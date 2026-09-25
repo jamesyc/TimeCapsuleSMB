@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "Отсутствует манифест файлов из комплекта приложения.";
 "bundle_issue.contract_decode_failed.message" = "Приложение получило неожиданный ответ от вспомогательной программы.";
 "bundle_issue.distribution_artifacts_missing.message" = "Отсутствуют файлы установки из комплекта TimeCapsuleSMB.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "В комплекте TimeCapsuleSMB отсутствуют файлы установки: %d.";
 "bundle_issue.distribution_root_missing.message" = "Отсутствует дистрибутив из комплекта TimeCapsuleSMB.";
 "bundle_issue.helper_launch_failed.message" = "Не удалось запустить вспомогательную программу TimeCapsuleSMB.";
 "bundle_issue.helper_missing.message" = "Отсутствует вспомогательная программа из комплекта TimeCapsuleSMB.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "Активация NetBSD4 завершена.";
 "backend.summary.configuration_saved" = "Конфигурация сохранена, аутентификация SSH проверена.";
 "backend.summary.deploy_completed" = "Установка или обновление Samba завершены.";
-"backend.summary.discovered_devices" = "Обнаружено устройств: %d.";
 "backend.summary.doctor_checks_passed" = "Диагностические проверки пройдены.";
 "backend.summary.doctor_found_fatal" = "Диагностика выявила одну или несколько серьезных проблем.";
 "backend.summary.flash_backup_saved" = "Резервная копия флеш-памяти сохранена в %@.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Исправление диска с помощью fsck завершено.";
 "backend.summary.fsck_plan_generated" = "План пробного прогона создан для fsck.";
 "backend.summary.helper_capabilities_resolved" = "Определены возможности вспомогательной программы.";
-"backend.summary.hfs_volumes_found" = "Найдено смонтированных томов HFS: %d.";
 "backend.summary.install_validation_failed" = "Не удалось выполнить проверку установки.";
 "backend.summary.install_validation_passed" = "Проверка установки пройдена.";
 "backend.summary.operation_exited" = "Операция завершена.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "Порт SMB доступен, SSH отключен.";
 "backend.summary.reachability.ssh_only" = "SSH доступен, порт SMB закрыт.";
 "backend.summary.reachability.unreachable" = "Не удалось связаться с SSH или SMB.";
-"backend.summary.repair_xattrs_found" = "Найдено проблем с метаданными: %d, из них исправимых: %d.";
 "backend.summary.waiting_device_activate" = "Подождите несколько секунд, пока устройство активируется...";
 "backend.summary.waiting_device_boot" = "Подождите несколько секунд, пока устройство загрузится...";
 "backend.summary.telemetry_disabled" = "Телеметрия отключена.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Прошивка восстановления Apple проверена (продукт %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Прошивка восстановления Apple проверена (версия %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Прошивка восстановления Apple проверена (версия %@, продукт %@).";
-"backend.summary.flash.apple_some_match" = "%lld из %lld проверяемых банков прошивки соответствуют оригинальной прошивке Apple.";
-"backend.summary.flash.apple_some_match_version" = "%lld из %lld проверяемых банков прошивки соответствуют оригинальной прошивке Apple %@.";
 "backend.summary.flash.apple_stock_match" = "Активный банк прошивки соответствует оригинальной прошивке Apple.";
 "backend.summary.flash.apple_stock_match_version" = "Активный банк прошивки соответствует оригинальной прошивке Apple %@.";
 "backend.summary.flash.apple_stock_mismatch" = "Активный банк прошивки не соответствует оригинальной прошивке Apple.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "Приложение готово";
 "activity.active" = "Активен";
 "activity.last_operation" = "Последняя операция";
-"activity.multiple_active" = "Активных операций: %d";
 "activity.multiple_active.message" = "Откройте «Активность», чтобы узнать подробности.";
 "activity.no_active_operation" = "Нет активной операции.";
 "activity.one_active" = "1 активная операция";

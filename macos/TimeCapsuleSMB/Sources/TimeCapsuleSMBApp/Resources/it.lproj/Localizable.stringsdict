@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>activity.multiple_active</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@operations@</string>
+		<key>operations</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di operazioni attive</string>
+			<key>one</key>
+			<string>%lld operazione attiva</string>
+			<key>other</key>
+			<string>%lld operazioni attive</string>
+		</dict>
+	</dict>
+	<key>backend.summary.discovered_devices</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@devices@</string>
+		<key>devices</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>Rilevati %lld di dispositivi.</string>
+			<key>one</key>
+			<string>Rilevato %lld dispositivo.</string>
+			<key>other</key>
+			<string>Rilevati %lld dispositivi.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld dei %2$lld banchi firmware candidati %1$#@verb@ al firmware originale Apple.</string>
+		<key>verb</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>corrispondono</string>
+			<key>one</key>
+			<string>corrisponde</string>
+			<key>other</key>
+			<string>corrispondono</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match_version</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld dei %2$lld banchi firmware candidati %1$#@verb@ al firmware originale Apple %3$@.</string>
+		<key>verb</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>corrispondono</string>
+			<key>one</key>
+			<string>corrisponde</string>
+			<key>other</key>
+			<string>corrispondono</string>
+		</dict>
+	</dict>
+	<key>backend.summary.hfs_volumes_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@volumes@</string>
+		<key>volumes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>Trovati %lld di volumi HFS montati.</string>
+			<key>one</key>
+			<string>Trovato %lld volume HFS montato.</string>
+			<key>other</key>
+			<string>Trovati %lld volumi HFS montati.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.repair_xattrs_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@issues@, di cui %#@repairable@.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>Trovati %lld di problemi di metadati</string>
+			<key>one</key>
+			<string>Trovato %lld problema di metadati</string>
+			<key>other</key>
+			<string>Trovati %lld problemi di metadati</string>
+		</dict>
+		<key>repairable</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld riparabili</string>
+			<key>one</key>
+			<string>%lld riparabile</string>
+			<key>other</key>
+			<string>%lld riparabili</string>
+		</dict>
+	</dict>
+	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>Nel pacchetto incluso con TimeCapsuleSMB mancano %lld di file di installazione.</string>
+			<key>one</key>
+			<string>Nel pacchetto incluso con TimeCapsuleSMB manca %lld file di installazione.</string>
+			<key>other</key>
+			<string>Nel pacchetto incluso con TimeCapsuleSMB mancano %lld file di installazione.</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

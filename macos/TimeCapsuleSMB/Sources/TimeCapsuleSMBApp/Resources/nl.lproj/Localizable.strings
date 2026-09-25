@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "Het meegeleverde bestandsmanifest ontbreekt.";
 "bundle_issue.contract_decode_failed.message" = "De app heeft een onverwacht antwoord van het hulpprogramma ontvangen.";
 "bundle_issue.distribution_artifacts_missing.message" = "De meegeleverde TimeCapsuleSMB-installatiebestanden ontbreken.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "In het meegeleverde TimeCapsuleSMB-pakket ontbreken %d installatiebestanden.";
 "bundle_issue.distribution_root_missing.message" = "Het meegeleverde TimeCapsuleSMB-pakket ontbreekt.";
 "bundle_issue.helper_launch_failed.message" = "Het TimeCapsuleSMB-hulpprogramma kon niet starten.";
 "bundle_issue.helper_missing.message" = "Het meegeleverde TimeCapsuleSMB-hulpprogramma ontbreekt.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "NetBSD4-activering voltooid.";
 "backend.summary.configuration_saved" = "Configuratie opgeslagen en SSH-authenticatie gecontroleerd.";
 "backend.summary.deploy_completed" = "Samba-installatie of -update voltooid.";
-"backend.summary.discovered_devices" = "%d apparaten gevonden.";
 "backend.summary.doctor_checks_passed" = "Diagnostische controles geslaagd.";
 "backend.summary.doctor_found_fatal" = "De diagnose heeft een of meer ernstige problemen gevonden.";
 "backend.summary.flash_backup_saved" = "Flashback-up opgeslagen in %@.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Schijfreparatie voltooid met fsck.";
 "backend.summary.fsck_plan_generated" = "Proefplan voor fsck aangemaakt.";
 "backend.summary.helper_capabilities_resolved" = "De functies van het hulpprogramma zijn vastgesteld.";
-"backend.summary.hfs_volumes_found" = "%d gekoppelde HFS-volumes gevonden.";
 "backend.summary.install_validation_failed" = "Installatievalidatie mislukt.";
 "backend.summary.install_validation_passed" = "Installatievalidatie geslaagd.";
 "backend.summary.operation_exited" = "Bewerking beëindigd.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "SMB-poort bereikbaar, SSH gesloten.";
 "backend.summary.reachability.ssh_only" = "SSH bereikbaar, SMB-poort gesloten.";
 "backend.summary.reachability.unreachable" = "Kan SSH of SMB niet bereiken.";
-"backend.summary.repair_xattrs_found" = "%d metadataproblemen gevonden, waarvan %d herstelbaar.";
 "backend.summary.waiting_device_activate" = "Een paar seconden wachten tot het apparaat wordt geactiveerd...";
 "backend.summary.waiting_device_boot" = "Een paar seconden wachten tot het apparaat opstart...";
 "backend.summary.telemetry_disabled" = "Telemetrie is uitgeschakeld.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Apple-herstelfirmware gecontroleerd (product %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Apple-herstelfirmware gecontroleerd (versie %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Apple-herstelfirmware gecontroleerd (versie %@, product %@).";
-"backend.summary.flash.apple_some_match" = "%lld van %lld kandidaat-firmwarebanken komen overeen met de originele Apple-firmware.";
-"backend.summary.flash.apple_some_match_version" = "%lld van %lld kandidaat-firmwarebanken komen overeen met de originele Apple-firmware %@.";
 "backend.summary.flash.apple_stock_match" = "De actieve firmwarebank komt overeen met de originele Apple-firmware.";
 "backend.summary.flash.apple_stock_match_version" = "De actieve firmwarebank komt overeen met de originele Apple-firmware %@.";
 "backend.summary.flash.apple_stock_mismatch" = "De actieve firmwarebank komt niet overeen met de originele Apple-firmware.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "App gereed";
 "activity.active" = "Actief";
 "activity.last_operation" = "Laatste handeling";
-"activity.multiple_active" = "%d actieve bewerkingen";
 "activity.multiple_active.message" = "Open Activiteit voor meer informatie.";
 "activity.no_active_operation" = "Geen actieve bewerking";
 "activity.one_active" = "1 actieve bewerking";

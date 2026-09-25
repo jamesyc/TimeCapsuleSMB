@@ -263,7 +263,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "The bundled artifact manifest is missing.";
 "bundle_issue.contract_decode_failed.message" = "The app received an unexpected helper response.";
 "bundle_issue.distribution_artifacts_missing.message" = "The bundled TimeCapsuleSMB payload artifacts are missing.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "The bundled TimeCapsuleSMB distribution is missing %d payload artifact(s).";
 "bundle_issue.distribution_root_missing.message" = "The bundled TimeCapsuleSMB distribution is missing.";
 "bundle_issue.helper_launch_failed.message" = "The TimeCapsuleSMB helper could not launch.";
 "bundle_issue.helper_missing.message" = "The bundled TimeCapsuleSMB helper is missing.";
@@ -299,7 +298,6 @@
 "backend.summary.activation_completed" = "NetBSD4 activation completed.";
 "backend.summary.configuration_saved" = "Configuration saved and SSH authentication verified.";
 "backend.summary.deploy_completed" = "Samba installation or update completed.";
-"backend.summary.discovered_devices" = "Discovered %d device(s).";
 "backend.summary.doctor_checks_passed" = "Doctor checks passed.";
 "backend.summary.doctor_found_fatal" = "Doctor found one or more fatal problems.";
 "backend.summary.flash_backup_saved" = "Flash backup saved to %@.";
@@ -313,7 +311,6 @@
 "backend.summary.fsck_completed" = "Disk repair completed with fsck.";
 "backend.summary.fsck_plan_generated" = "Dry-run plan generated for fsck.";
 "backend.summary.helper_capabilities_resolved" = "Helper capabilities resolved.";
-"backend.summary.hfs_volumes_found" = "Found %d mounted HFS volume(s).";
 "backend.summary.install_validation_failed" = "Install validation failed.";
 "backend.summary.install_validation_passed" = "Install validation passed.";
 "backend.summary.operation_exited" = "Operation exited.";
@@ -321,7 +318,6 @@
 "backend.summary.reachability.smb_only" = "SMB port reachable, SSH closed.";
 "backend.summary.reachability.ssh_only" = "SSH reachable, SMB port closed.";
 "backend.summary.reachability.unreachable" = "Could not reach SSH or SMB.";
-"backend.summary.repair_xattrs_found" = "Found %d metadata issue(s), %d repairable.";
 "backend.summary.waiting_device_activate" = "Waiting a few seconds for device to activate...";
 "backend.summary.waiting_device_boot" = "Waiting a few seconds for device to boot...";
 "backend.summary.telemetry_disabled" = "Telemetry is disabled.";
@@ -341,8 +337,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Apple restore firmware validated (product %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Apple restore firmware validated (version %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Apple restore firmware validated (version %@, product %@).";
-"backend.summary.flash.apple_some_match" = "%lld of %lld candidate firmware banks match Apple stock firmware.";
-"backend.summary.flash.apple_some_match_version" = "%lld of %lld candidate firmware banks match Apple stock firmware %@.";
 "backend.summary.flash.apple_stock_match" = "Active firmware bank matches Apple stock firmware.";
 "backend.summary.flash.apple_stock_match_version" = "Active firmware bank matches Apple stock firmware %@.";
 "backend.summary.flash.apple_stock_mismatch" = "Active firmware bank does not match Apple stock firmware.";
@@ -419,7 +413,6 @@
 "activity.app_ready" = "App Ready";
 "activity.active" = "Active";
 "activity.last_operation" = "Last operation";
-"activity.multiple_active" = "%d active operations";
 "activity.multiple_active.message" = "Open Activity for details.";
 "activity.no_active_operation" = "No active operation";
 "activity.one_active" = "1 active operation";

@@ -629,7 +629,7 @@ func testDiscoverPayload(records: [JSONValue], devices: [JSONValue]? = nil) -> J
             "resolved": .number(Double(records.count)),
             "devices": .number(Double(deviceValues.count))
         ]),
-        "summary": .string("Discovered \(deviceValues.count) device(s)."),
+        "summary": .string("Discovered \(deviceValues.count) \(deviceValues.count == 1 ? "device" : "devices")."),
         "summary_key": .string("discovered_devices"),
         "summary_args": .array([.number(Double(deviceValues.count))])
     ])
@@ -954,7 +954,7 @@ func testFsckListPayload(targets: [JSONValue]) -> JSONValue {
         "schema_version": .number(1),
         "targets": .array(targets),
         "counts": .object(["targets": .number(Double(targets.count))]),
-        "summary": .string("Found \(targets.count) mounted HFS volume(s)."),
+        "summary": .string("Found \(targets.count) mounted HFS \(targets.count == 1 ? "volume" : "volumes")."),
         "summary_key": .string("hfs_volumes_found"),
         "summary_args": .array([.number(Double(targets.count))])
     ])
@@ -1041,9 +1041,9 @@ func testRepairXattrsPayload(findings: Int, repairable: Int) -> JSONValue {
         ]),
         "stats": .object([:]),
         "report": .string("report"),
-        "summary": .string("Found \(findings) metadata issue(s), \(repairable) repairable."),
+        "summary": .string("Found \(findings) metadata \(findings == 1 ? "issue" : "issues"), \(repairable) repairable."),
         "summary_key": .string("repair_xattrs_found"),
         "summary_args": .array([.number(Double(findings)), .number(Double(repairable))]),
-        "summary_text": .string("Found \(findings) metadata issue(s), \(repairable) repairable.")
+        "summary_text": .string("Found \(findings) metadata \(findings == 1 ? "issue" : "issues"), \(repairable) repairable.")
     ])
 }

@@ -3,12 +3,13 @@
 Every result payload carries its English ``summary`` (for the CLI, telemetry
 and older consumers) plus a ``summary_key`` and positional ``summary_args``.
 The macOS app translates ``backend.summary.<summary_key>`` from its
-``Localizable.strings`` files and falls back to the English text.
+``Localizable`` catalogs and falls back to the English text.
 
 This registry is a contract with those files: each key lists its argument
 types, which must match the placeholders of every translation (``"int"`` for
-``%d``/``%ld``/``%lld``, ``"str"`` for ``%@``). To add or rename a key, update
-this registry, all ten ``Localizable.strings`` files and the summary contract
+``%d``/``%ld``/``%lld`` and ``%#@plural@`` variables, ``"str"`` for ``%@``). To
+add or rename a key, update this registry, all ten ``Localizable.strings`` (or,
+for a count sentence, ``Localizable.stringsdict``) files and the summary contract
 fixture (``python -m tests.fixtures.summary_payloads --write``) together;
 ``tests/test_summaries.py`` checks all three.
 """

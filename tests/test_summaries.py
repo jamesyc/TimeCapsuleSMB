@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import re
 import unittest
 from pathlib import Path
@@ -19,14 +20,19 @@ RESOURCES = Path(__file__).resolve().parents[1] / "macos/TimeCapsuleSMB/Sources/
 LANGUAGES = ("en", "de", "es", "fr", "it", "lt", "nl", "pt", "ru", "zh-Hans")
 STRING_LINE = re.compile(r'^"([^"]+)"\s*=\s*"((?:[^"\\]|\\.)*)";\s*$')
 # %d/%ld/%lld/%i/%u are integers and %@ is a string. A plural variable
-# (%#@name@) is always an integer; when .stringsdict files arrive, read the
-# key and its NSStringFormatValueTypeKey from them as well.
+# (%#@name@) is always an integer: tests/test_localization_plurals.py checks
+# that each one is declared with value type lld.
 PLACEHOLDER = re.compile(r"%(?:(\d+)\$)?(#@\w+@|l{0,2}[diu]|@)")
 
 
 def catalog(language: str) -> dict[str, str]:
+    """Every key's format: Localizable.strings plus the format keys of the
+    plural entries in Localizable.stringsdict."""
     path = RESOURCES / f"{language}.lproj" / "Localizable.strings"
-    return {m.group(1): m.group(2) for line in path.read_text().splitlines() if (m := STRING_LINE.match(line))}
+    strings = {m.group(1): m.group(2) for line in path.read_text().splitlines() if (m := STRING_LINE.match(line))}
+    with open(RESOURCES / f"{language}.lproj" / "Localizable.stringsdict", "rb") as handle:
+        plurals = plistlib.load(handle)
+    return {**strings, **{key: entry["NSStringLocalizedFormatKey"] for key, entry in plurals.items()}}
 
 
 def placeholder_types(template: str) -> tuple[str, ...]:

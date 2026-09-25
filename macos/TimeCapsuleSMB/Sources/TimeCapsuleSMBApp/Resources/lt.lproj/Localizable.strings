@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "Trūksta įdiegto artefaktų sąrašo.";
 "bundle_issue.contract_decode_failed.message" = "Programa gavo netikėtą pagalbinės programos atsakymą.";
 "bundle_issue.distribution_artifacts_missing.message" = "Trūksta su programa pateiktų TimeCapsuleSMB diegimo failų.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "Su programa pateiktame TimeCapsuleSMB platinime trūksta %d diegimo failo(-ų).";
 "bundle_issue.distribution_root_missing.message" = "Trūksta įdiegto TimeCapsuleSMB platinimo.";
 "bundle_issue.helper_launch_failed.message" = "Nepavyko paleisti TimeCapsuleSMB pagalbinės programos.";
 "bundle_issue.helper_missing.message" = "Trūksta įdiegtos TimeCapsuleSMB pagalbinės programos.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "NetBSD4 aktyvavimas baigtas.";
 "backend.summary.configuration_saved" = "Konfigūracija išsaugota ir SSH autentifikacija patvirtinta.";
 "backend.summary.deploy_completed" = "Diegimas baigtas.";
-"backend.summary.discovered_devices" = "Rasta %d įrenginis(-ių).";
 "backend.summary.doctor_checks_passed" = "Diagnostikos patikrinimai pavyko.";
 "backend.summary.doctor_found_fatal" = "Diagnostika rado vieną ar daugiau kritinių problemų.";
 "backend.summary.flash_backup_saved" = "Flash atsarginė kopija išsaugota į %@.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Disko taisymas su fsck baigtas.";
 "backend.summary.fsck_plan_generated" = "Bandomasis fsck planas sugeneruotas.";
 "backend.summary.helper_capabilities_resolved" = "Pagalbinės programos galimybės nustatytos.";
-"backend.summary.hfs_volumes_found" = "Rasta %d prijungtų HFS tomų(-ų).";
 "backend.summary.install_validation_failed" = "Diegimo tikrinimas nepavyko.";
 "backend.summary.install_validation_passed" = "Diegimo tikrinimas pavyko.";
 "backend.summary.operation_exited" = "Operacija baigta.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "SMB prievadas pasiekiamas, SSH uždaryta.";
 "backend.summary.reachability.ssh_only" = "SSH pasiekiama, SMB prievadas uždarytas.";
 "backend.summary.reachability.unreachable" = "Nepavyko pasiekti SSH ar SMB.";
-"backend.summary.repair_xattrs_found" = "Rasta %d metaduomenų problema(-ų), %d taisoma.";
 "backend.summary.waiting_device_activate" = "Laukiama kelias sekundes, kol įrenginys aktyvuosis...";
 "backend.summary.waiting_device_boot" = "Laukiama kelias sekundes, kol įrenginys įsikraus...";
 "backend.summary.telemetry_disabled" = "Telemetrija išjungta.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Apple atkūrimo programinė įranga patvirtinta (produktas %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Apple atkūrimo programinė įranga patvirtinta (versija %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Apple atkūrimo programinė įranga patvirtinta (versija %@, produktas %@).";
-"backend.summary.flash.apple_some_match" = "%lld iš %lld kandidatų programinės įrangos bankų atitinka Apple originalią programinę įrangą.";
-"backend.summary.flash.apple_some_match_version" = "%lld iš %lld kandidatų programinės įrangos bankų atitinka Apple originalią programinę įrangą %@.";
 "backend.summary.flash.apple_stock_match" = "Aktyvus programinės įrangos bankas atitinka Apple originalią programinę įrangą.";
 "backend.summary.flash.apple_stock_match_version" = "Aktyvus programinės įrangos bankas atitinka Apple originalią programinę įrangą %@.";
 "backend.summary.flash.apple_stock_mismatch" = "Aktyvus programinės įrangos bankas neatitinka Apple originalios programinės įrangos.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "Programa paruošta";
 "activity.active" = "Aktyvus";
 "activity.last_operation" = "Paskutinė operacija";
-"activity.multiple_active" = "%d aktyvios operacijos";
 "activity.multiple_active.message" = "Išsamiau žiūrėkite veikloje.";
 "activity.no_active_operation" = "Nėra aktyvių operacijų";
 "activity.one_active" = "1 aktyvi operacija";

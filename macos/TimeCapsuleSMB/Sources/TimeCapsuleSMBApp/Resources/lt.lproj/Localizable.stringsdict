@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>activity.multiple_active</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@operations@</string>
+		<key>operations</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld aktyvios operacijos</string>
+			<key>many</key>
+			<string>%lld aktyvios operacijos</string>
+			<key>one</key>
+			<string>%lld aktyvi operacija</string>
+			<key>other</key>
+			<string>%lld aktyvių operacijų</string>
+		</dict>
+	</dict>
+	<key>backend.summary.discovered_devices</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@devices@</string>
+		<key>devices</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>Rasti %lld įrenginiai.</string>
+			<key>many</key>
+			<string>Rasta %lld įrenginio.</string>
+			<key>one</key>
+			<string>Rastas %lld įrenginys.</string>
+			<key>other</key>
+			<string>Rasta %lld įrenginių.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld iš %2$#@banks@ atitinka Apple originalią programinę įrangą.</string>
+		<key>banks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld tikrinamų programinės įrangos bankų</string>
+			<key>many</key>
+			<string>%lld tikrinamo programinės įrangos banko</string>
+			<key>one</key>
+			<string>%lld tikrinamo programinės įrangos banko</string>
+			<key>other</key>
+			<string>%lld tikrinamų programinės įrangos bankų</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match_version</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld iš %2$#@banks@ atitinka Apple originalią programinę įrangą %3$@.</string>
+		<key>banks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld tikrinamų programinės įrangos bankų</string>
+			<key>many</key>
+			<string>%lld tikrinamo programinės įrangos banko</string>
+			<key>one</key>
+			<string>%lld tikrinamo programinės įrangos banko</string>
+			<key>other</key>
+			<string>%lld tikrinamų programinės įrangos bankų</string>
+		</dict>
+	</dict>
+	<key>backend.summary.hfs_volumes_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@volumes@</string>
+		<key>volumes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>Rasti %lld prijungti HFS tomai.</string>
+			<key>many</key>
+			<string>Rasta %lld prijungto HFS tomo.</string>
+			<key>one</key>
+			<string>Rastas %lld prijungtas HFS tomas.</string>
+			<key>other</key>
+			<string>Rasta %lld prijungtų HFS tomų.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.repair_xattrs_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@issues@, iš jų %#@repairable@.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>Rastos %lld metaduomenų problemos</string>
+			<key>many</key>
+			<string>Rasta %lld metaduomenų problemos</string>
+			<key>one</key>
+			<string>Rasta %lld metaduomenų problema</string>
+			<key>other</key>
+			<string>Rasta %lld metaduomenų problemų</string>
+		</dict>
+		<key>repairable</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld taisomos</string>
+			<key>many</key>
+			<string>%lld taisomos</string>
+			<key>one</key>
+			<string>%lld taisoma</string>
+			<key>other</key>
+			<string>%lld taisomų</string>
+		</dict>
+	</dict>
+	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Su programa pateiktame TimeCapsuleSMB platinime trūksta %#@files@.</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld diegimo failų</string>
+			<key>many</key>
+			<string>%lld diegimo failo</string>
+			<key>one</key>
+			<string>%lld diegimo failo</string>
+			<key>other</key>
+			<string>%lld diegimo failų</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

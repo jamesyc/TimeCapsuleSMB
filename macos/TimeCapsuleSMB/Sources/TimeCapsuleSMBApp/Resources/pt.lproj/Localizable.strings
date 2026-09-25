@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "O manifesto dos arquivos incluídos está ausente.";
 "bundle_issue.contract_decode_failed.message" = "O app recebeu uma resposta inesperada do programa auxiliar.";
 "bundle_issue.distribution_artifacts_missing.message" = "Os arquivos de instalação incluídos com TimeCapsuleSMB estão ausentes.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "Faltam %d arquivos de instalação no pacote incluído com TimeCapsuleSMB.";
 "bundle_issue.distribution_root_missing.message" = "O pacote incluído com TimeCapsuleSMB está ausente.";
 "bundle_issue.helper_launch_failed.message" = "Não foi possível iniciar o programa auxiliar do TimeCapsuleSMB.";
 "bundle_issue.helper_missing.message" = "O programa auxiliar incluído com TimeCapsuleSMB está ausente.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "Ativação do NetBSD4 concluída.";
 "backend.summary.configuration_saved" = "Configuração salva e autenticação SSH verificada.";
 "backend.summary.deploy_completed" = "Instalação ou atualização do Samba concluída.";
-"backend.summary.discovered_devices" = "%d dispositivos encontrados.";
 "backend.summary.doctor_checks_passed" = "Verificações de diagnóstico aprovadas.";
 "backend.summary.doctor_found_fatal" = "O diagnóstico encontrou um ou mais problemas graves.";
 "backend.summary.flash_backup_saved" = "Backup da memória flash salvo em %@.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Reparo de disco concluído com fsck.";
 "backend.summary.fsck_plan_generated" = "Plano de simulação gerado para fsck.";
 "backend.summary.helper_capabilities_resolved" = "Funcionalidades do programa auxiliar identificadas.";
-"backend.summary.hfs_volumes_found" = "Foram encontrados %d volumes HFS montados.";
 "backend.summary.install_validation_failed" = "Falha na validação de instalação.";
 "backend.summary.install_validation_passed" = "Validação de instalação aprovada.";
 "backend.summary.operation_exited" = "Operação encerrada.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "Porta SMB acessível, SSH fechado.";
 "backend.summary.reachability.ssh_only" = "SSH acessível, porta SMB fechada.";
 "backend.summary.reachability.unreachable" = "Não foi possível acessar SSH ou SMB.";
-"backend.summary.repair_xattrs_found" = "Foram encontrados %d problemas de metadados, dos quais %d são reparáveis.";
 "backend.summary.waiting_device_activate" = "Aguardando alguns segundos para o dispositivo ser ativado...";
 "backend.summary.waiting_device_boot" = "Aguardando alguns segundos para o dispositivo inicializar...";
 "backend.summary.telemetry_disabled" = "A telemetria está desativada.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Firmware de restauração da Apple verificado (produto %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Firmware de restauração da Apple verificado (versão %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Firmware de restauração da Apple verificado (versão %@, produto %@).";
-"backend.summary.flash.apple_some_match" = "%lld dos %lld bancos de firmware candidatos correspondem ao firmware original da Apple.";
-"backend.summary.flash.apple_some_match_version" = "%lld dos %lld bancos de firmware candidatos correspondem ao firmware original da Apple %@.";
 "backend.summary.flash.apple_stock_match" = "O banco de firmware ativo corresponde ao firmware original da Apple.";
 "backend.summary.flash.apple_stock_match_version" = "O banco de firmware ativo corresponde ao firmware original da Apple %@.";
 "backend.summary.flash.apple_stock_mismatch" = "O banco de firmware ativo não corresponde ao firmware original da Apple.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "App pronto";
 "activity.active" = "Ativo";
 "activity.last_operation" = "Última operação";
-"activity.multiple_active" = "%d operações ativas";
 "activity.multiple_active.message" = "Abra Atividade para obter detalhes.";
 "activity.no_active_operation" = "Sem operação ativa";
 "activity.one_active" = "1 operação ativa";

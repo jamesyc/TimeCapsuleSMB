@@ -20,6 +20,9 @@ enum L10n {
         string(key, language: currentLanguage)
     }
 
+    /// Plural keys live in Localizable.stringsdict: pass the template straight
+    /// from `string(_:language:)` to `String(format:)`, since a copy loses its
+    /// plural rules. Foundation picks the plural form from the locale passed.
     static func format(_ key: String, _ arguments: CVarArg...) -> String {
         let language = currentLanguage
         return String(format: string(key, language: language), locale: language.locale, arguments: arguments)

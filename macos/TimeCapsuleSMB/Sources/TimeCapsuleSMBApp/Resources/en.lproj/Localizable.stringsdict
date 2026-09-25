@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>activity.multiple_active</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@operations@</string>
+		<key>operations</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld active operation</string>
+			<key>other</key>
+			<string>%lld active operations</string>
+		</dict>
+	</dict>
+	<key>backend.summary.discovered_devices</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Discovered %#@devices@.</string>
+		<key>devices</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld device</string>
+			<key>other</key>
+			<string>%lld devices</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld of %2$lld candidate firmware banks %1$#@verb@ Apple stock firmware.</string>
+		<key>verb</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>matches</string>
+			<key>other</key>
+			<string>match</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match_version</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld of %2$lld candidate firmware banks %1$#@verb@ Apple stock firmware %3$@.</string>
+		<key>verb</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>matches</string>
+			<key>other</key>
+			<string>match</string>
+		</dict>
+	</dict>
+	<key>backend.summary.hfs_volumes_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Found %#@volumes@.</string>
+		<key>volumes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld mounted HFS volume</string>
+			<key>other</key>
+			<string>%lld mounted HFS volumes</string>
+		</dict>
+	</dict>
+	<key>backend.summary.repair_xattrs_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Found %#@issues@, %lld repairable.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld metadata issue</string>
+			<key>other</key>
+			<string>%lld metadata issues</string>
+		</dict>
+	</dict>
+	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>The bundled TimeCapsuleSMB distribution is missing %#@files@.</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld payload artifact</string>
+			<key>other</key>
+			<string>%lld payload artifacts</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

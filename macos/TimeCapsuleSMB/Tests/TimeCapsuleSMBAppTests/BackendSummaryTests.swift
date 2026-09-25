@@ -79,7 +79,7 @@ final class BackendSummaryTests: XCTestCase {
         let summary = BackendSummary(
             key: "backend.summary.flash.apple_some_match_version",
             arguments: [.int(1), .int(2), .string("7.8.1")],
-            text: "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1."
+            text: "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1."
         )
 
         let decoded = try JSONDecoder().decode(BackendSummary.self, from: JSONEncoder().encode(summary))

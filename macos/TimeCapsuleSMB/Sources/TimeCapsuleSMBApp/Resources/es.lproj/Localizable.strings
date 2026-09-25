@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "Falta el manifiesto de archivos incluido.";
 "bundle_issue.contract_decode_failed.message" = "La app recibió una respuesta inesperada del programa auxiliar.";
 "bundle_issue.distribution_artifacts_missing.message" = "Faltan los archivos de instalación incluidos con TimeCapsuleSMB.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "Faltan %d archivos de instalación en el paquete incluido con TimeCapsuleSMB.";
 "bundle_issue.distribution_root_missing.message" = "Falta el paquete incluido con TimeCapsuleSMB.";
 "bundle_issue.helper_launch_failed.message" = "No se pudo iniciar el programa auxiliar de TimeCapsuleSMB.";
 "bundle_issue.helper_missing.message" = "Falta el programa auxiliar incluido con TimeCapsuleSMB.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "Activación de NetBSD4 completada.";
 "backend.summary.configuration_saved" = "Configuración guardada y autenticación SSH verificada.";
 "backend.summary.deploy_completed" = "Instalación o actualización de Samba completada.";
-"backend.summary.discovered_devices" = "Se descubrieron %d dispositivos.";
 "backend.summary.doctor_checks_passed" = "Las comprobaciones de diagnóstico se superaron.";
 "backend.summary.doctor_found_fatal" = "El diagnóstico encontró uno o más problemas graves.";
 "backend.summary.flash_backup_saved" = "Copia de seguridad de la memoria flash guardada en %@.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Reparación del disco completada con fsck.";
 "backend.summary.fsck_plan_generated" = "Se generó un plan de simulación para fsck.";
 "backend.summary.helper_capabilities_resolved" = "Se identificaron las funciones del programa auxiliar.";
-"backend.summary.hfs_volumes_found" = "Se encontraron %d volúmenes HFS montados.";
 "backend.summary.install_validation_failed" = "Error en la validación de instalación.";
 "backend.summary.install_validation_passed" = "Verificación de instalación superada.";
 "backend.summary.operation_exited" = "Operación cerrada.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "Puerto SMB accesible, SSH cerrado.";
 "backend.summary.reachability.ssh_only" = "SSH accesible, puerto SMB cerrado.";
 "backend.summary.reachability.unreachable" = "No se pudo comunicar con SSH o SMB.";
-"backend.summary.repair_xattrs_found" = "Se encontraron %d problemas de metadatos; %d son reparables.";
 "backend.summary.waiting_device_activate" = "Esperando unos segundos para que el dispositivo se active...";
 "backend.summary.waiting_device_boot" = "Esperando unos segundos para que el dispositivo arranque...";
 "backend.summary.telemetry_disabled" = "La telemetría está deshabilitada.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Firmware de restauración de Apple verificado (producto %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Firmware de restauración de Apple verificado (versión %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Firmware de restauración de Apple verificado (versión %@, producto %@).";
-"backend.summary.flash.apple_some_match" = "%lld de los %lld bancos de firmware candidatos coinciden con el firmware original de Apple.";
-"backend.summary.flash.apple_some_match_version" = "%lld de los %lld bancos de firmware candidatos coinciden con el firmware original de Apple %@.";
 "backend.summary.flash.apple_stock_match" = "El banco de firmware activo coincide con el firmware original de Apple.";
 "backend.summary.flash.apple_stock_match_version" = "El banco de firmware activo coincide con el firmware original de Apple %@.";
 "backend.summary.flash.apple_stock_mismatch" = "El banco de firmware activo no coincide con el firmware original de Apple.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "App preparada";
 "activity.active" = "Activo";
 "activity.last_operation" = "Última operación";
-"activity.multiple_active" = "%d operaciones activas";
 "activity.multiple_active.message" = "Abra la actividad para obtener más detalles.";
 "activity.no_active_operation" = "Sin operación activa";
 "activity.one_active" = "1 operación activa";

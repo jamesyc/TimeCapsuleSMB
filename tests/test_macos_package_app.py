@@ -20,6 +20,11 @@ def load_package_app_module():
     return module
 
 
+PLURALS_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict></dict></plist>
+"""
+
+
 def create_fake_app_executable_and_resources(app: Path) -> None:
     executable = app / "Contents" / "MacOS" / "TimeCapsuleSMB"
     resource_bundle = (
@@ -35,6 +40,7 @@ def create_fake_app_executable_and_resources(app: Path) -> None:
     executable.chmod(0o755)
     create_fake_python_runtime(app)
     (resource_bundle / "Localizable.strings").write_text('"screen.readiness" = "Readiness";\n', encoding="utf-8")
+    (resource_bundle / "Localizable.stringsdict").write_text(PLURALS_PLIST, encoding="utf-8")
 
 
 def create_fake_python_runtime(app: Path) -> None:
@@ -198,6 +204,27 @@ def test_assert_bundle_layout_requires_swift_resource_bundle(tmp_path: Path) -> 
     (distribution / "artifact-manifest.json").write_text('{"artifacts":{}}', encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="missing Swift resource bundle"):
+        package_app.assert_bundle_layout(app)
+
+
+def test_assert_bundle_layout_requires_plural_localizations(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    distribution = app / "Contents" / "Resources" / "Distribution"
+    for directory in (helper.parent, python_packages, tools, distribution / "bin"):
+        directory.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    create_fake_app_executable_and_resources(app)
+    create_fake_certifi_package(python_packages)
+    (distribution / "artifact-manifest.json").write_text('{"artifacts":{}}', encoding="utf-8")
+    plurals = app / "Contents" / "Resources" / package_app.RESOURCE_BUNDLE_NAME / "en.lproj" / "Localizable.stringsdict"
+    plurals.unlink()
+
+    with pytest.raises(RuntimeError, match="missing Swift resource bundle plural localizations"):
         package_app.assert_bundle_layout(app)
 
 

@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "缺少随附的文件清单。";
 "bundle_issue.contract_decode_failed.message" = "应用收到了辅助程序的非预期响应。";
 "bundle_issue.distribution_artifacts_missing.message" = "缺少 TimeCapsuleSMB 随附的安装文件。";
-"bundle_issue.distribution_artifacts_missing_count.message" = "TimeCapsuleSMB 随附分发包缺少 %d 个安装文件。";
 "bundle_issue.distribution_root_missing.message" = "缺少捆绑的 TimeCapsuleSMB 分发包。";
 "bundle_issue.helper_launch_failed.message" = "TimeCapsuleSMB 辅助程序无法启动。";
 "bundle_issue.helper_missing.message" = "缺少 TimeCapsuleSMB 随附的辅助程序。";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "NetBSD4 启动已完成。";
 "backend.summary.configuration_saved" = "配置已保存，并已验证 SSH 身份验证。";
 "backend.summary.deploy_completed" = "Samba 安装或更新已完成。";
-"backend.summary.discovered_devices" = "发现 %d 个设备。";
 "backend.summary.doctor_checks_passed" = "诊断检查通过。";
 "backend.summary.doctor_found_fatal" = "诊断发现一个或多个严重问题。";
 "backend.summary.flash_backup_saved" = "闪存备份已保存到 %@。";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "已使用 fsck 完成磁盘修复。";
 "backend.summary.fsck_plan_generated" = "已生成 fsck 预演计划。";
 "backend.summary.helper_capabilities_resolved" = "已确定辅助程序支持的功能。";
-"backend.summary.hfs_volumes_found" = "找到 %d 个已挂载的 HFS 卷。";
 "backend.summary.install_validation_failed" = "安装验证失败。";
 "backend.summary.install_validation_passed" = "安装验证通过。";
 "backend.summary.operation_exited" = "操作已退出。";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "SMB 端口可达，SSH 已关闭。";
 "backend.summary.reachability.ssh_only" = "SSH 可达，SMB 端口已关闭。";
 "backend.summary.reachability.unreachable" = "无法访问 SSH 或 SMB。";
-"backend.summary.repair_xattrs_found" = "发现 %d 个元数据问题，其中 %d 个可修复。";
 "backend.summary.waiting_device_activate" = "正在等待设备完成激活...";
 "backend.summary.waiting_device_boot" = "正在等待设备完成启动...";
 "backend.summary.telemetry_disabled" = "遥测已禁用。";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "苹果恢复固件已验证（产品 %@）。";
 "backend.summary.flash.apple_restore_validated_version" = "苹果恢复固件已验证（版本 %@）。";
 "backend.summary.flash.apple_restore_validated_version_product" = "苹果恢复固件已验证（版本 %@，产品 %@）。";
-"backend.summary.flash.apple_some_match" = "%lld/%lld 个候选固件区与苹果原厂固件匹配。";
-"backend.summary.flash.apple_some_match_version" = "%lld/%lld 个候选固件区与苹果原厂固件 %@ 匹配。";
 "backend.summary.flash.apple_stock_match" = "活动固件区与苹果原厂固件匹配。";
 "backend.summary.flash.apple_stock_match_version" = "活动固件区与苹果原厂固件 %@ 匹配。";
 "backend.summary.flash.apple_stock_mismatch" = "活动固件区与苹果原厂固件不匹配。";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "应用就绪";
 "activity.active" = "正在进行";
 "activity.last_operation" = "上次操作";
-"activity.multiple_active" = "%d 个正在进行的操作";
 "activity.multiple_active.message" = "打开活动查看详情。";
 "activity.no_active_operation" = "没有正在进行的操作";
 "activity.one_active" = "1 个正在进行的操作";

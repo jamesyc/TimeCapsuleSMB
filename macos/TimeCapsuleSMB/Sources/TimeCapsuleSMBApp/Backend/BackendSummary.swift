@@ -145,7 +145,12 @@ struct BackendSummary: Codable, Equatable, Sendable {
                 return nil
             }
         }
-        return String(format: template, locale: locale, arguments: values)
+        // A plural template (%#@name@, from Localizable.stringsdict) carries its
+        // plural rules on the string object the bundle returned, so it must be
+        // passed here as is: a copy loses them and prints the variable raw, or
+        // crashes. Foundation picks the plural form from `locale`.
+        let formatted = String(format: template, locale: locale, arguments: values)
+        return formatted.contains("%#@") ? nil : formatted
     }
 
     private static let placeholderPattern = try! NSRegularExpression(

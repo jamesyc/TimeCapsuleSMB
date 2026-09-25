@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "Le manifeste des fichiers fournis est manquant.";
 "bundle_issue.contract_decode_failed.message" = "L’app a reçu une réponse inattendue du programme auxiliaire.";
 "bundle_issue.distribution_artifacts_missing.message" = "Les fichiers d’installation fournis avec TimeCapsuleSMB sont manquants.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "Il manque %d fichiers d’installation dans le paquet fourni avec TimeCapsuleSMB.";
 "bundle_issue.distribution_root_missing.message" = "Le paquet fourni avec TimeCapsuleSMB est manquant.";
 "bundle_issue.helper_launch_failed.message" = "Le programme auxiliaire de TimeCapsuleSMB n’a pas pu démarrer.";
 "bundle_issue.helper_missing.message" = "Le programme auxiliaire fourni avec TimeCapsuleSMB est manquant.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "Activation de NetBSD4 terminée.";
 "backend.summary.configuration_saved" = "Configuration enregistrée et authentification SSH vérifiée.";
 "backend.summary.deploy_completed" = "Installation ou mise à jour de Samba terminée.";
-"backend.summary.discovered_devices" = "%d appareil(s) découvert(s).";
 "backend.summary.doctor_checks_passed" = "Les vérifications de diagnostic ont réussi.";
 "backend.summary.doctor_found_fatal" = "Le diagnostic a détecté un ou plusieurs problèmes graves.";
 "backend.summary.flash_backup_saved" = "Sauvegarde de la mémoire flash enregistrée dans %@.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Réparation du disque terminée avec fsck.";
 "backend.summary.fsck_plan_generated" = "Plan de simulation généré pour fsck.";
 "backend.summary.helper_capabilities_resolved" = "Fonctionnalités du programme auxiliaire identifiées.";
-"backend.summary.hfs_volumes_found" = "%d volume(s) HFS monté(s) trouvé(s).";
 "backend.summary.install_validation_failed" = "La validation de l'installation a échoué.";
 "backend.summary.install_validation_passed" = "Validation de l'installation réussie.";
 "backend.summary.operation_exited" = "Opération terminée.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "Port SMB accessible, SSH fermé.";
 "backend.summary.reachability.ssh_only" = "SSH accessible, port SMB fermé.";
 "backend.summary.reachability.unreachable" = "Impossible d'atteindre SSH ou SMB.";
-"backend.summary.repair_xattrs_found" = "%d problème(s) de métadonnées trouvé(s), dont %d réparable(s).";
 "backend.summary.waiting_device_activate" = "Attente de quelques secondes pour que l'appareil s'active...";
 "backend.summary.waiting_device_boot" = "Attente de quelques secondes pour que l'appareil démarre...";
 "backend.summary.telemetry_disabled" = "La télémétrie est désactivée.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Firmware de restauration Apple vérifié (produit %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Firmware de restauration Apple vérifié (version %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Firmware de restauration Apple vérifié (version %@, produit %@).";
-"backend.summary.flash.apple_some_match" = "%lld des %lld banques de firmware candidates correspondent au firmware d’origine Apple.";
-"backend.summary.flash.apple_some_match_version" = "%lld des %lld banques de firmware candidates correspondent au firmware d’origine Apple %@.";
 "backend.summary.flash.apple_stock_match" = "La banque de firmware active correspond au firmware d’origine Apple.";
 "backend.summary.flash.apple_stock_match_version" = "La banque de firmware active correspond au firmware d’origine Apple %@.";
 "backend.summary.flash.apple_stock_mismatch" = "La banque de firmware active ne correspond pas au firmware d’origine Apple.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "App prête";
 "activity.active" = "Actif";
 "activity.last_operation" = "Dernière opération";
-"activity.multiple_active" = "%d opérations actives";
 "activity.multiple_active.message" = "Ouvrir l'activité pour plus de détails.";
 "activity.no_active_operation" = "Aucune opération active";
 "activity.one_active" = "1 opération active";

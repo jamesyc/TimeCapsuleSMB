@@ -274,7 +274,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "backend.summary.doctor_checks_passed": "诊断检查通过。",
             "backend.summary.fsck_plan_generated": "已生成 fsck 预演计划。",
             "backend.summary.install_validation_passed": "安装验证通过。",
-            "backend.summary.repair_xattrs_found": "发现 %d 个元数据问题，其中 %d 个可修复。",
+            "backend.summary.repair_xattrs_found": "发现 %lld 个元数据问题，其中 %lld 个可修复。",
             "dashboard.overview.connection_target": "连接目标",
             "diagnostics.title": "诊断",
             "install.advanced_options": "高级选项",

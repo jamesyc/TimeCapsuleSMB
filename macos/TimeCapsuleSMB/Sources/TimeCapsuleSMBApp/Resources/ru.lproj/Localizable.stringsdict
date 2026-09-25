@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>activity.multiple_active</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@operations@</string>
+		<key>operations</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld активные операции</string>
+			<key>many</key>
+			<string>%lld активных операций</string>
+			<key>one</key>
+			<string>%lld активная операция</string>
+			<key>other</key>
+			<string>%lld активной операции</string>
+		</dict>
+	</dict>
+	<key>backend.summary.discovered_devices</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Обнаружено %#@devices@.</string>
+		<key>devices</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld устройства</string>
+			<key>many</key>
+			<string>%lld устройств</string>
+			<key>one</key>
+			<string>%lld устройство</string>
+			<key>other</key>
+			<string>%lld устройства</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld из %2$#@banks@ %1$#@verb@ оригинальной прошивке Apple.</string>
+		<key>banks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld проверяемых банков прошивки</string>
+			<key>many</key>
+			<string>%lld проверяемых банков прошивки</string>
+			<key>one</key>
+			<string>%lld проверяемого банка прошивки</string>
+			<key>other</key>
+			<string>%lld проверяемого банка прошивки</string>
+		</dict>
+		<key>verb</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>соответствуют</string>
+			<key>many</key>
+			<string>соответствуют</string>
+			<key>one</key>
+			<string>соответствует</string>
+			<key>other</key>
+			<string>соответствуют</string>
+		</dict>
+	</dict>
+	<key>backend.summary.flash.apple_some_match_version</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$lld из %2$#@banks@ %1$#@verb@ оригинальной прошивке Apple %3$@.</string>
+		<key>banks</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld проверяемых банков прошивки</string>
+			<key>many</key>
+			<string>%lld проверяемых банков прошивки</string>
+			<key>one</key>
+			<string>%lld проверяемого банка прошивки</string>
+			<key>other</key>
+			<string>%lld проверяемого банка прошивки</string>
+		</dict>
+		<key>verb</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>соответствуют</string>
+			<key>many</key>
+			<string>соответствуют</string>
+			<key>one</key>
+			<string>соответствует</string>
+			<key>other</key>
+			<string>соответствуют</string>
+		</dict>
+	</dict>
+	<key>backend.summary.hfs_volumes_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@volumes@</string>
+		<key>volumes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>Найдено %lld смонтированных тома HFS.</string>
+			<key>many</key>
+			<string>Найдено %lld смонтированных томов HFS.</string>
+			<key>one</key>
+			<string>Найден %lld смонтированный том HFS.</string>
+			<key>other</key>
+			<string>Найдено %lld смонтированного тома HFS.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.repair_xattrs_found</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@issues@, из них %#@repairable@.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>Найдено %lld проблемы с метаданными</string>
+			<key>many</key>
+			<string>Найдено %lld проблем с метаданными</string>
+			<key>one</key>
+			<string>Найдена %lld проблема с метаданными</string>
+			<key>other</key>
+			<string>Найдено %lld проблемы с метаданными</string>
+		</dict>
+		<key>repairable</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld исправимые</string>
+			<key>many</key>
+			<string>%lld исправимых</string>
+			<key>one</key>
+			<string>%lld исправимая</string>
+			<key>other</key>
+			<string>%lld исправимой</string>
+		</dict>
+	</dict>
+	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>В комплекте TimeCapsuleSMB отсутствуют %lld файла установки.</string>
+			<key>many</key>
+			<string>В комплекте TimeCapsuleSMB отсутствуют %lld файлов установки.</string>
+			<key>one</key>
+			<string>В комплекте TimeCapsuleSMB отсутствует %lld файл установки.</string>
+			<key>other</key>
+			<string>В комплекте TimeCapsuleSMB отсутствуют %lld файла установки.</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

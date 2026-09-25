@@ -148,7 +148,7 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 - Portuguese proposals use `arquivo`, `compartilhamento`, `configuração`, `criptografia`, `salvar`, and `planejar`; avoid mixing these with European `ficheiro`, `partilha`, `definição`, `encriptação`, `guardar`, and `planear` in the same catalog.
 - Preserve meaning and severity in errors, especially “not”, “only”, “before”, “after”, “may”, and “must”. Do not strengthen “may help” into a guarantee.
 - Do not erase technical detail merely to shorten a warning. Conversely, do not insert new behavioral claims during translation.
-- Check key coverage, duplicate keys, format arguments, escapes, and literal tokens. Equality with English is not itself an error: names such as `Bonjour`, `Time Machine`, and naturally identical words are legitimate.
+- Check key coverage in both `Localizable.strings` and `Localizable.stringsdict`, duplicate keys, format arguments, escapes, and literal tokens. Equality with English is not itself an error: names such as `Bonjour`, `Time Machine`, and naturally identical words are legitimate.
 - Verify copy changes with localization tests plus focused render checks for changed long labels. Copy changes do not require a device deployment or a NetBSD rebuild.
 
 ## Additional verified OS application names
@@ -176,23 +176,33 @@ Helper results carry an English `summary` plus a stable `summary_key` and positi
 - Arguments are values (counts, versions, paths, product IDs), never English words. If a sentence needs a word that depends on state, it needs another key.
 - A summary is a status line: past tense or state, no trailing ellipsis unless the English has one (the "Waiting…" progress logs).
 - Changing an English summary's shape (adding, removing or retyping an argument) requires a new key name, so older app builds never format a new sentence with the wrong arguments.
+- A summary whose wording depends on a count is a plural entry (see Plurals). Turning an existing key into one keeps its name, since `%#@name@` is still an integer argument.
 
 ## Plurals
 
-Summaries with a count currently use the English-style "(s)" pattern in every language, for example `Found %d mounted HFS volume(s).`. This is known debt, to be replaced with `.stringsdict` plural rules; until then keep the existing "(s)"-style forms rather than choosing one grammatical form, which would be wrong for other counts.
+A sentence whose wording depends on a count lives in `Localizable.stringsdict`, not `Localizable.strings`, in all ten languages. The current plural keys are the four count summaries (`discovered_devices`, `hfs_volumes_found`, `repair_xattrs_found`, `flash.apple_some_match` and its `_version` variant), `bundle_issue.distribution_artifacts_missing_count.message`, and `activity.multiple_active`. Do not write "(s)", "(-ų)" or "problème(s)"-style forms, and do not pick one grammatical form for every count.
 
-When writing new strings with a count, keep the count a separate integer argument so it can move to a plural rule without changing the key. The registry already treats `%#@name@` plural variables as integers.
+Foundation picks the form from the locale the app formats with, not the system language, so plural sentences follow the app's language setting (verified on macOS 2026-09-25). Its rules match the table below, including Spanish and Italian `many` for round millions.
 
-| Language | CLDR categories for integer counts | Example |
+| Language | Forms each plural variable defines | Example |
 |---|---|---|
-| en, de, nl | one, other | 1 device / 2 devices |
-| es, it | one, many (millions), other | 1 dispositivo / 2 dispositivos |
-| fr, pt-BR | one (0 and 1), many (millions), other | 0 appareil, 1 appareil / 2 appareils |
-| ru | one, few, many, other | 1 устройство, 2 устройства, 5 устройств |
-| lt | one, few, many (fractions only), other | 1 įrenginys, 2 įrenginiai, 10 įrenginių, 21 įrenginys |
-| zh-Hans | other | 1 个设备 / 2 个设备 |
+| en, de, nl | one, other | 1 device / 0 devices, 2 devices |
+| es, it | one, many (round millions), other | 1 dispositivo / 2 dispositivos / 1.000.000 de dispositivos |
+| fr, pt-BR | one (0 and 1), many (round millions), other | 0 appareil, 1 appareil / 2 appareils / 1 000 000 d’appareils |
+| ru | one, few, many, other | 1, 21 устройство; 2, 22 устройства; 0, 5, 11 устройств |
+| lt | one, few, other (many optional) | 1, 21 įrenginys; 2, 9, 22 įrenginiai; 0, 10, 11, 20 įrenginių |
+| zh-Hans | no variable: a plain `%lld` format | 发现 %lld 个设备。 |
 
-The `many` category in Spanish, Italian, French and Portuguese covers round millions ("1 million d’appareils"); it must exist in a plural rule but rarely shows. Russian and Lithuanian choose the form from the last digits (21 takes the singular, 11–19 the plural genitive), so never special-case only 1. Lithuanian `many` applies only to fractional numbers; integer counts use one, few, or other.
+Russian and Lithuanian choose the form from the last digits (21 takes the singular, 11–19 the plural genitive), so never special-case only 1. Russian `other` and Lithuanian `many` apply only to fractions, but Russian still needs `other` because Foundation requires it as the fallback; use the genitive singular there.
+
+How to write a plural entry:
+
+- Declare one variable per count in `NSStringLocalizedFormatKey`, as `%#@name@`, with `NSStringFormatSpecTypeKey` = `NSStringPluralRuleType` and `NSStringFormatValueTypeKey` = `lld`. The app passes a 64-bit integer, which only `lld` reads correctly.
+- A form shows only its own count, as `%lld`. Either every form of a variable shows the number or none does: a variable that only makes a verb agree (`1 of 2 banks matches`) reuses the count's position, `%1$lld … %1$#@verb@`, and its forms are just the verb.
+- Put agreeing words inside the form when they change with the count: Russian and Lithuanian participles (`Найден 1 том` / `Найдено 5 томов`, `Rastas 1 įrenginys` / `Rasta 10 įrenginių`), Spanish and Portuguese verbs (`Se descubrió 1` / `Se descubrieron 2`), and French and Italian past participles.
+- A count that follows a preposition takes that case in every form: Russian `из 21 банка` / `из 5 банков`, Lithuanian `iš 21 banko` / `iš 2 bankų`.
+- Natural sentences are preferred to the `Label: N` style, which remains only for count lists such as `PASS %d, WARN %d, FAIL %d`.
+- `tests/test_localization_plurals.py` checks the structure and forms, and the Swift `PluralLocalizationTests` render every plural key in every language at each boundary count.
 
 ## Maintainer wording decisions
 

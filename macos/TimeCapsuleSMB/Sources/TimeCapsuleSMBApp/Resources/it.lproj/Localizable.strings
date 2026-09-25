@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "Manca il manifest dei file inclusi.";
 "bundle_issue.contract_decode_failed.message" = "L’app ha ricevuto una risposta inattesa dal programma ausiliario.";
 "bundle_issue.distribution_artifacts_missing.message" = "Mancano i file di installazione inclusi con TimeCapsuleSMB.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "Nel pacchetto incluso con TimeCapsuleSMB mancano %d file di installazione.";
 "bundle_issue.distribution_root_missing.message" = "Manca il pacchetto incluso con TimeCapsuleSMB.";
 "bundle_issue.helper_launch_failed.message" = "Impossibile avviare il programma ausiliario di TimeCapsuleSMB.";
 "bundle_issue.helper_missing.message" = "Manca il programma ausiliario incluso con TimeCapsuleSMB.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "Attivazione di NetBSD4 completata.";
 "backend.summary.configuration_saved" = "Configurazione salvata e autenticazione SSH verificata.";
 "backend.summary.deploy_completed" = "Installazione o aggiornamento di Samba completato.";
-"backend.summary.discovered_devices" = "Rilevati %d dispositivi.";
 "backend.summary.doctor_checks_passed" = "Controlli diagnostici superati.";
 "backend.summary.doctor_found_fatal" = "La diagnostica ha rilevato uno o più problemi gravi.";
 "backend.summary.flash_backup_saved" = "Backup della memoria flash salvato in %@.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Riparazione del disco completata con fsck.";
 "backend.summary.fsck_plan_generated" = "Piano di prova generato per fsck.";
 "backend.summary.helper_capabilities_resolved" = "Funzionalità del programma ausiliario identificate.";
-"backend.summary.hfs_volumes_found" = "Trovati %d volumi HFS montati.";
 "backend.summary.install_validation_failed" = "Convalida installazione non riuscita.";
 "backend.summary.install_validation_passed" = "Convalida dell'installazione superata.";
 "backend.summary.operation_exited" = "Operazione terminata.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "Porta SMB raggiungibile, SSH chiuso.";
 "backend.summary.reachability.ssh_only" = "SSH raggiungibile, porta SMB chiusa.";
 "backend.summary.reachability.unreachable" = "Impossibile raggiungere SSH o SMB.";
-"backend.summary.repair_xattrs_found" = "Trovati %d problemi di metadati, di cui %d riparabili.";
 "backend.summary.waiting_device_activate" = "Attesa di qualche secondo per l’attivazione del dispositivo…";
 "backend.summary.waiting_device_boot" = "Attesa di qualche secondo per l’avvio del dispositivo…";
 "backend.summary.telemetry_disabled" = "La telemetria è disabilitata.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Firmware di ripristino Apple verificato (prodotto %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Firmware di ripristino Apple verificato (versione %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Firmware di ripristino Apple verificato (versione %@, prodotto %@).";
-"backend.summary.flash.apple_some_match" = "%lld dei %lld banchi firmware candidati corrispondono al firmware originale Apple.";
-"backend.summary.flash.apple_some_match_version" = "%lld dei %lld banchi firmware candidati corrispondono al firmware originale Apple %@.";
 "backend.summary.flash.apple_stock_match" = "Il banco firmware attivo corrisponde al firmware originale Apple.";
 "backend.summary.flash.apple_stock_match_version" = "Il banco firmware attivo corrisponde al firmware originale Apple %@.";
 "backend.summary.flash.apple_stock_mismatch" = "Il banco firmware attivo non corrisponde al firmware originale Apple.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "App pronta";
 "activity.active" = "Attivo";
 "activity.last_operation" = "Ultima operazione";
-"activity.multiple_active" = "%d operazioni attive";
 "activity.multiple_active.message" = "Apri attività per i dettagli.";
 "activity.no_active_operation" = "Nessuna operazione attiva";
 "activity.one_active" = "1 operazione attiva";

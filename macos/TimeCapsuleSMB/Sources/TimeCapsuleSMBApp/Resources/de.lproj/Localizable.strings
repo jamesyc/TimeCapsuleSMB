@@ -265,7 +265,6 @@
 "bundle_issue.artifact_manifest_missing.message" = "Das mitgelieferte Dateimanifest fehlt.";
 "bundle_issue.contract_decode_failed.message" = "Die App hat eine unerwartete Antwort vom Hilfsprogramm erhalten.";
 "bundle_issue.distribution_artifacts_missing.message" = "Die mitgelieferten TimeCapsuleSMB-Installationsdateien fehlen.";
-"bundle_issue.distribution_artifacts_missing_count.message" = "Im mitgelieferten TimeCapsuleSMB-Paket fehlen %d Installationsdateien.";
 "bundle_issue.distribution_root_missing.message" = "Das mitgelieferte TimeCapsuleSMB-Paket fehlt.";
 "bundle_issue.helper_launch_failed.message" = "Das TimeCapsuleSMB-Hilfsprogramm konnte nicht gestartet werden.";
 "bundle_issue.helper_missing.message" = "Das mitgelieferte TimeCapsuleSMB-Hilfsprogramm fehlt.";
@@ -301,7 +300,6 @@
 "backend.summary.activation_completed" = "NetBSD4-Aktivierung abgeschlossen.";
 "backend.summary.configuration_saved" = "Konfiguration gespeichert und SSH-Authentifizierung geprüft.";
 "backend.summary.deploy_completed" = "Samba-Installation oder -Aktualisierung abgeschlossen.";
-"backend.summary.discovered_devices" = "%d Geräte gefunden.";
 "backend.summary.doctor_checks_passed" = "Diagnoseprüfungen bestanden.";
 "backend.summary.doctor_found_fatal" = "Bei der Diagnose wurden ein oder mehrere schwerwiegende Probleme gefunden.";
 "backend.summary.flash_backup_saved" = "Flash-Sicherung unter %@ gespeichert.";
@@ -315,7 +313,6 @@
 "backend.summary.fsck_completed" = "Festplattenreparatur mit fsck abgeschlossen.";
 "backend.summary.fsck_plan_generated" = "Probelaufplan für fsck erstellt.";
 "backend.summary.helper_capabilities_resolved" = "Die unterstützten Funktionen des Hilfsprogramms wurden ermittelt.";
-"backend.summary.hfs_volumes_found" = "%d eingebundene HFS-Volumes gefunden.";
 "backend.summary.install_validation_failed" = "Installationsvalidierung fehlgeschlagen.";
 "backend.summary.install_validation_passed" = "Installationsvalidierung bestanden.";
 "backend.summary.operation_exited" = "Vorgang beendet.";
@@ -323,7 +320,6 @@
 "backend.summary.reachability.smb_only" = "SMB-Port erreichbar, SSH geschlossen.";
 "backend.summary.reachability.ssh_only" = "SSH erreichbar, SMB-Port geschlossen.";
 "backend.summary.reachability.unreachable" = "Konnte SSH oder SMB nicht erreichen.";
-"backend.summary.repair_xattrs_found" = "%d Metadatenprobleme gefunden, davon %d reparierbar.";
 "backend.summary.waiting_device_activate" = "Warten Sie ein paar Sekunden, bis das Gerät aktiviert wird ...";
 "backend.summary.waiting_device_boot" = "Warten Sie ein paar Sekunden, bis das Gerät startet ...";
 "backend.summary.telemetry_disabled" = "Telemetrie ist deaktiviert.";
@@ -343,8 +339,6 @@
 "backend.summary.flash.apple_restore_validated_product" = "Apple-Wiederherstellungsfirmware geprüft (Produkt %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Apple-Wiederherstellungsfirmware geprüft (Version %@).";
 "backend.summary.flash.apple_restore_validated_version_product" = "Apple-Wiederherstellungsfirmware geprüft (Version %@, Produkt %@).";
-"backend.summary.flash.apple_some_match" = "%lld von %lld infrage kommenden Firmware-Bänken entsprechen der Apple-Originalfirmware.";
-"backend.summary.flash.apple_some_match_version" = "%lld von %lld infrage kommenden Firmware-Bänken entsprechen der Apple-Originalfirmware %@.";
 "backend.summary.flash.apple_stock_match" = "Die aktive Firmware-Bank entspricht der Apple-Originalfirmware.";
 "backend.summary.flash.apple_stock_match_version" = "Die aktive Firmware-Bank entspricht der Apple-Originalfirmware %@.";
 "backend.summary.flash.apple_stock_mismatch" = "Die aktive Firmware-Bank entspricht nicht der Apple-Originalfirmware.";
@@ -421,7 +415,6 @@
 "activity.app_ready" = "App bereit";
 "activity.active" = "Aktiv";
 "activity.last_operation" = "Letzter Vorgang";
-"activity.multiple_active" = "%d aktive Vorgänge";
 "activity.multiple_active.message" = "Öffnen Sie „Aktivität“, um Details anzuzeigen.";
 "activity.no_active_operation" = "Kein aktiver Vorgang";
 "activity.one_active" = "1 aktiver Vorgang";

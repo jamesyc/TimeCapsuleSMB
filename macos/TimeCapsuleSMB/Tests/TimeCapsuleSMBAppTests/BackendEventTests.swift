@@ -235,22 +235,22 @@ final class BackendEventTests: XCTestCase {
             operation: "flash",
             ok: true,
             payload: testSummaryPayload(
-                "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.",
+                "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1.",
                 key: "flash.apple_some_match_version",
                 args: [.number(1), .number(2), .string("7.8.1")]
             )
         )
 
         L10n.apply(language: .english)
-        XCTAssertEqual(repair.localizedPayloadSummaryText, "Found 2 metadata issue(s), 1 repairable.")
+        XCTAssertEqual(repair.localizedPayloadSummaryText, "Found 2 metadata issues, 1 repairable.")
         XCTAssertEqual(backup.localizedPayloadSummaryText, "Flash backup saved to /tmp/flash-backup.")
-        XCTAssertEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.")
+        XCTAssertEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1.")
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(repair.localizedPayloadSummaryText, "发现 2 个元数据问题，其中 1 个可修复。")
         XCTAssertEqual(backup.localizedPayloadSummaryText, "闪存备份已保存到 /tmp/flash-backup。")
         XCTAssertTrue(someMatch.localizedPayloadSummaryText?.contains("7.8.1") == true)
-        XCTAssertNotEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.")
+        XCTAssertNotEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1.")
     }
 
     func testMalformedSummaryArgumentsFallBackToTheEnglishText() {
@@ -270,9 +270,9 @@ final class BackendEventTests: XCTestCase {
                 type: "result",
                 operation: "repair-xattrs",
                 ok: true,
-                payload: testSummaryPayload("Found 2 metadata issue(s), 1 repairable.", key: "repair_xattrs_found", args: args)
+                payload: testSummaryPayload("Found 2 metadata issues, 1 repairable.", key: "repair_xattrs_found", args: args)
             )
-            XCTAssertEqual(event.localizedPayloadSummaryText, "Found 2 metadata issue(s), 1 repairable.", name)
+            XCTAssertEqual(event.localizedPayloadSummaryText, "Found 2 metadata issues, 1 repairable.", name)
         }
         let unknownKey = BackendEvent(
             type: "result",

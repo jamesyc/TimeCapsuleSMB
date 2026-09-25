@@ -1768,6 +1768,9 @@ def assert_bundle_layout(
             assert_runtime_macho_architectures(app, architectures)
     if not (resource_bundle / "en.lproj" / "Localizable.strings").is_file():
         raise RuntimeError(f"App bundle is missing Swift resource bundle localizations: {resource_bundle}")
+    # Count sentences exist only as plural rules; without this file the app shows raw keys.
+    if not (resource_bundle / "en.lproj" / "Localizable.stringsdict").is_file():
+        raise RuntimeError(f"App bundle is missing Swift resource bundle plural localizations: {resource_bundle}")
     if not python_packages.is_dir():
         raise RuntimeError(f"App bundle is missing bundled Python packages: {python_packages}")
     if not (distribution / "bin").is_dir():
