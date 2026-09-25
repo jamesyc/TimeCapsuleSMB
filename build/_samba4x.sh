@@ -707,10 +707,13 @@ configure_samba4x() {
 download_samba4x_archive() {
     url="$1"
     archive="$2"
+    sha256="$3"
 
     mkdir -p "$SAMBA4X_BUILD/distfiles"
     path="$SAMBA4X_BUILD/distfiles/$archive"
     if [ -f "$path" ]; then
+        # A cached archive is checked too: it may predate the pin or be truncated.
+        verify_sha256 "$path" "$sha256" || return 1
         printf '%s\n' "$path"
         return 0
     fi
@@ -718,6 +721,10 @@ download_samba4x_archive() {
     tmp="$path.tmp.$$"
     rm -f "$tmp"
     curl -fL "$url" -o "$tmp"
+    if ! verify_sha256 "$tmp" "$sha256"; then
+        rm -f "$tmp"
+        return 1
+    fi
     mv "$tmp" "$path"
     printf '%s\n' "$path"
 }
@@ -814,7 +821,7 @@ build_samba4x_gmp() {
         return 0
     fi
 
-    archive="$(download_samba4x_archive "$SAMBA4X_GMP_URL" "gmp-$SAMBA4X_GMP_VERSION.tar.xz")"
+    archive="$(download_samba4x_archive "$SAMBA4X_GMP_URL" "gmp-$SAMBA4X_GMP_VERSION.tar.xz" "$SAMBA4X_GMP_SHA256")"
     extract_samba4x_archive "$archive" "gmp-$SAMBA4X_GMP_VERSION"
     cd "$SAMBA4X_BUILD/gmp-$SAMBA4X_GMP_VERSION"
     env CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" \
@@ -860,7 +867,7 @@ build_samba4x_nettle() {
         return 0
     fi
 
-    archive="$(download_samba4x_archive "$SAMBA4X_NETTLE_URL" "nettle-$SAMBA4X_NETTLE_VERSION.tar.gz")"
+    archive="$(download_samba4x_archive "$SAMBA4X_NETTLE_URL" "nettle-$SAMBA4X_NETTLE_VERSION.tar.gz" "$SAMBA4X_NETTLE_SHA256")"
     extract_samba4x_archive "$archive" "nettle-$SAMBA4X_NETTLE_VERSION"
     cd "$SAMBA4X_BUILD/nettle-$SAMBA4X_NETTLE_VERSION"
     env PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig" \
@@ -885,7 +892,7 @@ build_samba4x_libtasn1() {
         return 0
     fi
 
-    archive="$(download_samba4x_archive "$SAMBA4X_LIBTASN1_URL" "libtasn1-$SAMBA4X_LIBTASN1_VERSION.tar.gz")"
+    archive="$(download_samba4x_archive "$SAMBA4X_LIBTASN1_URL" "libtasn1-$SAMBA4X_LIBTASN1_VERSION.tar.gz" "$SAMBA4X_LIBTASN1_SHA256")"
     extract_samba4x_archive "$archive" "libtasn1-$SAMBA4X_LIBTASN1_VERSION"
     cd "$SAMBA4X_BUILD/libtasn1-$SAMBA4X_LIBTASN1_VERSION"
     env PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig" \
@@ -936,7 +943,7 @@ build_samba4x_gnutls() {
         return 0
     fi
 
-    archive="$(download_samba4x_archive "$SAMBA4X_GNUTLS_URL" "gnutls-$SAMBA4X_GNUTLS_VERSION.tar.xz")"
+    archive="$(download_samba4x_archive "$SAMBA4X_GNUTLS_URL" "gnutls-$SAMBA4X_GNUTLS_VERSION.tar.xz" "$SAMBA4X_GNUTLS_SHA256")"
     extract_samba4x_archive "$archive" "gnutls-$SAMBA4X_GNUTLS_VERSION"
     cd "$SAMBA4X_BUILD/gnutls-$SAMBA4X_GNUTLS_VERSION"
     # GnuTLS needs only target compatibility edits: NetBSD bswap names and

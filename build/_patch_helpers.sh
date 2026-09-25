@@ -5,6 +5,19 @@ patch_fail() {
     exit 1
 }
 
+# Refuse a downloaded or cached source archive whose bytes differ from the
+# pinned hash in env.sh. Callers capture stdout, so report on stderr only.
+verify_sha256() {
+    file="$1"
+    expected="$2"
+
+    actual="$(sha256 -q "$file")" || return 1
+    if [ "$actual" != "$expected" ]; then
+        echo "SHA-256 mismatch for $file: expected $expected, got $actual" >&2
+        return 1
+    fi
+}
+
 patch_perl() {
     desc="$1"
     expr="$2"

@@ -21,6 +21,10 @@ mkdir -p "$OUT" "$RSYNC_SOURCE_WORK"
     tmp="$archive.tmp.$$"
     rm -f "$tmp"
     curl -fL "$RSYNC_URL" -o "$tmp"
+    if ! verify_sha256 "$tmp" "$RSYNC_SHA256"; then
+        rm -f "$tmp"
+        exit 1
+    fi
     mv "$tmp" "$archive"
 
     rm -rf "$RSYNC_SRC_DIR"

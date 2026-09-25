@@ -22,8 +22,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language:
-          - python
+        include:
+          - language: python
+            build-mode: none
+          # The native service runs as root on the device and parses network input.
+          - language: c-cpp
+            build-mode: none
 
     steps:
       - name: Check out repository
@@ -33,6 +37,7 @@ jobs:
         uses: github/codeql-action/init@v4.38.1
         with:
           languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v4.38.1

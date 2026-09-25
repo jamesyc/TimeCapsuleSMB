@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -531,6 +532,96 @@ def test_create_python_packages_reuses_cache(monkeypatch: pytest.MonkeyPatch, tm
     assert_no_python_bytecode(first_resources / "Python" / "site-packages")
     assert_no_python_bytecode(second_resources / "Python" / "site-packages")
     assert_no_python_bytecode(cache_entry / "site-packages")
+
+
+def make_cache_entries(root: Path, names: list[str]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for age, name in enumerate(reversed(names)):
+        path = root / name
+        if name.endswith(".icns"):
+            path.write_text("icns", encoding="utf-8")
+        else:
+            path.mkdir()
+            (path / ".complete").write_text("ok\n", encoding="utf-8")
+        stamp = 1_000_000 + age
+        os.utime(path, (stamp, stamp))
+
+
+def test_evict_stale_cache_entries_keeps_most_recent_and_marks_current_used(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    root = tmp_path / "python-site-packages"
+    # Newest first; "current" is the oldest but is the entry in use now.
+    make_cache_entries(root, ["new1", "new2", "new3", "old1", "old2.icns", "current"])
+
+    entry = package_app.evict_stale_cache_entries(root / "current", keep=4)
+
+    assert entry == root / "current"
+    assert sorted(path.name for path in root.iterdir()) == ["current", "new1", "new2", "new3"]
+    assert (root / "current").stat().st_mtime > (root / "new1").stat().st_mtime
+
+
+def test_evict_stale_cache_entries_counts_an_entry_not_built_yet(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    root = tmp_path / "native-tools"
+    make_cache_entries(root, ["new1", "new2", "new3", "old1"])
+
+    package_app.evict_stale_cache_entries(root / "missing", keep=4)
+
+    assert sorted(path.name for path in root.iterdir()) == ["new1", "new2", "new3"]
+    assert not (root / "missing").exists()
+
+
+def test_evict_stale_cache_entries_leaves_builds_in_progress(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    root = tmp_path / "python-framework"
+    make_cache_entries(root, ["current", "old1", "abc.tmp-123"])
+
+    package_app.evict_stale_cache_entries(root / "current", keep=1)
+
+    assert sorted(path.name for path in root.iterdir()) == ["abc.tmp-123", "current"]
+
+
+def test_evict_stale_cache_entries_keeps_everything_under_the_limit(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    root = tmp_path / "app-icon"
+    make_cache_entries(root, ["a.icns", "b.icns"])
+
+    package_app.evict_stale_cache_entries(root / "c.icns")
+
+    assert sorted(path.name for path in root.iterdir()) == ["a.icns", "b.icns"]
+
+
+def test_site_packages_cache_evicts_entries_left_by_older_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "python_cache_identity", lambda python: {"python": python})
+    source = {"revision": 0}
+    monkeypatch.setattr(package_app, "python_package_source_fingerprint", lambda: dict(source))
+
+    def fake_build(python: str, site_packages: Path) -> None:
+        (site_packages / "timecapsulesmb").mkdir(parents=True)
+
+    monkeypatch.setattr(package_app, "build_python_packages", fake_build)
+    monkeypatch.setattr(package_app, "assert_macho_architectures_for_roots", lambda *args: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies_for_roots", lambda roots: None)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_site_packages", lambda path: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid_for_roots", lambda roots: None)
+
+    entries = []
+    for revision in range(6):
+        source["revision"] = revision
+        package_app.create_python_packages("python3", tmp_path / f"Resources{revision}", ("arm64",))
+        entry = package_app.python_site_packages_cache_entry("python3", ("arm64",))
+        entries.append(entry)
+        stamp = 2_000_000 + revision
+        os.utime(entry, (stamp, stamp))
+
+    cache_root = tmp_path / ".build" / "package-app" / "python-site-packages"
+    assert sorted(path.name for path in cache_root.iterdir()) == sorted(entry.name for entry in entries[-4:])
+    assert (entries[-1] / "site-packages" / "timecapsulesmb").is_dir()
 
 
 def test_create_python_packages_cleans_bytecode_from_existing_cache(

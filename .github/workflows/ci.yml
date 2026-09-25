@@ -74,7 +74,8 @@ jobs:
       - name: Run full test suite
         run: |
           ulimit -n 256
-          python -m pytest -n 4 --dist worksteal
+          # The sanitizer step above already ran the native tests.
+          python -m pytest -n 4 --dist worksteal --ignore=tests/native --ignore=tests/test_deploy_modules.py
 
   swift-test:
     name: Swift Tests (macOS)

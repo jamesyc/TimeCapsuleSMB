@@ -48,6 +48,10 @@ CACHE_COMPLETE_MARKER = ".complete"
 CACHE_MANIFEST_FILE = "manifest.json"
 PACKAGE_CACHE_IGNORED_NAMES = {"__pycache__", ".DS_Store"}
 PACKAGE_CACHE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
+# Keyed cache entries are never read again once their inputs change, so every
+# source edit used to leave another full copy behind. Keep the few most recently
+# used entries of each kind: native and universal builds use different keys.
+PACKAGE_CACHE_KEEP_ENTRIES = 4
 PYTHON_SUBPROCESS_BYTECODE_CACHE = "python-bytecode"
 APP_ICON_ENTRIES = [
     ("icon_16x16.png", 16),
@@ -221,7 +225,7 @@ def app_icon_cache_entry(source: Path) -> Path:
         "source_sha256": sha256_file(source),
         "entries": APP_ICON_ENTRIES,
     })
-    return package_cache_dir("app-icon") / f"{key}.icns"
+    return evict_stale_cache_entries(package_cache_dir("app-icon") / f"{key}.icns")
 
 
 def create_app_icon(source: Path, resources_dir: Path, *, use_cache: bool = True) -> None:
@@ -286,6 +290,32 @@ def package_cache_dir(name: str) -> Path:
     path = PACKAGE_ROOT / ".build" / "package-app" / name
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _cache_entry_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+def evict_stale_cache_entries(entry: Path, keep: int = PACKAGE_CACHE_KEEP_ENTRIES) -> Path:
+    """Mark ``entry`` as used and remove all but the most recently used ``keep``
+    entries in its cache directory, counting ``entry`` itself even before it is
+    built. Staging directories of builds in progress are left alone."""
+    if entry.exists():
+        os.utime(entry)
+    others = [
+        path for path in entry.parent.iterdir()
+        if path.name != entry.name and ".tmp-" not in path.name
+    ]
+    others.sort(key=_cache_entry_mtime, reverse=True)
+    for stale in others[max(keep - 1, 0):]:
+        if stale.is_dir() and not stale.is_symlink():
+            shutil.rmtree(stale, ignore_errors=True)
+        else:
+            stale.unlink(missing_ok=True)
+    return entry
 
 
 def python_subprocess_env(
@@ -511,7 +541,7 @@ def prepared_python_framework(args: argparse.Namespace, architectures: tuple[str
         "source_fingerprint": source_fingerprint,
         "architectures": architectures,
     })
-    entry = cache_root / key
+    entry = evict_stale_cache_entries(cache_root / key)
     framework = entry / PYTHON_FRAMEWORK_NAME
 
     if cache_is_complete(entry, framework / "Versions" / "Current" / "bin" / "python3"):
@@ -765,7 +795,7 @@ def python_site_packages_cache_entry(python: str, architectures: tuple[str, ...]
         "bundled_requirements": APP_BUNDLED_PYTHON_REQUIREMENTS,
         "source": python_package_source_fingerprint(),
     })
-    return package_cache_dir("python-site-packages") / key
+    return evict_stale_cache_entries(package_cache_dir("python-site-packages") / key)
 
 
 def build_python_packages(python: str, site_packages: Path) -> None:
@@ -1339,7 +1369,7 @@ def native_tools_cache_entry(
         "architectures": architectures,
         "tool_sources": tool_source_records(sources),
     })
-    return package_cache_dir("native-tools") / key
+    return evict_stale_cache_entries(package_cache_dir("native-tools") / key)
 
 
 def native_tools_cache_is_complete(entry: Path) -> bool:

@@ -20,7 +20,7 @@ def main():
     output = Path(tempfile.mkdtemp(prefix='tc-native-coverage-'))
     env = {**os.environ, 'TC_NATIVE_COVERAGE': '1', 'TC_NATIVE_COVERAGE_DIR': str(output),
            'LLVM_PROFILE_FILE': str(output / '%m-%p.profraw')}
-    result = subprocess.run([str(ROOT / '.venv/bin/pytest'), 'tests/native/integration',
+    result = subprocess.run([str(ROOT / '.venv/bin/pytest'), 'tests/native',
                              'tests/test_deploy_modules.py', '-q'], cwd=ROOT, env=env)
     if result.returncode:
         return result.returncode
@@ -30,8 +30,10 @@ def main():
     if not profiles or not binaries:
         raise RuntimeError('native tests produced no coverage data')
     data = output / 'native.profdata'
-    subprocess.run([llvm_tool('llvm-profdata'), 'merge', '-sparse', *(str(p) for p in profiles),
-                    '-o', str(data)], check=True)
+    # Tests kill native children on purpose, so a profile can be cut off mid-write;
+    # skip unreadable ones rather than losing the whole report.
+    subprocess.run([llvm_tool('llvm-profdata'), 'merge', '-sparse', '--failure-mode=all',
+                    *(str(p) for p in profiles), '-o', str(data)], check=True)
     objects = [arg for p in binaries[1:] for arg in ('-object', str(p))]
     common = [str(binaries[0]), *objects, '-instr-profile', str(data),
               '-ignore-filename-regex', r'(tests/|vendor/)']

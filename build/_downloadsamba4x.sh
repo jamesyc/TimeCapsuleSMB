@@ -50,6 +50,14 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
         git clone --depth 1 --branch "$SAMBA4X_GIT_REF" "$SAMBA4X_GIT_URL" "$SAMBA4X_SRC_DIR"
     fi
 
+    # The tag is fetched by name, so confirm it still names the pinned commit
+    # before patching; a moved tag would silently change the Samba source.
+    head="$(git -C "$SAMBA4X_SRC_DIR" rev-parse HEAD)"
+    if [ "$head" != "$SAMBA4X_GIT_COMMIT" ]; then
+        echo "Samba $SAMBA4X_GIT_REF is $head, expected pinned $SAMBA4X_GIT_COMMIT" >&2
+        exit 1
+    fi
+
     # The ordered patch series is grouped by purpose in build/patches/samba4x.
     # Keep comments in that series and in the patch hunks themselves so the
     # downloader stays readable while patch order remains explicit.
