@@ -9,7 +9,6 @@
 #define HEARTBEAT_ENDPOINT "http://timecapsulesmb.jamesyc.com/v1/router-heartbeats"
 #endif
 #define HEARTBEAT_TOKEN "8a3598c2b142dffda9513a4c41ff4dacb47abce9cd4e85cc0fd3260257c40c5d"
-#define HEARTBEAT_TIMEOUT_SECONDS 10
 #define HEARTBEAT_MAX_FIELD 256
 #define HEARTBEAT_MAX_JSON 4096
 #ifndef HEARTBEAT_FLASH_CONFIG_PATH

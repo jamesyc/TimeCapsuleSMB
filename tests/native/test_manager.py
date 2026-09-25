@@ -12,7 +12,6 @@ import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import pytest
 from tests.native.build import compile_service
@@ -637,7 +636,7 @@ def test_internal_pending_payload_recovers_from_external_fallback(manager):
     home=root/'dk2/.samba4';(home/'private').rename(home/'private.saved')
     external=root/'dk3/.samba4';(external/'private').mkdir(parents=True)
     shutil.copy2(home/'smbd',external/'smbd')
-    process=start();wait(started('smbd'))
+    start();wait(started('smbd'))
     assert str(external) in (root/'ram/etc/smb.conf').read_text()
     (home/'private.saved').rename(home/'private')
     wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2,15)

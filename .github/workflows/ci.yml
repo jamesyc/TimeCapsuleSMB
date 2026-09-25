@@ -49,7 +49,7 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -e ".[dev]"
 
-      - name: Compile all native helpers
+      - name: Compile the native service
         run: ./build/native/host-check.sh
 
       - name: Native sanitizer tests

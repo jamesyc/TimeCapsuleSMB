@@ -24,10 +24,6 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 
-# Local dependencies and AirPyrt env
-.deps/
-.airpyrt-venv/
-
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

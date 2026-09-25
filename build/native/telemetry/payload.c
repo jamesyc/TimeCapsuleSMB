@@ -181,12 +181,11 @@ static int append_v2_fields(char *json, size_t cap, size_t used) {
     if (device_plan_collect(&plan, NULL, &options) != 0) return -1;
     n = snprintf(json + used, cap - used,
                  ",\"router_mode\":\"%s\",\"wan_setup_allowed\":%s,\"disks_over_wan\":%s,\"guest_enabled\":%s,"
-                 "\"nbns_enabled\":%s,\"debug_logging\":%s,\"advertise_afp\":%s",
+                 "\"debug_logging\":%s,\"advertise_afp\":%s",
                  router_mode_name(plan.mode),
                  json_bool_or_null(plan.waNM, 1),             /* waNM=1 means setup over WAN disabled */
                  plan.usbF.available ? (plan.wan_disks_allowed ? "true" : "false") : "null",
                  plan.gnRo.available ? "true" : "false",
-                 "true", /* Compatibility field: enabled policy, not child health. */
                  config_bool_json(plan.config.debug_logging),
                  config_bool_json(plan.config.advertise_afp));
     if (n < 0 || (size_t)n >= cap - used) return -1;

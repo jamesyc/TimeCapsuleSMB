@@ -86,9 +86,9 @@ root-owned, with sticky permissions if writable by other users.
 
 ## Telemetry protocol
 
-Schema 2 reports `nbns_enabled`, `debug_logging` (Samba or mDNS), and
-`advertise_afp`, using null for unreadable settings. `nbns_enabled` is always true
-for compatibility and describes the automatic policy, not live child health. `plan_error` contains a
+Schema 2 reports `debug_logging` (Samba or mDNS) and `advertise_afp`, using
+null for unreadable settings. It omits `nbns_enabled`: native NBNS is always on,
+and the server treats that field as optional. `plan_error` contains a
 short critical-facts failure reason and is omitted on success. There is no
 `ps` probe, constant daemon label, or live registration-state upload.
 This probe has no retained history and does not assert that services stopped.

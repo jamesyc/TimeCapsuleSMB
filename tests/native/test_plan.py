@@ -5,7 +5,6 @@ import json
 import os
 import shlex
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -571,10 +570,10 @@ def test_retention_diskless_clears_retained_masks_but_keeps_roles(tmp_path):
                                    "$HOME `x` \\n", "#not comment", "a=b=c", "tab\tinside", "quote\"double"])
 def test_config_reader_round_trips_shlex_quote(tmp_path, value):
     path = tmp_path / "tcapsulesmb.conf"
-    path.write_text(f"TC_CONFIG_VERSION=3\nTC_MDNS_INSTANCE_NAME={shlex.quote(value)}\nNBNS_ENABLED=1\n")
+    path.write_text(f"TC_CONFIG_VERSION=3\nTC_MDNS_INSTANCE_NAME={shlex.quote(value)}\nRSYNC_ENABLED=1\n")
     out = run_case("config_reader_decodes_shlex_quoting", path, "TC_MDNS_INSTANCE_NAME")
     assert out == f"ok:{value}\n"
-    assert run_case("config_reader_decodes_shlex_quoting", path, "NBNS_ENABLED") == "ok:1\n"
+    assert run_case("config_reader_decodes_shlex_quoting", path, "RSYNC_ENABLED") == "ok:1\n"
 
 
 @pytest.mark.parametrize("line", ["TC_MDNS_INSTANCE_NAME='unterminated", "TC_MDNS_INSTANCE_NAME=$(reboot)", "TC_MDNS_INSTANCE_NAME=a b",
@@ -587,29 +586,29 @@ def test_config_reader_rejects_shell_syntax_it_cannot_evaluate(tmp_path, line):
 
 def test_config_reader_missing_key_prefix_match_and_comments(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
-    path.write_text("# comment\nTC_NETBIOS_NAME_OLD='x'\n  TC_NETBIOS_NAME = 'Cap sule' # trailing\nNBNS_ENABLED=0\n")
+    path.write_text("# comment\nTC_NETBIOS_NAME_OLD='x'\n  TC_NETBIOS_NAME = 'Cap sule' # trailing\nRSYNC_ENABLED=0\n")
     assert run_case("config_reader_decodes_shlex_quoting", path, "TC_NETBIOS_NAME") == "ok:Cap sule\n"
     assert run_case("config_reader_decodes_shlex_quoting", path, "MDNS_ADVERTISE_AFP") == "unavailable\n"
-    assert run_case("config_reader_decodes_shlex_quoting", tmp_path / "missing", "NBNS_ENABLED") == "unavailable\n"
+    assert run_case("config_reader_decodes_shlex_quoting", tmp_path / "missing", "RSYNC_ENABLED") == "unavailable\n"
 
 
 def test_config_reader_last_assignment_wins(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
-    path.write_text("NBNS_ENABLED=0\nNBNS_ENABLED=1\n")
-    assert run_case("config_reader_decodes_shlex_quoting", path, "NBNS_ENABLED") == "ok:1\n"
+    path.write_text("RSYNC_ENABLED=0\nRSYNC_ENABLED=1\n")
+    assert run_case("config_reader_decodes_shlex_quoting", path, "RSYNC_ENABLED") == "ok:1\n"
 
 
 def test_device_config_reads_one_coherent_snapshot(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
-    path.write_text("MDNS_ADVERTISE_AFP=1\nNBNS_ENABLED=0\nSMBD_DEBUG_LOGGING=0\nMDNS_DEBUG_LOGGING=1\n")
+    path.write_text("MDNS_ADVERTISE_AFP=1\nRSYNC_ENABLED=0\nSMBD_DEBUG_LOGGING=0\nMDNS_DEBUG_LOGGING=1\n")
     assert run_case("config_facts_snapshot", path) == "rc=0 afp=1 debug=1\n"
 
 
 def test_device_config_preserves_missing_false_and_invalid_states(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
-    path.write_text("NBNS_ENABLED=invalid\nSMBD_DEBUG_LOGGING=1\n")
+    path.write_text("RSYNC_ENABLED=invalid\nSMBD_DEBUG_LOGGING=1\n")
     assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 debug=1\n"
-    path.write_text("NBNS_ENABLED=0\n")
+    path.write_text("RSYNC_ENABLED=0\n")
     assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 debug=0\n"
     path.write_text("MDNS_ADVERTISE_AFP=invalid\n")
     assert run_case("config_facts_snapshot", path) == "rc=0 afp=-1 debug=0\n"
@@ -619,9 +618,9 @@ def test_device_config_preserves_missing_false_and_invalid_states(tmp_path):
 def test_device_config_rejects_overlong_physical_line_continuations(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
     prefix = "IGNORED="
-    path.write_text(prefix + "x" * (1023 - len(prefix)) + "NBNS_ENABLED=1\n")
+    path.write_text(prefix + "x" * (1023 - len(prefix)) + "RSYNC_ENABLED=1\n")
     assert run_case("config_facts_snapshot", path) == "rc=-1 afp=-1 debug=-1\n"
-    assert run_case("config_reader_decodes_shlex_quoting", path, "NBNS_ENABLED") == "unavailable\n"
+    assert run_case("config_reader_decodes_shlex_quoting", path, "RSYNC_ENABLED") == "unavailable\n"
 
 
 # ---------------------------------------------------------------- identity ----

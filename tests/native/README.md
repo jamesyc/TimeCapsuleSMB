@@ -51,11 +51,19 @@ This deliberately provides launch-time retention, not a continuous HDD log cap.
 Native NBNS failures stop and reap only discovery's wcifsnd child, then retry
 with bounded backoff while preserving Bonjour's original IPC connections.
 Apple's reference-counted adds are never retransmitted after an uncertain reply.
-The controller tests cover partial registration, deadline/reset arithmetic,
-validated-plan startup gating, disable/shutdown during retry, and escalation
-when the old child cannot be safely cleaned up. Device supervision verifies
-that repeated native child deaths preserve discovery, Bonjour, and an SMB handle.
-An ACPd-owned wcifsnd appearing after boot is removed by the manager while
-discovery and Bonjour remain running. A returning wcifsfs is stopped without
-resetting discovery. Audit tests distinguish those foreign processes from the
-healthy child owned by discovery and still clean an orphan after controller death.
+`test_wcifsnd.py` covers this recovery: partial registration before a drop
+(`test_failed_child_retries_without_withdrawing_bonjour`), deadline/reset
+arithmetic (`test_retry_deadlines_cleanup_and_eligibility`), validated-plan
+startup gating (`test_ineligible_cold_start_does_not_spawn`,
+`test_retry_waits_for_valid_facts_without_dropping_bonjour`), cancelling a
+recovery in its registering or backoff phase by IPv4 loss, SIGTERM or parent
+EOF (`test_recovery_can_be_cancelled_without_respawning`), and escalation when
+the old child ignores SIGTERM (`test_term_ignoring_child_is_killed_and_reaped_within_bound`,
+`test_failed_term_ignoring_child_is_reaped_before_retry`). Device supervision
+verifies that repeated native child deaths preserve discovery, Bonjour, and an
+SMB handle. An ACPd-owned wcifsnd appearing after boot is removed by the manager
+while discovery and Bonjour remain running. A returning wcifsfs is stopped
+without resetting discovery. `test_manager.py` audit tests distinguish those
+foreign processes from the healthy child owned by discovery and still clean an
+orphan after discovery dies
+(`test_controller_death_cleans_orphaned_native_nbns_before_replacement`).

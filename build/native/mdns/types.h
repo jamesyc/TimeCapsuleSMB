@@ -10,7 +10,6 @@
 #define MAX_LABEL 63
 #define MAX_TXT_STRING 255
 #define ADISK_SYS_ADVF "0x1010"
-#define ADISK_DEFAULT_DISK_ADVF "0x1093"
 #define ADISK_MAX_DISKS 16
 #define ADISK_DISK_UUID_LEN 36
 #define ADISK_SYS_TXT_PREFIX "sys=waMA="
@@ -28,7 +27,6 @@
 enum exit_code {
     EXIT_OK = 0,
     EXIT_USAGE = 3,
-    EXIT_INVALID_ADISK_SYSTEM = 7,
     EXIT_INVALID_ADISK_DISK = 8,
     EXIT_PLAN_FAILED = 13,
     EXIT_DAEMON_STALLED = 14    /* an IPC call to mDNSResponder did not return within the alarm */

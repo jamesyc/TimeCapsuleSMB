@@ -8,7 +8,8 @@ _CASES = Path(__file__).with_suffix('')
 _DIRECTORY = build_root('cases')
 _MODULES = tuple(str(path.relative_to(ROOT / 'build')) for path in sources()
                  if path.parent.name == 'common' or
-                 path.name in {'network_commands.c', 'nt_hash.c', 'adisk_txt.c'})
+                 path.name in {'network_commands.c', 'nt_hash.c', 'adisk_txt.c', 'registrant.c',
+                               'dnssd_clientstub.c', 'dnssd_ipc.c'})
 
 
 def native_case_source(name):

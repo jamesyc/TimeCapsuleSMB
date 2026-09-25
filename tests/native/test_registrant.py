@@ -100,30 +100,41 @@ def test_adisk_txt_normalizes_lowercase_wama():
     assert run_case("adisk_txt_normalizes_wama").strip() == "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010"
 
 
-def test_adisk_txt_defaults_to_cloned_advf():
-    assert run_case("adisk_txt_defaults_to_cloned_advf").strip() == \
-        "dk2=adVF=0x1093,adVN=Data,adVU=12345678-1234-1234-1234-123456789012"
-
-
 def test_adisk_txt_accepts_time_machine_smb_advf():
     assert run_case("adisk_txt_accepts_time_machine_smb_advf").strip() == \
         "dk2=adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012"
 
 
-@pytest.mark.parametrize("mode,uuid,wama,expected_rc,expected_error", [
-    ("diskful", "-", "", 0, ""),
-    ("diskful", UUID, "", 7, ""),
-    ("diskful", UUID, "not-a-mac", 7, "adisk sys waMA must be a MAC address"),
-    ("diskful", UUID, "80:EA:96:E6:58:68", 0, ""),
-    ("diskless", UUID, "", 0, ""),
-    ("diskless", UUID, "not-a-mac", 0, ""),
-    ("diskless", "bad", "", 8, "adisk uuid must be 36 characters"),
+ADISK_SKIP_LOG = "registrant: _adisk skipped; waMA unavailable or TXT invalid"
+ADISK_TXT = f"sys=waMA=80:EA:96:E6:58:68,adVF=0x1010|dk2=adVF=0x82,adVN=Data,adVU={UUID}"
+
+
+@pytest.mark.parametrize("mode,uuid,wama,expected_pass,skip_logged", [
+    # No share rows: _adisk is not wanted, so there is nothing to skip.
+    ("diskful", "-", "80:EA:96:E6:58:68", "smb txt=", False),
+    # Rows but no usable waMA: _smb stays, _adisk is skipped and logged.
+    ("diskful", UUID, "", "smb txt=", True),
+    ("diskful", UUID, "not-a-mac", "smb txt=", True),
+    ("diskful", UUID, "80:ea:96:e6:58:68", f"smb,adisk txt={ADISK_TXT}", False),
+    # Diskless mode never wants _adisk, whatever waMA says.
+    ("diskless", UUID, "", "smb txt=", False),
+    ("diskless", UUID, "not-a-mac", "smb txt=", False),
+    ("diskless", UUID, "80:EA:96:E6:58:68", "smb txt=", False),
 ])
-def test_adisk_argument_validation_respects_diskless_mode(mode, uuid, wama, expected_rc, expected_error):
+def test_registrant_skips_adisk_without_valid_wama(mode, uuid, wama, expected_pass, skip_logged):
     result = run_case_result("adisk_txt_argument_validation", mode, uuid, wama)
-    assert result.returncode == expected_rc
-    if expected_error:
-        assert expected_error in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [expected_pass, expected_pass]
+    # The skip is logged once per process, not on every plan pass.
+    assert result.stderr.count(ADISK_SKIP_LOG) == (1 if skip_logged else 0)
+
+
+@pytest.mark.parametrize("mode", ["diskful", "diskless"])
+def test_invalid_share_row_is_rejected_in_either_mode(mode):
+    result = run_case_result("adisk_txt_argument_validation", mode, "bad", "80:EA:96:E6:58:68")
+    assert result.returncode == 8
+    assert "adisk uuid must be 36 characters" in result.stderr
+    assert result.stdout == ""
 
 
 def test_repeated_share_arguments_preserve_txt_values(rig, daemon):

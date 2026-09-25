@@ -1,5 +1,5 @@
 # Cross-build and static smbd environment.
-# Samba 4.24 marks some generated tools as hostcc but still lets waf inherit
+# Samba 4.25 marks some generated tools as hostcc but still lets waf inherit
 # target compiler/linker settings. Keep those host tools on the VM compiler,
 # while applying static link flags only to the smbd binary we deploy.
 0001-waf-cross-static-env.patch|waf hostcc and static smbd environment
@@ -25,7 +25,7 @@
 0007-tdb-cloexec-compat.patch|TDB close-on-exec compatibility
 
 # No-pthread appliance runtime behavior.
-# Time Capsule kernels do not support the pthread behavior Samba 4.24 expects.
+# Time Capsule kernels do not support the pthread behavior Samba 4.25 expects.
 # Host long-lived notifyd/cleanupd/scavenger work in the smbd parent event loop
 # and avoid helper forks that hit raw abort paths on these targets.
 0008-no-pthread-smbd-daemons-in-parent.patch|host smbd helper services in the parent event loop

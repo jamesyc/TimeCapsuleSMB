@@ -1,6 +1,5 @@
 """The same ACP process engine serves scalar, multiline, password and MaSt reads."""
 import os
-from pathlib import Path
 import subprocess
 
 import pytest

@@ -18,7 +18,7 @@
 #   make coverage                - run Python tests with coverage and show missing lines
 #   make coverage-html           - write an HTML coverage report to htmlcov/
 #   make coverage-native         - report native C coverage with LLVM tools
-#   make test-c                  - compile-check all four native helpers
+#   make test-c                  - compile-check the unified native service image
 #   make discover                - run tcapsule discover (depends on install)
 #   make bootstrap-host          - run the host bootstrap helper
 #   make set-ssh                 - advanced SSH toggle helper
