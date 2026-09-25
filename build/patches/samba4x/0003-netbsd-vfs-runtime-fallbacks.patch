@@ -135,7 +135,7 @@
  	return result;
  }
  
-@@ -581,8 +660,552 @@
+@@ -581,8 +660,564 @@
  	START_PROFILE_X(SNUM(handle->conn), syscall_rewinddir);
  	rewinddir(dirp);
  	END_PROFILE_X(syscall_rewinddir);
@@ -443,6 +443,18 @@
 +
 +	result = open(path, flags, mode);
 +	saved_errno = errno;
++#ifdef EFTYPE
++	if (result == -1 && saved_errno == EFTYPE && (flags & O_NOFOLLOW)) {
++		/*
++		 * NetBSD reports O_NOFOLLOW on a symlink as EFTYPE; POSIX, and
++		 * Samba's path walk, expect ELOOP. Without O_PATH Samba only spots
++		 * a symlink component by that ELOOP (openat_pathref_fsp_nosymlink),
++		 * so with EFTYPE a path through a link to a directory fails with
++		 * OBJECT_PATH_NOT_FOUND instead of being followed.
++		 */
++		saved_errno = ELOOP;
++	}
++#endif
 +	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
 +		int restore_errno = errno;
 +		if (result != -1) {

@@ -50,7 +50,8 @@ XATTR_MIGRATE_CASES = (
 )
 NATIVE_LINKS_CASES = ("apple_format", "format_limits", "parse_rejects", "convert_created", "convert_write_only",
                       "convert_refused", "sole_open", "commit_races", "commit_failures", "metadata", "read_xsym",
-                      "write_xsym", "reparse_created", "reparse_refused", "capabilities", "dos_mode")
+                      "write_xsym", "reparse_created", "reparse_refused", "capabilities", "dos_mode",
+                      "nofollow_errno")
 CATIA_LINKS_CASES = ("catia_links", "catia_fdopendir")
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")

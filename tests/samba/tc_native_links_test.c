@@ -593,6 +593,34 @@ static void create_in_gap(void)
 	put_file("gap", "newer", 5);
 }
 
+/* A handle for opening "name" through the real default VFS module. */
+static struct files_struct *vfs_fsp(TALLOC_CTX *ctx, struct connection_struct *conn,
+	const char *name, int fd)
+{
+	struct files_struct *fsp = talloc_zero(ctx, struct files_struct);
+	CHECK(fsp != NULL);
+	fsp->conn = conn;
+	fsp->fh = fd_handle_create(fsp);
+	CHECK(fsp->fh != NULL);
+	fsp_set_fd(fsp, fd);
+	fsp->fsp_name = synthetic_smb_fname(fsp, name, NULL, NULL, 0, 0);
+	CHECK(fsp->fsp_name != NULL);
+	return fsp;
+}
+
+/* SMB_VFS_OPENAT of "name" in dirfsp; returns the fd or -1 with errno. */
+static int vfs_open(struct connection_struct *conn, struct files_struct *dirfsp,
+	const char *name, int flags)
+{
+	struct files_struct *fsp = vfs_fsp(dirfsp, conn, name, -1);
+	struct vfs_open_how how = { .flags = flags };
+	int fd = SMB_VFS_OPENAT(conn, dirfsp, fsp->fsp_name, fsp, &how);
+	int err = errno;
+	TALLOC_FREE(fsp);
+	errno = err;
+	return fd;
+}
+
 int main(int argc, char **argv)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -1221,11 +1249,55 @@ int main(int argc, char **argv)
 		CHECK(t_dos_mode(&fsp, FILE_ATTRIBUTE_NORMAL) == FILE_ATTRIBUTE_NORMAL);
 		feature_enabled = true;
 	}
+	if (all || strcmp(c, "nofollow_errno") == 0) {
+		/*
+		 * Without O_PATH, Samba's path walk spots a symlink component only by the
+		 * ELOOP an O_NOFOLLOW open of it fails with (POSIX). NetBSD's open() says
+		 * EFTYPE, so the appliance's openat fallback must report ELOOP, or a path
+		 * through a link to a directory is "not found". This goes through the real
+		 * default VFS module: on the devices it exercises that fallback.
+		 */
+		struct connection_struct *vconn = talloc_zero(frame, struct connection_struct);
+		struct files_struct *dirfsp = NULL;
+		int fd, dfd;
+		CHECK(vconn != NULL);
+		vconn->params = talloc_zero(vconn, struct share_params);
+		CHECK(vconn->params != NULL);
+		vconn->params->service = -1;
+		CHECK(vfs_init_custom(vconn, DEFAULT_VFS_MODULE_NAME));
+		put_file("nf-file", "x", 1);
+		CHECK(symlink("nf-file", "nf-link") == 0);
+		CHECK(symlink("nf-missing", "nf-dangling") == 0);
+		CHECK(mkdir("nf-dir", 0755) == 0 && symlink("nf-dir", "nf-dirlink") == 0);
+		dfd = open(".", O_RDONLY);
+		CHECK(dfd >= 0);
+		dirfsp = vfs_fsp(frame, vconn, ".", dfd);
+		/* A regular file opens; a symlink, dangling or not, is ELOOP. */
+		fd = vfs_open(vconn, dirfsp, "nf-file", O_RDONLY | O_NOFOLLOW);
+		CHECK(fd >= 0 && close(fd) == 0);
+		errno = 0;
+		CHECK(vfs_open(vconn, dirfsp, "nf-link", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP);
+		errno = 0;
+		CHECK(vfs_open(vconn, dirfsp, "nf-dangling", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP);
+		/* A link to a directory, as the path walk opens each component. */
+		errno = 0;
+		CHECK(vfs_open(vconn, dirfsp, "nf-dirlink", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP);
+		/* Without O_NOFOLLOW the link is followed. */
+		fd = vfs_open(vconn, dirfsp, "nf-link", O_RDONLY);
+		CHECK(fd >= 0 && close(fd) == 0);
+		/* Other failures keep their own errno. */
+		errno = 0;
+		CHECK(vfs_open(vconn, dirfsp, "nf-absent", O_RDONLY | O_NOFOLLOW) == -1 && errno == ENOENT);
+		fsp_set_fd(dirfsp, -1); /* fd_handle's destructor asserts it was released */
+		TALLOC_FREE(dirfsp);
+		CHECK(close(dfd) == 0);
+		TALLOC_FREE(vconn);
+	}
 	if (!all && strcmp(c, "apple_format") && strcmp(c, "format_limits") && strcmp(c, "parse_rejects") &&
 	    strcmp(c, "convert_created") && strcmp(c, "convert_write_only") && strcmp(c, "convert_refused") &&
 	    strcmp(c, "sole_open") && strcmp(c, "commit_races") && strcmp(c, "commit_failures") && strcmp(c, "metadata") &&
 	    strcmp(c, "read_xsym") && strcmp(c, "write_xsym") && strcmp(c, "reparse_created") && strcmp(c, "reparse_refused") &&
-	    strcmp(c, "capabilities") && strcmp(c, "dos_mode")) {
+	    strcmp(c, "capabilities") && strcmp(c, "dos_mode") && strcmp(c, "nofollow_errno")) {
 		CHECK(false);
 	}
 	/* workdir may be relative to the directory the driver was started in. */
