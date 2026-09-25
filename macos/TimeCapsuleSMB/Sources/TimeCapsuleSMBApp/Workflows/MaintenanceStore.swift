@@ -262,16 +262,8 @@ final class MaintenanceStore: ObservableObject {
         fsckStore.selectedTarget
     }
 
-    var canPlanActivation: Bool {
-        !isBusy && activationStore.canPlan
-    }
-
     var canRunActivation: Bool {
         !isBusy && activationStore.canRun
-    }
-
-    var canPlanUninstall: Bool {
-        !isBusy && uninstallStore.canPlan(options: currentOptions)
     }
 
     var canRunUninstall: Bool {

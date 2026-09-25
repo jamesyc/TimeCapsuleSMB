@@ -145,7 +145,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(chinese.steps, ["重新输入 AirPort 管理员密码。", "确认所选设备是目标苹果设备。"])
     }
 
-    func testSuggestedOperationMapsToUserFacingAction() throws {
+    func testSuggestedOperationAndActionIDsMapToUserFacingActions() throws {
         let recovery = try recoveryValue(
             title: "Disk issue",
             actions: ["Wake the disk by opening it in Finder.", "Retry deploy."],
@@ -161,12 +161,16 @@ final class RecoveryActionMapperTests: XCTestCase {
 
         let actions = RecoveryActionMapper.actions(for: error)
 
-        XCTAssertTrue(actions.contains(RecoveryAction(title: "Run Disk Repair", kind: .diskRepair)))
-        XCTAssertTrue(actions.contains(RecoveryAction(title: "Open Finder", kind: .openFinder)))
-        XCTAssertTrue(actions.contains(RecoveryAction(title: "Install Samba", kind: .installSMB)))
+        // "open_finder" is not an action ID the backend emits, so it produces no button.
+        XCTAssertEqual(actions, [
+            RecoveryAction(title: "Install Samba", kind: .installSMB),
+            RecoveryAction(title: "Run Disk Repair", kind: .diskRepair),
+            RecoveryAction(title: "Retry", kind: .retry),
+            RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics)
+        ])
     }
 
-    func testDeployRecoveryDoesNotShowFinderOrInstallSMBActions() throws {
+    func testDeployRecoveryDoesNotShowInstallSMBOrUnknownActions() throws {
         let recovery = try recoveryValue(
             title: "No HFS volumes found",
             actions: ["Retry deploy."],
@@ -182,10 +186,9 @@ final class RecoveryActionMapperTests: XCTestCase {
 
         let actions = RecoveryActionMapper.actions(for: error)
 
-        XCTAssertFalse(actions.contains { $0.kind == .openFinder })
-        XCTAssertFalse(actions.contains { $0.kind == .installSMB })
-        XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
-        XCTAssertTrue(actions.contains(RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics)))
+        XCTAssertEqual(actions.map(\.kind), [.retry, .copyDiagnostics])
+        XCTAssertEqual(actions.first, RecoveryAction(title: "Retry", kind: .retry))
+        XCTAssertEqual(actions.last, RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics))
     }
 
     func testLocalNetworkRecoveryShowsSystemSettingsAction() throws {
@@ -223,9 +226,8 @@ final class RecoveryActionMapperTests: XCTestCase {
 
         let actions = RecoveryActionMapper.actions(for: error)
 
-        XCTAssertFalse(actions.contains(where: { $0.kind == .openFinder }))
-        XCTAssertFalse(actions.contains(where: { $0.kind == .installSMB }))
-        XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
+        XCTAssertEqual(actions.map(\.kind), [.generic, .retry, .copyDiagnostics])
+        XCTAssertFalse(actions.contains { $0.title.contains("Finder") })
     }
 
     func testRecoveryGuidancePresentationLocalizesConfigureAcpPortProbeDetails() throws {

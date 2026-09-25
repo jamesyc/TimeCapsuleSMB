@@ -1,33 +1,17 @@
 import Foundation
 
+// The backend tags only its startup-grace checks with details["domain"] = "Runtime";
+// every other check has no domain and is grouped as general.
 enum DoctorCheckDomain: String, CaseIterable, Equatable, Hashable, Identifiable {
-    case connection
     case runtime
-    case finderBonjour
-    case smbAuth
-    case timeMachine
-    case disk
-    case metadata
     case general
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .connection:
-            return L10n.string("doctor.domain.connection")
         case .runtime:
             return L10n.string("doctor.domain.runtime")
-        case .finderBonjour:
-            return L10n.string("doctor.domain.finder_bonjour")
-        case .smbAuth:
-            return L10n.string("doctor.domain.smb_auth")
-        case .timeMachine:
-            return L10n.string("doctor.domain.time_machine")
-        case .disk:
-            return L10n.string("doctor.domain.disk")
-        case .metadata:
-            return L10n.string("doctor.domain.metadata")
         case .general:
             return L10n.string("doctor.domain.general")
         }
@@ -76,24 +60,7 @@ enum DoctorCheckDomainPolicy {
         let normalized = rawDomain?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        switch normalized {
-        case "connection", "device", "ssh":
-            return .connection
-        case "runtime", "process", "service":
-            return .runtime
-        case "bonjour", "finder", "advertising", "discovery":
-            return .finderBonjour
-        case "smb", "smb auth", "auth":
-            return .smbAuth
-        case "time machine", "timemachine":
-            return .timeMachine
-        case "disk", "storage", "volume", "fsck":
-            return .disk
-        case "metadata", "xattrs", "xattr", "repair-xattrs":
-            return .metadata
-        default:
-            return .general
-        }
+        return normalized == "runtime" ? .runtime : .general
     }
 
     static func domain(for check: DoctorCheckPayload) -> DoctorCheckDomain {

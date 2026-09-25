@@ -13,10 +13,6 @@ struct LocalNetworkPreflightResult: Equatable, Sendable {
     let durationMilliseconds: Int
     let serviceType: String
 
-    var allowsConfigure: Bool {
-        status != .denied
-    }
-
     var telemetryFields: [String: JSONValue] {
         var fields: [String: JSONValue] = [
             "macos_local_network_preflight_result": .string(status.rawValue),

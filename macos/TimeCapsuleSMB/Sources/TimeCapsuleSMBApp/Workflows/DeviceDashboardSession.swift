@@ -156,9 +156,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     func performInstallAction(_ action: InstallUserAction, profile: DeviceProfile, showDiagnostics: () -> Void) {
         switch action {
-        case .createPlan, .regeneratePlan, .reinstall:
-            runInstall(profile: profile)
-        case .installUpdate:
+        case .reinstall, .installUpdate:
             runInstall(profile: profile)
         case .openFinder:
             openSMBAddress(for: profile)
@@ -351,9 +349,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             return true
         case .replacePassword:
             showPasswordReplacement()
-            return true
-        case .openFinder:
-            openSMBAddress(for: profile)
             return true
         case .openSystemSettings:
             if let url = LocalNetworkRecovery.settingsURL {

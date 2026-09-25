@@ -18,7 +18,8 @@ struct InstallPlanPresentation: Equatable {
         options: DeployOptions? = nil,
         hostWarning: HostCompatibilityWarning? = nil
     ) {
-        let returnsAfterRebootRequest = Self.returnsAfterRebootRequest(plan: plan, options: options)
+        // Every deploy reboots the device, so No Wait always returns once the reboot is requested.
+        let returnsAfterRebootRequest = options?.noWait == true
         self.title = Self.title(for: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)
         self.sections = [
             InstallPlanSection(title: L10n.string("install.plan.section.target"), rows: [
@@ -49,10 +50,6 @@ struct InstallPlanPresentation: Equatable {
             warnings.append(hostWarning.message)
         }
         self.warnings = warnings
-    }
-
-    private static func returnsAfterRebootRequest(plan: DeployPlanPayload, options: DeployOptions?) -> Bool {
-        plan.requiresReboot && options?.noWait == true
     }
 
     private static func expectedDowntime(plan: DeployPlanPayload, returnsAfterRebootRequest: Bool) -> String {
@@ -95,8 +92,6 @@ struct InstallPlanPresentation: Equatable {
 }
 
 enum InstallUserAction: String, Equatable, Identifiable {
-    case createPlan
-    case regeneratePlan
     case installUpdate
     case reinstall
     case openFinder
@@ -108,10 +103,6 @@ enum InstallUserAction: String, Equatable, Identifiable {
 
     var title: String {
         switch self {
-        case .createPlan:
-            return L10n.string("install.action.create_plan")
-        case .regeneratePlan:
-            return L10n.string("install.action.regenerate_plan")
         case .installUpdate:
             return L10n.string("install.action.install_update")
         case .reinstall:
@@ -129,8 +120,6 @@ enum InstallUserAction: String, Equatable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .createPlan, .regeneratePlan:
-            return "doc.text.magnifyingglass"
         case .installUpdate:
             return "square.and.arrow.down.on.square"
         case .reinstall:
@@ -161,7 +150,7 @@ enum InstallActionAvailabilityPolicy {
         isDeviceBusy: Bool = false
     ) -> Bool {
         switch action {
-        case .createPlan, .regeneratePlan, .reinstall:
+        case .reinstall:
             return !isDeviceBusy && !store.isBusy && store.hasValidOptions
         case .installUpdate:
             return !isDeviceBusy && store.canDeploy

@@ -14,10 +14,6 @@ struct RecoveryGuidancePresentation: Equatable {
         self.steps = localizedRecovery?.actions ?? []
     }
 
-    var hasStructuredGuidance: Bool {
-        detail != nil || !steps.isEmpty
-    }
-
     private static func uniqueDetail(_ detail: String?, title: String, errorMessage: String) -> String? {
         guard let detail else {
             return nil

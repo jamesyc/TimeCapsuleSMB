@@ -23,7 +23,6 @@ final class FlashWorkflowStoreTests: XCTestCase {
             .readbackValidating,
             .writeValidated,
             .writeValidatedSnapshotStale,
-            .manualPowerCycleRequired,
             .restoreRebooting,
             .failed
         ])

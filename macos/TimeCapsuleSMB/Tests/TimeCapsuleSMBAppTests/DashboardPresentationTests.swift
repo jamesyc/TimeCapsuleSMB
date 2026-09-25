@@ -5,8 +5,8 @@ import XCTest
 final class DashboardPresentationTests: XCTestCase {
     func testCheckupPresentationHeadlineFollowsState() throws {
         let payload = try testDoctorPayload(checks: [
-            testDoctorCheck(status: "PASS", message: "ssh ok", domain: "Device"),
-            testDoctorCheck(status: "WARN", message: "bonjour missing", domain: "Finder")
+            doctorCheckWithoutDomain(status: "PASS", message: "ssh ok"),
+            testDoctorCheck(status: "WARN", message: "device services started 12s ago", domain: "Runtime")
         ]).decode(DoctorPayload.self)
         let summary = DoctorSummary(payload: payload)
 
@@ -14,8 +14,8 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.headline, "Checkup found warnings.")
         XCTAssertEqual(presentation.summaryRows.first, PresentationRow(label: "Pass", value: "1"))
-        XCTAssertEqual(presentation.domains.first?.domain, .finderBonjour)
-        XCTAssertEqual(presentation.domains.first?.status, .warning)
+        XCTAssertEqual(presentation.domains.map(\.domain), [.runtime, .general])
+        XCTAssertEqual(presentation.domains.map(\.status), [.warning, .passed])
     }
 
     func testCheckupPresentationLocalizesKnownDoctorCheckCodes() throws {
@@ -27,7 +27,7 @@ final class DashboardPresentationTests: XCTestCase {
             testDoctorCheck(
                 status: "FAIL",
                 message: "managed runtime payload directory /Volumes/dk2/.samba4 is missing from the data disk",
-                domain: "SMB Auth",
+                domain: "General",
                 code: "payload_missing_from_disk"
             )
         ]).decode(DoctorPayload.self)
@@ -36,7 +36,7 @@ final class DashboardPresentationTests: XCTestCase {
         let presentation = CheckupPresentation(summary: summary, state: .failed)
         let row = try XCTUnwrap(presentation.domains.first?.rows.first)
 
-        XCTAssertEqual(presentation.domains.first?.domain, .smbAuth)
+        XCTAssertEqual(presentation.domains.first?.domain, .general)
         XCTAssertEqual(
             row.message,
             "The Samba folder is missing from the data disk; the disk may have been erased. Run \"Install / Update Samba\" to reinstall."
@@ -183,12 +183,17 @@ final class DashboardPresentationTests: XCTestCase {
         let store = DeployWorkflowStore(coordinator: coordinator, laneKey: laneKey)
 
         XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.reinstall, store: store))
+        XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.installUpdate, store: store))
         XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.runCheckup, store: store))
+        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.reinstall, store: store, isDeviceBusy: true))
+        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.installUpdate, store: store, isDeviceBusy: true))
+        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.runCheckup, store: store, isDeviceBusy: true))
+        XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.openFinder, store: store, isDeviceBusy: true))
 
         _ = coordinator.run(operation: "doctor", context: nil, activeDeviceID: "device-one", laneKey: laneKey)
         try await waitUntilStoreState { store.isBusy }
 
-        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.createPlan, store: store))
+        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.installUpdate, store: store))
         XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.reinstall, store: store))
         XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.runCheckup, store: store))
         XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.openFinder, store: store))
@@ -321,8 +326,7 @@ final class DashboardPresentationTests: XCTestCase {
 
     func testDoctorDomainPolicyUsesTypedDetailsDomainAndSeverity() throws {
         let payload = try testDoctorPayload(checks: [
-            testDoctorCheck(status: "PASS", message: "ssh ok", domain: "Device"),
-            testDoctorCheck(status: "WARN", message: "bonjour warning", domain: "Bonjour"),
+            testDoctorCheck(status: "PASS", message: "runtime ok", domain: "Runtime"),
             testDoctorCheck(status: "FAIL", message: "smb failed", domain: "SMB"),
             doctorCheckWithoutDomain(status: "INFO", message: "misc info")
         ]).decode(DoctorPayload.self)
@@ -330,16 +334,20 @@ final class DashboardPresentationTests: XCTestCase {
 
         let signals = DoctorCheckDomainPolicy.signals(from: summary)
 
-        XCTAssertEqual(signals.map(\.domain), [.smbAuth, .finderBonjour, .connection, .general])
-        XCTAssertEqual(signals.first?.severity, .failed)
-        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .connection, summary: summary)?.passCount, 1)
+        // Only "Runtime" is a backend domain; anything else, tagged or not, is general.
+        XCTAssertEqual(signals.map(\.domain), [.general, .runtime])
+        XCTAssertEqual(signals.map(\.severity), [.failed, .passed])
+        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .runtime, summary: summary)?.passCount, 1)
+        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .general, summary: summary)?.failCount, 1)
         XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .general, summary: summary)?.infoCount, 1)
-        XCTAssertNil(DoctorCheckDomainPolicy.signal(for: .disk, summary: summary))
+        XCTAssertNil(DoctorCheckDomainPolicy.signal(for: .runtime, summary: nil))
 
         let lowerStatusSummary = DoctorSummary(payload: try testDoctorPayload(checks: [
-            testDoctorCheck(status: " warn ", message: "disk warning", domain: "Disk")
+            testDoctorCheck(status: " warn ", message: "startup warning", domain: " runtime ")
         ]).decode(DoctorPayload.self))
-        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .disk, summary: lowerStatusSummary)?.warnCount, 1)
+        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .runtime, summary: lowerStatusSummary)?.warnCount, 1)
+        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .runtime, summary: lowerStatusSummary)?.severity, .warning)
+        XCTAssertNil(DoctorCheckDomainPolicy.signal(for: .general, summary: lowerStatusSummary))
         XCTAssertEqual(CheckupStatusPresentation(status: " warn "), .warning)
     }
 
@@ -478,7 +486,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(running.isPrimaryActionEnabled)
     }
 
-    func testOverviewPresentationAggregatesServiceCheckupDomainsForHealthRow() throws {
+    func testOverviewRuntimeRowUsesCurrentRuntimeChecksAndCheckupRowUsesStoredSnapshot() throws {
         var profile = try makeProfile()
         profile.lastDeployState = testDeployState(
             startedAt: Date(timeIntervalSince1970: 100),
@@ -486,12 +494,15 @@ final class DashboardPresentationTests: XCTestCase {
             finishedAt: Date(timeIntervalSince1970: 100)
         )
         profile.runtimeState = testRuntimeState()
-        let checkup = DoctorSummary(payload: try testDoctorPayload(checks: [
-            testDoctorCheck(status: "PASS", message: "runtime ok", domain: "Runtime"),
-            testDoctorCheck(status: "WARN", message: "bonjour warning", domain: "Bonjour"),
-            testDoctorCheck(status: "FAIL", message: "smb failed", domain: "SMB"),
-            testDoctorCheck(status: "PASS", message: "time machine ok", domain: "Time Machine")
-        ]).decode(DoctorPayload.self))
+        let snapshot = DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 200),
+            state: .passed,
+            passCount: 5,
+            warnCount: 0,
+            failCount: 0,
+            summary: "PASS 5, WARN 0, FAIL 0"
+        )
+        profile.lastCheckup = snapshot
         let summary = DeviceDashboardSummary(
             profile: profile,
             passwordState: .available,
@@ -499,14 +510,35 @@ final class DashboardPresentationTests: XCTestCase {
             primaryAction: .openSMB,
             hostWarning: nil
         )
+        let withRuntimeChecks = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "WARN", message: "device services started 12s ago", domain: "Runtime"),
+            testDoctorCheck(status: "FAIL", message: "smb failed", domain: "SMB"),
+            doctorCheckWithoutDomain(status: "FAIL", message: "bonjour missing")
+        ]).decode(DoctorPayload.self))
 
-        let presentation = DeviceDashboardOverviewPresentation(summary: summary, currentCheckupSummary: checkup)
+        let presentation = DeviceDashboardOverviewPresentation(summary: summary, currentCheckupSummary: withRuntimeChecks)
 
-        XCTAssertEqual(try row(.runtime, in: presentation).status, .good)
         XCTAssertEqual(presentation.healthSections.map(\.domain), [.connection, .runtime, .checkup])
-        XCTAssertEqual(try row(.checkup, in: presentation).status, .failed)
-        XCTAssertEqual(try row(.checkup, in: presentation).detail, "PASS 1, WARN 1, FAIL 1")
-        XCTAssertEqual(try row(.checkup, in: presentation).action, .viewCheckup)
+        let runtime = try row(.runtime, in: presentation)
+        XCTAssertEqual(runtime.id, "runtime-checkup")
+        XCTAssertEqual(runtime.status, .warning)
+        XCTAssertEqual(runtime.detail, "PASS 0, WARN 1, FAIL 0")
+        XCTAssertEqual(runtime.action, .viewCheckup)
+        // General failures in the live summary do not replace the stored checkup snapshot.
+        let checkup = try row(.checkup, in: presentation)
+        XCTAssertEqual(checkup.id, "checkup-snapshot")
+        XCTAssertEqual(checkup.status, .good)
+        XCTAssertEqual(checkup.detail, snapshot.localizedSummary)
+        XCTAssertNil(checkup.action)
+
+        let withoutRuntimeChecks = DoctorSummary(payload: try testDoctorPayload(checks: [
+            doctorCheckWithoutDomain(status: "FAIL", message: "bonjour missing")
+        ]).decode(DoctorPayload.self))
+        let fallback = DeviceDashboardOverviewPresentation(summary: summary, currentCheckupSummary: withoutRuntimeChecks)
+
+        XCTAssertEqual(try row(.runtime, in: fallback).id, "runtime-installed")
+        XCTAssertEqual(try row(.runtime, in: fallback).status, .good)
+        XCTAssertEqual(try row(.checkup, in: fallback).id, "checkup-snapshot")
     }
 
     func testOverviewPresentationCoversInstallHealthyActivationAndHostWarningStates() throws {

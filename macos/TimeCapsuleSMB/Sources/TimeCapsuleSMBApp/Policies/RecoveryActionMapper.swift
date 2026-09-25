@@ -8,7 +8,6 @@ enum RecoveryActionKind: String, Equatable {
     case uninstall
     case diskRepair = "disk_repair"
     case metadataRepair = "repair_metadata"
-    case openFinder = "open_finder"
     case replacePassword = "replace_password"
     case copyDiagnostics = "copy_diagnostics"
     case diagnostics = "open_diagnostics"
@@ -56,15 +55,8 @@ enum RecoveryActionMapper {
     }
 
     private static func allows(_ kind: RecoveryActionKind, for error: BackendErrorViewModel) -> Bool {
-        if error.operation == "deploy" {
-            switch kind {
-            case .openFinder, .installSMB:
-                return false
-            default:
-                break
-            }
-        }
-        return true
+        // "Install Samba" on a deploy error would just rerun the operation that failed.
+        !(error.operation == "deploy" && kind == .installSMB)
     }
 
     private static func action(forSuggestedOperation operation: String) -> RecoveryAction {
@@ -108,8 +100,6 @@ enum RecoveryActionMapper {
             return L10n.string("recovery.action.disk_repair")
         case .metadataRepair:
             return L10n.string("recovery.action.metadata_repair")
-        case .openFinder:
-            return L10n.string("recovery.action.open_finder")
         case .replacePassword:
             return L10n.string("recovery.action.replace_password")
         case .copyDiagnostics:

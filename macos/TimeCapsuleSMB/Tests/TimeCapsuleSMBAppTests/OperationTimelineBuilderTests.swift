@@ -153,7 +153,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
     func testDeployUploadStagesAreUserFacingAndPresentTense() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
-            BackendEvent(type: "stage", operation: "deploy", stage: "upload_discovery"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_xattr_migrator"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_rsync"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_boot_files"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_runtime_config")
@@ -161,7 +161,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
         XCTAssertEqual(timeline.map(\.title), [
             "Upload smbd",
-            "Upload discovery service",
+            "Upload metadata migrator",
             "Upload rsync",
             "Upload Boot Files",
             "Upload Runtime Config"
@@ -195,13 +195,19 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "check_compatibility",
             "read_mast",
             "select_payload_home",
+            "inventory_legacy_metadata",
             "build_deployment_plan",
             "check_flash_capacity",
             "pre_upload_actions",
             "prepare_deployment_files",
             "upload_payload",
             "upload_smbd",
-            "upload_discovery",
+            "upload_xattr_migrator",
+            "inspect_migration_sources",
+            "migrate_xattrs_copy",
+            "migrate_xattrs_cleanup",
+            "replace_software",
+            "install_runtime_config",
             "upload_rsync",
             "upload_boot_files",
             "upload_runtime_config",
@@ -246,6 +252,79 @@ final class OperationTimelineBuilderTests: XCTestCase {
             XCTAssertNotNil(detail, "\(stage) should have a localized detail")
             XCTAssertFalse(detail?.hasPrefix("timeline.") == true, "\(stage) detail should be localized")
         }
+    }
+
+    func testDeployMetadataMigrationStagesFollowBackendOrderWithLocalizedCopy() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_xattr_migrator", description: "Upload the one-shot HFS metadata migrator."),
+            BackendEvent(type: "stage", operation: "deploy", stage: "inspect_migration_sources", description: "Fingerprint legacy Samba metadata before migration."),
+            BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy", description: "Copy and verify legacy Samba metadata in native HFS storage."),
+            BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_cleanup", description: "Reverify native HFS metadata and remove migrated legacy storage.")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), [
+            "Upload metadata migrator",
+            "Inspect legacy metadata",
+            "Migrate metadata",
+            "Remove migrated metadata"
+        ])
+        XCTAssertEqual(timeline.map(\.detail), [
+            "Copying the one-time metadata migration helper to the device.",
+            "Recording the current state of the legacy Samba metadata (xattr.tdb) before migrating it.",
+            "Copying legacy Samba metadata into native HFS extended attributes and verifying the copy.",
+            "Re-verifying the native HFS metadata, then removing the migrated legacy Samba metadata."
+        ])
+        XCTAssertEqual(timeline.map(\.state), [.succeeded, .succeeded, .succeeded, .running])
+
+        L10n.apply(language: .german)
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "deploy", stage: "migrate_xattrs_copy"), "Metadaten migrieren")
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "deploy", stage: "migrate_xattrs_cleanup"), "移除已迁移的元数据")
+    }
+
+    func testDeploySoftwareReplacementStagesUseLocalizedCopyInsteadOfBackendText() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        // Backend order: inventory before migration, replacement before uploads,
+        // runtime settings after migration cleanup and before enable_boot.
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "inventory_legacy_metadata", description: "raw inventory text"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "replace_software", description: "raw replace text"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "install_runtime_config", description: "raw config text"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "enable_boot")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), [
+            "Find existing installations",
+            "Remove old software",
+            "Install service settings",
+            "Upload Boot Files"
+        ])
+        XCTAssertEqual(Array(timeline.prefix(3).map(\.detail)), [
+            "Looking on each disk for earlier installations and legacy Samba metadata (xattr.tdb).",
+            "Removing previously installed software files from flash and the disks. Metadata and logs are kept.",
+            "Writing service settings (tcapsulesmb.conf) to /mnt/Flash."
+        ])
+        XCTAssertEqual(timeline.map(\.state), [.succeeded, .succeeded, .succeeded, .running])
+
+        L10n.apply(language: .russian)
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "deploy", stage: "replace_software"), "Удалить старое ПО")
+        L10n.apply(language: .portuguese)
+        XCTAssertEqual(
+            OperationTimelineBuilder.stageDetail(for: "deploy", stage: "install_runtime_config", fallback: "raw config text"),
+            "Gravando a configuração dos serviços (tcapsulesmb.conf) em /mnt/Flash."
+        )
+    }
+
+    func testRemovedDiscoveryUploadStageIsNotMapped() {
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "deploy", stage: "upload_discovery"), "Upload Discovery")
+        XCTAssertNil(OperationTimelineBuilder.stageDetail(for: "deploy", stage: "upload_discovery", fallback: nil))
     }
 
     func testRemovedNetBSD4DeployActivationStageIsNotMapped() {

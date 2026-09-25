@@ -239,6 +239,29 @@ final class BackendPayloadTests: XCTestCase {
         XCTAssertEqual(maintenance.counts?["payload_dirs"], 1)
     }
 
+    func testDeployPlanWithoutStartupModeFallsBackByPlatform() throws {
+        func plan(netbsd4: Bool) throws -> DeployPlanPayload {
+            try jsonValue("""
+            {
+              "schema_version": 1,
+              "host": "root@10.0.0.2",
+              "payload_dir": "/Volumes/dk2/.samba4",
+              "netbsd4": \(netbsd4),
+              "requires_reboot": true,
+              "summary": "Deployment dry-run plan generated."
+            }
+            """).decode(DeployPlanPayload.self)
+        }
+
+        let netbsd6 = try plan(netbsd4: false)
+        XCTAssertEqual(netbsd6.startupMode, .rebootThenVerify)
+        XCTAssertTrue(netbsd6.requiresReboot)
+        XCTAssertFalse(netbsd6.rsyncEnabled)
+        XCTAssertEqual(netbsd6.uploads, [])
+
+        XCTAssertEqual(try plan(netbsd4: true).startupMode, .rebootThenActivate)
+    }
+
     func testDecodesRecoveryAndReportsContractFailures() throws {
         let event = BackendEvent(
             type: "error",

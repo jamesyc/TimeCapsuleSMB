@@ -39,12 +39,7 @@ enum WorkflowLocalError: Equatable {
     case deployOptionsInvalid
     case ataIdleSecondsInvalid
     case ataStandbyInvalid
-    case deployPlanStale
-    case deployPlanNotReady
     case mountWaitInvalid
-    case activationPlanRequired
-    case uninstallPlanStale
-    case uninstallPlanNotReady
     case fsckTargetRequired
     case fsckPlanStale
     case fsckPlanNotReady
@@ -70,18 +65,8 @@ enum WorkflowLocalError: Equatable {
             return "ata_idle_seconds_invalid"
         case .ataStandbyInvalid:
             return "ata_standby_invalid"
-        case .deployPlanStale:
-            return "deploy_plan_stale"
-        case .deployPlanNotReady:
-            return "deploy_plan_not_ready"
         case .mountWaitInvalid:
             return "mount_wait_invalid"
-        case .activationPlanRequired:
-            return "activation_plan_required"
-        case .uninstallPlanStale:
-            return "uninstall_plan_stale"
-        case .uninstallPlanNotReady:
-            return "uninstall_plan_not_ready"
         case .fsckTargetRequired:
             return "fsck_target_required"
         case .fsckPlanStale:

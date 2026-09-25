@@ -105,10 +105,6 @@ struct DeviceNetworkIdentity: Codable, Equatable {
         DeviceEndpointPolicy.normalizedHostname(hostname)?.lowercased() ?? ""
     }
 
-    var addressKeys: Set<String> {
-        Set(addresses.map(\.identityKey))
-    }
-
     var matchableAddressKeys: Set<String> {
         Set(addresses.filter { $0.scope == .regular }.map(\.identityKey))
     }

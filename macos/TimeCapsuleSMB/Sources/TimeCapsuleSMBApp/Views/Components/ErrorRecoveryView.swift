@@ -116,8 +116,6 @@ struct ErrorRecoveryView: View {
             return "externaldrive.badge.exclamationmark"
         case .metadataRepair:
             return "tag"
-        case .openFinder:
-            return "folder"
         case .replacePassword:
             return "key"
         case .copyDiagnostics:

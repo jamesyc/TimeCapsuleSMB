@@ -221,7 +221,7 @@ final class AppSettingsStoreTests: XCTestCase {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
 
-        let error = BackendErrorViewModel(operation: "deploy", localError: .deployPlanStale)
+        let error = BackendErrorViewModel(operation: "deploy", localError: .deployOptionsInvalid)
         let issue = BundleRuntimeIssue(code: .helperMissing, severity: .error)
         let checkup = DeviceCheckupSnapshot(
             checkedAt: Date(timeIntervalSince1970: 1_700_000_000),
@@ -246,7 +246,7 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(DeployWorkflowState.planStale.title, "计划已过期")
         XCTAssertEqual(MaintenanceWorkflow.fsck.title, "磁盘修复")
         XCTAssertEqual(FlashWorkflowState.writeLocked.title, "就绪")
-        XCTAssertEqual(error.message, "继续前请检查并重新生成安装 / 更新计划。")
+        XCTAssertEqual(error.message, "安装 / 更新选项无效。")
         XCTAssertEqual(issue.message, "缺少 TimeCapsuleSMB 随附的辅助程序。")
         XCTAssertEqual(issue.recovery, "重新安装 TimeCapsuleSMB。")
         XCTAssertEqual(checkup.localizedSummary, "通过 2，警告 1，失败 0")
@@ -258,7 +258,7 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(DeployWorkflowState.planStale.title, "Plan Stale")
         XCTAssertEqual(MaintenanceWorkflow.fsck.title, "Disk Repair")
         XCTAssertEqual(FlashWorkflowState.writeLocked.title, "Ready")
-        XCTAssertEqual(error.message, "Review and regenerate the Install / Update plan before continuing.")
+        XCTAssertEqual(error.message, "Install / Update options are invalid.")
         XCTAssertEqual(issue.message, "The bundled TimeCapsuleSMB helper is missing.")
         XCTAssertEqual(issue.recovery, "Reinstall TimeCapsuleSMB.")
         XCTAssertEqual(checkup.localizedSummary, "PASS 2, WARN 1, FAIL 0")
@@ -276,13 +276,13 @@ final class AppSettingsStoreTests: XCTestCase {
             "backend.summary.install_validation_passed": "安装验证通过。",
             "backend.summary.repair_xattrs_found": "发现 %d 个元数据问题，其中 %d 个可修复。",
             "dashboard.overview.connection_target": "连接目标",
-            "deploy.presentation.row.pre_upload_actions": "上传前操作",
+            "deploy.presentation.row.post_install_checks": "安装后检查",
             "diagnostics.title": "诊断",
             "install.advanced_options": "高级选项",
             "maintenance.workflow.repair_xattrs": "文件元数据修复",
             "profile_editor.display_name": "显示名称",
             "timeline.state.pending": "等待中",
-            "toggle.enable_debug_logging": "启用调试日志",
+            "toggle.force_debug_logging": "启用调试日志",
             "toggle.smb_browse_compatibility": "允许浏览 SMB 共享",
             "toggle.mdns_advertise_afp": "通过 Bonjour 广播 AFP",
             "toggle.force_disable_smb_signing_and_encryption": "禁用 SMB 签名和加密",

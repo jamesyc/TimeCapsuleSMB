@@ -32,10 +32,6 @@ final class ActivationStore: ObservableObject {
     var canCancel: Bool { operation.canCancel }
     var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
 
-    var canPlan: Bool {
-        !isBusy
-    }
-
     var canRun: Bool {
         !isBusy
     }

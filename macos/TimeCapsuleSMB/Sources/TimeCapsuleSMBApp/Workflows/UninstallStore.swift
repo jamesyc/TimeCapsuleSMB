@@ -34,10 +34,6 @@ final class UninstallStore: ObservableObject {
     var canCancel: Bool { operation.canCancel }
     var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
 
-    func canPlan(options: MaintenanceOptions?) -> Bool {
-        return !isBusy && options != nil
-    }
-
     func canRun(options: MaintenanceOptions?) -> Bool {
         return !isBusy && options != nil
     }

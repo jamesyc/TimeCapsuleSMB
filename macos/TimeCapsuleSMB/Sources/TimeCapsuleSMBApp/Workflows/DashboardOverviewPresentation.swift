@@ -313,7 +313,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             ]),
             DashboardHealthSection(domain: .runtime, rows: [runtimeRow(for: summary, currentCheckupSummary: currentCheckupSummary)]),
             DashboardHealthSection(domain: .checkup, rows: [
-                checkupRow(summary: summary, currentCheckupSummary: currentCheckupSummary)
+                checkupRow(summary: summary)
             ])
         ]
     }
@@ -501,10 +501,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         )
     }
 
-    private static func checkupRow(
-        summary: DeviceDashboardSummary,
-        currentCheckupSummary: DoctorSummary?
-    ) -> DashboardHealthRow {
+    private static func checkupRow(summary: DeviceDashboardSummary) -> DashboardHealthRow {
         if summary.displayStatus == .checking {
             return DashboardHealthRow(
                 id: "checkup-running",
@@ -512,16 +509,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 detail: L10n.string("checkup.presentation.headline.running"),
                 status: .running,
                 action: .viewCheckup
-            )
-        }
-        if let signal = serviceCheckupSignal(summary: currentCheckupSummary) {
-            let status = dashboardStatus(signal.severity)
-            return DashboardHealthRow(
-                id: "checkup-current",
-                title: DashboardHealthDomain.checkup.title,
-                detail: signal.countSummary,
-                status: status,
-                action: status == .good ? nil : .viewCheckup
             )
         }
         if let hostWarning = summary.hostWarning {
@@ -555,22 +542,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         summary: DoctorSummary?
     ) -> DoctorDomainSignal? {
         DoctorCheckDomainPolicy.signal(for: domain, summary: summary)
-    }
-
-    private static func serviceCheckupSignal(summary: DoctorSummary?) -> DoctorDomainSignal? {
-        let domains: [DoctorCheckDomain] = [.finderBonjour, .smbAuth, .timeMachine]
-        let signals = domains.compactMap { checkupSignal(for: $0, summary: summary) }
-        guard !signals.isEmpty else {
-            return nil
-        }
-        return DoctorDomainSignal(
-            domain: .general,
-            checks: signals.flatMap(\.checks),
-            passCount: signals.map(\.passCount).reduce(0, +),
-            warnCount: signals.map(\.warnCount).reduce(0, +),
-            failCount: signals.map(\.failCount).reduce(0, +),
-            infoCount: signals.map(\.infoCount).reduce(0, +)
-        )
     }
 
     private static func dashboardStatus(_ severity: DoctorCheckSeverity) -> DashboardHealthStatus {

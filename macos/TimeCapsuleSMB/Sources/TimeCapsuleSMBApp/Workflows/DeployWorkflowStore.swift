@@ -419,9 +419,6 @@ final class DeployWorkflowStore: ObservableObject {
         }
         if currentOptions == plannedOptions {
             state = .planReady
-            if error?.code == WorkflowLocalError.deployPlanStale.code {
-                error = nil
-            }
         } else {
             state = .planStale
         }

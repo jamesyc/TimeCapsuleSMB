@@ -37,7 +37,6 @@ enum FlashWorkflowState: String, CaseIterable, Equatable {
     case readbackValidating
     case writeValidated
     case writeValidatedSnapshotStale
-    case manualPowerCycleRequired
     case restoreRebooting
     case failed
 
@@ -75,8 +74,6 @@ enum FlashWorkflowState: String, CaseIterable, Equatable {
             return L10n.string("workflow.state.write_validated")
         case .writeValidatedSnapshotStale:
             return L10n.string("workflow.state.snapshot_stale")
-        case .manualPowerCycleRequired:
-            return L10n.string("workflow.state.manual_power_cycle_required")
         case .restoreRebooting:
             return L10n.string("workflow.state.rebooting_after_restore")
         case .failed:

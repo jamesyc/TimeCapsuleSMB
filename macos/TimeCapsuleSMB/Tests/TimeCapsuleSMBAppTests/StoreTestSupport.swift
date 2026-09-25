@@ -825,10 +825,7 @@ func testDeployPlanPayload(
     startupMode: DeployStartupMode? = nil
 ) -> JSONValue {
     let isNetBSD4 = netbsd4 ?? payloadFamily.localizedCaseInsensitiveContains("netbsd4")
-    let resolvedStartupMode = startupMode ?? DeployStartupMode.fallback(
-        netbsd4: isNetBSD4,
-        requiresReboot: requiresReboot
-    )
+    let resolvedStartupMode = startupMode ?? DeployStartupMode.fallback(netbsd4: isNetBSD4)
     return .object([
         "schema_version": .number(1),
         "host": .string("root@10.0.0.2"),
