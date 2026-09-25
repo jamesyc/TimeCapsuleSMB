@@ -16,7 +16,7 @@ final class ActivityStoreTests: XCTestCase {
                     type: "result",
                     operation: "deploy",
                     ok: true,
-                    payload: .object(["summary": .string("Deployment completed.")])
+                    payload: testSummaryPayload("Deployment completed.", key: "deploy_completed")
                 )
             ], pauseBeforeEvents: true)
         ])
@@ -56,7 +56,7 @@ final class ActivityStoreTests: XCTestCase {
                     type: "result",
                     operation: "deploy",
                     ok: true,
-                    payload: .object(["summary": .string("Deployment completed.")])
+                    payload: testSummaryPayload("Deployment completed.", key: "deploy_completed")
                 )
             ])
         ])

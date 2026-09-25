@@ -103,6 +103,60 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(sameOperation.deployState.startedAt, prior.startedAt)
     }
 
+    func testSucceededDeploySnapshotsKeepTheResultSummaryKey() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let result = try testDeployResultPayload().decode(DeployResultPayload.self)
+
+        let snapshots = DeviceDashboardSnapshotMapper.succeededDeploySnapshots(
+            operation: ActiveOperation(operation: "deploy", profileID: profile.id, context: nil),
+            profile: profile,
+            result: result,
+            payloadFamily: "netbsd6_samba4",
+            stage: nil,
+            finishedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        XCTAssertEqual(snapshots.deployState.summaryRef?.key, "backend.summary.deploy_completed")
+        XCTAssertEqual(snapshots.runtimeState.summaryRef?.key, "backend.summary.deploy_completed")
+        L10n.apply(language: .german)
+        XCTAssertEqual(snapshots.deployState.localizedSummary, L10n.string("backend.summary.deploy_completed"))
+        let reloaded = try JSONDecoder().decode(
+            DeviceDeployStateSnapshot.self,
+            from: JSONEncoder().encode(snapshots.deployState)
+        )
+        XCTAssertEqual(reloaded.summaryRef, snapshots.deployState.summaryRef)
+    }
+
+    func testCheckupCountsFollowTheLanguageInUseWhenShown() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime"),
+            testDoctorCheck(status: "WARN", message: "slow disk", domain: "Disk")
+        ])
+        L10n.apply(language: .english)
+
+        let runtimeState = try XCTUnwrap(DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile,
+            skipSSH: false,
+            state: .warning,
+            summary: summary
+        ))
+
+        XCTAssertEqual(runtimeState.summaryRef?.key, "summary.checkup_counts")
+        XCTAssertEqual(runtimeState.summaryRef?.arguments, [BackendSummaryArgument.int(1), .int(1), .int(0)])
+        XCTAssertEqual(runtimeState.localizedSummary, "PASS 1, WARN 1, FAIL 0")
+        L10n.apply(language: .russian)
+        XCTAssertEqual(
+            runtimeState.localizedSummary,
+            String(format: L10n.string("summary.checkup_counts"), locale: AppLanguage.russian.locale, 1, 1, 0)
+        )
+        XCTAssertNotEqual(runtimeState.localizedSummary, "PASS 1, WARN 1, FAIL 0")
+    }
+
     private func makeDoctorSummary(checks: [JSONValue]) throws -> DoctorSummary {
         DoctorSummary(payload: try testDoctorPayload(checks: checks).decode(DoctorPayload.self))
     }

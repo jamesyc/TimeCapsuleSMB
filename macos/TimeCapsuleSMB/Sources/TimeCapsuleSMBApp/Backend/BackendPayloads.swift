@@ -10,6 +10,8 @@ struct CapabilitiesPayload: Decodable, Equatable {
     let artifactManifestSHA256: String?
     let confirmationSchemaVersion: Int
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -21,6 +23,8 @@ struct CapabilitiesPayload: Decodable, Equatable {
         case artifactManifestSHA256 = "artifact_manifest_sha256"
         case confirmationSchemaVersion = "confirmation_schema_version"
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -30,6 +34,8 @@ struct InstallValidationPayload: Decodable, Equatable {
     let checks: [InstallCheckPayload]
     let counts: [String: Int]
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -37,6 +43,8 @@ struct InstallValidationPayload: Decodable, Equatable {
         case checks
         case counts
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -53,6 +61,8 @@ struct VersionCheckPayload: Decodable, Equatable {
     let latestTag: String?
     let source: String
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -67,6 +77,8 @@ struct VersionCheckPayload: Decodable, Equatable {
         case latestTag = "latest_tag"
         case source
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -78,6 +90,8 @@ struct ReachabilityPayload: Decodable, Equatable {
     let checks: [ReachabilityCheckPayload]
     let counts: [String: Int]
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -87,6 +101,8 @@ struct ReachabilityPayload: Decodable, Equatable {
         case checks
         case counts
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -113,6 +129,8 @@ struct SSHAccessPayload: Decodable, Equatable {
     let waited: Bool?
     let sshVerificationSkipped: Bool?
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -129,6 +147,8 @@ struct SSHAccessPayload: Decodable, Equatable {
         case waited
         case sshVerificationSkipped = "ssh_verification_skipped"
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 
     var isSSHDisabledLikely: Bool {
@@ -150,6 +170,8 @@ struct DiscoverPayload: Decodable, Equatable {
     let devices: [DiscoveredDevicePayload]
     let counts: [String: Int]
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -158,6 +180,8 @@ struct DiscoverPayload: Decodable, Equatable {
         case devices
         case counts
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 
     init(from decoder: Decoder) throws {
@@ -168,6 +192,8 @@ struct DiscoverPayload: Decodable, Equatable {
         self.devices = try container.decodeIfPresent([DiscoveredDevicePayload].self, forKey: .devices) ?? []
         self.counts = try container.decodeIfPresent([String: Int].self, forKey: .counts) ?? [:]
         self.summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        self.summaryKey = try container.decodeIfPresent(String.self, forKey: .summaryKey)
+        self.summaryArgs = try container.decodeIfPresent([JSONValue].self, forKey: .summaryArgs)
     }
 }
 
@@ -322,6 +348,8 @@ struct ConfigurePayload: Decodable, Equatable {
     let compatibility: DeviceCompatibilityPayload?
     let device: DevicePayload?
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -334,6 +362,8 @@ struct ConfigurePayload: Decodable, Equatable {
         case compatibility
         case device
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -398,6 +428,8 @@ struct DeployResultPayload: Decodable, Equatable {
     let verified: Bool?
     let message: String?
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -411,6 +443,8 @@ struct DeployResultPayload: Decodable, Equatable {
         case verified
         case message
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -421,6 +455,8 @@ struct DoctorPayload: Decodable, Equatable {
     let counts: [String: Int]
     let error: String?
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -429,6 +465,8 @@ struct DoctorPayload: Decodable, Equatable {
         case counts
         case error
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -460,12 +498,16 @@ struct FsckVolumeListPayload: Decodable, Equatable {
     let targets: [FsckTargetPayload]
     let counts: [String: Int]
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case targets
         case counts
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -481,12 +523,16 @@ struct ActivationResultPayload: Decodable, Equatable {
     let alreadyActive: Bool
     let message: String?
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case alreadyActive = "already_active"
         case message
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -498,6 +544,8 @@ struct FsckPlanPayload: Decodable, Equatable {
     let rebootRequired: Bool
     let waitAfterReboot: Bool
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -507,6 +555,8 @@ struct FsckPlanPayload: Decodable, Equatable {
         case rebootRequired = "reboot_required"
         case waitAfterReboot = "wait_after_reboot"
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -519,6 +569,8 @@ struct FsckResultPayload: Decodable, Equatable {
     let waited: Bool?
     let verified: Bool?
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -529,6 +581,8 @@ struct FsckResultPayload: Decodable, Equatable {
         case waited
         case verified
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 }
 
@@ -544,6 +598,8 @@ struct RepairXattrsPayload: Decodable, Equatable {
     let telemetryResult: JSONValue?
     let error: String?
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
     let summaryText: String?
 
     enum CodingKeys: String, CodingKey {
@@ -558,6 +614,8 @@ struct RepairXattrsPayload: Decodable, Equatable {
         case telemetryResult = "telemetry_result"
         case error
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
         case summaryText = "summary_text"
     }
 
@@ -574,6 +632,8 @@ struct RepairXattrsPayload: Decodable, Equatable {
         self.telemetryResult = try container.decodeIfPresent(JSONValue.self, forKey: .telemetryResult)
         self.error = try container.decodeIfPresent(String.self, forKey: .error)
         self.summary = try container.decode(String.self, forKey: .summary)
+        self.summaryKey = try container.decodeIfPresent(String.self, forKey: .summaryKey)
+        self.summaryArgs = try container.decodeIfPresent([JSONValue].self, forKey: .summaryArgs)
         self.summaryText = try container.decodeIfPresent(String.self, forKey: .summaryText)
     }
 }
@@ -640,6 +700,8 @@ struct FlashBackupPayload: Decodable, Equatable {
     let banks: [FlashBankPayload]
     let counts: [String: Int]
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -652,6 +714,8 @@ struct FlashBackupPayload: Decodable, Equatable {
         case banks
         case counts
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 
     init(from decoder: Decoder) throws {
@@ -666,6 +730,8 @@ struct FlashBackupPayload: Decodable, Equatable {
         self.banks = try container.decodeIfPresent([FlashBankPayload].self, forKey: .banks) ?? []
         self.counts = try container.decodeIfPresent([String: Int].self, forKey: .counts) ?? [:]
         self.summary = try container.decode(String.self, forKey: .summary)
+        self.summaryKey = try container.decodeIfPresent(String.self, forKey: .summaryKey)
+        self.summaryArgs = try container.decodeIfPresent([JSONValue].self, forKey: .summaryArgs)
     }
 }
 
@@ -839,6 +905,8 @@ struct FlashPlanPayload: Decodable, Equatable {
     let firmwarePayloadPath: String?
     let warnings: [String]
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -856,6 +924,8 @@ struct FlashPlanPayload: Decodable, Equatable {
         case firmwarePayloadPath = "firmware_payload_path"
         case warnings
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 
     init(from decoder: Decoder) throws {
@@ -875,6 +945,8 @@ struct FlashPlanPayload: Decodable, Equatable {
         self.firmwarePayloadPath = try container.decodeIfPresent(String.self, forKey: .firmwarePayloadPath)
         self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
         self.summary = try container.decode(String.self, forKey: .summary)
+        self.summaryKey = try container.decodeIfPresent(String.self, forKey: .summaryKey)
+        self.summaryArgs = try container.decodeIfPresent([JSONValue].self, forKey: .summaryArgs)
     }
 }
 
@@ -892,6 +964,8 @@ struct FlashWritePayload: Decodable, Equatable {
     let rebooted: Bool
     let waitedAfterReboot: Bool
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -906,6 +980,8 @@ struct FlashWritePayload: Decodable, Equatable {
         case rebooted
         case waitedAfterReboot = "waited_after_reboot"
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
     }
 
     init(from decoder: Decoder) throws {
@@ -931,6 +1007,8 @@ struct FlashWritePayload: Decodable, Equatable {
             ?? Self.boolValue(from: writeOutcome, key: "waited_after_reboot")
             ?? false
         self.summary = try container.decode(String.self, forKey: .summary)
+        self.summaryKey = try container.decodeIfPresent(String.self, forKey: .summaryKey)
+        self.summaryArgs = try container.decodeIfPresent([JSONValue].self, forKey: .summaryArgs)
     }
 
     private static func decodeWriteMayHaveModifiedDevice(from value: JSONValue?) -> Bool {
@@ -958,6 +1036,8 @@ struct FlashWritePayload: Decodable, Equatable {
 struct MaintenanceResultPayload: Decodable, Equatable {
     let schemaVersion: Int
     let summary: String
+    var summaryKey: String? = nil
+    var summaryArgs: [JSONValue]? = nil
     let message: String?
     let requiresReboot: Bool?
     let rebooted: Bool?
@@ -970,6 +1050,8 @@ struct MaintenanceResultPayload: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case summary
+        case summaryKey = "summary_key"
+        case summaryArgs = "summary_args"
         case message
         case requiresReboot = "requires_reboot"
         case rebooted

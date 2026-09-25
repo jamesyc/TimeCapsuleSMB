@@ -164,7 +164,11 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
                         type: "result",
                         operation: operation,
                         ok: true,
-                        payload: .object(["summary": .string("Device profile settings synchronized.")])
+                        payload: .object([
+                            "summary": .string("Device profile settings synchronized."),
+                            "summary_key": .string("settings_synchronized"),
+                            "summary_args": .array([])
+                        ])
                     )])
                 }
                 return Response(
@@ -265,7 +269,11 @@ final class PausingStoreTestRunner: HelperRunning, @unchecked Sendable {
                         type: "result",
                         operation: operation,
                         ok: true,
-                        payload: .object(["summary": .string("Device profile settings synchronized.")])
+                        payload: .object([
+                            "summary": .string("Device profile settings synchronized."),
+                            "summary_key": .string("settings_synchronized"),
+                            "summary_args": .array([])
+                        ])
                     )])
                 }
                 return Response(
@@ -573,6 +581,15 @@ func testDiscoveredDevice(
     ])
 }
 
+/// A result payload carrying only a summary, keyed the way the helper sends it.
+func testSummaryPayload(_ text: String, key: String, args: [JSONValue] = []) -> JSONValue {
+    .object([
+        "summary": .string(text),
+        "summary_key": .string(key),
+        "summary_args": .array(args)
+    ])
+}
+
 func testDiscoverPayload(records: [JSONValue], devices: [JSONValue]? = nil) -> JSONValue {
     let deviceValues: [JSONValue]
     if let devices {
@@ -612,7 +629,9 @@ func testDiscoverPayload(records: [JSONValue], devices: [JSONValue]? = nil) -> J
             "resolved": .number(Double(records.count)),
             "devices": .number(Double(deviceValues.count))
         ]),
-        "summary": .string("Discovered \(deviceValues.count) device(s).")
+        "summary": .string("Discovered \(deviceValues.count) device(s)."),
+        "summary_key": .string("discovered_devices"),
+        "summary_args": .array([.number(Double(deviceValues.count))])
     ])
 }
 
@@ -714,7 +733,9 @@ func testConfigurePayload(
             "syap": .string(syap),
             "model": .string(model)
         ]),
-        "summary": .string("Configuration saved and SSH authentication verified.")
+        "summary": .string("Configuration saved and SSH authentication verified."),
+        "summary_key": .string("configuration_saved"),
+        "summary_args": .array([])
     ])
 }
 
@@ -752,7 +773,9 @@ func testDoctorPayload(fatal: Bool = false, checks: [JSONValue]) -> JSONValue {
             "INFO": .number(Double(info))
         ]),
         "error": fatal ? .string("doctor failed") : .null,
-        "summary": .string(fatal ? "Doctor found one or more fatal problems." : "Doctor checks passed.")
+        "summary": .string(fatal ? "Doctor found one or more fatal problems." : "Doctor checks passed."),
+        "summary_key": .string(fatal ? "doctor_found_fatal" : "doctor_checks_passed"),
+        "summary_args": .array([])
     ])
 }
 
@@ -770,7 +793,8 @@ func testDoctorCheck(status: String, message: String, domain: String, code: Stri
 
 func testReachabilityPayload(
     status: String = "reachable",
-    summary: String = "SSH reachable; SMB port reachable."
+    summary: String = "SSH reachable; SMB port reachable.",
+    summaryKey: String = "reachability.all_reachable"
 ) -> JSONValue {
     .object([
         "schema_version": .number(1),
@@ -795,7 +819,9 @@ func testReachabilityPayload(
             "PASS": .number(status == "reachable" ? 2 : (status == "partial" ? 1 : 0)),
             "FAIL": .number(status == "reachable" ? 0 : (status == "partial" ? 1 : 2))
         ]),
-        "summary": .string(summary)
+        "summary": .string(summary),
+        "summary_key": .string(summaryKey),
+        "summary_args": .array([])
     ])
 }
 
@@ -803,7 +829,8 @@ func testSSHAccessPayload(
     host: String = "10.0.0.2",
     acpPortReachable: Bool = true,
     sshPortReachable: Bool = false,
-    summary: String = "AirPort ACP is reachable, but SSH is closed."
+    summary: String = "AirPort ACP is reachable, but SSH is closed.",
+    summaryKey: String = "ssh.acp_reachable_ssh_closed"
 ) -> JSONValue {
     .object([
         "schema_version": .number(1),
@@ -813,7 +840,9 @@ func testSSHAccessPayload(
         "acp_port_error": acpPortReachable ? .null : .string("ACP port is closed."),
         "ssh_port_error": sshPortReachable ? .null : .string("SSH port is closed."),
         "ssh_disabled_likely": .bool(acpPortReachable && !sshPortReachable),
-        "summary": .string(summary)
+        "summary": .string(summary),
+        "summary_key": .string(summaryKey),
+        "summary_args": .array([])
     ])
 }
 
@@ -833,7 +862,9 @@ func testDeployResultPayload(
         "waited": .bool(true),
         "verified": .bool(verified),
         "message": .string("Install completed."),
-        "summary": .string("Deployment completed.")
+        "summary": .string("Deployment completed."),
+        "summary_key": .string("deploy_completed"),
+        "summary_args": .array([])
     ])
 }
 
@@ -898,7 +929,9 @@ func testActivationResultPayload(alreadyActive: Bool) -> JSONValue {
     .object([
         "schema_version": .number(1),
         "already_active": .bool(alreadyActive),
-        "summary": .string(alreadyActive ? "NetBSD4 payload was already active." : "NetBSD4 activation completed.")
+        "summary": .string(alreadyActive ? "NetBSD4 payload was already active." : "NetBSD4 activation completed."),
+        "summary_key": .string(alreadyActive ? "activation_already_active" : "activation_completed"),
+        "summary_args": .array([])
     ])
 }
 
@@ -906,6 +939,8 @@ func testUninstallResultPayload(waited: Bool, verified: Bool) -> JSONValue {
     .object([
         "schema_version": .number(1),
         "summary": .string(verified ? "Uninstall completed." : "Uninstall completed without post-reboot verification."),
+        "summary_key": .string(verified ? "uninstall_completed" : "uninstall_unverified"),
+        "summary_args": .array([]),
         "requires_reboot": .bool(true),
         "rebooted": .bool(false),
         "reboot_requested": .bool(true),
@@ -919,7 +954,9 @@ func testFsckListPayload(targets: [JSONValue]) -> JSONValue {
         "schema_version": .number(1),
         "targets": .array(targets),
         "counts": .object(["targets": .number(Double(targets.count))]),
-        "summary": .string("Found \(targets.count) mounted HFS volume(s).")
+        "summary": .string("Found \(targets.count) mounted HFS volume(s)."),
+        "summary_key": .string("hfs_volumes_found"),
+        "summary_args": .array([.number(Double(targets.count))])
     ])
 }
 
@@ -951,7 +988,9 @@ func testFsckPlanPayload(
         "mountpoint": .string(mountpoint),
         "reboot_required": .bool(true),
         "wait_after_reboot": .bool(false),
-        "summary": .string("Dry-run plan generated for fsck.")
+        "summary": .string("Dry-run plan generated for fsck."),
+        "summary_key": .string("fsck_plan_generated"),
+        "summary_args": .array([])
     ])
 }
 
@@ -964,7 +1003,9 @@ func testFsckResultPayload(returncode: Int) -> JSONValue {
         "reboot_requested": .bool(false),
         "waited": .bool(false),
         "verified": .bool(false),
-        "summary": .string("Disk repair completed with fsck.")
+        "summary": .string("Disk repair completed with fsck."),
+        "summary_key": .string("fsck_completed"),
+        "summary_args": .array([])
     ])
 }
 
@@ -981,7 +1022,9 @@ func testFsckFailedResultPayload(returncode: Int) -> JSONValue {
         "waited": .bool(true),
         "verified": .bool(true),
         "error": .string(failure),
-        "summary": .string(failure)
+        "summary": .string(failure),
+        "summary_key": .string("fsck_failed"),
+        "summary_args": .array([.number(Double(returncode))])
     ])
 }
 
@@ -999,6 +1042,8 @@ func testRepairXattrsPayload(findings: Int, repairable: Int) -> JSONValue {
         "stats": .object([:]),
         "report": .string("report"),
         "summary": .string("Found \(findings) metadata issue(s), \(repairable) repairable."),
+        "summary_key": .string("repair_xattrs_found"),
+        "summary_args": .array([.number(Double(findings)), .number(Double(repairable))]),
         "summary_text": .string("Found \(findings) metadata issue(s), \(repairable) repairable.")
     ])
 }

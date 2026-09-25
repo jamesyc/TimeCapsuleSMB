@@ -83,6 +83,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
     public let stage: String?
     public let level: String?
     public let message: String?
+    public let messageKey: String?
+    public let messageArgs: [JSONValue]?
     public let status: String?
     public let ok: Bool?
     public let payload: JSONValue?
@@ -102,6 +104,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         stage: String? = nil,
         level: String? = nil,
         message: String? = nil,
+        messageKey: String? = nil,
+        messageArgs: [JSONValue]? = nil,
         status: String? = nil,
         ok: Bool? = nil,
         payload: JSONValue? = nil,
@@ -120,6 +124,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         self.stage = stage
         self.level = level
         self.message = message
+        self.messageKey = messageKey
+        self.messageArgs = messageArgs
         self.status = status
         self.ok = ok
         self.payload = payload
@@ -158,6 +164,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
             stage: stage,
             level: level,
             message: message,
+            messageKey: messageKey,
+            messageArgs: messageArgs,
             status: status,
             ok: ok,
             payload: payload,
@@ -179,6 +187,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         case stage
         case level
         case message
+        case messageKey = "message_key"
+        case messageArgs = "message_args"
         case status
         case ok
         case payload

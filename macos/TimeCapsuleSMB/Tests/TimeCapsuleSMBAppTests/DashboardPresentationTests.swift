@@ -453,7 +453,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let partial = DeviceReachabilitySnapshot(
             refreshedAt: Date(timeIntervalSince1970: 2),
-            payload: try testReachabilityPayload(status: "partial", summary: "SSH reachable, SMB port closed.")
+            payload: try testReachabilityPayload(status: "partial", summary: "SSH reachable, SMB port closed.", summaryKey: "reachability.ssh_only")
                 .decode(ReachabilityPayload.self)
         )
         let partialRow = try row(.connection, in: DeviceDashboardOverviewPresentation(summary: summary, reachabilitySnapshot: partial))
@@ -462,7 +462,11 @@ final class DashboardPresentationTests: XCTestCase {
 
         let authFailed = DeviceReachabilitySnapshot(
             refreshedAt: Date(timeIntervalSince1970: 2),
-            payload: try testReachabilityPayload(status: "partial", summary: "SSH authentication failed.")
+            payload: try testReachabilityPayload(
+                status: "partial",
+                summary: "SSH authentication failed.",
+                summaryKey: "reachability.auth_failed"
+            )
                 .decode(ReachabilityPayload.self)
         )
         let authFailedRow = try row(.connection, in: DeviceDashboardOverviewPresentation(summary: summary, reachabilitySnapshot: authFailed))
@@ -471,7 +475,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let unreachable = DeviceReachabilitySnapshot(
             refreshedAt: Date(timeIntervalSince1970: 3),
-            payload: try testReachabilityPayload(status: "unreachable", summary: "Could not reach SSH or SMB.")
+            payload: try testReachabilityPayload(status: "unreachable", summary: "Could not reach SSH or SMB.", summaryKey: "reachability.unreachable")
                 .decode(ReachabilityPayload.self)
         )
         let unreachableRow = try row(.connection, in: DeviceDashboardOverviewPresentation(summary: summary, reachabilitySnapshot: unreachable))

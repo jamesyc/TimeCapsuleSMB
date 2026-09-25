@@ -291,26 +291,20 @@ extension BackendEvent {
         return nil
     }
 
+    /// The payload's summary in the app language. Only the helper's own
+    /// summary key translates it; the payload's other fields are never used
+    /// to guess one, since a failed result can keep success-shaped fields (a
+    /// failed fsck keeps device/mountpoint).
     var localizedPayloadSummaryText: String? {
-        guard let payloadSummaryText else {
-            return nil
-        }
-        // A failed result's fields can still look like a success payload (a
-        // failed fsck keeps device/mountpoint), so never derive its summary
-        // from them; only its own summary text is translated.
-        if isFailedResult {
-            return BackendSummaryLocalization.localized(payloadSummaryText, operation: operation)
-        }
-        return BackendSummaryLocalization.localized(payloadSummaryText, operation: operation, payload: payload)
-    }
-
-    private var isFailedResult: Bool {
-        type == "result" && ok == false
+        BackendSummary(payload: payload)?.localized
     }
 
     var localizedSummary: String {
         if type == "result", let localizedPayloadSummaryText {
             return localizedPayloadSummaryText
+        }
+        if type == "log", let message {
+            return BackendSummary.backend(key: messageKey, arguments: messageArgs, text: message).localized
         }
         if type == "error",
            let code,

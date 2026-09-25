@@ -41,6 +41,16 @@ Use single-process pytest for focused debugging when xdist makes a failure harde
 - Do not commit local secrets, `.env` files, virtualenvs, generated build directories, or device logs with passwords, public IPs, or serial numbers.
 - If you change package metadata or repository automation, validate the changed config before opening the PR.
 
+## Helper Summaries And Translations
+
+The macOS app translates helper results through a summary key, never by matching English text. To add or change a result summary:
+
+1. Build it with `Summary(key, text, args)` from `src/timecapsulesmb/core/summaries.py`, and register the key there with its argument types.
+2. Add `backend.summary.<key>` to all ten `Localizable.strings` files as a whole sentence; `macos/LOCALIZATION_GLOSSARY.md` has the terms and the rules for arguments.
+3. Regenerate the Swift contract fixture: `.venv/bin/python -m tests.fixtures.summary_payloads --write`.
+
+`tests/test_summaries.py` checks the registry against every catalog, and the Swift `BackendSummaryContractTests` check that every summary in the fixture resolves in every language. If a summary's arguments change shape, give it a new key.
+
 ## NetBSD Artifacts
 
 Changes under `build/` may require rebuilding the affected artifact on the NetBSD VM before the work is complete. Do not rebuild the NetBSD toolchains unless that is explicitly required; they are already prebuilt and take hours to recreate.

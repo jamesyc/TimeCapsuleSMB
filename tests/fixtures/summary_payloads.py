@@ -51,12 +51,16 @@ def _reachability(status: str, key: str, text: str) -> ReachabilityResult:
     return ReachabilityResult(status=status, summary=text, ssh_host="root@10.0.0.2", smb_host="10.0.0.2", summary_key=key)
 
 
+# The flash operation passes its backup directory through every flash payload.
+BACKUP_DIR = "/tmp/flash-backup"
+
+
 def _apple_match(matched: bool, version: str | None) -> dict[str, object]:
     return {"matched": matched, "template_version": version}
 
 
 def _flash_plan(mode: str, **plan: object) -> dict[str, object]:
-    return contracts.flash_plan_payload({"flash_plan": {"mode": mode, **plan}})
+    return contracts.flash_plan_payload({"backup_dir": BACKUP_DIR, "flash_plan": {"mode": mode, **plan}})
 
 
 def _check_apple(matched: list[bool], version: str | None) -> dict[str, object]:
@@ -66,7 +70,7 @@ def _check_apple(matched: list[bool], version: str | None) -> dict[str, object]:
 
 
 def _flash_write(**outcome: object) -> dict[str, object]:
-    return contracts.flash_write_payload({"write_outcome": outcome})
+    return contracts.flash_write_payload({"backup_dir": BACKUP_DIR, "write_outcome": outcome})
 
 
 def cases() -> list[tuple[str, str, str, bool, object]]:
@@ -127,7 +131,7 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
             already_active=False, message=NETBSD4_FOLLOWUP)),
         ("uninstall_completed", result, "uninstall", True, contracts.uninstall_result_payload(rebooted=True, verified=True)),
         ("uninstall_unverified", result, "uninstall", True, contracts.uninstall_result_payload(rebooted=True, verified=False)),
-        ("fsck_volumes", result, "fsck", True, contracts.fsck_volume_list_payload({"targets": [{"device": "/dev/dk2"}]})),
+        ("fsck_volumes", result, "fsck", True, contracts.fsck_volume_list_payload({"targets": [{"device": "/dev/dk2", "mountpoint": "/Volumes/dk2"}]})),
         ("fsck_plan", result, "fsck", True, contracts.fsck_plan_payload(fsck_plan_to_jsonable(FSCK_TARGET, reboot=True, wait=True))),
         ("fsck_completed", result, "fsck", True, contracts.fsck_result_payload(
             device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=0, reboot_requested=True, waited=True, verified=True)),
@@ -139,7 +143,7 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("doctor_passed", result, "doctor", True, contracts.doctor_payload(fatal=False, results=[])),
         ("doctor_fatal", result, "doctor", False, contracts.doctor_payload(
             fatal=True, results=doctor_fail, error="Doctor failures:\nFAIL smbd is not running")),
-        ("flash_backup", result, "flash", True, contracts.flash_backup_payload({"backup_dir": "/tmp/flash-backup", "banks": []})),
+        ("flash_backup", result, "flash", True, contracts.flash_backup_payload({"backup_dir": BACKUP_DIR, "banks": []})),
         ("flash_apple_stock_match", result, "flash", True, _check_apple([True], None)),
         ("flash_apple_stock_match_version", result, "flash", True, _check_apple([True], "7.8.1")),
         ("flash_apple_stock_mismatch", result, "flash", True, _check_apple([False], None)),

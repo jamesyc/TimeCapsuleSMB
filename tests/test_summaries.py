@@ -233,6 +233,14 @@ class SummaryCatalogTests(unittest.TestCase):
                     self.assertIsNotNone(template, "missing translation")
                     self.assertEqual(placeholder_types(template or ""), types, template)
 
+    def test_catalogs_hold_no_summary_keys_the_helper_never_sends(self) -> None:
+        # The app resolves backend.summary.* only through keys the helper
+        # sends, so any other such entry is dead text left for translators.
+        for language in LANGUAGES:
+            with self.subTest(language=language):
+                keys = {key.removeprefix("backend.summary.") for key in catalog(language) if key.startswith("backend.summary.")}
+                self.assertEqual(keys - set(SUMMARY_KEYS), set())
+
     def test_placeholder_parser_accepts_reordered_and_plural_forms(self) -> None:
         self.assertEqual(placeholder_types("%2$@ then %1$lld"), ("int", "str"))
         self.assertEqual(placeholder_types("%#@devices@ in %@"), ("int", "str"))

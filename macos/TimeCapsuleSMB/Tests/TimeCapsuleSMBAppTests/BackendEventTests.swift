@@ -83,14 +83,14 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(blankSummaryFallsBack.summary, "doctor: Finished")
     }
 
-    func testBackendEventLocalizesKnownResultSummaries() {
+    func testBackendEventLocalizesKeyedResultSummaries() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         let event = BackendEvent(
             type: "result",
             operation: "doctor",
             ok: true,
-            payload: .object(["summary": .string("Doctor checks passed.")])
+            payload: testSummaryPayload("Doctor checks passed.", key: "doctor_checks_passed")
         )
 
         L10n.apply(language: .english)
@@ -102,23 +102,46 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.localizedSummary, "诊断检查通过。")
     }
 
-    func testFailedResultIsNotSummarizedFromSuccessShapedFields() {
+    func testUnkeyedResultSummaryIsShownAsSent() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .simplifiedChinese)
+        // Neither the English text nor the payload's fields are used to guess
+        // a key: a known sentence without its key stays in English.
+        let event = BackendEvent(
+            type: "result",
+            operation: "fsck",
+            ok: true,
+            payload: .object([
+                "summary": .string("Disk repair completed with fsck."),
+                "device": .string("/dev/dk2"),
+                "mountpoint": .string("/Volumes/dk2")
+            ])
+        )
+
+        XCTAssertEqual(event.localizedPayloadSummaryText, "Disk repair completed with fsck.")
+        XCTAssertEqual(event.localizedSummary, "Disk repair completed with fsck.")
+    }
+
+    func testFailedResultIsSummarizedFromItsOwnKeyNotItsFields() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        // A failed fsck keeps device and mountpoint, the fields of a
+        // successful repair; only its fsck_failed key decides the summary.
         let failed = BackendEvent(type: "result", operation: "fsck", ok: false, payload: testFsckFailedResultPayload(returncode: 8))
         let succeeded = BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckResultPayload(returncode: 0))
-        let failure = "fsck_hfs exited with status 8; the disk may still need repair."
 
-        for language in [AppLanguage.english, .simplifiedChinese] {
-            L10n.apply(language: language)
-            XCTAssertEqual(failed.localizedPayloadSummaryText, failure)
-            XCTAssertEqual(failed.localizedSummary, failure)
-            XCTAssertEqual(BackendErrorViewModel(event: failed).message, failure)
-        }
         L10n.apply(language: .english)
+        let failure = "fsck_hfs exited with status 8; the disk may still need repair."
+        XCTAssertEqual(failed.localizedPayloadSummaryText, failure)
+        XCTAssertEqual(failed.localizedSummary, failure)
+        XCTAssertEqual(BackendErrorViewModel(event: failed).message, failure)
         XCTAssertEqual(succeeded.localizedPayloadSummaryText, "Disk repair completed with fsck.")
+
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertNotEqual(succeeded.localizedPayloadSummaryText, "Disk repair completed with fsck.")
+        XCTAssertEqual(failed.localizedPayloadSummaryText, "fsck_hfs 以状态 8 退出；磁盘可能仍需修复。")
+        XCTAssertEqual(BackendErrorViewModel(event: failed).message, "fsck_hfs 以状态 8 退出；磁盘可能仍需修复。")
+        XCTAssertEqual(succeeded.localizedPayloadSummaryText, "已使用 fsck 完成磁盘修复。")
     }
 
     func testFailedResultStillTranslatesItsOwnKnownSummary() {
@@ -145,77 +168,119 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.localizedSummary, "doctor：设备拒绝了提供的密码或 SSH 凭据。")
     }
 
-    func testBackendSummaryLocalizationCoversRuntimeWaitMessages() {
+    func testKeyedLogMessagesAreLocalizedAndOthersShownAsSent() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         let boot = BackendEvent(
-            type: "result",
+            type: "log",
             operation: "deploy",
-            ok: true,
-            payload: .object(["summary": .string("Waiting a few seconds for device to boot...")])
+            level: "info",
+            message: "Waiting a few seconds for device to boot...",
+            messageKey: "waiting_device_boot",
+            messageArgs: []
         )
         let activate = BackendEvent(
-            type: "result",
+            type: "log",
             operation: "activate",
-            ok: true,
-            payload: .object(["summary": .string("Waiting a few seconds for device to activate...")])
+            level: "info",
+            message: "Waiting a few seconds for device to activate...",
+            messageKey: "waiting_device_activate"
         )
+        let plain = BackendEvent(type: "log", operation: "deploy", level: "info", message: "Copying smbd.")
 
         L10n.apply(language: .english)
-        XCTAssertEqual(boot.localizedPayloadSummaryText, "Waiting a few seconds for device to boot...")
-        XCTAssertEqual(activate.localizedPayloadSummaryText, "Waiting a few seconds for device to activate...")
+        XCTAssertEqual(boot.localizedSummary, "Waiting a few seconds for device to boot...")
+        XCTAssertEqual(activate.localizedSummary, "Waiting a few seconds for device to activate...")
 
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertEqual(boot.localizedPayloadSummaryText, "正在等待设备完成启动...")
-        XCTAssertEqual(activate.localizedPayloadSummaryText, "正在等待设备完成激活...")
+        XCTAssertEqual(boot.localizedSummary, "正在等待设备完成启动...")
+        XCTAssertEqual(activate.localizedSummary, "正在等待设备完成激活...")
+        XCTAssertEqual(plain.localizedSummary, "Copying smbd.")
     }
 
-    func testBackendEventLocalizesStructuredResultSummaries() {
+    func testDecodedLogEventKeepsItsMessageKey() throws {
+        let data = Data(#"""
+        {"type": "log", "operation": "deploy", "level": "info", "message": "Waiting a few seconds for device to boot...",
+         "message_key": "waiting_device_boot", "message_args": []}
+        """#.utf8)
+
+        let event = try JSONDecoder().decode(BackendEvent.self, from: data)
+
+        XCTAssertEqual(event.messageKey, "waiting_device_boot")
+        XCTAssertEqual(event.messageArgs, [])
+        XCTAssertEqual(event.withRequestId("r").messageKey, "waiting_device_boot")
+    }
+
+    func testBackendEventLocalizesResultSummaryArguments() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         let repair = BackendEvent(
             type: "result",
             operation: "repair-xattrs",
             ok: true,
-            payload: .object([
-                "summary_text": .string("Found 2 metadata issue(s), 1 repairable."),
-                "finding_count": .number(2),
-                "repairable_count": .number(1)
-            ])
+            payload: testRepairXattrsPayload(findings: 2, repairable: 1)
         )
-        let fsck = BackendEvent(
-            type: "result",
-            operation: "fsck",
-            ok: true,
-            payload: .object([
-                "summary": .string("Dry-run plan generated for fsck."),
-                "target": .object(["device": .string("/dev/dk2"), "mountpoint": .string("/Volumes/Data")])
-            ])
-        )
-        let flash = BackendEvent(
+        let backup = BackendEvent(
             type: "result",
             operation: "flash",
             ok: true,
-            payload: .object([
-                "summary": .string("Flash patch write validated; manual power cycle required."),
-                "mode": .string("patch"),
-                "write_status": .string("validated"),
-                "write_validated": .bool(true),
-                "post_write_action": .string("manual_power_cycle"),
-                "reboot_requested": .bool(false),
-                "rebooted": .bool(false)
-            ])
+            payload: testSummaryPayload(
+                "Flash backup saved to /tmp/flash-backup.",
+                key: "flash_backup_saved",
+                args: [.string("/tmp/flash-backup")]
+            )
+        )
+        let someMatch = BackendEvent(
+            type: "result",
+            operation: "flash",
+            ok: true,
+            payload: testSummaryPayload(
+                "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.",
+                key: "flash.apple_some_match_version",
+                args: [.number(1), .number(2), .string("7.8.1")]
+            )
         )
 
         L10n.apply(language: .english)
         XCTAssertEqual(repair.localizedPayloadSummaryText, "Found 2 metadata issue(s), 1 repairable.")
-        XCTAssertEqual(fsck.localizedPayloadSummaryText, "Dry-run plan generated for fsck.")
-        XCTAssertEqual(flash.localizedPayloadSummaryText, "Flash patch write validated; manual power cycle required.")
+        XCTAssertEqual(backup.localizedPayloadSummaryText, "Flash backup saved to /tmp/flash-backup.")
+        XCTAssertEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.")
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(repair.localizedPayloadSummaryText, "发现 2 个元数据问题，其中 1 个可修复。")
-        XCTAssertEqual(fsck.localizedPayloadSummaryText, "已生成 fsck 预演计划。")
-        XCTAssertEqual(flash.localizedPayloadSummaryText, "闪存补丁写入已验证；需要手动断电重启。")
+        XCTAssertEqual(backup.localizedPayloadSummaryText, "闪存备份已保存到 /tmp/flash-backup。")
+        XCTAssertTrue(someMatch.localizedPayloadSummaryText?.contains("7.8.1") == true)
+        XCTAssertNotEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.")
+    }
+
+    func testMalformedSummaryArgumentsFallBackToTheEnglishText() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .simplifiedChinese)
+        let cases: [(String, [JSONValue])] = [
+            ("missing argument", [.number(2)]),
+            ("extra argument", [.number(2), .number(1), .number(0)]),
+            ("string for a count", [.string("2"), .number(1)]),
+            ("fractional count", [.number(2.5), .number(1)]),
+            ("bool argument", [.bool(true), .number(1)])
+        ]
+
+        for (name, args) in cases {
+            let event = BackendEvent(
+                type: "result",
+                operation: "repair-xattrs",
+                ok: true,
+                payload: testSummaryPayload("Found 2 metadata issue(s), 1 repairable.", key: "repair_xattrs_found", args: args)
+            )
+            XCTAssertEqual(event.localizedPayloadSummaryText, "Found 2 metadata issue(s), 1 repairable.", name)
+        }
+        let unknownKey = BackendEvent(
+            type: "result",
+            operation: "doctor",
+            ok: true,
+            payload: testSummaryPayload("A summary from a newer helper.", key: "not_in_this_app")
+        )
+        XCTAssertEqual(unknownKey.localizedPayloadSummaryText, "A summary from a newer helper.")
     }
 
     func testJSONValueRoundTripsNestedObjects() throws {

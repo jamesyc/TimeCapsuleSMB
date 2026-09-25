@@ -30,6 +30,11 @@ enum DeviceDashboardSnapshotMapper {
         }
 
         let countSummary = L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
+        let countSummaryRef = BackendSummary(
+            key: "summary.checkup_counts",
+            arguments: [.int(summary.passCount), .int(summary.warnCount), .int(summary.failCount)],
+            text: countSummary
+        )
         let payloadFamily = profile.runtimeState?.payloadFamily ?? profile.payloadFamily
         switch state {
         case .passed:
@@ -56,6 +61,7 @@ enum DeviceDashboardSnapshotMapper {
                 payloadFamily: payloadFamily,
                 verified: false,
                 summary: countSummary,
+                summaryRef: countSummaryRef,
                 errorCode: nil,
                 errorMessage: nil,
                 recovery: nil
@@ -81,6 +87,7 @@ enum DeviceDashboardSnapshotMapper {
                 payloadFamily: payloadFamily,
                 verified: false,
                 summary: countSummary,
+                summaryRef: countSummaryRef,
                 errorCode: "doctor_failed",
                 errorMessage: nil,
                 recovery: nil
@@ -145,6 +152,7 @@ enum DeviceDashboardSnapshotMapper {
                 rebootRequested: current.rebootRequested,
                 verified: current.verified,
                 summary: current.summary,
+                summaryRef: current.summaryRef,
                 errorCode: current.errorCode,
                 errorMessage: current.errorMessage,
                 recovery: current.recovery
@@ -156,6 +164,7 @@ enum DeviceDashboardSnapshotMapper {
                 payloadFamily: runtimeState?.payloadFamily ?? current.payloadFamily,
                 verified: runtimeState?.verified,
                 summary: runtimeState?.summary ?? "",
+                summaryRef: runtimeState?.summaryRef,
                 errorCode: runtimeState?.errorCode,
                 errorMessage: runtimeState?.errorMessage,
                 recovery: runtimeState?.recovery
@@ -219,6 +228,7 @@ enum DeviceDashboardSnapshotMapper {
             ? profile.lastDeployState : nil
         let runtimeState: DeviceRuntimeState = result.verified == true ? .installedVerified : .installedUnverified
         let summary = result.message ?? ""
+        let summaryRef = result.summaryRef
         return (
             deployState: DeviceDeployStateSnapshot(
                 operationID: operation.id.uuidString,
@@ -231,6 +241,7 @@ enum DeviceDashboardSnapshotMapper {
                 rebootRequested: result.rebootRequested,
                 verified: result.verified,
                 summary: summary,
+                summaryRef: summaryRef,
                 errorCode: nil,
                 errorMessage: nil,
                 recovery: nil
@@ -242,6 +253,7 @@ enum DeviceDashboardSnapshotMapper {
                 payloadFamily: payloadFamily,
                 verified: result.verified,
                 summary: summary,
+                summaryRef: summaryRef,
                 errorCode: nil,
                 errorMessage: nil,
                 recovery: nil

@@ -662,7 +662,8 @@
         "summary_key": "hfs_volumes_found",
         "targets": [
           {
-            "device": "/dev/dk2"
+            "device": "/dev/dk2",
+            "mountpoint": "/Volumes/dk2"
           }
         ]
       },
@@ -863,6 +864,7 @@
         },
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -899,6 +901,7 @@
         },
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -937,6 +940,7 @@
         },
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -973,6 +977,7 @@
         },
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1026,6 +1031,7 @@
           }
         ],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1092,6 +1098,7 @@
           }
         ],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1160,6 +1167,7 @@
           }
         ],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1226,6 +1234,7 @@
           }
         ],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1294,6 +1303,7 @@
           }
         ],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1363,6 +1373,7 @@
           }
         ],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1415,6 +1426,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": {},
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1444,6 +1456,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": {
           "template_version": "7.8.1"
         },
@@ -1479,6 +1492,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": {
           "template_product_id": "119"
         },
@@ -1514,6 +1528,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": {
           "template_product_id": "119",
           "template_version": "7.8.1"
@@ -1552,6 +1567,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1581,6 +1597,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1609,6 +1626,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1637,6 +1655,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1666,6 +1685,7 @@
         "apple_firmware_match": null,
         "apple_firmware_matches": [],
         "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
         "firmware_payload": null,
         "firmware_payload_path": null,
         "flash_plan": {
@@ -1691,6 +1711,7 @@
       "ok": true,
       "operation": "flash",
       "payload": {
+        "backup_dir": "/tmp/flash-backup",
         "mode": "patch",
         "post_write_action": "",
         "reboot_requested": false,
@@ -1718,6 +1739,7 @@
       "ok": true,
       "operation": "flash",
       "payload": {
+        "backup_dir": "/tmp/flash-backup",
         "mode": "patch",
         "post_write_action": "manual_power_cycle",
         "reboot_requested": false,
@@ -1747,6 +1769,7 @@
       "ok": true,
       "operation": "flash",
       "payload": {
+        "backup_dir": "/tmp/flash-backup",
         "mode": "restore",
         "post_write_action": "ssh_reboot",
         "reboot_requested": true,
@@ -1778,6 +1801,7 @@
       "ok": true,
       "operation": "flash",
       "payload": {
+        "backup_dir": "/tmp/flash-backup",
         "mode": "restore",
         "post_write_action": "ssh_reboot",
         "reboot_requested": true,
@@ -1808,6 +1832,7 @@
       "ok": true,
       "operation": "flash",
       "payload": {
+        "backup_dir": "/tmp/flash-backup",
         "mode": "restore",
         "post_write_action": "manual_reboot",
         "reboot_requested": false,
@@ -1837,6 +1862,7 @@
       "ok": true,
       "operation": "flash",
       "payload": {
+        "backup_dir": "/tmp/flash-backup",
         "mode": "patch",
         "post_write_action": "",
         "reboot_requested": false,

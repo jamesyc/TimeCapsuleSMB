@@ -267,6 +267,9 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
     var rebootRequested: Bool?
     var verified: Bool?
     var summary: String
+    /// The translatable form of `summary`; nil in profiles saved before
+    /// summary keys existed.
+    var summaryRef: BackendSummary? = nil
     var errorCode: String?
     var errorMessage: String?
     var recovery: DeviceRecoverySnapshot?
@@ -275,11 +278,8 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
     var localizedSummary: String {
         switch status {
         case .succeeded:
-            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return BackendSummaryLocalization.localized(trimmed, operation: "deploy")
-            }
-            return L10n.string("deploy.result.default_message")
+            return BackendSummary.saved(summaryRef, text: summary)?.localized
+                ?? L10n.string("deploy.result.default_message")
         case .failed:
             let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? L10n.string("install.state.deploy_failed") : trimmed
@@ -304,6 +304,7 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
         rebootRequested: Bool?,
         verified: Bool?,
         summary: String,
+        summaryRef: BackendSummary? = nil,
         errorCode: String?,
         errorMessage: String?,
         recovery: DeviceRecoverySnapshot?,
@@ -319,6 +320,7 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
         self.rebootRequested = rebootRequested
         self.verified = verified
         self.summary = summary
+        self.summaryRef = summaryRef
         self.errorCode = errorCode
         self.errorMessage = errorMessage
         self.recovery = recovery
@@ -369,6 +371,9 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
     var payloadFamily: String?
     var verified: Bool?
     var summary: String
+    /// The translatable form of `summary`; nil in profiles saved before
+    /// summary keys existed.
+    var summaryRef: BackendSummary? = nil
     var errorCode: String?
     var errorMessage: String?
     var recovery: DeviceRecoverySnapshot?
@@ -382,20 +387,15 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
         case .installing:
             return L10n.string("install.state.deploying")
         case .installedVerified:
-            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return source == .doctor
-                    ? BackendSummaryLocalization.localized(trimmed, operation: "doctor")
-                    : BackendSummaryLocalization.localized(trimmed, operation: "deploy")
+            if let saved = BackendSummary.saved(summaryRef, text: summary) {
+                return saved.localized
             }
             return source == .doctor
                 ? L10n.string("summary.install_verified_by_checkup")
                 : L10n.string("deploy.result.default_message")
         case .installedUnverified:
-            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty
-                ? L10n.string("deploy.result.default_message")
-                : BackendSummaryLocalization.localized(trimmed, operation: "deploy")
+            return BackendSummary.saved(summaryRef, text: summary)?.localized
+                ?? L10n.string("deploy.result.default_message")
         case .installFailed:
             let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? L10n.string("install.state.deploy_failed") : trimmed
@@ -417,6 +417,7 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
         payloadFamily: String?,
         verified: Bool?,
         summary: String,
+        summaryRef: BackendSummary? = nil,
         errorCode: String?,
         errorMessage: String?,
         recovery: DeviceRecoverySnapshot?
@@ -427,6 +428,7 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
         self.payloadFamily = payloadFamily
         self.verified = verified
         self.summary = summary
+        self.summaryRef = summaryRef
         self.errorCode = errorCode
         self.errorMessage = errorMessage
         self.recovery = recovery

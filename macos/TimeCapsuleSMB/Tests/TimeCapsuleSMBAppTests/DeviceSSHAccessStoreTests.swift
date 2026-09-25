@@ -85,7 +85,7 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
         let coordinator = OperationCoordinator(backend: BackendClient(runner: StoreTestRunner(responses: [])))
         let store = DeviceSSHAccessStore(coordinator: coordinator, now: { Date(timeIntervalSince1970: 200) })
         let profile = try makeProfile(host: "10.0.0.2")
-        let payload = try testSSHAccessPayload(sshPortReachable: true, summary: "SSH is reachable.").decode(SSHAccessPayload.self)
+        let payload = try testSSHAccessPayload(sshPortReachable: true, summary: "SSH is reachable.", summaryKey: "ssh.reachable").decode(SSHAccessPayload.self)
 
         store.apply(payload: payload, profile: profile)
 

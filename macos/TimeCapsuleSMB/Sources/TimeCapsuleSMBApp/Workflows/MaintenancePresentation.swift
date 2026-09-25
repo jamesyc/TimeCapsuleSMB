@@ -342,7 +342,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                     PresentationRow(label: L10n.string("maintenance.result.host"), value: payload.host),
                     PresentationRow(label: L10n.string("maintenance.result.acp"), value: payload.acpPortReachable ? L10n.string("value.reachable") : L10n.string("value.not_reachable")),
                     PresentationRow(label: L10n.string("maintenance.result.ssh"), value: payload.sshPortReachable ? L10n.string("value.reachable") : L10n.string("value.not_reachable")),
-                    PresentationRow(label: L10n.string("deploy.result.message"), value: payload.summary)
+                    PresentationRow(label: L10n.string("deploy.result.message"), value: payload.localizedSummary)
                 ]
             )
         case .activate:
@@ -351,7 +351,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                 title: L10n.string("maintenance.completion.activate"),
                 rows: [
                     PresentationRow(label: L10n.string("maintenance.result.already_active"), value: result.alreadyActive ? L10n.string("value.yes") : L10n.string("value.no")),
-                    PresentationRow(label: L10n.string("deploy.result.message"), value: result.localizedMessage)
+                    PresentationRow(label: L10n.string("deploy.result.message"), value: result.localizedSummary)
                 ]
             )
         case .uninstall:
@@ -384,7 +384,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         [
             PresentationRow(label: L10n.string("deploy.result.reboot_requested"), value: result.rebootRequested == true ? L10n.string("value.yes") : L10n.string("value.no")),
             PresentationRow(label: L10n.string("deploy.result.verified"), value: result.verified == true ? L10n.string("value.yes") : L10n.string("value.no")),
-            PresentationRow(label: L10n.string("deploy.result.message"), value: result.localizedUninstallSummary)
+            PresentationRow(label: L10n.string("deploy.result.message"), value: result.localizedSummary)
         ]
     }
 
