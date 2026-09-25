@@ -14,6 +14,11 @@ UNINSTALL_REBOOT_NO_DOWN_MESSAGE = (
     "The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall."
 )
 FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
+FSCK_STATUS_PREFIX = "tcapsule-fsck: fsck_hfs exit status "
+FSCK_DID_NOT_RUN_MESSAGE = (
+    "fsck did not run: file sharing could not be stopped, or the connection "
+    "ended before fsck_hfs finished."
+)
 
 NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
 MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE = "multiple mounted HFS volumes found; specify --volume to select one"
@@ -112,19 +117,49 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
     # Never repair a volume the manager could remount or smbd could write:
-    # abort unless every managed process has stopped.
+    # abort unless every managed process has stopped. AFP could write it too,
+    # so afpserver stops even without a reboot; file sharing then stays off
+    # until the next reboot either way.
     lines = [
         f"( {command} ) || exit 1"
         for command in render_remote_actions(managed_stop_actions(stop_afpserver=True))
     ]
+    # The reboot drops SSH, so the session's exit status is unreliable on that
+    # path; the status line in the output is what reports fsck's result.
     lines += [
         f"/sbin/umount -f {shlex.quote(mountpoint)} >/dev/null 2>&1 || true",
         f"echo '--- fsck_hfs {device} ---'",
-        f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1 || true",
+        f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1",
+        "fsck_status=$?",
+        f'echo "{FSCK_STATUS_PREFIX}$fsck_status"',
     ]
+    # A failed repair still reboots: that is what restarts file sharing.
     if reboot:
         lines.extend([
             "echo '--- reboot ---'",
             DETACHED_SHUTDOWN_REBOOT_COMMAND,
         ])
+    lines.append('exit "$fsck_status"')
     return "\n".join(lines)
+
+
+def fsck_exit_status(output: str) -> int | None:
+    """Return fsck_hfs's exit status from the remote script output.
+
+    None means fsck never ran: stopping file sharing failed (the script exits
+    before unmounting or rebooting), or the session ended before fsck finished.
+    """
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if line.startswith(FSCK_STATUS_PREFIX):
+            value = line.removeprefix(FSCK_STATUS_PREFIX)
+            return int(value) if value.isdigit() else None
+    return None
+
+
+def fsck_failure_message(status: int | None) -> str | None:
+    if status is None:
+        return FSCK_DID_NOT_RUN_MESSAGE
+    if status != 0:
+        return f"fsck_hfs exited with status {status}; the disk may still need repair."
+    return None

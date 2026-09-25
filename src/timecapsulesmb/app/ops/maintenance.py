@@ -48,12 +48,15 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.activation import decide_manual_activation
 from timecapsulesmb.services.maintenance import (
+    FSCK_DID_NOT_RUN_MESSAGE,
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     FSCK_REBOOT_NO_DOWN_MESSAGE,
     UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
     build_remote_fsck_script,
     format_fsck_plan,
     format_fsck_targets,
+    fsck_exit_status,
+    fsck_failure_message,
     fsck_plan_to_jsonable,
     fsck_target_from_volume,
     fsck_target_to_jsonable,
@@ -329,25 +332,34 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     if proc.stdout:
         for line in proc.stdout.splitlines():
             context.log(line)
-    context.update_fields(returncode=proc.returncode)
-    if proc.returncode != 0:
-        context.set_error(f"Disk repair exited with fsck status {proc.returncode}")
+    fsck_status = fsck_exit_status(proc.stdout or "")
+    failure = fsck_failure_message(fsck_status)
+    context.update_fields(returncode=fsck_status if fsck_status is not None else proc.returncode)
+    # Without a status line the script stopped before fsck and before any
+    # reboot, so there is no reboot to wait for.
+    if fsck_status is None:
+        raise AppOperationError(FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
+    if failure is not None:
+        context.set_error(failure)
     if no_reboot:
-        return OperationResult(proc.returncode == 0, fsck_result_payload(
+        return OperationResult(failure is None, fsck_result_payload(
             device=target.device,
             mountpoint=target.mountpoint,
-            returncode=proc.returncode,
+            returncode=fsck_status,
             reboot_requested=False,
             waited=False,
             verified=False,
+            error=failure,
         ))
     if no_wait:
-        return OperationResult(True, fsck_result_payload(
+        return OperationResult(failure is None, fsck_result_payload(
             device=target.device,
             mountpoint=target.mountpoint,
+            returncode=fsck_status,
             reboot_requested=True,
             waited=False,
             verified=False,
+            error=failure,
         ))
     try:
         observe_reboot_cycle(
@@ -360,12 +372,14 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         )
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
-    return OperationResult(True, fsck_result_payload(
+    return OperationResult(failure is None, fsck_result_payload(
         device=target.device,
         mountpoint=target.mountpoint,
+        returncode=fsck_status,
         reboot_requested=True,
         waited=True,
         verified=True,
+        error=failure,
     ))
 
 

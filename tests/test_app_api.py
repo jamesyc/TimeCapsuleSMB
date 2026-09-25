@@ -5,6 +5,7 @@ from enum import Enum
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -4586,6 +4587,110 @@ MaSt = (
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertEqual(payload["device"], "/dev/dk2")
         self.assertEqual(payload["wait_after_reboot"], False)
+
+    def _run_confirmed_fsck(self, stdout: str, *, ssh_returncode: int, **flags: bool):
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        mounted = [MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "uuid", True, "hfs")]
+        params: dict[str, object] = {"volume": "dk2", **flags}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "fsck",
+            params,
+            {
+                "volume": "dk2",
+                "requires_reboot": not flags.get("no_reboot", False),
+                "no_reboot": flags.get("no_reboot", False),
+                "no_wait": flags.get("no_wait", False),
+            },
+        )
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config))
+            stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection))
+            stack.enter_context(mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]))
+            stack.enter_context(mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted))
+            run_ssh = stack.enter_context(mock.patch(
+                "timecapsulesmb.app.ops.maintenance.run_ssh",
+                return_value=subprocess.CompletedProcess(["ssh"], ssh_returncode, stdout=stdout, stderr=""),
+            ))
+            observe = stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.observe_reboot_cycle"))
+            rc = service.run_api_request({"operation": "fsck", "params": params}, collector.sink)
+        run_ssh.assert_called_once()
+        return rc, collector, observe
+
+    def test_fsck_clean_status_reboots_waits_and_succeeds(self) -> None:
+        # The reboot drops SSH (rc 255); the status line carries fsck's result.
+        rc, collector, observe = self._run_confirmed_fsck(
+            "--- fsck_hfs /dev/dk2 ---\ntcapsule-fsck: fsck_hfs exit status 0\r\n--- reboot ---\n",
+            ssh_returncode=255,
+        )
+
+        self.assertEqual(rc, 0)
+        observe.assert_called_once()
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertEqual(payload["returncode"], 0)
+        self.assertEqual(payload["summary"], "Disk repair completed with fsck.")
+        self.assertNotIn("error", payload)
+        self.assertTrue(payload["verified"])
+
+    def test_fsck_failed_status_still_waits_for_reboot_then_fails(self) -> None:
+        rc, collector, observe = self._run_confirmed_fsck(
+            "--- fsck_hfs /dev/dk2 ---\ntcapsule-fsck: fsck_hfs exit status 8\n--- reboot ---\n",
+            ssh_returncode=255,
+        )
+
+        self.assertEqual(rc, 1)
+        # The reboot is what restarts file sharing, so it is still observed.
+        observe.assert_called_once()
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["payload"]["returncode"], 8)
+        self.assertIn("fsck_hfs exited with status 8", result["payload"]["error"])
+        self.assertNotEqual(result["payload"]["summary"], "Disk repair completed with fsck.")
+
+    def test_fsck_failed_status_without_wait_is_not_reported_as_success(self) -> None:
+        rc, collector, observe = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 8\n--- reboot ---\n",
+            ssh_returncode=255,
+            no_wait=True,
+        )
+
+        self.assertEqual(rc, 1)
+        observe.assert_not_called()
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["payload"]["returncode"], 8)
+        self.assertTrue(result["payload"]["reboot_requested"])
+
+    def test_fsck_failed_status_without_reboot_fails(self) -> None:
+        rc, collector, observe = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 8\n",
+            ssh_returncode=8,
+            no_reboot=True,
+        )
+
+        self.assertEqual(rc, 1)
+        observe.assert_not_called()
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["payload"]["reboot_requested"])
+
+    def test_fsck_that_never_ran_fails_without_waiting_for_a_reboot(self) -> None:
+        # A process that would not stop aborts the script before fsck and
+        # before the reboot command, even when a reboot was requested.
+        for flags in ({}, {"no_wait": True}):
+            with self.subTest(flags=flags):
+                rc, collector, observe = self._run_confirmed_fsck(
+                    "process smbd did not stop\n",
+                    ssh_returncode=1,
+                    **flags,
+                )
+
+                self.assertEqual(rc, 1)
+                observe.assert_not_called()
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "remote_error")
+                self.assertIn("fsck did not run", error["message"])
 
     def test_repair_xattrs_uses_structured_runner(self) -> None:
         collector = CollectingSink()

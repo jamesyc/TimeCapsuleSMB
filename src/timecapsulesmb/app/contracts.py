@@ -299,12 +299,15 @@ def fsck_result_payload(
     reboot_requested: bool | None = None,
     waited: bool | None = None,
     verified: bool | None = None,
+    error: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "device": device,
         "mountpoint": mountpoint,
-        "summary": "Disk repair completed with fsck.",
+        "summary": error or "Disk repair completed with fsck.",
     }
+    if error is not None:
+        payload["error"] = error
     if returncode is not None:
         payload["returncode"] = returncode
     if reboot_requested is not None:

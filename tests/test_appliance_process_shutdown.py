@@ -232,14 +232,23 @@ if sys.argv[1] == 'ps':
     assert _manager_stop_timed_out(RuntimeError(result.stderr)) is manager_timeout
 
 
-@pytest.mark.parametrize('stubborn', [None, '30', '41'])
-def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubborn):
+@pytest.mark.parametrize(('stubborn', 'fsck_rc', 'reboot'), [
+    (None, 0, False),
+    (None, 8, False),
+    (None, 0, True),
+    (None, 8, True),
+    ('30', 0, True),
+    ('41', 0, False),
+])
+def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubborn, fsck_rc, reboot):
     # The native manager restarts smbd and can remount the volume, so fsck
     # must stop it (and everything else deploy stops) before unmounting, and
-    # must not touch the disk at all if anything is still running.
+    # must not touch the disk at all if anything is still running. fsck's own
+    # status must survive to the caller, and a failed repair still reboots.
     import shlex
     import sys
-    from timecapsulesmb.services.maintenance import build_remote_fsck_script
+    from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
+    from timecapsulesmb.services.maintenance import build_remote_fsck_script, fsck_exit_status
 
     state = tmp_path / 'rows.json'
     rows = {
@@ -277,9 +286,13 @@ else:
     with open({str(log)!r}, 'a') as out:
         out.write(' '.join(sys.argv[1:]) + '\\n')
 state.write_text(json.dumps(rows))
+if cmd == 'fsck_hfs':
+    sys.exit({fsck_rc})
 ''')
     fake = lambda name: shlex.join([sys.executable, str(tool), name])
-    script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2', reboot=False)
+    script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2', reboot=reboot)
+    assert (DETACHED_SHUTDOWN_REBOOT_COMMAND in script) is reboot
+    script = script.replace(DETACHED_SHUTDOWN_REBOOT_COMMAND, fake('reboot'))
     for real, name in (
         ('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', 'ps-full'),
         ('ps axww -o stat= -o ucomm= -o command=', 'ps-short'),
@@ -294,11 +307,15 @@ state.write_text(json.dumps(rows))
 
     remaining = set(json.loads(state.read_text()))
     if stubborn is None:
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == fsck_rc, result.stderr
+        assert fsck_exit_status(result.stdout) == fsck_rc
         assert remaining == {'90'}  # Apple's mDNSResponder is never ours to stop.
-        assert log.read_text().splitlines() == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2']
+        expected = ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2'] + (['reboot'] if reboot else [])
+        assert log.read_text().splitlines() == expected
     else:
         assert result.returncode == 1
         assert 'did not stop' in result.stderr
         assert stubborn in remaining
+        # No status line, and nothing touched the disk or rebooted.
+        assert fsck_exit_status(result.stdout) is None
         assert not log.exists()

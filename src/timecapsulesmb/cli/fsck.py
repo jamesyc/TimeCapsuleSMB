@@ -14,6 +14,8 @@ from timecapsulesmb.services.maintenance import (
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     build_remote_fsck_script,
     format_fsck_targets,
+    fsck_exit_status,
+    fsck_failure_message,
     fsck_target_from_volume,
     FsckTarget,
     select_fsck_target,
@@ -40,7 +42,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before running fsck")
     add_no_input_argument(parser)
-    parser.add_argument("--no-reboot", action="store_true", help="Run fsck only; do not reboot afterward")
+    parser.add_argument("--no-reboot", action="store_true", help="Run fsck only; do not reboot afterward. File sharing stays off until the next reboot")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for SSH to go down and come back after reboot")
     parser.add_argument("--volume", help="HFS volume device to repair, for example dk2 or /dev/dk2")
     args = parser.parse_args(argv)
@@ -90,8 +92,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.yes:
             command_context.set_stage("confirm_fsck")
             device_name = command_context.optional_airport_display_name(timeout_seconds=0.1)
+            if args.no_reboot:
+                confirmation = (
+                    "This will stop file sharing, unmount the disk, and run fsck_hfs. "
+                    f"File sharing stays off until the {device_name} restarts. Continue?"
+                )
+            else:
+                confirmation = f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?"
             proceed = command_context.confirm_or_fail(
-                f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?",
+                confirmation,
                 default=True,
                 noninteractive_message="Running `fsck` requires confirmation when stdin is not interactive. Use `fsck --yes` in a non-interactive environment.",
                 allow_prompt=not no_input_enabled(args),
@@ -108,18 +117,26 @@ def main(argv: Optional[list[str]] = None) -> int:
         proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
         if proc.stdout:
             print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
-
-        if args.no_reboot:
-            if proc.returncode == 0:
+        fsck_status = fsck_exit_status(proc.stdout or "")
+        failure = fsck_failure_message(fsck_status)
+        # Without a status line the script stopped before fsck, and therefore
+        # before any reboot: there is nothing to wait for.
+        if fsck_status is None or args.no_reboot:
+            if failure is None:
                 command_context.succeed()
                 return 0
-            command_context.fail_with_error("fsck_hfs command failed.")
+            print(failure)
+            command_context.fail_with_error(failure)
             return 1
 
         command_context.update_fields(reboot_was_attempted=True)
         if args.no_wait:
-            command_context.succeed()
-            return 0
+            if failure is None:
+                command_context.succeed()
+                return 0
+            print(failure)
+            command_context.fail_with_error(failure)
+            return 1
 
         try:
             observe_reboot_cycle(
@@ -135,6 +152,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.fail_with_error(str(exc))
             return 1
 
+        if failure is not None:
+            print(failure)
+            command_context.fail_with_error(failure)
+            return 1
         command_context.succeed()
         return 0
     return 1
