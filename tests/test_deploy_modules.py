@@ -15,6 +15,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.deploy.commands import (
     EnsureVolumeMountedAction,
     InstallPermissionsAction,
@@ -1663,6 +1664,9 @@ describe_managed_smbd_status "" ""
         self.assertIn(ACTIVATION_SETTLE_MESSAGE.text, logs)
         self.assertTrue(result.rebooted)
         self.assertTrue(result.verified)
+        # The app translates the follow-up through this key, so the service owns it.
+        self.assertEqual(result.summary, netbsd4_activation_summary())
+        self.assertEqual(result.message, NETBSD4_ACTIVATION_COMPLETED)
 
     def test_complete_deployment_netbsd6_reboot_waits_for_runtime(self) -> None:
         prepared_plan = self._prepared_deploy_plan(startup_mode=DEPLOY_STARTUP_REBOOT_THEN_VERIFY)
@@ -1697,6 +1701,28 @@ describe_managed_smbd_status "" ""
         self.assertIn("Waiting for managed runtime...", logs)
         self.assertEqual(stages, ["post_reboot_boot_settle"])
         self.assertTrue(result.verified)
+        self.assertIsNone(result.summary)
+        self.assertIsNone(result.message)
+
+    def test_deploy_completion_payload_forwards_the_service_summary(self) -> None:
+        from timecapsulesmb.app.ops.deploy import _deploy_completion_payload
+        from timecapsulesmb.services.deploy import DeployCompletionResult
+
+        def completion(**fields: object) -> DeployCompletionResult:
+            return DeployCompletionResult(
+                payload_dir="/Volumes/dk2/.samba4", payload_family="netbsd4_samba4", is_netbsd4=True,
+                rebooted=True, reboot_requested=True, waited=True, verified=True, **fields)
+
+        netbsd4 = _deploy_completion_payload(completion(
+            message=NETBSD4_ACTIVATION_COMPLETED, summary=netbsd4_activation_summary()))
+        generic = _deploy_completion_payload(completion())
+
+        self.assertEqual(netbsd4["summary_key"], "activation_completed_followup")
+        self.assertEqual(netbsd4["summary"], NETBSD4_ACTIVATION_COMPLETED)
+        self.assertEqual(netbsd4["message"], NETBSD4_ACTIVATION_COMPLETED)
+        self.assertEqual(generic["summary_key"], "deploy_completed")
+        self.assertEqual(generic["summary"], "Deployment completed.")
+        self.assertNotIn("message", generic)
 
     def test_probe_managed_runtime_once_checks_both_probes_and_rechecks_mdns_after_settle(self) -> None:
         smbd_ready = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))

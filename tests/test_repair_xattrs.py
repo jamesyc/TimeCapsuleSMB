@@ -781,12 +781,20 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertIn("No changes made.", result.text)
 
-    def run_service_payload(self, root: Path, commands: FakeXattrCommands, *, approve: bool) -> dict[str, object]:
+    def run_service_payload(
+        self,
+        root: Path,
+        commands: FakeXattrCommands,
+        *,
+        approve: bool,
+        dry_run: bool = False,
+        confirm=None,
+    ) -> dict[str, object]:
         from timecapsulesmb.app.contracts import repair_xattrs_payload
 
-        request = repair_xattrs_service.RepairXattrsRequest(path=root, dry_run=False, approve_repairs=approve)
+        request = repair_xattrs_service.RepairXattrsRequest(path=root, dry_run=dry_run, approve_repairs=approve)
         with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=commands):
-            result = repair_xattrs_service.run_repair(request, self.app_config({}))
+            result = repair_xattrs_service.run_repair(request, self.app_config({}), confirm=confirm)
         return repair_xattrs_payload(result.to_payload_fields())
 
     def test_failed_runs_are_summarized_by_why_they_failed(self) -> None:
@@ -826,7 +834,36 @@ class RepairXattrsTests(unittest.TestCase):
             self.assertEqual(payload["returncode"], 1)
             self.assertTrue(payload["error"])
 
-    def test_successful_and_preview_runs_keep_the_found_summary(self) -> None:
+    def test_a_single_unresolved_issue_uses_the_singular(self) -> None:
+        # Scanning one file (not a folder) yields exactly one finding.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "broken.txt"
+            target.write_text("data")
+            payload = self.run_service_payload(
+                target, FakeXattrCommands(xattr_stderr="", readable_after_chflags=False), approve=True)
+
+        self.assertEqual(payload["summary_key"], "repair_xattrs_unresolved")
+        self.assertEqual(payload["summary_args"], [1])
+        self.assertEqual(payload["summary"], "1 metadata issue remains after repair.")
+
+    def test_preview_and_declined_runs_keep_the_found_summary(self) -> None:
+        # Both return 0 without repairing: the counts are the whole result.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+            preview = self.run_service_payload(root, FakeXattrCommands(xattr_stderr=""), approve=False, dry_run=True)
+            confirm = mock.Mock(return_value=False)
+            declined = self.run_service_payload(root, FakeXattrCommands(xattr_stderr=""), approve=False, confirm=confirm)
+
+        confirm.assert_called_once()
+        for payload in (preview, declined):
+            self.assertEqual(payload["returncode"], 0)
+            self.assertIsNone(payload["failure"])
+            self.assertEqual(payload["summary_key"], "repair_xattrs_found")
+            self.assertEqual(payload["summary_args"], [payload["finding_count"], payload["repairable_count"]])
+            self.assertGreater(payload["repairable_count"], 0)
+
+    def test_successful_and_clean_runs_keep_the_found_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "broken.txt").write_text("data")

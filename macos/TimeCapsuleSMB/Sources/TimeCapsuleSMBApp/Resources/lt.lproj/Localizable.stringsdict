@@ -140,7 +140,7 @@
 	<key>backend.summary.repair_xattrs_no_safe_repairs</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
-		<string>%#@issues@, tačiau žinomo saugaus pataisymo nėra.</string>
+		<string>%#@issues@, tačiau nėra žinomai saugaus taisymo būdo.</string>
 		<key>issues</key>
 		<dict>
 			<key>NSStringFormatSpecTypeKey</key>
@@ -160,7 +160,7 @@
 	<key>backend.summary.repair_xattrs_unresolved</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
-		<string>Po pataisymo %#@issues@.</string>
+		<string>Po taisymo %#@issues@.</string>
 		<key>issues</key>
 		<dict>
 			<key>NSStringFormatSpecTypeKey</key>

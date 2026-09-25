@@ -4683,7 +4683,30 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         enable_mock.assert_called_once()
         wait_mock.assert_not_called()
-        self.assertIn("not waiting for SSH to open", output.getvalue())
+        self.assertIn("SSH enable requested; not waiting for SSH to open.", output.getvalue().splitlines())
+        self.assertNotIn("Summary(", output.getvalue())
+
+    def test_set_ssh_disable_no_wait_prints_the_request_summary(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
+                with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state") as wait_mock:
+                        with redirect_stdout(output):
+                            rc = set_ssh.main(["--disable", "--yes", "--no-wait"])
+
+        self.assertEqual(rc, 0)
+        disable_mock.assert_called_once()
+        wait_mock.assert_not_called()
+        self.assertIn(
+            "SSH disable requested; not waiting for reboot or verifying SSH stays closed.",
+            output.getvalue().splitlines(),
+        )
+        self.assertNotIn("Summary(", output.getvalue())
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
 
     def test_set_ssh_enable_exception_emits_failure_stage(self) -> None:
         output = io.StringIO()

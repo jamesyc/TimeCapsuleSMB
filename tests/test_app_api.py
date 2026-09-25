@@ -20,6 +20,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
@@ -4336,6 +4337,31 @@ MaSt = (
         self.assertEqual(result["payload"]["schema_version"], 1)
         self.assertEqual(result["payload"]["summary"], "NetBSD4 payload was already active.")
         remote_actions.assert_not_called()
+
+    def test_activate_that_runs_actions_reports_the_netbsd4_followup(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        params = {}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(False)):
+                    with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
+                        with mock.patch("timecapsulesmb.app.ops.maintenance.wait_for_activation_settle"):
+                            with mock.patch("timecapsulesmb.app.ops.maintenance.verify_runtime"):
+                                rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        remote_actions.assert_called_once()
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertEqual(payload["already_active"], False)
+        self.assertEqual(payload["summary_key"], "activation_completed_followup")
+        self.assertEqual(payload["summary_args"], [])
+        self.assertEqual(payload["summary"], NETBSD4_ACTIVATION_COMPLETED)
+        self.assertEqual(payload["message"], NETBSD4_ACTIVATION_COMPLETED)
 
     def test_uninstall_requires_confirmation_before_remote_removal(self) -> None:
         collector = CollectingSink()

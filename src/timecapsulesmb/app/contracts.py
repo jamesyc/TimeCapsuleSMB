@@ -337,9 +337,12 @@ def fsck_result_payload(
     return _with_schema(payload)
 
 
-def _repair_xattrs_summary(raw: Mapping[str, object], finding_count: int, repairable_count: int) -> Summary:
-    # A failed run still reports its finding counts; summarizing it from them
-    # ("Found 3 issues, 3 repairable.") would hide why it failed.
+def _repair_xattrs_summary(raw: Mapping[str, object], finding_count: int, repairable_count: int) -> Summary | None:
+    """The keyed summary, or None for a failure this builder does not know.
+
+    A failed run still reports its finding counts; summarizing it from them
+    ("Found 3 issues, 3 repairable.") would hide why it failed.
+    """
     failure = raw.get("failure")
     if failure == "no_safe_repairs":
         return Summary(
@@ -357,6 +360,8 @@ def _repair_xattrs_summary(raw: Mapping[str, object], finding_count: int, repair
             f"{english_count(unresolved_count, 'metadata issue remains', 'metadata issues remain')} after repair.",
             (unresolved_count,),
         )
+    if failure is not None or int(raw.get("returncode") or 0) != 0:
+        return None
     return Summary(
         "repair_xattrs_found",
         f"Found {english_count(finding_count, 'metadata issue', 'metadata issues')}, {repairable_count} repairable.",
@@ -369,14 +374,19 @@ def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
     repairable_count = int(raw.get("repairable_count") or 0)
     stats = raw.get("stats")
     summary = _repair_xattrs_summary(raw, finding_count, repairable_count)
+    # An unrecognized failure shows its own error text, untranslated.
+    summary_fields: dict[str, object] = (
+        summary.fields() if summary is not None
+        else {"summary": str(raw.get("error") or "Metadata repair failed.")}
+    )
     payload = {
         **raw,
         "counts": {
             "findings": finding_count,
             "repairable": repairable_count,
         },
-        **summary.fields(),
-        "summary_text": summary.text,
+        **summary_fields,
+        "summary_text": summary_fields["summary"],
     }
     if stats is not None:
         payload["stats"] = jsonable(stats)

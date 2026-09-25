@@ -118,7 +118,7 @@ final class PluralLocalizationTests: XCTestCase {
             (.english, "backend.summary.repair_xattrs_unresolved", [.int(2)], "2 metadata issues remain after repair."),
             (.german, "backend.summary.repair_xattrs_unresolved", [.int(1)], "Nach der Reparatur bleibt 1 Metadatenproblem bestehen."),
             (.russian, "backend.summary.repair_xattrs_unresolved", [.int(21)], "После исправления осталась 21 проблема с метаданными."),
-            (.lithuanian, "backend.summary.repair_xattrs_unresolved", [.int(12)], "Po pataisymo liko 12 metaduomenų problemų.")
+            (.lithuanian, "backend.summary.repair_xattrs_unresolved", [.int(12)], "Po taisymo liko 12 metaduomenų problemų.")
         ]
 
         for (language, key, arguments, expected) in cases {

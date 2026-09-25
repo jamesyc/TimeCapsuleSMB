@@ -253,6 +253,22 @@ class SummaryProducerTests(unittest.TestCase):
                 self.assertEqual(payload["summary"], text)
                 self.assertEqual(payload["summary_args"], [findings, repairable])
 
+    def test_unrecognized_repair_failures_show_their_error_unkeyed(self) -> None:
+        from timecapsulesmb.app import contracts
+
+        cases = [
+            ({"returncode": 1, "failure": "timeout", "error": "scan timed out"}, "scan timed out"),
+            ({"returncode": 1, "error": "no reason recorded"}, "no reason recorded"),
+            ({"returncode": 1, "failure": "timeout"}, "Metadata repair failed."),
+        ]
+        for raw, text in cases:
+            with self.subTest(raw=raw):
+                payload = contracts.repair_xattrs_payload({"finding_count": 3, "repairable_count": 3, **raw})
+                self.assertEqual(payload["summary"], text)
+                self.assertEqual(payload["summary_text"], text)
+                self.assertNotIn("summary_key", payload)
+                self.assertNotIn("Found", payload["summary"])
+
     def test_some_banks_match_agrees_with_the_matched_count(self) -> None:
         def some_match(matched: list[bool]) -> str:
             matches = [{"bank": f"bank{i}", "match": {"matched": m, "template_version": None}} for i, m in enumerate(matched)]
@@ -356,10 +372,25 @@ class SummaryCatalogTests(unittest.TestCase):
                             with self.subTest(language=language, key=key):
                                 self.assertIsNone(straight.search(text), text)
 
+    def test_french_uses_a_non_breaking_space_before_double_punctuation(self) -> None:
+        # A plain space lets "?", "!", ":" or ";" wrap onto a line of its own.
+        plain = re.compile(r" [?!:;]")
+        with open(RESOURCES / "fr.lproj" / "Localizable.stringsdict", "rb") as handle:
+            plurals = plistlib.load(handle)
+        texts = dict(catalog("fr"))
+        for key, entry in plurals.items():
+            for name, forms in entry.items():
+                for category, text in (forms.items() if isinstance(forms, dict) else [("format", forms)]):
+                    texts[f"{key} {name} {category}"] = text
+        for key, text in texts.items():
+            with self.subTest(key=key):
+                self.assertIsNone(plain.search(text), text)
+
     def test_lithuanian_keeps_apple_names_unquoted(self) -> None:
         for key, text in catalog("lt").items():
-            with self.subTest(key=key):
-                self.assertNotIn("„Apple“", text)
+            for name in ("„Apple“", "„Mac“"):
+                with self.subTest(key=key, name=name):
+                    self.assertNotIn(name, text)
 
     def test_count_sentences_are_plural_entries(self) -> None:
         # Every integer summary argument is a count, except fsck_hfs's exit status.

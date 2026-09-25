@@ -41,7 +41,7 @@ Preserve `%@`, `%d`, `%lld`, positional specifiers, `%%`, URLs, backticks, and i
 | Simplified Chinese | 钥匙串 | [钥匙串访问](https://support.apple.com/zh-cn/guide/keychain-access/welcome/mac) | [磁盘工具](https://support.apple.com/zh-cn/guide/disk-utility/dskutl1027/mac) |
 | Lithuanian | Keychain | Keychain Access | Disk Utility |
 
-macOS has no Lithuanian localization, so Lithuanian keeps Apple application and product names in English, unquoted and uninflected: `iš Keychain`, `Atidaryti Finder`, `AirPort Utility`, `Time Machine`. The company name is unquoted too (`Apple originali programinė įranga`), even though the human translation quoted it once; the catalog keeps one form. Generic OS concepts are translated: System Settings is **sistemos nustatymai**.
+macOS has no Lithuanian localization, so Lithuanian keeps Apple application and product names in English, unquoted and uninflected: `iš Keychain`, `Atidaryti Finder`, `AirPort Utility`, `Time Machine`, `Mac`. The company name is unquoted too (`Apple originali programinė įranga`), even though the human translation quoted it once; the catalog keeps one form. Generic OS concepts are translated: System Settings is **sistemos nustatymai**.
 
 “Cannot read the password from Keychain” refers to the **store**, not to opening the Keychain Access app. Do not turn every storage error into an application error. The newer Passwords app is also not a replacement term for the keychain API.
 
@@ -58,7 +58,7 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Diagnostics | Diagnose | Diagnostiek | Diagnostic | Diagnóstico |
 | Helper program | Hilfsprogramm | hulpprogramma | programme auxiliaire | programa auxiliar |
 | Discovery | Erkennung (process) / Gerätesuche (operation title) | detectie (process) / apparaatdetectie (operation title) | découverte | descubrimiento |
-| Running | Wird ausgeführt (operation) / läuft (service) | Bezig (operation) / actief (service) | En cours d'exécution | En ejecución |
+| Running | Wird ausgeführt (operation) / läuft (service) | Bezig (operation) / actief (service) | En cours d’exécution | En ejecución |
 | Passed check | Bestanden | Geslaagd | Réussi | Aprobado |
 | Warning | Warnung | Waarschuwing | Avertissement | Advertencia |
 | Failed | Fehlgeschlagen | Mislukt | Échec (label) / a échoué (sentence) | Error (label) / falló (sentence) |
@@ -147,7 +147,14 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 - Use consistent voice within a locale. German buttons use infinitives; Dutch buttons normally place the verb last; Russian buttons use infinitives. Avoid mixing polite commands, infinitives, and noun phrases arbitrarily.
 - French and Italian use the typographic apostrophe `’` (`l’appareil`, `dell’app`), never the straight `'`.
 - French uses *Paramètres* for this app's own settings and keeps *Réglages* for Apple's *Réglages Système*.
-- Lithuanian *pataisomas* means repairable and *taisomas* means being repaired: "Repairable" is *Pataisoma*, "Repairing" is *Taisoma*.
+- French puts a non-breaking space (U+00A0) before `?`, `!`, `:` and `;`, so the mark never starts a line: `Continuer ?`, `app : %@`.
+- Lithuanian *pataisomas* means repairable and *taisomas* means being repaired: "Repairable" is *Pataisoma*, "Repairing" is *Taisoma*. The act of repairing metadata is *taisymas* (`Po taisymo liko…`); *pataisymas* is reserved for the firmware **patch** (`Flash atminties pataisymo planas`), so "after the repair" is never *po pataisymo*.
+- Lithuanian "requested" in status lines is *Paprašyta …* (`Paprašyta įjungti SSH`), not *užklaustas*, which means "queried".
+- Lithuanian flash summaries name the storage as *flash atmintis* (`Flash atminties atsarginė kopija…`, `Įrašyti į flash atmintį nereikėjo.`), never a bare *Flash*.
+- Dutch *reparatie* is repair and *herstel* is restore (`Herstel naar flash`); metadata repair sentences say *na de reparatie*, not *na het herstel*.
+- Russian "requested; not waiting for X" is *Запрошено …; без ожидания X*. Avoid *X не ожидается*, which reads as "X is not expected". *Доступен* means reachable, so do not use it for "saved" or "available" (`Нет сохраненных хостов для проверки.`).
+- Chinese "Activate" is the action label 启动, as in `启动 SMB`, and names what starts (`NetBSD4 服务启动已完成。`, `正在等待服务完成启动...`), because a bare 启动 reads as the device booting (`设备完成启动`). Do not switch to 激活.
+- "Known-safe repair" means a repair known to be safe, not a known and safe one: German *als sicher bekannte Reparatur*, Dutch *als veilig bekende reparatie*, French *réparation connue comme sûre*, Spanish *reparación conocida como segura*, Italian *riparazione nota come sicura*, Portuguese *reparo conhecido como seguro*, Lithuanian *žinomai saugus taisymo būdas*.
 - Chinese "already enabled/disabled" keeps "already" as 已处于…状态 (`SSH 已处于禁用状态。`), so it cannot be read as the plain result `SSH 已禁用`.
 - Portuguese proposals use `arquivo`, `compartilhamento`, `configuração`, `criptografia`, `salvar`, and `planejar`; avoid mixing these with European `ficheiro`, `partilha`, `definição`, `encriptação`, `guardar`, and `planear` in the same catalog.
 - Preserve meaning and severity in errors, especially “not”, “only”, “before”, “after”, “may”, and “must”. Do not strengthen “may help” into a guarantee.
@@ -184,7 +191,7 @@ Helper results carry an English `summary` plus a stable `summary_key` and positi
 
 ## Plurals
 
-A sentence whose wording depends on a count lives in `Localizable.stringsdict`, not `Localizable.strings`, in all ten languages. The current plural keys are the four count summaries (`discovered_devices`, `hfs_volumes_found`, `repair_xattrs_found`, `flash.apple_some_match` and its `_version` variant), `bundle_issue.distribution_artifacts_missing_count.message`, and `activity.multiple_active`. Do not write "(s)", "(-ų)" or "problème(s)"-style forms, and do not pick one grammatical form for every count.
+A sentence whose wording depends on a count lives in `Localizable.stringsdict`, not `Localizable.strings`, in all ten languages. The current plural keys are the count summaries (`discovered_devices`, `hfs_volumes_found`, `repair_xattrs_found`, `repair_xattrs_no_safe_repairs`, `repair_xattrs_unresolved`, `flash.apple_some_match` and its `_version` variant), `bundle_issue.distribution_artifacts_missing_count.message`, and `activity.multiple_active`. Do not write "(s)", "(-ų)" or "problème(s)"-style forms, and do not pick one grammatical form for every count.
 
 Foundation picks the form from the locale the app formats with, not the system language, so plural sentences follow the app's language setting (verified on macOS 2026-09-25). Its rules match the table below, including Spanish and Italian `many` for round millions.
 

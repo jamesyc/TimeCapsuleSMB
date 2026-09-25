@@ -23,6 +23,8 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.core.summaries import Summary
+from timecapsulesmb.repair_xattrs import RepairCandidate, RepairFinding, RepairSummary
+from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services.maintenance import fsck_failure_message, fsck_plan_to_jsonable, FsckTarget
 from timecapsulesmb.services.reachability import ReachabilityCheck, ReachabilityResult, result_from_checks, run_reachability
 from timecapsulesmb.services.runtime_verification import ACTIVATION_SETTLE_MESSAGE, BOOT_SETTLE_MESSAGE
@@ -68,6 +70,23 @@ def _reachability(ssh: str | None, smb: str | None, auth: str | None = None) -> 
     checks = [ReachabilityCheck(id=check_id, status=status, message="checked", host="10.0.0.2")
               for check_id, status in (("ssh_port", ssh), ("smb_port", smb), ("ssh_auth", auth)) if status]
     return result_from_checks(ssh_target="root@10.0.0.2", smb_hosts=["10.0.0.2"], checks=checks)
+
+
+def _repair(findings: int, candidates: int, *, failure: str | None = None, unresolved_count: int = 0) -> dict[str, object]:
+    """A repair-xattrs payload from the service's own result fields."""
+    result = repair_xattrs_service.RepairRunResult(
+        returncode=1 if failure else 0,
+        root=Path("/Volumes/Data"),
+        findings=[RepairFinding(path=Path(f"/Volumes/Data/f{i}"), path_type="file", kind="arch_flag") for i in range(findings)],
+        candidates=[RepairCandidate(path=Path(f"/Volumes/Data/f{i}"), flags="arch") for i in range(candidates)],
+        summary=RepairSummary(),
+        report="report" if failure else None,
+        telemetry_result="failure" if failure else "success",
+        error="report" if failure else None,
+        failure=failure,
+        unresolved_count=unresolved_count,
+    )
+    return contracts.repair_xattrs_payload(result.to_payload_fields())
 
 
 def _no_reachability_candidates() -> ReachabilityResult:
@@ -158,17 +177,13 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("fsck_failed", result, "fsck", False, contracts.fsck_result_payload(
             device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=8, reboot_requested=True, waited=True,
             verified=True, error=fsck_failure_message(8))),
-        ("repair_xattrs", result, "repair-xattrs", True, contracts.repair_xattrs_payload(
-            {"returncode": 0, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 2})),
-        ("repair_xattrs_no_safe_repairs", result, "repair-xattrs", False, contracts.repair_xattrs_payload(
-            {"returncode": 1, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 0,
-             "failure": "no_safe_repairs", "error": "report"})),
-        ("repair_xattrs_approval_required", result, "repair-xattrs", False, contracts.repair_xattrs_payload(
-            {"returncode": 1, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 3,
-             "failure": "approval_required", "error": "needs --yes"})),
-        ("repair_xattrs_unresolved", result, "repair-xattrs", False, contracts.repair_xattrs_payload(
-            {"returncode": 1, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 3,
-             "failure": "unresolved", "unresolved_count": 2, "error": "report"})),
+        ("repair_xattrs", result, "repair-xattrs", True, _repair(3, 2)),
+        ("repair_xattrs_no_safe_repairs", result, "repair-xattrs", False, _repair(
+            3, 0, failure=repair_xattrs_service.FAILURE_NO_SAFE_REPAIRS)),
+        ("repair_xattrs_approval_required", result, "repair-xattrs", False, _repair(
+            3, 3, failure=repair_xattrs_service.FAILURE_APPROVAL_REQUIRED)),
+        ("repair_xattrs_unresolved", result, "repair-xattrs", False, _repair(
+            3, 3, failure=repair_xattrs_service.FAILURE_UNRESOLVED, unresolved_count=2)),
         ("doctor_passed", result, "doctor", True, contracts.doctor_payload(fatal=False, results=[])),
         ("doctor_fatal", result, "doctor", False, contracts.doctor_payload(
             fatal=True, results=doctor_fail, error="Doctor failures:\nFAIL smbd is not running")),

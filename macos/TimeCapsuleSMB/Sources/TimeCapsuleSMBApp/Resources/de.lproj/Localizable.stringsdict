@@ -101,7 +101,7 @@
 	<key>backend.summary.repair_xattrs_no_safe_repairs</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
-		<string>%#@issues@ gefunden, aber keine bekannte sichere Reparatur verfügbar.</string>
+		<string>%#@issues@ gefunden, aber keine als sicher bekannte Reparatur verfügbar.</string>
 		<key>issues</key>
 		<dict>
 			<key>NSStringFormatSpecTypeKey</key>

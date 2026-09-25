@@ -5,7 +5,7 @@
 "action.done" = "Terminé";
 "action.ok" = "OK";
 "add_device.connection_method" = "Méthode de connexion";
-"add_device.discover.placeholder" = "Rechercher des services AirPort via Bonjour :";
+"add_device.discover.placeholder" = "Rechercher des services AirPort via Bonjour :";
 "add_device.discovered_devices" = "Appareils détectés";
 "add_device.entry.discover" = "Découvrir";
 "add_device.entry.manual" = "Adresse manuelle";
@@ -52,7 +52,7 @@
 "app_readiness.state.ready" = "Prêt";
 "app_readiness.state.resolving_bundle" = "Préparation de l’environnement d’exécution de l’app";
 "app_readiness.state.validating_install" = "Vérification des fichiers fournis";
-"app_readiness.error.unexpected_payload" = "%@ a renvoyé des données de réponse inattendues : %@";
+"app_readiness.error.unexpected_payload" = "%@ a renvoyé des données de réponse inattendues : %@";
 "app_readiness.recovery.contract_mismatch" = "Mettez à jour ou réinstallez TimeCapsuleSMB afin que l’app et le programme auxiliaire utilisent le même contrat API.";
 "app_readiness.recovery.install_validation_failed" = "Réinstallez TimeCapsuleSMB ou ouvrez Diagnostic pour consulter les vérifications ayant échoué.";
 "app_readiness.recovery.retry_diagnostics" = "Ouvrez Diagnostic et vérifiez à nouveau que l’app est prête.";
@@ -65,13 +65,13 @@
 "app_settings.error.ata_idle" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul.";
 "app_settings.error.ata_standby" = "Le délai de veille ATA doit être vide ou un nombre de secondes positif ou nul.";
 "app_settings.error.bonjour_timeout" = "Le délai d’attente Bonjour doit être un nombre positif ou nul.";
-"app_settings.error.corrupt" = "Impossible de lire les réglages de l’app : %@";
+"app_settings.error.corrupt" = "Impossible de lire les paramètres de l’app : %@";
 "app_settings.error.mount_wait" = "Le délai d’attente du montage doit être un entier positif ou nul.";
 "app_settings.error.version_url" = "L’URL de vérification des versions doit être vide ou utiliser HTTP/HTTPS.";
 "app_settings.helper_path" = "Chemin du programme auxiliaire";
 "app_settings.language" = "Langue";
 "app_settings.restore_defaults" = "Restaurer les paramètres par défaut";
-"app_settings.reset_saved" = "Rétablir les réglages enregistrés";
+"app_settings.reset_saved" = "Rétablir les paramètres enregistrés";
 "app_settings.save" = "Enregistrer les paramètres";
 "app_settings.section.defaults" = "Valeurs par défaut des nouveaux appareils";
 "app_settings.section.diagnostics" = "Programme auxiliaire et diagnostic";
@@ -121,50 +121,50 @@
 "close_guard.close_anyway" = "Fermer quand même";
 "close_guard.keep_open" = "Garder ouvert";
 "close_guard.message" = "TimeCapsuleSMB a une opération en cours. La fermeture maintenant peut interrompre le travail sur l’appareil.";
-"close_guard.title" = "Fermer TimeCapsuleSMB ?";
+"close_guard.title" = "Fermer TimeCapsuleSMB ?";
 "confirm.activate.netbsd4.action" = "Activer";
-"confirm.activate.netbsd4.message" = "Activer le logiciel NetBSD4 installé et redémarrer les services gérés ?";
-"confirm.activate.netbsd4.title" = "Activer les services NetBSD4 ?";
-"confirm.backend.message" = "Continuer cette opération ?";
-"confirm.backend.title" = "Confirmer l’opération ?";
+"confirm.activate.netbsd4.message" = "Activer le logiciel NetBSD4 installé et redémarrer les services gérés ?";
+"confirm.activate.netbsd4.title" = "Activer les services NetBSD4 ?";
+"confirm.backend.message" = "Continuer cette opération ?";
+"confirm.backend.title" = "Confirmer l’opération ?";
 "confirm.configure.enable_ssh_reboot.action" = "Activer SSH et redémarrer";
-"confirm.configure.enable_ssh_reboot.message" = "SSH est fermé sur %@. Activer SSH via AirPort ACP et redémarrer cet appareil AirPort ?";
+"confirm.configure.enable_ssh_reboot.message" = "SSH est fermé sur %@. Activer SSH via AirPort ACP et redémarrer cet appareil AirPort ?";
 "confirm.configure.enable_ssh_reboot.title" = "Activer SSH et redémarrer ?";
 "confirm.ssh_access.enable_reboot.action" = "Activer SSH et redémarrer";
 "confirm.ssh_access.enable_reboot.message" = "Activer SSH en utilisant AirPort ACP sur %@ et redémarrer cet appareil AirPort ?";
 "confirm.ssh_access.enable_reboot.title" = "Activer SSH et redémarrer ?";
 "confirm.deploy.netbsd4.action" = "Installer / mettre à jour Samba, redémarrer et activer";
-"confirm.deploy.netbsd4.message" = "Installer ou mettre à jour Samba sur ce %@, redémarrer l’appareil, puis démarrer Samba lorsque SSH sera de nouveau accessible ?";
-"confirm.deploy.netbsd4.title" = "Installer / mettre à jour Samba, redémarrer et activer ?";
+"confirm.deploy.netbsd4.message" = "Installer ou mettre à jour Samba sur ce %@, redémarrer l’appareil, puis démarrer Samba lorsque SSH sera de nouveau accessible ?";
+"confirm.deploy.netbsd4.title" = "Installer / mettre à jour Samba, redémarrer et activer ?";
 "confirm.deploy.netbsd4_no_wait.action" = "Installer / mettre à jour Samba et demander un redémarrage";
-"confirm.deploy.netbsd4_no_wait.message" = "Installer ou mettre à jour Samba sur ce %@, demander un redémarrage et rendre la main immédiatement sans démarrer Samba au retour de SSH ?";
-"confirm.deploy.netbsd4_no_wait.title" = "Installer / mettre à jour Samba et demander le redémarrage de NetBSD4 ?";
+"confirm.deploy.netbsd4_no_wait.message" = "Installer ou mettre à jour Samba sur ce %@, demander un redémarrage et rendre la main immédiatement sans démarrer Samba au retour de SSH ?";
+"confirm.deploy.netbsd4_no_wait.title" = "Installer / mettre à jour Samba et demander le redémarrage de NetBSD4 ?";
 "confirm.deploy.reboot.action" = "Installer / mettre à jour Samba et redémarrer";
-"confirm.deploy.reboot.message" = "Installer ou mettre à jour Samba et redémarrer ce %@ ?";
-"confirm.deploy.reboot.title" = "Installer / mettre à jour Samba et redémarrer ?";
+"confirm.deploy.reboot.message" = "Installer ou mettre à jour Samba et redémarrer ce %@ ?";
+"confirm.deploy.reboot.title" = "Installer / mettre à jour Samba et redémarrer ?";
 "confirm.deploy.reboot_no_wait.action" = "Installer / mettre à jour Samba et demander un redémarrage";
-"confirm.deploy.reboot_no_wait.message" = "Installer ou mettre à jour Samba sur ce %@, demander un redémarrage et rendre la main immédiatement ?";
-"confirm.deploy.reboot_no_wait.title" = "Installer / mettre à jour Samba et demander un redémarrage ?";
+"confirm.deploy.reboot_no_wait.message" = "Installer ou mettre à jour Samba sur ce %@, demander un redémarrage et rendre la main immédiatement ?";
+"confirm.deploy.reboot_no_wait.title" = "Installer / mettre à jour Samba et demander un redémarrage ?";
 "confirm.fsck.no_reboot.action" = "Exécuter fsck";
-"confirm.fsck.no_reboot.message" = "Exécuter fsck sur le volume HFS sélectionné ?";
+"confirm.fsck.no_reboot.message" = "Exécuter fsck sur le volume HFS sélectionné ?";
 "confirm.fsck.no_reboot.title" = "Exécuter la réparation du disque ?";
 "confirm.fsck.reboot.action" = "Exécuter fsck";
-"confirm.fsck.reboot.message" = "Exécuter fsck sur le volume HFS sélectionné et redémarrer l’appareil ?";
-"confirm.fsck.reboot.title" = "Réparer le disque et redémarrer l’appareil ?";
+"confirm.fsck.reboot.message" = "Exécuter fsck sur le volume HFS sélectionné et redémarrer l’appareil ?";
+"confirm.fsck.reboot.title" = "Réparer le disque et redémarrer l’appareil ?";
 "confirm.flash.patch_write.action" = "Écrire le firmware";
-"confirm.flash.patch_write.message" = "Modifier le hook de démarrage de la banque de firmware principale sur %@ ? Après une écriture réussie, il faudra débrancher puis rebrancher manuellement l’alimentation.";
-"confirm.flash.patch_write.title" = "Modifier le hook de démarrage du firmware ?";
+"confirm.flash.patch_write.message" = "Modifier le hook de démarrage de la banque de firmware principale sur %@ ? Après une écriture réussie, il faudra débrancher puis rebrancher manuellement l’alimentation.";
+"confirm.flash.patch_write.title" = "Modifier le hook de démarrage du firmware ?";
 "confirm.flash.restore_write.action" = "Écrire le firmware";
-"confirm.flash.restore_write.message" = "Restaurer le firmware d’origine Apple dans la banque de firmware %@ sur %@, puis redémarrer après vérification ?";
-"confirm.flash.restore_write.title" = "Restaurer le firmware Apple ?";
+"confirm.flash.restore_write.message" = "Restaurer le firmware d’origine Apple dans la banque de firmware %@ sur %@, puis redémarrer après vérification ?";
+"confirm.flash.restore_write.title" = "Restaurer le firmware Apple ?";
 "confirm.repair_xattrs.action" = "Réparer les attributs étendus";
-"confirm.repair_xattrs.message" = "Réparer les problèmes connus de métadonnées macOS pouvant être corrigés sans risque sous %@ ?";
+"confirm.repair_xattrs.message" = "Réparer les problèmes connus de métadonnées macOS pouvant être corrigés sans risque sous %@ ?";
 "confirm.repair_xattrs.title" = "Réparer les attributs étendus ?";
 "confirm.uninstall.no_reboot.action" = "Désinstaller";
-"confirm.uninstall.no_reboot.message" = "Supprimer de l’appareil les fichiers gérés par TimeCapsuleSMB ?";
+"confirm.uninstall.no_reboot.message" = "Supprimer de l’appareil les fichiers gérés par TimeCapsuleSMB ?";
 "confirm.uninstall.no_reboot.title" = "Désinstaller ?";
 "confirm.uninstall.reboot.action" = "Désinstaller";
-"confirm.uninstall.reboot.message" = "Supprimer de l’appareil les fichiers gérés par TimeCapsuleSMB et redémarrer ?";
+"confirm.uninstall.reboot.message" = "Supprimer de l’appareil les fichiers gérés par TimeCapsuleSMB et redémarrer ?";
 "confirm.uninstall.reboot.title" = "Désinstaller et redémarrer ?";
 "dashboard.action.install_update_smb" = "Installer / Mettre à jour Samba";
 "dashboard.action.refresh_status" = "Actualiser l’état";
@@ -226,14 +226,14 @@
 "deploy.result.message" = "Message";
 "deploy.result.reboot_requested" = "Redémarrage demandé";
 "deploy.result.verified" = "Vérifié";
-"deploy.failure.reboot_guidance" = "Conseil de dépannage : redémarrez l’appareil et attendez 5 minutes. Relancez ensuite « Installer / mettre à jour Samba ».";
+"deploy.failure.reboot_guidance" = "Conseil de dépannage : redémarrez l’appareil et attendez 5 minutes. Relancez ensuite « Installer / mettre à jour Samba ».";
 "install.action.install_update" = "Installer / mettre à jour Samba";
 "install.action.reinstall" = "Réinstaller Samba";
 "install.advanced_options" = "Options avancées";
 "install.completion.title.finished" = "Installation / Mise à jour terminée";
 "install.completion.title.verified" = "Installation / mise à jour vérifiée";
 "install.completion.warning.netbsd4" = "Les appareils NetBSD4 peuvent nécessiter l’action « Activer » après un redémarrage ultérieur, sauf si le hook de démarrage a été corrigé.";
-"install.advanced_options.no_wait_note" = "« Ne pas attendre » est destiné aux utilisateurs expérimentés : l’app rend la main immédiatement après la demande de redémarrage, sans activation ni vérification ultérieure.";
+"install.advanced_options.no_wait_note" = "« Ne pas attendre » est destiné aux utilisateurs expérimentés : l’app rend la main immédiatement après la demande de redémarrage, sans activation ni vérification ultérieure.";
 "install.progress.deploying.message" = "Envoi et installation des services Samba gérés. Cela peut prendre quelques minutes…";
 "install.progress.deploying.title" = "Installation / Mise à jour";
 "install.state.awaiting_confirmation" = "Examinez la boîte de dialogue de confirmation avant de continuer.";
@@ -283,9 +283,9 @@
 "dialog.forget.action" = "Oublier %@";
 "dialog.forget.error_title" = "Impossible d’oublier l’appareil";
 "dialog.forget.message" = "Supprimer %@ de ce Mac ? Cela ne désinstalle pas Samba de l’appareil.";
-"dialog.forget.title" = "Oublier cet appareil ?";
+"dialog.forget.title" = "Oublier cet appareil ?";
 "doctor.check.device_starting_up" = "L’appareil est encore en cours de démarrage. Patientez quelques minutes, puis relancez la vérification.";
-"doctor.check.payload_missing_from_disk" = "Le dossier Samba est absent du disque de données ; le disque a peut-être été effacé. Exécutez « Installer / mettre à jour Samba » pour réinstaller.";
+"doctor.check.payload_missing_from_disk" = "Le dossier Samba est absent du disque de données ; le disque a peut-être été effacé. Exécutez « Installer / mettre à jour Samba » pour réinstaller.";
 "doctor.domain.general" = "Général";
 "doctor.domain.runtime" = "État des services";
 "event.summary.check" = "%@ %@";
@@ -303,11 +303,11 @@
 "backend.summary.doctor_checks_passed" = "Les vérifications de diagnostic ont réussi.";
 "backend.summary.doctor_found_fatal" = "Le diagnostic a détecté un ou plusieurs problèmes graves.";
 "backend.summary.flash_backup_saved" = "Sauvegarde de la mémoire flash enregistrée dans %@.";
-"backend.summary.flash_patch_write_validated_power_cycle" = "Écriture du correctif en mémoire flash vérifiée ; débranchez puis rebranchez manuellement l’appareil.";
-"backend.summary.flash_plan_already_satisfied" = "La mémoire flash correspond déjà au plan ; aucune écriture n’est nécessaire.";
-"backend.summary.flash_restore_write_validated_manual_reboot" = "Écriture de restauration en mémoire flash vérifiée ; redémarrage manuel requis.";
-"backend.summary.flash_restore_write_validated_reboot_requested" = "Écriture de restauration en mémoire flash vérifiée ; redémarrage demandé.";
-"backend.summary.flash_restore_write_validated_rebooted" = "Écriture de restauration en mémoire flash vérifiée ; appareil redémarré.";
+"backend.summary.flash_patch_write_validated_power_cycle" = "Écriture du correctif en mémoire flash vérifiée ; débranchez puis rebranchez manuellement l’appareil.";
+"backend.summary.flash_plan_already_satisfied" = "La mémoire flash correspond déjà au plan ; aucune écriture n’est nécessaire.";
+"backend.summary.flash_restore_write_validated_manual_reboot" = "Écriture de restauration en mémoire flash vérifiée ; redémarrage manuel requis.";
+"backend.summary.flash_restore_write_validated_reboot_requested" = "Écriture de restauration en mémoire flash vérifiée ; redémarrage demandé.";
+"backend.summary.flash_restore_write_validated_rebooted" = "Écriture de restauration en mémoire flash vérifiée ; appareil redémarré.";
 "backend.summary.flash_write_completed" = "Écriture en mémoire flash terminée.";
 "backend.summary.flash_write_not_needed" = "L’écriture en mémoire flash n’était pas nécessaire.";
 "backend.summary.fsck_completed" = "Réparation du disque terminée avec fsck.";
@@ -316,7 +316,7 @@
 "backend.summary.install_validation_failed" = "La validation de l’installation a échoué.";
 "backend.summary.install_validation_passed" = "Validation de l’installation réussie.";
 "backend.summary.operation_exited" = "Opération terminée.";
-"backend.summary.reachability.all_reachable" = "SSH accessible ; port SMB accessible.";
+"backend.summary.reachability.all_reachable" = "SSH accessible ; port SMB accessible.";
 "backend.summary.reachability.smb_only" = "Port SMB accessible, SSH fermé.";
 "backend.summary.reachability.ssh_only" = "SSH accessible, port SMB fermé.";
 "backend.summary.reachability.unreachable" = "Impossible d’atteindre SSH ou SMB.";
@@ -347,7 +347,7 @@
 "backend.summary.flash.patch_write_plan_generated" = "Plan d’écriture du patch dans la mémoire flash généré.";
 "backend.summary.flash.restore_plan_generated" = "Plan de restauration de la mémoire flash généré.";
 "backend.summary.flash.restore_write_plan_generated" = "Plan d’écriture de la restauration dans la mémoire flash généré.";
-"backend.summary.fsck_failed" = "fsck_hfs s’est terminé avec l’état %d ; le disque a peut-être encore besoin d’être réparé.";
+"backend.summary.fsck_failed" = "fsck_hfs s’est terminé avec l’état %d ; le disque a peut-être encore besoin d’être réparé.";
 "backend.summary.reachability.auth_failed" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.summary.reachability.no_candidates" = "Aucun hôte enregistré n’était disponible.";
 "backend.summary.settings_synchronized" = "Paramètres du profil de l’appareil synchronisés.";
@@ -355,12 +355,12 @@
 "backend.summary.ssh.already_disabled" = "SSH est déjà désactivé.";
 "backend.summary.ssh.already_enabled" = "SSH est déjà activé.";
 "backend.summary.ssh.configured" = "SSH est configuré.";
-"backend.summary.ssh.disable_requested" = "Désactivation de SSH demandée ; sans attendre le redémarrage ni vérifier que SSH reste fermé.";
+"backend.summary.ssh.disable_requested" = "Désactivation de SSH demandée ; sans attendre le redémarrage ni vérifier que SSH reste fermé.";
 "backend.summary.ssh.disabled" = "SSH désactivé (reste fermé après le redémarrage).";
-"backend.summary.ssh.enable_requested" = "Activation de SSH demandée ; sans attendre l’ouverture de SSH.";
+"backend.summary.ssh.enable_requested" = "Activation de SSH demandée ; sans attendre l’ouverture de SSH.";
 "backend.summary.ssh.reachable" = "SSH est accessible.";
 "backend.summary.ssh.unreachable" = "AirPort ACP et SSH ne sont pas accessibles.";
-"backend.summary.repair_xattrs_approval_required" = "Aucune modification effectuée ; les réparations nécessitent une confirmation.";
+"backend.summary.repair_xattrs_approval_required" = "Aucune modification effectuée ; les réparations nécessitent une confirmation.";
 "field.firmware_template" = "Chemin du modèle de firmware, facultatif";
 "field.firmware_version" = "Version du firmware, facultative";
 "field.helper" = "Programme auxiliaire";
@@ -633,7 +633,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "Attendez encore quelques minutes.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "L’appareil a peut-être une nouvelle adresse IP. Relancez la découverte et sélectionnez-le à nouveau.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Assurez-vous que vous êtes connecté au même réseau ou Wi-Fi que l’appareil.";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "Sur les appareils NetBSD 4, exécutez tcapsule activate dès que SSH est accessible ; l’installation n’a pas atteint l’activation de Samba après redémarrage.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "Sur les appareils NetBSD 4, exécutez tcapsule activate dès que SSH est accessible ; l’installation n’a pas atteint l’activation de Samba après redémarrage.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Si votre appareil se réinitialise, consultez https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort n’est pas accessible à cette adresse";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB n’a pas pu joindre le service ACP AirPort avant d’activer SSH. Les sauvegardes ou l’utilitaire AirPort peuvent encore fonctionner même si ACP est bloqué.";
@@ -643,13 +643,13 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Utilisez la découverte ou saisissez l’adresse IP LAN actuelle.";
 "backend.error.auth_failed" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.error.configure.auth_failed" = "Le mot de passe administrateur AirPort n’a pas fonctionné.";
-"backend.error.deploy.deploy_no_disk_detected" = "Aucun disque interne n’a été détecté. Vérifiez que le disque est connecté et bien inséré. Remarque : certains appareils ne peuvent pas détecter complètement certains disques de plus de 2 To.";
+"backend.error.deploy.deploy_no_disk_detected" = "Aucun disque interne n’a été détecté. Vérifiez que le disque est connecté et bien inséré. Remarque : certains appareils ne peuvent pas détecter complètement certains disques de plus de 2 To.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Un disque a été trouvé, mais aucune partition HFS valide. Réessayez ou effacez le disque avec Utilitaire AirPort pour le formater pour Time Capsule. Certains appareils ne reconnaissent pas certaines partitions de plus de 2 To.";
 "backend.error.deploy.deploy_disk_not_writable" = "Un disque HFS valide a été trouvé, mais TimeCapsuleSMB n’a pas pu y écrire les fichiers d’installation. Réactivez ou remontez le disque, vérifiez l’espace libre, puis réessayez.";
 "backend.error.ssh_enable_timeout" = "L’appareil a accepté le réglage, mais SSH n’est pas encore disponible. Patientez quelques minutes (ou redémarrez l’appareil), puis réessayez.";
-"backend.error.disk_write_test_unresponsive" = "Le disque n’a pas répondu au test. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
+"backend.error.disk_write_test_unresponsive" = "Le disque n’a pas répondu au test. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
 "backend.error.manager_stop_timeout" = "Un service de l’appareil est bloqué, souvent à cause d’un disque défaillant. Débranchez l’appareil, rebranchez-le, puis réessayez.";
-"backend.error.payload_upload_timeout" = "Le disque n’a pas répondu pendant la copie des fichiers d’installation SMB. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
+"backend.error.payload_upload_timeout" = "Le disque n’a pas répondu pendant la copie des fichiers d’installation SMB. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
 "backend.recovery.auth_failed.title" = "Authentification échouée";
 "backend.recovery.auth_failed.message" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.recovery.auth_failed.action.1" = "Saisissez à nouveau le mot de passe administrateur AirPort.";
@@ -749,7 +749,7 @@
 "timeline.deploy.detail.verify_runtime_activation" = "Attente de la fin du démarrage des services gérés.";
 "timeline.deploy.detail.verify_runtime_reboot" = "L’appareil est de nouveau en ligne. Attente de la fin du démarrage des services gérés.";
 "timeline.deploy.detail.wait_for_reboot_down" = "Attente que SSH s’arrête après la demande de redémarrage.";
-"timeline.deploy.detail.wait_for_reboot_up" = "L’appareil est hors ligne ; attente de son retour.";
+"timeline.deploy.detail.wait_for_reboot_up" = "L’appareil est hors ligne ; attente de son retour.";
 "timeline.deploy.title.build_deployment_plan" = "Préparer le plan d’installation";
 "timeline.deploy.title.check_compatibility" = "Vérifier la compatibilité des appareils";
 "timeline.deploy.title.flush_payload_upload" = "Synchroniser les écritures sur le disque";
@@ -811,7 +811,7 @@
 "toggle.internal_share_use_disk_root" = "Partager la racine du disque interne";
 "toggle.smb_browse_compatibility" = "Autoriser la navigation des partages SMB";
 "toggle.mdns_advertise_afp" = "Annoncer AFP via Bonjour";
-"toggle.mdns_advertise_afp.help" = "Annoncer AFP via Bonjour. À laisser désactivé : macOS 26.x/27 masque les Time Capsule qui annoncent AFP.";
+"toggle.mdns_advertise_afp.help" = "Annoncer AFP via Bonjour. À laisser désactivé : macOS 26.x/27 masque les Time Capsule qui annoncent AFP.";
 "toggle.any_protocol" = "Autoriser tout protocole SMB";
 "toggle.require_smb_encryption" = "Exiger le chiffrement SMB";
 "toggle.force_disable_smb_signing_and_encryption" = "Désactiver la signature et le chiffrement SMB";
@@ -865,13 +865,13 @@
 
 "settings.note.idle" = "0 désactive le délai d’inactivité.";
 
-"settings.note.standby" = "Laissez vide pour conserver le réglage actuel ; 0 désactive la veille.";
+"settings.note.standby" = "Laissez vide pour conserver le réglage actuel ; 0 désactive la veille.";
 
 "settings.note.nbns" = "La découverte NetBIOS intégrée d’Apple fonctionne automatiquement.";
 
 "settings.note.rsync" = "Activer le service rsync";
 
-"settings.note.browsing" = "Lister les partages avant connexion ; les fichiers exigent une authentification.";
+"settings.note.browsing" = "Lister les partages avant connexion ; les fichiers exigent une authentification.";
 
 "settings.note.afp" = "Activer les annonces Bonjour pour AFP. Provoque des problèmes de compatibilité avec macOS 27";
 
@@ -883,7 +883,7 @@
 
 "settings.note.encryption" = "Exiger des connexions SMB3 chiffrées. Beaucoup plus lent.";
 
-"settings.note.aio" = "Processus supplémentaires pour les E/S disque ; consommation de mémoire potentiellement accrue.";
+"settings.note.aio" = "Processus supplémentaires pour les E/S disque ; consommation de mémoire potentiellement accrue.";
 
 "settings.note.debug" = "Les journaux détaillés peuvent occuper beaucoup d’espace.";
 

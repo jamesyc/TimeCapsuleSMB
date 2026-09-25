@@ -839,18 +839,35 @@
           "findings": 3,
           "repairable": 2
         },
+        "error": null,
+        "failure": null,
         "finding_count": 3,
         "repairable_count": 2,
+        "report": null,
         "returncode": 0,
         "root": "/Volumes/Data",
         "schema_version": 1,
+        "stats": {
+          "failed": 0,
+          "not_repairable": 0,
+          "permission_repairable": 0,
+          "repairable": 0,
+          "repaired": 0,
+          "scanned": 0,
+          "scanned_dirs": 0,
+          "scanned_files": 0,
+          "skipped": 0,
+          "unreadable": 0
+        },
         "summary": "Found 3 metadata issues, 2 repairable.",
         "summary_args": [
           3,
           2
         ],
         "summary_key": "repair_xattrs_found",
-        "summary_text": "Found 3 metadata issues, 2 repairable."
+        "summary_text": "Found 3 metadata issues, 2 repairable.",
+        "telemetry_result": "success",
+        "unresolved_count": 0
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -871,15 +888,30 @@
         "failure": "no_safe_repairs",
         "finding_count": 3,
         "repairable_count": 0,
+        "report": "report",
         "returncode": 1,
         "root": "/Volumes/Data",
         "schema_version": 1,
+        "stats": {
+          "failed": 0,
+          "not_repairable": 0,
+          "permission_repairable": 0,
+          "repairable": 0,
+          "repaired": 0,
+          "scanned": 0,
+          "scanned_dirs": 0,
+          "scanned_files": 0,
+          "skipped": 0,
+          "unreadable": 0
+        },
         "summary": "Found 3 metadata issues, but no known-safe repair is available.",
         "summary_args": [
           3
         ],
         "summary_key": "repair_xattrs_no_safe_repairs",
-        "summary_text": "Found 3 metadata issues, but no known-safe repair is available."
+        "summary_text": "Found 3 metadata issues, but no known-safe repair is available.",
+        "telemetry_result": "failure",
+        "unresolved_count": 0
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -896,17 +928,32 @@
           "findings": 3,
           "repairable": 3
         },
-        "error": "needs --yes",
+        "error": "report",
         "failure": "approval_required",
         "finding_count": 3,
         "repairable_count": 3,
+        "report": "report",
         "returncode": 1,
         "root": "/Volumes/Data",
         "schema_version": 1,
+        "stats": {
+          "failed": 0,
+          "not_repairable": 0,
+          "permission_repairable": 0,
+          "repairable": 0,
+          "repaired": 0,
+          "scanned": 0,
+          "scanned_dirs": 0,
+          "scanned_files": 0,
+          "skipped": 0,
+          "unreadable": 0
+        },
         "summary": "No changes made; repairs need confirmation.",
         "summary_args": [],
         "summary_key": "repair_xattrs_approval_required",
-        "summary_text": "No changes made; repairs need confirmation."
+        "summary_text": "No changes made; repairs need confirmation.",
+        "telemetry_result": "failure",
+        "unresolved_count": 0
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -927,15 +974,29 @@
         "failure": "unresolved",
         "finding_count": 3,
         "repairable_count": 3,
+        "report": "report",
         "returncode": 1,
         "root": "/Volumes/Data",
         "schema_version": 1,
+        "stats": {
+          "failed": 0,
+          "not_repairable": 0,
+          "permission_repairable": 0,
+          "repairable": 0,
+          "repaired": 0,
+          "scanned": 0,
+          "scanned_dirs": 0,
+          "scanned_files": 0,
+          "skipped": 0,
+          "unreadable": 0
+        },
         "summary": "2 metadata issues remain after repair.",
         "summary_args": [
           2
         ],
         "summary_key": "repair_xattrs_unresolved",
         "summary_text": "2 metadata issues remain after repair.",
+        "telemetry_result": "failure",
         "unresolved_count": 2
       },
       "request_id": "fixture",

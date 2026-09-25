@@ -302,14 +302,14 @@
 "backend.summary.deploy_completed" = "Diegimas baigtas.";
 "backend.summary.doctor_checks_passed" = "Diagnostikos patikrinimai pavyko.";
 "backend.summary.doctor_found_fatal" = "Diagnostika rado vieną ar daugiau kritinių problemų.";
-"backend.summary.flash_backup_saved" = "Flash atsarginė kopija išsaugota į %@.";
-"backend.summary.flash_patch_write_validated_power_cycle" = "Flash pataisymo įrašymas patvirtintas; reikalingas rankinis maitinimo ciklas.";
-"backend.summary.flash_plan_already_satisfied" = "Flash planas jau įvykdytas; įrašyti nereikia.";
-"backend.summary.flash_restore_write_validated_manual_reboot" = "Flash atkūrimo įrašymas patvirtintas; reikalingas rankinis paleidimas iš naujo.";
-"backend.summary.flash_restore_write_validated_reboot_requested" = "Flash atkūrimo įrašymas patvirtintas; paleidimas iš naujo užklaustas.";
-"backend.summary.flash_restore_write_validated_rebooted" = "Flash atkūrimo įrašymas patvirtintas; įrenginys paleistas iš naujo.";
-"backend.summary.flash_write_completed" = "Flash įrašymas baigtas.";
-"backend.summary.flash_write_not_needed" = "Flash įrašyti nereikėjo.";
+"backend.summary.flash_backup_saved" = "Flash atminties atsarginė kopija išsaugota į %@.";
+"backend.summary.flash_patch_write_validated_power_cycle" = "Flash atminties pataisymo įrašymas patvirtintas; reikalingas rankinis maitinimo ciklas.";
+"backend.summary.flash_plan_already_satisfied" = "Flash atminties planas jau įvykdytas; įrašyti nereikia.";
+"backend.summary.flash_restore_write_validated_manual_reboot" = "Flash atminties atkūrimo įrašymas patvirtintas; reikalingas rankinis paleidimas iš naujo.";
+"backend.summary.flash_restore_write_validated_reboot_requested" = "Flash atminties atkūrimo įrašymas patvirtintas; paprašyta paleisti iš naujo.";
+"backend.summary.flash_restore_write_validated_rebooted" = "Flash atminties atkūrimo įrašymas patvirtintas; įrenginys paleistas iš naujo.";
+"backend.summary.flash_write_completed" = "Įrašymas į flash atmintį baigtas.";
+"backend.summary.flash_write_not_needed" = "Įrašyti į flash atmintį nereikėjo.";
 "backend.summary.fsck_completed" = "Disko taisymas su fsck baigtas.";
 "backend.summary.fsck_plan_generated" = "Bandomasis fsck planas sugeneruotas.";
 "backend.summary.helper_capabilities_resolved" = "Pagalbinės programos galimybės nustatytos.";
@@ -355,9 +355,9 @@
 "backend.summary.ssh.already_disabled" = "SSH jau išjungta.";
 "backend.summary.ssh.already_enabled" = "SSH jau įjungta.";
 "backend.summary.ssh.configured" = "SSH sukonfigūruota.";
-"backend.summary.ssh.disable_requested" = "SSH išjungimas užklaustas; nelaukiama paleidimo iš naujo ir netikrinama, ar SSH lieka uždaryta.";
+"backend.summary.ssh.disable_requested" = "Paprašyta išjungti SSH; nelaukiama paleidimo iš naujo ir netikrinama, ar SSH lieka uždaryta.";
 "backend.summary.ssh.disabled" = "SSH išjungta (lieka uždaryta po paleidimo iš naujo).";
-"backend.summary.ssh.enable_requested" = "SSH įjungimas užklaustas; nelaukiama, kol SSH atsidarys.";
+"backend.summary.ssh.enable_requested" = "Paprašyta įjungti SSH; nelaukiama, kol SSH atsidarys.";
 "backend.summary.ssh.reachable" = "SSH pasiekiama.";
 "backend.summary.ssh.unreachable" = "AirPort ACP ir SSH nepasiekiami.";
 "backend.summary.repair_xattrs_approval_required" = "Pakeitimų neatlikta; taisymams reikia patvirtinimo.";
@@ -877,7 +877,7 @@
 
 "settings.note.root" = "Bendrinti vidinio disko šakninį katalogą, o ne numatytąjį Apple ShareRoot";
 
-"settings.note.metadata" = "Naudoti su Netatalk suderinamus „Mac“ metaduomenis.";
+"settings.note.metadata" = "Naudoti su Netatalk suderinamus Mac metaduomenis.";
 
 "settings.note.protocol" = "Įjungti nesaugų SMB1, o ne apsiriboti SMB2/3.";
 

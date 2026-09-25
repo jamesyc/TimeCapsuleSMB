@@ -213,7 +213,7 @@ final class BackendEventTests: XCTestCase {
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(boot.localizedSummary, "正在等待设备完成启动...")
-        XCTAssertEqual(activate.localizedSummary, "正在等待设备完成激活...")
+        XCTAssertEqual(activate.localizedSummary, "正在等待服务完成启动...")
         XCTAssertEqual(plain.localizedSummary, "Copying smbd.")
     }
 
