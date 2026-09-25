@@ -90,6 +90,15 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+def english_count(count: int, singular: str, plural: str) -> str:
+    """The count and its noun in English: "1 device", "0 devices", "2 devices".
+
+    Only the English ``text`` uses this; translations choose their own plural
+    forms from the count argument (see ``Localizable.stringsdict``).
+    """
+    return f"{count} {singular if count == 1 else plural}"
+
+
 def _arg_type(value: object) -> str | None:
     if isinstance(value, bool):
         return None

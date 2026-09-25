@@ -61,13 +61,13 @@ def event_key(event: dict[str, object]) -> tuple[str | None, list[object]]:
 
 class SummaryTests(unittest.TestCase):
     def test_fields_carry_text_key_and_args(self) -> None:
-        summary = Summary("hfs_volumes_found", "Found 2 mounted HFS volume(s).", (2,))
+        summary = Summary("hfs_volumes_found", "Found 2 mounted HFS volumes.", (2,))
 
         self.assertEqual(summary.fields(), {
-            "summary": "Found 2 mounted HFS volume(s).", "summary_key": "hfs_volumes_found", "summary_args": [2],
+            "summary": "Found 2 mounted HFS volumes.", "summary_key": "hfs_volumes_found", "summary_args": [2],
         })
         self.assertEqual(summary.message_fields(), {
-            "message": "Found 2 mounted HFS volume(s).", "message_key": "hfs_volumes_found", "message_args": [2],
+            "message": "Found 2 mounted HFS volumes.", "message_key": "hfs_volumes_found", "message_args": [2],
         })
 
     def test_rejects_unregistered_keys_and_mismatched_arguments(self) -> None:
@@ -110,7 +110,7 @@ class SummaryProducerTests(unittest.TestCase):
 
     EXPECTED = {
         "capabilities": ("helper_capabilities_resolved", [], "Helper capabilities resolved."),
-        "discover": ("discovered_devices", [2], "Discovered 2 device(s)."),
+        "discover": ("discovered_devices", [2], "Discovered 2 devices."),
         "validate_install_failed": ("install_validation_failed", [], "Install validation failed."),
         "version_required": ("update_required", [], "Update required."),
         "version_available": ("update_available", [], "Update available."),
@@ -126,11 +126,11 @@ class SummaryProducerTests(unittest.TestCase):
         "activation_completed": ("activation_completed", [], "NetBSD4 activation completed."),
         "activation_followup": ("activation_completed_followup", [], summary_payloads.NETBSD4_FOLLOWUP),
         "uninstall_unverified": ("uninstall_unverified", [], "Uninstall completed without post-reboot verification."),
-        "fsck_volumes": ("hfs_volumes_found", [1], "Found 1 mounted HFS volume(s)."),
+        "fsck_volumes": ("hfs_volumes_found", [1], "Found 1 mounted HFS volume."),
         "fsck_plan": ("fsck_plan_generated", [], "Dry-run plan generated for fsck."),
         "fsck_completed": ("fsck_completed", [], "Disk repair completed with fsck."),
         "fsck_failed": ("fsck_failed", [8], "fsck_hfs exited with status 8; the disk may still need repair."),
-        "repair_xattrs": ("repair_xattrs_found", [3, 2], "Found 3 metadata issue(s), 2 repairable."),
+        "repair_xattrs": ("repair_xattrs_found", [3, 2], "Found 3 metadata issues, 2 repairable."),
         "doctor_fatal": ("doctor_found_fatal", [], "Doctor found one or more fatal problems."),
         "flash_backup": ("flash_backup_saved", ["/tmp/flash-backup"], "Flash backup saved to /tmp/flash-backup."),
         "flash_apple_stock_match": ("flash.apple_stock_match", [], "Active firmware bank matches Apple stock firmware."),
@@ -139,9 +139,9 @@ class SummaryProducerTests(unittest.TestCase):
         "flash_apple_all_match": ("flash.apple_all_match", [], "All candidate firmware banks match Apple stock firmware."),
         "flash_apple_none_match_version": (
             "flash.apple_none_match_version", ["7.8.1"], "No candidate firmware banks match Apple stock firmware 7.8.1."),
-        "flash_apple_some_match": ("flash.apple_some_match", [1, 2], "1 of 2 candidate firmware banks match Apple stock firmware."),
+        "flash_apple_some_match": ("flash.apple_some_match", [1, 2], "1 of 2 candidate firmware banks matches Apple stock firmware."),
         "flash_apple_some_match_version": (
-            "flash.apple_some_match_version", [1, 2, "7.8.1"], "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1."),
+            "flash.apple_some_match_version", [1, 2, "7.8.1"], "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1."),
         "flash_restore_validated": ("flash.apple_restore_validated", [], "Apple restore firmware validated."),
         "flash_restore_validated_version": (
             "flash.apple_restore_validated_version", ["7.8.1"], "Apple restore firmware validated (version 7.8.1)."),
@@ -171,6 +171,50 @@ class SummaryProducerTests(unittest.TestCase):
                 event = events[name]
                 self.assertEqual(event_key(event), (key, args))
                 self.assertEqual(event["message"] if event["type"] == "log" else event["payload"]["summary"], text)
+
+    def test_english_count_is_singular_only_for_exactly_one(self) -> None:
+        from timecapsulesmb.core.summaries import english_count
+
+        self.assertEqual(english_count(0, "device", "devices"), "0 devices")
+        self.assertEqual(english_count(1, "device", "devices"), "1 device")
+        self.assertEqual(english_count(2, "device", "devices"), "2 devices")
+        self.assertEqual(english_count(11, "device", "devices"), "11 devices")
+        self.assertEqual(english_count(21, "device", "devices"), "21 devices")
+
+    def test_count_summaries_use_english_plurals_at_every_count(self) -> None:
+        from timecapsulesmb.app import contracts
+
+        def discovered(count: int) -> str:
+            return contracts.discover_payload({"devices": [{"name": f"tc{i}"} for i in range(count)]})["summary"]
+
+        def volumes(count: int) -> str:
+            return contracts.fsck_volume_list_payload({"targets": [{"device": "/dev/dk2"}] * count})["summary"]
+
+        self.assertEqual(discovered(0), "Discovered 0 devices.")
+        self.assertEqual(discovered(1), "Discovered 1 device.")
+        self.assertEqual(discovered(2), "Discovered 2 devices.")
+        self.assertEqual(volumes(0), "Found 0 mounted HFS volumes.")
+        self.assertEqual(volumes(1), "Found 1 mounted HFS volume.")
+        self.assertEqual(volumes(2), "Found 2 mounted HFS volumes.")
+        repairs = {
+            (0, 0): "Found 0 metadata issues, 0 repairable.",
+            (1, 0): "Found 1 metadata issue, 0 repairable.",
+            (2, 1): "Found 2 metadata issues, 1 repairable.",
+        }
+        for (findings, repairable), text in repairs.items():
+            with self.subTest(findings=findings, repairable=repairable):
+                payload = contracts.repair_xattrs_payload({"finding_count": findings, "repairable_count": repairable})
+                self.assertEqual(payload["summary"], text)
+                self.assertEqual(payload["summary_args"], [findings, repairable])
+
+    def test_some_banks_match_agrees_with_the_matched_count(self) -> None:
+        def some_match(matched: list[bool]) -> str:
+            matches = [{"bank": f"bank{i}", "match": {"matched": m, "template_version": None}} for i, m in enumerate(matched)]
+            return summary_payloads._flash_plan(
+                "check_apple", apple_match=matches[0]["match"], apple_matches=matches)["summary"]
+
+        self.assertEqual(some_match([True, False]), "1 of 2 candidate firmware banks matches Apple stock firmware.")
+        self.assertEqual(some_match([True, True, False]), "2 of 3 candidate firmware banks match Apple stock firmware.")
 
     def test_unknown_flash_modes_keep_english_without_a_key(self) -> None:
         from timecapsulesmb.app import contracts

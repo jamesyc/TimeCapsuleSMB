@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.summaries import Summary
+from timecapsulesmb.core.summaries import Summary, english_count
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
 from timecapsulesmb.services.reachability import ReachabilityResult
@@ -59,7 +59,7 @@ def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
             "resolved": len(resolved),
             "devices": len(devices),
         },
-        **Summary("discovered_devices", f"Discovered {len(devices)} device(s).", (len(devices),)).fields(),
+        **Summary("discovered_devices", f"Discovered {english_count(len(devices), 'device', 'devices')}.", (len(devices),)).fields(),
     })
 
 
@@ -295,7 +295,7 @@ def fsck_volume_list_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema({
         **raw,
         "counts": {"targets": target_count},
-        **Summary("hfs_volumes_found", f"Found {target_count} mounted HFS volume(s).", (target_count,)).fields(),
+        **Summary("hfs_volumes_found", f"Found {english_count(target_count, 'mounted HFS volume', 'mounted HFS volumes')}.", (target_count,)).fields(),
     })
 
 
@@ -346,7 +346,7 @@ def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
     stats = raw.get("stats")
     summary = Summary(
         "repair_xattrs_found",
-        f"Found {finding_count} metadata issue(s), {repairable_count} repairable.",
+        f"Found {english_count(finding_count, 'metadata issue', 'metadata issues')}, {repairable_count} repairable.",
         (finding_count, repairable_count),
     )
     payload = {
@@ -447,7 +447,8 @@ def _apple_firmware_summary(
                                f"No candidate firmware banks match Apple stock firmware{suffix}.", with_version)
             return Summary(
                 f"flash.apple_some_match{variant}",
-                f"{matched_count} of {len(matches)} candidate firmware banks match Apple stock firmware{suffix}.",
+                f"{matched_count} of {len(matches)} candidate firmware banks {'matches' if matched_count == 1 else 'match'} "
+                f"Apple stock firmware{suffix}.",
                 (matched_count, len(matches), *with_version),
             )
         if match is not None and match.get("matched") is True:

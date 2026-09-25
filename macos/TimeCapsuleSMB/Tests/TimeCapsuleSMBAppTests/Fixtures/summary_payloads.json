@@ -58,7 +58,7 @@
           }
         ],
         "schema_version": 1,
-        "summary": "Discovered 2 device(s).",
+        "summary": "Discovered 2 devices.",
         "summary_args": [
           2
         ],
@@ -655,7 +655,7 @@
           "targets": 1
         },
         "schema_version": 1,
-        "summary": "Found 1 mounted HFS volume(s).",
+        "summary": "Found 1 mounted HFS volume.",
         "summary_args": [
           1
         ],
@@ -760,13 +760,13 @@
         "returncode": 0,
         "root": "/Volumes/Data",
         "schema_version": 1,
-        "summary": "Found 3 metadata issue(s), 2 repairable.",
+        "summary": "Found 3 metadata issues, 2 repairable.",
         "summary_args": [
           3,
           2
         ],
         "summary_key": "repair_xattrs_found",
-        "summary_text": "Found 3 metadata issue(s), 2 repairable."
+        "summary_text": "Found 3 metadata issues, 2 repairable."
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -1331,7 +1331,7 @@
         },
         "mode": "check_apple",
         "schema_version": 1,
-        "summary": "1 of 2 candidate firmware banks match Apple stock firmware.",
+        "summary": "1 of 2 candidate firmware banks matches Apple stock firmware.",
         "summary_args": [
           1,
           2
@@ -1401,7 +1401,7 @@
         },
         "mode": "check_apple",
         "schema_version": 1,
-        "summary": "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.",
+        "summary": "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1.",
         "summary_args": [
           1,
           2,

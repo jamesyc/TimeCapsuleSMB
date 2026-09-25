@@ -1320,8 +1320,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(events[0]["type"], "stage")
         self.assertEqual(events[-1]["type"], "result")
         self.assertEqual(events[-1]["payload"]["finding_count"], 1)
-        self.assertEqual(events[-1]["payload"]["summary"], "Found 1 metadata issue(s), 1 repairable.")
-        self.assertEqual(events[-1]["payload"]["summary_text"], "Found 1 metadata issue(s), 1 repairable.")
+        self.assertEqual(events[-1]["payload"]["summary"], "Found 1 metadata issue, 1 repairable.")
+        self.assertEqual(events[-1]["payload"]["summary_text"], "Found 1 metadata issue, 1 repairable.")
         self.assertEqual(events[-1]["payload"]["stats"]["scanned"], 1)
         self.assertEqual(events[-1]["payload"]["repairable_count"], 1)
 

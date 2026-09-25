@@ -425,8 +425,8 @@ class AppApiTests(unittest.TestCase):
             "repairable_count": 1,
             "stats": {"scanned": 3},
         })
-        self.assertEqual(repair["summary"], "Found 2 metadata issue(s), 1 repairable.")
-        self.assertEqual(repair["summary_text"], "Found 2 metadata issue(s), 1 repairable.")
+        self.assertEqual(repair["summary"], "Found 2 metadata issues, 1 repairable.")
+        self.assertEqual(repair["summary_text"], "Found 2 metadata issues, 1 repairable.")
         self.assertEqual(repair["stats"], {"scanned": 3})
 
     def test_request_id_propagates_to_every_event(self) -> None:
@@ -1606,7 +1606,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["devices"][0]["selected_record"]["fullname"], "TC._airport._tcp.local.")
         self.assertEqual(result["payload"]["schema_version"], 1)
         self.assertEqual(result["payload"]["counts"], {"instances": 1, "resolved": 1, "devices": 1})
-        self.assertEqual(result["payload"]["summary"], "Discovered 1 device(s).")
+        self.assertEqual(result["payload"]["summary"], "Discovered 1 device.")
         self.assertEqual(self._telemetry_client.emit.call_count, 2)
         started = self._telemetry_client.emit.call_args_list[0].kwargs
         finished = self._telemetry_client.emit.call_args_list[1].kwargs
@@ -4715,8 +4715,8 @@ MaSt = (
         self.assertFalse(request.approve_repairs)
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertEqual(payload["finding_count"], 1)
-        self.assertEqual(payload["summary"], "Found 1 metadata issue(s), 1 repairable.")
-        self.assertEqual(payload["summary_text"], "Found 1 metadata issue(s), 1 repairable.")
+        self.assertEqual(payload["summary"], "Found 1 metadata issue, 1 repairable.")
+        self.assertEqual(payload["summary_text"], "Found 1 metadata issue, 1 repairable.")
         self.assertEqual(payload["stats"]["scanned"], 1)
         self.assertNotIsInstance(payload["summary"], dict)
 
