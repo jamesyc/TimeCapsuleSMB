@@ -968,6 +968,23 @@ func testFsckResultPayload(returncode: Int) -> JSONValue {
     ])
 }
 
+/// The shape of `fsck_result_payload(error=...)`: a failed repair keeps the
+/// device fields, and its summary is the failure text.
+func testFsckFailedResultPayload(returncode: Int) -> JSONValue {
+    let failure = "fsck_hfs exited with status \(returncode); the disk may still need repair."
+    return .object([
+        "schema_version": .number(1),
+        "device": .string("/dev/dk2"),
+        "mountpoint": .string("/Volumes/dk2"),
+        "returncode": .number(Double(returncode)),
+        "reboot_requested": .bool(true),
+        "waited": .bool(true),
+        "verified": .bool(true),
+        "error": .string(failure),
+        "summary": .string(failure)
+    ])
+}
+
 func testRepairXattrsPayload(findings: Int, repairable: Int) -> JSONValue {
     .object([
         "schema_version": .number(1),

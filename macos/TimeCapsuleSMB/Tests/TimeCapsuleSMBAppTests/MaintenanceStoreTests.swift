@@ -401,7 +401,7 @@ final class MaintenanceStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: false, payload: testFsckResultPayload(returncode: 1))
+                BackendEvent(type: "result", operation: "fsck", ok: false, payload: testFsckFailedResultPayload(returncode: 8))
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
@@ -421,6 +421,9 @@ final class MaintenanceStoreTests: XCTestCase {
         store.runFsck(password: "")
         try await waitUntilStoreState { store.fsckState == .failed }
         XCTAssertEqual(store.error?.code, "operation_failed")
+        // The failed repair keeps its device fields; it must not read as completed.
+        XCTAssertEqual(store.error?.message, "fsck_hfs exited with status 8; the disk may still need repair.")
+        XCTAssertNil(store.fsckResult)
     }
 
     func testFsckFallbackVolumeParamTargetChangeBackendErrorAndMalformedPayloads() async throws {

@@ -102,6 +102,37 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.localizedSummary, "诊断检查通过。")
     }
 
+    func testFailedResultIsNotSummarizedFromSuccessShapedFields() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let failed = BackendEvent(type: "result", operation: "fsck", ok: false, payload: testFsckFailedResultPayload(returncode: 8))
+        let succeeded = BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckResultPayload(returncode: 0))
+        let failure = "fsck_hfs exited with status 8; the disk may still need repair."
+
+        for language in [AppLanguage.english, .simplifiedChinese] {
+            L10n.apply(language: language)
+            XCTAssertEqual(failed.localizedPayloadSummaryText, failure)
+            XCTAssertEqual(failed.localizedSummary, failure)
+            XCTAssertEqual(BackendErrorViewModel(event: failed).message, failure)
+        }
+        L10n.apply(language: .english)
+        XCTAssertEqual(succeeded.localizedPayloadSummaryText, "Disk repair completed with fsck.")
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertNotEqual(succeeded.localizedPayloadSummaryText, "Disk repair completed with fsck.")
+    }
+
+    func testFailedResultStillTranslatesItsOwnKnownSummary() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let event = BackendEvent(type: "result", operation: "doctor", ok: false, payload: testDoctorPayload(fatal: true, checks: [
+            testDoctorCheck(status: "FAIL", message: "smbd is not running", domain: "Runtime")
+        ]))
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(event.localizedPayloadSummaryText, L10n.string("backend.summary.doctor_found_fatal"))
+        XCTAssertNotEqual(event.localizedPayloadSummaryText, "Doctor found one or more fatal problems.")
+    }
+
     func testBackendEventLocalizesKnownErrorSummaries() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
