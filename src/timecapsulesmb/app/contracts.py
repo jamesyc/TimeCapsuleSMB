@@ -136,7 +136,7 @@ def reachability_payload(result: ReachabilityResult) -> dict[str, object]:
         "smb_host": result.smb_host,
         "checks": checks,
         "counts": counts,
-        **Summary(result.summary_key, result.summary).fields(),
+        **result.summary.fields(),
     })
 
 
@@ -151,7 +151,7 @@ def set_ssh_payload(result: SetSshStatusResult | SetSshResult) -> dict[str, obje
     if "ssh_port_error" not in payload:
         payload["ssh_port_error"] = None
     payload["ssh_disabled_likely"] = bool(payload.get("acp_port_reachable")) and not bool(payload.get("ssh_port_reachable"))
-    payload.update(Summary(result.summary_key, result.summary).fields())
+    payload.update(result.summary.fields())
     return _with_schema(payload)
 
 
@@ -198,14 +198,11 @@ def deploy_result_payload(
     verified: bool | None = None,
     netbsd4: bool = False,
     message: str | None = None,
+    summary: Summary | None = None,
     payload_family: str | None = None,
 ) -> dict[str, object]:
-    # The only message a deploy result carries is the activation outcome, and
-    # only NetBSD 4's needs a follow-up; every other completion is generic.
-    if netbsd4 and message is not None:
-        summary = Summary("activation_completed_followup", message)
-    else:
-        summary = Summary("deploy_completed", message or "Deployment completed.")
+    # The service decides the summary; `message` is only the raw text it logged.
+    summary = summary or Summary("deploy_completed", "Deployment completed.")
     payload: dict[str, object] = {
         "payload_dir": payload_dir,
         "netbsd4": netbsd4,
@@ -239,20 +236,17 @@ def activation_plan_payload(raw: object) -> dict[str, object]:
     })
 
 
-def activation_result_payload(*, already_active: bool, message: str | None = None) -> dict[str, object]:
+def activation_result_payload(*, already_active: bool, summary: Summary | None = None) -> dict[str, object]:
     if already_active:
         summary = Summary("activation_already_active", "NetBSD4 payload was already active.")
-    elif message is not None:
-        # The only activation message is NetBSD 4's reboot follow-up.
-        summary = Summary("activation_completed_followup", message)
-    else:
+    elif summary is None:
         summary = Summary("activation_completed", "NetBSD4 activation completed.")
     payload: dict[str, object] = {
         "already_active": already_active,
         **summary.fields(),
     }
-    if message is not None:
-        payload["message"] = message
+    if summary.key == "activation_completed_followup":
+        payload["message"] = summary.text
     return _with_schema(payload)
 
 
@@ -316,16 +310,19 @@ def fsck_result_payload(
     verified: bool | None = None,
     error: str | None = None,
 ) -> dict[str, object]:
-    if error is not None:
-        if not isinstance(returncode, int):
-            raise ValueError("a failed fsck result needs fsck_hfs's exit status")
-        summary = Summary("fsck_failed", error, (returncode,))
+    summary_fields: dict[str, object]
+    if error is not None and type(returncode) is int:
+        summary_fields = Summary("fsck_failed", error, (returncode,)).fields()
+    elif error is not None:
+        # Without fsck_hfs's exit status there is no translatable sentence;
+        # the error text itself is the summary.
+        summary_fields = {"summary": error}
     else:
-        summary = Summary("fsck_completed", "Disk repair completed with fsck.")
+        summary_fields = Summary("fsck_completed", "Disk repair completed with fsck.").fields()
     payload: dict[str, object] = {
         "device": device,
         "mountpoint": mountpoint,
-        **summary.fields(),
+        **summary_fields,
     }
     if error is not None:
         payload["error"] = error
@@ -389,10 +386,13 @@ def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
 def flash_backup_payload(raw: Mapping[str, object]) -> dict[str, object]:
     banks = raw.get("banks")
     bank_count = len(banks) if isinstance(banks, list) else 0
+    backup_dir = raw.get("backup_dir")
+    if not isinstance(backup_dir, str) or not backup_dir:
+        raise ValueError("a flash backup result needs its backup directory")
     return _with_schema({
         **raw,
         "counts": {"banks": bank_count},
-        **Summary("flash_backup_saved", f"Flash backup saved to {raw.get('backup_dir')}.", (str(raw.get("backup_dir")),)).fields(),
+        **Summary("flash_backup_saved", f"Flash backup saved to {backup_dir}.", (backup_dir,)).fields(),
     })
 
 

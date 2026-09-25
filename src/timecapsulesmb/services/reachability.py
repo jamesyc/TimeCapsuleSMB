@@ -9,6 +9,7 @@ from typing import Callable
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host, parse_endpoint, resolve_host_ips
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.transport.errors import SshAuthenticationError, TransportError
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
@@ -29,11 +30,10 @@ class ReachabilityCheck:
 @dataclass(frozen=True)
 class ReachabilityResult:
     status: str
-    summary: str
+    summary: Summary
     ssh_host: str | None
     smb_host: str | None
     checks: list[ReachabilityCheck] = field(default_factory=list)
-    summary_key: str = "reachability.unreachable"  # see core/summaries.py
 
 
 def run_reachability(
@@ -59,8 +59,7 @@ def run_reachability(
         )
         return ReachabilityResult(
             status="skipped",
-            summary="No saved host candidates were available.",
-            summary_key="reachability.no_candidates",
+            summary=Summary("reachability.no_candidates", "No saved host candidates were available."),
             ssh_host=ssh_target or None,
             smb_host=None,
             checks=[check],
@@ -327,15 +326,15 @@ def result_from_checks(
     smb_signal = by_id.get("smb_port") and by_id["smb_port"].status == "PASS"
 
     if ssh_auth_failed:
-        status, summary_key, summary = "partial", "reachability.auth_failed", "SSH authentication failed."
+        status, summary = "partial", Summary("reachability.auth_failed", "SSH authentication failed.")
     elif ssh_signal and smb_signal:
-        status, summary_key, summary = "reachable", "reachability.all_reachable", "SSH reachable; SMB port reachable."
+        status, summary = "reachable", Summary("reachability.all_reachable", "SSH reachable; SMB port reachable.")
     elif ssh_signal and not smb_signal:
-        status, summary_key, summary = "partial", "reachability.ssh_only", "SSH reachable, SMB port closed."
+        status, summary = "partial", Summary("reachability.ssh_only", "SSH reachable, SMB port closed.")
     elif smb_signal and not ssh_signal:
-        status, summary_key, summary = "partial", "reachability.smb_only", "SMB port reachable, SSH closed."
+        status, summary = "partial", Summary("reachability.smb_only", "SMB port reachable, SSH closed.")
     else:
-        status, summary_key, summary = "unreachable", "reachability.unreachable", "Could not reach SSH or SMB."
+        status, summary = "unreachable", Summary("reachability.unreachable", "Could not reach SSH or SMB.")
 
     smb_host = None
     smb_check = by_id.get("smb_port")
@@ -350,7 +349,6 @@ def result_from_checks(
         ssh_host=ssh_target or None,
         smb_host=smb_host,
         checks=list(checks),
-        summary_key=summary_key,
     )
 
 

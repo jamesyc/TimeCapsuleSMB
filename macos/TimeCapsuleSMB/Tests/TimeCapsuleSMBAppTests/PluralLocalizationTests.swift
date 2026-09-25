@@ -4,7 +4,9 @@ import XCTest
 /// Plural sentences come from Localizable.stringsdict. Foundation chooses the
 /// form from the locale the app formats with, so these tests render through
 /// the app's own paths (BackendSummary and L10n.format) in every language.
-/// tests/test_localization_plurals.py checks the files' structure.
+/// tests/test_localization_plurals.py checks the files' structure. The
+/// expected category for each count is CLDR's, from babel, so this checks
+/// that Foundation agrees with CLDR rather than with a hand-written rule.
 final class PluralLocalizationTests: XCTestCase {
     private var originalLanguage: AppLanguage = .system
 
@@ -20,34 +22,19 @@ final class PluralLocalizationTests: XCTestCase {
 
     private static let languages = AppLanguage.allCases.filter { $0 != .system }
 
-    /// Counts at every boundary between CLDR categories in the ten languages.
-    private static let edgeCounts = [0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 14, 19, 20, 21, 22, 25, 100, 101, 111, 112, 1_000, 1_000_000, 2_000_000]
+    /// CLDR's plural category for each app language at each boundary count,
+    /// generated from babel by tests/fixtures/plural_categories.py.
+    private struct PluralCategories: Decodable {
+        let counts: [Int]
+        let categories: [String: [String: String]]
+    }
 
-    /// The CLDR category of a non-negative integer count; the same rule as
-    /// `plural_rule` in tests/test_localization_plurals.py.
-    private static func category(_ language: AppLanguage, _ count: Int) -> String {
-        let last = count % 10
-        let lastTwo = count % 100
-        switch language {
-        case .english, .german, .dutch:
-            return count == 1 ? "one" : "other"
-        case .spanish, .italian:
-            if count == 1 { return "one" }
-            return count != 0 && count % 1_000_000 == 0 ? "many" : "other"
-        case .french, .portuguese:
-            if count == 0 || count == 1 { return "one" }
-            return count % 1_000_000 == 0 ? "many" : "other"
-        case .russian:
-            if last == 1 && lastTwo != 11 { return "one" }
-            if (2...4).contains(last) && !(12...14).contains(lastTwo) { return "few" }
-            return "many"
-        case .lithuanian:
-            if last == 1 && !(11...19).contains(lastTwo) { return "one" }
-            if (2...9).contains(last) && !(11...19).contains(lastTwo) { return "few" }
-            return "other"
-        case .simplifiedChinese, .system:
-            return "other"
-        }
+    private func loadCLDR() throws -> PluralCategories {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "plural_categories", withExtension: "json", subdirectory: "Fixtures"),
+            "run python -m tests.fixtures.plural_categories --write"
+        )
+        return try JSONDecoder().decode(PluralCategories.self, from: Data(contentsOf: url))
     }
 
     private func pluralEntries(_ language: AppLanguage) throws -> [String: [String: Any]] {
@@ -184,15 +171,17 @@ final class PluralLocalizationTests: XCTestCase {
     // MARK: Every key, language and boundary count
 
     func testEveryPluralKeyRendersTheExpectedFormAtEveryBoundaryCount() throws {
+        let cldr = try loadCLDR()
         let english = try pluralEntries(.english)
         XCTAssertEqual(english.count, 9)
+        XCTAssertEqual(Set(cldr.categories.keys), Set(Self.languages.map(\.rawValue)))
         for language in Self.languages {
             let entries = try pluralEntries(language)
             XCTAssertEqual(Set(entries.keys), Set(english.keys), language.rawValue)
             for (key, entry) in entries {
                 let format = try XCTUnwrap(entry["NSStringLocalizedFormatKey"] as? String)
                 let placeholders = try XCTUnwrap(BackendSummary.placeholders(in: format), "\(language.rawValue) \(key)")
-                for count in Self.edgeCounts {
+                for count in cldr.counts {
                     // Every count argument gets the same value, so each plural
                     // variable must show the form for that count.
                     let arguments = placeholders.map { $0 == .object ? BackendSummaryArgument.string("7.8.1") : .int(count) }
@@ -201,7 +190,7 @@ final class PluralLocalizationTests: XCTestCase {
                     XCTAssertFalse(rendered.contains("%"), "\(context): \(rendered)")
                     XCTAssertFalse(rendered.contains("#@"), "\(context): \(rendered)")
                     // Foundation uses a zero form, where one exists, for exactly 0.
-                    let expected = Self.category(language, count)
+                    let expected = try XCTUnwrap(cldr.categories[language.rawValue]?[String(count)], context)
                     for (name, value) in entry {
                         guard let forms = value as? [String: String] else { continue }
                         let chosen = count == 0 && forms["zero"] != nil ? "zero" : expected

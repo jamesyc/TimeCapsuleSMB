@@ -4,7 +4,8 @@ Foundation picks a plural form from the locale the app formats with
 (verified on macOS 2026-09-25; see macos/LOCALIZATION_GLOSSARY.md). A form
 Foundation can pick but the catalog lacks silently falls back to "other", and
 a malformed entry can crash String(format:), so the structure is checked here
-and the rendered sentences in the Swift PluralLocalizationTests.
+and the rendered sentences in the Swift PluralLocalizationTests. Plural
+categories come from CLDR through babel; none is written by hand.
 """
 from __future__ import annotations
 
@@ -12,57 +13,33 @@ import plistlib
 import re
 import unittest
 
+from tests.fixtures import plural_categories
+from tests.fixtures.plural_categories import all_categories, integer_categories
 from tests.test_summaries import LANGUAGES, RESOURCES, STRING_LINE, catalog, placeholder_types
 
 
-# The forms each language's plural entries must define: the CLDR categories
-# its integer counts use, plus the "other" fallback Foundation requires.
-# Lithuanian "many" only applies to fractions, so it is allowed but not
-# required. Portuguese also defines "zero": CLDR puts 0 in "one", but Brazilian
-# usage says "0 dispositivos", and Foundation uses a zero form for exactly 0.
-REQUIRED_FORMS = {
-    "en": {"one", "other"},
-    "de": {"one", "other"},
-    "nl": {"one", "other"},
-    "es": {"one", "many", "other"},
-    "it": {"one", "many", "other"},
-    "fr": {"one", "many", "other"},
-    "pt": {"zero", "one", "many", "other"},
-    "ru": {"one", "few", "many", "other"},
-    "lt": {"one", "few", "other"},
-    "zh-Hans": {"other"},
-}
-ALLOWED_FORMS = {**REQUIRED_FORMS, "lt": {"one", "few", "many", "other"}}
+# Project choices on top of CLDR. CLDR puts Portuguese 0 in "one", but
+# Brazilian usage says "0 dispositivos", and Foundation uses a zero form for
+# exactly 0; see the glossary's Plurals section.
+ZERO_FORM_LANGUAGES = {"pt"}
 VARIABLE = re.compile(r"%(?:\d+\$)?#@(\w+)@")
 SPECIFIER = re.compile(r"%(?:\d+\$)?(?:#@\w+@|l{0,2}[diu]|@)")
+# A plural squeezed into parentheses right after a word: "device(s)",
+# "problème(s)", "failo(-ų)", "устройств(а)". Not "(ssh)" after a space.
+PARENTHESIZED_PLURAL = re.compile(r"[^\W\d_]\(-?[^\W\d_]{1,3}\)")
 
 
-def plural_rule(language: str, count: int) -> str:
-    """The CLDR category of a non-negative integer count."""
-    last, last_two = count % 10, count % 100
-    if language in ("en", "de", "nl"):
-        return "one" if count == 1 else "other"
-    if language in ("es", "it"):
-        if count == 1:
-            return "one"
-        return "many" if count != 0 and count % 1_000_000 == 0 else "other"
-    if language in ("fr", "pt"):
-        if count in (0, 1):
-            return "one"
-        return "many" if count % 1_000_000 == 0 else "other"
-    if language == "ru":
-        if last == 1 and last_two != 11:
-            return "one"
-        if 2 <= last <= 4 and not 12 <= last_two <= 14:
-            return "few"
-        return "many"
-    if language == "lt":
-        if last == 1 and not 11 <= last_two <= 19:
-            return "one"
-        if 2 <= last <= 9 and not 11 <= last_two <= 19:
-            return "few"
-        return "other"
-    return "other"
+def required_forms(language: str) -> set[str]:
+    """Every form a plural variable must define: each category an integer
+    count can take, the "other" fallback Foundation requires, and the
+    project's zero form where it applies."""
+    zero = {"zero"} if language in ZERO_FORM_LANGUAGES else set()
+    return integer_categories(language) | {"other"} | zero
+
+
+def allowed_forms(language: str) -> set[str]:
+    """Required forms plus categories only fractions use (Lithuanian many)."""
+    return required_forms(language) | all_categories(language)
 
 
 def stringsdict(language: str) -> dict[str, dict[str, object]]:
@@ -79,37 +56,20 @@ def variables(entry: dict[str, object]) -> dict[str, dict[str, str]]:
     return {name: value for name, value in entry.items() if isinstance(value, dict)}  # type: ignore[misc]
 
 
-class PluralRuleTests(unittest.TestCase):
-    """The expected categories, which the Swift tests check Foundation against."""
+class PluralCategoryFixtureTests(unittest.TestCase):
+    def test_fixture_matches_babel(self) -> None:
+        self.assertEqual(plural_categories.FIXTURE_PATH.read_text(), plural_categories.render())
 
-    EDGE_CASES = {
-        "en": {0: "other", 1: "one", 2: "other", 11: "other", 21: "other", 1_000_000: "other"},
-        "de": {0: "other", 1: "one", 2: "other", 101: "other"},
-        "es": {0: "other", 1: "one", 2: "other", 1_000: "other", 1_000_000: "many", 2_000_000: "many"},
-        "it": {0: "other", 1: "one", 2: "other", 1_000_000: "many"},
-        "fr": {0: "one", 1: "one", 2: "other", 1_000: "other", 1_000_000: "many", 1_000_001: "other"},
-        "pt": {0: "one", 1: "one", 2: "other", 1_000_000: "many"},
-        "ru": {0: "many", 1: "one", 2: "few", 4: "few", 5: "many", 11: "many", 12: "many", 14: "many",
-               21: "one", 22: "few", 25: "many", 101: "one", 111: "many", 112: "many", 1_000_000: "many"},
-        "lt": {0: "other", 1: "one", 2: "few", 9: "few", 10: "other", 11: "other", 19: "other", 20: "other",
-               21: "one", 22: "few", 101: "one", 111: "other", 1_000_000: "other"},
-        "zh-Hans": {0: "other", 1: "other", 2: "other"},
-    }
+    def test_fixture_covers_every_app_language(self) -> None:
+        self.assertEqual(set(plural_categories.LOCALES), set(LANGUAGES))
 
-    def test_edge_counts_fall_in_the_expected_category(self) -> None:
-        for language, cases in self.EDGE_CASES.items():
-            for count, category in cases.items():
-                with self.subTest(language=language, count=count):
-                    self.assertEqual(plural_rule(language, count), category)
-
-    def test_required_forms_are_the_integer_categories_plus_other(self) -> None:
-        # Foundation needs "other" as the fallback even where no integer uses it (Russian).
-        counts = [*range(300), 1_000_000, 2_000_000, 3_000_000]
+    def test_boundary_counts_reach_every_integer_category(self) -> None:
+        # The Swift sweep renders only the boundary counts, so they must hit
+        # every form a translator writes.
         for language in LANGUAGES:
             with self.subTest(language=language):
-                categories = {plural_rule(language, count) for count in counts}
-                extra = {"zero"} if language == "pt" else set()
-                self.assertEqual(categories | {"other"} | extra, REQUIRED_FORMS[language])
+                reached = {plural_categories.plural_category(language, n) for n in plural_categories.BOUNDARY_COUNTS}
+                self.assertEqual(reached, integer_categories(language))
 
 
 class PluralCatalogTests(unittest.TestCase):
@@ -149,8 +109,8 @@ class PluralCatalogTests(unittest.TestCase):
                         # The app passes Swift Int, which only %lld reads correctly.
                         self.assertEqual(forms.get("NSStringFormatValueTypeKey"), "lld")
                         categories = set(forms) - {"NSStringFormatSpecTypeKey", "NSStringFormatValueTypeKey"}
-                        self.assertLessEqual(REQUIRED_FORMS[language], categories)
-                        self.assertLessEqual(categories, ALLOWED_FORMS[language])
+                        self.assertLessEqual(required_forms(language), categories)
+                        self.assertLessEqual(categories, allowed_forms(language))
 
     def test_portuguese_zero_uses_the_plural_wording(self) -> None:
         for key, entry in stringsdict("pt").items():
@@ -171,17 +131,24 @@ class PluralCatalogTests(unittest.TestCase):
                         # verb that only agrees with a count shown elsewhere).
                         self.assertEqual(len({"%lld" in text for text in texts.values()}), 1, texts)
 
+    def test_parenthesized_plural_pattern(self) -> None:
+        for text in ("device(s)", "problème(s)", "failo(-ų)", "устройств(а)", "tomų(-ų)"):
+            with self.subTest(text=text):
+                self.assertIsNotNone(PARENTHESIZED_PLURAL.search(text))
+        for text in ("Connect over SSH (ssh)", "version (7.8.1)", "(s)"):
+            with self.subTest(text=text):
+                self.assertIsNone(PARENTHESIZED_PLURAL.search(text))
+
     def test_no_translation_keeps_a_parenthesized_plural(self) -> None:
-        pattern = re.compile(r"\((?:s|es|e|-?[a-zą-ž]{1,3})\)")
         for language in LANGUAGES:
             for key, text in catalog(language).items():
                 with self.subTest(language=language, key=key):
-                    self.assertIsNone(pattern.search(text), text)
+                    self.assertIsNone(PARENTHESIZED_PLURAL.search(text), text)
             for key, entry in stringsdict(language).items():
                 for forms in variables(entry).values():
                     for text in forms.values():
                         with self.subTest(language=language, key=key):
-                            self.assertIsNone(pattern.search(text), text)
+                            self.assertIsNone(PARENTHESIZED_PLURAL.search(text), text)
 
 
 if __name__ == "__main__":

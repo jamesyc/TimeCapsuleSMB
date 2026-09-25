@@ -23,7 +23,7 @@ from timecapsulesmb.app.ops.common import (
 )
 from timecapsulesmb.app.ops.deploy import verify_runtime
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
-from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
+from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload, run_remote_actions
 from timecapsulesmb.deploy.planner import (
@@ -130,7 +130,7 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
     verify_runtime(context, connection, stage="verify_runtime_activation", timeout_seconds=200)
     return OperationResult(True, activation_result_payload(
         already_active=False,
-        message=f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}",
+        summary=netbsd4_activation_summary(),
     ))
 
 

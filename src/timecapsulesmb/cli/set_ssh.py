@@ -137,7 +137,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
             _update_fields_from_result(command_context, result)
             if args.no_wait:
-                print(result.summary)
+                print(result.summary.text)
             else:
                 print("SSH is configured. You can connect as 'root' using the AirPort admin password.")
             command_context.succeed()
@@ -199,7 +199,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         _update_fields_from_result(command_context, result)
         if args.no_wait:
-            print(result.summary)
+            print(result.summary.text)
         command_context.succeed()
         return 0
 

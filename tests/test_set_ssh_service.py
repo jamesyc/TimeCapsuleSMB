@@ -11,6 +11,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.set_ssh import (
@@ -38,8 +39,7 @@ class SetSshServiceTests(unittest.TestCase):
         self.assertTrue(result.acp_port_reachable)
         self.assertFalse(result.ssh_port_reachable)
         self.assertTrue(result.ssh_disabled_likely)
-        self.assertEqual(result.summary, "AirPort ACP is reachable, but SSH is closed.")
-        self.assertEqual(result.summary_key, "ssh.acp_reachable_ssh_closed")
+        self.assertEqual(result.summary, Summary("ssh.acp_reachable_ssh_closed", "AirPort ACP is reachable, but SSH is closed."))
 
     def test_enable_noops_when_ssh_is_already_open(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -58,7 +58,7 @@ class SetSshServiceTests(unittest.TestCase):
         self.assertEqual(result.action, "enable_noop")
         self.assertTrue(result.ssh_final_reachable)
         self.assertFalse(result.reboot_requested)
-        self.assertEqual(result.summary_key, "ssh.already_enabled")
+        self.assertEqual(result.summary.key, "ssh.already_enabled")
 
     def test_enable_requests_acp_reboot_and_waits_for_ssh(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -91,7 +91,7 @@ class SetSshServiceTests(unittest.TestCase):
         self.assertEqual(result.action, "enable_ssh")
         self.assertTrue(result.ssh_final_reachable)
         self.assertTrue(result.reboot_requested)
-        self.assertEqual(result.summary_key, "ssh.configured")
+        self.assertEqual(result.summary.key, "ssh.configured")
 
     def test_enable_no_wait_skips_ssh_verification(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -111,8 +111,7 @@ class SetSshServiceTests(unittest.TestCase):
         wait.assert_not_called()
         self.assertTrue(result.ssh_verification_skipped)
         self.assertFalse(result.ssh_final_reachable)
-        self.assertEqual(result.summary, "SSH enable requested; not waiting for SSH to open.")
-        self.assertEqual(result.summary_key, "ssh.enable_requested")
+        self.assertEqual(result.summary, Summary("ssh.enable_requested", "SSH enable requested; not waiting for SSH to open."))
 
     def test_enable_raises_verification_error_when_ssh_does_not_open(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")

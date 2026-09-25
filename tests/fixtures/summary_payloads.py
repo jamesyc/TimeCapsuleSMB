@@ -13,15 +13,22 @@ import json
 import sys
 from pathlib import Path
 
+from unittest import mock
+
 from timecapsulesmb.app import contracts
 from timecapsulesmb.app.events import AppEvent, EventSink
+from timecapsulesmb.app.ops.configure import SETTINGS_SYNCHRONIZED
+from timecapsulesmb.app.service import OPERATION_EXITED
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.services.maintenance import fsck_failure_message, fsck_plan_to_jsonable, FsckTarget
-from timecapsulesmb.services.reachability import ReachabilityResult
+from timecapsulesmb.services.reachability import ReachabilityCheck, ReachabilityResult, result_from_checks, run_reachability
 from timecapsulesmb.services.runtime_verification import ACTIVATION_SETTLE_MESSAGE, BOOT_SETTLE_MESSAGE
-from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
+from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult, disable_set_ssh, enable_set_ssh
 from timecapsulesmb.services.version_check import VersionCheckResult
+from timecapsulesmb.transport.ssh import SshConnection
 
 
 FIXTURE_PATH = (
@@ -29,26 +36,43 @@ FIXTURE_PATH = (
     / "macos/TimeCapsuleSMB/Tests/TimeCapsuleSMBAppTests/Fixtures/summary_payloads.json"
 )
 
-NETBSD4_FOLLOWUP = "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba."
 FSCK_TARGET = FsckTarget(device="/dev/dk2", mountpoint="/Volumes/dk2", name="Data", builtin=True)
 
 
-def _set_ssh(key: str, text: str) -> SetSshResult:
-    return SetSshResult(
-        host="10.0.0.2",
-        action="enable",
-        ssh_initially_reachable=False,
-        ssh_final_reachable=True,
-        acp_port_reachable=True,
-        reboot_requested=True,
-        waited=True,
-        summary=text,
-        summary_key=key,
-    )
+def _set_ssh_results() -> list[tuple[str, SetSshResult]]:
+    """Every set-ssh result branch, from the real enable/disable flows with the
+    device calls mocked."""
+    connection = SshConnection("root@10.0.0.2", "pw", "")
+    ssh_open = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True)
+    ssh_closed = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False)
+    wait = mock.Mock(return_value=True)
+    disable = mock.Mock()
+    with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"):
+        return [
+            ("ssh_already_enabled", enable_set_ssh(connection, no_wait=False, initial=ssh_open)),
+            ("ssh_enable_requested", enable_set_ssh(connection, no_wait=True, initial=ssh_closed)),
+            ("ssh_configured", enable_set_ssh(
+                connection, no_wait=False, initial=ssh_closed, wait_for_tcp_port_state=wait)),
+            ("ssh_already_disabled", disable_set_ssh(
+                connection, no_wait=False, initial=ssh_closed, disable_func=disable)),
+            ("ssh_disable_requested", disable_set_ssh(
+                connection, no_wait=True, initial=ssh_open, disable_func=disable)),
+            ("ssh_disabled", disable_set_ssh(
+                connection, no_wait=False, initial=ssh_open, disable_func=disable,
+                wait_for_tcp_port_state=wait, wait_for_device_up_func=wait)),
+        ]
 
 
-def _reachability(status: str, key: str, text: str) -> ReachabilityResult:
-    return ReachabilityResult(status=status, summary=text, ssh_host="root@10.0.0.2", smb_host="10.0.0.2", summary_key=key)
+def _reachability(ssh: str | None, smb: str | None, auth: str | None = None) -> ReachabilityResult:
+    """A reachability result from the real check classifier."""
+    checks = [ReachabilityCheck(id=check_id, status=status, message="checked", host="10.0.0.2")
+              for check_id, status in (("ssh_port", ssh), ("smb_port", smb), ("ssh_auth", auth)) if status]
+    return result_from_checks(ssh_target="root@10.0.0.2", smb_hosts=["10.0.0.2"], checks=checks)
+
+
+def _no_reachability_candidates() -> ReachabilityResult:
+    config = AppConfig.from_values({}, path=Path("/nonexistent/.env"), exists=False, file_values={})
+    return run_reachability(config, {})
 
 
 # The flash operation passes its backup directory through every flash payload.
@@ -85,7 +109,7 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("capabilities", result, "capabilities", True, contracts.capabilities_payload(
             helper_version="1.0", helper_version_code=1, operations=["doctor"],
             distribution_root="/tmp/dist", artifact_manifest_sha256=None)),
-        ("operation_exited", result, "doctor", True, Summary("operation_exited", "Operation exited.").fields()),
+        ("operation_exited", result, "doctor", True, OPERATION_EXITED.fields()),
         ("discover", result, "discover", True, contracts.discover_payload({"devices": [{"name": "A"}, {"name": "B"}]})),
         ("validate_install_passed", result, "validate-install", True, contracts.install_validation_payload(ok=True, checks=[])),
         ("validate_install_failed", result, "validate-install", False, contracts.install_validation_payload(ok=False, checks=[])),
@@ -101,19 +125,16 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
             config_path="/tmp/.env", host="root@10.0.0.2", configure_id="c", ssh_authenticated=True,
             device_syap="119", device_model="TimeCapsule8,119", compatibility=None)),
         ("settings_synchronized", result, "update-config-settings", True,
-         {"config_path": "/tmp/.env", **Summary("settings_synchronized", "Device profile settings synchronized.").fields()}),
-        ("reachability_all", result, "reachability", True, contracts.reachability_payload(
-            _reachability("reachable", "reachability.all_reachable", "SSH reachable; SMB port reachable."))),
-        ("reachability_ssh_only", result, "reachability", True, contracts.reachability_payload(
-            _reachability("partial", "reachability.ssh_only", "SSH reachable, SMB port closed."))),
-        ("reachability_smb_only", result, "reachability", True, contracts.reachability_payload(
-            _reachability("partial", "reachability.smb_only", "SMB port reachable, SSH closed."))),
+         {"config_path": "/tmp/.env", **SETTINGS_SYNCHRONIZED.fields()}),
+        ("reachability_all", result, "reachability", True, contracts.reachability_payload(_reachability("PASS", "PASS"))),
+        ("reachability_ssh_only", result, "reachability", True, contracts.reachability_payload(_reachability("PASS", "FAIL"))),
+        ("reachability_smb_only", result, "reachability", True, contracts.reachability_payload(_reachability("FAIL", "PASS"))),
         ("reachability_unreachable", result, "reachability", True, contracts.reachability_payload(
-            _reachability("unreachable", "reachability.unreachable", "Could not reach SSH or SMB."))),
+            _reachability("FAIL", "FAIL"))),
         ("reachability_auth_failed", result, "reachability", True, contracts.reachability_payload(
-            _reachability("partial", "reachability.auth_failed", "SSH authentication failed."))),
+            _reachability("PASS", "PASS", auth="FAIL"))),
         ("reachability_no_candidates", result, "reachability", True, contracts.reachability_payload(
-            _reachability("skipped", "reachability.no_candidates", "No saved host candidates were available."))),
+            _no_reachability_candidates())),
         ("ssh_status_reachable", result, "set-ssh", True, contracts.set_ssh_payload(SetSshStatusResult(
             host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True))),
         ("ssh_status_acp_only", result, "set-ssh", True, contracts.set_ssh_payload(SetSshStatusResult(
@@ -121,14 +142,13 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("ssh_status_unreachable", result, "set-ssh", True, contracts.set_ssh_payload(SetSshStatusResult(
             host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False))),
         ("deploy_completed", result, "deploy", True, contracts.deploy_result_payload(payload_dir="/Volumes/dk2/.samba4")),
-        ("deploy_runtime_activated", result, "deploy", True, contracts.deploy_result_payload(
-            payload_dir="/Volumes/dk2/.samba4", message="Runtime activation complete.")),
         ("deploy_netbsd4_followup", result, "deploy", True, contracts.deploy_result_payload(
-            payload_dir="/Volumes/dk2/.samba4", netbsd4=True, message=NETBSD4_FOLLOWUP)),
+            payload_dir="/Volumes/dk2/.samba4", netbsd4=True, message=netbsd4_activation_summary().text,
+            summary=netbsd4_activation_summary())),
         ("activation_already_active", result, "activate", True, contracts.activation_result_payload(already_active=True)),
         ("activation_completed", result, "activate", True, contracts.activation_result_payload(already_active=False)),
         ("activation_followup", result, "activate", True, contracts.activation_result_payload(
-            already_active=False, message=NETBSD4_FOLLOWUP)),
+            already_active=False, summary=netbsd4_activation_summary())),
         ("uninstall_completed", result, "uninstall", True, contracts.uninstall_result_payload(rebooted=True, verified=True)),
         ("uninstall_unverified", result, "uninstall", True, contracts.uninstall_result_payload(rebooted=True, verified=False)),
         ("fsck_volumes", result, "fsck", True, contracts.fsck_volume_list_payload({"targets": [{"device": "/dev/dk2", "mountpoint": "/Volumes/dk2"}]})),
@@ -189,13 +209,8 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("log_waiting_boot", "log", "deploy", True, BOOT_SETTLE_MESSAGE),
         ("log_waiting_activate", "log", "deploy", True, ACTIVATION_SETTLE_MESSAGE),
     ]
-    for key, text in (("ssh.already_enabled", "SSH is already enabled."),
-                      ("ssh.enable_requested", "SSH enable requested; not waiting for SSH to open."),
-                      ("ssh.configured", "SSH is configured."),
-                      ("ssh.already_disabled", "SSH already disabled."),
-                      ("ssh.disable_requested", "SSH disable requested; not waiting for reboot or verifying SSH stays closed."),
-                      ("ssh.disabled", "SSH disabled (remains closed after reboot).")):
-        rows.append((key.replace(".", "_"), result, "set-ssh", True, contracts.set_ssh_payload(_set_ssh(key, text))))
+    for name, ssh_result in _set_ssh_results():
+        rows.append((name, result, "set-ssh", True, contracts.set_ssh_payload(ssh_result)))
     return rows
 
 

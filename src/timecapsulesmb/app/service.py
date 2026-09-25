@@ -26,6 +26,10 @@ from timecapsulesmb.telemetry.operation import (
 from timecapsulesmb.transport.errors import is_ssh_timeout_error, TransportError
 
 
+# The result of an operation that exits cleanly without emitting its own.
+OPERATION_EXITED = Summary("operation_exited", "Operation exited.")
+
+
 def run_api_request(request: dict[str, object], sink: EventSink) -> int:
     try:
         api_request = parse_api_request(request)
@@ -146,7 +150,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         message = system_exit_message(exc)
         result = "success" if message in {"0", "None", ""} else "failure"
         if result == "success":
-            context.emit_result(ok=True, payload=Summary("operation_exited", "Operation exited.").fields())
+            context.emit_result(ok=True, payload=OPERATION_EXITED.fields())
             _finish_api_telemetry(
                 telemetry_session,
                 context,

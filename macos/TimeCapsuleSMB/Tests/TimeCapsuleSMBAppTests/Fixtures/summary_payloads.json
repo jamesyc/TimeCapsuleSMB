@@ -307,8 +307,25 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
-        "checks": [],
-        "counts": {},
+        "checks": [
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "ssh_port",
+            "message": "checked",
+            "status": "PASS"
+          },
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "smb_port",
+            "message": "checked",
+            "status": "PASS"
+          }
+        ],
+        "counts": {
+          "PASS": 2
+        },
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -328,8 +345,26 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
-        "checks": [],
-        "counts": {},
+        "checks": [
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "ssh_port",
+            "message": "checked",
+            "status": "PASS"
+          },
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "smb_port",
+            "message": "checked",
+            "status": "FAIL"
+          }
+        ],
+        "counts": {
+          "FAIL": 1,
+          "PASS": 1
+        },
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -349,8 +384,26 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
-        "checks": [],
-        "counts": {},
+        "checks": [
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "ssh_port",
+            "message": "checked",
+            "status": "FAIL"
+          },
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "smb_port",
+            "message": "checked",
+            "status": "PASS"
+          }
+        ],
+        "counts": {
+          "FAIL": 1,
+          "PASS": 1
+        },
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -370,8 +423,25 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
-        "checks": [],
-        "counts": {},
+        "checks": [
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "ssh_port",
+            "message": "checked",
+            "status": "FAIL"
+          },
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "smb_port",
+            "message": "checked",
+            "status": "FAIL"
+          }
+        ],
+        "counts": {
+          "FAIL": 2
+        },
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -391,8 +461,33 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
-        "checks": [],
-        "counts": {},
+        "checks": [
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "ssh_port",
+            "message": "checked",
+            "status": "PASS"
+          },
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "smb_port",
+            "message": "checked",
+            "status": "PASS"
+          },
+          {
+            "detail": null,
+            "host": "10.0.0.2",
+            "id": "ssh_auth",
+            "message": "checked",
+            "status": "FAIL"
+          }
+        ],
+        "counts": {
+          "FAIL": 1,
+          "PASS": 2
+        },
         "schema_version": 1,
         "smb_host": "10.0.0.2",
         "ssh_host": "root@10.0.0.2",
@@ -412,11 +507,21 @@
       "ok": true,
       "operation": "reachability",
       "payload": {
-        "checks": [],
-        "counts": {},
+        "checks": [
+          {
+            "detail": null,
+            "host": null,
+            "id": "candidates",
+            "message": "No saved host candidates were available.",
+            "status": "SKIP"
+          }
+        ],
+        "counts": {
+          "SKIP": 1
+        },
         "schema_version": 1,
-        "smb_host": "10.0.0.2",
-        "ssh_host": "root@10.0.0.2",
+        "smb_host": null,
+        "ssh_host": null,
         "status": "skipped",
         "summary": "No saved host candidates were available.",
         "summary_args": [],
@@ -519,34 +624,13 @@
       "ok": true,
       "operation": "deploy",
       "payload": {
-        "message": "Runtime activation complete.",
-        "netbsd4": false,
-        "payload_dir": "/Volumes/dk2/.samba4",
-        "payload_family": null,
-        "requires_reboot": false,
-        "schema_version": 1,
-        "summary": "Runtime activation complete.",
-        "summary_args": [],
-        "summary_key": "deploy_completed"
-      },
-      "request_id": "fixture",
-      "schema_version": 1,
-      "type": "result"
-    },
-    "name": "deploy_runtime_activated"
-  },
-  {
-    "event": {
-      "ok": true,
-      "operation": "deploy",
-      "payload": {
-        "message": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "message": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "netbsd4": true,
         "payload_dir": "/Volumes/dk2/.samba4",
         "payload_family": null,
         "requires_reboot": false,
         "schema_version": 1,
-        "summary": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "summary": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "summary_args": [],
         "summary_key": "activation_completed_followup"
       },
@@ -596,9 +680,9 @@
       "operation": "activate",
       "payload": {
         "already_active": false,
-        "message": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "message": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "schema_version": 1,
-        "summary": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "summary": "NetBSD4 activation completed. Run `activate` after a reboot if the device did not auto-start Samba.",
         "summary_args": [],
         "summary_key": "activation_completed_followup"
       },
@@ -2004,15 +2088,15 @@
       "payload": {
         "acp_port_error": null,
         "acp_port_reachable": true,
-        "action": "enable",
+        "action": "enable_noop",
         "device_recovered": null,
         "host": "10.0.0.2",
-        "reboot_requested": true,
+        "reboot_requested": false,
         "schema_version": 1,
         "ssh_disable_persisted": null,
         "ssh_disabled_likely": false,
         "ssh_final_reachable": true,
-        "ssh_initially_reachable": false,
+        "ssh_initially_reachable": true,
         "ssh_port_error": null,
         "ssh_port_reachable": true,
         "ssh_reboot_observed_down": null,
@@ -2020,7 +2104,7 @@
         "summary": "SSH is already enabled.",
         "summary_args": [],
         "summary_key": "ssh.already_enabled",
-        "waited": true
+        "waited": false
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -2035,23 +2119,23 @@
       "payload": {
         "acp_port_error": null,
         "acp_port_reachable": true,
-        "action": "enable",
+        "action": "enable_ssh",
         "device_recovered": null,
         "host": "10.0.0.2",
         "reboot_requested": true,
         "schema_version": 1,
         "ssh_disable_persisted": null,
-        "ssh_disabled_likely": false,
-        "ssh_final_reachable": true,
+        "ssh_disabled_likely": true,
+        "ssh_final_reachable": false,
         "ssh_initially_reachable": false,
         "ssh_port_error": null,
-        "ssh_port_reachable": true,
+        "ssh_port_reachable": false,
         "ssh_reboot_observed_down": null,
-        "ssh_verification_skipped": false,
+        "ssh_verification_skipped": true,
         "summary": "SSH enable requested; not waiting for SSH to open.",
         "summary_args": [],
         "summary_key": "ssh.enable_requested",
-        "waited": true
+        "waited": false
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -2066,7 +2150,7 @@
       "payload": {
         "acp_port_error": null,
         "acp_port_reachable": true,
-        "action": "enable",
+        "action": "enable_ssh",
         "device_recovered": null,
         "host": "10.0.0.2",
         "reboot_requested": true,
@@ -2097,23 +2181,23 @@
       "payload": {
         "acp_port_error": null,
         "acp_port_reachable": true,
-        "action": "enable",
+        "action": "disable_noop",
         "device_recovered": null,
         "host": "10.0.0.2",
-        "reboot_requested": true,
+        "reboot_requested": false,
         "schema_version": 1,
         "ssh_disable_persisted": null,
-        "ssh_disabled_likely": false,
-        "ssh_final_reachable": true,
+        "ssh_disabled_likely": true,
+        "ssh_final_reachable": false,
         "ssh_initially_reachable": false,
         "ssh_port_error": null,
-        "ssh_port_reachable": true,
+        "ssh_port_reachable": false,
         "ssh_reboot_observed_down": null,
         "ssh_verification_skipped": false,
         "summary": "SSH already disabled.",
         "summary_args": [],
         "summary_key": "ssh.already_disabled",
-        "waited": true
+        "waited": false
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -2128,7 +2212,7 @@
       "payload": {
         "acp_port_error": null,
         "acp_port_reachable": true,
-        "action": "enable",
+        "action": "disable_ssh",
         "device_recovered": null,
         "host": "10.0.0.2",
         "reboot_requested": true,
@@ -2136,15 +2220,15 @@
         "ssh_disable_persisted": null,
         "ssh_disabled_likely": false,
         "ssh_final_reachable": true,
-        "ssh_initially_reachable": false,
+        "ssh_initially_reachable": true,
         "ssh_port_error": null,
         "ssh_port_reachable": true,
         "ssh_reboot_observed_down": null,
-        "ssh_verification_skipped": false,
+        "ssh_verification_skipped": true,
         "summary": "SSH disable requested; not waiting for reboot or verifying SSH stays closed.",
         "summary_args": [],
         "summary_key": "ssh.disable_requested",
-        "waited": true
+        "waited": false
       },
       "request_id": "fixture",
       "schema_version": 1,
@@ -2159,18 +2243,18 @@
       "payload": {
         "acp_port_error": null,
         "acp_port_reachable": true,
-        "action": "enable",
-        "device_recovered": null,
+        "action": "disable_ssh",
+        "device_recovered": true,
         "host": "10.0.0.2",
         "reboot_requested": true,
         "schema_version": 1,
-        "ssh_disable_persisted": null,
-        "ssh_disabled_likely": false,
-        "ssh_final_reachable": true,
-        "ssh_initially_reachable": false,
-        "ssh_port_error": null,
-        "ssh_port_reachable": true,
-        "ssh_reboot_observed_down": null,
+        "ssh_disable_persisted": true,
+        "ssh_disabled_likely": true,
+        "ssh_final_reachable": false,
+        "ssh_initially_reachable": true,
+        "ssh_port_error": "SSH port is closed.",
+        "ssh_port_reachable": false,
+        "ssh_reboot_observed_down": true,
         "ssh_verification_skipped": false,
         "summary": "SSH disabled (remains closed after reboot).",
         "summary_args": [],

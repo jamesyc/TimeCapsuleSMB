@@ -176,7 +176,7 @@ These are names of external OS applications. They need not dictate the name of t
 Helper results carry an English `summary` plus a stable `summary_key` and positional `summary_args` (progress logs: `message_key`, `message_args`). The app shows `backend.summary.<summary_key>` from the catalogs and falls back to the English text. The key registry is `src/timecapsulesmb/core/summaries.py`; `tests/test_summaries.py` checks every catalog against it.
 
 - Translate each key as a **whole sentence**. Keys are never assembled from fragments; a variant such as "with a firmware version" has its own key (`flash.apple_stock_match_version`) so each language can place the version where it reads naturally.
-- Placeholders must match the registry's argument types and count: `%d`/`%ld`/`%lld` for integers, `%@` for strings. Reorder with positional specifiers (`%2$@ … %1$lld`), never by swapping bare placeholders.
+- Placeholders must match the registry's argument types and count: `%d`/`%ld`/`%lld` for integers, `%@` for strings. Reorder with positional specifiers (`%2$@ … %1$lld`), never by swapping bare placeholders. In a plain string `%d` is fine: the app checks each placeholder and passes a 32-bit value for `%d` and a 64-bit one for `%ld`/`%lld`. A plural variable is different: Foundation reads it with its declared value type, so it must be `lld`.
 - Arguments are values (counts, versions, paths, product IDs), never English words. If a sentence needs a word that depends on state, it needs another key.
 - A summary is a status line: past tense or state, no trailing ellipsis unless the English has one (the "Waiting…" progress logs).
 - Changing an English summary's shape (adding, removing or retyping an argument) requires a new key name, so older app builds never format a new sentence with the wrong arguments.
@@ -207,7 +207,7 @@ How to write a plural entry:
 - Put agreeing words inside the form when they change with the count: Russian and Lithuanian participles (`Найден 1 том` / `Найдено 5 томов`, `Rastas 1 įrenginys` / `Rasta 10 įrenginių`), Spanish and Portuguese verbs (`Se descubrió 1` / `Se descubrieron 2`), and French and Italian past participles.
 - A count that follows a preposition takes that case in every form: Russian `из 21 банка` / `из 5 банков`, Lithuanian `iš 21 banko` / `iš 2 bankų`.
 - Natural sentences are preferred to the `Label: N` style, which remains only for count lists such as `PASS %d, WARN %d, FAIL %d`.
-- `tests/test_localization_plurals.py` checks the structure and forms, and the Swift `PluralLocalizationTests` render every plural key in every language at each boundary count.
+- `tests/test_localization_plurals.py` checks the structure and forms, and the Swift `PluralLocalizationTests` render every plural key in every language at each boundary count. Both take the plural categories from CLDR through the `babel` test dependency (`tests/fixtures/plural_categories.py` writes the Swift copy), so no rule is written by hand. If a babel update changes a category, rerun `python -m tests.fixtures.plural_categories --write`; a Swift failure then means Foundation and CLDR disagree, which is worth investigating rather than silencing.
 
 ## Maintainer wording decisions
 

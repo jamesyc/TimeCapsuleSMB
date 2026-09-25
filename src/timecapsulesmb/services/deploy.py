@@ -9,9 +9,10 @@ import time
 import tempfile
 
 from timecapsulesmb.core.config import DEFAULTS, MANAGED_PAYLOAD_DIR_NAME, AppConfig, parse_bool, shell_quote
-from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
+from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import (
     MigrationStalledError,
     NATIVE_TIMEOUT_SECONDS,
@@ -199,6 +200,9 @@ class DeployCompletionResult:
     waited: bool
     verified: bool
     message: str | None = None
+    # Set when the deploy ends with its own result summary (a NetBSD 4
+    # activation); otherwise the generic deploy summary applies.
+    summary: Summary | None = None
 
 
 @dataclass(frozen=True)
@@ -339,12 +343,6 @@ def startup_mode_for_deploy(*, is_netbsd4: bool) -> DeploymentStartupMode:
     if is_netbsd4:
         return DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE
     return DEPLOY_STARTUP_REBOOT_THEN_VERIFY
-
-
-def activation_complete_message(*, is_netbsd4: bool) -> str:
-    if is_netbsd4:
-        return f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}"
-    return "Runtime activation complete."
 
 
 def deploy_upload_stage(transfer: FileTransfer) -> str:
@@ -1216,7 +1214,8 @@ def complete_deployment_after_upload(
             reboot_requested=True,
             waited=True,
             verified=True,
-            message=activation_complete_message(is_netbsd4=is_netbsd4),
+            message=NETBSD4_ACTIVATION_COMPLETED,
+            summary=netbsd4_activation_summary(),
         )
 
     wait_for_boot_settle(callbacks)

@@ -150,6 +150,7 @@ def _deploy_completion_payload(result) -> object:
         waited=result.waited,
         verified=result.verified,
         message=result.message,
+        summary=result.summary,
         payload_family=result.payload_family,
     )
 

@@ -58,6 +58,8 @@ Source = "https://github.com/jamesyc/TimeCapsuleSMB"
 
 [project.optional-dependencies]
 dev = [
+  # CLDR plural rules for the macOS catalog tests; not bundled into the app.
+  "babel",
   "coverage>=7.6.0",
   "pytest>=8.4.0,<10",
   "pytest-xdist>=3.6.1,<4",

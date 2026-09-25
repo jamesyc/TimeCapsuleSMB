@@ -20,6 +20,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation
@@ -2449,7 +2450,7 @@ class AppApiTests(unittest.TestCase):
                 acp_port_reachable=True,
                 reboot_requested=True,
                 waited=True,
-                summary="SSH is configured.",
+                summary=Summary("ssh.configured", "SSH is configured."),
             )
             with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
                 with mock.patch("timecapsulesmb.app.ops.set_ssh.enable_set_ssh", return_value=result) as enable_ssh:
@@ -2477,6 +2478,7 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(payload["ssh_disabled_likely"])
         self.assertIsNone(payload["ssh_port_error"])
         self.assertEqual(payload["summary"], "SSH is configured.")
+        self.assertEqual(payload["summary_key"], "ssh.configured")
         self.assertNotIn("secret", json.dumps(confirmed_collector.events))
 
     def test_set_ssh_enable_timeout_uses_specific_gui_error_code(self) -> None:

@@ -22,7 +22,7 @@ from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.services.runtime_verification import wait_for_activation_settle
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
+from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, NETBSD4_REBOOT_GUIDANCE
 
 
 def _target_device_display_name(target) -> str:
@@ -110,7 +110,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not decision.run_actions:
             print("NetBSD4 payload already active; skipping rc.local.")
             command_context.update_fields(runtime_already_ready=True)
-            print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
+            print(NETBSD4_ACTIVATION_COMPLETED)
             command_context.succeed()
             return 0
 
@@ -127,7 +127,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             failure_message="NetBSD4 activation failed.",
         ):
             return 1
-        print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
+        print(NETBSD4_ACTIVATION_COMPLETED)
         command_context.succeed()
         return 0
     return 1

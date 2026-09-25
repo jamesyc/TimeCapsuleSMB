@@ -4,6 +4,7 @@ import subprocess
 import unittest
 from unittest import mock
 
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app import service
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
@@ -30,6 +31,37 @@ class ReachabilityTests(unittest.TestCase):
             ),
         )
 
+    def test_smb_port_without_ssh_is_partial_and_names_the_smb_host(self) -> None:
+        def tcp(host: str, port: int, *_args, **_kwargs) -> str | None:
+            return None if port == 445 else "connection refused"
+
+        config = AppConfig.from_values({"TC_HOST": "root@tc.local", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        with mock.patch("timecapsulesmb.services.reachability.resolve_host_ips", return_value=("10.0.0.2",)):
+            with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value=None):
+                with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
+                    with mock.patch("timecapsulesmb.services.reachability.run_ssh") as run_ssh:
+                        result = reachability.run_reachability(config, {"smb_hosts": ["tc.local"]}, password="pw")
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.summary, Summary("reachability.smb_only", "SMB port reachable, SSH closed."))
+        self.assertEqual(result.smb_host, "tc.local")
+        run_ssh.assert_not_called()
+
+    def test_no_saved_hosts_skips_every_probe(self) -> None:
+        config = AppConfig.from_values({})
+        with mock.patch("timecapsulesmb.services.reachability.resolve_host_ips") as resolve:
+            with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error") as tcp:
+                with mock.patch("timecapsulesmb.services.reachability.run_ssh") as run_ssh:
+                    result = reachability.run_reachability(config, {})
+
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.summary, Summary("reachability.no_candidates", "No saved host candidates were available."))
+        self.assertEqual([(check.id, check.status) for check in result.checks], [("candidates", "SKIP")])
+        self.assertIsNone(result.ssh_host)
+        resolve.assert_not_called()
+        tcp.assert_not_called()
+        run_ssh.assert_not_called()
+
     def test_reachability_passes_when_ssh_and_smb_work(self) -> None:
         config = AppConfig.from_values({
             "TC_HOST": "root@tc.local",
@@ -54,8 +86,7 @@ class ReachabilityTests(unittest.TestCase):
                             )
 
         self.assertEqual(result.status, "reachable")
-        self.assertEqual(result.summary, "SSH reachable; SMB port reachable.")
-        self.assertEqual(result.summary_key, "reachability.all_reachable")
+        self.assertEqual(result.summary, Summary("reachability.all_reachable", "SSH reachable; SMB port reachable."))
         self.assertEqual({check.id: check.status for check in result.checks}, {
             "dns": "PASS",
             "ping": "PASS",
@@ -79,8 +110,7 @@ class ReachabilityTests(unittest.TestCase):
         ssh.assert_called_once()
         self.assertEqual(ssh.call_args.args[0].password, "")
         self.assertEqual(result.status, "reachable")
-        self.assertEqual(result.summary, "SSH reachable; SMB port reachable.")
-        self.assertEqual(result.summary_key, "reachability.all_reachable")
+        self.assertEqual(result.summary, Summary("reachability.all_reachable", "SSH reachable; SMB port reachable."))
         self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "PASS")
 
     def test_reachability_strips_ports_from_host_candidates(self) -> None:
@@ -126,8 +156,7 @@ class ReachabilityTests(unittest.TestCase):
                         result = reachability.run_reachability(config, {}, password="")
 
         self.assertEqual(result.status, "partial")
-        self.assertEqual(result.summary, "SSH reachable, SMB port closed.")
-        self.assertEqual(result.summary_key, "reachability.ssh_only")
+        self.assertEqual(result.summary, Summary("reachability.ssh_only", "SSH reachable, SMB port closed."))
 
     def test_ssh_proxy_skips_direct_port_check_but_auth_can_pass(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": "-J jump"})
@@ -162,8 +191,7 @@ class ReachabilityTests(unittest.TestCase):
                     result = reachability.run_reachability(config, {}, password="")
 
         self.assertEqual(result.status, "unreachable")
-        self.assertEqual(result.summary, "Could not reach SSH or SMB.")
-        self.assertEqual(result.summary_key, "reachability.unreachable")
+        self.assertEqual(result.summary, Summary("reachability.unreachable", "Could not reach SSH or SMB."))
 
     def test_all_failed_checks_return_unreachable_without_raising(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@tc.local", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
@@ -336,8 +364,7 @@ class ReachabilityTests(unittest.TestCase):
                         result = reachability.run_reachability(config, {}, password="bad")
 
         self.assertEqual(result.status, "partial")
-        self.assertEqual(result.summary, "SSH authentication failed.")
-        self.assertEqual(result.summary_key, "reachability.auth_failed")
+        self.assertEqual(result.summary, Summary("reachability.auth_failed", "SSH authentication failed."))
         self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "FAIL")
 
     def test_ssh_network_failure_makes_auth_check_unavailable(self) -> None:

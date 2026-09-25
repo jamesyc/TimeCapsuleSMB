@@ -10,6 +10,7 @@ from unittest import mock
 from tests.fixtures import summary_payloads
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import AppEvent, EventSink
+from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import SUMMARY_KEYS, Summary
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.set_ssh import SetSshStatusResult, disable_set_ssh
@@ -41,7 +42,10 @@ def placeholder_types(template: str) -> tuple[str, ...]:
     for match in PLACEHOLDER.finditer(template.replace("%%", "")):
         kind = "str" if match.group(2) == "@" else "int"
         if match.group(1):
-            positional[int(match.group(1))] = kind
+            position = int(match.group(1))
+            if positional.get(position, kind) != kind:
+                raise AssertionError(f"position {position} is used as both int and str: {template}")
+            positional[position] = kind
         else:
             sequential.append(kind)
     if positional and sequential:
@@ -51,6 +55,25 @@ def placeholder_types(template: str) -> tuple[str, ...]:
             raise AssertionError(f"positional placeholders skip a position: {template}")
         return tuple(positional[i] for i in sorted(positional))
     return tuple(sequential)
+
+
+def render_english(key: str, args: list[object]) -> str:
+    """Render a catalog key in English the way Foundation would: plural
+    variables take "one" for exactly 1 and "other" otherwise."""
+    strings = catalog("en")
+    with open(RESOURCES / "en.lproj" / "Localizable.stringsdict", "rb") as handle:
+        entry = plistlib.load(handle).get(key, {})
+    sequential = iter(range(len(args)))
+
+    def substitute(match: re.Match[str]) -> str:
+        index = int(match.group(1)) - 1 if match.group(1) else next(sequential)
+        value = args[index]
+        if match.group(2).startswith("#@"):
+            forms = entry[match.group(2)[2:-1]]
+            return forms["one" if value == 1 else "other"].replace("%lld", str(value))
+        return str(value)
+
+    return PLACEHOLDER.sub(substitute, strings[key])
 
 
 def fixture_events() -> list[dict[str, object]]:
@@ -125,12 +148,24 @@ class SummaryProducerTests(unittest.TestCase):
         "ssh_status_reachable": ("ssh.reachable", [], "SSH is reachable."),
         "ssh_status_acp_only": ("ssh.acp_reachable_ssh_closed", [], "AirPort ACP is reachable, but SSH is closed."),
         "ssh_status_unreachable": ("ssh.unreachable", [], "AirPort ACP and SSH are not reachable."),
+        "reachability_all": ("reachability.all_reachable", [], "SSH reachable; SMB port reachable."),
+        "reachability_ssh_only": ("reachability.ssh_only", [], "SSH reachable, SMB port closed."),
+        "reachability_smb_only": ("reachability.smb_only", [], "SMB port reachable, SSH closed."),
+        "reachability_unreachable": ("reachability.unreachable", [], "Could not reach SSH or SMB."),
+        "reachability_auth_failed": ("reachability.auth_failed", [], "SSH authentication failed."),
+        "reachability_no_candidates": ("reachability.no_candidates", [], "No saved host candidates were available."),
+        "ssh_already_enabled": ("ssh.already_enabled", [], "SSH is already enabled."),
+        "ssh_enable_requested": ("ssh.enable_requested", [], "SSH enable requested; not waiting for SSH to open."),
+        "ssh_configured": ("ssh.configured", [], "SSH is configured."),
+        "ssh_already_disabled": ("ssh.already_disabled", [], "SSH already disabled."),
+        "ssh_disable_requested": (
+            "ssh.disable_requested", [], "SSH disable requested; not waiting for reboot or verifying SSH stays closed."),
+        "ssh_disabled": ("ssh.disabled", [], "SSH disabled (remains closed after reboot)."),
         "deploy_completed": ("deploy_completed", [], "Deployment completed."),
-        "deploy_runtime_activated": ("deploy_completed", [], "Runtime activation complete."),
-        "deploy_netbsd4_followup": ("activation_completed_followup", [], summary_payloads.NETBSD4_FOLLOWUP),
+        "deploy_netbsd4_followup": ("activation_completed_followup", [], NETBSD4_ACTIVATION_COMPLETED),
         "activation_already_active": ("activation_already_active", [], "NetBSD4 payload was already active."),
         "activation_completed": ("activation_completed", [], "NetBSD4 activation completed."),
-        "activation_followup": ("activation_completed_followup", [], summary_payloads.NETBSD4_FOLLOWUP),
+        "activation_followup": ("activation_completed_followup", [], NETBSD4_ACTIVATION_COMPLETED),
         "uninstall_unverified": ("uninstall_unverified", [], "Uninstall completed without post-reboot verification."),
         "fsck_volumes": ("hfs_volumes_found", [1], "Found 1 mounted HFS volume."),
         "fsck_plan": ("fsck_plan_generated", [], "Dry-run plan generated for fsck."),
@@ -238,11 +273,26 @@ class SummaryProducerTests(unittest.TestCase):
         self.assertEqual(write["summary"], "Flash mystery write validated.")
         self.assertNotIn("summary_key", write)
 
-    def test_failed_fsck_result_requires_its_exit_status(self) -> None:
+    def test_failed_fsck_without_an_exit_status_shows_its_error_unkeyed(self) -> None:
         from timecapsulesmb.app import contracts
 
-        with self.assertRaisesRegex(ValueError, "exit status"):
-            contracts.fsck_result_payload(device="/dev/dk2", mountpoint="/Volumes/dk2", error="failed")
+        for returncode in (None, True, "8"):
+            with self.subTest(returncode=returncode):
+                payload = contracts.fsck_result_payload(
+                    device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=returncode, error="fsck_hfs failed")  # type: ignore[arg-type]
+                self.assertEqual(payload["summary"], "fsck_hfs failed")
+                self.assertEqual(payload["error"], "fsck_hfs failed")
+                self.assertNotIn("summary_key", payload)
+        keyed = contracts.fsck_result_payload(device="/dev/dk2", mountpoint="/Volumes/dk2", returncode=0, error="exit 0")
+        self.assertEqual((keyed["summary_key"], keyed["summary_args"]), ("fsck_failed", [0]))
+
+    def test_flash_backup_requires_its_backup_directory(self) -> None:
+        from timecapsulesmb.app import contracts
+
+        for raw in ({}, {"backup_dir": None}, {"backup_dir": ""}, {"backup_dir": 7}):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "backup directory"):
+                    contracts.flash_backup_payload(raw)
 
     def test_ssh_status_summary_follows_port_state(self) -> None:
         cases = {
@@ -254,8 +304,7 @@ class SummaryProducerTests(unittest.TestCase):
         for (acp, ssh), key in cases.items():
             with self.subTest(acp=acp, ssh=ssh):
                 status = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=acp, ssh_port_reachable=ssh)
-                self.assertEqual(status.summary_key, key)
-                Summary(status.summary_key, status.summary)
+                self.assertEqual(status.summary.key, key)
 
     def test_disable_paths_emit_their_keys(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -270,12 +319,10 @@ class SummaryProducerTests(unittest.TestCase):
             wait_for_tcp_port_state=mock.Mock(return_value=True), wait_for_device_up_func=mock.Mock(return_value=True),
         )
 
-        self.assertEqual(noop.summary_key, "ssh.already_disabled")
-        self.assertEqual(requested.summary_key, "ssh.disable_requested")
-        self.assertEqual(verified.summary_key, "ssh.disabled")
+        self.assertEqual(noop.summary, Summary("ssh.already_disabled", "SSH already disabled."))
+        self.assertEqual(requested.summary.key, "ssh.disable_requested")
+        self.assertEqual(verified.summary, Summary("ssh.disabled", "SSH disabled (remains closed after reboot)."))
         self.assertEqual(disable.call_count, 2)
-        for result in (noop, requested, verified):
-            Summary(result.summary_key, result.summary)
 
 
 class SummaryCatalogTests(unittest.TestCase):
@@ -314,12 +361,24 @@ class SummaryCatalogTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertNotIn("„Apple“", text)
 
+    def test_count_sentences_are_plural_entries(self) -> None:
+        # Every integer summary argument is a count, except fsck_hfs's exit status.
+        not_counts = {"fsck_failed"}
+        with open(RESOURCES / "en.lproj" / "Localizable.stringsdict", "rb") as handle:
+            plural_keys = {key.removeprefix("backend.summary.") for key in plistlib.load(handle)}
+        counting = {key for key, types in SUMMARY_KEYS.items() if "int" in types} - not_counts
+        self.assertEqual(counting - plural_keys, set())
+        self.assertEqual(not_counts & plural_keys, set())
+
     def test_placeholder_parser_accepts_reordered_and_plural_forms(self) -> None:
         self.assertEqual(placeholder_types("%2$@ then %1$lld"), ("int", "str"))
+        self.assertEqual(placeholder_types("%1$lld of %2$lld, %1$#@verb@"), ("int", "int"))
         self.assertEqual(placeholder_types("%#@devices@ in %@"), ("int", "str"))
         self.assertEqual(placeholder_types("100%% of %d"), ("int",))
-        with self.assertRaises(AssertionError):
-            placeholder_types("%1$@ and %d")
+        for template in ("%1$@ and %d", "%2$@ skips a position", "%1$lld then %1$@"):
+            with self.subTest(template=template):
+                with self.assertRaises(AssertionError):
+                    placeholder_types(template)
 
 
 class SummaryFixtureTests(unittest.TestCase):
@@ -330,12 +389,22 @@ class SummaryFixtureTests(unittest.TestCase):
         keys = {event_key(row["event"])[0] for row in fixture_events()}
         self.assertEqual(set(SUMMARY_KEYS) - keys, set())
 
-    def test_fixture_events_carry_registered_keys_with_typed_arguments(self) -> None:
+    # Summaries whose English catalog wording deliberately differs from the
+    # helper's CLI English: the app says what was installed, and reuses its
+    # auth error sentence for the reachability auth failure.
+    ENGLISH_REWORDED = {"deploy_completed", "reachability.auth_failed"}
+
+    def test_english_catalog_says_what_the_helper_says(self) -> None:
         for row in fixture_events():
+            key, args = event_key(row["event"])
+            event = row["event"]
+            text = event["message"] if event["type"] == "log" else event["payload"]["summary"]  # type: ignore[index]
             with self.subTest(name=row["name"]):
-                key, args = event_key(row["event"])
-                self.assertIn(key, SUMMARY_KEYS)
-                Summary(key, "text", tuple(args))  # type: ignore[arg-type]
+                rendered = render_english(f"backend.summary.{key}", list(args))
+                if key in self.ENGLISH_REWORDED:
+                    self.assertNotEqual(rendered, text, "no longer reworded; drop it from ENGLISH_REWORDED")
+                else:
+                    self.assertEqual(rendered, text)
 
 
 if __name__ == "__main__":

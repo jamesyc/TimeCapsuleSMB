@@ -47,7 +47,7 @@ The macOS app translates helper results through a summary key, never by matching
 
 1. Build it with `Summary(key, text, args)` from `src/timecapsulesmb/core/summaries.py`, and register the key there with its argument types.
 2. Add `backend.summary.<key>` to all ten `Localizable.strings` files as a whole sentence, or to all ten `Localizable.stringsdict` files when its wording depends on a count; `macos/LOCALIZATION_GLOSSARY.md` has the terms and the rules for arguments and plurals.
-3. Regenerate the Swift contract fixture: `.venv/bin/python -m tests.fixtures.summary_payloads --write`.
+3. Regenerate the Swift contract fixture: `.venv/bin/python -m tests.fixtures.summary_payloads --write`. The plural category fixture (`python -m tests.fixtures.plural_categories --write`) only changes with babel's CLDR data.
 
 `tests/test_summaries.py` checks the registry against every catalog, and the Swift `BackendSummaryContractTests` check that every summary in the fixture resolves in every language. If a summary's arguments change shape, give it a new key.
 

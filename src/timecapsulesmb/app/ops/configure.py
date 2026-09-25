@@ -42,6 +42,9 @@ from timecapsulesmb.services.configure_target import resolve_configure_target
 from timecapsulesmb.core.summaries import Summary
 
 
+SETTINGS_SYNCHRONIZED = Summary("settings_synchronized", "Device profile settings synchronized.")
+
+
 LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
     "macos_local_network_preflight_result",
     "macos_local_network_preflight_duration_ms",
@@ -155,7 +158,7 @@ def update_config_settings_operation(
     context.values = values
     return OperationResult(True, {
         "config_path": str(env_path),
-        **Summary("settings_synchronized", "Device profile settings synchronized.").fields(),
+        **SETTINGS_SYNCHRONIZED.fields(),
     })
 
 
