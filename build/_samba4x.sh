@@ -815,7 +815,7 @@ EOF
 }
 
 build_samba4x_gmp() {
-    stamp="$SAMBA4X_DEPS/.stamp-gmp-$SAMBA4X_GMP_VERSION"
+    stamp="$SAMBA4X_DEPS/.stamp-gmp-$SAMBA4X_GMP_VERSION-$SAMBA4X_GMP_SHA256"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libgmp.a" ]; then
         echo "GMP $SAMBA4X_GMP_VERSION already built."
         write_samba4x_gmp_pc "$SAMBA4X_GMP_VERSION"
@@ -860,7 +860,7 @@ EOF
 }
 
 build_samba4x_nettle() {
-    stamp="$SAMBA4X_DEPS/.stamp-nettle-$SAMBA4X_NETTLE_VERSION-system-gmp"
+    stamp="$SAMBA4X_DEPS/.stamp-nettle-$SAMBA4X_NETTLE_VERSION-$SAMBA4X_NETTLE_SHA256-system-gmp"
     if [ -f "$stamp" ] &&
        [ -f "$SAMBA4X_DEPS/lib/libnettle.a" ] &&
        [ -f "$SAMBA4X_DEPS/lib/libhogweed.a" ]; then
@@ -887,7 +887,7 @@ build_samba4x_nettle() {
 }
 
 build_samba4x_libtasn1() {
-    stamp="$SAMBA4X_DEPS/.stamp-libtasn1-$SAMBA4X_LIBTASN1_VERSION"
+    stamp="$SAMBA4X_DEPS/.stamp-libtasn1-$SAMBA4X_LIBTASN1_VERSION-$SAMBA4X_LIBTASN1_SHA256"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libtasn1.a" ]; then
         echo "libtasn1 $SAMBA4X_LIBTASN1_VERSION already built."
         return 0
@@ -937,7 +937,7 @@ rewrite_samba4x_gnutls_pc() {
 
 build_samba4x_gnutls() {
     gnutls_stamp_suffix="system-nettle-oaep-no-thread-local"
-    stamp="$SAMBA4X_DEPS/.stamp-gnutls-$SAMBA4X_GNUTLS_VERSION-$gnutls_stamp_suffix"
+    stamp="$SAMBA4X_DEPS/.stamp-gnutls-$SAMBA4X_GNUTLS_VERSION-$SAMBA4X_GNUTLS_SHA256-$gnutls_stamp_suffix"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libgnutls.a" ]; then
         echo "GnuTLS $SAMBA4X_GNUTLS_VERSION already built."
         rewrite_samba4x_gnutls_pc
