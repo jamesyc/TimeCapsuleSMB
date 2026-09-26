@@ -104,6 +104,10 @@
 # the normal -1/ERANGE retry signal instead of a positive required length that
 # callers mistake for bytes written into the too-small buffer.
 0027-xattr-tdb-listattr-erange.patch|xattr_tdb retries oversized xattr name lists
+# With xattr_tdb:ignore_user_xattr, user xattr reads pass to the next module
+# before xattr_tdb has built its local smb_fname copy, so upstream passes NULL.
+# Pass the caller's name instead.
+0047-xattr-tdb-getxattrat-bypass-name.patch|pass the caller's name when xattr_tdb bypasses a user xattr read
 # Time Machine durable handles on HFS sparsebundle bands should not treat
 # allocation-block count drift as file identity loss after reconnect.
 0019-time-machine-durable-st-ex-blocks.patch|allow durable reconnect across HFS allocation-block drift
@@ -138,6 +142,10 @@
 # NetBSD distinguishes ENOATTR from ENODATA. Missing optional extents must not
 # fail stream cleanup after its primary xattr is gone; retain real unlink errors.
 0035-streams-xattr-missing-extents.patch|portable stream extent cleanup and unlink errors
+# Native HFS xattrs hold at most 3802 bytes, so smb.conf sets 35 xattrs per
+# stream to keep the previous ~128 KiB Windows alternate data stream limit.
+# Upstream accepts at most 16.
+0048-streams-xattr-max-64-per-stream.patch|allow up to 64 xattrs per stream
 
 # Rc2 uses C11 generic selection for const-preserving charset helpers. The
 # existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.

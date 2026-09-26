@@ -1,0 +1,12 @@
+diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
+--- a/source3/modules/vfs_xattr_tdb.c
++++ b/source3/modules/vfs_xattr_tdb.c
+@@ -87,7 +87,7 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
+ 						      ev,
+ 						      handle,
+ 						      dir_fsp,
+-						      smb_fname,
++						      _smb_fname,
+ 						      xattr_name,
+ 						      alloc_hint);
+ 		if (tevent_req_nomem(subreq, req)) {

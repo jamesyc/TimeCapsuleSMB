@@ -1,0 +1,15 @@
+diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
+--- a/source3/modules/vfs_streams_xattr.c
++++ b/source3/modules/vfs_streams_xattr.c
+@@ -1497,9 +1497,9 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
+ 				 "streams_xattr",
+ 				 "max xattrs per stream",
+ 				 1);
+-	if ((max_xattrs < 1) || (max_xattrs > 16)) {
++	if ((max_xattrs < 1) || (max_xattrs > 64)) {
+ 		DBG_WARNING("\"max xattrs per stream\"=%d invalid: "
+-			    "Between 1 and 16 possible\n",
++			    "Between 1 and 64 possible\n",
+ 			    max_xattrs);
+ 		errno = EINVAL;
+ 		return -1;
