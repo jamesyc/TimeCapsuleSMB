@@ -875,6 +875,23 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 self.assertFalse((stage / "sbin/smbd").exists())
                 self.assertFalse((stage / "sbin/smbd.stripped").exists())
 
+    def test_lane_build_starts_from_an_empty_build_tree(self) -> None:
+        # A stale object or waf lock from an earlier (or interrupted) build must
+        # not reach configure or the link; waf distclean silently kept them.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env_for_lane(root, "netbsd7", root / "configure.txt")
+            src = Path(env["SAMBA4X_NETBSD7_SRC_DIR"])
+            stale = src / "bin/default/lib/util/stale.o"
+            self.make_file(stale, "old object\n")
+            self.make_file(src / ".lock-wscript", "out_dir = ''\n")
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(stale.exists())
+            self.assertFalse((src / ".lock-wscript").exists())
+
     def test_thread_local_storage_blocks_staging(self) -> None:
         # Static libc's __tls_get_addr aborts, so a binary with a TLS section
         # would crash on its first thread-local read. The default fake

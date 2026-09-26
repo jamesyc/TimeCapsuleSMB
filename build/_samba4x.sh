@@ -1144,7 +1144,11 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
 
     mkdir -p "$SAMBA4X_BUILD"
     cd "$SAMBA4X_SRC_DIR"
-    PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf distclean >/dev/null 2>&1 || true
+    # Every lane build starts from an empty build tree. Samba's waf keeps its
+    # lock file out of the source top (NO_LOCK_IN_TOP), so "waf distclean"
+    # finds nothing to remove and returns success; old objects and configure
+    # results then leaked into later builds. Remove the build output directly.
+    rm -rf bin .lock-wscript
 
     configure_samba4x
     verify_samba4x_no_pthread_config
