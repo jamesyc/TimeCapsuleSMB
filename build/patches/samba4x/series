@@ -1,147 +1,169 @@
 # Patch numbers are permanent IDs: this file alone sets the order, and merged
-# patches keep the number of the one they absorbed the others into.
+# patches keep the number of the one they absorbed the others into. A patch's
+# name starts with the part of Samba it changes; the headings say why.
 #
 # Whole source files that do not exist upstream live in overlay/, mirroring the
 # Samba tree, and are copied in before the first patch (patch_copy_overlay).
 # Patches change upstream files only; never add or edit an overlay file here.
 
-# Cross-build and static smbd environment.
+# Build and toolchain.
 # Samba 4.25 marks some generated tools as hostcc but still lets waf inherit
 # target compiler/linker settings. Keep those host tools on the VM compiler,
 # while applying static link flags only to the static binaries we build: the
 # deployed smbd and migrator, and the opt-in regression tests.
-0001-waf-cross-static-env.patch|waf hostcc and static smbd environment
+0001-waf-hostcc-target-flags.patch|waf hostcc and static smbd environment
+# This reduced nonshared build can expose duplicate typedefs through multiple
+# include paths; guard the typedefs instead of relying on fragile include order.
+0014-includes-typedef-guards.patch|duplicate typedef guards
+# Samba's bundled popt fallback collides with libc glob_pattern_p in the static
+# NetBSD lanes; rename the bundled private symbol.
+0016-popt-glob-symbol-rename.patch|bundled popt glob symbol rename
+# Rc2 uses C11 generic selection for const-preserving charset helpers. The
+# existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.
+0036-charset-legacy-gcc-generic.patch|const-preserving charset helpers on legacy GCC
 
-# NetBSD runtime compatibility.
+# NetBSD 4 and old-kernel compatibility.
 # NetBSD4 lacks newer libc symbols, and the runtime kernels are older than the
 # SDKs used to compile these binaries. Keep normal file serving on path-based
 # VFS fallbacks instead of relying on runtime *at/openat2/fdopendir support.
 # The fallbacks report NetBSD's EFTYPE for O_NOFOLLOW on a symlink as ELOOP,
 # which Samba expects, and vfs_catia gains an fdopendir hook so the fallback
 # opens directories under their on-disk (SFM-mapped) names.
-0002-netbsd4-libreplace-compat.patch|NetBSD4 libc compatibility shims
+0002-replace-netbsd4-compat.patch|NetBSD4 libc compatibility shims
 # Samba's default streaminfo refreshes stat before appending ::$DATA. The
 # pathref fallback can fail that refresh even when the open path already
 # cached valid stat metadata, so 0003 uses the cached stat for macOS
 # delete/share checks.
-0003-netbsd-vfs-runtime-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
+0003-vfs-default-path-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
 # NetBSD4 can lose Samba's cached is_directory flag even when stat still says
 # the handle is a directory; recover before rejecting SMB2 QUERY_DIRECTORY.
-0004-netbsd4-query-directory-stat-fallback.patch|NetBSD4 SMB2 directory stat fallback
-
-# Single-binary smbd behavior.
-# Finder and smbclient enumerate shares through IPC$ srvsvc. Embed that one
-# pipe in smbd because the Time Capsule RAM-disk deployment cannot rely on
-# external DCE/RPC helper binaries living on an Apple-managed HFS disk.
-0005-smbd-embedded-srvsvc.patch|embedded srvsvc named pipe support
-# Reopened TDB handles should not leak into any helper exec path.
-0007-tdb-cloexec-compat.patch|TDB close-on-exec compatibility
-
-# No-pthread appliance runtime behavior.
-# Keep smbd to one process: run notifyd, cleanupd and the durable-handle
-# scavenger on the parent's event loop, and skip the periodic datagram-socket
-# sweep that forks a helper. Forked helpers work (tested 2026-09-26), but each
-# is another resident smbd (about 2.5 MB RSS) on a device that runs smbd from a
-# RAM disk, and dropping this patch adds 14 KB to smbd.
-0008-no-pthread-smbd-daemons-in-parent.patch|host smbd helper services in the parent event loop
-# Disable pthread before libreplace constructs the dependency graph, compile
-# pthreadpool_tevent without pthread mutex/glue operations, and define __thread
-# away. Without threads, thread-local storage is process storage, and in the
-# static appliance binary any real __thread access from Samba's -fPIC objects
-# calls static libc's __tls_get_addr, which only aborts. That abort was the
-# startup crash in tevent_req_create (tevent's call-depth state) and in the
-# winbind SID lookup (libwbclient's client name) that earlier patches avoided;
-# the NetBSD 4 compilers never enabled __thread, only the NetBSD 6 lane did.
-0013-no-pthread-configure-and-pthreadpool-sync.patch|configure-time no-pthread and synchronous pthreadpool support
-# Without pthread, talloc_stack frees its frame tracker from an atexit handler
-# that logs every frame still open, so every smbd connection child logged about
-# three "Dangling frame" lines and smbd -V/-b did too. pthread builds never run
-# that report at exit(); free the tracker the same way, quietly.
-0022-no-pthread-talloc-stack-quiet-exit.patch|quiet talloc stack teardown at exit
-
-# aio_fork runtime behavior.
-# Limit aio_fork helpers without turning overload into an SMB I/O error. A
-# bounded FIFO keeps accepted requests asynchronous; excess work runs in the
-# client smbd process so the helper count cannot grow without limit. Worker
-# read failures keep their errno instead of casting ssize_t -1 to an oversized
-# successful read, and the event watcher is cancelled before a worker retires
-# so descriptor reuse cannot leave the replacement request without events.
-0031-vfs-aio-fork-max-children.patch|bounded aio_fork helpers with FIFO backpressure
-# Normal helper retirement sends a short message without SCM_RIGHTS data.
-# Keep that path valid under C's nonzero variable-length-array requirement.
-0033-vfs-aio-fork-empty-control-message.patch|avoid zero-length arrays during aio_fork shutdown
-
-# Static build compile fixes.
-# This reduced nonshared build can expose duplicate typedefs through multiple
-# include paths; guard the typedefs instead of relying on fragile include order.
-0014-typedef-guards.patch|duplicate typedef guards
+0004-smb2-query-directory-stat-fallback.patch|NetBSD4 SMB2 directory stat fallback
 # NetBSD4 lacks posix_spawn, but local named pipe and print queue code still
 # compile into the static smbd target even though printing is not enabled.
-0015-netbsd-posix-spawn-fallbacks.patch|NetBSD posix_spawn fallbacks
-# Samba's bundled popt fallback collides with libc glob_pattern_p in the static
-# NetBSD lanes; rename the bundled private symbol.
-0016-popt-glob-symbol-rename.patch|bundled popt glob symbol rename
-# Time Capsule lock databases live on a tiny RAM disk. Let smb.conf force
-# volatile dbwrap TDB deletes onto the global freelist instead of retaining
-# thousands of per-hash-chain dead records after Time Machine closes files.
-0017-dbwrap-tdb-max-dead-config.patch|configurable dbwrap TDB max-dead records
-# macOS and Time Machine probe stream/ACL xattrs on untouched files. When
-# xattr_tdb backs that metadata, a missing row must behave like an empty xattr
-# set, not EINVAL. This is a real macOS interoperability fix, not a NetBSD shim,
-# and likely applies to future Samba versions that still use xattr_tdb here.
-0018-xattr-tdb-missing-row-empty-xattrs.patch|xattr_tdb missing rows behave like empty xattrs
-# macOS/iOS Photos writes many assetsd metadata streams. Once xattr_tdb's
-# stream-name list exceeds Samba's initial 1024-byte listxattr buffer, return
-# the normal -1/ERANGE retry signal instead of a positive required length that
-# callers mistake for bytes written into the too-small buffer.
-0027-xattr-tdb-listattr-erange.patch|xattr_tdb retries oversized xattr name lists
-# With xattr_tdb:ignore_user_xattr, user xattr reads pass to the next module
-# before xattr_tdb has built its local smb_fname copy, so upstream passes NULL.
-# Pass the caller's name instead.
-0047-xattr-tdb-getxattrat-bypass-name.patch|pass the caller's name when xattr_tdb bypasses a user xattr read
-# Time Machine durable handles on HFS sparsebundle bands should not treat
-# allocation-block count drift as file identity loss after reconnect.
-0019-time-machine-durable-st-ex-blocks.patch|allow durable reconnect across HFS allocation-block drift
-# Time Machine can retry SMB2 durable opens before the old smbd has marked the
-# open disconnected; retry once outside the open-global TDB lock instead of
-# reporting the durable handle as permanently missing.
-0024-time-machine-durable-open-live-retry.patch|retry transient live durable-open reconnect races
-# Time Capsule HFS can update ctime when the last writable fd closes. Record
-# durable cookies after that close so reconnect keeps strict ctime validation
-# without comparing against Samba's own stale pre-close snapshot.
-0029-time-machine-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
+0015-spawn-fork-exec-fallback.patch|NetBSD posix_spawn fallbacks
+# tdb_open_ex() marks its fd close-on-exec, but tdb_reopen() replaces that fd
+# without the flag, so reopened databases leaked into helper execs. NetBSD4
+# also lacks O_CLOEXEC, which tdb_wrap uses.
+0007-tdb-reopen-cloexec.patch|TDB close-on-exec compatibility
+# NetBSD distinguishes ENOATTR from ENODATA. Missing optional extents must not
+# fail stream cleanup after its primary xattr is gone; retain real unlink errors.
+0035-streams-xattr-enoattr.patch|portable stream extent cleanup and unlink errors
 # Time Capsule kernels can hang in native NetBSD getifaddrs() (_samba4x.sh
 # clears configure's getifaddrs results), and the NetBSD4 kernel's routing ABI
 # is newer than its SDK headers, so the ioctl fallback, which assumes
 # fixed-size ifreq rows, returns no interfaces. Decode NET_RT_IFLIST by its
 # on-wire version, as the native service does (overlay
 # lib/socket/tc_netbsd_iflist.c).
-0043-netbsd-route-interface-enumeration.patch|parse Time Capsule interfaces from routing messages
+0043-interfaces-netbsd-route-iflist.patch|parse Time Capsule interfaces from routing messages
+
+# No-pthread build.
+# Disable pthread before libreplace constructs the dependency graph (the
+# synchronous pthreadpool backend itself comes from --disable-pthreadpool in
+# _samba4x.sh), compile pthreadpool_tevent and tevent without pthread
+# mutex/glue operations, and define __thread away. Without threads,
+# thread-local storage is process storage, and in the static appliance binary
+# any real __thread access from Samba's -fPIC objects calls static libc's
+# __tls_get_addr, which only aborts. That abort was the startup crash in
+# tevent_req_create (tevent's call-depth state) and in the winbind SID lookup
+# (libwbclient's client name) that earlier patches avoided; the NetBSD 4
+# compilers never enabled __thread, only the NetBSD 6 lane did.
+0013-configure-disable-pthread.patch|configure-time no-pthread and synchronous pthreadpool support
+# Without pthread, talloc_stack frees its frame tracker from an atexit handler
+# that logs every frame still open, so every smbd connection child logged about
+# three "Dangling frame" lines and smbd -V/-b did too. pthread builds never run
+# that report at exit(); free the tracker the same way, quietly.
+0022-talloc-stack-quiet-exit.patch|quiet talloc stack teardown at exit
+# Keep smbd to one process: run notifyd, cleanupd and the durable-handle
+# scavenger on the parent's event loop, and skip the periodic datagram-socket
+# sweep that forks a helper. Forked helpers work (tested 2026-09-26), but each
+# is another resident smbd (about 2.5 MB RSS) on a device that runs smbd from a
+# RAM disk, and dropping this patch adds 14 KB to smbd.
+0008-smbd-single-process-helpers.patch|host smbd helper services in the parent event loop
+
+# Appliance kernel and disk.
+# Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
+# initialized data: handling the first write to a .data page, UVM fault-ahead
+# maps the neighbouring pages (4 below, 3 above) from the executable again,
+# dropping this process's (or its parent's) changes to them. Globals silently
+# returned to their initial values; talloc_magic did, so talloc aborted with
+# "Bad talloc magic value" in forked children and elsewhere, depending only on
+# code layout. A first-priority constructor in talloc, linked into every Samba
+# binary, turns fault-ahead off for the writable segment with MADV_RANDOM, and
+# talloc_lib_init repeats it where NetBSD 4's GCC has no constructor priorities.
+0046-talloc-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment
 # Time Capsule HFS can report file and directory owner/group as 4294967295.
 # Normalize only that sentinel at Samba's stat_ex boundary so ACL, stream, and
 # security descriptor paths see the forced root/wheel appliance identity, and
 # accept it in the strict corepath setup (which calls lstat() directly) so
 # panics produce disk-backed cores under logs/cores/smbd.
-0023-time-capsule-corepath-hfs-owner.patch|HFS unknown owner in corepath setup and stat metadata
+0023-stat-hfs-unknown-owner.patch|HFS unknown owner in corepath setup and stat metadata
+# Time Capsule lock databases live on a tiny RAM disk. Let smb.conf force
+# volatile dbwrap TDB deletes onto the global freelist instead of retaining
+# thousands of per-hash-chain dead records after Time Machine closes files.
+0017-dbwrap-tdb-max-dead.patch|configurable dbwrap TDB max-dead records
+
+# Single-binary smbd.
+# Finder and smbclient enumerate shares through IPC$ srvsvc. Embed that one
+# pipe in smbd because the Time Capsule RAM-disk deployment cannot rely on
+# external DCE/RPC helper binaries living on an Apple-managed HFS disk.
+0005-rpc-embedded-srvsvc.patch|embedded srvsvc named pipe support
+
+# aio_fork.
+# Normal helper retirement sends a short message without SCM_RIGHTS data.
+# Keep that path valid under C's nonzero variable-length-array requirement.
+# This is an upstream bug; it applies to pristine Samba.
+0033-aio-fork-empty-control-message.patch|avoid zero-length arrays during aio_fork shutdown
+# Limit aio_fork helpers without turning overload into an SMB I/O error. A
+# bounded FIFO keeps accepted requests asynchronous; excess work runs in the
+# client smbd process so the helper count cannot grow without limit. Worker
+# read failures keep their errno instead of casting ssize_t -1 to an oversized
+# successful read, and the event watcher is cancelled before a worker retires
+# so descriptor reuse cannot leave the replacement request without events.
+# Idle helpers are retired after 3 hours instead of upstream's 30 seconds.
+0031-aio-fork-max-children.patch|bounded aio_fork helpers with FIFO backpressure
+
+# Time Machine.
+# Time Machine durable handles on HFS sparsebundle bands should not treat
+# allocation-block count drift as file identity loss after reconnect.
+0019-durable-allow-block-count-drift.patch|allow durable reconnect across HFS allocation-block drift
+# Time Machine can retry SMB2 durable opens before the old smbd has marked the
+# open disconnected; retry once outside the open-global TDB lock instead of
+# reporting the durable handle as permanently missing.
+0024-durable-open-live-retry.patch|retry transient live durable-open reconnect races
+# Time Capsule HFS can update ctime when the last writable fd closes. Record
+# durable cookies after that close so reconnect keeps strict ctime validation
+# without comparing against Samba's own stale pre-close snapshot.
+0029-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
 # macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
 # request while probing backup-disk capabilities. The default VFS can complete
 # that resume-key request synchronously, but wrapper layers must propagate the
 # completed state before the SMB2 compound guard treats it as illegal async IOCTL
 # work and returns NT_STATUS_INTERNAL_ERROR.
-0028-time-machine-resume-key-sync-completion.patch|propagate synchronous resume-key IOCTL completion
+0028-ioctl-resume-key-sync-completion.patch|propagate synchronous resume-key IOCTL completion
 
-# NetBSD distinguishes ENOATTR from ENODATA. Missing optional extents must not
-# fail stream cleanup after its primary xattr is gone; retain real unlink errors.
-0035-streams-xattr-missing-extents.patch|portable stream extent cleanup and unlink errors
+# xattr_tdb and streams_xattr fixes.
+# macOS and Time Machine probe stream/ACL xattrs on untouched files. When
+# xattr_tdb backs that metadata, a missing row must behave like an empty xattr
+# set, not EINVAL. This is a real macOS interoperability fix, not a NetBSD shim,
+# and likely applies to future Samba versions that still use xattr_tdb here.
+# It also frees the stack frame that xattr_tdb_setattr leaked when it could
+# not lock the row.
+0018-xattr-tdb-missing-row-empty.patch|xattr_tdb missing rows behave like empty xattrs
+# macOS/iOS Photos writes many assetsd metadata streams. Once xattr_tdb's
+# stream-name list exceeds Samba's initial 1024-byte listxattr buffer, return
+# the normal -1/ERANGE retry signal instead of a positive required length that
+# callers mistake for bytes written into the too-small buffer.
+0027-xattr-tdb-listxattr-erange.patch|xattr_tdb retries oversized xattr name lists
+# With xattr_tdb:ignore_user_xattr, user xattr reads pass to the next module
+# before xattr_tdb has built its local smb_fname copy, so upstream passes NULL.
+# Pass the caller's name instead.
+0047-xattr-tdb-getxattrat-bypass-name.patch|pass the caller's name when xattr_tdb bypasses a user xattr read
 # Native HFS xattrs hold at most 3802 bytes, so smb.conf sets 35 xattrs per
 # stream to keep the previous ~128 KiB Windows alternate data stream limit.
 # Upstream accepts at most 16.
 0048-streams-xattr-max-64-per-stream.patch|allow up to 64 xattrs per stream
 
-# Rc2 uses C11 generic selection for const-preserving charset helpers. The
-# existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.
-0036-legacy-gcc-charset-selection.patch|const-preserving charset helpers on legacy GCC
-
+# Native Mac metadata.
 # Apple firmware stores AFP FinderInfo, resource forks and ordinary Mac xattrs
 # in native HFS attributes that its SMB server reaches only through private
 # xattr syscalls (overlay airport_native_xattr.h). Store them there so AFP and
@@ -151,13 +173,16 @@
 # only; it merges several historical databases without changing source mtimes,
 # keeps anything it cannot prove orphaned, and sets aside (never deletes)
 # databases left with only proven orphans.
-0038-native-hfs-xattr-backend.patch|native HFS Mac metadata and legacy migration
+0038-xattr-tdb-native-hfs.patch|native HFS Mac metadata and legacy migration
+
+# Apple disk rebinding.
 # Apple can revoke a bumped USB disk's vnode and remount the same dkN. Record
 # each tree's volume identity at connect, forward the manager's reload signal
 # from the parent to every worker, and disconnect only trees whose disk binding
 # was revoked, replaced or removed; other shares on the session stay connected.
-0041-time-capsule-stale-tree-reload.patch|forward parent reloads and disconnect only revoked Apple disk bindings
+0041-smbd-stale-tree-reload.patch|forward parent reloads and disconnect only revoked Apple disk bindings
 
+# Native symlinks.
 # Apple's AFP server and SSH store real POSIX symlinks on these disks, while
 # macOS SMB clients create 1067-byte Minshall+French "XSym" files. Keep the
 # disk native (tc:native symlinks, set by the unified service's smb.conf):
@@ -177,15 +202,4 @@
 # is mklink /D. Only non-Mac connections see FILE_SUPPORTS_REPARSE_POINTS, so
 # macOS keeps creating XSym. Existing XSym files stay as they are; there is no
 # migration.
-0045-time-capsule-native-symlinks.patch|native POSIX symlinks as reparse points; new SMB links become native
-
-# Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
-# initialized data: handling the first write to a .data page, UVM fault-ahead
-# maps the neighbouring pages (4 below, 3 above) from the executable again,
-# dropping this process's (or its parent's) changes to them. Globals silently
-# returned to their initial values; talloc_magic did, so talloc aborted with
-# "Bad talloc magic value" in forked children and elsewhere, depending only on
-# code layout. A first-priority constructor in talloc, linked into every Samba
-# binary, turns fault-ahead off for the writable segment with MADV_RANDOM, and
-# talloc_lib_init repeats it where NetBSD 4's GCC has no constructor priorities.
-0046-time-capsule-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment
+0045-smbd-native-links-reparse-points.patch|native POSIX symlinks as reparse points; new SMB links become native

@@ -41,7 +41,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	struct tevent_timer *cleanup_event;
  };
  
-@@ -250,7 +265,7 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
+@@ -252,7 +267,7 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
  			continue;
  		}
  
@@ -50,7 +50,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  			   "deleting\n", (int)child->pid));
  
  		TALLOC_FREE(child);
-@@ -262,7 +277,10 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
+@@ -264,7 +279,10 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
  		 * Re-schedule the next cleanup round
  		 */
  		list->cleanup_event = tevent_add_timer(global_event_context(), list,
@@ -62,7 +62,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  						      aio_child_cleanup, list);
  
  	}
-@@ -281,6 +299,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -283,6 +301,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  		if (config->children == NULL) {
  			return NULL;
  		}
@@ -71,7 +71,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	}
  	children = config->children;
  
-@@ -293,7 +313,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -295,7 +315,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  	if (children->cleanup_event == NULL) {
  		children->cleanup_event =
  			tevent_add_timer(global_event_context(), children,
@@ -81,7 +81,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  					 aio_child_cleanup, children);
  		if (children->cleanup_event == NULL) {
  			TALLOC_FREE(config->children);
-@@ -417,6 +438,7 @@ static int aio_child_destructor(struct aio_child *child)
+@@ -419,6 +440,7 @@ static int aio_child_destructor(struct aio_child *child)
  	sys_write_v(child->sockfd, &c, sizeof(c));
  	close(child->sockfd);
  	DLIST_REMOVE(child->list->children, child);
@@ -89,7 +89,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	return 0;
  }
  
-@@ -488,6 +510,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -490,6 +512,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  
  	result->list = children;
  	DLIST_ADD(children->children, result);
@@ -97,7 +97,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  	talloc_set_destructor(result, aio_child_destructor);
  
-@@ -503,289 +526,337 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -505,289 +528,337 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  	return ret;
  }
  
@@ -623,7 +623,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  	if (tevent_req_is_unix_error(req, &vfs_aio_state->error)) {
  		return -1;
-@@ -794,117 +865,59 @@ static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
+@@ -796,117 +867,59 @@ static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
  	return state->ret;
  }
  
@@ -775,7 +775,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	int ret;
  	struct aio_fork_config *config;
  	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
-@@ -922,6 +935,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+@@ -924,6 +937,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
  
  	config->erratic_testing_mode = lp_parm_bool(SNUM(handle->conn), "vfs_aio_fork",
  						    "erratic_testing_mode", false);
