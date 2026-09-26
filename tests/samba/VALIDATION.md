@@ -590,8 +590,19 @@ any smbd or migrator with a `.tdata` or `.tbss` section.
 
 Two observations:
 - On every build, including the unmodified one, a Mac handle held across the
-  kill of its smbd child returns EIO instead of reconnecting. It is not caused
-  by these patches and was not investigated.
+  kill of its smbd child returns EIO instead of reconnecting. That is by
+  design: a durable (not persistent) handle survives a lost connection, not
+  the server process. smbXsrv_open_global_verify_record() refuses an open
+  whose smbd is gone ("did not clean up record"), as Windows does. Lost
+  connections do reconnect on both LAN devices (2026-09-26, smbprotocol with a
+  lease and DH2Q, then DH2C on a new connection): after a FIN or an RST in
+  0.1 s; with the old connection left half-open, after about 5.5 s the
+  answer is FILE_NOT_AVAILABLE (0024's retry window), unless the new session
+  names the old one (PreviousSessionId), which reconnects in 0.1 s. macOS does
+  that: with its mount's smbd stopped for 60 s, the Mac opened a new session,
+  the old smbd got MSG_SMBXSRV_SESSION_CLOSE when resumed and marked the open
+  disconnected, and the Mac's DH2C reconnect restored the handle with its
+  pending write and all data.
 - One NetBSD 4 run without 0008 saw a Mac write time out during the notify
   step. Two reruns and the build without all five patches passed.
 
