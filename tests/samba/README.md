@@ -247,3 +247,18 @@ in a `__tc_links_test__` folder on the share and removes it at the end.
 After changing the conversion path, run the suite several times in a row and
 check `/mnt/Flash/dmesg.panic` on the device: without the journal commit, the
 HFS panic appeared within one to three runs, while each run on its own passed.
+
+`durable_device.py` checks durable-handle reconnect against a deployed device
+from a Mac (it needs `smbprotocol` on the host):
+
+```sh
+.venv/bin/python -m tests.samba.durable_device --env .env
+```
+
+It opens a file with a lease and a durable v2 request, drops the connection by
+FIN, by RST and half-open, and reconnects from a new connection. A half-open
+connection's open is refused with FILE_NOT_AVAILABLE after 0024's retry window
+unless the new session names the old one. The macOS case stops the smbd serving
+a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
+and checks that the Mac's reconnect keeps the handle and its data. It works in a
+`__tc_durable_test__` folder and removes it at the end.

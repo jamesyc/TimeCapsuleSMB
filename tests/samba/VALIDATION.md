@@ -602,7 +602,12 @@ Two observations:
   that: with its mount's smbd stopped for 60 s, the Mac opened a new session,
   the old smbd got MSG_SMBXSRV_SESSION_CLOSE when resumed and marked the open
   disconnected, and the Mac's DH2C reconnect restored the handle with its
-  pending write and all data.
+  pending write and all data. `durable_device.py` repeats these checks. In
+  about 25 NetBSD 6 runs, the macOS case failed once: the Mac's DH2C reached
+  the still-attached open and got FILE_NOT_AVAILABLE after 5.1 s, so the held
+  handle returned EIO. In 23 later runs with PreviousSessionId logged, the Mac
+  always named the old session and reconnected. The cause of that one failure
+  is not known.
 - One NetBSD 4 run without 0008 saw a Mac write time out during the notify
   step. Two reruns and the build without all five patches passed.
 
