@@ -13,10 +13,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli.flows import (
-    wait_for_device_up,
-    verify_managed_runtime_flow,
-)
+from timecapsulesmb.cli.flows import wait_for_device_up
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
     ProbeStepResult,
@@ -28,6 +26,7 @@ from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle
 from timecapsulesmb.services.reboot import ACP_REBOOT_REQUEST_TIMEOUT_SECONDS, SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import wait_for_tcp_port_state
+from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
@@ -439,30 +438,31 @@ class CliFlowTests(unittest.TestCase):
         self.assertNotIn("Run Discover and reselect it", str(raised.exception))
         self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues/177", str(raised.exception))
 
-    def test_verify_managed_runtime_flow_succeeds_when_runtime_ready(self) -> None:
+    def verify_runtime(self, command_context: FakeCommandContext, *, timeout_seconds: int = 123, failure_message: str = "runtime failed"):
+        return verify_managed_runtime_ready(
+            self.make_connection(),
+            callbacks=command_context.to_operation_callbacks(),
+            stage="verify_runtime",
+            timeout_seconds=timeout_seconds,
+            heading="Checking runtime",
+            failure_message=failure_message,
+        )
+
+    def test_verify_managed_runtime_ready_succeeds_when_runtime_ready(self) -> None:
         command_context = FakeCommandContext()
         with (
             mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock,
             mock.patch("timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn") as log_tail_mock,
         ):
-            ok = verify_managed_runtime_flow(
-                self.make_connection(),
-                command_context,
-                stage="verify_runtime",
-                timeout_seconds=123,
-                heading="Checking runtime",
-                failure_message="runtime failed",
-            )
+            result = self.verify_runtime(command_context)
 
-        self.assertTrue(ok)
+        self.assertTrue(result.ready)
         self.assertEqual(command_context.stages, ["verify_runtime"])
-        self.assertIsNone(command_context.error)
         self.assertEqual(verify_mock.call_args.kwargs, {"timeout_seconds": 123})
         log_tail_mock.assert_not_called()
 
-    def test_verify_managed_runtime_flow_fails_when_runtime_not_ready(self) -> None:
+    def test_verify_managed_runtime_ready_fails_when_runtime_not_ready(self) -> None:
         command_context = FakeCommandContext()
-        output = io.StringIO()
         with (
             mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
             mock.patch(
@@ -473,45 +473,29 @@ class CliFlowTests(unittest.TestCase):
                 },
             ),
         ):
-            with redirect_stdout(output):
-                ok = verify_managed_runtime_flow(
-                    self.make_connection(),
-                    command_context,
-                    stage="verify_runtime",
-                    timeout_seconds=123,
-                    heading="Checking runtime",
-                    failure_message="runtime failed",
-                )
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaises(DeviceError) as raised:
+                    self.verify_runtime(command_context)
 
-        self.assertFalse(ok)
+        self.assertEqual(str(raised.exception), "runtime failed managed runtime is not ready")
         self.assertEqual(command_context.stages, ["verify_runtime"])
-        self.assertEqual(command_context.error, "runtime failed managed runtime is not ready")
-        self.assertIn("runtime failed managed runtime is not ready", output.getvalue())
         self.assertEqual(command_context.debug_fields["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(command_context.debug_fields["remote_discovery_log_tail"], "mdns log")
 
-    def test_verify_managed_runtime_flow_keeps_original_failure_when_log_tail_fails(self) -> None:
+    def test_verify_managed_runtime_ready_keeps_original_failure_when_log_tail_fails(self) -> None:
         command_context = FakeCommandContext()
-        output = io.StringIO()
         with (
             mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
             mock.patch("timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn", side_effect=RuntimeError("tail failed")),
         ):
-            with redirect_stdout(output):
-                ok = verify_managed_runtime_flow(
-                    self.make_connection(),
-                    command_context,
-                    stage="verify_runtime",
-                    timeout_seconds=123,
-                    heading="Checking runtime",
-                    failure_message="runtime failed",
-                )
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaises(DeviceError) as raised:
+                    self.verify_runtime(command_context)
 
-        self.assertFalse(ok)
-        self.assertEqual(command_context.error, "runtime failed managed runtime is not ready")
+        self.assertEqual(str(raised.exception), "runtime failed managed runtime is not ready")
         self.assertEqual(command_context.debug_fields["remote_runtime_log_tail_error"], "tail failed")
 
-    def test_verify_managed_runtime_flow_includes_runtime_timeout_detail(self) -> None:
+    def test_verify_managed_runtime_ready_includes_runtime_timeout_detail(self) -> None:
         command_context = FakeCommandContext()
         smbd = readiness_result(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
         mdns = readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
@@ -525,22 +509,14 @@ class CliFlowTests(unittest.TestCase):
         output = io.StringIO()
         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=result):
             with redirect_stdout(output):
-                ok = verify_managed_runtime_flow(
-                    self.make_connection(),
-                    command_context,
-                    stage="verify_runtime",
-                    timeout_seconds=200,
-                    heading="Checking runtime",
-                    failure_message="NetBSD4 activation failed.",
-                )
+                with self.assertRaises(DeviceError) as raised:
+                    self.verify_runtime(command_context, timeout_seconds=200, failure_message="NetBSD4 activation failed.")
 
-        self.assertFalse(ok)
         self.assertEqual(
-            command_context.error,
+            str(raised.exception),
             "NetBSD4 activation failed. runtime verification timed out after 200s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
         )
         self.assertIn("failed: runtime verification timed out after 200s", output.getvalue())
-
 
 if __name__ == "__main__":
     unittest.main()

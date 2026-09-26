@@ -80,13 +80,12 @@ from timecapsulesmb.device.storage import (
     verify_payload_home_conn,
 )
 from timecapsulesmb.services import storage as storage_service
-from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
+from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation, run_activation_actions_and_verify
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
-    wait_for_activation_settle,
     wait_for_boot_settle,
 )
 from timecapsulesmb.transport.ssh import (
@@ -1079,38 +1078,6 @@ def upload_and_verify_deployment_payload(
         migration_helper_cleanup_safe = True
 
 
-def _run_activation_actions_and_verify(
-    connection: SshConnection,
-    activation_actions: list[RemoteAction],
-    *,
-    callbacks: OperationCallbacks,
-    activation_message: str,
-    activation_stage: str,
-    verification_stage: str,
-    verification_timeout_seconds: int,
-    verification_heading: str,
-    failure_message: str,
-    run_remote_actions_func=None,
-    verify_runtime_func=None,
-) -> None:
-    if run_remote_actions_func is None:
-        run_remote_actions_func = run_remote_actions
-    if verify_runtime_func is None:
-        verify_runtime_func = verify_managed_runtime_ready
-    callbacks.stage(activation_stage)
-    callbacks.message(activation_message)
-    run_remote_actions_func(connection, activation_actions)
-    wait_for_activation_settle(callbacks)
-    verify_runtime_func(
-        connection,
-        callbacks=callbacks,
-        stage=verification_stage,
-        timeout_seconds=verification_timeout_seconds,
-        heading=verification_heading,
-        failure_message=failure_message,
-    )
-
-
 def complete_deployment_after_upload(
     connection: SshConnection,
     prepared_plan: PreparedDeployPlan,
@@ -1183,7 +1150,7 @@ def complete_deployment_after_upload(
         )
         callbacks.message(decision.detail)
         if decision.run_actions:
-            _run_activation_actions_and_verify(
+            run_activation_actions_and_verify(
                 connection,
                 plan.activation_actions,
                 callbacks=callbacks,

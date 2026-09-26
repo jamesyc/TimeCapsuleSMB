@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
@@ -45,10 +44,6 @@ from timecapsulesmb.services.deploy import (
     upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
-
-if TYPE_CHECKING:
-    from timecapsulesmb.transport.ssh import SshConnection
 
 
 @dataclass(frozen=True)
@@ -75,7 +70,7 @@ def _device_error_code(exc: DeviceError) -> str:
     return code if isinstance(code, str) and code else "remote_error"
 
 
-def _device_operation_error(
+def device_operation_error(
     context: AppOperationContext,
     exc: DeviceError,
     *,
@@ -152,25 +147,6 @@ def _deploy_completion_payload(result) -> object:
         message=result.message,
         summary=result.summary,
         payload_family=result.payload_family,
-    )
-
-
-def _verify_runtime_for_service(
-    connection: SshConnection,
-    *,
-    callbacks,
-    stage: str,
-    timeout_seconds: int,
-    heading: str,
-    failure_message: str,
-) -> object:
-    return verify_managed_runtime_ready(
-        connection,
-        callbacks=callbacks,
-        stage=stage,
-        timeout_seconds=timeout_seconds,
-        heading=heading,
-        failure_message=failure_message,
     )
 
 
@@ -282,7 +258,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except DeployArtifactValidationError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
-        raise _device_operation_error(context, exc, default_code="unsupported_device") from exc
+        raise device_operation_error(context, exc, default_code="unsupported_device") from exc
     payload_context = preflight.payload_context
     payload_family = preflight.payload_family
     is_netbsd4 = preflight.is_netbsd4
@@ -342,7 +318,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             rsync_enabled=rsync_enabled,
         )
     except DeviceError as exc:
-        raise _device_operation_error(context, exc) from exc
+        raise device_operation_error(context, exc) from exc
     plan = prepared_plan.plan
     if dry_run:
         return OperationResult(True, deploy_plan_payload(
@@ -393,7 +369,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
-        raise _device_operation_error(context, exc) from exc
+        raise device_operation_error(context, exc) from exc
 
     try:
         completion = complete_deployment_after_upload(
@@ -402,31 +378,9 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             no_wait=no_wait,
             callbacks=context.to_operation_callbacks(),
             messages=DeployCompletionMessages(),
-            verify_runtime_func=_verify_runtime_for_service,
         )
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
     except DeviceError as exc:
-        raise _device_operation_error(context, exc) from exc
+        raise device_operation_error(context, exc) from exc
     return OperationResult(True, _deploy_completion_payload(completion))
-
-
-def verify_runtime(
-    context: AppOperationContext,
-    connection: SshConnection,
-    *,
-    stage: str,
-    timeout_seconds: int,
-    failure_message: str = "Managed runtime did not become ready.",
-) -> None:
-    try:
-        _verify_runtime_for_service(
-            connection,
-            callbacks=context.to_operation_callbacks(),
-            stage=stage,
-            timeout_seconds=timeout_seconds,
-            heading="Waiting for managed runtime to finish starting...",
-            failure_message=failure_message,
-        )
-    except DeviceError as exc:
-        raise _device_operation_error(context, exc) from exc

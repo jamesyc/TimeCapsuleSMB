@@ -780,7 +780,7 @@ class AppApiTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
                             with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup") as validate_mock:
                                 with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
-                                    with mock.patch("timecapsulesmb.app.ops.flash.request_reboot") as reboot_mock:
+                                    with mock.patch("timecapsulesmb.services.flash.request_reboot") as reboot_mock:
                                         rc = service.run_api_request(
                                             {"operation": "flash", "params": params},
                                             collector.sink,
@@ -892,7 +892,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
                         with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"):
                             with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan"):
-                                with mock.patch("timecapsulesmb.app.ops.flash.request_reboot_and_wait") as reboot_wait:
+                                with mock.patch("timecapsulesmb.services.flash.request_reboot_and_wait") as reboot_wait:
                                     rc = service.run_api_request(
                                         {
                                             "operation": "flash",
@@ -910,6 +910,49 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(payload["rebooted"])
         self.assertTrue(payload["waited_after_reboot"])
         self.assertEqual(payload["summary"], "Flash restore write validated; device rebooted.")
+
+    def test_flash_restore_write_reports_failed_reboot_wait_as_remote_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            manifest = {
+                "backup_dir": str(backup_dir),
+                "write_outcome": {"status": "validated", "mode": "restore", "write_validated": True},
+            }
+            plan = SimpleNamespace(already_satisfied=False, target_bank=SimpleNamespace(name="primary", sha256="bank-sha"))
+            bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
+            target = SimpleNamespace(acp_host="10.0.0.2", connection=object())
+            params: dict[str, object] = {"action": "write", "backup_dir": str(backup_dir), "mode": "restore"}
+            params["confirmation_id"] = self.confirmation_id_for(
+                "flash",
+                params,
+                {
+                    "host": "10.0.0.2",
+                    "backup_dir": str(backup_dir),
+                    "mode": "restore",
+                    "target_bank": "primary",
+                    "target_sha256": "bank-sha",
+                    "reboot_after_write": True,
+                    "wait_after_reboot": True,
+                },
+            )
+            collector = CollectingSink()
+            failure = RebootFlowError("the device did not go down", "did_not_go_down")
+            with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
+                with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()):
+                    with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
+                        with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"):
+                            with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan"):
+                                with mock.patch("timecapsulesmb.services.flash.request_reboot_and_wait", side_effect=failure):
+                                    rc = service.run_api_request({"operation": "flash", "params": params}, collector.sink)
+            saved = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["message"], "the device did not go down")
+        self.assertEqual(saved["write_outcome"]["post_write_action"], "ssh_reboot")
+        self.assertTrue(saved["write_outcome"]["reboot_requested"])
+        self.assertFalse(saved["write_outcome"]["rebooted"])
 
     def test_flash_patch_write_rejects_reboot_request(self) -> None:
         collector = CollectingSink()
@@ -3965,54 +4008,6 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(execution["measurements"]["reboot_request"][0]["strategy"], "ssh_shutdown_then_reboot")
         self.assertEqual(execution["measurements"]["reboot_cycle"][0]["result"], "success")
 
-    def test_deploy_verify_runtime_failure_adds_runtime_logs_to_error_context(self) -> None:
-        from timecapsulesmb.app.ops import deploy as deploy_ops
-
-        collector = CollectingSink()
-        context = AppOperationContext("deploy", collector.sink)
-        connection = SshConnection("root@169.254.44.9", "pw", "-o foo")
-        smbd = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
-        mdns = readiness_result(
-            False,
-            "managed mDNS takeover probe timed out",
-            ("FAIL:managed mDNS takeover probe timed out",),
-        )
-        verification = ManagedRuntimeProbeResult(
-            ready=False,
-            detail="runtime verification timed out after 200s; managed smbd ready; managed mDNS takeover probe timed out",
-            smbd=smbd,
-            mdns=mdns,
-            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 200s"),),
-        )
-        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=verification):
-            with mock.patch(
-                "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
-                return_value={
-                    "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
-                    "remote_discovery_log_tail": "mdns: before interface probe",
-                },
-            ):
-                with self.assertRaises(AppOperationError) as raised:
-                    deploy_ops.verify_runtime(
-                        context,
-                        connection,
-                        stage="verify_runtime_activation",
-                        timeout_seconds=200,
-                        failure_message="NetBSD4 activation failed.",
-                    )
-
-        self.assertEqual(raised.exception.code, "remote_error")
-        self.assertEqual(
-            context.diagnostics.debug_fields["remote_manager_log_tail"],
-            "manager: mDNS startup deferred; no usable address has appeared yet",
-        )
-        self.assertEqual(context.diagnostics.debug_fields["remote_discovery_log_tail"], "mdns: before interface probe")
-        # The retired advertiser's auto-IP classification no longer runs.
-        self.assertNotIn("runtime_startup_failure", context.diagnostics.debug_fields)
-        error = context.diagnostic_error(str(raised.exception))
-        self.assertIn("remote_manager_log_tail=manager: mDNS startup deferred; no usable address has appeared yet", error)
-        self.assertIn("remote_discovery_log_tail=mdns: before interface probe", error)
-
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
         from timecapsulesmb.services.reboot import request_reboot
 
@@ -4300,7 +4295,7 @@ MaSt = (
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target") as resolve_target:
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn") as runtime_probe:
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
                         rc = service.run_api_request({"operation": "activate", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 1)
@@ -4326,7 +4321,7 @@ MaSt = (
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(True)):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
                         rc = service.run_api_request(
                             {"operation": "activate", "params": params},
                             collector.sink,
@@ -4350,9 +4345,9 @@ MaSt = (
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(False)):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.wait_for_activation_settle"):
-                            with mock.patch("timecapsulesmb.app.ops.maintenance.verify_runtime"):
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
+                        with mock.patch("timecapsulesmb.services.activation.wait_for_activation_settle"):
+                            with mock.patch("timecapsulesmb.services.activation.verify_managed_runtime_ready"):
                                 rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
 
         self.assertEqual(rc, 0)
@@ -4363,6 +4358,53 @@ MaSt = (
         self.assertEqual(payload["summary_args"], [])
         self.assertEqual(payload["summary"], NETBSD4_ACTIVATION_COMPLETED)
         self.assertEqual(payload["message"], NETBSD4_ACTIVATION_COMPLETED)
+
+    def test_activate_runtime_failure_reports_remote_error_with_runtime_logs(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        params = {}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
+        smbd = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns = readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
+        verification = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="runtime verification timed out after 200s; managed smbd ready; managed mDNS takeover probe timed out",
+            smbd=smbd,
+            mdns=mdns,
+            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 200s"),),
+        )
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(False)):
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
+                        with mock.patch("timecapsulesmb.services.activation.wait_for_activation_settle"):
+                            with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=verification) as verify_probe:
+                                with mock.patch(
+                                    "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
+                                    return_value={
+                                        "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
+                                        "remote_discovery_log_tail": "mdns: before interface probe",
+                                    },
+                                ):
+                                    rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        remote_actions.assert_called_once()
+        self.assertEqual(verify_probe.call_args.kwargs, {"timeout_seconds": 200})
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertTrue(error["message"].startswith("NetBSD4 activation failed. runtime verification timed out after 200s"))
+        self.assertEqual(error["debug"]["stage"], "verify_runtime_activation")
+        self.assertEqual(
+            error["debug"]["remote_manager_log_tail"],
+            "manager: mDNS startup deferred; no usable address has appeared yet",
+        )
+        self.assertEqual(error["debug"]["remote_discovery_log_tail"], "mdns: before interface probe")
+        # The retired advertiser's auto-IP classification no longer runs.
+        self.assertNotIn("runtime_startup_failure", error["debug"])
 
     def test_uninstall_requires_confirmation_before_remote_removal(self) -> None:
         collector = CollectingSink()
@@ -4492,9 +4534,9 @@ MaSt = (
                 with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
                     with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
                         with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload"):
-                            with mock.patch("timecapsulesmb.app.ops.maintenance.request_reboot", side_effect=self.fake_reboot_request) as reboot:
-                                with mock.patch("timecapsulesmb.app.ops.maintenance.request_reboot_and_wait") as wait:
-                                    with mock.patch("timecapsulesmb.app.ops.maintenance.verify_post_uninstall") as verify:
+                            with mock.patch("timecapsulesmb.services.maintenance.request_reboot", side_effect=self.fake_reboot_request) as reboot:
+                                with mock.patch("timecapsulesmb.services.maintenance.request_reboot_and_wait") as wait:
+                                    with mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall") as verify:
                                         rc = service.run_api_request(
                                             {
                                                 "operation": "uninstall",
@@ -4567,7 +4609,7 @@ MaSt = (
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
                     with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.run_ssh") as run_ssh:
+                        with mock.patch("timecapsulesmb.services.maintenance.run_ssh") as run_ssh:
                             rc = service.run_api_request(
                                 {
                                     "operation": "fsck",
@@ -4593,7 +4635,7 @@ MaSt = (
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
                     with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted):
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.run_ssh") as run_ssh:
+                        with mock.patch("timecapsulesmb.services.maintenance.run_ssh") as run_ssh:
                             rc = service.run_api_request(
                                 {
                                     "operation": "fsck",
@@ -4630,10 +4672,10 @@ MaSt = (
             stack.enter_context(mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]))
             stack.enter_context(mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted))
             run_ssh = stack.enter_context(mock.patch(
-                "timecapsulesmb.app.ops.maintenance.run_ssh",
+                "timecapsulesmb.services.maintenance.run_ssh",
                 return_value=subprocess.CompletedProcess(["ssh"], ssh_returncode, stdout=stdout, stderr=""),
             ))
-            observe = stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.observe_reboot_cycle"))
+            observe = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.observe_reboot_cycle"))
             rc = service.run_api_request({"operation": "fsck", "params": params}, collector.sink)
         run_ssh.assert_called_once()
         return rc, collector, observe

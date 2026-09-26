@@ -12,16 +12,12 @@ from timecapsulesmb.cli.runtime import (
     no_input_enabled,
     print_json,
 )
-from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
-from timecapsulesmb.deploy.planner import build_uninstall_plan
-from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.services import storage as storage_service
-from timecapsulesmb.services.maintenance import UNINSTALL_REBOOT_NO_DOWN_MESSAGE as REBOOT_NO_DOWN_MESSAGE
-from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.maintenance import prepare_uninstall, reboot_after_uninstall
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 
@@ -69,25 +65,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         if connection.password:
             command_context.start_optional_airport_identity_probe(connection)
 
-        if args.dry_run:
-            volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
-            payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{MANAGED_PAYLOAD_DIR_NAME}"]
-        else:
-            mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
-                connection,
-                callbacks=command_context.to_operation_callbacks(),
-                wait_seconds=args.mount_wait,
-            )
-            volume_roots = [volume.volume_root for volume in mounted_volumes]
-            payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
-        command_context.update_fields(volume_roots=volume_roots, payload_dirs=payload_dirs)
-        command_context.set_stage("build_uninstall_plan")
-        plan = build_uninstall_plan(
-            connection.host,
-            volume_roots,
-            payload_dirs,
-            reboot_after_uninstall=not args.no_reboot,
-            wait_after_reboot=not args.no_wait,
+        plan = prepare_uninstall(
+            connection,
+            dry_run=args.dry_run,
+            reboot=not args.no_reboot,
+            wait=not args.no_wait,
+            mount_wait=args.mount_wait,
+            callbacks=command_context.to_operation_callbacks(),
         )
 
         if args.dry_run:
@@ -129,48 +113,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.succeed()
                 return 0
 
-        if args.no_wait:
-            try:
-                request_reboot(
-                    connection,
-                    strategy="acp_then_ssh",
-                    callbacks=command_context.to_operation_callbacks(),
-                    raise_on_request_error=True,
-                )
-            except RebootFlowError as exc:
-                print(str(exc))
-                command_context.fail_with_error(str(exc))
-                return 1
-            print("Reboot requested; not waiting for the device to go down or come back.")
-            print("Post-uninstall verification skipped.")
-            command_context.succeed()
-            return 0
-
         try:
-            request_reboot_and_wait(
-                connection,
-                strategy="acp_then_ssh",
-                callbacks=command_context.to_operation_callbacks(),
-                down_timeout_seconds=60,
-                up_timeout_seconds=240,
-                reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,
-                reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
-            )
-        except RebootFlowError as exc:
+            verified = reboot_after_uninstall(connection, plan, callbacks=command_context.to_operation_callbacks())
+        except (RebootFlowError, DeviceError) as exc:
             print(str(exc))
             command_context.fail_with_error(str(exc))
             return 1
-
-        command_context.set_stage("verify_post_uninstall")
-        verification = verify_post_uninstall(connection, plan)
-        for line in render_post_uninstall_verification(verification):
-            print(line)
-        if verification:
+        if verified:
             command_context.update_fields(post_uninstall_verified=True)
-            command_context.succeed()
-            return 0
-
-        print("Managed TimeCapsuleSMB files are still present after reboot.")
-        command_context.fail_with_error("Managed TimeCapsuleSMB files are still present after reboot.")
-        return 1
+        else:
+            print("Reboot requested; not waiting for the device to go down or come back.")
+            print("Post-uninstall verification skipped.")
+        command_context.succeed()
+        return 0
     return 1

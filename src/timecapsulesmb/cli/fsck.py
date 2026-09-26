@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import shlex
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
@@ -10,20 +9,15 @@ from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.maintenance import (
-    FSCK_REBOOT_NO_DOWN_MESSAGE,
-    FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
-    build_remote_fsck_script,
     format_fsck_targets,
-    fsck_exit_status,
-    fsck_failure_message,
     fsck_target_from_volume,
     FsckTarget,
+    run_fsck,
     select_fsck_target,
 )
-from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.ssh import run_ssh
 
 
 def prompt_fsck_target(targets: tuple[FsckTarget, ...]) -> FsckTarget:
@@ -112,49 +106,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at fsck confirmation prompt.")
                 return 0
 
-        command_context.set_stage("run_fsck")
-        script = build_remote_fsck_script(target.device, target.mountpoint, reboot=not args.no_reboot)
-        proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
-        if proc.stdout:
-            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
-        fsck_status = fsck_exit_status(proc.stdout or "")
-        failure = fsck_failure_message(fsck_status, proc.stdout or "")
-        # Without a status line the script stopped before fsck, and therefore
-        # before any reboot: there is nothing to wait for.
-        if fsck_status is None or args.no_reboot:
-            if failure is None:
-                command_context.succeed()
-                return 0
-            print(failure)
-            command_context.fail_with_error(failure)
-            return 1
-
-        command_context.update_fields(reboot_was_attempted=True)
-        if args.no_wait:
-            if failure is None:
-                command_context.succeed()
-                return 0
-            print(failure)
-            command_context.fail_with_error(failure)
-            return 1
-
         try:
-            observe_reboot_cycle(
+            outcome = run_fsck(
                 connection,
+                target,
+                reboot=not args.no_reboot,
+                wait=not args.no_wait,
                 callbacks=command_context.to_operation_callbacks(),
-                reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
-                reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
-                down_timeout_seconds=90,
-                up_timeout_seconds=420,
             )
         except RebootFlowError as exc:
             print(str(exc))
             command_context.fail_with_error(str(exc))
             return 1
-
-        if failure is not None:
-            print(failure)
-            command_context.fail_with_error(failure)
+        if outcome.failure is not None:
+            print(outcome.failure)
+            command_context.fail_with_error(outcome.failure)
             return 1
         command_context.succeed()
         return 0

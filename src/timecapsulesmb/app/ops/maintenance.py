@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 import sys
 
 from timecapsulesmb.app.context import AppOperationContext
@@ -21,19 +20,16 @@ from timecapsulesmb.app.ops.common import (
     resolve_request_connection,
     resolve_request_target,
 )
-from timecapsulesmb.app.ops.deploy import verify_runtime
-from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
+from timecapsulesmb.app.ops.deploy import device_operation_error
 from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
-from timecapsulesmb.deploy.executor import remote_uninstall_payload, run_remote_actions
+from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     build_runtime_activation_plan,
-    build_uninstall_plan,
 )
-from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -45,21 +41,18 @@ from timecapsulesmb.services.app import (
     string_param,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
-from timecapsulesmb.services.activation import decide_manual_activation
+from timecapsulesmb.services.reboot import RebootFlowError
+from timecapsulesmb.services.activation import activate_runtime
 from timecapsulesmb.services.maintenance import (
     FSCK_DID_NOT_RUN_MESSAGE,
-    FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
-    FSCK_REBOOT_NO_DOWN_MESSAGE,
-    UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
-    build_remote_fsck_script,
     format_fsck_plan,
     format_fsck_targets,
-    fsck_exit_status,
-    fsck_failure_message,
     fsck_plan_to_jsonable,
     fsck_target_from_volume,
     fsck_target_to_jsonable,
+    prepare_uninstall,
+    reboot_after_uninstall,
+    run_fsck,
     select_fsck_target,
 )
 from timecapsulesmb.services.deploy import require_supported_payload
@@ -70,11 +63,6 @@ from timecapsulesmb.services.runtime import (
     load_optional_env_config,
     resolve_env_connection,
 )
-from timecapsulesmb.services.runtime_verification import wait_for_activation_settle
-from timecapsulesmb.transport.ssh import run_ssh
-
-
-REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 
 
 def activate_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -113,21 +101,12 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
             "activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
             code="unsupported_device",
         )
-    connection = target.connection
-    context.stage("probe_runtime")
-    decision = decide_manual_activation(connection)
-    context.add_debug_fields(
-        activation_decision=decision.reason,
-        manual_activation_required=decision.run_actions,
-    )
-    context.log(decision.detail)
+    try:
+        decision = activate_runtime(target.connection, plan.actions, callbacks=context.to_operation_callbacks())
+    except DeviceError as exc:
+        raise device_operation_error(context, exc) from exc
     if not decision.run_actions:
         return OperationResult(True, activation_result_payload(already_active=True))
-
-    context.stage("run_activation")
-    run_remote_actions(connection, plan.actions)
-    wait_for_activation_settle(context.to_operation_callbacks())
-    verify_runtime(context, connection, stage="verify_runtime_activation", timeout_seconds=200)
     return OperationResult(True, activation_result_payload(
         already_active=False,
         summary=netbsd4_activation_summary(),
@@ -172,75 +151,27 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
                 presentation_values=presentation_values,
             ),
         )
-    if dry_run:
-        volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
-        payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{MANAGED_PAYLOAD_DIR_NAME}"]
-    else:
-        mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
-            connection,
-            callbacks=context.to_operation_callbacks(),
-            wait_seconds=mount_wait,
-        )
-        volume_roots = [volume.volume_root for volume in mounted_volumes]
-        payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
-    context.stage("build_uninstall_plan")
-    plan = build_uninstall_plan(
-        connection.host,
-        volume_roots,
-        payload_dirs,
-        reboot_after_uninstall=not no_reboot,
-        wait_after_reboot=not no_wait,
+    plan = prepare_uninstall(
+        connection,
+        dry_run=dry_run,
+        reboot=not no_reboot,
+        wait=not no_wait,
+        mount_wait=mount_wait,
+        callbacks=context.to_operation_callbacks(),
     )
     if dry_run:
         return OperationResult(True, uninstall_plan_payload(uninstall_plan_to_jsonable(plan)))
     context.stage("uninstall_payload")
     remote_uninstall_payload(connection, plan)
-    if no_reboot:
-        return OperationResult(True, uninstall_result_payload(
-            rebooted=False,
-            verified=False,
-            reboot_requested=False,
-            waited=False,
-        ))
-    if no_wait:
-        try:
-            request_reboot(
-                connection,
-                strategy="acp_then_ssh",
-                callbacks=context.to_operation_callbacks(),
-                raise_on_request_error=True,
-            )
-        except RebootFlowError as exc:
-            raise AppOperationError(str(exc), code="remote_error") from exc
-        return OperationResult(True, uninstall_result_payload(
-            rebooted=False,
-            verified=False,
-            reboot_requested=True,
-            waited=False,
-        ))
     try:
-        request_reboot_and_wait(
-            connection,
-            strategy="acp_then_ssh",
-            callbacks=context.to_operation_callbacks(),
-            down_timeout_seconds=60,
-            up_timeout_seconds=240,
-            reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
-            reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
-        )
-    except RebootFlowError as exc:
+        verified = reboot_after_uninstall(connection, plan, callbacks=context.to_operation_callbacks())
+    except (RebootFlowError, DeviceError) as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
-    context.stage("verify_post_uninstall")
-    verification = verify_post_uninstall(connection, plan)
-    for line in render_post_uninstall_verification(verification):
-        context.log(line)
-    if not verification:
-        raise AppOperationError("Managed TimeCapsuleSMB files are still present after reboot.", code="remote_error")
     return OperationResult(True, uninstall_result_payload(
-        rebooted=True,
-        verified=True,
-        reboot_requested=True,
-        waited=True,
+        rebooted=verified,
+        verified=verified,
+        reboot_requested=plan.reboot_required,
+        waited=verified,
     ))
 
 
@@ -321,65 +252,28 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             wait=not no_wait,
         )))
 
-    context.stage("run_fsck")
-    script = build_remote_fsck_script(target.device, target.mountpoint, reboot=not no_reboot)
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
-    )
-    if proc.stdout:
-        for line in proc.stdout.splitlines():
-            context.log(line)
-    fsck_status = fsck_exit_status(proc.stdout or "")
-    failure = fsck_failure_message(fsck_status, proc.stdout or "")
-    context.update_fields(returncode=fsck_status if fsck_status is not None else proc.returncode)
-    # Without a status line the script stopped before fsck and before any
-    # reboot, so there is no reboot to wait for.
-    if fsck_status is None:
-        raise AppOperationError(failure or FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
-    if failure is not None:
-        context.set_error(failure)
-    if no_reboot:
-        return OperationResult(failure is None, fsck_result_payload(
-            device=target.device,
-            mountpoint=target.mountpoint,
-            returncode=fsck_status,
-            reboot_requested=False,
-            waited=False,
-            verified=False,
-            error=failure,
-        ))
-    if no_wait:
-        return OperationResult(failure is None, fsck_result_payload(
-            device=target.device,
-            mountpoint=target.mountpoint,
-            returncode=fsck_status,
-            reboot_requested=True,
-            waited=False,
-            verified=False,
-            error=failure,
-        ))
     try:
-        observe_reboot_cycle(
+        outcome = run_fsck(
             connection,
+            target,
+            reboot=not no_reboot,
+            wait=not no_wait,
             callbacks=context.to_operation_callbacks(),
-            reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
-            reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
-            down_timeout_seconds=90,
-            up_timeout_seconds=420,
         )
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
-    return OperationResult(failure is None, fsck_result_payload(
+    if outcome.status is None:
+        raise AppOperationError(outcome.failure or FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
+    if outcome.failure is not None:
+        context.set_error(outcome.failure)
+    return OperationResult(outcome.failure is None, fsck_result_payload(
         device=target.device,
         mountpoint=target.mountpoint,
-        returncode=fsck_status,
-        reboot_requested=True,
-        waited=True,
-        verified=True,
-        error=failure,
+        returncode=outcome.status,
+        reboot_requested=outcome.reboot_requested,
+        waited=outcome.waited,
+        verified=outcome.waited,
+        error=outcome.failure,
     ))
 
 

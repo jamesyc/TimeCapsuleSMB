@@ -31,6 +31,8 @@ from timecapsulesmb.flash_workflow import (
     write_and_validate_plan,
 )
 from timecapsulesmb.integrations.acp import ACPError, flash_firmware_bank, get_property_int
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.reboot import request_reboot, request_reboot_and_wait
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh_capture_bytes
 
 
@@ -44,6 +46,11 @@ POWERCYCLE_REQUIRED_MESSAGE = (
 STALE_BACKUP_AFTER_WRITE_MESSAGE = (
     "This flash backup was used for a firmware write. Back up and inspect again before planning another flash action."
 )
+FLASH_RESTORE_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
+FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE = (
+    "Firmware restore write validated, but the device did not go down after reboot request."
+)
+FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after firmware restore reboot."
 FLASH_UNSUPPORTED_DEVICE_MESSAGE = (
     "flash is only supported for NetBSD4 AirPort storage devices. "
     "If your device should be supported, please add details to "
@@ -727,3 +734,63 @@ def write_flash_plan(
         write_result=write_result,
     )
     return write_result
+
+
+def finish_validated_write(
+    *,
+    target: FlashTarget,
+    bundle: FlashAnalysisBundle,
+    plan_operation: str,
+    reboot: bool,
+    wait: bool,
+    callbacks: OperationCallbacks,
+    progress_log: Callable[[str], None] | None = None,
+) -> None:
+    """Record what follows a validated write in the manifest, and reboot if asked.
+
+    A patched bank needs a manual power cycle; a restore reboots over SSH only
+    when requested. Raises RebootFlowError when the reboot request or wait fails.
+    """
+    if plan_operation == "patch" or not reboot:
+        record_post_write_action(
+            bundle=bundle,
+            post_write_action="manual_power_cycle" if plan_operation == "patch" else "manual_reboot",
+            reboot_requested=False,
+            rebooted=False,
+            waited_after_reboot=False,
+        )
+        return
+
+    record_post_write_action(
+        bundle=bundle,
+        post_write_action="ssh_reboot",
+        reboot_requested=True,
+        rebooted=False,
+        waited_after_reboot=wait,
+    )
+    if not wait:
+        request_reboot(
+            target.connection,
+            strategy=FLASH_RESTORE_REBOOT_STRATEGY,
+            callbacks=callbacks,
+            progress_log=progress_log,
+            raise_on_request_error=True,
+        )
+        return
+    request_reboot_and_wait(
+        target.connection,
+        strategy=FLASH_RESTORE_REBOOT_STRATEGY,
+        callbacks=callbacks,
+        progress_log=progress_log,
+        down_timeout_seconds=60,
+        up_timeout_seconds=240,
+        reboot_no_down_message=FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE,
+        reboot_up_timeout_message=FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE,
+    )
+    record_post_write_action(
+        bundle=bundle,
+        post_write_action="ssh_reboot",
+        reboot_requested=True,
+        rebooted=True,
+        waited_after_reboot=True,
+    )

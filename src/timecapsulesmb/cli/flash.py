@@ -38,6 +38,7 @@ from timecapsulesmb.services.flash import (
     FLASH_UNSUPPORTED_DEVICE_MESSAGE,
     apply_flash_plan_to_manifest,
     build_flash_backup_dir,
+    finish_validated_write,
     manifest_from_inspection,
     plan_from_operation,
     record_write_outcome,
@@ -49,7 +50,7 @@ from timecapsulesmb.services.flash import (
     write_flash_plan,
     write_stage_for_plan,
 )
-from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshError
@@ -634,50 +635,38 @@ def _finish_write(
     args: argparse.Namespace,
     operation: str,
     target: FlashTarget,
+    bundle: FlashAnalysisBundle,
     log: ProgressLogger,
 ) -> int:
+    reboot = operation == "restore" and args.reboot
+    wait = reboot and not args.no_wait
+    try:
+        finish_validated_write(
+            target=target,
+            bundle=bundle,
+            plan_operation=operation,
+            reboot=reboot,
+            wait=wait,
+            callbacks=command_context.to_operation_callbacks(),
+            progress_log=log,
+        )
+    except RebootFlowError as exc:
+        print(str(exc))
+        command_context.fail_with_error(str(exc))
+        # With a wait, only the down/up wait can fail; the device may be stuck mid-reboot.
+        if wait:
+            print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
+        return 1
+
     if operation == "patch":
         print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
         print(f"{color_green('Patch write successful.')} The device needs to be manually rebooted.", flush=True)
-        command_context.succeed()
-        return 0
-
-    if not args.reboot:
+    elif not reboot:
         print(f"{color_green('Restore write successful.')} The device needs to be manually rebooted.", flush=True)
-        command_context.succeed()
-        return 0
-
-    try:
-        request_reboot(
-            target.connection,
-            strategy="ssh",
-            callbacks=command_context.to_operation_callbacks(),
-            progress_log=log,
-            raise_on_request_error=args.no_wait,
-        )
-    except RebootFlowError as exc:
-        print(str(exc))
-        command_context.fail_with_error(str(exc))
-        return 1
-    if args.no_wait:
+    elif not wait:
         print("Reboot requested; not waiting for the device to go down or come back.", flush=True)
-        command_context.succeed()
-        return 0
-    try:
-        observe_reboot_cycle(
-            target.connection,
-            callbacks=command_context.to_operation_callbacks(),
-            reboot_no_down_message="Firmware write validated, but the device did not go down after reboot request.",
-            reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
-            down_timeout_seconds=60,
-            up_timeout_seconds=240,
-        )
-    except RebootFlowError as exc:
-        print(str(exc))
-        command_context.fail_with_error(str(exc))
-        print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
-        return 1
-    print("Device returned after reboot. Run `tcapsule flash --check-apple` to verify Apple stock firmware.", flush=True)
+    else:
+        print("Device returned after reboot. Run `tcapsule flash --check-apple` to verify Apple stock firmware.", flush=True)
     command_context.succeed()
     return 0
 
@@ -737,7 +726,7 @@ def _run_flash(
     ) is None:
         return 1
 
-    return _finish_write(command_context, args=args, operation=operation, target=target, log=log)
+    return _finish_write(command_context, args=args, operation=operation, target=target, bundle=bundle, log=log)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

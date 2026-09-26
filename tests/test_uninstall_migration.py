@@ -10,6 +10,8 @@ from timecapsulesmb.app.ops import maintenance
 from timecapsulesmb.deploy import commands, executor
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.device.processes import render_wait_for_idle_jobs
+from timecapsulesmb.services import maintenance as maintenance_service
+from timecapsulesmb.services.callbacks import OperationCallbacks
 
 
 @pytest.mark.parametrize('scenario', ['active_short', 'active_long', 'finishes', 'zombie', 'unrelated', 'ps_failure'])
@@ -49,14 +51,14 @@ if {scenario!r} != 'finishes' or n == 0: print({rows[scenario]!r})
     monkeypatch.setattr(maintenance, 'load_request_config', lambda *a: {})
     monkeypatch.setattr(maintenance, 'resolve_request_connection', lambda *a, **kw: SimpleNamespace(host='fixture'))
     monkeypatch.setattr(maintenance, 'require_confirmation', lambda *a: None)
-    monkeypatch.setattr(maintenance.storage_service, 'mount_mast_volumes_with_diagnostics',
+    monkeypatch.setattr(maintenance_service.storage_service, 'mount_mast_volumes_with_diagnostics',
                         lambda *a, **kw: [SimpleNamespace(volume_root='/Volumes/dk2')])
     reboot = []
-    monkeypatch.setattr(maintenance, 'request_reboot', lambda *a, **kw: reboot.append('request'))
-    monkeypatch.setattr(maintenance, 'request_reboot_and_wait', lambda *a, **kw: reboot.append('wait'))
-    monkeypatch.setattr(maintenance, 'verify_post_uninstall', lambda *a: True)
-    monkeypatch.setattr(maintenance, 'render_post_uninstall_verification', lambda *a: [])
-    context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=lambda: None)
+    monkeypatch.setattr(maintenance_service, 'request_reboot', lambda *a, **kw: reboot.append('request'))
+    monkeypatch.setattr(maintenance_service, 'request_reboot_and_wait', lambda *a, **kw: reboot.append('wait'))
+    monkeypatch.setattr(maintenance_service, 'verify_post_uninstall', lambda *a: True)
+    monkeypatch.setattr(maintenance_service, 'render_post_uninstall_verification', lambda *a: [])
+    context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=OperationCallbacks)
     busy = scenario in ('active_short', 'active_long', 'ps_failure')
     if busy:
         with pytest.raises(RuntimeError):

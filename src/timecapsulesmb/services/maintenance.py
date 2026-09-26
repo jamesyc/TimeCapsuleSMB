@@ -3,9 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shlex
 
+from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
 from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
-from timecapsulesmb.device.storage import MaStVolume
+from timecapsulesmb.deploy.planner import UninstallPlan, build_uninstall_plan
+from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
+from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.reboot import observe_reboot_cycle, request_reboot, request_reboot_and_wait
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -13,7 +21,10 @@ UNINSTALL_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall."
 )
+UNINSTALL_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+UNINSTALL_FILES_REMAIN_MESSAGE = "Managed TimeCapsuleSMB files are still present after reboot."
 FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
+FSCK_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 FSCK_STATUS_PREFIX = "tcapsule-fsck: fsck_hfs exit status "
 FSCK_DID_NOT_RUN_MESSAGE = (
     "fsck did not run: file sharing could not be stopped, or the connection "
@@ -178,3 +189,119 @@ def fsck_failure_message(status: int | None, output: str = "") -> str | None:
     if status != 0:
         return f"fsck_hfs exited with status {status}; the disk may still need repair."
     return None
+
+
+@dataclass(frozen=True)
+class FsckOutcome:
+    # None when fsck_hfs never ran; see fsck_exit_status.
+    status: int | None
+    failure: str | None
+    reboot_requested: bool
+    waited: bool
+
+
+def run_fsck(
+    connection: SshConnection,
+    target: FsckTarget,
+    *,
+    reboot: bool,
+    wait: bool,
+    callbacks: OperationCallbacks,
+) -> FsckOutcome:
+    """Run the remote fsck script, log its output, and follow its reboot.
+
+    Raises RebootFlowError when the device does not go down or come back.
+    """
+    callbacks.stage("run_fsck")
+    script = build_remote_fsck_script(target.device, target.mountpoint, reboot=reboot)
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
+    output = proc.stdout or ""
+    for line in output.splitlines():
+        callbacks.message(line)
+    status = fsck_exit_status(output)
+    callbacks.update(returncode=status if status is not None else proc.returncode)
+    # Without a status line the script stopped before fsck, and therefore
+    # before any reboot: there is nothing to wait for.
+    rebooting = reboot and status is not None
+    if rebooting:
+        callbacks.update(reboot_was_attempted=True)
+        if wait:
+            observe_reboot_cycle(
+                connection,
+                callbacks=callbacks,
+                reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
+                reboot_up_timeout_message=FSCK_REBOOT_UP_TIMEOUT_MESSAGE,
+                down_timeout_seconds=90,
+                up_timeout_seconds=420,
+            )
+    return FsckOutcome(
+        status=status,
+        failure=fsck_failure_message(status, output),
+        reboot_requested=rebooting,
+        waited=rebooting and wait,
+    )
+
+
+def prepare_uninstall(
+    connection: SshConnection,
+    *,
+    dry_run: bool,
+    reboot: bool,
+    wait: bool,
+    mount_wait: int,
+    callbacks: OperationCallbacks,
+) -> UninstallPlan:
+    """Mount the HFS volumes (placeholders for a dry run) and plan the removal."""
+    if dry_run:
+        volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
+    else:
+        mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
+            connection,
+            callbacks=callbacks,
+            wait_seconds=mount_wait,
+        )
+        volume_roots = [volume.volume_root for volume in mounted_volumes]
+    payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
+    callbacks.update(volume_roots=volume_roots, payload_dirs=payload_dirs)
+    callbacks.stage("build_uninstall_plan")
+    return build_uninstall_plan(
+        connection.host,
+        volume_roots,
+        payload_dirs,
+        reboot_after_uninstall=reboot,
+        wait_after_reboot=wait,
+    )
+
+
+def reboot_after_uninstall(connection: SshConnection, plan: UninstallPlan, *, callbacks: OperationCallbacks) -> bool:
+    """Reboot as the plan asks and, after a waited reboot, verify the removal.
+
+    Returns whether the removal was verified. Raises RebootFlowError when the
+    reboot fails, and DeviceError when managed files survive the reboot.
+    """
+    if not plan.reboot_required:
+        return False
+    if not plan.wait_after_reboot:
+        request_reboot(
+            connection,
+            strategy="acp_then_ssh",
+            callbacks=callbacks,
+            raise_on_request_error=True,
+        )
+        return False
+    request_reboot_and_wait(
+        connection,
+        strategy="acp_then_ssh",
+        callbacks=callbacks,
+        down_timeout_seconds=60,
+        up_timeout_seconds=240,
+        reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
+        reboot_up_timeout_message=UNINSTALL_REBOOT_UP_TIMEOUT_MESSAGE,
+    )
+    callbacks.stage("verify_post_uninstall")
+    verification = verify_post_uninstall(connection, plan)
+    for line in render_post_uninstall_verification(verification):
+        callbacks.message(line)
+    if not verification:
+        raise DeviceError(UNINSTALL_FILES_REMAIN_MESSAGE)
+    return True

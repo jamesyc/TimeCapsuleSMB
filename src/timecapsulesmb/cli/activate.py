@@ -4,7 +4,6 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -15,11 +14,10 @@ from timecapsulesmb.cli.runtime import (
 from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, format_activation_plan
-from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_runtime_activation_plan
-from timecapsulesmb.services.activation import decide_manual_activation
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.services.activation import activate_runtime
 from timecapsulesmb.services.runtime import load_env_config
-from timecapsulesmb.services.runtime_verification import wait_for_activation_settle
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, NETBSD4_REBOOT_GUIDANCE
@@ -100,33 +98,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")
                 return 0
 
-        command_context.set_stage("probe_runtime")
-        decision = decide_manual_activation(connection)
-        command_context.add_debug_fields(
-            activation_decision=decision.reason,
-            manual_activation_required=decision.run_actions,
-        )
-        print(decision.detail)
+        try:
+            decision = activate_runtime(connection, plan.actions, callbacks=command_context.to_operation_callbacks())
+        except DeviceError as exc:
+            print(str(exc))
+            command_context.fail_with_error(str(exc))
+            return 1
         if not decision.run_actions:
             print("NetBSD4 payload already active; skipping rc.local.")
             command_context.update_fields(runtime_already_ready=True)
-            print(NETBSD4_ACTIVATION_COMPLETED)
-            command_context.succeed()
-            return 0
-
-        command_context.set_stage("run_activation")
-        print("Activating NetBSD4 payload without file transfer.")
-        run_remote_actions(connection, plan.actions)
-        wait_for_activation_settle(command_context.to_operation_callbacks())
-        if not verify_managed_runtime_flow(
-            connection,
-            command_context,
-            stage="verify_runtime_activation",
-            timeout_seconds=200,
-            heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
-            failure_message="NetBSD4 activation failed.",
-        ):
-            return 1
         print(NETBSD4_ACTIVATION_COMPLETED)
         command_context.succeed()
         return 0

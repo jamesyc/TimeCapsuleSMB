@@ -24,8 +24,8 @@ from timecapsulesmb.services.flash import (
     WRITE_OPERATIONS,
     FlashTarget,
     backup_flash,
+    finish_validated_write,
     plan_flash_from_backup,
-    record_post_write_action,
     record_write_outcome,
     require_netbsd4_flash_target,
     validate_live_target_matches_backup,
@@ -35,17 +35,12 @@ from timecapsulesmb.services.flash import (
 from timecapsulesmb.services.runtime import (
     require_connection_compatibility,
 )
-from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.transport.errors import TransportError
 
 
 FLASH_ACTIONS = {"backup", "plan", "write"}
 PLAN_OPERATIONS = {"patch", "restore", "check_apple", "download_only"}
-FLASH_RESTORE_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
-FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE = (
-    "Firmware restore write validated, but the device did not go down after reboot request."
-)
-FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after firmware restore reboot."
 
 
 def flash_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -179,73 +174,6 @@ def _confirmation_message(target: FlashTarget, mode: str, bank: str | None, *, r
     return f"Restore Apple stock firmware to the {bank_text} firmware bank on {target.acp_host}?"
 
 
-def _finish_validated_write(
-    *,
-    context: AppOperationContext,
-    target: FlashTarget,
-    bundle,
-    plan_operation: str,
-    reboot_after_write: bool,
-    wait_after_reboot: bool,
-) -> None:
-    if plan_operation == "patch":
-        record_post_write_action(
-            bundle=bundle,
-            post_write_action="manual_power_cycle",
-            reboot_requested=False,
-            rebooted=False,
-            waited_after_reboot=False,
-        )
-        return
-    if not reboot_after_write:
-        record_post_write_action(
-            bundle=bundle,
-            post_write_action="manual_reboot",
-            reboot_requested=False,
-            rebooted=False,
-            waited_after_reboot=False,
-        )
-        return
-
-    record_post_write_action(
-        bundle=bundle,
-        post_write_action="ssh_reboot",
-        reboot_requested=True,
-        rebooted=False,
-        waited_after_reboot=wait_after_reboot,
-    )
-    if wait_after_reboot:
-        try:
-            request_reboot_and_wait(
-                target.connection,
-                strategy=FLASH_RESTORE_REBOOT_STRATEGY,
-                callbacks=context.to_operation_callbacks(),
-                down_timeout_seconds=60,
-                up_timeout_seconds=240,
-                reboot_no_down_message=FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE,
-                reboot_up_timeout_message=FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE,
-            )
-        except RebootFlowError as exc:
-            raise AppOperationError(str(exc), code="remote_error") from exc
-        record_post_write_action(
-            bundle=bundle,
-            post_write_action="ssh_reboot",
-            reboot_requested=True,
-            rebooted=True,
-            waited_after_reboot=True,
-        )
-        return
-    try:
-        request_reboot(
-            target.connection,
-            strategy=FLASH_RESTORE_REBOOT_STRATEGY,
-            callbacks=context.to_operation_callbacks(),
-            raise_on_request_error=True,
-        )
-    except RebootFlowError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
-
-
 def _write_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     plan_operation = _write_operation_param(params)
     reboot_after_write, wait_after_reboot = _write_reboot_policy(params, plan_operation)
@@ -348,12 +276,15 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
         raise AppOperationError(str(exc), code="operation_failed") from exc
     except TransportError as exc:
         raise AppOperationError(f"SSH post-write validation failed: {exc}", code="remote_error") from exc
-    _finish_validated_write(
-        context=context,
-        target=target,
-        bundle=bundle,
-        plan_operation=plan_operation,
-        reboot_after_write=reboot_after_write,
-        wait_after_reboot=wait_after_reboot,
-    )
+    try:
+        finish_validated_write(
+            target=target,
+            bundle=bundle,
+            plan_operation=plan_operation,
+            reboot=reboot_after_write,
+            wait=wait_after_reboot,
+            callbacks=context.to_operation_callbacks(),
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
     return OperationResult(True, flash_write_payload(bundle.manifest))

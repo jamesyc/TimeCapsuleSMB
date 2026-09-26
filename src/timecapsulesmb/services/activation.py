@@ -9,6 +9,10 @@ from timecapsulesmb.device.probe import (
     probe_managed_runtime_conn,
     probe_netbsd4_rc_local_autostart_conn,
 )
+from timecapsulesmb.deploy.commands import RemoteAction
+from timecapsulesmb.deploy.executor import run_remote_actions
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready, wait_for_activation_settle
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -74,3 +78,67 @@ def decide_netbsd4_post_reboot_activation(
         detail=autostart.detail,
         autostart=autostart,
     )
+
+
+def run_activation_actions_and_verify(
+    connection: SshConnection,
+    activation_actions: list[RemoteAction],
+    *,
+    callbacks: OperationCallbacks,
+    activation_message: str,
+    activation_stage: str,
+    verification_stage: str,
+    verification_timeout_seconds: int,
+    verification_heading: str,
+    failure_message: str,
+    run_remote_actions_func=None,
+    verify_runtime_func=None,
+) -> None:
+    if run_remote_actions_func is None:
+        run_remote_actions_func = run_remote_actions
+    if verify_runtime_func is None:
+        verify_runtime_func = verify_managed_runtime_ready
+    callbacks.stage(activation_stage)
+    callbacks.message(activation_message)
+    run_remote_actions_func(connection, activation_actions)
+    wait_for_activation_settle(callbacks)
+    verify_runtime_func(
+        connection,
+        callbacks=callbacks,
+        stage=verification_stage,
+        timeout_seconds=verification_timeout_seconds,
+        heading=verification_heading,
+        failure_message=failure_message,
+    )
+
+
+def activate_runtime(
+    connection: SshConnection,
+    activation_actions: list[RemoteAction],
+    *,
+    callbacks: OperationCallbacks,
+) -> ActivationDecision:
+    """Start an already-deployed NetBSD4 runtime unless it is already running.
+
+    Raises DeviceError when the started runtime does not become ready.
+    """
+    callbacks.stage("probe_runtime")
+    decision = decide_manual_activation(connection)
+    callbacks.debug(
+        activation_decision=decision.reason,
+        manual_activation_required=decision.run_actions,
+    )
+    callbacks.message(decision.detail)
+    if decision.run_actions:
+        run_activation_actions_and_verify(
+            connection,
+            activation_actions,
+            callbacks=callbacks,
+            activation_message="Activating NetBSD4 payload without file transfer.",
+            activation_stage="run_activation",
+            verification_stage="verify_runtime_activation",
+            verification_timeout_seconds=200,
+            verification_heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
+            failure_message="NetBSD4 activation failed.",
+        )
+    return decision
