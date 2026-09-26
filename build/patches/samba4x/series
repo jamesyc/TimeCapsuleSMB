@@ -119,13 +119,19 @@
 # Keep that path valid under C's nonzero variable-length-array requirement.
 # This is an upstream bug; it applies to pristine Samba.
 0033-aio-fork-empty-control-message.patch|avoid zero-length arrays during aio_fork shutdown
-# Limit aio_fork helpers without turning overload into an SMB I/O error. A
-# bounded FIFO keeps accepted requests asynchronous; excess work runs in the
-# client smbd process so the helper count cannot grow without limit. Worker
-# read failures keep their errno instead of casting ssize_t -1 to an oversized
-# successful read, and the event watcher is cancelled before a worker retires
-# so descriptor reuse cannot leave the replacement request without events.
-# Idle helpers are retired after 3 hours instead of upstream's 30 seconds.
+# A helper's failed pread returned -1, which the parent cast to an oversized
+# read and turned into EIO; return the helper's errno instead. Upstream bug.
+0052-aio-fork-read-errno.patch|keep the helper's errno for a failed read
+# Refactor only: pread, pwrite and fsync had three copies of the same
+# send/done/recv code; use one path that takes the command.
+0053-aio-fork-single-request-path.patch|one request path for pread, pwrite and fsync
+# aio_fork:max_children bounds the helpers per share (0 keeps upstream's no
+# limit). Requests wait in a short FIFO for a free helper and are dispatched
+# oldest first; past the FIFO bound, or when fork() fails, a request runs in
+# the client's own smbd, which slows that client instead of failing its I/O.
+# A request freed while its helper works retires that helper, cancelling its
+# event watcher first so a reused descriptor cannot lose the next request's
+# events.
 0031-aio-fork-max-children.patch|bounded aio_fork helpers with FIFO backpressure
 
 # Time Machine.
@@ -133,8 +139,9 @@
 # allocation-block count drift as file identity loss after reconnect.
 0019-durable-allow-block-count-drift.patch|allow durable reconnect across HFS allocation-block drift
 # Time Machine can retry SMB2 durable opens before the old smbd has marked the
-# open disconnected; retry once outside the open-global TDB lock instead of
-# reporting the durable handle as permanently missing.
+# open disconnected. Check that live record like a disconnected one and, for
+# the same durable open only, retry outside the open-global TDB lock for up to
+# about 5 seconds (34 x 150 ms) instead of reporting the handle as missing.
 0024-durable-open-live-retry.patch|retry transient live durable-open reconnect races
 # Time Capsule HFS can update ctime when the last writable fd closes. Record
 # durable cookies after that close so reconnect keeps strict ctime validation

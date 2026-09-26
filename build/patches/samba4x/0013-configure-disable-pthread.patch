@@ -12,127 +12,37 @@ diff --git a/lib/replace/replace.h b/lib/replace/replace.h
 diff --git a/lib/replace/wscript b/lib/replace/wscript
 --- a/lib/replace/wscript
 +++ b/lib/replace/wscript
-@@ -647,44 +647,51 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
+@@ -647,10 +647,18 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
         conf.undefine('HAVE_DGETTEXT')
         conf.undefine('HAVE_DECL_DGETTEXT')
  
 -    conf.CHECK_FUNCS_IN('pthread_create', 'pthread', checklibc=True, headers='pthread.h')
--
--    PTHREAD_CFLAGS='error'
--    PTHREAD_LDFLAGS='error'
--
--    if PTHREAD_LDFLAGS == 'error':
--        # Check if pthread_attr_init() is provided by libc first!
--        if conf.CHECK_FUNCS('pthread_attr_init'):
--            PTHREAD_CFLAGS='-D_REENTRANT'
--            PTHREAD_LDFLAGS=''
--    if PTHREAD_LDFLAGS == 'error':
--        if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthread'):
--            PTHREAD_CFLAGS='-D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS'
--            PTHREAD_LDFLAGS='-lpthread'
--    if PTHREAD_LDFLAGS == 'error':
--        if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthreads'):
--            PTHREAD_CFLAGS='-D_THREAD_SAFE'
--            PTHREAD_LDFLAGS='-lpthreads'
--    if PTHREAD_LDFLAGS == 'error':
--        if conf.CHECK_FUNCS_IN('pthread_attr_init', 'c_r'):
--            PTHREAD_CFLAGS='-D_THREAD_SAFE -pthread'
--            PTHREAD_LDFLAGS='-pthread'
--
--    # especially for HP-UX, where the CHECK_FUNC macro fails to test for
--    # pthread_attr_init. On pthread_mutex_lock it works there...
--    if PTHREAD_LDFLAGS == 'error':
--        if conf.CHECK_FUNCS_IN('pthread_mutex_lock', 'pthread'):
--            PTHREAD_CFLAGS='-D_REENTRANT'
--            PTHREAD_LDFLAGS='-lpthread'
--
--    if PTHREAD_CFLAGS != 'error' and PTHREAD_LDFLAGS != 'error':
--        if conf.CONFIG_SET('replace_add_global_pthread'):
--            conf.ADD_CFLAGS(PTHREAD_CFLAGS)
--            conf.ADD_LDFLAGS(PTHREAD_LDFLAGS)
--        conf.CHECK_HEADERS('pthread.h')
--        conf.DEFINE('HAVE_PTHREAD', '1')
--
--    if conf.CONFIG_SET('HAVE_PTHREAD'):
-+    no_pthreads = bool(conf.env.NO_PTHREADS) or not getattr(
-+        Options.options, 'with_pthread', True)
++    # The top-level wscript sets NO_PTHREADS for --disable-pthread. Skip
++    # every pthread probe then: 'disabled' is not 'error', so none of the
++    # checks below runs and HAVE_PTHREAD stays undefined.
++    no_pthreads = bool(conf.env.NO_PTHREADS)
 +    if no_pthreads:
-+        conf.env.replace_add_global_pthread = False
 +        conf.SET_TARGET_TYPE('pthread', 'EMPTY')
 +        conf.msg('Checking for pthread support', 'disabled by --disable-pthread')
 +    else:
 +        conf.CHECK_FUNCS_IN('pthread_create', 'pthread', checklibc=True, headers='pthread.h')
-+
-+        PTHREAD_CFLAGS='error'
-+        PTHREAD_LDFLAGS='error'
-+
-+        if PTHREAD_LDFLAGS == 'error':
-+            # Check if pthread_attr_init() is provided by libc first!
-+            if conf.CHECK_FUNCS('pthread_attr_init'):
-+                PTHREAD_CFLAGS='-D_REENTRANT'
-+                PTHREAD_LDFLAGS=''
-+        if PTHREAD_LDFLAGS == 'error':
-+            if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthread'):
-+                PTHREAD_CFLAGS='-D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS'
-+                PTHREAD_LDFLAGS='-lpthread'
-+        if PTHREAD_LDFLAGS == 'error':
-+            if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthreads'):
-+                PTHREAD_CFLAGS='-D_THREAD_SAFE'
-+                PTHREAD_LDFLAGS='-lpthreads'
-+        if PTHREAD_LDFLAGS == 'error':
-+            if conf.CHECK_FUNCS_IN('pthread_attr_init', 'c_r'):
-+                PTHREAD_CFLAGS='-D_THREAD_SAFE -pthread'
-+                PTHREAD_LDFLAGS='-pthread'
-+
-+        # especially for HP-UX, where the CHECK_FUNC macro fails to test for
-+        # pthread_attr_init. On pthread_mutex_lock it works there...
-+        if PTHREAD_LDFLAGS == 'error':
-+            if conf.CHECK_FUNCS_IN('pthread_mutex_lock', 'pthread'):
-+                PTHREAD_CFLAGS='-D_REENTRANT'
-+                PTHREAD_LDFLAGS='-lpthread'
-+
-+        if PTHREAD_CFLAGS != 'error' and PTHREAD_LDFLAGS != 'error':
-+            if conf.CONFIG_SET('replace_add_global_pthread'):
-+                conf.ADD_CFLAGS(PTHREAD_CFLAGS)
-+                conf.ADD_LDFLAGS(PTHREAD_LDFLAGS)
-+            conf.CHECK_HEADERS('pthread.h')
-+            conf.DEFINE('HAVE_PTHREAD', '1')
-+
-+    if not no_pthreads and conf.CONFIG_SET('HAVE_PTHREAD'):
  
-         conf.CHECK_FUNCS_IN('pthread_mutexattr_setrobust', 'pthread',
-                             checklibc=True, headers='pthread.h')
-@@ -712,16 +719,23 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
+     PTHREAD_CFLAGS='error'
+-    PTHREAD_LDFLAGS='error'
++    PTHREAD_LDFLAGS='disabled' if no_pthreads else 'error'
  
-     # __thread is available in Solaris Studio, IBM XL,
-     # gcc, Clang and Intel C Compiler
--    conf.CHECK_CODE('''
--        __thread int tls;
--
--        int main(void) {
--            return 0;
--        }
--        ''',
--        'HAVE___THREAD',
--        addmain=False,
--        msg='Checking for __thread local storage')
+     if PTHREAD_LDFLAGS == 'error':
+         # Check if pthread_attr_init() is provided by libc first!
+@@ -722,6 +730,12 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
+         'HAVE___THREAD',
+         addmain=False,
+         msg='Checking for __thread local storage')
 +    if no_pthreads:
 +        # Without threads, thread-local storage is process storage. Leave
 +        # HAVE___THREAD unset so replace.h defines __thread away: the static
 +        # appliance links Samba's -fPIC objects, whose TLS accesses call
 +        # __tls_get_addr, and static libc's __tls_get_addr only aborts.
-+        conf.msg('Checking for __thread local storage', 'disabled by --disable-pthread')
-+    else:
-+        conf.CHECK_CODE('''
-+            __thread int tls;
-+
-+            int main(void) {
-+                return 0;
-+            }
-+            ''',
-+            'HAVE___THREAD',
-+            addmain=False,
-+            msg='Checking for __thread local storage')
++        conf.undefine('HAVE___THREAD')
  
      if conf.CONFIG_SET('HAVE_PTHREAD') and not conf.CONFIG_SET('HAVE___THREAD'):
          conf.fatal('Missing required TLS support in pthread library')
