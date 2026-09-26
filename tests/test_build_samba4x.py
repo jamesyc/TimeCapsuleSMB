@@ -208,7 +208,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         "",
                     ).split(",")
                     capture = os.environ.get("TEST_WAF_TARGETS")
-                    for target in ("tc_aio_fork_test", "tc_durable_reconnect_test",
+                    for target in ("tc_pthreadpool_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
                                    "tc_streams_xattr_test", "tc_native_metadata_test",
                                    "tc_xattr_migrate_test", "tc_storage_reload_test",
                                    "tc_native_links_test", "tc_catia_links_test"):
@@ -220,17 +220,6 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                             if capture:
                                 with pathlib.Path(capture).open("a") as stream:
                                     stream.write(target + "\\n")
-                    if "pthreadpool_tevent_sync_test" in targets:
-                        test_binary = pathlib.Path(
-                            "bin/default/lib/pthreadpool/"
-                            "pthreadpool_tevent_sync_test"
-                        )
-                        test_binary.parent.mkdir(parents=True, exist_ok=True)
-                        test_binary.write_text("fake pthreadpool test\\n")
-                        test_binary.chmod(0o755)
-                        if capture:
-                            with pathlib.Path(capture).open("a") as stream:
-                                stream.write("pthreadpool_tevent_sync_test\\n")
                     if "tc_xattr_hfs_migrate" in targets:
                         migrator = pathlib.Path(
                             "bin/default/source3/utils/tc_xattr_hfs_migrate"
@@ -698,7 +687,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
                     self.assertIn(expected, log)
 
-    def test_opt_in_pthreadpool_lifecycle_target_is_offline_by_default(self) -> None:
+    def test_regression_drivers_are_offline_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             capture = root / "configure-args.txt"
@@ -725,51 +714,50 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             )
             self.assertFalse(cross_exec_capture.exists())
 
-    def test_opt_in_pthreadpool_lifecycle_build_and_run(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            capture = root / "configure-args.txt"
-            targets = root / "waf-targets.txt"
-            cross_exec_capture = root / "cross-exec-args.txt"
-            cross_exec = root / "cross-exec.sh"
-            self.make_fake_cross_execute(cross_exec)
-            env = self.env_for_lane(root, "netbsd7", capture)
-            env.update(
-                {
-                    "TEST_WAF_TARGETS": str(targets),
-                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
-                    "TEST_CROSS_EXEC_ARGS": str(cross_exec_capture),
-                    "SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST": "1",
-                }
-            )
+    def test_regression_build_links_every_driver_static_without_the_smbd_map(self) -> None:
+        from tests.samba.run import TARGETS
 
-            result = self.run_wrapper("samba4x.sh", env)
+        for wrapper, lane in (("samba4x.sh", "netbsd7"),
+                              ("samba4xoldle.sh", "netbsd4le"),
+                              ("samba4xoldbe.sh", "netbsd4be")):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                capture = root / "configure-args.txt"
+                targets = root / "waf-targets.txt"
+                cross_exec_capture = root / "cross-exec-args.txt"
+                cross_exec = root / "cross-exec.sh"
+                self.make_fake_cross_execute(cross_exec)
+                env = self.env_for_lane(root, lane, capture)
+                env.update(
+                    {
+                        "TEST_WAF_TARGETS": str(targets),
+                        "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                        "TEST_CROSS_EXEC_ARGS": str(cross_exec_capture),
+                        "SAMBA4X_BUILD_REGRESSION_TESTS": "1",
+                    }
+                )
 
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(
-                targets.read_text().splitlines(),
-                ["pthreadpool_tevent_sync_test", "smbd/smbd"],
-            )
-            self.assertIn(
-                "--nonshared-binary=smbd/smbd,tc_xattr_hfs_migrate,pthreadpool_tevent_sync_test",
-                self.configure_args(capture),
-            )
-            self.assertTrue(cross_exec_capture.exists())
-            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
-            self.assertIn(
-                "SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=1",
-                log,
-            )
-            self.assertNotIn(
-                "-Map=",
-                next(
-                    line
-                    for line in log.splitlines()
-                    if line.startswith(
-                        "TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS="
-                    )
-                ),
-            )
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                # Every driver the runner executes is built, static, and
+                # stripped for upload; compile-only never runs a device test.
+                self.assertEqual(targets.read_text().splitlines(), [*TARGETS, "smbd/smbd"])
+                self.assertIn(
+                    "--nonshared-binary=smbd/smbd,tc_xattr_hfs_migrate," + ",".join(TARGETS),
+                    self.configure_args(capture),
+                )
+                modules = Path(env[f"SAMBA4X_{lane.upper()}_SRC_DIR"]) / "bin/default/source3/modules"
+                for target in TARGETS:
+                    self.assertTrue((modules / (target + ".stripped")).is_file(), target)
+                self.assertFalse(cross_exec_capture.exists())
+                # Only smbd's link writes the map the staging check reads.
+                log = Path(env[f"SAMBA4X_{lane.upper()}_LOG"]).read_text().splitlines()
+                tc_flags = next(line for line in log if line.startswith("TC_STATIC_LINKFLAGS="))
+                smbd_flags = next(line for line in log if line.startswith("SAMBA4X_FINAL_LINKFLAGS="))
+                self.assertIn("-static", tc_flags)
+                self.assertNotIn("-Map=", tc_flags)
+                self.assertIn("-Map=", smbd_flags)
 
     def test_netbsd4_without_gc_sections_still_generates_smbd_map(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

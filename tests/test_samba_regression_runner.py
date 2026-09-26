@@ -90,9 +90,10 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
             calls.append((name, kwargs))
 
     exec(compile(script.read_text(), str(script), "exec"), {"bld": Builder()})
-    assert [name for name, _ in calls] == ["existing", *run.TARGETS[1:]]
+    assert [name for name, _ in calls] == ["existing", *run.TARGETS]
     for name, arguments in calls[1:]:
         expected_deps = {
+            "tc_pthreadpool_sync_test": ["PTHREADPOOL"],
             "tc_streams_xattr_test": ["smbd_base", "HASH_INODE"],
             "tc_native_metadata_test": [
                 "smbd_base", "HASH_INODE", "ADOUBLE", "OFFLOAD_TOKEN",

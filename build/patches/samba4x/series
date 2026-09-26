@@ -65,9 +65,6 @@
 # disarm normal-exit diagnostics once smbd has completed clean shutdown.
 0022-no-pthread-talloc-stack-fork-exit-cleanup.patch|no-pthread talloc stack fork and exit cleanup
 
-# Validation-only target: opt-in, never installed, omitted from normal builds.
-0032-no-pthread-pthreadpool-sync-test.patch|no-pthread pthreadpool lifecycle validation target
-
 # aio_fork runtime behavior.
 # Limit aio_fork helpers without turning overload into an SMB I/O error. A
 # bounded FIFO keeps accepted requests asynchronous; excess work runs in the

@@ -15,7 +15,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
+TARGETS = ("tc_pthreadpool_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
            "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test",
            "tc_native_links_test", "tc_catia_links_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
@@ -62,7 +62,7 @@ def stage(source: Path) -> None:
     script = modules / "wscript_build"
     marker = "\n# TC_SAMBA_REGRESSION_TARGETS\n"
     original = script.read_text().split(marker)[0]
-    for name in TARGETS[1:]:
+    for name in TARGETS:
         shutil.copy2(HERE / (name + ".c"), modules / (name + ".c"))
     # Compile the exact static callbacks in this patched tree. Their enclosing
     # server.c main is irrelevant to the routing test and cannot be linked into
@@ -149,8 +149,7 @@ def run_tests(source: Path, cross_exec: str | None = None) -> None:
                 "device regression tests require CROSS_EXEC_REMOTE_DIR under /Volumes/"
             )
     for target, arguments in execution_cases(cross_exec is not None):
-        folder = "lib/pthreadpool" if target == TARGETS[0] else "source3/modules"
-        binary = source / "bin/default" / folder / target
+        binary = source / "bin/default/source3/modules" / target
         if cross_exec:
             binary = binary.with_suffix(".stripped")
         if not binary.is_file():

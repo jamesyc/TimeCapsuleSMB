@@ -44,30 +44,29 @@ diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
  if Context.HEXVERSION not in (0x2010600,):
      Logs.error('''
  Please use the version of waf that comes with Samba, not
-@@ -424,6 +446,37 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
+@@ -424,6 +446,36 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
  
  
  #################################################################
 +def APPLY_TC_STATIC_BINARY_ENV(bld, taskgen):
-+    # Time Capsule runs smbd from a tiny RAM disk. Keep the deployed binary
-+    # and the validation-only regression tests fully static. This follow-on
-+    # allowlist extends the smbd-only hook introduced by downstream patch 0001.
++    # Time Capsule runs smbd from a tiny RAM disk. Link the deployed smbd
++    # fully static with its link map. The other shipped binary, the metadata
++    # migrator, is named here too; only the opt-in regression drivers, never
++    # shipped, are matched by their tc_*_test naming convention. Both link
++    # fully static without smbd's map.
 +    target = getattr(taskgen, 'target', None)
 +    if target == 'smbd/smbd':
 +        static_linkflags = TO_LIST(
 +            getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
 +        static_ldflags = TO_LIST(
 +            getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
-+    elif target in ('pthreadpool_tevent_sync_test', 'tc_aio_fork_test',
-+                    'tc_durable_reconnect_test', 'tc_streams_xattr_test',
-+                    'tc_native_metadata_test', 'tc_xattr_migrate_test',
-+                    'tc_xattr_hfs_migrate', 'tc_storage_reload_test',
-+                    # patch 0045
-+                    'tc_native_links_test', 'tc_catia_links_test'):
++    elif target == 'tc_xattr_hfs_migrate' or (
++            target is not None and target.startswith('tc_') and
++            target.endswith('_test')):
 +        static_linkflags = TO_LIST(getattr(
-+            bld.env, 'TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS', []))
++            bld.env, 'TC_STATIC_LINKFLAGS', []))
 +        static_ldflags = TO_LIST(getattr(
-+            bld.env, 'TC_PTHREADPOOL_TEST_STATIC_LDFLAGS', []))
++            bld.env, 'TC_STATIC_LDFLAGS', []))
 +    else:
 +        return
 +    if not static_linkflags and not static_ldflags:
@@ -82,7 +81,7 @@ diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
  def SAMBA_BINARY(bld, binname, source,
                   deps='',
                   includes='',
-@@ -544,8 +597,11 @@ def SAMBA_BINARY(bld, binname, source,
+@@ -544,8 +596,11 @@ def SAMBA_BINARY(bld, binname, source,
          install_path   = None,
          samba_inst_path= install_path,
          samba_install  = install,
@@ -95,7 +94,7 @@ diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
  
      if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
          bld.MANPAGES(manpages, install)
-@@ -861,6 +917,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
+@@ -861,6 +916,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
          samba_builtin_subsystem = None,
          )
  

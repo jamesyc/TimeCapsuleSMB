@@ -218,8 +218,8 @@ apply_samba4x_static_waf_cache() {
     set_waf_cache_value "$cache_file" "SMBD_STATIC_LIBPATH" "[]"
     set_waf_cache_value "$cache_file" "SMBD_STATIC_SHLIB_MARKER" "''"
     set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
-    set_waf_cache_value "$cache_file" "TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS" "[$TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS]"
-    set_waf_cache_value "$cache_file" "TC_PTHREADPOOL_TEST_STATIC_LDFLAGS" "[$TC_PTHREADPOOL_TEST_STATIC_LDFLAGS]"
+    set_waf_cache_value "$cache_file" "TC_STATIC_LINKFLAGS" "[$TC_STATIC_LINKFLAGS]"
+    set_waf_cache_value "$cache_file" "TC_STATIC_LDFLAGS" "[$TC_STATIC_LDFLAGS]"
     set_waf_cache_value "$cache_file" "TC_SAMBA4X_EMBEDDED_SRVSVC" "True"
     set_waf_cache_value "$cache_file" "FULLSTATIC" "True"
 }
@@ -655,13 +655,10 @@ configure_samba4x() {
     # The one-shot HFS migrator is a separate binary so its TDB/tree-walk code
     # does not remain in the RAM-resident smbd after conversion.
     samba4x_nonshared_binaries=smbd/smbd,tc_xattr_hfs_migrate
-    if [ "$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST" = "1" ]; then
-        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,pthreadpool_tevent_sync_test"
-    fi
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
         # Storage reload tests use the same static, no-pthread connection and
         # AIO teardown code as the shipped appliance smbd.
-        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test"
+        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,$SAMBA4X_REGRESSION_TARGETS"
     fi
 
     set -- \
@@ -999,8 +996,6 @@ prepare_samba4x_deps() {
 mkdir -p "$SAMBA4X_WORK" "$SAMBA4X_STAGE" "$SAMBA4X_BUILD" "$SAMBA4X_DEPS" "$SAMBA4X_STAGE/sbin"
 MAP_FILE="$SAMBA4X_BUILD/smbd-link.map"
 export MAP_FILE
-SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST="${SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST:-0}"
-SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST="${SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST:-0}"
 SAMBA4X_RUN_REGRESSION_TESTS="${SAMBA4X_RUN_REGRESSION_TESTS:-0}"
 SAMBA4X_BUILD_REGRESSION_TESTS="${SAMBA4X_BUILD_REGRESSION_TESTS:-0}"
 # Release validation runs the same real Samba tests as host CI on the selected
@@ -1009,14 +1004,12 @@ SAMBA4X_BUILD_REGRESSION_TESTS="${SAMBA4X_BUILD_REGRESSION_TESTS:-0}"
 if [ "$SAMBA4X_RUN_REGRESSION_TESTS" = "1" ]; then
     SAMBA4X_BUILD_REGRESSION_TESTS=1
 fi
-if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-    SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=1
-fi
-if [ "$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST" = "1" ]; then
-    SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=1
-fi
-TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS=
-TC_PTHREADPOOL_TEST_STATIC_LDFLAGS=
+# The drivers staged from tests/samba (tests/samba/run.py TARGETS).
+SAMBA4X_REGRESSION_TARGETS=tc_pthreadpool_sync_test,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test
+# Link flags for the static binaries other than smbd: the shipped metadata
+# migrator and the regression drivers. Unlike smbd's, they write no link map.
+TC_STATIC_LINKFLAGS=
+TC_STATIC_LDFLAGS=
 
 if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
     prepare_netbsd4_gc_note_inputs
@@ -1053,8 +1046,8 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
         SAMBA4X_NETBSD4_TEST_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-T,$SAMBA4X_NETBSD4_KEEP_NOTES_LD', '$SAMBA4X_NETBSD4_NOTE_OBJ', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     fi
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_NETBSD4_FINAL_LINKFLAGS"
-    TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS="$SAMBA4X_NETBSD4_TEST_LINKFLAGS"
-    TC_PTHREADPOOL_TEST_STATIC_LDFLAGS="$SAMBA4X_NETBSD4_TEST_LINKFLAGS"
+    TC_STATIC_LINKFLAGS="$SAMBA4X_NETBSD4_TEST_LINKFLAGS"
+    TC_STATIC_LDFLAGS="$SAMBA4X_NETBSD4_TEST_LINKFLAGS"
     export LDFLAGS="$SAMBA4X_NETBSD4_BASE_LDFLAGS"
 else
     export CC="$TOOLDIR/bin/$TRIPLE-gcc --sysroot=$SYSROOT"
@@ -1065,8 +1058,8 @@ else
     export CXXFLAGS="$CFLAGS"
     export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
-    TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
-    TC_PTHREADPOOL_TEST_STATIC_LDFLAGS="$TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS"
+    TC_STATIC_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
+    TC_STATIC_LDFLAGS="$TC_STATIC_LINKFLAGS"
     SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST"
     export LDFLAGS="-Wl,-Bstatic -static -Wl,--gc-sections -L$SAMBA4X_DEPS/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib"
@@ -1112,10 +1105,8 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     echo "SAMBA4X_SHARED_LDFLAGS_LIST=$SAMBA4X_SHARED_LDFLAGS_LIST"
     echo "SAMBA4X_FINAL_LDFLAGS_LIST=$SAMBA4X_FINAL_LDFLAGS_LIST"
     echo "SAMBA4X_FINAL_LINKFLAGS=$SAMBA4X_FINAL_LINKFLAGS"
-    echo "TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS=$TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS"
-    echo "TC_PTHREADPOOL_TEST_STATIC_LDFLAGS=$TC_PTHREADPOOL_TEST_STATIC_LDFLAGS"
-    echo "SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST"
-    echo "SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST=$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST"
+    echo "TC_STATIC_LINKFLAGS=$TC_STATIC_LINKFLAGS"
+    echo "TC_STATIC_LDFLAGS=$TC_STATIC_LDFLAGS"
     echo "MAP_FILE=$MAP_FILE"
     echo "CFLAGS=$CFLAGS"
     echo "CPPFLAGS=$CPPFLAGS"
@@ -1180,38 +1171,12 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         echo "Final NetBSD4 build LDFLAGS=$LDFLAGS"
     fi
 
-    if [ "$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST" = "1" ]; then
-        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=pthreadpool_tevent_sync_test
-        pthreadpool_test_binary="$SAMBA4X_SRC_DIR/bin/default/lib/pthreadpool/pthreadpool_tevent_sync_test"
-        if [ ! -x "$pthreadpool_test_binary" ]; then
-            echo "Missing Samba 4.x pthreadpool lifecycle test at $pthreadpool_test_binary"
-            exit 1
-        fi
-        if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$pthreadpool_test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
-            echo "Samba 4.x pthreadpool lifecycle test is dynamically linked."
-            exit 1
-        fi
-        if [ "$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST" = "1" ]; then
-            "$CROSS_EXECUTE" "$pthreadpool_test_binary"
-        fi
-    fi
-
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test
+        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets="$SAMBA4X_REGRESSION_TARGETS"
         # Debug information can dwarf the tests on these small appliances.
         # Keep the ordinary Waf outputs and upload separate stripped copies.
-        for test_relative in \
-            lib/pthreadpool/pthreadpool_tevent_sync_test \
-            source3/modules/tc_aio_fork_test \
-            source3/modules/tc_durable_reconnect_test \
-            source3/modules/tc_streams_xattr_test \
-            source3/modules/tc_native_metadata_test \
-            source3/modules/tc_xattr_migrate_test \
-            source3/modules/tc_storage_reload_test \
-            source3/modules/tc_native_links_test \
-            source3/modules/tc_catia_links_test
-        do
-            test_binary="$SAMBA4X_SRC_DIR/bin/default/$test_relative"
+        for test_name in $(printf '%s\n' "$SAMBA4X_REGRESSION_TARGETS" | sed 's/,/ /g'); do
+            test_binary="$SAMBA4X_SRC_DIR/bin/default/source3/modules/$test_name"
             if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
                 echo "Samba regression test is dynamically linked: $test_binary"
                 exit 1
