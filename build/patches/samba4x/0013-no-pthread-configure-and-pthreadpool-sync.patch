@@ -194,10 +194,9 @@ index 051583c..1fa3cb9 100644
  #endif
  
 diff --git a/lib/replace/wscript b/lib/replace/wscript
-index 4621d90..f598f35 100644
 --- a/lib/replace/wscript
 +++ b/lib/replace/wscript
-@@ -626,44 +626,51 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
+@@ -647,44 +647,51 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
         conf.undefine('HAVE_DGETTEXT')
         conf.undefine('HAVE_DECL_DGETTEXT')
  
@@ -287,6 +286,40 @@ index 4621d90..f598f35 100644
  
          conf.CHECK_FUNCS_IN('pthread_mutexattr_setrobust', 'pthread',
                              checklibc=True, headers='pthread.h')
+@@ -712,16 +719,23 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
+ 
+     # __thread is available in Solaris Studio, IBM XL,
+     # gcc, Clang and Intel C Compiler
+-    conf.CHECK_CODE('''
+-        __thread int tls;
+-
+-        int main(void) {
+-            return 0;
+-        }
+-        ''',
+-        'HAVE___THREAD',
+-        addmain=False,
+-        msg='Checking for __thread local storage')
++    if no_pthreads:
++        # Without threads, thread-local storage is process storage. Leave
++        # HAVE___THREAD unset so replace.h defines __thread away: the static
++        # appliance links Samba's -fPIC objects, whose TLS accesses call
++        # __tls_get_addr, and static libc's __tls_get_addr only aborts.
++        conf.msg('Checking for __thread local storage', 'disabled by --disable-pthread')
++    else:
++        conf.CHECK_CODE('''
++            __thread int tls;
++
++            int main(void) {
++                return 0;
++            }
++            ''',
++            'HAVE___THREAD',
++            addmain=False,
++            msg='Checking for __thread local storage')
+ 
+     if conf.CONFIG_SET('HAVE_PTHREAD') and not conf.CONFIG_SET('HAVE___THREAD'):
+         conf.fatal('Missing required TLS support in pthread library')
 diff --git a/lib/tevent/tevent.c b/lib/tevent/tevent.c
 index 12e1f40..9f26982 100644
 --- a/lib/tevent/tevent.c

@@ -139,10 +139,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             "server.c": ("smbd_parent_conf_updated", "smbd_parent_sig_hup_handler"),
             "smb2_process.c": ("smbd_sig_hup_handler", "smbd_conf_updated"),
         }.items():
-            helper = ("\nstatic void smbd_child_detach_parent(void)\n{\n}\n"
-                      if filename == "server.c" else "")
             self.make_file(src_dir / "source3/smbd" / filename,
-                           "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names) + helper)
+                           "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names))
         self.make_executable(
             src_dir / "configure",
             textwrap.dedent(
@@ -598,6 +596,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             "HAVE_PTHREAD_CREATE",
             "HAVE_PTHREAD_ATTR_INIT",
             "HAVE_LIBPTHREAD",
+            "HAVE___THREAD",
             "WITH_PTHREADPOOL",
             "HAVE_ROBUST_MUTEXES",
             "HAVE_PTHREAD_MUTEXATTR_SETROBUST",
@@ -875,6 +874,30 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 self.assertIn("tc_disable_data_faultahead does not call madvise", log.read_text())
                 self.assertFalse((stage / "sbin/smbd").exists())
                 self.assertFalse((stage / "sbin/smbd.stripped").exists())
+
+    def test_thread_local_storage_blocks_staging(self) -> None:
+        # Static libc's __tls_get_addr aborts, so a binary with a TLS section
+        # would crash on its first thread-local read. The default fake
+        # sections (no TLS) stage in every other test.
+        for section in (".tbss", ".tdata"):
+            with self.subTest(section=section), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, "netbsd7", root / "configure.txt")
+                sections = root / "sections.txt"
+                sections.write_text(
+                    "  [ 7] .init_array       INIT_ARRAY      000752b0 0552b0 000008 00  WA  0   0  4\n"
+                    f"  [ 8] {section:<17} NOBITS          000752b8 0552b8 000024 00 WAT  0   0  4\n"
+                    "  [10] .data             PROGBITS        000752f8 0552f8 000a74 00  WA  0   0  8\n"
+                )
+                env["TEST_READELF_SECTIONS"] = str(sections)
+                stage = Path(env["SAMBA4X_NETBSD7_STAGE"])
+
+                result = self.run_wrapper("samba4x.sh", env)
+
+                self.assertNotEqual(result.returncode, 0)
+                log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                self.assertIn("smbd has thread-local storage; refusing to stage it", log)
+                self.assertFalse((stage / "sbin/smbd").exists())
 
     def test_rc2_size_budget_accepts_boundary_and_rejects_growth(self) -> None:
         for wrapper, lane in (("samba4x.sh", "netbsd7"),

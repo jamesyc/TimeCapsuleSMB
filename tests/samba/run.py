@@ -29,7 +29,7 @@ AIO_CASES = (
     "sync_append", "sync_append_error", "sync_fsync", "sync_fsync_error",
     "queue", "cancel_queued", "cancel_active", "queued_fork_failure",
     "dispatch_failure", "allocation_failure", "response_failure",
-    "limits", "unlimited", "cleanup", "fork_stack", "listener_handoff", "data_page_writes",
+    "limits", "unlimited", "cleanup", "fork_stack", "data_page_writes",
 )
 DURABLE_CASES = (
     "transition", "exhausted", "already_disconnected", "client_mismatch",
@@ -78,10 +78,6 @@ def stage(source: Path) -> None:
             end = text.index("\n}", text.index("\n{", start)) + 2
             callbacks.append(text[start:end])
     (modules / "tc_storage_reload_callbacks.inc").write_text("\n\n".join(callbacks) + "\n")
-    server = (source / "source3/smbd/server.c").read_text()
-    start = server.index("static void smbd_child_detach_parent(")
-    end = server.index("\n}", start) + 2
-    (modules / "tc_smbd_child_detach_parent.inc").write_text(server[start:end] + "\n")
     script.write_text(original + marker + (HERE / "targets.py").read_text())
 
 

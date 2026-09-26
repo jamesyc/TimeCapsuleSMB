@@ -40,25 +40,23 @@
 0007-tdb-cloexec-compat.patch|TDB close-on-exec compatibility
 
 # No-pthread appliance runtime behavior.
-# Time Capsule kernels do not support the pthread behavior Samba 4.25 expects.
-# Host long-lived notifyd/cleanupd/scavenger work in the smbd parent event loop
-# and avoid helper forks that hit raw abort paths on these targets.
+# Keep smbd to one process: run notifyd, cleanupd and the durable-handle
+# scavenger on the parent's event loop, and skip the periodic datagram-socket
+# sweep that forks a helper. Forked helpers work (tested 2026-09-26), but each
+# is another resident smbd (about 2.5 MB RSS) on a device that runs smbd from a
+# RAM disk, and dropping this patch adds 14 KB to smbd.
 0008-no-pthread-smbd-daemons-in-parent.patch|host smbd helper services in the parent event loop
-# Avoid pthreadpool-backed messaging paths while preserving Samba's watched
-# SMBX database wrappers; client/session callers still require watched records.
-0009-no-pthread-messaging-fallbacks.patch|no-pthread messaging fallbacks
-# The static appliance build does not launch winbindd; keep local mappings and
-# skip libwbclient lookups for the remaining Windows SIDs during startup.
-0010-no-pthread-local-sid-to-unixids.patch|local SID mapping without winbindd
 # smbXsrv_version_global_init retains global DB state after returning; parent
 # it to an explicit named context instead of the process-global talloc stack.
 0011-no-pthread-smbxsrv-version-global-parent.patch|explicit parent for retained SMBX version state
-# Tevent's pooled request and call-depth paths assume allocator/TLS behavior
-# that is unsafe in the static appliance build.
-0012-no-pthread-tevent-fallbacks.patch|tevent fallbacks for no-pthread builds
-# Disable pthread before libreplace constructs the dependency graph, retain
-# process-global storage when compiler TLS is unavailable, and use Samba's
-# synchronous pthreadpool backend without pthread mutex/glue operations.
+# Disable pthread before libreplace constructs the dependency graph, compile
+# pthreadpool_tevent without pthread mutex/glue operations, and define __thread
+# away. Without threads, thread-local storage is process storage, and in the
+# static appliance binary any real __thread access from Samba's -fPIC objects
+# calls static libc's __tls_get_addr, which only aborts. That abort was the
+# startup crash in tevent_req_create (tevent's call-depth state) and in the
+# winbind SID lookup (libwbclient's client name) that earlier patches avoided;
+# the NetBSD 4 compilers never enabled __thread, only the NetBSD 6 lane did.
 0013-no-pthread-configure-and-pthreadpool-sync.patch|configure-time no-pthread and synchronous pthreadpool support
 # The no-pthread talloc stack is process-global, so forked smbd children inherit
 # parent event-loop stack tracking. Drop inherited tracking after fork and
@@ -163,11 +161,6 @@
 # from the parent to every worker, and disconnect only trees whose disk binding
 # was revoked, replaced or removed; other shares on the session stay connected.
 0041-time-capsule-stale-tree-reload.patch|forward parent reloads and disconnect only revoked Apple disk bindings
-
-# A forked connection child inherits the master's listener tree. Its active
-# accept callback has aborted while recursively freeing that copied tree;
-# close the inherited listeners and let process exit reclaim the child copy.
-0044-smbd-child-retain-listener-tree.patch|retain copied listener tree in connection children
 
 # Apple's AFP server and SSH store real POSIX symlinks on these disks, while
 # macOS SMB clients create 1067-byte Minshall+French "XSym" files. Keep the

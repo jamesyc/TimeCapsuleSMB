@@ -9,7 +9,8 @@ Patch numbers in dated entries are as they were then. Later merges folded 0037,
 0039, 0040 and 0042 into 0038 plus overlay files, 0030 and 0034 into 0031, 0025
 into 0023, and 0026 into 0003. 0020 was dropped: build/_samba4x.sh already
 clears configure's getifaddrs results. 0032's pthreadpool driver moved to
-tests/samba/tc_pthreadpool_sync_test.c.
+tests/samba/tc_pthreadpool_sync_test.c. 0009, 0010, 0012 and 0044 were dropped
+on 2026-09-26 (see "No-pthread workaround review" below).
 
 | Deliberately broken behavior | Case that rejects it |
 | --- | --- |
@@ -550,3 +551,45 @@ Second review follow-up (2026-09-24), smbd only:
 | NetBSD 6 (NetBSD 7 SDK) | 10,231,584 |
 | NetBSD 4 LE | 10,244,304 |
 | NetBSD 4 BE | 10,243,176 |
+
+## No-pthread workaround review (2026-09-26)
+
+Did 0046 (static `.data` fault-ahead) make the older no-pthread workarounds
+unnecessary? Each patch was reverse-applied in the configured lane tree and
+only smbd rebuilt. The variant then ran from the device's RAM path (a symlink
+to the data disk, so a reboot restores the deployed smbd) under a workload:
+150 connections, cross-connection lease breaks, change notify, and killing the
+serving child mid-open. A pass means no abort, panic, core or talloc error and
+every check as on the unmodified build.
+
+| Removed | NetBSD 6 | NetBSD 4 LE | Outcome |
+| --- | --- | --- | --- |
+| 0044 | pass | pass | Dropped: its device-only failure was the fault-ahead bug 0046 fixes. |
+| 0009 | pass | pass | Dropped. |
+| 0012 | aborts at startup | pass | Dropped: only the call-depth hooks mattered (TLS, below). |
+| 0010 | aborts at startup | pass | Dropped (TLS, below). |
+| 0008 | pass | pass | Kept, for one process: forked notifyd and cleanupd add two ~2.5 MB RSS processes and 14 KB of smbd. Its notifyd-parent hunk, a TLS workaround, is dropped. |
+| 0046 (control) | never opens its listeners | not run | The fault-ahead bug still breaks smbd, so "remove X and 0046" controls cannot isolate X. |
+
+TLS. The NetBSD 6 aborts printed no reason and left no core. An `abort()`
+override in the variant printed its caller: `__tls_get_addr`. Samba builds its
+objects `-fPIC`, so every `__thread` access calls `__tls_get_addr`, and static
+libc's version only aborts. Configure enabled `__thread` on the NetBSD 6 lane
+only; the NetBSD 4 compilers lack it, which is why both variants pass there.
+0012's call-depth hooks avoided tevent's `__thread` state in
+`tevent_req_create`, and 0010 avoided libwbclient's `__thread` client name. The
+one other TLS variable, `config_include_depth`, would have aborted on the first
+smb.conf `include`. 0013 now leaves `HAVE___THREAD` unset without pthreads, so
+`replace.h` defines `__thread` away, and the build refuses `HAVE___THREAD` and
+any smbd or migrator with a `.tdata` or `.tbss` section.
+
+Two observations:
+- On every build, including the unmodified one, a Mac handle held across the
+  kill of its smbd child returns EIO instead of reconnecting. It is not caused
+  by these patches and was not investigated.
+- One NetBSD 4 run without 0008 saw a Mac write time out during the notify
+  step. Two reruns and the build without all five patches passed.
+
+The candidate series (0013 fix; 0009, 0010, 0012, 0044 dropped) passed the
+workload and the links suite (85/85) on NetBSD 6 before landing.
+

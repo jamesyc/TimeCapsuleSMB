@@ -298,12 +298,15 @@ verify_samba4x_no_pthread_config() {
         patch_fail "Samba 4.x configure generated no config.h files"
     fi
 
+    # HAVE___THREAD belongs here too: without threads, patch 0013 defines
+    # __thread away (see the thread-local storage check when staging).
     while IFS= read -r config_header; do
         for symbol in \
             HAVE_PTHREAD \
             HAVE_PTHREAD_CREATE \
             HAVE_PTHREAD_ATTR_INIT \
             HAVE_LIBPTHREAD \
+            HAVE___THREAD \
             WITH_PTHREADPOOL \
             HAVE_ROBUST_MUTEXES \
             HAVE_PTHREAD_MUTEXATTR_SETROBUST \
@@ -1222,6 +1225,13 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         "$TOOLDIR/bin/nbfile" "$built_path" 2>&1 || true
         if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$built_path" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
             echo "Samba 4.x $label has dynamic ELF headers; refusing to stage it."
+            exit 1
+        fi
+        # Static libc's __tls_get_addr only aborts, so the first read of any
+        # thread-local variable kills the process. Patch 0013 defines __thread
+        # away for Samba; this also catches TLS from any other linked library.
+        if "$TOOLDIR/bin/$TRIPLE-readelf" -SW "$built_path" | grep -Eq '[[:space:]]\.t(data|bss)[[:space:]]'; then
+            echo "Samba 4.x $label has thread-local storage; refusing to stage it."
             exit 1
         fi
         dump_elf_notes "built $label" "$built_path"
