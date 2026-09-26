@@ -678,3 +678,42 @@ matched the previous build exactly.
 | NetBSD 4 LE | 10,250,044 |
 | NetBSD 4 BE | 10,248,928 |
 
+
+## Native resource fork create and delete (2026-09-26)
+
+Two fixes to patch 0056 and its overlay fragment `tc_fruit_native_rsrc.c`,
+both found with macOS 26 `xattr` over SMB on native HFS shares:
+
+- Creating a fork failed with "Attribute not found". HFS gives every file a
+  resource fork, empty or not, so `fd_open_atomic()` sent its O_CREAT|O_EXCL
+  create to a fork that already existed. HFS answered EEXIST, the retry
+  without O_CREAT found the fork empty, and the create ended as
+  OBJECT_NAME_NOT_FOUND. Now an empty fork opens without O_EXCL, and an
+  exclusive create of a fork with data still fails with EEXIST.
+- Deleting the AFP_Resource stream left the fork in place. The Mac deletes it
+  with delete-on-close, and the native branch ignored that. Now the delete
+  truncates `<file>/..namedfork/rsrc` to zero, and removing the file still
+  removes its fork without the extra step. Apple's AFP server empties the
+  fork the same way: after this fix, a fork deleted over AFP disappears over
+  SMB too.
+
+`xattr -w` of a shorter fork over SMB keeps the old tail. The Mac opens the
+stream with OPEN_IF and writes at offset 0 without setting EOF, so that is the
+client's behaviour on any server.
+
+Results: in the host regression run with sanitizers, 113 cases passed.
+`resource_backend` now covers the empty, present and unprobeable fork
+exclusive creates, the plain create, the delete from the share root and from a
+subdirectory, a failed truncate, and file removal. A NetBSD 4 LE test build
+was byte-identical to the shipped one. After `tcapsule deploy` on both LAN
+devices, Doctor passed and the links suite with `--afp` passed 87/87. On
+NetBSD 6, `durable_device.py` passed 13/13. From a macOS SMB mount on both
+devices, these all worked: create, read, rewrite, delete (the fork is empty
+on the device), create again after delete, `cp` carrying the fork, and
+removing files that have forks. A fork written over SMB read back over AFP.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,228,312 |
+| NetBSD 4 LE | 10,250,528 |
+| NetBSD 4 BE | 10,249,412 |

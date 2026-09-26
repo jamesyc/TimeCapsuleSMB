@@ -62,6 +62,11 @@ static int primary_remove_error;
 static int ad_fset_error;
 static off_t test_resource_size;
 static int test_resource_stat_error;
+/* Deleting the AFP_Resource stream truncates the native fork by path. */
+static unsigned test_truncate_calls;
+static char test_truncate_path[256];
+static off_t test_truncate_length;
+static int test_truncate_error;
 static char test_openat_name[256];
 static bool test_openat_had_stream;
 static const struct files_struct *test_openat_dirfsp;
@@ -124,6 +129,10 @@ static void reset_stores(void)
 	ad_fset_error = 0;
 	test_resource_size = 0;
 	test_resource_stat_error = 0;
+	test_truncate_calls = 0;
+	test_truncate_path[0] = '\0';
+	test_truncate_length = -1;
+	test_truncate_error = 0;
 	test_openat_name[0] = '\0';
 	test_openat_had_stream = false;
 	test_openat_dirfsp = NULL;
@@ -664,6 +673,18 @@ static ssize_t test_next_pwrite(struct vfs_handle_struct *handle,
 	return n;
 }
 
+static int test_truncate(const char *path, off_t length)
+{
+	test_truncate_calls++;
+	snprintf(test_truncate_path, sizeof(test_truncate_path), "%s", path);
+	test_truncate_length = length;
+	if (test_truncate_error != 0) {
+		errno = test_truncate_error;
+		return -1;
+	}
+	return 0;
+}
+
 static int test_primary_remove(void)
 {
 	record_mutation('P');
@@ -751,10 +772,12 @@ static NTSTATUS test_missing_synthetic_pathref(void)
 #define ad_fset(h, a, f) test_ad_fset((h), (a), (f))
 #define synthetic_pathref(...) test_missing_synthetic_pathref()
 #define openat_pathref_fsp_lcomp test_openat_pathref_fsp_lcomp
+#define truncate(p, l) test_truncate((p), (l))
 #undef vfs_fruit_init
 #define vfs_fruit_init regression_fruit_init
 #include "vfs_fruit.c"
 #undef vfs_fruit_init
+#undef truncate
 #undef openat_pathref_fsp_lcomp
 #undef synthetic_pathref
 #undef ad_fset
@@ -1216,14 +1239,17 @@ static void test_resource_backend(struct vfs_handle_struct *handle,
 	stream_name.stream_name = discard_const_p(char, ":AFP_Resource");
 	reset_stores();
 	strict_native_at_context = true;
+	/* fd_open_atomic() creates a missing stream with O_EXCL. HFS gives
+	 * every file a fork, so an empty one is opened without O_EXCL. */
 	fd = fruit_open_rsrc(
 		handle, NULL, &stream_name, &stream_fsp,
 		O_RDWR | O_CREAT | O_EXCL, 0600);
 	CHECK(fd == 77);
+	CHECK(strcmp(test_fstatat_name, "object/..namedfork/rsrc") == 0);
 	CHECK(strcmp(test_openat_name, "object/..namedfork/rsrc") == 0);
 	CHECK(!test_openat_had_stream);
 	CHECK(test_openat_dirfsp == conn->cwd_fsp);
-	CHECK(next_openat_flags == (O_RDWR | O_CREAT | O_EXCL));
+	CHECK(next_openat_flags == (O_RDWR | O_CREAT));
 	fsp_set_fd(&stream_fsp, fd);
 	fio = VFS_FETCH_FSP_EXTENSION(handle, &stream_fsp);
 	CHECK(fio != NULL && fio->type == ADOUBLE_RSRC && !fio->fake_fd);
@@ -1239,8 +1265,80 @@ static void test_resource_backend(struct vfs_handle_struct *handle,
 	CHECK(fruit_pwrite_rsrc(
 		      handle, &stream_fsp, "resource", 8, 0) == 8);
 	CHECK(strcmp(mutation_order, "P") == 0);
-	CHECK(fruit_unlink_rsrc(handle, NULL, &stream_name, false) == 0);
 	remove_fio(handle, &stream_fsp);
+
+	/* A fork with data exists, so an exclusive create must fail. */
+	reset_stores();
+	test_resource_size = 4096;
+	init_stream_file(mem_ctx, conn, base_fsp, &stream_fsp, &stream_name);
+	stream_name.stream_name = discard_const_p(char, ":AFP_Resource");
+	errno = 0;
+	CHECK(fruit_open_rsrc(
+		      handle, NULL, &stream_name, &stream_fsp,
+		      O_RDWR | O_CREAT | O_EXCL, 0600) == -1);
+	CHECK(errno == EEXIST);
+	CHECK(next_openat_calls == 0);
+	remove_fio(handle, &stream_fsp);
+
+	/* If the fork cannot be probed, the open reports the real error. */
+	reset_stores();
+	test_resource_stat_error = EIO;
+	init_stream_file(mem_ctx, conn, base_fsp, &stream_fsp, &stream_name);
+	stream_name.stream_name = discard_const_p(char, ":AFP_Resource");
+	fd = fruit_open_rsrc(
+		handle, NULL, &stream_name, &stream_fsp,
+		O_RDWR | O_CREAT | O_EXCL, 0600);
+	CHECK(fd == 77);
+	CHECK(next_openat_flags == (O_RDWR | O_CREAT));
+	fsp_set_fd(&stream_fsp, fd);
+	remove_fio(handle, &stream_fsp);
+
+	/* A plain O_CREAT open needs no probe: the fork always exists. */
+	reset_stores();
+	test_resource_size = 4096;
+	init_stream_file(mem_ctx, conn, base_fsp, &stream_fsp, &stream_name);
+	stream_name.stream_name = discard_const_p(char, ":AFP_Resource");
+	fd = fruit_open_rsrc(
+		handle, NULL, &stream_name, &stream_fsp, O_RDWR | O_CREAT, 0600);
+	CHECK(fd == 77);
+	CHECK(test_fstatat_name[0] == '\0');
+	CHECK(next_openat_flags == (O_RDWR | O_CREAT));
+	fsp_set_fd(&stream_fsp, fd);
+	remove_fio(handle, &stream_fsp);
+
+	/* Deleting the stream empties the fork by path. */
+	reset_stores();
+	CHECK(fruit_unlink_rsrc(
+		      handle, conn->cwd_fsp, &stream_name, false) == 0);
+	CHECK(test_truncate_calls == 1);
+	CHECK(strcmp(test_truncate_path, "object/..namedfork/rsrc") == 0);
+	CHECK(test_truncate_length == 0);
+	CHECK(mutation_count == 0);
+	{
+		struct smb_filename dir_name = {
+			.base_name = discard_const_p(char, "dir"),
+		};
+		files_struct dir = {
+			.conn = conn,
+			.fsp_name = &dir_name,
+		};
+
+		reset_stores();
+		CHECK(fruit_unlink_rsrc(handle, &dir, &stream_name, false) == 0);
+		CHECK(strcmp(test_truncate_path,
+			     "dir/object/..namedfork/rsrc") == 0);
+	}
+	reset_stores();
+	test_truncate_error = EACCES;
+	errno = 0;
+	CHECK(fruit_unlink_rsrc(
+		      handle, conn->cwd_fsp, &stream_name, false) == -1);
+	CHECK(errno == EACCES);
+	/* Removing the file removes its fork; nothing to empty first. */
+	reset_stores();
+	CHECK(fruit_unlink_rsrc(
+		      handle, conn->cwd_fsp, &stream_name, true) == 0);
+	CHECK(test_truncate_calls == 0);
 
 	/* FILE_OVERWRITE opens an existing fork with O_TRUNC but not O_CREAT.
 	 * Check existence before open so the post-open zero length is not mistaken

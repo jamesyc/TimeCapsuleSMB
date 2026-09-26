@@ -95,22 +95,65 @@ static int fruit_open_rsrc_native(vfs_handle_struct *handle,
 		errno = ENOMEM;
 		return -1;
 	}
-	if (!(flags & O_CREAT)) {
+	/*
+	 * HFS gives every file a resource fork, but an empty one counts as
+	 * absent, as in the stream list. fd_open_atomic() creates a missing
+	 * stream with O_EXCL, which HFS refuses for an empty fork too.
+	 */
+	if (!(flags & O_CREAT) || (flags & O_EXCL)) {
 		int stat_ret = SMB_VFS_NEXT_FSTATAT(
 			handle, fsp->conn->cwd_fsp, native_name, &st, 0);
+		bool present = stat_ret == 0 && st.st_ex_size > 0;
+		int error = 0;
 
-		if (stat_ret != 0 || st.st_ex_size == 0) {
-			int error = stat_ret == 0 ? ENOENT : errno;
-
+		if (!(flags & O_CREAT) && !present) {
+			error = stat_ret == 0 ? ENOENT : errno;
+		} else if ((flags & O_CREAT) && present) {
+			error = EEXIST;
+		}
+		if (error != 0) {
 			TALLOC_FREE(frame);
 			errno = error;
 			return -1;
 		}
+		how.flags &= ~O_EXCL;
 	}
 	fd = SMB_VFS_NEXT_OPENAT(
 		handle, fsp->conn->cwd_fsp, native_name, fsp, &how);
 	TALLOC_FREE(frame);
 	return fd;
+}
+
+/*
+ * Deleting the stream empties the fork, as an AFP client does when it
+ * removes a resource fork. Removing the file removes its fork anyway.
+ */
+static int fruit_unlink_rsrc_native(vfs_handle_struct *handle,
+				    struct files_struct *dirfsp,
+				    const struct smb_filename *smb_fname,
+				    bool force_unlink)
+{
+	TALLOC_CTX *frame = NULL;
+	struct smb_filename *full_fname = NULL;
+	struct smb_filename *native_name = NULL;
+	int ret;
+
+	if (force_unlink) {
+		return 0;
+	}
+	frame = talloc_stackframe();
+	full_fname = full_path_from_dirfsp_atname(frame, dirfsp, smb_fname);
+	if (full_fname != NULL) {
+		native_name = tc_native_rsrc_name(frame, full_fname);
+	}
+	if (native_name == NULL) {
+		TALLOC_FREE(frame);
+		errno = ENOMEM;
+		return -1;
+	}
+	ret = truncate(native_name->base_name, 0);
+	TALLOC_FREE(frame);
+	return ret;
 }
 
 static int fruit_fstatat_rsrc_native(struct vfs_handle_struct *handle,

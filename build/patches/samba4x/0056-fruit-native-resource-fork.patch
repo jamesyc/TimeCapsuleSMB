@@ -76,17 +76,18 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -2231,6 +2251,9 @@ static int fruit_unlink_rsrc(vfs_handle_struct *handle,
+@@ -2231,6 +2251,10 @@ static int fruit_unlink_rsrc(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config,
  				struct fruit_config_data, return -1);
 +	if (config->native_hfs) {
-+		return 0;
++		return fruit_unlink_rsrc_native(
++			handle, dirfsp, smb_fname, force_unlink);
 +	}
  
  	switch (config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -2588,6 +2611,9 @@ static ssize_t fruit_pread_rsrc(vfs_handle_struct *handle,
+@@ -2588,6 +2612,9 @@ static ssize_t fruit_pread_rsrc(vfs_handle_struct *handle,
  		errno = EINVAL;
  		return -1;
  	}
@@ -96,7 +97,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (fio->config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -3068,6 +3094,9 @@ static ssize_t fruit_pwrite_rsrc(vfs_handle_struct *handle,
+@@ -3068,6 +3095,9 @@ static ssize_t fruit_pwrite_rsrc(vfs_handle_struct *handle,
  		DBG_ERR("Failed to fetch fsp extension\n");
  		return -1;
  	}
@@ -106,7 +107,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (fio->config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -3434,6 +3463,11 @@ static int fruit_fstatat_rsrc(struct vfs_handle_struct *handle,
+@@ -3434,6 +3464,11 @@ static int fruit_fstatat_rsrc(struct vfs_handle_struct *handle,
  	int ret;
  	bool ok;
  
@@ -118,7 +119,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  	if (config->rsrc == FRUIT_RSRC_STREAM) {
  		ret = SMB_VFS_NEXT_FSTATAT(
  			handle, dirfsp, smb_relname, sbuf, flags);
-@@ -3790,6 +3824,10 @@ static int fruit_fstat_rsrc(vfs_handle_struct *handle, files_struct *fsp,
+@@ -3790,6 +3825,10 @@ static int fruit_fstat_rsrc(vfs_handle_struct *handle, files_struct *fsp,
  {
  	int ret;
  
@@ -129,7 +130,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  	switch (fio->config->rsrc) {
  	case FRUIT_RSRC_STREAM:
  		ret = fruit_fstat_rsrc_stream(handle, fsp, sbuf);
-@@ -4123,6 +4161,10 @@ static NTSTATUS fruit_streaminfo_rsrc(vfs_handle_struct *handle,
+@@ -4123,6 +4162,10 @@ static NTSTATUS fruit_streaminfo_rsrc(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
  				return NT_STATUS_INTERNAL_ERROR);
@@ -140,7 +141,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -4349,6 +4391,9 @@ static int fruit_ftruncate_rsrc(struct vfs_handle_struct *handle,
+@@ -4349,6 +4392,9 @@ static int fruit_ftruncate_rsrc(struct vfs_handle_struct *handle,
  		DBG_ERR("Failed to fetch fsp extension\n");
  		return -1;
  	}
