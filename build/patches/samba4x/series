@@ -34,8 +34,6 @@
 # pipe in smbd because the Time Capsule RAM-disk deployment cannot rely on
 # external DCE/RPC helper binaries living on an Apple-managed HFS disk.
 0005-smbd-embedded-srvsvc.patch|embedded srvsvc named pipe support
-# smbd -V exits through shared option parsing before server.c can clean up.
-0006-smbd-version-no-dangling-frame.patch|clean smbd version exit
 # Reopened TDB handles should not leak into any helper exec path.
 0007-tdb-cloexec-compat.patch|TDB close-on-exec compatibility
 
@@ -46,9 +44,6 @@
 # is another resident smbd (about 2.5 MB RSS) on a device that runs smbd from a
 # RAM disk, and dropping this patch adds 14 KB to smbd.
 0008-no-pthread-smbd-daemons-in-parent.patch|host smbd helper services in the parent event loop
-# smbXsrv_version_global_init retains global DB state after returning; parent
-# it to an explicit named context instead of the process-global talloc stack.
-0011-no-pthread-smbxsrv-version-global-parent.patch|explicit parent for retained SMBX version state
 # Disable pthread before libreplace constructs the dependency graph, compile
 # pthreadpool_tevent without pthread mutex/glue operations, and define __thread
 # away. Without threads, thread-local storage is process storage, and in the
@@ -58,10 +53,11 @@
 # winbind SID lookup (libwbclient's client name) that earlier patches avoided;
 # the NetBSD 4 compilers never enabled __thread, only the NetBSD 6 lane did.
 0013-no-pthread-configure-and-pthreadpool-sync.patch|configure-time no-pthread and synchronous pthreadpool support
-# The no-pthread talloc stack is process-global, so forked smbd children inherit
-# parent event-loop stack tracking. Drop inherited tracking after fork and
-# disarm normal-exit diagnostics once smbd has completed clean shutdown.
-0022-no-pthread-talloc-stack-fork-exit-cleanup.patch|no-pthread talloc stack fork and exit cleanup
+# Without pthread, talloc_stack frees its frame tracker from an atexit handler
+# that logs every frame still open, so every smbd connection child logged about
+# three "Dangling frame" lines and smbd -V/-b did too. pthread builds never run
+# that report at exit(); free the tracker the same way, quietly.
+0022-no-pthread-talloc-stack-quiet-exit.patch|quiet talloc stack teardown at exit
 
 # aio_fork runtime behavior.
 # Limit aio_fork helpers without turning overload into an SMB I/O error. A

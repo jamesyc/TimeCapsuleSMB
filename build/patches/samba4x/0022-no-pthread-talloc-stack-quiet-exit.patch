@@ -1,0 +1,35 @@
+diff --git a/lib/util/talloc_stack.c b/lib/util/talloc_stack.c
+--- a/lib/util/talloc_stack.c
++++ b/lib/util/talloc_stack.c
+@@ -58,6 +58,7 @@ static pthread_key_t ts_key;
+ static struct talloc_stackframe *global_ts;
+ #endif
+ 
++#ifdef HAVE_PTHREAD
+ static void talloc_stackframe_destructor(void *ptr)
+ {
+ 	struct talloc_stackframe *ts =
+@@ -78,7 +79,6 @@ static void talloc_stackframe_destructor(void *ptr)
+ 	free(ts);
+ }
+ 
+-#ifdef HAVE_PTHREAD
+ static void talloc_stackframe_init_once(void)
+ {
+ 	int ret = pthread_key_create(&ts_key, talloc_stackframe_destructor);
+@@ -92,7 +92,14 @@ static void talloc_stackframe_init(void)
+ #else /* ! HAVE_PTHREAD */
+ static void talloc_stackframe_atexit(void)
+ {
+-	talloc_stackframe_destructor(global_ts);
++	/*
++	 * Behave like pthread builds, where exit() never runs the key
++	 * destructor. Frames still open at exit are not leaks: a forked child
++	 * keeps its copy of the parent's frames, and smbd exits from inside
++	 * tevent callbacks. Free the tracker (NULL if this process never
++	 * created a frame) without reporting them.
++	 */
++	free(global_ts);
+ }
+ 
+ static void talloc_stackframe_init(void)

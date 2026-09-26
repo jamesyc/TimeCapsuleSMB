@@ -9,13 +9,14 @@ Patch numbers in dated entries are as they were then. Later merges folded 0037,
 0039, 0040 and 0042 into 0038 plus overlay files, 0030 and 0034 into 0031, 0025
 into 0023, and 0026 into 0003. 0020 was dropped: build/_samba4x.sh already
 clears configure's getifaddrs results. 0032's pthreadpool driver moved to
-tests/samba/tc_pthreadpool_sync_test.c. 0009, 0010, 0012 and 0044 were dropped
-on 2026-09-26 (see "No-pthread workaround review" below).
+tests/samba/tc_pthreadpool_sync_test.c. 0006, 0009, 0010, 0011, 0012 and 0044
+were dropped and 0022 was replaced on 2026-09-26 (see "No-pthread workaround
+review" below).
 
 | Deliberately broken behavior | Case that rejects it |
 | --- | --- |
-| Omit the AIO child's talloc stack reset | `read` |
 | Treat a negative worker read result as an oversized successful read | `read_error` |
+| Report open talloc frames from the no-pthread atexit handler (upstream, without 0022) | `exit_frames` (NetBSD 6 device, 2026-09-26) |
 | Allow worker creation beyond the configured bound | `limits` |
 | Insert queued work at the head rather than the tail | `queue` |
 | Reject a matching live durable reconnect immediately | `transition` |
@@ -592,4 +593,20 @@ Two observations:
 
 The candidate series (0013 fix; 0009, 0010, 0012, 0044 dropped) passed the
 workload and the links suite (85/85) on NetBSD 6 before landing.
+
+Follow-up, 0011 and 0022 (2026-09-26). Same method, both devices:
+- Without 0011 nothing changed. Upstream already opens the SMBX version
+  database with a NULL (process-lifetime) parent. Dropped.
+- Without 0022 nothing crashed, but smbd logged 471 "Dangling frame" lines at
+  level 0, about three per exiting connection child. Upstream's no-pthread
+  talloc stack reports every open frame from an atexit handler; pthread builds
+  never run that report at exit(). 0022 is now that one change (free the
+  tracker quietly), which also makes 0006's early `-V` handling unnecessary, so
+  0006 was dropped too. The AIO child's inherited frames are upstream
+  behaviour; the new `exit_frames` case checks that a child exiting with open
+  frames prints nothing, in place of `fork_stack`.
+- A clean rebuild also showed that `waf distclean` in `_samba4x.sh` had not
+  been clearing the lane tree, so the committed NetBSD 6 smbd carried a stale
+  configure result (`HAVE__STATIC_ASSERT` missing from `smbd -b`). The
+  binaries below come from lane trees with `bin/` removed first.
 

@@ -19,7 +19,6 @@ static bool oversized_reply;
 static pid_t workers[128];
 static size_t worker_count;
 static unsigned destructors;
-static unsigned inherited_destructors;
 
 static pid_t controlled_fork(void)
 {
@@ -37,26 +36,20 @@ static int mark_destroyed(int *marker)
 	return 0;
 }
 
-static int mark_inherited_destroyed(int *marker)
-{
-	(void)marker;
-	inherited_destructors++;
-	return 0;
-}
-
 static struct files_struct *check_child_stack(struct smbd_server_connection *sconn,
 	struct files_struct *(*fn)(struct files_struct *, void *), void *data)
 {
-	TALLOC_CTX *frame;
+	TALLOC_CTX *outer, *frame;
 	(void)sconn; (void)fn; (void)data;
 	alarm(15);
-	/* Called by create_aio_child after its actual fork/reset path. */
-	CHECK(!talloc_stackframe_exists());
+	/* Called by create_aio_child in the forked worker. As upstream, it keeps
+	 * its copy of the parent's talloc frames; its own nest on top of them. */
 	CHECK(destructors == 0);
+	outer = talloc_tos();
 	frame = talloc_stackframe();
-	CHECK(talloc_stackframe_exists());
+	CHECK(talloc_tos() == frame);
 	TALLOC_FREE(frame);
-	CHECK(!talloc_stackframe_exists() && destructors == 0);
+	CHECK(talloc_tos() == outer && destructors == 0);
 	return NULL;
 }
 
@@ -328,9 +321,10 @@ static void test_cleanup(struct vfs_handle_struct *h)
  * talloc_magic at startup (on NetBSD, derived from its own address) and
  * checks every chunk header against it, so a reverted talloc_magic made the
  * next talloc call abort with "Bad talloc magic value - unknown value". Here
- * fork_stack and listener_handoff (a case for Samba patch 0044, since dropped)
- * failed only on the devices, in forked children; later tc_native_links_test's convert_created aborted the same way
- * in a single process. The allocator corruption seen in create_aio_child()
+ * the since-removed fork_stack and listener_handoff cases (for the old Samba
+ * patch 0022 and for 0044) failed only on the devices, in forked children; later
+ * tc_native_links_test's convert_created aborted the same way in a single
+ * process. The allocator corruption seen in create_aio_child()
  * (issue #295) fits too: jemalloc's own state lives in .data. Which global
  * gets hit depends on which variables share pages and on the order of first
  * writes, i.e. on the code layout. So the failure is deterministic for one
@@ -445,48 +439,42 @@ static void test_data_page_writes(void)
 	}
 }
 
-static void test_fork_stackframes(TALLOC_CTX *root)
+/* A process that exits with talloc frames still open, as every forked smbd
+ * child does, must not report them (Samba patch 0022). pthread builds never
+ * run that report at exit(); upstream's no-pthread atexit handler logged
+ * "Dangling frame" lines at level 0 for each of them. */
+static void test_exit_frames(void)
 {
-	TALLOC_CTX *inherited = talloc_stackframe();
-	int *marker = talloc_zero(inherited, int);
-	int mode;
+	char out[4096];
+	size_t used = 0;
+	ssize_t n;
+	int fds[2], status;
+	pid_t pid;
 
-	CHECK(inherited != NULL && marker != NULL);
-	talloc_set_destructor(marker, mark_inherited_destroyed);
-	for (mode = 0; mode < 2; mode++) {
-		pid_t pid = fork();
-		int status;
-
-		CHECK(pid >= 0);
-		if (pid == 0) {
-			TALLOC_CTX *fresh = NULL;
-			TALLOC_CTX *nested = NULL;
-
-			alarm(15);
-			talloc_stackframe_reinit_after_fork();
-			CHECK(!talloc_stackframe_exists());
-			if (mode != 0) {
-				fresh = talloc_stackframe();
-				nested = talloc_stackframe();
-				CHECK(talloc_tos() == nested);
-			}
-			TALLOC_FREE(inherited);
-			CHECK(inherited_destructors == 1);
-			if (mode != 0) {
-				CHECK(talloc_tos() == nested);
-				TALLOC_FREE(nested);
-				CHECK(talloc_tos() == fresh);
-				TALLOC_FREE(fresh);
-			}
-			CHECK(!talloc_stackframe_exists());
-			_exit(0);
-		}
-		CHECK(waitpid(pid, &status, 0) == pid);
-		CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-		CHECK(inherited_destructors == 0 && talloc_tos() == inherited);
+	CHECK(pipe(fds) == 0);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0) {
+		alarm(15);
+		CHECK(dup2(fds[1], 2) == 2);
+		close(fds[0]);
+		/* Left open on top of main's frame, which is also still open. */
+		CHECK(talloc_stackframe() != NULL);
+		exit(0);
 	}
-	TALLOC_FREE(inherited);
-	CHECK(inherited_destructors == 1 && talloc_tos() == root);
+	close(fds[1]);
+	while (used < sizeof(out) - 1 &&
+	       (n = read(fds[0], out + used, sizeof(out) - 1 - used)) > 0) {
+		used += n;
+	}
+	out[used] = '\0';
+	close(fds[0]);
+	CHECK(waitpid(pid, &status, 0) == pid);
+	if (strstr(out, "Dangling frame") != NULL) {
+		fprintf(stderr, "%s", out);
+	}
+	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	CHECK(strstr(out, "Dangling frame") == NULL);
 }
 
 int main(int argc, char **argv)
@@ -515,7 +503,7 @@ int main(int argc, char **argv)
 	else if (strstr(argv[1], "failure")) test_failures(h, argv[1]);
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
-	else if (!strcmp(argv[1], "fork_stack")) test_fork_stackframes(frame);
+	else if (!strcmp(argv[1], "exit_frames")) test_exit_frames();
 	else if (!strcmp(argv[1], "data_page_writes")) test_data_page_writes();
 	else test_io(h, argv[1]);
 	CHECK(destructors == 0 && talloc_tos() == frame);
