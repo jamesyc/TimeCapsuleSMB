@@ -103,6 +103,33 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         make_fake_elf_tools(tools, triple)
         for name in ("ar", "ranlib", "strip"):
             self.make_executable(tools / f"{triple}-{name}", "#!/bin/sh\nexit 0\n")
+        # Dependency sources must come from the cache in these tests: a
+        # download attempt is recorded and fails instead of reaching the network.
+        self.make_executable(
+            tools / "curl",
+            textwrap.dedent(
+                """\
+                #!/bin/sh
+                if [ -n "${TEST_CURL_ARGS:-}" ]; then
+                    printf '%s\\n' "$*" >> "$TEST_CURL_ARGS"
+                fi
+                exit 22
+                """
+            ),
+        )
+        # NetBSD's sha256 -q, which Linux hosts lack.
+        self.make_executable(
+            tools / "sha256",
+            textwrap.dedent(
+                f"""\
+                #!{sys.executable}
+                import hashlib, sys
+                assert sys.argv[1] == "-q"
+                with open(sys.argv[2], "rb") as stream:
+                    print(hashlib.sha256(stream.read()).hexdigest())
+                """
+            ),
+        )
 
     def prepare_fake_samba_source(self, src_dir: Path) -> None:
         self.make_file(src_dir / "source3/modules/wscript_build", "# fixture\n")
@@ -235,6 +262,34 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             ),
         )
 
+    _dependency_pins: dict[str, str] | None = None
+
+    @classmethod
+    def dependency_pins(cls) -> dict[str, str]:
+        """The dependency versions and source hashes build/env.sh pins."""
+        if cls._dependency_pins is None:
+            names = [
+                f"{dep}_{field}"
+                for dep in ("NETTLE", "LIBTASN1", "GNUTLS")
+                for field in ("VERSION", "SHA256")
+            ]
+            result = subprocess.run(
+                [
+                    "sh",
+                    "-c",
+                    '. "$1"; shift; for name in "$@"; do eval "printf \'%s=%s\\n\' $name \\$SAMBA4X_$name"; done',
+                    "sh",
+                    str(REPO_ROOT / "build/env.sh"),
+                    *names,
+                ],
+                env=dict(os.environ, TC_ENV_FILE="/dev/null"),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            cls._dependency_pins = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        return cls._dependency_pins
+
     def prepare_fake_netbsd_inputs(self, root: Path, *, lane: str) -> dict[str, Path]:
         out = root / f"out-{lane}"
         build_src = root / f"netbsd-src-{lane}"
@@ -262,12 +317,16 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         self.make_file(build_src / "external" / "lgpl3" / "gmp" / "lib" / "libgmp" / "arch" / gmp_arch / "gmp.h")
 
         deps = samba_build / "deps"
-        self.make_file(deps / ".stamp-nettle-3.10.1-system-gmp")
+        pins = self.dependency_pins()
+        self.make_file(deps / f".stamp-nettle-{pins['NETTLE_VERSION']}-{pins['NETTLE_SHA256']}-system-gmp")
         self.make_file(deps / "lib" / "libnettle.a")
         self.make_file(deps / "lib" / "libhogweed.a")
-        self.make_file(deps / ".stamp-libtasn1-4.20.0")
+        self.make_file(deps / f".stamp-libtasn1-{pins['LIBTASN1_VERSION']}-{pins['LIBTASN1_SHA256']}")
         self.make_file(deps / "lib" / "libtasn1.a")
-        self.make_file(deps / ".stamp-gnutls-3.8.5-system-nettle-oaep-no-thread-local")
+        self.make_file(
+            deps / f".stamp-gnutls-{pins['GNUTLS_VERSION']}-{pins['GNUTLS_SHA256']}"
+            "-system-nettle-oaep-no-thread-local"
+        )
         self.make_file(deps / "lib" / "libgnutls.a")
         self.make_file(deps / "lib" / "pkgconfig" / "gnutls.pc", "Libs: -L${libdir} -lgnutls\n")
 
@@ -359,6 +418,74 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             cross_answers = self.cross_answer_arg(args)
             self.assertTrue(cross_answers.endswith("/samba4x-4.25.0rc2-netbsd7.answers"))
             self.assertFalse(cross_exec_capture.exists())
+
+    def test_dependency_built_from_the_pinned_source_is_reused_without_download(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            curl_capture = root / "curl-args.txt"
+            env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt")
+            env["TEST_CURL_ARGS"] = str(curl_capture)
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            pins = self.dependency_pins()
+            for name, key in (("nettle", "NETTLE"), ("libtasn1", "LIBTASN1"), ("GnuTLS", "GNUTLS")):
+                self.assertIn(f"{name} {pins[key + '_VERSION']} already built.", log)
+            self.assertFalse(curl_capture.exists())
+
+    def test_dependency_built_without_the_pinned_hash_is_not_reused(self) -> None:
+        pins = self.dependency_pins()
+        version = pins["LIBTASN1_VERSION"]
+        for case, stamp in (
+            ("pre-pin stamp", f".stamp-libtasn1-{version}"),
+            ("other hash", f".stamp-libtasn1-{version}-{'0' * 64}"),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                capture = root / "configure-args.txt"
+                curl_capture = root / "curl-args.txt"
+                env = self.env_for_lane(root, "netbsd7", capture)
+                env["TEST_CURL_ARGS"] = str(curl_capture)
+                deps = root / "samba-build-netbsd7" / "deps"
+                (deps / f".stamp-libtasn1-{version}-{pins['LIBTASN1_SHA256']}").unlink()
+                self.make_file(deps / stamp)
+                # The compiled library is still there; only the source it came
+                # from no longer matches the pin.
+                self.assertTrue((deps / "lib" / "libtasn1.a").is_file())
+                archive = root / "samba-build-netbsd7" / "distfiles" / f"libtasn1-{version}.tar.gz"
+                self.make_file(archive, "not the pinned libtasn1 source\n")
+
+                result = self.run_wrapper("samba4x.sh", env)
+
+                self.assertNotEqual(result.returncode, 0)
+                output = result.stdout + result.stderr + Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                self.assertNotIn("libtasn1 4.20.0 already built.", output)
+                self.assertIn(f"SHA-256 mismatch for {archive}", output)
+                self.assertIn(f"expected {pins['LIBTASN1_SHA256']}", output)
+                self.assertFalse(curl_capture.exists())
+                self.assertFalse(capture.exists())
+
+    def test_dependency_rebuild_downloads_a_missing_source_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            curl_capture = root / "curl-args.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+            env["TEST_CURL_ARGS"] = str(curl_capture)
+            pins = self.dependency_pins()
+            deps = root / "samba-build-netbsd7" / "deps"
+            (deps / f".stamp-libtasn1-{pins['LIBTASN1_VERSION']}-{pins['LIBTASN1_SHA256']}").unlink()
+            self.make_file(deps / f".stamp-libtasn1-{pins['LIBTASN1_VERSION']}")
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            calls = curl_capture.read_text().splitlines()
+            self.assertEqual(len(calls), 1)
+            self.assertIn(f"libtasn1-{pins['LIBTASN1_VERSION']}.tar.gz", calls[0])
+            self.assertFalse(capture.exists())
 
     def test_appliance_lanes_enable_private_kernel_workarounds(self) -> None:
         for wrapper, lane, log_name in (
