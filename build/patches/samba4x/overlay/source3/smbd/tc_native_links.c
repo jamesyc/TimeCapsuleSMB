@@ -81,10 +81,10 @@ static bool tc_xsym_md5_hex(const uint8_t *data,
  * checked by the client either. A native link additionally cannot hold an
  * empty target or a NUL byte.
  */
-bool tc_xsym_parse(TALLOC_CTX *mem_ctx,
-		   const uint8_t *buf,
-		   size_t buflen,
-		   char **_target)
+static bool tc_xsym_parse(TALLOC_CTX *mem_ctx,
+			  const uint8_t *buf,
+			  size_t buflen,
+			  char **_target)
 {
 	char hex[33];
 	size_t len = 0;
@@ -129,7 +129,7 @@ bool tc_xsym_parse(TALLOC_CTX *mem_ctx,
  * smbfs_create_windows_symlink_data): header, target, one newline, then
  * space padding.
  */
-bool tc_xsym_format(const char *target, uint8_t buf[TC_XSYM_FILE_SIZE])
+static bool tc_xsym_format(const char *target, uint8_t buf[TC_XSYM_FILE_SIZE])
 {
 	size_t len = strlen(target);
 	char hex[33];

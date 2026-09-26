@@ -137,7 +137,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  static int catia_lchown(vfs_handle_struct *handle,
  			const struct smb_filename *smb_fname,
  			uid_t uid,
-@@ -930,6 +1015,33 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
+@@ -962,6 +1047,33 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
  	*_num_streams = 0;
  	*_streams = NULL;
  
@@ -171,7 +171,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	ret = catia_string_replace_allocate(handle->conn,
  					    smb_fname->base_name,
  					    &mapped_name,
-@@ -963,6 +1075,8 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
+@@ -995,6 +1107,8 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
  		return status;
  	}
  
@@ -180,7 +180,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	/*
  	 * Translate stream names just like the base names
  	 */
-@@ -1117,6 +1231,7 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+@@ -1149,6 +1263,7 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
  			       void *value,
  			       size_t size)
  {
@@ -188,7 +188,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	ssize_t result;
  	int ret;
-@@ -1130,9 +1245,20 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+@@ -1162,9 +1277,20 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
@@ -209,7 +209,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_xattr_name);
  
  	return result;
-@@ -1163,6 +1289,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1195,6 +1321,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  			      struct files_struct *fsp,
  			      const char *name)
  {
@@ -217,7 +217,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_name = NULL;
  	int ret;
  
-@@ -1175,8 +1302,15 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1207,8 +1334,15 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
@@ -233,7 +233,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_name);
  
  	return ret;
-@@ -1189,6 +1323,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1221,6 +1355,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  			   size_t size,
  			   int flags)
  {
@@ -241,7 +241,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	int ret;
  
-@@ -1201,9 +1336,16 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1233,9 +1368,16 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
@@ -258,7 +258,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_xattr_name);
  
  	return ret;
-@@ -1931,6 +2073,8 @@ static struct vfs_fn_pointers vfs_catia_fns = {
+@@ -1964,6 +2106,8 @@ static struct vfs_fn_pointers vfs_catia_fns = {
  	.fstatat_fn = catia_fstatat,
  	.lstat_fn = catia_lstat,
  	.unlinkat_fn = catia_unlinkat,
@@ -270,7 +270,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
 diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 --- a/source3/modules/vfs_default.c
 +++ b/source3/modules/vfs_default.c
-@@ -3525,8 +3525,19 @@ static int vfswrap_fchmod(vfs_handle_struct *handle, files_struct *fsp, mode_t m
+@@ -2965,8 +2965,19 @@ static int vfswrap_fchmod(vfs_handle_struct *handle, files_struct *fsp, mode_t m
  	}
  
  	/*
@@ -291,7 +291,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	result = chmod(fsp->fsp_name->base_name, mode);
  
  	END_PROFILE_X(syscall_fchmod);
-@@ -3556,8 +3567,13 @@ static int vfswrap_fchown(vfs_handle_struct *handle, files_struct *fsp, uid_t ui
+@@ -2996,8 +3007,13 @@ static int vfswrap_fchown(vfs_handle_struct *handle, files_struct *fsp, uid_t ui
  	}
  
  	/*
@@ -306,7 +306,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	result = chown(fsp->fsp_name->base_name, uid, gid);
  	END_PROFILE_X(syscall_fchown);
  	return result;
-@@ -3641,6 +3657,20 @@ static int vfswrap_fntimes(vfs_handle_struct *handle,
+@@ -3081,6 +3097,20 @@ static int vfswrap_fntimes(vfs_handle_struct *handle,
  		times = NULL;
  	}
  
@@ -327,7 +327,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (!fsp->fsp_flags.is_pathref) {
  		result = futimens(fsp_get_io_fd(fsp), times);
  		goto out;
-@@ -4107,8 +4137,18 @@ static int vfswrap_fchflags(vfs_handle_struct *handle,
+@@ -3547,8 +3577,18 @@ static int vfswrap_fchflags(vfs_handle_struct *handle,
  	}
  
  	/*
@@ -347,7 +347,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	return chflags(fsp->fsp_name->base_name, flags);
  #else
  	errno = ENOSYS;
-@@ -4353,8 +4393,14 @@ static ssize_t vfswrap_fgetxattr(struct vfs_handle_struct *handle,
+@@ -3793,8 +3833,14 @@ static ssize_t vfswrap_fgetxattr(struct vfs_handle_struct *handle,
  	}
  
  	/*
@@ -363,7 +363,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = getxattr(fsp->fsp_name->base_name, name, value, size);
  out:
  	END_PROFILE_X(syscall_fgetxattr);
-@@ -4693,6 +4739,11 @@ static ssize_t vfswrap_flistxattr(struct vfs_handle_struct *handle, struct files
+@@ -4133,6 +4179,11 @@ static ssize_t vfswrap_flistxattr(struct vfs_handle_struct *handle, struct files
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -375,7 +375,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = listxattr(fsp->fsp_name->base_name, list, size);
  out:
  	END_PROFILE_X(syscall_flistxattr);
-@@ -4723,6 +4774,12 @@ static int vfswrap_fremovexattr(struct vfs_handle_struct *handle, struct files_s
+@@ -4163,6 +4214,12 @@ static int vfswrap_fremovexattr(struct vfs_handle_struct *handle, struct files_s
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -388,7 +388,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = removexattr(fsp->fsp_name->base_name, name);
  out:
  	END_PROFILE_X(syscall_fremovexattr);
-@@ -4757,6 +4814,12 @@ static int vfswrap_fsetxattr(struct vfs_handle_struct *handle, struct files_stru
+@@ -4197,6 +4254,12 @@ static int vfswrap_fsetxattr(struct vfs_handle_struct *handle, struct files_stru
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -1053,62 +1053,11 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 --- a/source3/smbd/proto.h
 +++ b/source3/smbd/proto.h
-@@ -1233,4 +1233,57 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
+@@ -1233,4 +1233,6 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
  					   TALLOC_CTX *mem_ctx,
  					   struct share_mode_lock **lck);
  
-+/* The following definitions come from smbd/tc_native_links.c  */
-+
-+#define TC_XSYM_FILE_SIZE 1067
-+
-+struct tc_xsym_candidate {
-+	char *target;
-+	SMB_DEV_T dev;
-+	SMB_INO_T ino;
-+	off_t size;
-+	char *aside;	/* taken aside; removed by close_finish */
-+};
-+
-+bool tc_native_links_enabled(const struct connection_struct *conn);
-+bool tc_client_resolves_links(const struct connection_struct *conn);
-+bool tc_xsym_parse(TALLOC_CTX *mem_ctx,
-+		   const uint8_t *buf,
-+		   size_t buflen,
-+		   char **_target);
-+bool tc_xsym_format(const char *target, uint8_t buf[TC_XSYM_FILE_SIZE]);
-+NTSTATUS tc_native_links_read_xsym(struct files_struct *fsp,
-+				   TALLOC_CTX *mem_ctx,
-+				   DATA_BLOB *out,
-+				   off_t offset,
-+				   size_t length);
-+NTSTATUS tc_native_links_write_xsym(struct files_struct *fsp,
-+				    const uint8_t *data,
-+				    size_t length,
-+				    off_t offset);
-+bool tc_native_links_close_prepare(TALLOC_CTX *mem_ctx,
-+				   struct files_struct *fsp,
-+				   enum file_close_type close_type,
-+				   struct tc_xsym_candidate *cand);
-+struct share_mode_lock;
-+bool tc_native_links_sole_open(struct share_mode_lock *lck,
-+			       struct files_struct *fsp);
-+bool tc_native_links_close_commit(struct files_struct *fsp,
-+				  struct tc_xsym_candidate *cand);
-+void tc_native_links_close_finish(struct files_struct *fsp,
-+				  struct tc_xsym_candidate *cand);
-+uint32_t tc_native_links_dos_mode(struct files_struct *fsp, uint32_t dosmode);
-+uint32_t tc_native_links_fs_capabilities(const struct connection_struct *conn);
-+NTSTATUS tc_native_links_map_target(struct connection_struct *conn,
-+				    TALLOC_CTX *mem_ctx,
-+				    char **_target,
-+				    enum vfs_translate_direction direction);
-+NTSTATUS tc_native_links_check_set(struct files_struct *fsp,
-+				   uint32_t reparse_tag,
-+				   const uint8_t *data,
-+				   size_t len);
-+NTSTATUS tc_native_links_stream_base(struct connection_struct *conn,
-+				     struct files_struct *dirfsp,
-+				     struct smb_filename *smb_fname_base);
++#include "smbd/tc_native_links.h"
 +
  #endif /* _SMBD_PROTO_H_ */
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
