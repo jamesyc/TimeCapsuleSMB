@@ -429,26 +429,54 @@ def test_losing_ipv4_cancels_pending_inspection_without_restarting(rig, dnssd):
         discovery.stop()
 
 
+def set_text(path, text):
+    # A running fake may read the file mid-write_text and see it empty.
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(text)
+    os.replace(temporary, path)
+
+
+def datagrams(sock):
+    sock.setblocking(False)
+    received = []
+    while True:
+        try:
+            received.append(sock.recv(512))
+        except BlockingIOError:
+            return received
+
+
 def test_native_child_exit_status_and_port_collision_recover(rig, dnssd):
     port = rig[3]
     foreign = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    foreign.bind(("127.0.0.1", port))
     discovery = Discovery(rig, mode="exit-7", shares=True)
     try:
         connections = bonjour_connections(dnssd)
+        # The port stays free here, so each exit-7 child is reaped as its own
+        # failure rather than stopped by a failed ownership check.
         assert wait_for(lambda: len(children(discovery)) >= 2, timeout=12)
         assert not adds(discovery)
-        discovery.mode.write_text("success")
-        assert wait_for(lambda: "BIND_FAILED" in event_lines(discovery.events), timeout=15)
+        # Another process now holds the control port, so fstat truthfully
+        # names that process. The child stays alive without binding, which
+        # forces the ownership check instead of racing the child's own bind.
+        set_text(discovery.fstat_mode, "foreign")
+        foreign.bind(("127.0.0.1", port))
+        set_text(discovery.mode, "no-listener")
+        assert wait_for(lambda: "STOP" in event_lines(discovery.events), timeout=15)
         assert not adds(discovery)
+        # Apple's adds are reference-counted: none may reach a listener that
+        # is not our verified child.
+        assert datagrams(foreign) == []
         foreign.close()
+        set_text(discovery.fstat_mode, "owned")
+        set_text(discovery.mode, "success")
         assert wait_for(lambda: len(adds(discovery)) == 3, timeout=20)
         assert_bonjour_unchanged(discovery, dnssd, connections)
     finally:
         foreign.close()
         log = discovery.stop()[1]
     assert "exited with status 7" in log
-    assert "exited with status 1" in log
+    assert "native child does not own UDP 137/138/922" in log
 
 
 def test_wack_then_success_and_workgroup_collision(rig, dnssd):
