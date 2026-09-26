@@ -1,5 +1,4 @@
 diff --git a/docs-xml/manpages/vfs_aio_fork.8.xml b/docs-xml/manpages/vfs_aio_fork.8.xml
-index d55af32..a1066b6 100644
 --- a/docs-xml/manpages/vfs_aio_fork.8.xml
 +++ b/docs-xml/manpages/vfs_aio_fork.8.xml
 @@ -43,15 +43,32 @@
@@ -39,7 +38,6 @@ index d55af32..a1066b6 100644
  <refsect1>
  	<title>EXAMPLES</title>
 diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
-index de81d1c..4f8e320 100644
 --- a/source3/modules/vfs_aio_fork.c
 +++ b/source3/modules/vfs_aio_fork.c
 @@ -42,10 +42,19 @@
@@ -62,7 +60,7 @@ index de81d1c..4f8e320 100644
  	struct aio_child_list *children;
  };
  
-@@ -141,6 +148,7 @@ struct rw_ret {
+@@ -141,6 +150,7 @@ struct rw_ret {
  };
  
  struct aio_child_list;
@@ -70,7 +68,7 @@ index de81d1c..4f8e320 100644
  
  struct aio_child {
  	struct aio_child *prev, *next;
-@@ -154,6 +162,11 @@ struct aio_child {
+@@ -154,6 +164,11 @@ struct aio_child {
  
  struct aio_child_list {
  	struct aio_child *children;
@@ -82,7 +80,7 @@ index de81d1c..4f8e320 100644
  	struct tevent_timer *cleanup_event;
  };
  
-@@ -250,7 +263,7 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
+@@ -250,7 +265,7 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
  			continue;
  		}
  
@@ -91,7 +89,7 @@ index de81d1c..4f8e320 100644
  			   "deleting\n", (int)child->pid));
  
  		TALLOC_FREE(child);
-@@ -262,7 +275,10 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
+@@ -262,7 +277,10 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
  		 * Re-schedule the next cleanup round
  		 */
  		list->cleanup_event = tevent_add_timer(global_event_context(), list,
@@ -103,7 +101,7 @@ index de81d1c..4f8e320 100644
  						      aio_child_cleanup, list);
  
  	}
-@@ -281,6 +297,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -281,6 +299,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  		if (config->children == NULL) {
  			return NULL;
  		}
@@ -112,7 +110,7 @@ index de81d1c..4f8e320 100644
  	}
  	children = config->children;
  
-@@ -293,7 +311,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -293,7 +313,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  	if (children->cleanup_event == NULL) {
  		children->cleanup_event =
  			tevent_add_timer(global_event_context(), children,
@@ -122,7 +120,7 @@ index de81d1c..4f8e320 100644
  					 aio_child_cleanup, children);
  		if (children->cleanup_event == NULL) {
  			TALLOC_FREE(config->children);
-@@ -417,6 +436,7 @@ static int aio_child_destructor(struct aio_child *child)
+@@ -417,6 +438,7 @@ static int aio_child_destructor(struct aio_child *child)
  	sys_write_v(child->sockfd, &c, sizeof(c));
  	close(child->sockfd);
  	DLIST_REMOVE(child->list->children, child);
@@ -130,7 +128,7 @@ index de81d1c..4f8e320 100644
  	return 0;
  }
  
-@@ -494,6 +514,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -494,6 +516,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  
  	result->list = children;
  	DLIST_ADD(children->children, result);
@@ -138,7 +136,7 @@ index de81d1c..4f8e320 100644
  
  	talloc_set_destructor(result, aio_child_destructor);
  
-@@ -509,268 +530,290 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -509,289 +532,337 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  	return ret;
  }
  
@@ -151,6 +149,7 @@ index de81d1c..4f8e320 100644
 +	struct aio_child_list *list;
  	struct aio_child *child;
 +	struct tevent_req *req;
++	struct tevent_req *pending_read;
 +	struct tevent_context *ev;
 +	struct files_struct *fsp;
 +	void *data;
@@ -286,28 +285,28 @@ index de81d1c..4f8e320 100644
  	ssize_t written;
  	int err;
 -	struct aio_fork_config *config;
--
+ 
 -	SMB_VFS_HANDLE_GET_DATA(handle, config,
 -				struct aio_fork_config,
 -				return NULL);
- 
+-
 -	req = tevent_req_create(mem_ctx, &state, struct aio_fork_pread_state);
 -	if (req == NULL) {
 -		return NULL;
 -	}
 -	state->n = n;
 -	state->data = data;
--
--	if (n > 128*1024) {
--		/* TODO: support variable buffers */
--		tevent_req_error(req, EINVAL);
--		return tevent_req_post(req, ev);
--	}
 +	state->child = child;
 +	state->active = true;
 +	child->dont_delete = true;
 +	child->busy = true;
  
+-	if (n > 128*1024) {
+-		/* TODO: support variable buffers */
+-		tevent_req_error(req, EINVAL);
+-		return tevent_req_post(req, ev);
+-	}
+-
 -	err = get_idle_child(handle, &state->child);
 -	if (err != 0) {
 -		tevent_req_error(req, err);
@@ -360,14 +359,16 @@ index de81d1c..4f8e320 100644
 -	if (tevent_req_nomem(subreq, req)) {
 -		TALLOC_FREE(state->child); /* we sent sth down */
 -		return tevent_req_post(req, ev);
+-	}
+-	tevent_req_set_callback(subreq, aio_fork_pread_done, req);
+-	return req;
 +	if (subreq == NULL) {
 +		aio_fork_release_child(state, true); /* we sent sth down */
 +		tevent_req_error(state->req, ENOMEM);
 +		return false;
- 	}
--	tevent_req_set_callback(subreq, aio_fork_pread_done, req);
--	return req;
++	}
 +	tevent_req_set_callback(subreq, aio_fork_done, state->req);
++	state->pending_read = subreq;
 +	return true;
  }
  
@@ -390,33 +391,20 @@ index de81d1c..4f8e320 100644
 -		tevent_req_error(req, err);
 -		return;
 -	}
--
--	retbuf = (struct rw_ret *)buf;
--	state->ret = retbuf->size;
--	state->vfs_aio_state.error = retbuf->ret_errno;
--	state->vfs_aio_state.duration = retbuf->duration;
 +	while (list->pending != NULL) {
 +		struct aio_fork_state *state;
 +		struct aio_child *child;
 +		int ret;
  
--	/*
--	 * Preserve the worker's errno when pread returns -1 instead of casting
--	 * the negative result to a huge size or using it as a memcpy length.
--	 */
--	if (state->ret >= 0) {
--		if ((size_t)state->ret > state->n) {
--			tevent_req_error(req, EIO);
--			state->child->busy = false;
+-	retbuf = (struct rw_ret *)buf;
+-	state->ret = retbuf->size;
+-	state->vfs_aio_state.error = retbuf->ret_errno;
+-	state->vfs_aio_state.duration = retbuf->duration;
 +		child = aio_fork_find_idle_child(list);
 +		if (child == NULL && list->max_children != 0 &&
 +		    list->num_children >= list->max_children) {
- 			return;
- 		}
--		memcpy(state->data, state->child->map->ptr, state->ret);
--	}
--
--	state->child->busy = false;
++			return;
++		}
 +		if (child == NULL) {
 +			ret = create_aio_child(
 +				list->sconn, list, 128*1024, &child);
@@ -432,11 +420,19 @@ index de81d1c..4f8e320 100644
 +			}
 +		}
  
--	tevent_req_done(req);
+-	if ((size_t)state->ret > state->n) {
+-		tevent_req_error(req, EIO);
+-		state->child->busy = false;
+-		return;
 +		state = list->pending;
 +		aio_fork_unqueue(state);
 +		aio_fork_dispatch(state, child);
-+	}
+ 	}
+-	memcpy(state->data, state->child->map->ptr, state->ret);
+-
+-	state->child->busy = false;
+-
+-	tevent_req_done(req);
  }
  
 -static ssize_t aio_fork_pread_recv(struct tevent_req *req,
@@ -450,16 +446,20 @@ index de81d1c..4f8e320 100644
 -		return -1;
 +	if (state->queued) {
 +		aio_fork_unqueue(state);
- 	}
--	*vfs_aio_state = state->vfs_aio_state;
--	return state->ret;
++	}
 +	if (state->active) {
++		/* Remove the old socket watcher before a replacement worker can
++		 * reuse its descriptor. Talloc frees children after this destructor;
++		 * leaving the read until then can unregister the replacement fd. */
++		TALLOC_FREE(state->pending_read);
 +		/*
 +		 * The caller may free a submitted request if later setup fails.
 +		 * Retire the worker and its mapping before another job can use it.
 +		 */
 +		aio_fork_release_child(state, true);
-+	}
+ 	}
+-	*vfs_aio_state = state->vfs_aio_state;
+-	return state->ret;
 +	return 0;
  }
  
@@ -614,8 +614,10 @@ index de81d1c..4f8e320 100644
  	ssize_t nread;
  	uint8_t *buf;
  	int err;
-@@ -779,25 +822,38 @@ static void aio_fork_pwrite_done(struct tevent_req *subreq)
+ 	struct rw_ret *retbuf;
+ 
  	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
++	state->pending_read = NULL;
  	TALLOC_FREE(subreq);
  	if (nread == -1) {
 -		TALLOC_FREE(state->child);
@@ -660,7 +662,7 @@ index de81d1c..4f8e320 100644
  
  	if (tevent_req_is_unix_error(req, &vfs_aio_state->error)) {
  		return -1;
-@@ -806,117 +862,59 @@ static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
+@@ -800,117 +871,59 @@ static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
  	return state->ret;
  }
  
@@ -709,7 +711,9 @@ index de81d1c..4f8e320 100644
 -	if (req == NULL) {
 -		return NULL;
 -	}
--
++	enum cmd_type cmd = fsp->fsp_flags.posix_append
++		? WRITE_CMD : PWRITE_CMD;
+ 
 -	err = get_idle_child(handle, &state->child);
 -	if (err != 0) {
 -		tevent_req_error(req, err);
@@ -722,9 +726,7 @@ index de81d1c..4f8e320 100644
 -
 -	DEBUG(10, ("sending fd %d to child %d\n", fsp_get_io_fd(fsp),
 -		   (int)state->child->pid));
-+	enum cmd_type cmd = fsp->fsp_flags.posix_append
-+		? WRITE_CMD : PWRITE_CMD;
- 
+-
 -	/*
 -	 * Not making this async. We're writing into an empty unix
 -	 * domain socket. This should never block.
@@ -812,7 +814,7 @@ index de81d1c..4f8e320 100644
  	int ret;
  	struct aio_fork_config *config;
  	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
-@@ -934,6 +932,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+@@ -928,6 +941,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
  
  	config->erratic_testing_mode = lp_parm_bool(SNUM(handle->conn), "vfs_aio_fork",
  						    "erratic_testing_mode", false);

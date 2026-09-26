@@ -1,6 +1,57 @@
+diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
+--- a/source3/modules/vfs_catia.c
++++ b/source3/modules/vfs_catia.c
+@@ -821,6 +821,38 @@ static int catia_mkdirat(vfs_handle_struct *handle,
+ 	return ret;
+ }
+ 
++/*
++ * Time Capsule NetBSD 4 builds (patch 0003): libc has no fdopendir(), so
++ * vfs_default reopens the directory with opendir() on fsp's name. That name
++ * is the client's; map it like every other name-based call, or a directory
++ * whose on-disk name holds a mapped character (':' from a Finder '/') can
++ * never be listed. Where fdopendir() uses the fd, the swap changes nothing.
++ */
++static DIR *catia_fdopendir(vfs_handle_struct *handle,
++			    files_struct *fsp,
++			    const char *mask,
++			    uint32_t attributes)
++{
++	struct catia_cache *cc = NULL;
++	DIR *result = NULL;
++	int saved_errno;
++	int ret;
++
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		return NULL;
++	}
++
++	result = SMB_VFS_NEXT_FDOPENDIR(handle, fsp, mask, attributes);
++	/* OpenDir_fsp() maps a failure's errno; the name restore may log. */
++	saved_errno = errno;
++
++	CATIA_FETCH_FSP_POST_NEXT(&cc, fsp);
++
++	errno = saved_errno;
++	return result;
++}
++
+ static int catia_chdir(vfs_handle_struct *handle,
+ 			const struct smb_filename *smb_fname)
+ {
+@@ -1913,6 +1945,7 @@ static struct vfs_fn_pointers vfs_catia_fns = {
+ 
+ 	/* Directory operations */
+ 	.mkdirat_fn = catia_mkdirat,
++	.fdopendir_fn = catia_fdopendir,
+ 
+ 	/* File operations */
+ 	.openat_fn = catia_openat,
+diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 --- a/source3/modules/vfs_default.c
 +++ b/source3/modules/vfs_default.c
-@@ -88,6 +88,18 @@
+@@ -89,6 +89,18 @@ static int vfswrap_connect(vfs_handle_struct *handle, const char *service, const
  	handle->conn->open_how_resolve &= ~VFS_OPEN_HOW_RESOLVE_NO_XDEV;
  #endif
  
@@ -19,11 +70,10 @@
  	return 0;    /* Return >= 0 for success */
  }
  
-@@ -354,6 +366,26 @@
- 
+@@ -393,6 +405,26 @@ static NTSTATUS vfswrap_get_dfs_referrals(struct vfs_handle_struct *handle,
  	return NT_STATUS_OK;
  }
-+
+ 
 +#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +static int tc_netbsd_symlinkat_compat(const char *target,
 +				      const struct files_struct *dirfsp,
@@ -43,10 +93,11 @@
 +static DIR *tc_netbsd_fdopendir_compat(files_struct *fsp);
 +#endif
 +#endif
- 
++
  static NTSTATUS vfswrap_create_dfs_pathat(struct vfs_handle_struct *handle,
  				struct files_struct *dirfsp,
-@@ -374,9 +406,17 @@
+ 				const struct smb_filename *smb_fname,
+@@ -412,9 +444,17 @@ static NTSTATUS vfswrap_create_dfs_pathat(struct vfs_handle_struct *handle,
  		goto out;
  	}
  
@@ -64,7 +115,7 @@
  	if (ret == 0) {
  		status = NT_STATUS_OK;
  	} else {
-@@ -437,10 +477,19 @@
+@@ -475,10 +515,19 @@ static NTSTATUS vfswrap_read_dfs_pathat(struct vfs_handle_struct *handle,
  		}
  	}
  
@@ -84,7 +135,7 @@
  	if (referral_len == -1) {
  		if (errno == EINVAL) {
  			/*
-@@ -477,11 +526,21 @@
+@@ -515,11 +564,21 @@ static NTSTATUS vfswrap_read_dfs_pathat(struct vfs_handle_struct *handle,
  		goto err;
  	}
  
@@ -106,7 +157,7 @@
  	if (ret < 0) {
  		status = map_nt_error_from_unix(errno);
  		goto err;
-@@ -549,8 +608,28 @@
+@@ -587,8 +646,28 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
  	DIR *result;
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_fdopendir);
@@ -135,12 +186,10 @@
  	return result;
  }
  
-@@ -581,8 +660,564 @@
- 	START_PROFILE_X(SNUM(handle->conn), syscall_rewinddir);
- 	rewinddir(dirp);
+@@ -621,6 +700,562 @@ static void vfswrap_rewinddir(vfs_handle_struct *handle, DIR *dirp)
  	END_PROFILE_X(syscall_rewinddir);
-+}
-+
+ }
+ 
 +#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +/*
 + * Time Capsule runtime kernels are older than the NetBSD SDKs used to build
@@ -468,8 +517,8 @@
 +					      result,
 +					      want_directory,
 +					      want_cloexec);
- }
- 
++}
++
 +static int tc_netbsd_mkdirat_compat(const struct files_struct *dirfsp,
 +				    const struct smb_filename *smb_fname,
 +				    mode_t mode)
@@ -700,7 +749,7 @@
  static int vfswrap_mkdirat(vfs_handle_struct *handle,
  			struct files_struct *dirfsp,
  			const struct smb_filename *smb_fname,
-@@ -592,7 +1215,11 @@
+@@ -630,7 +1265,11 @@ static int vfswrap_mkdirat(vfs_handle_struct *handle,
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_mkdirat);
  
@@ -712,7 +761,7 @@
  
  	END_PROFILE_X(syscall_mkdirat);
  	return result;
-@@ -616,16 +1243,27 @@
+@@ -654,16 +1293,27 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  			  files_struct *fsp,
  			  const struct vfs_open_how *how)
  {
@@ -740,7 +789,7 @@
  
  	if (how->resolve & ~(VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS |
  			     VFS_OPEN_HOW_WITH_BACKUP_INTENT |
-@@ -638,6 +1276,7 @@
+@@ -676,6 +1326,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -748,16 +797,16 @@
  #ifdef O_PATH
  	have_opath = true;
  	if (fsp->fsp_flags.is_pathref) {
-@@ -662,10 +1301,36 @@
+@@ -700,7 +1351,33 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  		flags &= (O_PATH|O_CLOEXEC|O_DIRECTORY|O_NOFOLLOW);
  	}
  #endif
 +#endif
- 
++
 +#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
- 	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
- 	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
- 	{
++	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
++	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
++	{
 +		/*
 +		 * vfswrap_connect() disables these features for normal appliance
 +		 * connections. If a caller still asks for them, return ENOSYS so
@@ -772,20 +821,17 @@
 +		become_root();
 +		became_root = true;
 +	}
-+
+ 
 +	result = tc_netbsd_openat_compat(dirfsp,
 +					 smb_fname,
 +					 fsp,
 +					 flags,
 +					 mode);
 +#else
-+	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
-+	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
-+	{
- 		struct open_how linux_how = {
- 			.flags = flags,
- 			.mode = mode,
-@@ -712,6 +1377,7 @@
+ 	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
+ 	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
+ 	{
+@@ -750,6 +1427,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  			smb_fname->base_name,
  			flags,
  			mode);
@@ -793,7 +839,7 @@
  
  	if (became_root) {
  		int err = errno;
-@@ -1316,11 +1982,37 @@
+@@ -1352,11 +2030,37 @@ static int vfswrap_renameat(vfs_handle_struct *handle,
  		flags |= RENAME_NOREPLACE;
  	}
  
@@ -831,7 +877,7 @@
  
  	END_PROFILE_X(syscall_renameat);
  	return result;
-@@ -1394,12 +2086,20 @@
+@@ -1430,12 +2134,20 @@ static int vfswrap_fstatat(
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -852,7 +898,7 @@
  
  	END_PROFILE_X(syscall_fstatat);
  	return result;
-@@ -2754,9 +3454,13 @@
+@@ -2790,9 +3502,13 @@ static int vfswrap_unlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -866,7 +912,7 @@
  
  	END_PROFILE_X(syscall_unlinkat);
  	return result;
-@@ -3243,9 +3947,15 @@
+@@ -3255,9 +3971,15 @@ static int vfswrap_symlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -882,7 +928,7 @@
  	END_PROFILE_X(syscall_symlinkat);
  	return result;
  }
-@@ -3262,10 +3972,17 @@
+@@ -3274,10 +3996,17 @@ static int vfswrap_readlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -900,7 +946,7 @@
  
  	END_PROFILE_X(syscall_readlinkat);
  	return result;
-@@ -3285,11 +4002,32 @@
+@@ -3297,11 +4026,32 @@ static int vfswrap_linkat(vfs_handle_struct *handle,
  	SMB_ASSERT(!is_named_stream(old_smb_fname));
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -933,7 +979,7 @@
  
  	END_PROFILE_X(syscall_linkat);
  	return result;
-@@ -3307,10 +4045,14 @@
+@@ -3319,10 +4069,14 @@ static int vfswrap_mknodat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -948,58 +994,34 @@
  
  	END_PROFILE_X(syscall_mknodat);
  	return result;
-@@ -4160,5 +4902,3 @@
+@@ -3429,7 +4183,23 @@ static NTSTATUS vfswrap_fstreaminfo(vfs_handle_struct *handle,
+ 	}
+ 	status = vfs_stat_fsp(fsp);
+ 	if (!NT_STATUS_IS_OK(status)) {
+-		return status;
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++		if (VALID_STAT(fsp->fsp_name->st)) {
++			/*
++			 * Time Capsule pathref emulation can fail this stat
++			 * refresh while stream enumeration already has a valid
++			 * stat from the open/path walk. Preserve the default
++			 * stream entry instead of failing delete/share checks.
++			 * See https://github.com/jamesyc/TimeCapsuleSMB/issues/170.
++			 */
++			DBG_DEBUG("vfs_stat_fsp failed for %s with %s; "
++				  "using cached stat for default stream\n",
++				  fsp_str_dbg(fsp), nt_errstr(status));
++		} else
++#endif
++		{
++			return status;
++		}
+ 	}
+ 
+ 	if (num_streams + 1 < 1) {
+@@ -4204,5 +4974,3 @@ NTSTATUS vfs_default_init(TALLOC_CTX *ctx)
  	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION,
  				DEFAULT_VFS_MODULE_NAME, &vfs_default_fns);
  }
 -
 -
---- a/source3/modules/vfs_catia.c
-+++ b/source3/modules/vfs_catia.c
-@@ -821,6 +821,38 @@
- 	return ret;
- }
- 
-+/*
-+ * Time Capsule NetBSD 4 builds (patch 0003): libc has no fdopendir(), so
-+ * vfs_default reopens the directory with opendir() on fsp's name. That name
-+ * is the client's; map it like every other name-based call, or a directory
-+ * whose on-disk name holds a mapped character (':' from a Finder '/') can
-+ * never be listed. Where fdopendir() uses the fd, the swap changes nothing.
-+ */
-+static DIR *catia_fdopendir(vfs_handle_struct *handle,
-+			    files_struct *fsp,
-+			    const char *mask,
-+			    uint32_t attributes)
-+{
-+	struct catia_cache *cc = NULL;
-+	DIR *result = NULL;
-+	int saved_errno;
-+	int ret;
-+
-+	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
-+	if (ret != 0) {
-+		return NULL;
-+	}
-+
-+	result = SMB_VFS_NEXT_FDOPENDIR(handle, fsp, mask, attributes);
-+	/* OpenDir_fsp() maps a failure's errno; the name restore may log. */
-+	saved_errno = errno;
-+
-+	CATIA_FETCH_FSP_POST_NEXT(&cc, fsp);
-+
-+	errno = saved_errno;
-+	return result;
-+}
-+
- static int catia_chdir(vfs_handle_struct *handle,
- 			const struct smb_filename *smb_fname)
- {
-@@ -1913,6 +1945,7 @@
- 
- 	/* Directory operations */
- 	.mkdirat_fn = catia_mkdirat,
-+	.fdopendir_fn = catia_fdopendir,
- 
- 	/* File operations */
- 	.openat_fn = catia_openat,

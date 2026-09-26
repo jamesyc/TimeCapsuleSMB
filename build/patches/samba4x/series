@@ -1,7 +1,15 @@
+# Patch numbers are permanent IDs: this file alone sets the order, and merged
+# patches keep the number of the one they absorbed the others into.
+#
+# Whole source files that do not exist upstream live in overlay/, mirroring the
+# Samba tree, and are copied in before the first patch (patch_copy_overlay).
+# Patches change upstream files only; never add or edit an overlay file here.
+
 # Cross-build and static smbd environment.
 # Samba 4.25 marks some generated tools as hostcc but still lets waf inherit
 # target compiler/linker settings. Keep those host tools on the VM compiler,
-# while applying static link flags only to the smbd binary we deploy.
+# while applying static link flags only to the static binaries we build: the
+# deployed smbd and migrator, and the opt-in regression tests.
 0001-waf-cross-static-env.patch|waf hostcc and static smbd environment
 
 # NetBSD runtime compatibility.
@@ -12,6 +20,10 @@
 # which Samba expects, and vfs_catia gains an fdopendir hook so the fallback
 # opens directories under their on-disk (SFM-mapped) names.
 0002-netbsd4-libreplace-compat.patch|NetBSD4 libc compatibility shims
+# Samba's default streaminfo refreshes stat before appending ::$DATA. The
+# pathref fallback can fail that refresh even when the open path already
+# cached valid stat metadata, so 0003 uses the cached stat for macOS
+# delete/share checks.
 0003-netbsd-vfs-runtime-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
 # NetBSD4 can lose Samba's cached is_directory flag even when stat still says
 # the handle is a directory; recover before rejecting SMB2 QUERY_DIRECTORY.
@@ -53,25 +65,20 @@
 # disarm normal-exit diagnostics once smbd has completed clean shutdown.
 0022-no-pthread-talloc-stack-fork-exit-cleanup.patch|no-pthread talloc stack fork and exit cleanup
 
-# Validation-only follow-on. This patch extends the static smbd hook introduced
-# by 0001; refresh 0032 whenever 0001 changes that hook. The target is opt-in,
-# never installed, and is omitted from normal smbd builds.
+# Validation-only target: opt-in, never installed, omitted from normal builds.
 0032-no-pthread-pthreadpool-sync-test.patch|no-pthread pthreadpool lifecycle validation target
 
 # aio_fork runtime behavior.
-# aio_fork reports worker read failures through rw_ret. Keep the original errno
-# instead of treating ssize_t -1 as an oversized successful read after casting.
-0030-vfs-aio-fork-error-preservation.patch|preserve aio_fork worker read errors
 # Limit aio_fork helpers without turning overload into an SMB I/O error. A
 # bounded FIFO keeps accepted requests asynchronous; excess work runs in the
-# client smbd process so the helper count cannot grow without limit.
+# client smbd process so the helper count cannot grow without limit. Worker
+# read failures keep their errno instead of casting ssize_t -1 to an oversized
+# successful read, and the event watcher is cancelled before a worker retires
+# so descriptor reuse cannot leave the replacement request without events.
 0031-vfs-aio-fork-max-children.patch|bounded aio_fork helpers with FIFO backpressure
 # Normal helper retirement sends a short message without SCM_RIGHTS data.
 # Keep that path valid under C's nonzero variable-length-array requirement.
 0033-vfs-aio-fork-empty-control-message.patch|avoid zero-length arrays during aio_fork shutdown
-# Cancel the event watcher before retiring a worker and dispatching queued work.
-# Otherwise descriptor reuse can leave the replacement request without events.
-0034-vfs-aio-fork-cancel-read-before-close.patch|cancel pending socket reads before worker retirement
 
 # Static build compile fixes.
 # This reduced nonshared build can expose duplicate typedefs through multiple
@@ -115,21 +122,12 @@
 # ioctl fallback above assumes fixed-size ifreq rows and returns no interfaces.
 # Decode NET_RT_IFLIST by its on-wire version, as the native service does.
 0043-netbsd-route-interface-enumeration.patch|parse Time Capsule interfaces from routing messages
-# Samba 4.25 includes the AFP_AfpInfo fstatat fix formerly carried as 0021.
-# Time Capsule payload logs live on Apple-managed HFS, where root-created
-# directories can report owner 4294967295 and fail Samba's strict corepath
-# setup. Relax only the appliance core directory creation so panics produce
-# disk-backed cores under logs/cores/smbd.
-0023-time-capsule-corepath-hfs-owner.patch|allow HFS-backed smbd corepath setup
-# Time Capsule HFS can report served file owner/group as 4294967295. Normalize
-# only that HFS sentinel at Samba's stat_ex boundary so ACL, stream, and
-# security descriptor paths see the forced root/wheel appliance identity.
-0025-time-capsule-hfs-stat-owner.patch|normalize HFS unknown owner in stat metadata
-# Samba's default streaminfo layer refreshes stat before appending ::$DATA.
-# The Time Capsule pathref fallback can fail that refresh even when the open
-# path has already cached valid stat metadata; keep stream enumeration alive
-# for macOS delete/share checks without hiding failures on uncached paths.
-0026-time-capsule-fstreaminfo-cached-stat.patch|use cached stat for default streaminfo fallback
+# Time Capsule HFS can report file and directory owner/group as 4294967295.
+# Normalize only that sentinel at Samba's stat_ex boundary so ACL, stream, and
+# security descriptor paths see the forced root/wheel appliance identity, and
+# accept it in the strict corepath setup (which calls lstat() directly) so
+# panics produce disk-backed cores under logs/cores/smbd.
+0023-time-capsule-corepath-hfs-owner.patch|HFS unknown owner in corepath setup and stat metadata
 # macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
 # request while probing backup-disk capabilities. The default VFS can complete
 # that resume-key request synchronously, but wrapper layers must propagate the
@@ -145,31 +143,21 @@
 # existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.
 0036-legacy-gcc-charset-selection.patch|const-preserving charset helpers on legacy GCC
 
-# Apple firmware stores legacy AFP FinderInfo and Finder tags in native HFS
-# attributes that its SMB server exposes only through private xattr syscalls.
-# Keep Samba's configured stream/netatalk store authoritative, use HFS only as
-# a read fallback, and mirror successful SMB changes so AFP and SMB converge.
-0037-time-capsule-native-macos-metadata.patch|bridge native HFS Finder metadata into fruit
-# Supersede the temporary dual-write bridge with native HFS storage. fruit owns
-# FinderInfo and resource-fork stream semantics, xattr_tdb owns ordinary native
-# attributes, and a separate static helper migrates legacy TDB/AppleDouble data.
+# Apple firmware stores AFP FinderInfo, resource forks and ordinary Mac xattrs
+# in native HFS attributes that its SMB server reaches only through private
+# xattr syscalls (overlay airport_native_xattr.h). Store them there so AFP and
+# SMB see one copy: fruit owns FinderInfo and resource-fork stream semantics,
+# xattr_tdb owns ordinary native attributes. The static helper in overlay
+# tc_xattr_hfs_migrate.c moves legacy TDB/AppleDouble metadata during deploy
+# only; it merges several historical databases without changing source mtimes,
+# keeps anything it cannot prove orphaned, and sets aside (never deletes)
+# databases left with only proven orphans.
 0038-native-hfs-xattr-backend.patch|native HFS Mac metadata and legacy migration
-# v3.1.0 (mdns-redesign.md package 7). Legacy TDB keys carry (st_dev, st_ino),
-# never a volume UUID: only a row whose device was walked completely with no
-# file claiming it is a proven orphan; everything else is unresolved and kept.
-# A database left with only proven orphans is set aside, never deleted; the
-# walk no longer crosses into nested mounts; and a `fingerprint` mode gives
-# the manager's durable checkpoint a source generation to validate against.
-0039-xattr-migrate-orphan-classification.patch|xattr migrator orphan/unresolved split, quarantine and fingerprint
-# Legacy TDB entries have no per-attribute modification times. During the
-# deploy-only migration use Samba's stored values, and require exact native
-# readback before cleanup retires them. Report directory/retirement failures.
-0040-deploy-migration-tdb-authority.patch|TDB-authoritative deploy migration and actionable scan errors
+# Apple can revoke a bumped USB disk's vnode and remount the same dkN. Record
+# each tree's volume identity at connect, forward the manager's reload signal
+# from the parent to every worker, and disconnect only trees whose disk binding
+# was revoked, replaced or removed; other shares on the session stay connected.
 0041-time-capsule-stale-tree-reload.patch|forward parent reloads and disconnect only revoked Apple disk bindings
-# A deploy can find several historical payload databases. Merge logical values
-# without changing source mtimes, and retire whole databases oldest-first only
-# after verified volume coverage is available to the deploy completion files.
-0042-merge-legacy-metadata-sources.patch|merge read-only legacy TDBs and report verified volume coverage
 
 # A forked connection child inherits the master's listener tree. Its active
 # accept callback has aborted while recursively freeing that copied tree;

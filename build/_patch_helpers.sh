@@ -127,6 +127,42 @@ patch_apply_checked() {
         patch_fail "$desc: patch apply failed"
 }
 
+# Source files that do not exist upstream live whole under the series'
+# overlay/ directory, mirroring the source tree, so they get ordinary diffs
+# instead of patches to patches. An overlay only adds files: refuse to
+# overwrite anything already in the tree. Check every path before copying so
+# a refusal leaves the tree untouched. Dotfiles (such as a Finder .DS_Store)
+# are never source.
+patch_copy_overlay() {
+    desc="$1"
+    overlay_dir="$2"
+    workdir="$3"
+
+    if [ ! -d "$overlay_dir" ]; then
+        return 0
+    fi
+    overlay_files="$(cd "$overlay_dir" && find . -type f ! -name '.*' | sort)" ||
+        patch_fail "$desc: cannot list overlay $overlay_dir"
+    # One path per line: split on newlines only, and never glob.
+    overlay_saved_ifs=$IFS
+    IFS='
+'
+    set -f
+    for overlay_file in $overlay_files; do
+        if [ -e "$workdir/$overlay_file" ]; then
+            patch_fail "$desc: overlay file ${overlay_file#./} already exists in $workdir"
+        fi
+    done
+    for overlay_file in $overlay_files; do
+        mkdir -p "$workdir/$(dirname "$overlay_file")" ||
+            patch_fail "$desc: cannot create directory for ${overlay_file#./}"
+        cp "$overlay_dir/$overlay_file" "$workdir/$overlay_file" ||
+            patch_fail "$desc: cannot copy overlay file ${overlay_file#./}"
+    done
+    set +f
+    IFS=$overlay_saved_ifs
+}
+
 patch_apply_series() {
     desc_prefix="$1"
     series_file="$2"
@@ -137,6 +173,7 @@ patch_apply_series() {
     if [ ! -f "$series_file" ]; then
         patch_fail "$desc_prefix: missing patch series $series_file"
     fi
+    patch_copy_overlay "$desc_prefix" "$series_dir/overlay" "$workdir"
 
     while IFS= read -r series_line || [ -n "$series_line" ]; do
         series_lineno=$((series_lineno + 1))

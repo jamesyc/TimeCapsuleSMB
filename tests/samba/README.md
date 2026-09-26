@@ -65,7 +65,7 @@ device number and inode after a cable bump; retained descriptor validity is the
 additional signal. Error injection covers this decision, while physical USB
 detach/reconnect and client durable reconnect remain device integration checks.
 
-The sanitizer cases exposed two bugs fixed by patches 0033 and 0034: a
+The sanitizer cases exposed two bugs fixed by patches 0033 and 0031: a
 zero-length descriptor array on the worker shutdown message, and a cancelled
 request's socket watcher surviving until after a replacement reused its fd.
 The `read` and `cancel_active` cases cover these paths; sanitizer exit code 86

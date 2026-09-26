@@ -5,6 +5,10 @@ Samba checkout, rebuilding the affected target, and running the named case.
 Each mutation below failed at runtime; the source was restored and rebuilt after
 each check. All cases passed again after restoration.
 
+Patch numbers in dated entries are as they were then. Later merges folded 0037,
+0039, 0040 and 0042 into 0038 plus overlay files, 0030 and 0034 into 0031, 0025
+into 0023, and 0026 into 0003.
+
 | Deliberately broken behavior | Case that rejects it |
 | --- | --- |
 | Omit the AIO child's talloc stack reset | `read` |
