@@ -349,8 +349,10 @@ verify_samba4x_runtime_config() {
     config_header="$1"
 
     # Native NetBSD getifaddrs can hang during interface enumeration on Time
-    # Capsule runtime kernels. The source patch removes native detection and
-    # should leave Samba on libreplace's ioctl-based IFCONF implementation.
+    # Capsule runtime kernels. apply_samba4x_runtime_waf_cache and the config
+    # header edits clear configure's getifaddrs results and select
+    # libreplace's ioctl-based IFCONF backend; patch 0043 then reads NetBSD
+    # interfaces from routing messages instead.
     require_config_symbol_defined "$config_header" "HAVE_IFACE_IFCONF"
 }
 

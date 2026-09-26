@@ -119,12 +119,12 @@
 # durable cookies after that close so reconnect keeps strict ctime validation
 # without comparing against Samba's own stale pre-close snapshot.
 0029-time-machine-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
-# Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
-# interface enumeration through libreplace's ioctl-based fallback.
-0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD
-# The NetBSD4 kernel's routing ABI is newer than its SDK headers, while the
-# ioctl fallback above assumes fixed-size ifreq rows and returns no interfaces.
-# Decode NET_RT_IFLIST by its on-wire version, as the native service does.
+# Time Capsule kernels can hang in native NetBSD getifaddrs() (_samba4x.sh
+# clears configure's getifaddrs results), and the NetBSD4 kernel's routing ABI
+# is newer than its SDK headers, so the ioctl fallback, which assumes
+# fixed-size ifreq rows, returns no interfaces. Decode NET_RT_IFLIST by its
+# on-wire version, as the native service does (overlay
+# lib/socket/tc_netbsd_iflist.c).
 0043-netbsd-route-interface-enumeration.patch|parse Time Capsule interfaces from routing messages
 # Time Capsule HFS can report file and directory owner/group as 4294967295.
 # Normalize only that sentinel at Samba's stat_ex boundary so ACL, stream, and
