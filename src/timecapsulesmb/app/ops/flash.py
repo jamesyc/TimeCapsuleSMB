@@ -120,7 +120,6 @@ def _backup_operation(params: dict[str, object], context: AppOperationContext) -
         bundle = backup_flash(
             target=target,
             backup_dir=backup_dir,
-            operation="read_only",
             log=context.log,
             stage=context.stage,
         )

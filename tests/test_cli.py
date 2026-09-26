@@ -6168,14 +6168,14 @@ class CliTests(unittest.TestCase):
     def test_flash_backup_dir_sanitizes_dot_only_path_parts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            backup_dir = cli_flash.build_flash_backup_dir(base_dir=None, host="..", syap=".")
+            backup_dir = flash_service.build_flash_backup_dir(base_dir=None, host="..", syap=".")
 
         self.assertEqual(backup_dir.parent, default_flash_backup_root())
         self.assertIn("-device-syAPdevice", backup_dir.name)
         self.assertNotIn("..", backup_dir.parts)
         self.assertNotIn(".", backup_dir.parts)
 
-        explicit_dir = cli_flash.build_flash_backup_dir(base_dir=root / ".." / "chosen", host="..", syap=".")
+        explicit_dir = flash_service.build_flash_backup_dir(base_dir=root / ".." / "chosen", host="..", syap=".")
         self.assertEqual(explicit_dir, (root / ".." / "chosen").resolve())
 
     def test_flash_read_only_saves_banks_and_manifest(self) -> None:
@@ -6570,6 +6570,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("primary: backup=valid; active=not_candidate", output.getvalue())
         self.assertIn("secondary: backup=valid; active=not_candidate", output.getvalue())
         self.assertIn("Use --force to patch the primary bank anyway", output.getvalue())
+        self.assertEqual(manifest["flash_plan_error"]["stage"], "plan_flash")
+        self.assertIn("refusing to patch primary", manifest["flash_plan_error"]["message"])
+        self.assertNotIn("flash_plan", manifest)
+        self.assertEqual(manifest["operation"], "patch")
 
     def test_flash_patch_refuses_when_only_secondary_is_active_candidate(self) -> None:
         output = io.StringIO()
@@ -6800,6 +6804,103 @@ class CliTests(unittest.TestCase):
         self.assertEqual(manifest["write_outcome"]["status"], "cancelled")
         self.assertFalse(manifest["write_outcome"]["write_may_have_modified_device"])
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
+
+    def run_patch_until_prompt(self, *, answer):
+        output = io.StringIO()
+        primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
+            with ExitStack() as stack:
+                stack.enter_context(self.flash_zopfli_available())
+                stack.enter_context(mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())))
+                stack.enter_context(mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context))
+                stack.enter_context(mock.patch(
+                    "timecapsulesmb.services.flash.read_flash_inputs",
+                    return_value=self.make_flash_inputs(primary, secondary),
+                ))
+                inspect = stack.enter_context(mock.patch(
+                    "timecapsulesmb.services.flash.inspect_flash_banks", wraps=flash_service.inspect_flash_banks,
+                ))
+                flash_mock = stack.enter_context(mock.patch("timecapsulesmb.services.flash.flash_firmware_bank"))
+                stack.enter_context(mock.patch("builtins.input", side_effect=answer))
+                stack.enter_context(redirect_stdout(output))
+                rc = cli_flash.main([
+                    "--patch",
+                    "--firmware-template",
+                    str(template_path),
+                    "--backup-dir",
+                    str(backup_dir),
+                ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+        return rc, output.getvalue(), manifest, command_context, inspect, flash_mock
+
+    def test_flash_patch_plans_from_the_saved_backup_and_builds_the_candidate_once(self) -> None:
+        rc, text, manifest, command_context, inspect, flash_mock = self.run_patch_until_prompt(answer=["n"])
+
+        self.assertEqual(rc, 0)
+        flash_mock.assert_not_called()
+        builds = [call.kwargs.get("build_primary_patch_candidate", False) for call in inspect.call_args_list]
+        self.assertEqual(builds, [False, True])
+        # The first pass sees the live LOGIN; planning reads its saved evidence back.
+        self.assertIn("live_login", inspect.call_args_list[0].kwargs)
+        self.assertIn("saved_live_login_matches", inspect.call_args_list[1].kwargs)
+        self.assertIn("[flash] Building patched gzip candidate...", text)
+        self.assertEqual(manifest["flash_plan"]["target_bank"], "primary")
+        self.assertEqual(manifest["flash_plan_params"]["operation"], "patch")
+        self.assertIn("primary_patched", manifest["files"])
+        finished = command_context.finish.call_args.kwargs
+        self.assertEqual(finished["flash_plan_mode"], "patch")
+        self.assertEqual([key for key in finished if key.endswith("_path")], [])
+
+    def test_flash_patch_without_interactive_input_refuses_before_writing(self) -> None:
+        rc, text, manifest, command_context, _inspect, flash_mock = self.run_patch_until_prompt(answer=EOFError)
+
+        self.assertEqual(rc, 1)
+        flash_mock.assert_not_called()
+        self.assertIn("requires confirmation when stdin is not interactive", text)
+        self.assertEqual(manifest["flash_plan"]["target_bank"], "primary")
+        self.assertNotIn("write_outcome", manifest)
+        self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
+
+    def test_flash_check_apple_uses_the_live_login_bank_choice_from_the_saved_backup(self) -> None:
+        output = io.StringIO()
+        stock_primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            with self.flash_zopfli_available():
+                patched_primary = self.make_patched_flash_bank(stock_primary)
+            template_path.write_bytes(self.make_firmware_template(stock_primary, product_id=113))
+            with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                    with mock.patch(
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(patched_primary, secondary, live_login=PATCHED_LOGIN_SCRIPT),
+                    ):
+                        with redirect_stdout(output):
+                            rc = cli_flash.main([
+                                "--check-apple",
+                                "--firmware-template",
+                                str(template_path),
+                                "--backup-dir",
+                                str(backup_dir),
+                            ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(manifest["active_bank"], "primary")
+        self.assertEqual(manifest["active_selection"]["selected_by"], "live_login")
+        self.assertEqual(manifest["flash_plan"]["mode"], "check_apple")
+        # Every candidate is still compared; the live LOGIN picks which one is the target.
+        self.assertEqual(manifest["flash_plan"]["target_bank"], "primary")
+        self.assertEqual([result["bank"] for result in manifest["flash_plan"]["apple_matches"]], ["primary", "secondary"])
+        self.assertEqual(command_context.finish.call_args.kwargs["active_selection_selected_by"], "live_login")
 
     def test_flash_yes_without_write_mode_rejects(self) -> None:
         stderr = io.StringIO()

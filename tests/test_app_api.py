@@ -595,6 +595,37 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["apple_firmware_match"]["template_version"], "7.8.1")
         self.assertIsNone(payload["firmware_payload"])
 
+    def test_flash_plan_failure_is_recorded_in_the_saved_backup(self) -> None:
+        from timecapsulesmb.flash import FlashAnalysisError
+        from tests.test_flash import save_live_login_backup
+
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            save_live_login_backup(backup_dir)
+            with mock.patch(
+                "timecapsulesmb.services.flash.plan_from_operation",
+                side_effect=FlashAnalysisError("no candidate firmware bank matches Apple stock firmware"),
+            ):
+                rc = service.run_api_request(
+                    {
+                        "operation": "flash",
+                        "params": {"action": "plan", "backup_dir": str(backup_dir), "mode": "check_apple"},
+                    },
+                    collector.sink,
+                )
+            saved = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertEqual(error["message"], "no candidate firmware bank matches Apple stock firmware")
+        self.assertEqual(saved["flash_plan_error"], {
+            "stage": "plan_flash",
+            "message": "no candidate firmware bank matches Apple stock firmware",
+        })
+        self.assertEqual(saved["operation"], "check_apple")
+
     def test_flash_plan_payload_promotes_download_payload_and_saved_path(self) -> None:
         payload = contracts.flash_plan_payload({
             "backup_dir": "/tmp/flash-backup",

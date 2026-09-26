@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 from pathlib import Path
 import zlib
@@ -677,6 +678,152 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertIn("expected exactly one valid footer", inspection.secondary.error or "")
         self.assertEqual(payload["banks"][1]["footer"], None)
         self.assertIn("expected exactly one valid footer", payload["banks"][1]["analysis_error"])
+
+
+LIVE_LOGIN_PRIMARY = make_bank(login=PATCHED_LOGIN_SCRIPT, release=b"NetBSD 4.0_STABLE #0: current")
+LIVE_LOGIN_SECONDARY = make_bank(login=STOCK_LOGIN_NETBSD4_DUMMY, release=b"NetBSD 4.0_STABLE #0: current")
+
+
+def save_live_login_backup(backup_dir: Path, *, log=None, stage=None):
+    """Save a backup whose two active banks are told apart only by the live LOGIN."""
+    inputs = flash_service.FlashInputs(
+        primary=LIVE_LOGIN_PRIMARY,
+        secondary=LIVE_LOGIN_SECONDARY,
+        cks1=bank_checksum(LIVE_LOGIN_PRIMARY),
+        cks2=bank_checksum(LIVE_LOGIN_SECONDARY),
+        syap="116",
+        live_login=PATCHED_LOGIN_SCRIPT,
+    )
+    target = SimpleNamespace(acp_host="10.0.0.2", compatibility=SimpleNamespace(os_release="4.0_STABLE"))
+    return flash_service.save_flash_backup(target=target, inputs=inputs, backup_dir=backup_dir, log=log, stage=stage)
+
+
+class FlashBackupServiceTests(unittest.TestCase):
+    """The backup a run saves is what planning reads back, for the CLI and the app."""
+
+    PRIMARY = LIVE_LOGIN_PRIMARY
+
+    def save_backup(self, backup_dir: Path):
+        stages: list[str] = []
+        logs: list[str] = []
+        with mock.patch("timecapsulesmb.services.flash.inspect_flash_banks", wraps=inspect_flash_banks) as inspect:
+            bundle = save_live_login_backup(backup_dir, log=logs.append, stage=stages.append)
+        return bundle, stages, logs, inspect
+
+    def restore_payload(self) -> AcpFlashPayload:
+        footer = find_footer(self.PRIMARY)
+        return AcpFlashPayload(
+            data=b"payload",
+            expected_prefix=self.PRIMARY[: footer.end_offset],
+            expected_login_classification="stock",
+            template_source="test",
+            template_path=Path("/tmp/template.basebinary"),
+            template_product_id="116",
+            template_version="7.8.1",
+            template_sha256="template-sha",
+            payload_sha256="payload-sha",
+            key_id="test-key",
+            inner_model=116,
+            inner_version=0x00070801,
+            inner_payload_size=footer.end_offset,
+        )
+
+    def plan_restore(self, backup_dir: Path):
+        with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank", return_value=self.restore_payload()):
+            return flash_service.plan_flash_from_backup(
+                backup_dir=backup_dir,
+                operation="restore",
+                force=False,
+                firmware_template=None,
+                firmware_version=None,
+            )
+
+    def test_save_writes_a_read_only_manifest_with_live_login_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            bundle, stages, logs, inspect = self.save_backup(backup_dir)
+            saved = flash_service.load_flash_manifest(backup_dir)
+            raw_primary = (backup_dir / "primary.raw").read_bytes()
+
+        self.assertEqual(stages, ["save_raw_backup", "analyze_flash", "save_backup"])
+        self.assertEqual(logs, [
+            f"Saving raw flash backup to {backup_dir.resolve()}...",
+            "Analyzing flash banks...",
+            "Writing flash manifest...",
+        ])
+        self.assertEqual(raw_primary, self.PRIMARY)
+        self.assertEqual(saved, bundle.manifest)
+        self.assertEqual(saved["operation"], "read_only")
+        self.assertEqual(saved["syap"], "116")
+        self.assertEqual([bank["live_login_match"] for bank in saved["banks"]], [True, False])
+        self.assertEqual(saved["active_selection"]["selected_by"], "live_login")
+        self.assertEqual([bank["patch"] for bank in saved["banks"]], [None, None])
+        self.assertEqual({bank["write_decision"] for bank in saved["banks"]}, {"backup only; no patch candidate built"})
+        self.assertFalse(inspect.call_args.kwargs.get("build_primary_patch_candidate", False))
+
+    def test_planning_from_the_saved_backup_keeps_the_live_login_bank_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            self.save_backup(backup_dir)
+            bundle, plan = self.plan_restore(backup_dir)
+
+        assert plan is not None and plan.target_bank is not None
+        self.assertEqual(plan.target_bank.name, "primary")
+        self.assertEqual(bundle.inspection.active_selection.selected_by, "live_login")
+        self.assertEqual(bundle.manifest["operation"], "restore")
+        self.assertNotIn("flash_plan_error", bundle.manifest)
+
+    def test_plan_failure_is_recorded_and_replaces_an_earlier_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            self.save_backup(backup_dir)
+            self.plan_restore(backup_dir)
+            self.assertIn("flash_plan", flash_service.load_flash_manifest(backup_dir))
+            with mock.patch(
+                "timecapsulesmb.services.flash.plan_from_operation",
+                side_effect=FlashAnalysisError("refusing to restore"),
+            ):
+                with self.assertRaisesRegex(FlashAnalysisError, "refusing to restore"):
+                    flash_service.plan_flash_from_backup(
+                        backup_dir=backup_dir,
+                        operation="check_apple",
+                        force=False,
+                        firmware_template=None,
+                        firmware_version="7.8.1",
+                    )
+            saved = flash_service.load_flash_manifest(backup_dir)
+
+        self.assertEqual(saved["flash_plan_error"], {"stage": "plan_flash", "message": "refusing to restore"})
+        self.assertNotIn("flash_plan", saved)
+        self.assertEqual(saved["operation"], "check_apple")
+        self.assertEqual(saved["flash_plan_params"]["firmware_version"], "7.8.1")
+
+    def test_a_later_successful_plan_clears_the_recorded_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            self.save_backup(backup_dir)
+            with mock.patch("timecapsulesmb.services.flash.plan_from_operation", side_effect=FlashAnalysisError("no")):
+                with self.assertRaises(FlashAnalysisError):
+                    self.plan_restore(backup_dir)
+            self.plan_restore(backup_dir)
+            saved = flash_service.load_flash_manifest(backup_dir)
+
+        self.assertNotIn("flash_plan_error", saved)
+        self.assertEqual(saved["flash_plan"]["mode"], "restore")
+
+    def test_failure_before_planning_leaves_the_manifest_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            bundle, _stages, _logs, _inspect = self.save_backup(backup_dir)
+            (backup_dir / "manifest.json").write_text(
+                (backup_dir / "manifest.json").read_text().replace('"syap": "116"', '"syap": ""'),
+            )
+            with self.assertRaisesRegex(FlashAnalysisError, "missing syAP"):
+                self.plan_restore(backup_dir)
+            saved = flash_service.load_flash_manifest(backup_dir)
+
+        self.assertNotIn("flash_plan_error", saved)
+        self.assertEqual(saved["operation"], "read_only")
 
 
 if __name__ == "__main__":

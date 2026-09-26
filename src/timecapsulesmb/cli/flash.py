@@ -21,8 +21,8 @@ from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP
 from timecapsulesmb.flash import (
     FlashAnalysisError,
+    FlashInspection,
     STOCK_LOGIN_NETBSD4_DUMMY,
-    inspect_flash_banks,
     require_zopfli_gzip_available,
     sha256_hex,
 )
@@ -36,17 +36,11 @@ from timecapsulesmb.services.flash import (
     FlashInputs,
     FlashTarget,
     FLASH_UNSUPPORTED_DEVICE_MESSAGE,
-    apply_flash_plan_to_manifest,
-    build_flash_backup_dir,
     finish_validated_write,
-    manifest_from_inspection,
-    plan_from_operation,
+    plan_flash_from_backup,
     record_write_outcome,
     require_netbsd4_flash_target,
-    save_acp_flash_payload,
-    save_flash_banks,
-    save_flash_manifest,
-    save_primary_patched_bank_if_ready,
+    save_flash_backup,
     write_flash_plan,
     write_stage_for_plan,
 )
@@ -215,7 +209,7 @@ def _confirmation_prompt(plan: FlashPlan) -> str:
     return "This will patch the primary firmware bank. Continue?"
 
 
-def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, payload_path: Path | None) -> None:
+def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan) -> None:
     fields: dict[str, object] = {
         "flash_plan_mode": plan.mode,
         "flash_plan_already_satisfied": plan.already_satisfied,
@@ -230,8 +224,6 @@ def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, 
             "firmware_payload_size": len(plan.payload.data),
             "firmware_template_key_id": plan.payload.key_id,
         })
-    if payload_path is not None:
-        fields["firmware_payload_path"] = str(payload_path)
     command_context.update_fields(**fields)
 
 
@@ -359,36 +351,7 @@ def _read_flash(
     return inputs
 
 
-def _analyze_flash(
-    command_context: CommandContext,
-    *,
-    args: argparse.Namespace,
-    operation: str,
-    target: FlashTarget,
-    inputs: FlashInputs,
-    log: ProgressLogger,
-) -> FlashAnalysisBundle | None:
-    backup_dir = build_flash_backup_dir(base_dir=args.backup_dir, host=target.acp_host, syap=inputs.syap)
-    command_context.set_stage("save_raw_backup")
-    emit_progress(log, f"Saving raw flash backup to {backup_dir}...")
-    save_flash_banks(backup_dir=backup_dir, primary=inputs.primary, secondary=inputs.secondary)
-
-    command_context.set_stage("analyze_flash")
-    if operation == "patch":
-        emit_progress(log, "Analyzing flash banks and building patched gzip candidate...")
-    else:
-        emit_progress(log, "Analyzing flash banks...")
-    inspection = inspect_flash_banks(
-        primary_data=inputs.primary,
-        secondary_data=inputs.secondary,
-        cks1=inputs.cks1,
-        cks2=inputs.cks2,
-        os_release=target.compatibility.os_release,
-        build_primary_patch_candidate=operation == "patch",
-        live_login=inputs.live_login,
-    )
-    analysis = inspection.strict_analysis
-
+def _record_inspection_fields(command_context: CommandContext, inspection: FlashInspection) -> None:
     primary_analysis = inspection.primary.analysis
     secondary_analysis = inspection.secondary.analysis
     command_context.update_fields(
@@ -402,14 +365,14 @@ def _analyze_flash(
         primary_login=None if primary_analysis is None else primary_analysis.login.classification,
         secondary_login=None if secondary_analysis is None else secondary_analysis.login.classification,
     )
-    manifest = manifest_from_inspection(
-        operation=operation,
-        inspection=inspection,
-        target=target,
-        inputs=inputs,
-        backup_dir=backup_dir,
-    )
-    return FlashAnalysisBundle(inspection=inspection, analysis=analysis, backup_dir=backup_dir, manifest=manifest)
+
+
+def _patch_login_is_unexpected(operation: str, backup: FlashAnalysisBundle) -> bool:
+    """A refused patch reports the live LOGIN only when the primary bank's LOGIN is not one we know."""
+    if operation != "patch":
+        return False
+    analysis = backup.inspection.primary.analysis
+    return analysis is not None and analysis.login.classification not in {"stock", "already_patched"}
 
 
 def _plan_flash(
@@ -417,95 +380,36 @@ def _plan_flash(
     *,
     args: argparse.Namespace,
     operation: str,
-    bundle: FlashAnalysisBundle,
+    backup: FlashAnalysisBundle,
     inputs: FlashInputs,
-) -> tuple[bool, FlashPlan | None]:
-    if operation == "read_only":
-        return True, None
-
+    log: ProgressLogger,
+) -> tuple[FlashAnalysisBundle, FlashPlan] | None:
     command_context.set_stage("plan_flash")
+    if operation == "patch":
+        emit_progress(log, "Building patched gzip candidate...")
     try:
-        plan = plan_from_operation(
+        bundle, plan = plan_flash_from_backup(
+            backup_dir=backup.backup_dir,
             operation=operation,
-            inspection=bundle.inspection,
-            analysis=bundle.analysis,
             force=args.force,
-            syap=inputs.syap,
             firmware_template=args.firmware_template,
             firmware_version=args.firmware_version,
         )
     except FlashAnalysisError as exc:
         message = str(exc)
-        bundle.manifest["flash_plan_error"] = {
-            "stage": "plan_flash",
-            "message": message,
-        }
-        active_analysis = None if bundle.analysis is None else bundle.analysis.active
-        if operation == "patch":
-            active_analysis = bundle.inspection.primary.analysis
-        include_login_mismatch = (
-            operation == "patch"
-            and active_analysis is not None
-            and active_analysis.login.classification != "stock"
-            and active_analysis.login.classification != "already_patched"
-        )
         record_flash_error(
             command_context,
             message,
             stage="plan_flash",
             live_login=inputs.live_login,
-            include_login_mismatch=include_login_mismatch,
+            include_login_mismatch=_patch_login_is_unexpected(operation, backup),
         )
         print(message)
         command_context.fail()
-        return False, None
+        return None
     assert plan is not None
-    patched_primary_path = None
-    if operation == "patch":
-        patched_primary_path = save_primary_patched_bank_if_ready(backup_dir=bundle.backup_dir, inspection=bundle.inspection)
-        if patched_primary_path is not None:
-            files = bundle.manifest.get("files")
-            if isinstance(files, dict):
-                files["primary_patched"] = str(patched_primary_path)
-            command_context.update_fields(patched_primary_path=str(patched_primary_path))
-    payload_path = save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
-    files = bundle.manifest.get("files")
-    if isinstance(files, dict) and payload_path is not None:
-        if plan.target_bank is not None:
-            files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
-        elif plan.mode == "download_only":
-            files[f"{plan.mode}_basebinary_payload"] = str(payload_path)
-    bundle.manifest["flash_plan"] = plan.to_jsonable()
-    apply_flash_plan_to_manifest(bundle.manifest, plan)
-    _update_context_with_plan(command_context, plan, payload_path)
-    return True, plan
-
-
-def _save_and_report_manifest(
-    command_context: CommandContext,
-    *,
-    args: argparse.Namespace,
-    bundle: FlashAnalysisBundle,
-    log: ProgressLogger,
-) -> None:
-    command_context.set_stage("save_backup")
-    emit_progress(log, "Writing flash manifest...")
-    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
-    if args.json:
-        print_json(bundle.manifest)
-    else:
-        print_flash_summary(bundle.manifest)
-
-
-def _save_manifest_after_plan_failure(
-    command_context: CommandContext,
-    *,
-    bundle: FlashAnalysisBundle,
-    log: ProgressLogger,
-) -> None:
-    command_context.set_stage("save_backup")
-    emit_progress(log, "Writing flash manifest...")
-    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
+    _update_context_with_plan(command_context, plan)
+    return bundle, plan
 
 
 def _prepare_write(
@@ -684,29 +588,25 @@ def _run_flash(
     if inputs is None:
         return 1
 
-    bundle = _analyze_flash(
-        command_context,
-        args=args,
-        operation=operation,
+    bundle = save_flash_backup(
         target=target,
         inputs=inputs,
+        backup_dir=args.backup_dir,
         log=log,
+        stage=command_context.set_stage,
     )
-    if bundle is None:
-        return 1
+    _record_inspection_fields(command_context, bundle.inspection)
+    plan: FlashPlan | None = None
+    if operation != "read_only":
+        planned = _plan_flash(command_context, args=args, operation=operation, backup=bundle, inputs=inputs, log=log)
+        if planned is None:
+            return 1
+        bundle, plan = planned
 
-    plan_ok, plan = _plan_flash(
-        command_context,
-        args=args,
-        operation=operation,
-        bundle=bundle,
-        inputs=inputs,
-    )
-    if not plan_ok:
-        _save_manifest_after_plan_failure(command_context, bundle=bundle, log=log)
-        return 1
-
-    _save_and_report_manifest(command_context, args=args, bundle=bundle, log=log)
+    if args.json:
+        print_json(bundle.manifest)
+    else:
+        print_flash_summary(bundle.manifest)
     if operation not in WRITE_OPERATIONS:
         command_context.succeed()
         return 0

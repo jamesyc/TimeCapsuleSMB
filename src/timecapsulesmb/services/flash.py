@@ -431,7 +431,6 @@ def backup_flash(
     *,
     target: FlashTarget,
     backup_dir: Path | None,
-    operation: str = "read_only",
     log: object | None = None,
     stage: Callable[[str], None] | None = None,
 ) -> FlashAnalysisBundle:
@@ -443,23 +442,40 @@ def backup_flash(
         password=target.connection.password,
         log=log,
     )
+    return save_flash_backup(target=target, inputs=inputs, backup_dir=backup_dir, log=log, stage=stage)
+
+
+def save_flash_backup(
+    *,
+    target: FlashTarget,
+    inputs: FlashInputs,
+    backup_dir: Path | None,
+    log: object | None = None,
+    stage: Callable[[str], None] | None = None,
+) -> FlashAnalysisBundle:
+    """Save the banks read from the device and a read-only manifest of them.
+
+    Planning reads this backup back, so the live login match of each bank is
+    recorded here: only this run has the live /etc/rc.d/LOGIN.
+    """
     resolved_backup_dir = build_flash_backup_dir(base_dir=backup_dir, host=target.acp_host, syap=inputs.syap)
     if stage is not None:
         stage("save_raw_backup")
+    _emit(log, f"Saving raw flash backup to {resolved_backup_dir}...")
     save_flash_banks(backup_dir=resolved_backup_dir, primary=inputs.primary, secondary=inputs.secondary)
     if stage is not None:
         stage("analyze_flash")
+    _emit(log, "Analyzing flash banks...")
     inspection = inspect_flash_banks(
         primary_data=inputs.primary,
         secondary_data=inputs.secondary,
         cks1=inputs.cks1,
         cks2=inputs.cks2,
         os_release=target.compatibility.os_release,
-        build_primary_patch_candidate=operation == "patch",
         live_login=inputs.live_login,
     )
     manifest = manifest_from_inspection(
-        operation=operation,
+        operation="read_only",
         inspection=inspection,
         target=target,
         inputs=inputs,
@@ -467,6 +483,7 @@ def backup_flash(
     )
     if stage is not None:
         stage("save_backup")
+    _emit(log, "Writing flash manifest...")
     save_flash_manifest(backup_dir=resolved_backup_dir, manifest=manifest)
     return FlashAnalysisBundle(
         inspection=inspection,
@@ -556,15 +573,7 @@ def plan_flash_from_backup(
         require_zopfli_gzip_available()
     bundle = inspect_backup(backup_dir, operation=operation)
     syap = _backup_syap(bundle.manifest)
-    plan = plan_from_operation(
-        operation=operation,
-        inspection=bundle.inspection,
-        analysis=bundle.analysis,
-        force=force,
-        syap=syap,
-        firmware_template=firmware_template,
-        firmware_version=firmware_version,
-    )
+    bundle.manifest.pop("flash_plan_error", None)
     bundle.manifest["operation"] = operation
     bundle.manifest["flash_plan_params"] = {
         "operation": operation,
@@ -572,6 +581,23 @@ def plan_flash_from_backup(
         "firmware_template": None if firmware_template is None else str(firmware_template),
         "firmware_version": firmware_version,
     }
+    try:
+        plan = plan_from_operation(
+            operation=operation,
+            inspection=bundle.inspection,
+            analysis=bundle.analysis,
+            force=force,
+            syap=syap,
+            firmware_template=firmware_template,
+            firmware_version=firmware_version,
+        )
+    except FlashAnalysisError as exc:
+        # Keep the refusal with the backup it was made from, and drop any
+        # earlier plan so the manifest never pairs this error with a stale plan.
+        bundle.manifest.pop("flash_plan", None)
+        bundle.manifest["flash_plan_error"] = {"stage": "plan_flash", "message": str(exc)}
+        save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
+        raise
     if plan is not None:
         if operation == "patch":
             patched_primary_path = save_primary_patched_bank_if_ready(
