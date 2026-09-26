@@ -1,0 +1,135 @@
+{
+  "common": [
+    "config",
+    "confirmation",
+    "confirmation_id",
+    "credentials",
+    "password"
+  ],
+  "operations": {
+    "activate": [
+      "dry_run"
+    ],
+    "capabilities": [],
+    "configure": [
+      "any_protocol",
+      "ata_idle_seconds",
+      "ata_standby",
+      "debug_logging",
+      "enable_ssh",
+      "force_disable_smb_signing_and_encryption",
+      "fruit_metadata_netatalk",
+      "host",
+      "internal_share_use_disk_root",
+      "macos_local_network_preflight_duration_ms",
+      "macos_local_network_preflight_error",
+      "macos_local_network_preflight_result",
+      "macos_local_network_preflight_service",
+      "mdns_advertise_afp",
+      "persist_password",
+      "require_smb_encryption",
+      "selected_record",
+      "smb_browse_compatibility",
+      "ssh_opts",
+      "ssh_wait_timeout",
+      "vfs_aio_fork_enabled"
+    ],
+    "deploy": [
+      "allow_unsupported",
+      "any_protocol",
+      "ata_idle_seconds",
+      "ata_standby",
+      "debug_logging",
+      "dry_run",
+      "force_disable_smb_signing_and_encryption",
+      "fruit_metadata_netatalk",
+      "internal_share_use_disk_root",
+      "mdns_advertise_afp",
+      "mount_wait",
+      "nbns_enabled",
+      "no_reboot",
+      "no_wait",
+      "require_smb_encryption",
+      "rsync_enabled",
+      "smb_browse_compatibility",
+      "vfs_aio_fork_enabled"
+    ],
+    "discover": [
+      "timeout"
+    ],
+    "doctor": [
+      "bonjour_timeout",
+      "skip_bonjour",
+      "skip_smb",
+      "skip_ssh",
+      "startup_grace"
+    ],
+    "flash": [
+      "action",
+      "backup_dir",
+      "firmware_template",
+      "firmware_version",
+      "force",
+      "mode",
+      "reboot_after_write",
+      "wait_after_reboot"
+    ],
+    "fsck": [
+      "dry_run",
+      "list_volumes",
+      "mount_wait",
+      "no_reboot",
+      "no_wait",
+      "volume"
+    ],
+    "reachability": [
+      "host",
+      "hosts",
+      "smb_host",
+      "smb_hosts",
+      "ssh_host",
+      "ssh_timeout",
+      "tcp_timeout"
+    ],
+    "repair-xattrs": [
+      "dry_run",
+      "fix_permissions",
+      "include_hidden",
+      "include_time_machine",
+      "max_depth",
+      "path",
+      "recursive",
+      "verbose"
+    ],
+    "set-ssh": [
+      "action",
+      "no_wait"
+    ],
+    "set-telemetry": [
+      "enabled"
+    ],
+    "uninstall": [
+      "dry_run",
+      "mount_wait",
+      "no_reboot",
+      "no_wait"
+    ],
+    "update-config-settings": [
+      "any_protocol",
+      "ata_idle_seconds",
+      "ata_standby",
+      "debug_logging",
+      "force_disable_smb_signing_and_encryption",
+      "fruit_metadata_netatalk",
+      "internal_share_use_disk_root",
+      "mdns_advertise_afp",
+      "require_smb_encryption",
+      "smb_browse_compatibility",
+      "vfs_aio_fork_enabled"
+    ],
+    "validate-install": [],
+    "version-check": [
+      "url"
+    ]
+  }
+}

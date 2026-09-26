@@ -43,6 +43,16 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Check the request JSON shape.", "Send params as a JSON object."),
         retryable=True,
     ),
+    "unknown_param": RecoveryInfo(
+        "Unknown parameter",
+        "The helper does not accept a parameter this request sent, so the app and helper are out of step.",
+        (
+            "Update or reinstall TimeCapsuleSMB so the app and helper use the same API contract.",
+            "If Helper path is set in Settings, clear it.",
+        ),
+        # Resending the same request fails the same way.
+        retryable=False,
+    ),
     "unknown_operation": RecoveryInfo(
         "Unknown operation",
         "The helper does not recognize the requested operation.",

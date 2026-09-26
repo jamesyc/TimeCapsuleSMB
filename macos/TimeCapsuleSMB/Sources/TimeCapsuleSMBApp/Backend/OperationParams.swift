@@ -19,6 +19,10 @@ enum OperationParams {
             }
             return params
         }
+
+        static func setTelemetry(enabled: Bool) -> [String: JSONValue] {
+            ["enabled": .bool(enabled)]
+        }
     }
 
     enum Discovery {

@@ -289,10 +289,9 @@ final class AppStore: ObservableObject {
     }
 
     private func syncTelemetryPreference(_ enabled: Bool) {
-        let params: [String: JSONValue] = ["enabled": .bool(enabled)]
         _ = operationCoordinator.run(
             operation: "set-telemetry",
-            params: params,
+            params: OperationParams.Readiness.setTelemetry(enabled: enabled),
             laneKey: .localPath("app-settings")
         )
     }

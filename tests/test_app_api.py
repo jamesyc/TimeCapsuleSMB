@@ -1164,6 +1164,111 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "unknown_operation")
         self.assertEqual(error["recovery"]["title"], "Unknown operation")
 
+    def run_with_api_telemetry(self, request: dict[str, object], handlers: dict[str, object]) -> tuple[int, CollectingSink]:
+        collector = CollectingSink()
+        with mock.patch.dict(service.OPERATIONS, handlers):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request(request, collector.sink)
+        return rc, collector
+
+    def test_misspelled_param_is_rejected_before_the_operation_runs_and_recorded(self) -> None:
+        handler = mock.Mock()
+
+        rc, collector = self.run_with_api_telemetry(
+            {"operation": "fsck", "params": {"no_reboot": True, "no_wiat": True, "volumee": "dk2"}},
+            {"fsck": handler},
+        )
+
+        self.assertEqual(rc, 1)
+        handler.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["operation"], "fsck")
+        self.assertEqual(error["code"], "unknown_param")
+        self.assertEqual(error["message"], "unknown parameters for fsck: no_wiat, volumee")
+        self.assertIn("no_wait", error["debug"]["accepted_params"])
+        self.assertIn("config", error["debug"]["accepted_params"])
+        self.assertEqual(error["recovery"]["title"], "Unknown parameter")
+        self.assertFalse(error["recovery"]["retryable"])
+        self.assertIn("If Helper path is set in Settings, clear it.", error["recovery"]["actions"])
+        # A started and a finished event, like any other failed operation.
+        self.assertEqual([call.kwargs["phase"] for call in self._telemetry_client.emit.call_args_list], ["started", "finished"])
+        finished = self._telemetry_client.emit.call_args_list[1].kwargs
+        self.assertEqual(finished["operation"], "fsck")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["error"], "unknown parameters for fsck: no_wiat, volumee")
+        self.assertEqual(finished["details"], {"unknown_params": ["no_wiat", "volumee"]})
+
+    def test_rejected_param_values_never_reach_telemetry(self) -> None:
+        handler = mock.Mock()
+
+        rc, _collector = self.run_with_api_telemetry(
+            {"operation": "uninstall", "params": {"no_reboot": True, "credentails": {"password": "hunter2"}}},
+            {"uninstall": handler},
+        )
+
+        self.assertEqual(rc, 1)
+        handler.assert_not_called()
+        self.assertEqual(self._telemetry_client.emit.call_count, 2)
+        finished = self._telemetry_client.emit.call_args_list[1].kwargs
+        self.assertEqual(finished["details"], {"unknown_params": ["credentails"]})
+        self.assertNotIn("hunter2", repr(self._telemetry_client.emit.call_args_list))
+
+    def test_rejected_request_for_an_operation_without_telemetry_records_nothing(self) -> None:
+        for request in (
+            {"operation": "reachability", "params": {"ssh_hots": "10.0.0.2"}},
+            {"operation": "set-ssh", "params": {"action": "status", "no_wiat": True}},
+        ):
+            with self.subTest(operation=request["operation"]):
+                self._telemetry_factory.reset_mock()
+                self._telemetry_client.reset_mock()
+                handler = mock.Mock()
+
+                rc, collector = self.run_with_api_telemetry(request, {str(request["operation"]): handler})
+
+                self.assertEqual(rc, 1)
+                handler.assert_not_called()
+                self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "unknown_param")
+                self._telemetry_factory.assert_not_called()
+                self._telemetry_client.emit.assert_not_called()
+
+    def test_operation_without_own_params_still_takes_the_shared_request_params(self) -> None:
+        collector = CollectingSink()
+        handler = mock.Mock(return_value=service.OperationResult(True, {"summary": "ok"}))
+        params = {
+            "config": "/tmp/tcapsule.env",
+            "credentials": {"password": "pw"},
+            "password": "pw",
+            "confirmation_id": "abc",
+            "confirmation": {"id": "abc"},
+        }
+
+        with mock.patch.dict(service.OPERATIONS, {"validate-install": handler}):
+            rc = service.run_api_request({"operation": "validate-install", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        handler.assert_called_once()
+        self.assertEqual(handler.call_args.args[0], params)
+
+    def test_operation_rejects_a_param_only_another_operation_takes(self) -> None:
+        collector = CollectingSink()
+        handler = mock.Mock()
+
+        with mock.patch.dict(service.OPERATIONS, {"uninstall": handler}):
+            rc = service.run_api_request({"operation": "uninstall", "params": {"volume": "dk2"}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        handler.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unknown_param")
+        self.assertEqual(error["message"], "unknown parameter for uninstall: volume")
+
+    def test_request_param_fixture_matches_the_operation_specs(self) -> None:
+        from tests.fixtures import operation_params
+
+        self.assertEqual(operation_params.FIXTURE_PATH.read_text(), operation_params.render())
+
     def test_non_object_params_emits_invalid_request_error(self) -> None:
         collector = CollectingSink()
 

@@ -16,6 +16,32 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics)))
     }
 
+    func testUnknownParamErrorOffersNoRetry() throws {
+        // As the helper sends it: resending the same request fails the same way.
+        let recovery = try JSONValue.object([
+            "title": .string("Unknown parameter"),
+            "message": .string("The helper does not accept a parameter this request sent, so the app and helper are out of step."),
+            "actions": .array([
+                .string("Update or reinstall TimeCapsuleSMB so the app and helper use the same API contract."),
+                .string("If Helper path is set in Settings, clear it.")
+            ]),
+            "action_ids": .array([]),
+            "retryable": .bool(false),
+            "suggested_operation": .null
+        ]).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "fsck",
+            code: "unknown_param",
+            message: "unknown parameter for fsck: no_wiat",
+            recovery: recovery
+        )
+
+        XCTAssertEqual(RecoveryActionMapper.actions(for: error).map(\.kind), [.copyDiagnostics])
+        let guidance = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(guidance.title, "Unknown parameter")
+        XCTAssertEqual(guidance.steps.last, "If Helper path is set in Settings, clear it.")
+    }
+
     func testBackendErrorViewModelLocalizesAuthFailureMessagesAcrossFlows() {
         let doctorError = BackendErrorViewModel(operation: "doctor", code: "auth_failed", message: "Password rejected.")
         let configureError = BackendErrorViewModel(

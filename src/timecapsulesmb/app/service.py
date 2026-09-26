@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import EventSink
-from timecapsulesmb.app.ops import OPERATIONS, TELEMETRY_OPERATIONS
+from timecapsulesmb.app.ops import OPERATION_PARAMS, OPERATIONS, TELEMETRY_OPERATIONS, unknown_params
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
 from timecapsulesmb.app.requests import parse_api_request
 from timecapsulesmb.app.recovery import recovery_for, ssh_timeout_slow_device_recovery
@@ -61,6 +61,26 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
     if telemetry_session is not None:
         telemetry_session.start()
     context = AppOperationContext(operation, sink)
+    unknown = unknown_params(operation, params)
+    if unknown:
+        noun = "parameter" if len(unknown) == 1 else "parameters"
+        message = f"unknown {noun} for {operation}: {', '.join(unknown)}"
+        sink.error(
+            operation,
+            message,
+            code="unknown_param",
+            debug={"accepted_params": sorted(OPERATION_PARAMS[operation])},
+            recovery=recovery_for(operation, "unknown_param"),
+        )
+        # Only the names: a misspelled key may still carry a secret value.
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="failure",
+            error=message,
+            details={"unknown_params": unknown},
+        )
+        return 1
     try:
         result = handler(params, context)
     except AppConfirmationRequired as exc:
