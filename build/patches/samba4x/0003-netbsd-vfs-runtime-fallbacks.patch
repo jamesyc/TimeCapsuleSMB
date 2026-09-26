@@ -141,7 +141,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (ret < 0) {
  		status = map_nt_error_from_unix(errno);
  		goto err;
-@@ -587,8 +630,28 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
+@@ -587,7 +630,26 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
  	DIR *result;
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_fdopendir);
@@ -166,11 +166,9 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	result = sys_fdopendir(fsp_get_io_fd(fsp));
 +#endif
  	END_PROFILE_X(syscall_fdopendir);
-+
  	return result;
  }
- 
-@@ -630,7 +693,11 @@ static int vfswrap_mkdirat(vfs_handle_struct *handle,
+@@ -630,7 +692,11 @@ static int vfswrap_mkdirat(vfs_handle_struct *handle,
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_mkdirat);
  
@@ -182,7 +180,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_mkdirat);
  	return result;
-@@ -654,16 +721,27 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -654,16 +720,27 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  			  files_struct *fsp,
  			  const struct vfs_open_how *how)
  {
@@ -210,7 +208,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	if (how->resolve & ~(VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS |
  			     VFS_OPEN_HOW_WITH_BACKUP_INTENT |
-@@ -676,6 +754,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -676,6 +753,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -218,12 +216,12 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  #ifdef O_PATH
  	have_opath = true;
  	if (fsp->fsp_flags.is_pathref) {
-@@ -700,7 +779,33 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -700,7 +778,33 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  		flags &= (O_PATH|O_CLOEXEC|O_DIRECTORY|O_NOFOLLOW);
  	}
  #endif
 +#endif
-+
+ 
 +#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
 +	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
@@ -242,7 +240,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 +		become_root();
 +		became_root = true;
 +	}
- 
++
 +	result = tc_netbsd_openat_compat(dirfsp,
 +					 smb_fname,
 +					 fsp,
@@ -252,7 +250,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
  	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
  	{
-@@ -750,6 +855,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -750,6 +854,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  			smb_fname->base_name,
  			flags,
  			mode);
@@ -260,7 +258,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	if (became_root) {
  		int err = errno;
-@@ -1352,11 +1458,37 @@ static int vfswrap_renameat(vfs_handle_struct *handle,
+@@ -1352,11 +1457,37 @@ static int vfswrap_renameat(vfs_handle_struct *handle,
  		flags |= RENAME_NOREPLACE;
  	}
  
@@ -298,7 +296,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_renameat);
  	return result;
-@@ -1430,12 +1562,20 @@ static int vfswrap_fstatat(
+@@ -1430,12 +1561,20 @@ static int vfswrap_fstatat(
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -319,7 +317,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_fstatat);
  	return result;
-@@ -2790,9 +2930,13 @@ static int vfswrap_unlinkat(vfs_handle_struct *handle,
+@@ -2790,9 +2929,13 @@ static int vfswrap_unlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -333,7 +331,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_unlinkat);
  	return result;
-@@ -3255,9 +3399,15 @@ static int vfswrap_symlinkat(vfs_handle_struct *handle,
+@@ -3255,9 +3398,15 @@ static int vfswrap_symlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -349,7 +347,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	END_PROFILE_X(syscall_symlinkat);
  	return result;
  }
-@@ -3274,10 +3424,17 @@ static int vfswrap_readlinkat(vfs_handle_struct *handle,
+@@ -3274,10 +3423,17 @@ static int vfswrap_readlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -367,7 +365,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_readlinkat);
  	return result;
-@@ -3297,11 +3454,32 @@ static int vfswrap_linkat(vfs_handle_struct *handle,
+@@ -3297,11 +3453,32 @@ static int vfswrap_linkat(vfs_handle_struct *handle,
  	SMB_ASSERT(!is_named_stream(old_smb_fname));
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -400,7 +398,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_linkat);
  	return result;
-@@ -3319,10 +3497,14 @@ static int vfswrap_mknodat(vfs_handle_struct *handle,
+@@ -3319,10 +3496,14 @@ static int vfswrap_mknodat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -415,7 +413,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_mknodat);
  	return result;
-@@ -3429,7 +3611,23 @@ static NTSTATUS vfswrap_fstreaminfo(vfs_handle_struct *handle,
+@@ -3429,7 +3610,23 @@ static NTSTATUS vfswrap_fstreaminfo(vfs_handle_struct *handle,
  	}
  	status = vfs_stat_fsp(fsp);
  	if (!NT_STATUS_IS_OK(status)) {
@@ -440,9 +438,3 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	}
  
  	if (num_streams + 1 < 1) {
-@@ -4204,5 +4402,3 @@ NTSTATUS vfs_default_init(TALLOC_CTX *ctx)
- 	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION,
- 				DEFAULT_VFS_MODULE_NAME, &vfs_default_fns);
- }
--
--

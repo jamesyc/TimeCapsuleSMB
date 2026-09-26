@@ -1,12 +1,11 @@
 diff --git a/source3/lib/dumpcore.c b/source3/lib/dumpcore.c
-index 147e427..7c7d6b1 100644
 --- a/source3/lib/dumpcore.c
 +++ b/source3/lib/dumpcore.c
-@@ -56,10 +56,26 @@ static char *get_default_corepath(const char *logbase, const char *progname)
+@@ -56,11 +56,27 @@ static char *get_default_corepath(const char *logbase, const char *progname)
  		return NULL;
  	}
  
-+#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++#ifdef TC_SAMBA4X_APPLIANCE
 +	/*
 +	 * Time Capsule payload logs live on Apple-managed HFS. NetBSD4/6 HFS
 +	 * reports root-created directories there with uid 4294967295, and the
@@ -29,14 +28,15 @@ index 147e427..7c7d6b1 100644
 +#endif
  
  	/* Setup progname-specific core subdir */
+ 	tmp_corepath = talloc_asprintf_append(tmp_corepath, "/%s", progname);
 diff --git a/source3/lib/system.c b/source3/lib/system.c
-index 63987cb..393ba4a 100644
 --- a/source3/lib/system.c
 +++ b/source3/lib/system.c
-@@ -270,3 +270,34 @@ void copy_stat_ex_timestamps(struct stat_ex *st,
+@@ -269,6 +269,33 @@ void copy_stat_ex_timestamps(struct stat_ex *st,
+ 	}
  }
  
-+#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++#ifdef TC_SAMBA4X_APPLIANCE
 +static void tc_normalize_hfs_unknown_owner(struct stat_ex *st)
 +{
 +	/*
@@ -48,15 +48,11 @@ index 63987cb..393ba4a 100644
 +	 * it escapes the stat conversion boundary. See
 +	 * https://github.com/jamesyc/TimeCapsuleSMB/issues/170.
 +	 */
-+	if (st->st_ex_uid == (uid_t)-1 ||
-+	    st->st_ex_uid == (uid_t)UINT32_MAX)
-+	{
++	if (st->st_ex_uid == (uid_t)-1) {
 +		st->st_ex_uid = 0;
 +	}
 +
-+	if (st->st_ex_gid == (gid_t)-1 ||
-+	    st->st_ex_gid == (gid_t)UINT32_MAX)
-+	{
++	if (st->st_ex_gid == (gid_t)-1) {
 +		st->st_ex_gid = 0;
 +	}
 +}
@@ -68,7 +64,9 @@ index 63987cb..393ba4a 100644
 +#endif
 +
  void init_stat_ex_from_stat (struct stat_ex *dst,
-@@ -279,6 +309,7 @@ void init_stat_ex_from_stat (struct stat_ex *dst,
+ 			    const struct stat *src,
+ 			    bool fake_dir_create_times)
+@@ -279,6 +306,7 @@ void init_stat_ex_from_stat (struct stat_ex *dst,
  	dst->st_ex_nlink = src->st_nlink;
  	dst->st_ex_uid = src->st_uid;
  	dst->st_ex_gid = src->st_gid;

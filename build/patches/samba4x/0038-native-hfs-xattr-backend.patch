@@ -829,24 +829,18 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (fio->config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -3242,8 +3740,12 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
- {
+@@ -3243,7 +3741,9 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
  	struct adouble_buf ad = {};
  	struct smb_filename *smb_relname = NULL;
-+	SMB_STRUCT_STAT base_sbuf;
  	uint8_t ad_data[402];
 +	uint8_t native_finderinfo[AFP_FinderSize];
  	NTSTATUS status;
-+	int backend_error;
 +	int native_state;
  	int ret = -1;
  	ssize_t ealen;
  	ino_t ino;
-@@ -3262,8 +3764,28 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
- 	if (ret == -1) {
- 		goto fail;
+@@ -3264,6 +3764,24 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
  	}
-+	base_sbuf = *sbuf;
  
  	ino = hash_inode(sbuf, _smb_relname->stream_name);
 +	if (config->native_hfs) {
@@ -860,7 +854,6 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
 +			}
 +			goto fail;
 +		}
-+		*sbuf = base_sbuf;
 +		sbuf->st_ex_ino = ino;
 +		sbuf->st_ex_size = AFP_INFO_SIZE;
 +		sbuf->st_ex_mode &= ~S_IFMT;
@@ -871,17 +864,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	if (config->meta == FRUIT_META_STREAM) {
  		ret = SMB_VFS_NEXT_FSTATAT(
-@@ -3311,7 +3833,8 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
- 		smb_relname->fsp, AFPINFO_EA_NETATALK, ad_data,
- 		sizeof(ad_data));
- 	if (ealen == -1) {
--		if (errno == ENOATTR) {
-+		backend_error = errno;
-+		if (backend_error == ENOATTR) {
- 			errno = ENOENT;
- 		}
- 		goto fail;
-@@ -3367,6 +3890,35 @@ static int fruit_fstatat_rsrc(struct vfs_handle_struct *handle,
+@@ -3367,6 +3885,35 @@ static int fruit_fstatat_rsrc(struct vfs_handle_struct *handle,
  	ino_t ino;
  	int ret;
  	bool ok;
@@ -917,7 +900,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	if (config->rsrc == FRUIT_RSRC_STREAM) {
  		ret = SMB_VFS_NEXT_FSTATAT(
-@@ -3648,6 +4200,9 @@ static int fruit_fstat_meta(vfs_handle_struct *handle,
+@@ -3648,6 +4195,9 @@ static int fruit_fstat_meta(vfs_handle_struct *handle,
  	int ret;
  
  	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
@@ -927,7 +910,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (fio->config->meta) {
  	case FRUIT_META_STREAM:
-@@ -3716,10 +4271,30 @@ static int fruit_fstat_rsrc_adouble(vfs_handle_struct *handle,
+@@ -3716,10 +4266,30 @@ static int fruit_fstat_rsrc_adouble(vfs_handle_struct *handle,
  	return 0;
  }
  
@@ -958,52 +941,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (fio->config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -3825,7 +4400,8 @@ static NTSTATUS fruit_streaminfo_meta_stream(
- 	const struct smb_filename *smb_fname,
- 	TALLOC_CTX *mem_ctx,
- 	unsigned int *pnum_streams,
--	struct stream_struct **pstreams)
-+	struct stream_struct **pstreams,
-+	bool *backend_exists)
- {
- 	struct stream_struct *stream = *pstreams;
- 	unsigned int i, num_streams = *pnum_streams;
-@@ -3839,6 +4415,7 @@ static NTSTATUS fruit_streaminfo_meta_stream(
- 	if (i == num_streams) {
- 		return NT_STATUS_OK;
- 	}
-+	*backend_exists = true;
- 
- 	if (stream[i].size != AFP_INFO_SIZE) {
- 		DBG_ERR("Removing invalid AFPINFO_STREAM size [%jd] from [%s]\n",
-@@ -3862,7 +4439,8 @@ static NTSTATUS fruit_streaminfo_meta_netatalk(
- 	const struct smb_filename *smb_fname,
- 	TALLOC_CTX *mem_ctx,
- 	unsigned int *pnum_streams,
--	struct stream_struct **pstreams)
-+	struct stream_struct **pstreams,
-+	bool *backend_exists)
- {
- 	struct stream_struct *stream = *pstreams;
- 	unsigned int i, num_streams = *pnum_streams;
-@@ -3902,6 +4480,7 @@ static NTSTATUS fruit_streaminfo_meta_netatalk(
- 	if (ad == NULL) {
- 		return NT_STATUS_OK;
- 	}
-+	*backend_exists = true;
- 
- 	is_fi_empty = ad_empty_finderinfo(ad);
- 	TALLOC_FREE(ad);
-@@ -3925,25 +4504,58 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
- 				      const struct smb_filename *smb_fname,
- 				      TALLOC_CTX *mem_ctx,
- 				      unsigned int *pnum_streams,
--				      struct stream_struct **pstreams)
-+				      struct stream_struct **pstreams,
-+				      bool backend_exists)
- {
- 	struct fruit_config_data *config = NULL;
- 	NTSTATUS status;
+@@ -3932,6 +4502,38 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
  				return NT_STATUS_INTERNAL_ERROR);
@@ -1042,21 +980,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->meta) {
  	case FRUIT_META_NETATALK:
- 		status = fruit_streaminfo_meta_netatalk(handle, fsp, smb_fname,
- 							mem_ctx, pnum_streams,
--							pstreams);
-+							pstreams, &backend_exists);
- 		break;
- 
- 	case FRUIT_META_STREAM:
- 		status = fruit_streaminfo_meta_stream(handle, fsp, smb_fname,
- 						      mem_ctx, pnum_streams,
--						      pstreams);
-+						      pstreams, &backend_exists);
- 		break;
- 
- 	default:
-@@ -4050,6 +4662,22 @@ static NTSTATUS fruit_streaminfo_rsrc(vfs_handle_struct *handle,
+@@ -4050,6 +4652,22 @@ static NTSTATUS fruit_streaminfo_rsrc(vfs_handle_struct *handle,
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
  				return NT_STATUS_INTERNAL_ERROR);
@@ -1079,38 +1003,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (config->rsrc) {
  	case FRUIT_RSRC_STREAM:
-@@ -4116,6 +4744,8 @@ static NTSTATUS fruit_fstreaminfo(vfs_handle_struct *handle,
- 	struct fruit_config_data *config = NULL;
- 	const struct smb_filename *smb_fname = NULL;
- 	NTSTATUS status;
-+	bool meta_backend_exists = false;
-+	unsigned int i;
- 
- 	smb_fname = fsp->fsp_name;
- 
-@@ -4129,11 +4759,20 @@ static NTSTATUS fruit_fstreaminfo(vfs_handle_struct *handle,
- 	if (!NT_STATUS_IS_OK(status)) {
- 		return status;
- 	}
-+	if (config->meta == FRUIT_META_STREAM) {
-+		for (i = 0; i < *pnum_streams; i++) {
-+			if (strequal_m((*pstreams)[i].name, AFPINFO_STREAM)) {
-+				meta_backend_exists = true;
-+				break;
-+			}
-+		}
-+	}
- 
- 	fruit_filter_empty_streams(pnum_streams, pstreams);
- 
- 	status = fruit_streaminfo_meta(handle, fsp, smb_fname,
--				       mem_ctx, pnum_streams, pstreams);
-+				       mem_ctx, pnum_streams, pstreams,
-+				       meta_backend_exists);
- 	if (!NT_STATUS_IS_OK(status)) {
- 		return status;
- 	}
-@@ -4158,7 +4797,8 @@ static int fruit_fntimes(vfs_handle_struct *handle,
+@@ -4158,7 +4776,8 @@ static int fruit_fntimes(vfs_handle_struct *handle,
  	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
  				return -1);
  
@@ -1120,7 +1013,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  	    is_omit_timespec(&ft->create_time))
  	{
  		return SMB_VFS_NEXT_FNTIMES(handle, fsp, ft);
-@@ -4276,6 +4916,9 @@ static int fruit_ftruncate_rsrc(struct vfs_handle_struct *handle,
+@@ -4276,6 +4895,9 @@ static int fruit_ftruncate_rsrc(struct vfs_handle_struct *handle,
  		DBG_ERR("Failed to fetch fsp extension\n");
  		return -1;
  	}
@@ -1130,7 +1023,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	switch (fio->config->rsrc) {
  	case FRUIT_RSRC_XATTR:
-@@ -4375,7 +5018,8 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
+@@ -4375,7 +4997,8 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
  	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
  				return NT_STATUS_UNSUCCESSFUL);
  
@@ -1140,7 +1033,7 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  	    !internal_open &&
  	    config->convert_adouble)
  	{
-@@ -4494,7 +5138,7 @@ static NTSTATUS fruit_freaddir_attr(struct vfs_handle_struct *handle,
+@@ -4494,7 +5117,7 @@ static NTSTATUS fruit_freaddir_attr(struct vfs_handle_struct *handle,
  
  	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
  

@@ -8,7 +8,7 @@
 +		/*
 +		 * The Time Capsule appliance build runs smbd without pthreads
 +		 * and avoids helper daemon forks. The scavenger is the current
-+		 * Samba 4.24 path that expires disconnected durable handles, so
++		 * Samba path that expires disconnected durable handles, so
 +		 * keep the timer semantics but host them on the smbd parent event
 +		 * loop instead of forwarding to a smbd-scavenger helper process.
 +		 */
@@ -80,7 +80,7 @@
 +
 +#ifndef HAVE_PTHREAD
 +	/*
-+	 * The Time Capsule appliance build cannot safely fork Samba 4.24's
++	 * The Time Capsule appliance build cannot safely fork Samba's
 +	 * cleanupd helper, but cleanupd itself is linked into smbd. Host the
 +	 * long-lived cleanup request in the parent event loop so child process
 +	 * messaging state is still cleaned up without entering the no-pthread

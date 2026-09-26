@@ -37,14 +37,14 @@ diff --git a/lib/replace/replace.c b/lib/replace/replace.c
 diff --git a/lib/replace/system/filesys.h b/lib/replace/system/filesys.h
 --- a/lib/replace/system/filesys.h
 +++ b/lib/replace/system/filesys.h
-@@ -189,6 +189,43 @@
+@@ -189,6 +189,44 @@
  #define O_ACCMODE (O_RDONLY | O_WRONLY | O_RDWR)
  #endif
  
 +/*
 + * TimeCapsuleSMB NetBSD compatibility notes:
 + *
-+ * NetBSD 6/7 provide the modern *at family that Samba 4.24's source3 VFS
++ * NetBSD 6/7 provide the modern *at family that Samba's source3 VFS
 + * expects, so those builds use the native libc/kernel paths.
 + *
 + * NetBSD 4 lacks that API surface. These definitions are not meant to pretend
@@ -76,6 +76,7 @@ diff --git a/lib/replace/system/filesys.h b/lib/replace/system/filesys.h
 +int futimens(int fd, const struct timespec times[2]);
 +int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
 +void arc4random_buf(void *buf, size_t n);
++ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 +#endif
 +
  #ifndef MAXPATHLEN

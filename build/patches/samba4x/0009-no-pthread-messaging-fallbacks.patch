@@ -118,7 +118,7 @@ index a5c6603..79de4f5 100644
 +#ifndef HAVE_PTHREAD
 +	/*
 +	 * The Time Capsule appliance build runs Samba without pthread support on
-+	 * NetBSD4 and NetBSD6/7. Samba 4.24's MSG_REQ_POOL_USAGE diagnostic hook
++	 * NetBSD4 and NetBSD6/7. Samba's MSG_REQ_POOL_USAGE diagnostic hook
 +	 * registers a filtered messaging reader during smbd startup; in the
 +	 * static no-pthread build that path aborts before smbd can bind TCP 445.
 +	 *

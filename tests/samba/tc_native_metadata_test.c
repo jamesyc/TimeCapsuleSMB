@@ -1185,7 +1185,7 @@ static void test_finderinfo_views(struct vfs_handle_struct *handle,
 	CHECK(S_ISREG(sbuf.st_ex_mode));
 
 	status = fruit_streaminfo_meta(
-		handle, fsp, smb_fname, mem_ctx, &num_streams, &streams, false);
+		handle, fsp, smb_fname, mem_ctx, &num_streams, &streams);
 	CHECK(NT_STATUS_IS_OK(status));
 	CHECK(num_streams == 1);
 	CHECK(strequal_m(streams[0].name, AFPINFO_STREAM));

@@ -1,7 +1,7 @@
 /* Included by replace.c (patch 0002) for TC_SAMBA4X_NETBSD4_COMPAT. */
 
 /*
- * NetBSD4 compatibility layer for symbols Samba 4.24 can reference.
+ * NetBSD4 compatibility layer for symbols Samba can reference.
  *
  * NetBSD 6/7 do not compile this block; they use native libc support. For
  * NetBSD4, path-aware source3 VFS fallbacks handle normal SMB file I/O. These

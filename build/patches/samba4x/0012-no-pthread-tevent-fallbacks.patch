@@ -69,7 +69,7 @@ index 544f853..05d29d0 100644
 +	 * during configure. Avoid tevent's pooled request allocation in that mode:
 +	 * notifyd's first long-lived request aborts in the pool path on these old
 +	 * NetBSD targets, while ordinary talloc children are sufficient here.
-+	 * Samba 4.24 initializes internal.trigger below with tevent_create_immediate()
++	 * Samba initializes internal.trigger below with tevent_create_immediate()
 +	 * and stores the private state in req->data, so this fallback only changes
 +	 * the parent request allocation strategy.
 +	 */
