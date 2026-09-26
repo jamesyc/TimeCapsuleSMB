@@ -1,0 +1,48 @@
+diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
+--- a/buildtools/wafsamba/wafsamba.py
++++ b/buildtools/wafsamba/wafsamba.py
+@@ -446,6 +446,36 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
+ 
+ 
+ #################################################################
++def APPLY_TC_STATIC_BINARY_ENV(bld, taskgen):
++    # Time Capsule runs smbd from a tiny RAM disk. Link the deployed smbd
++    # fully static with its link map. The other shipped binary, the metadata
++    # migrator, is named here too; only the opt-in regression drivers, never
++    # shipped, are matched by their tc_*_test naming convention. Both link
++    # fully static without smbd's map.
++    target = getattr(taskgen, 'target', None)
++    if target == 'smbd/smbd':
++        static_linkflags = TO_LIST(
++            getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
++        static_ldflags = TO_LIST(
++            getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
++    elif target == 'tc_xattr_hfs_migrate' or (
++            target is not None and target.startswith('tc_') and
++            target.endswith('_test')):
++        static_linkflags = TO_LIST(getattr(
++            bld.env, 'TC_STATIC_LINKFLAGS', []))
++        static_ldflags = TO_LIST(getattr(
++            bld.env, 'TC_STATIC_LDFLAGS', []))
++    else:
++        return
++    if not static_linkflags and not static_ldflags:
++        return
++    taskgen.env = taskgen.env.derive()
++    taskgen.env.LINKFLAGS = static_linkflags
++    taskgen.env.LDFLAGS = static_ldflags
++    taskgen.env.LIBPATH = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LIBPATH', []))
++    taskgen.env.SHLIB_MARKER = getattr(bld.env, 'SMBD_STATIC_SHLIB_MARKER', '')
++    taskgen.env.FULLSTATIC_MARKER = getattr(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static')
++
+ def SAMBA_BINARY(bld, binname, source,
+                  deps='',
+                  includes='',
+@@ -570,6 +600,7 @@ def SAMBA_BINARY(bld, binname, source,
+         samba_use_hostcc = use_hostcc
+         )
+     APPLY_HOSTCC_ENV(bld, t)
++    APPLY_TC_STATIC_BINARY_ENV(bld, t)
+ 
+     if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
+         bld.MANPAGES(manpages, install)

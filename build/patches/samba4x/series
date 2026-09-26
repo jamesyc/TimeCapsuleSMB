@@ -8,10 +8,12 @@
 
 # Build and toolchain.
 # Samba 4.25 marks some generated tools as hostcc but still lets waf inherit
-# target compiler/linker settings. Keep those host tools on the VM compiler,
-# while applying static link flags only to the static binaries we build: the
-# deployed smbd and migrator, and the opt-in regression tests.
-0001-waf-hostcc-target-flags.patch|waf hostcc and static smbd environment
+# target compiler/linker settings. Keep those host tools on the VM compiler.
+0001-waf-hostcc-target-flags.patch|waf hostcc isolation from target flags
+# Apply static link flags only to the static binaries we build: the deployed
+# smbd (with its link map), the other shipped binary, the metadata migrator,
+# by name, and the opt-in tc_*_test regression drivers, which never ship.
+0049-waf-static-appliance-binaries.patch|static link flags for smbd, the migrator and regression drivers
 # This reduced nonshared build can expose duplicate typedefs through multiple
 # include paths; guard the typedefs instead of relying on fragile include order.
 0014-includes-typedef-guards.patch|duplicate typedef guards
@@ -30,11 +32,11 @@
 # which Samba expects, and vfs_catia gains an fdopendir hook so the fallback
 # opens directories under their on-disk (SFM-mapped) names.
 0002-replace-netbsd4-compat.patch|NetBSD4 libc compatibility shims
+0003-vfs-default-path-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
 # Samba's default streaminfo refreshes stat before appending ::$DATA. The
 # pathref fallback can fail that refresh even when the open path already
-# cached valid stat metadata, so 0003 uses the cached stat for macOS
-# delete/share checks.
-0003-vfs-default-path-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
+# cached valid stat metadata; use the cached stat for macOS delete/share checks.
+0050-vfs-default-streaminfo-cached-stat.patch|keep the default stream when the pathref stat refresh fails
 # NetBSD4 can lose Samba's cached is_directory flag even when stat still says
 # the handle is a directory; recover before rejecting SMB2 QUERY_DIRECTORY.
 0004-smb2-query-directory-stat-fallback.patch|NetBSD4 SMB2 directory stat fallback
@@ -57,10 +59,14 @@
 0043-interfaces-netbsd-route-iflist.patch|parse Time Capsule interfaces from routing messages
 
 # No-pthread build.
+# Without HAVE_PTHREAD, pthreadpool_tevent still used pthread mutexes and
+# atfork glue and tevent_threads.c's context destructor still locked a mutex.
+# Guard those on HAVE_PTHREAD, and skip registering tevent's poll_mt backend,
+# which only threaded callers select. Pthread builds are unchanged.
+0051-tevent-no-pthread-build.patch|build tevent and pthreadpool_tevent without pthread
 # Disable pthread before libreplace constructs the dependency graph (the
 # synchronous pthreadpool backend itself comes from --disable-pthreadpool in
-# _samba4x.sh), compile pthreadpool_tevent and tevent without pthread
-# mutex/glue operations, and define __thread away. Without threads,
+# _samba4x.sh) and define __thread away. Without threads,
 # thread-local storage is process storage, and in the static appliance binary
 # any real __thread access from Samba's -fPIC objects calls static libc's
 # __tls_get_addr, which only aborts. That abort was the startup crash in
