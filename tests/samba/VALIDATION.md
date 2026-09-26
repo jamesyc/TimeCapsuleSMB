@@ -614,3 +614,51 @@ Follow-up, 0011 and 0022 (2026-09-26). Same method, both devices:
   configure result (`HAVE__STATIC_ASSERT` missing from `smbd -b`). The
   binaries below come from lane trees with `bin/` removed first.
 
+## Series restructuring (2026-09-26)
+
+Every patch is now generated from a replay repository (pristine rc2, the
+overlay, then one commit per patch) and named by the Samba component it
+changes. Commits that only reformatted, renamed, regrouped or split patches
+left the fully patched tree byte-identical; that was checked after each one
+with patch_apply_series. The ones that changed source:
+
+- 0024 reuses upstream's reconnect checks for a live open instead of a copy.
+- 0023 calls its HFS owner fix under an `#ifdef` instead of a no-op stub.
+- 0013 guards only the first pthread probe instead of re-indenting them all;
+  configure produced the same results (config.h and the waf cache differ
+  only by an `#undef HAVE___THREAD` comment and the regression target list).
+- aio_fork: 0052 (errno fix, upstream bug), 0053 (one request path, refactor
+  only) and 0031 (bounded helpers). 0031 now queues every request and lets
+  one scheduler dispatch the FIFO, and idle helpers are retired after
+  upstream's 30 seconds again: the 3-hour interval avoided repeated forks
+  during the allocator corruption of issue #295, which was the fault-ahead
+  bug that 0046 fixes.
+- 0038: the native xattr_tdb helpers and their four copies of the name
+  dispatch moved into overlay tc_xattr_tdb_native.c, which also holds the
+  link-aware wrappers that 0045 used to add; 0038 is 67 lines instead of 363.
+- fruit (0055 FinderInfo, 0056 resource fork): helpers and the larger native
+  branches moved into overlay tc_fruit_native_finderinfo.c and
+  tc_fruit_native_rsrc.c; the upstream diff went from 659 to 131 lines. Dead
+  code and changes to non-native paths were removed. Two intentional changes:
+  removing FinderInfo during a nested pathref open now reports it absent, as
+  reading it already did, and an all-zero FinderInfo stats as ENOENT.
+- 0059: lchmod/lchflags branches that no configure check could enable became
+  ENOTSUP, and catia's xattr wrappers run only for link handles without an fd.
+- `_samba4x.sh` removes the lane's build tree before configure: `waf
+  distclean` never removed anything, so earlier lane builds reused stale
+  objects and configure results.
+
+Results: host regression run with sanitizers, 113 cases passed; NetBSD 6
+regression drivers on the device, 62 passed; all three lanes rebuilt from
+empty build trees (NetBSD 6 smbd reproduced its earlier test build byte for
+byte). After `tcapsule deploy` on both LAN devices: Doctor passed, the links
+suite with `--afp` passed 87/87, a 150-connection/lease/notify workload
+passed, and FinderInfo, resource-fork and xattr visibility between SMB and AFP
+matched the previous build exactly.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,227,864 |
+| NetBSD 4 LE | 10,250,044 |
+| NetBSD 4 BE | 10,248,928 |
+
