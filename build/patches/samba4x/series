@@ -247,3 +247,11 @@
 # is mklink /D. Only non-Mac connections see FILE_SUPPORTS_REPARSE_POINTS, so
 # macOS keeps creating XSym.
 0060-smbd-native-links-convert-on-close.patch|new SMB links become native links when their creator closes them
+
+# Diagnostics.
+# Log each step of a client's durable reconnect at level 3, prefixed
+# tc_reconnect: (SMBD_DEBUG_LOGGING shows it): negotiate with its client GUID,
+# the session setup and the previous session it names, why close_previous acted
+# or left that session alone, the old smbd closing it, each durable open it
+# disconnects, the reconnect request and its result, and why connections end.
+0061-smbd-reconnect-diagnostics.patch|durable reconnect diagnostics at log level 3

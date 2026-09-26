@@ -1,0 +1,217 @@
+diff --git a/source3/smbd/close.c b/source3/smbd/close.c
+--- a/source3/smbd/close.c
++++ b/source3/smbd/close.c
+@@ -917,6 +917,9 @@ static bool close_durable(struct smb_request *req,
+ 	 * This is the case where we successfully disconnected
+ 	 * a durable handle and closed the underlying file.
+ 	 */
++	DBG_NOTICE("tc_reconnect: durable open %#" PRIx64 " disconnected: "
++		   "%s\n", fsp->op->global->open_persistent_id,
++		   fsp_str_dbg(fsp));
+ 
+ 	DBG_DEBUG("%s disconnected durable handle for file %s\n",
+ 		  fsp->conn->session_info->unix_info->unix_name,
+diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
+--- a/source3/smbd/smb2_create.c
++++ b/source3/smbd/smb2_create.c
+@@ -1118,6 +1118,20 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+ 		 */
+ 		SMB_ASSERT(state->op == NULL);
+ 
++		{
++			struct GUID_txt_buf guid_buf;
++
++			/* Durable reconnect diagnostics (patch 0061). A v1
++			 * reconnect has no create GUID. */
++			DBG_NOTICE("tc_reconnect: reconnect %s persistent=%#"
++				   PRIx64 " create_guid=%s session=%#" PRIx64
++				   "\n", state->fname,
++				   state->persistent_id,
++				   state->create_guid == NULL ? "none" :
++				   GUID_buf_string(state->create_guid,
++						   &guid_buf),
++				   smb2req->session->global->session_wire_id);
++		}
+ 		if (state->lease_ptr != NULL) {
+ 			lease_key = &state->lease_ptr->lease_key;
+ 		}
+@@ -1189,6 +1203,8 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+ 			return tevent_req_post(req, state->ev);
+ 		}
+ 
++		DBG_NOTICE("tc_reconnect: reconnect %s persistent=%#" PRIx64
++			   " restored\n", state->fname, state->persistent_id);
+ 		DBG_DEBUG("oplock_type=%u, lease_ptr==%p\n",
+ 			  (unsigned)state->result->oplock_type, state->lease_ptr);
+ 
+diff --git a/source3/smbd/smb2_negprot.c b/source3/smbd/smb2_negprot.c
+--- a/source3/smbd/smb2_negprot.c
++++ b/source3/smbd/smb2_negprot.c
+@@ -849,6 +849,14 @@ NTSTATUS smbd_smb2_request_process_negprot(struct smbd_smb2_request *req)
+ 	xconn->smb2.client.capabilities = in_capabilities;
+ 	xconn->smb2.client.security_mode = in_security_mode;
+ 	xconn->smb2.client.guid = in_guid;
++	{
++		struct GUID_txt_buf guid_buf;
++
++		/* Durable reconnect diagnostics (patch 0061): which client. */
++		DBG_NOTICE("tc_reconnect: negotiate %s client_guid=%s\n",
++			   smbXsrv_connection_dbg(xconn),
++			   GUID_buf_string(&in_guid, &guid_buf));
++	}
+ 	xconn->smb2.client.num_dialects = dialect_count;
+ 	xconn->smb2.client.dialects = talloc_array(xconn,
+ 						   uint16_t,
+diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
+--- a/source3/smbd/smb2_server.c
++++ b/source3/smbd/smb2_server.c
+@@ -1797,6 +1797,9 @@ void smbd_server_connection_terminate_ex(struct smbXsrv_connection *xconn,
+ 	}
+ 	xconn->transport.terminating = true;
+ 
++	/* Durable reconnect diagnostics (patch 0061): why a connection ended. */
++	DBG_NOTICE("tc_reconnect: connection %s ends: %s\n",
++		   smbXsrv_connection_dbg(xconn), reason);
+ 	DBG_DEBUG("conn[%s] num_ok[%zu] reason[%s] at %s\n",
+ 		  smbXsrv_connection_dbg(xconn), num_ok,
+ 		  reason, location);
+diff --git a/source3/smbd/smb2_sesssetup.c b/source3/smbd/smb2_sesssetup.c
+--- a/source3/smbd/smb2_sesssetup.c
++++ b/source3/smbd/smb2_sesssetup.c
+@@ -943,6 +943,13 @@ static void smbd_smb2_session_setup_gensec_done(struct tevent_req *subreq)
+ 		return;
+ 	}
+ 
++	/* Durable reconnect diagnostics (patch 0061): the session a client
++	 * names here is the one whose opens it expects to reclaim. */
++	DBG_NOTICE("tc_reconnect: session setup %s session=%#" PRIx64
++		   " previous=%#" PRIx64 "\n",
++		   smbXsrv_connection_dbg(state->smb2req->xconn),
++		   state->session->global->session_wire_id,
++		   state->in_previous_session_id);
+ 	if ((state->in_previous_session_id != 0) &&
+ 	     (state->session->global->session_wire_id !=
+ 	      state->in_previous_session_id))
+diff --git a/source3/smbd/smbXsrv_session.c b/source3/smbd/smbXsrv_session.c
+--- a/source3/smbd/smbXsrv_session.c
++++ b/source3/smbd/smbXsrv_session.c
+@@ -322,6 +322,10 @@ static void smbXsrv_session_close_loop(struct tevent_req *subreq)
+ 		NDR_PRINT_DEBUG(smbXsrv_session_closeB, &close_blob);
+ 		goto next;
+ 	}
++	DBG_NOTICE("tc_reconnect: asked to close session %#" PRIx64
++		   " for new session %#" PRIx64 "\n",
++		   close_info->old_session_wire_id,
++		   close_info->new_session_wire_id);
+ 
+ 	status = smb2srv_session_lookup_client(client,
+ 					       close_info->old_session_wire_id,
+@@ -429,6 +433,8 @@ static void smbXsrv_session_close_shutdown_done(struct tevent_req *subreq)
+ 			session->global->session_wire_id,
+ 			nt_errstr(status));
+ 	}
++	DBG_NOTICE("tc_reconnect: closed session %#" PRIx64 ": %s\n",
++		   session->global->session_wire_id, nt_errstr(status));
+ 
+ 	TALLOC_FREE(session);
+ }
+@@ -1029,18 +1035,29 @@ struct tevent_req *smb2srv_session_close_previous_send(TALLOC_CTX *mem_ctx,
+ 
+ 	tevent_req_set_cleanup_fn(req, smb2srv_session_close_previous_cleanup);
+ 
++	/*
++	 * Durable reconnect diagnostics (patch 0061): every way the previous
++	 * session can be left alone is logged, since a session left open keeps
++	 * its durable opens attached and the client's reconnect then fails.
++	 */
+ 	if (global_zeros != 0) {
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " not ours "
++			   "(high bits set)\n", previous_session_id);
+ 		tevent_req_done(req);
+ 		return tevent_req_post(req, ev);
+ 	}
+ 
+ 	if (session_info == NULL) {
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " kept: "
++			   "no session info\n", previous_session_id);
+ 		tevent_req_done(req);
+ 		return tevent_req_post(req, ev);
+ 	}
+ 	current_token = session_info->security_token;
+ 
+ 	if (current_token->num_sids <= PRIMARY_USER_SID_INDEX) {
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " kept: "
++			   "no user SID\n", previous_session_id);
+ 		tevent_req_done(req);
+ 		return tevent_req_post(req, ev);
+ 	}
+@@ -1048,6 +1065,8 @@ struct tevent_req *smb2srv_session_close_previous_send(TALLOC_CTX *mem_ctx,
+ 
+ 	if (!security_token_has_nt_authenticated_users(current_token)) {
+ 		/* TODO */
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " kept: "
++			   "not an authenticated user\n", previous_session_id);
+ 		tevent_req_done(req);
+ 		return tevent_req_post(req, ev);
+ 	}
+@@ -1057,6 +1076,8 @@ struct tevent_req *smb2srv_session_close_previous_send(TALLOC_CTX *mem_ctx,
+ 							global_id,
+ 							state /* TALLOC_CTX */);
+ 	if (state->db_rec == NULL) {
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " record "
++			   "cannot be locked\n", previous_session_id);
+ 		tevent_req_nterror(req, NT_STATUS_UNSUCCESSFUL);
+ 		return tevent_req_post(req, ev);
+ 	}
+@@ -1094,11 +1115,16 @@ static void smb2srv_session_close_previous_check(struct tevent_req *req)
+ 					     &seqnum);
+ 
+ 	if (is_free) {
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " is gone\n",
++			   state->previous_session_id);
+ 		tevent_req_done(req);
+ 		return;
+ 	}
+ 
+ 	if (global->auth_session_info == NULL) {
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " kept: "
++			   "not authenticated yet\n",
++			   state->previous_session_id);
+ 		tevent_req_done(req);
+ 		return;
+ 	}
+@@ -1106,6 +1132,8 @@ static void smb2srv_session_close_previous_check(struct tevent_req *req)
+ 	previous_token = global->auth_session_info->security_token;
+ 
+ 	if (!security_token_is_sid(previous_token, state->current_sid)) {
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " kept: "
++			   "another user\n", state->previous_session_id);
+ 		tevent_req_done(req);
+ 		return;
+ 	}
+@@ -1166,6 +1194,16 @@ static void smb2srv_session_close_previous_check(struct tevent_req *req)
+ 		return;
+ 	}
+ 
++	{
++		struct server_id_buf id_buf;
++
++		DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " owned by %s: "
++			   "asking it to close for %#" PRIx64 "\n",
++			   state->previous_session_id,
++			   server_id_str_buf(global->channels[0].server_id,
++					     &id_buf),
++			   state->current_session_id);
++	}
+ 	status = messaging_send(conn->client->msg_ctx,
+ 				global->channels[0].server_id,
+ 				MSG_SMBXSRV_SESSION_CLOSE, &blob);
+@@ -1192,6 +1230,8 @@ static void smb2srv_session_close_previous_modified(struct tevent_req *subreq)
+ 
+ 	status = dbwrap_watched_watch_recv(subreq, &instance, NULL, NULL);
+ 	TALLOC_FREE(subreq);
++	DBG_NOTICE("tc_reconnect: previous %#" PRIx64 " record changed: %s\n",
++		   state->previous_session_id, nt_errstr(status));
+ 	if (tevent_req_nterror(req, status)) {
+ 		return;
+ 	}

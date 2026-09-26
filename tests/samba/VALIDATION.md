@@ -781,3 +781,28 @@ Then aio_fork was turned on (2 helpers, default SMB2 sizes):
 | NetBSD 6 (NetBSD 7 SDK) | 10,228,304 |
 | NetBSD 4 LE | 10,250,528 |
 | NetBSD 4 BE | 10,249,412 |
+
+## Durable reconnect diagnostics, patch 0061 (2026-09-26)
+
+Patch 0061 logs each step of a durable reconnect at level 3, prefixed
+`tc_reconnect:`. Deploy with debug logging and grep `log.smbd` for it. The
+steps are:
+- negotiate, with its client GUID;
+- session setup, with the previous session it names;
+- why `close_previous` asked the old owner to close that session, or left it
+  alone (gone, another user, not authenticated);
+- the old smbd receiving the close and finishing it;
+- each durable open it disconnects;
+- the DH2C request and whether it was restored;
+- why each connection ended.
+
+It is for the rare Mac reconnect failure recorded above: one stall run in
+about 25 got FILE_NOT_AVAILABLE and EIO. The level-3 lines stay out of normal
+logs because the default log level is 0. The host regression run was
+unchanged; all three lanes built without warnings in the changed files.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,232,608 |
+| NetBSD 4 LE | 10,254,592 |
+| NetBSD 4 BE | 10,253,480 |
