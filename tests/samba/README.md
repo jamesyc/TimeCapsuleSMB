@@ -182,7 +182,7 @@ spare disk was unavailable. The scratch-root test verifies targeted reload and
 unchanged-share continuity, while the native tests inject Apple's observed
 revoked-descriptor behavior. Neither substitutes for the missing cable test.
 
-### Native symlinks (patch 0045)
+### Native symlinks (patches 0045, 0058-0060)
 
 The `tc_native_links_test` cases run the real `source3/smbd/tc_native_links.c`
 in a scratch directory under `$TMPDIR` or the working directory, with real

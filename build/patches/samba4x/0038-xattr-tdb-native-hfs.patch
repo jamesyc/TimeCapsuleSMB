@@ -1,7 +1,7 @@
 diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
 --- a/source3/modules/vfs_xattr_tdb.c
 +++ b/source3/modules/vfs_xattr_tdb.c
-@@ -25,15 +25,22 @@
+@@ -25,12 +25,14 @@
  #include "dbwrap/dbwrap_open.h"
  #include "source3/lib/xattr_tdb.h"
  #include "lib/util/tevent_unix.h"
@@ -16,268 +16,39 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	bool ignore_user_xattr;
  };
  
-+#define TC_APPLE_STREAM_XATTR_PREFIX "user.DosStream."
-+#define TC_APPLE_STREAM_XATTR_SUFFIX ":$DATA"
-+#define TC_FINDERINFO_XATTR "com.apple.FinderInfo"
-+#define TC_RESOURCEFORK_XATTR "com.apple.ResourceFork"
-+
- static bool xattr_tdb_init(struct vfs_handle_struct *handle,
- 			   struct xattr_tdb_config **_config);
- 
-@@ -45,6 +52,170 @@ static bool is_user_xattr(const char *xattr_name)
+@@ -45,6 +47,8 @@ static bool is_user_xattr(const char *xattr_name)
  	return (match == 0);
  }
  
-+static char *tc_apple_stream_native_name(TALLOC_CTX *mem_ctx,
-+					 const char *name)
-+{
-+	size_t prefix_len = strlen(TC_APPLE_STREAM_XATTR_PREFIX);
-+	size_t suffix_len = strlen(TC_APPLE_STREAM_XATTR_SUFFIX);
-+	size_t name_len = strlen(name);
-+
-+	if (name_len <= prefix_len + suffix_len ||
-+	    strncmp(name, TC_APPLE_STREAM_XATTR_PREFIX "com.apple.",
-+		    strlen(TC_APPLE_STREAM_XATTR_PREFIX "com.apple.")) != 0 ||
-+	    strcmp(name + name_len - suffix_len,
-+		   TC_APPLE_STREAM_XATTR_SUFFIX) != 0)
-+	{
-+		return NULL;
-+	}
-+	return talloc_strndup(
-+		mem_ctx, name + prefix_len, name_len - prefix_len - suffix_len);
-+}
-+
-+static bool tc_fruit_owned_native_xattr(const char *name)
-+{
-+	return strcmp(name, TC_FINDERINFO_XATTR) == 0 ||
-+		strcmp(name, TC_RESOURCEFORK_XATTR) == 0;
-+}
-+
-+static ssize_t tc_native_apple_stream_get(files_struct *fsp,
-+					   const char *native_name,
-+					   void *value,
-+					   size_t size)
-+{
-+	ssize_t raw_size;
-+	ssize_t ret;
-+	int fd = fsp_get_pathref_fd(fsp);
-+
-+	raw_size = tc_airport_fgetxattr(fd, native_name, NULL, 0);
-+	if (raw_size < 0) {
-+		return -1;
-+	}
-+	if (raw_size >= SSIZE_MAX) {
-+		errno = EOVERFLOW;
-+		return -1;
-+	}
-+	if (size == 0) {
-+		return raw_size + 1;
-+	}
-+	if ((size_t)raw_size + 1 > size) {
-+		errno = ERANGE;
-+		return -1;
-+	}
-+	ret = tc_airport_fgetxattr(fd, native_name, value, raw_size);
-+	if (ret < 0) {
-+		return -1;
-+	}
-+	if (ret > raw_size) {
-+		errno = EIO;
-+		return -1;
-+	}
-+	((uint8_t *)value)[ret] = 0;
-+	return ret + 1;
-+}
-+
-+static int tc_native_apple_stream_set(files_struct *fsp,
-+				      const char *native_name,
-+				      const void *value,
-+				      size_t size,
-+				      int flags)
-+{
-+	if (size == 0) {
-+		errno = EINVAL;
-+		return -1;
-+	}
-+	if (((const uint8_t *)value)[size - 1] != 0) {
-+		/* HFS must expose one complete canonical xattr to AFP. A
-+		 * streams_xattr extent count here would expose only its anchor. */
-+		errno = E2BIG;
-+		return -1;
-+	}
-+	return tc_airport_fsetxattr(
-+		fsp_get_pathref_fd(fsp), native_name, value, size - 1, flags);
-+}
-+
-+static ssize_t tc_native_list_with_apple_streams(
-+	files_struct *fsp, char *list, size_t size)
-+{
-+	ssize_t raw_size;
-+	ssize_t ret;
-+	char *raw = NULL;
-+	size_t offset = 0;
-+	size_t required = 0;
-+	size_t written_size = 0;
-+
-+	raw_size = tc_airport_flistxattr(fsp_get_pathref_fd(fsp), NULL, 0);
-+	if (raw_size <= 0) {
-+		return raw_size;
-+	}
-+	raw = talloc_array(talloc_tos(), char, raw_size);
-+	if (raw == NULL) {
-+		errno = ENOMEM;
-+		return -1;
-+	}
-+	ret = tc_airport_flistxattr(
-+		fsp_get_pathref_fd(fsp), raw, raw_size);
-+	if (ret < 0) {
-+		TALLOC_FREE(raw);
-+		return -1;
-+	}
-+	while (offset < (size_t)ret) {
-+		const char *entry = raw + offset;
-+		size_t entry_size = strlen(entry) + 1;
-+
-+		if (tc_fruit_owned_native_xattr(entry)) {
-+			offset += entry_size;
-+			continue;
-+		}
-+		required += entry_size;
-+		if (strncmp(entry, "com.apple.", strlen("com.apple.")) == 0) {
-+			required += strlen(TC_APPLE_STREAM_XATTR_PREFIX) +
-+				entry_size - 1 +
-+				strlen(TC_APPLE_STREAM_XATTR_SUFFIX) + 1;
-+		}
-+		offset += entry_size;
-+	}
-+	if (list == NULL || size == 0) {
-+		TALLOC_FREE(raw);
-+		return required;
-+	}
-+	if (size < required) {
-+		TALLOC_FREE(raw);
-+		errno = ERANGE;
-+		return -1;
-+	}
-+	offset = 0;
-+	while (offset < (size_t)ret) {
-+		const char *entry = raw + offset;
-+		size_t entry_size = strlen(entry) + 1;
-+
-+		if (tc_fruit_owned_native_xattr(entry)) {
-+			offset += entry_size;
-+			continue;
-+		}
-+		memcpy(list + written_size, entry, entry_size);
-+		written_size += entry_size;
-+		if (strncmp(entry, "com.apple.", strlen("com.apple.")) == 0) {
-+			int stream_written = snprintf(
-+				list + written_size,
-+				size - written_size,
-+				"%s%s%s",
-+				TC_APPLE_STREAM_XATTR_PREFIX,
-+				entry,
-+				TC_APPLE_STREAM_XATTR_SUFFIX);
-+
-+			if (stream_written < 0) {
-+				TALLOC_FREE(raw);
-+				errno = EIO;
-+				return -1;
-+			}
-+			written_size += stream_written + 1;
-+		}
-+		offset += entry_size;
-+	}
-+	TALLOC_FREE(raw);
-+	return written_size;
-+}
++#include "tc_xattr_tdb_native.c"
 +
  struct xattr_tdb_getxattrat_state {
  	struct vfs_aio_state vfs_aio_state;
  	ssize_t xattr_size;
-@@ -82,7 +253,9 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
+@@ -109,6 +113,36 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
  	}
- 	state->xattr_size = -1;
  
--	if (config->ignore_user_xattr && is_user_xattr(xattr_name)) {
-+	if (!config->native_hfs && config->ignore_user_xattr &&
-+	    is_user_xattr(xattr_name))
-+	{
- 		subreq = SMB_VFS_NEXT_GETXATTRAT_SEND(state,
- 						      ev,
- 						      handle,
-@@ -108,6 +281,83 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
- 		return tevent_req_post(req, ev);
- 	}
  
 +	if (config->native_hfs) {
-+		files_struct *fsp = smb_fname->fsp;
-+		char *native_name = tc_apple_stream_native_name(
-+			talloc_tos(), xattr_name);
-+		ssize_t xattr_size;
++		ssize_t xattr_size = tc_xattr_tdb_native_get(
++			smb_fname->fsp, xattr_name, NULL, 0);
 +
-+		if (native_name != NULL &&
-+		    tc_fruit_owned_native_xattr(native_name))
-+		{
-+			TALLOC_FREE(native_name);
-+			TALLOC_FREE(smb_fname);
-+			tevent_req_error(req, ENOATTR);
-+			return tevent_req_post(req, ev);
++		if (xattr_size > 0 && alloc_hint != 0) {
++			if ((size_t)xattr_size > alloc_hint) {
++				errno = ERANGE;
++				xattr_size = -1;
++			} else {
++				state->xattr_value = talloc_array(
++					state, uint8_t, xattr_size);
++				if (tevent_req_nomem(state->xattr_value, req)) {
++					TALLOC_FREE(smb_fname);
++					return tevent_req_post(req, ev);
++				}
++				xattr_size = tc_xattr_tdb_native_get(
++					smb_fname->fsp, xattr_name,
++					state->xattr_value, xattr_size);
++			}
 +		}
-+		if (native_name == NULL &&
-+		    strcmp(xattr_name, TC_RESOURCEFORK_XATTR) == 0)
-+		{
-+			TALLOC_FREE(smb_fname);
-+			tevent_req_error(req, ENOTSUP);
-+			return tevent_req_post(req, ev);
-+		}
-+		if (native_name != NULL) {
-+			xattr_size = tc_native_apple_stream_get(
-+				fsp, native_name, NULL, 0);
-+		} else {
-+			xattr_size = tc_airport_fgetxattr(
-+				fsp_get_pathref_fd(fsp), xattr_name, NULL, 0);
-+		}
-+		if (xattr_size < 0) {
-+			tevent_req_error(req, errno);
-+			TALLOC_FREE(native_name);
-+			TALLOC_FREE(smb_fname);
-+			return tevent_req_post(req, ev);
-+		}
-+		state->xattr_size = xattr_size;
-+		if (alloc_hint == 0 || xattr_size == 0) {
-+			TALLOC_FREE(native_name);
-+			TALLOC_FREE(smb_fname);
-+			tevent_req_done(req);
-+			return tevent_req_post(req, ev);
-+		}
-+		if ((size_t)xattr_size > alloc_hint) {
-+			TALLOC_FREE(native_name);
-+			TALLOC_FREE(smb_fname);
-+			state->xattr_size = -1;
-+			tevent_req_error(req, ERANGE);
-+			return tevent_req_post(req, ev);
-+		}
-+		state->xattr_value = talloc_array(state, uint8_t, xattr_size);
-+		if (tevent_req_nomem(state->xattr_value, req)) {
-+			TALLOC_FREE(native_name);
-+			TALLOC_FREE(smb_fname);
-+			return tevent_req_post(req, ev);
-+		}
-+		if (native_name != NULL) {
-+			xattr_size = tc_native_apple_stream_get(
-+				fsp,
-+				native_name,
-+				state->xattr_value,
-+				state->xattr_size);
-+		} else {
-+			xattr_size = tc_airport_fgetxattr(
-+				fsp_get_pathref_fd(fsp),
-+				xattr_name,
-+				state->xattr_value,
-+				state->xattr_size);
-+		}
-+		TALLOC_FREE(native_name);
 +		TALLOC_FREE(smb_fname);
 +		if (xattr_size < 0) {
 +			tevent_req_error(req, errno);
@@ -287,171 +58,57 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
 +		tevent_req_done(req);
 +		return tevent_req_post(req, ev);
 +	}
- 
++
  	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &smb_fname->st);
  
-@@ -216,6 +466,29 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
+ 	TALLOC_FREE(smb_fname);
+@@ -216,6 +250,9 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
  	if (!xattr_tdb_init(handle, &config)) {
  		return -1;
  	}
 +	if (config->native_hfs) {
-+		char *native_name = tc_apple_stream_native_name(
-+			talloc_tos(), name);
-+		ssize_t ret;
-+
-+		if (native_name != NULL) {
-+			if (tc_fruit_owned_native_xattr(native_name)) {
-+				TALLOC_FREE(native_name);
-+				errno = ENOATTR;
-+				return -1;
-+			}
-+			ret = tc_native_apple_stream_get(
-+				fsp, native_name, value, size);
-+			TALLOC_FREE(native_name);
-+			return ret;
-+		}
-+		if (strcmp(name, TC_RESOURCEFORK_XATTR) == 0) {
-+			errno = ENOTSUP;
-+			return -1;
-+		}
-+		return tc_airport_fgetxattr(
-+			fsp_get_pathref_fd(fsp), name, value, size);
++		return tc_xattr_tdb_native_get(fsp, name, value, size);
 +	}
  
  	if (config->ignore_user_xattr && is_user_xattr(name)) {
  		return SMB_VFS_NEXT_FGETXATTR(
-@@ -232,8 +505,8 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
- 
- 	xattr_size = xattr_tdb_getattr(config->db, frame, &id, name, &blob);
- 	if (xattr_size < 0) {
--		errno = ENOATTR;
- 		TALLOC_FREE(frame);
-+		errno = ENOATTR;
- 		return -1;
- 	}
- 
-@@ -260,11 +533,33 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
- 	struct xattr_tdb_config *config = NULL;
- 	SMB_STRUCT_STAT sbuf;
- 	struct file_id id;
--	int ret;
- 
+@@ -265,6 +302,9 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
  	if (!xattr_tdb_init(handle, &config)) {
  		return -1;
  	}
 +	if (config->native_hfs) {
-+		char *native_name = tc_apple_stream_native_name(
-+			talloc_tos(), name);
-+		int ret;
-+
-+		if (native_name != NULL) {
-+			if (tc_fruit_owned_native_xattr(native_name)) {
-+				TALLOC_FREE(native_name);
-+				errno = ENOTSUP;
-+				return -1;
-+			}
-+			ret = tc_native_apple_stream_set(
-+				fsp, native_name, value, size, flags);
-+			TALLOC_FREE(native_name);
-+			return ret;
-+		}
-+		if (strcmp(name, TC_RESOURCEFORK_XATTR) == 0) {
-+			errno = ENOTSUP;
-+			return -1;
-+		}
-+		return tc_airport_fsetxattr(
-+			fsp_get_pathref_fd(fsp), name, value, size, flags);
++		return tc_xattr_tdb_native_set(fsp, name, value, size, flags);
 +	}
  
  	if (config->ignore_user_xattr && is_user_xattr(name)) {
  		return SMB_VFS_NEXT_FSETXATTR(
-@@ -277,8 +572,7 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
- 
- 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
- 
--	ret = xattr_tdb_setattr(config->db, &id, name, value, size, flags);
--	return ret;
-+	return xattr_tdb_setattr(config->db, &id, name, value, size, flags);
- 
- }
- 
-@@ -291,22 +585,29 @@ static ssize_t xattr_tdb_flistxattr(struct vfs_handle_struct *handle,
- 	struct file_id id;
- 	ssize_t backend_size;
- 	ssize_t ret;
-+	TALLOC_CTX *frame = NULL;
- 
+@@ -295,6 +335,9 @@ static ssize_t xattr_tdb_flistxattr(struct vfs_handle_struct *handle,
  	if (!xattr_tdb_init(handle, &config)) {
  		return -1;
  	}
 +	if (config->native_hfs) {
-+		return tc_native_list_with_apple_streams(fsp, list, size);
++		return tc_xattr_tdb_native_list(fsp, list, size);
 +	}
  
  	if (SMB_VFS_NEXT_FSTAT(handle, fsp, &sbuf) == -1) {
  		return -1;
- 	}
- 
- 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
--
-+	frame = talloc_stackframe();
- 	ret = xattr_tdb_listattr(config->db, &id, list, size);
- 	if (ret == -1) {
-+		TALLOC_FREE(frame);
- 		return -1;
- 	}
--	if (ret == size) {
-+
-+	TALLOC_FREE(frame);
-+	if (ret == (ssize_t)size) {
- 		return ret;
- 	}
- 	if (!config->ignore_user_xattr) {
-@@ -333,6 +634,28 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
+@@ -333,6 +376,9 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
  	if (!xattr_tdb_init(handle, &config)) {
  		return -1;
  	}
 +	if (config->native_hfs) {
-+		char *native_name = tc_apple_stream_native_name(
-+			talloc_tos(), name);
-+		int ret;
-+
-+		if (native_name != NULL) {
-+			if (tc_fruit_owned_native_xattr(native_name)) {
-+				TALLOC_FREE(native_name);
-+				errno = ENOATTR;
-+				return -1;
-+			}
-+			ret = tc_airport_fremovexattr(
-+				fsp_get_pathref_fd(fsp), native_name);
-+			TALLOC_FREE(native_name);
-+			return ret;
-+		}
-+		if (strcmp(name, TC_RESOURCEFORK_XATTR) == 0) {
-+			errno = ENOTSUP;
-+			return -1;
-+		}
-+		return tc_airport_fremovexattr(fsp_get_pathref_fd(fsp), name);
++		return tc_xattr_tdb_native_remove(fsp, name);
 +	}
  
  	if (config->ignore_user_xattr && is_user_xattr(name)) {
  		return SMB_VFS_NEXT_FREMOVEXATTR(handle, fsp, name);
-@@ -343,7 +666,6 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
- 	}
- 
- 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
--
- 	return xattr_tdb_removeattr(config->db, &id, name);
- }
- 
-@@ -383,6 +705,19 @@ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
+@@ -383,6 +429,18 @@ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
  		goto error;
  	}
  
++	/* Native HFS shares keep xattrs in the filesystem, not a database. */
 +	config->native_hfs = tc_airport_path_is_hfs(
 +		handle->conn->connectpath);
-+	config->ignore_user_xattr = lp_parm_bool(
-+		SNUM(handle->conn), "xattr_tdb", "ignore_user_xattr", false);
 +	if (config->native_hfs) {
 +		SMB_VFS_HANDLE_SET_DATA(handle, config, config_destructor,
 +					struct xattr_tdb_config, return false);
@@ -464,17 +121,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	def_dbname = state_path(talloc_tos(), "xattr.tdb");
  	if (def_dbname == NULL) {
  		errno = ENOSYS;
-@@ -412,9 +747,6 @@ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
- 	}
- 	TALLOC_FREE(def_dbname);
- 
--	config->ignore_user_xattr = lp_parm_bool(
--		SNUM(handle->conn), "xattr_tdb", "ignore_user_xattr", false);
--
- 	SMB_VFS_HANDLE_SET_DATA(handle, config, config_destructor,
- 				struct xattr_tdb_config, return false);
- 
-@@ -443,6 +775,9 @@ static int xattr_tdb_openat(struct vfs_handle_struct *handle,
+@@ -443,6 +501,9 @@ static int xattr_tdb_openat(struct vfs_handle_struct *handle,
  	if (!xattr_tdb_init(handle, &config)) {
  		return -1;
  	}
@@ -484,7 +131,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  
  	fd = SMB_VFS_NEXT_OPENAT(handle,
  				 dirfsp,
-@@ -493,6 +828,9 @@ static int xattr_tdb_mkdirat(vfs_handle_struct *handle,
+@@ -493,6 +554,9 @@ static int xattr_tdb_mkdirat(vfs_handle_struct *handle,
  	if (!xattr_tdb_init(handle, &config)) {
  		return -1;
  	}
@@ -494,7 +141,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  
  	ret = SMB_VFS_NEXT_MKDIRAT(handle,
  				dirfsp,
-@@ -539,6 +877,9 @@ static int xattr_tdb_unlinkat(vfs_handle_struct *handle,
+@@ -539,6 +603,9 @@ static int xattr_tdb_unlinkat(vfs_handle_struct *handle,
  	if (!xattr_tdb_init(handle, &config)) {
  		return -1;
  	}

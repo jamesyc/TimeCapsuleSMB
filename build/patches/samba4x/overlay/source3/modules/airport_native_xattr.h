@@ -21,6 +21,10 @@
 #define TC_AIRPORT_SYS_LLISTXATTR 382
 #define TC_AIRPORT_SYS_LREMOVEXATTR 385
 
+/* Apple's names for the two attributes fruit owns. */
+#define TC_FINDERINFO_XATTR "com.apple.FinderInfo"
+#define TC_RESOURCEFORK_XATTR "com.apple.ResourceFork"
+
 #ifndef TC_AIRPORT_XATTR_SYSCALL
 #define TC_AIRPORT_XATTR_SYSCALL syscall
 #endif

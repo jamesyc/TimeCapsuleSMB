@@ -1,0 +1,200 @@
+diff --git a/source3/modules/util_reparse.c b/source3/modules/util_reparse.c
+--- a/source3/modules/util_reparse.c
++++ b/source3/modules/util_reparse.c
+@@ -365,6 +365,11 @@ NTSTATUS fsctl_set_reparse_point(struct files_struct *fsp,
+ 		  reparse_tag,
+ 		  reparse_data_length);
+ 
++	status = tc_native_links_check_set(fsp, reparse_tag, in_data, in_len);
++	if (!NT_STATUS_IS_OK(status)) {
++		return status;
++	}
++
+ 	status = fsctl_get_reparse_tag(fsp, &existing_tag);
+ 	if (NT_STATUS_IS_OK(status) && (existing_tag != reparse_tag)) {
+ 		DBG_DEBUG("Can't overwrite tag %" PRIX32 " with tag %" PRIX32
+diff --git a/source3/smbd/close.c b/source3/smbd/close.c
+--- a/source3/smbd/close.c
++++ b/source3/smbd/close.c
+@@ -355,6 +355,8 @@ struct close_share_mode_lock_state {
+ 	const struct security_token *del_nt_token;
+ 	bool reset_delete_on_close;
+ 	share_mode_entry_prepare_unlock_fn_t cleanup_fn;
++	struct tc_xsym_candidate *tc_xsym;
++	bool tc_convert;
+ };
+ 
+ static void close_share_mode_lock_prepare(struct share_mode_lock *lck,
+@@ -424,6 +426,19 @@ static void close_share_mode_lock_prepare(struct share_mode_lock *lck,
+ 		state->delete_object = false;
+ 	}
+ 
++	if (!state->delete_object && state->tc_xsym != NULL &&
++	    tc_native_links_sole_open(lck, fsp)) {
++		/*
++		 * This handle created an XSym file or symlink placeholder and
++		 * is its only open: replace it with a native link while the
++		 * lock is held, as delete on close does. The entry goes on
++		 * unlock (close_share_mode_lock_cleanup).
++		 */
++		state->tc_convert = true;
++		*keep_locked = true;
++		return;
++	}
++
+ 	if (!state->delete_object) {
+ 		ok = del_share_mode(lck, fsp);
+ 		if (!ok) {
+@@ -475,7 +490,8 @@ static void close_share_mode_lock_cleanup(struct share_mode_lock *lck,
+ ****************************************************************************/
+ 
+ static NTSTATUS close_remove_share_mode(files_struct *fsp,
+-					enum file_close_type close_type)
++					enum file_close_type close_type,
++					struct tc_xsym_candidate *tc_xsym)
+ {
+ 	connection_struct *conn = fsp->conn;
+ 	struct close_share_mode_lock_state lck_state = {};
+@@ -498,6 +514,7 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
+ 		.fsp			= fsp,
+ 		.object_type		= "file",
+ 		.close_type		= close_type,
++		.tc_xsym		= tc_xsym,
+ 	};
+ 
+ 	status = share_mode_entry_prepare_lock_del(&lck_state.prepare_state,
+@@ -526,6 +543,13 @@ static NTSTATUS close_remove_share_mode(files_struct *fsp,
+ 	 * reference to a file.
+ 	 */
+ 
++	if (lck_state.tc_convert) {
++		lck_state.cleanup_fn = close_share_mode_lock_cleanup;
++		tc_native_links_close_commit(fsp, tc_xsym);
++		status = NT_STATUS_OK;
++		goto done;
++	}
++
+ 	if (!lck_state.delete_object) {
+ 		status = NT_STATUS_OK;
+ 		goto done;
+@@ -920,6 +944,8 @@ static NTSTATUS close_normal_file(struct smb_request *req, files_struct *fsp,
+ 	NTSTATUS status = NT_STATUS_OK;
+ 	NTSTATUS tmp;
+ 	connection_struct *conn = fsp->conn;
++	struct tc_xsym_candidate tc_xsym;
++	bool tc_convert;
+ 	bool is_durable;
+ 
+ 	SMB_ASSERT(fsp->fsp_flags.is_fsa);
+@@ -953,12 +979,26 @@ static NTSTATUS close_normal_file(struct smb_request *req, files_struct *fsp,
+ 			     fsp_get_smb2_lease(fsp));
+ 	}
+ 
++	/*
++	 * A client that just wrote a Minshall+French XSym file (macOS without
++	 * reparse support, Linux mfsymlinks) or a symlink reparse placeholder
++	 * asked for a symlink. close_remove_share_mode() replaces it with a
++	 * native link if this is its only open.
++	 */
++	tc_convert = tc_native_links_close_prepare(talloc_tos(),
++						   fsp,
++						   close_type,
++						   &tc_xsym);
++
+ 	/* If this is an old DOS or FCB open and we have multiple opens on
+ 	   the same handle we only have one share mode. Ensure we only remove
+ 	   the share mode on the last close. */
+ 
+-	tmp = close_remove_share_mode(fsp, close_type);
++	tmp = close_remove_share_mode(fsp,
++				      close_type,
++				      tc_convert ? &tc_xsym : NULL);
+ 	status = ntstatus_keeperror(status, tmp);
++	TALLOC_FREE(tc_xsym.target);
+ 
+ 	/*
+ 	 * Ensure pending modtime is set before closing underlying fd.
+@@ -977,6 +1017,9 @@ static NTSTATUS close_normal_file(struct smb_request *req, files_struct *fsp,
+ 	tmp = fd_close(fsp);
+ 	status = ntstatus_keeperror(status, tmp);
+ 
++	/* Remove a file a native-link conversion took aside, now closed. */
++	tc_native_links_close_finish(fsp, &tc_xsym);
++
+ 	/* check for magic scripts */
+ 	if (close_type == NORMAL_CLOSE) {
+ 		tmp = check_magic(fsp);
+diff --git a/source3/smbd/smb2_read.c b/source3/smbd/smb2_read.c
+--- a/source3/smbd/smb2_read.c
++++ b/source3/smbd/smb2_read.c
+@@ -544,6 +544,28 @@ static struct tevent_req *smbd_smb2_read_send(TALLOC_CTX *mem_ctx,
+ 		return req;
+ 	}
+ 
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode) &&
++	    tc_client_resolves_links(fsp->conn)) {
++		/*
++		 * A Mac reading the data of a native link still has it
++		 * cached as the XSym file it created; see tc_native_links.c.
++		 */
++		if (!(fsp->access_mask & FILE_READ_DATA)) {
++			tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
++			return tevent_req_post(req, ev);
++		}
++		status = tc_native_links_read_xsym(fsp,
++						   state,
++						   &state->out_data,
++						   (off_t)in_offset,
++						   (size_t)in_length);
++		if (tevent_req_nterror(req, status)) {
++			return tevent_req_post(req, ev);
++		}
++		tevent_req_done(req);
++		return tevent_req_post(req, ev);
++	}
++
+ 	if (!CHECK_READ_SMB2(fsp)) {
+ 		tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
+ 		return tevent_req_post(req, ev);
+diff --git a/source3/smbd/smb2_trans2.c b/source3/smbd/smb2_trans2.c
+--- a/source3/smbd/smb2_trans2.c
++++ b/source3/smbd/smb2_trans2.c
+@@ -2117,7 +2117,8 @@ NTSTATUS smbd_do_qfsinfo(struct smbXsrv_connection *xconn,
+ 
+ 			SIVAL(pdata,0,FILE_CASE_PRESERVED_NAMES|FILE_CASE_SENSITIVE_SEARCH|
+ 				FILE_SUPPORTS_OBJECT_IDS|FILE_UNICODE_ON_DISK|
+-				conn->fs_capabilities); /* FS ATTRIBUTES */
++				conn->fs_capabilities|
++				tc_native_links_fs_capabilities(conn)); /* FS ATTRIBUTES */
+ 
+ 			SIVAL(pdata,4,255); /* Max filename component length */
+ 			/* NOTE! the fstype must *not* be null terminated or win98 won't recognise it
+diff --git a/source3/smbd/smb2_write.c b/source3/smbd/smb2_write.c
+--- a/source3/smbd/smb2_write.c
++++ b/source3/smbd/smb2_write.c
+@@ -346,6 +346,25 @@ static struct tevent_req *smbd_smb2_write_send(TALLOC_CTX *mem_ctx,
+ 		return tevent_req_post(req, ev);
+ 	}
+ 
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode) &&
++	    tc_client_resolves_links(fsp->conn)) {
++		/*
++		 * A Mac that just created a link may restate the XSym file it
++		 * wrote; the name is a native link by now. See
++		 * tc_native_links.c.
++		 */
++		status = tc_native_links_write_xsym(fsp,
++						    in_data.data,
++						    in_data.length,
++						    in_offset);
++		if (tevent_req_nterror(req, status)) {
++			return tevent_req_post(req, ev);
++		}
++		state->out_count = in_data.length;
++		tevent_req_done(req);
++		return tevent_req_post(req, ev);
++	}
++
+ 	if (state->in_offset == VFS_PWRITE_APPEND_OFFSET &&
+ 	    !fsp->fsp_flags.posix_append)
+ 	{

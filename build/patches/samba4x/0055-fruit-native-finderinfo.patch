@@ -1,0 +1,218 @@
+diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
+--- a/source3/modules/vfs_fruit.c
++++ b/source3/modules/vfs_fruit.c
+@@ -38,6 +38,7 @@
+ #include "lib/util_macstreams.h"
+ #include "source3/smbd/dir.h"
+ #include "lib/util/smb_strtox.h"
++#include "airport_native_xattr.h"
+ 
+ /*
+  * Enhanced OS X and Netatalk compatibility
+@@ -114,7 +115,12 @@ static struct global_fruit_config {
+ enum apple_fork {APPLE_FORK_DATA, APPLE_FORK_RSRC};
+ 
+ enum fruit_rsrc {FRUIT_RSRC_STREAM, FRUIT_RSRC_ADFILE, FRUIT_RSRC_XATTR};
+-enum fruit_meta {FRUIT_META_STREAM, FRUIT_META_NETATALK};
++enum fruit_meta {
++	FRUIT_META_STREAM,
++	FRUIT_META_NETATALK,
++	/* Internal effective backend; deliberately not accepted by smb.conf. */
++	FRUIT_META_NATIVE_HFS
++};
+ enum fruit_locking {FRUIT_LOCKING_NETATALK, FRUIT_LOCKING_NONE};
+ enum fruit_encoding {FRUIT_ENC_NATIVE, FRUIT_ENC_PRIVATE};
+ 
+@@ -140,6 +146,7 @@ struct fruit_config_data {
+ 	bool validate_afpinfo;
+ 	bool veto_localized;
+ 	bool ignore_zero_aces;
++	bool native_hfs;
+ 
+ 	/*
+ 	 * Additional options, all enabled by default,
+@@ -394,6 +401,14 @@ static int init_fruit_config(vfs_handle_struct *handle)
+ 		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME,
+ 		"veto_localized", false);
+ 
++	config->native_hfs = tc_airport_path_is_hfs(handle->conn->connectpath);
++	if (config->native_hfs) {
++		/* Preserve the public settings for non-HFS filesystems. On an HFS
++		 * share the AFP_AfpInfo stream uses the same native FinderInfo AFP
++		 * serves, without adding a public "hfs" configuration value. */
++		config->meta = FRUIT_META_NATIVE_HFS;
++	}
++
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config,
+ 				NULL, struct fruit_config_data,
+ 				return -1);
+@@ -912,6 +927,8 @@ static NTSTATUS check_aapl(vfs_handle_struct *handle,
+ 	return status;
+ }
+ 
++#include "tc_fruit_native_finderinfo.c"
++
+ static bool readdir_attr_meta_finderi_stream(
+ 	struct vfs_handle_struct *handle,
+ 	const struct smb_filename *smb_fname,
+@@ -1021,6 +1038,24 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data,
+ 				return false);
++	if (config->native_hfs) {
++		uint8_t native_finderinfo[AFP_FinderSize];
++		int native_state = tc_native_finderinfo_read_at(
++			handle,
++			handle->conn->cwd_fsp,
++			smb_fname,
++			native_finderinfo);
++
++		if (native_state != 1 ||
++		    all_zero(native_finderinfo, AFP_FinderSize))
++		{
++			return true;
++		}
++		memcpy(ai.afpi_FinderInfo,
++		       native_finderinfo,
++		       AFP_FinderSize);
++		goto have_metadata;
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_NETATALK:
+@@ -1043,6 +1078,7 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
+ 		return true;
+ 	}
+ 
++have_metadata:
+ 	if (S_ISREG(smb_fname->st.st_ex_mode)) {
+ 		/* finder_type */
+ 		memcpy(&attr_data->attr_data.aapl.finder_info[0],
+@@ -1518,6 +1554,10 @@ static int fruit_open_meta(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		fd = fruit_open_meta_native(handle, fsp, flags, mode);
++		goto done;
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -1535,6 +1575,7 @@ static int fruit_open_meta(vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++done:
+ 	DBG_DEBUG("path [%s] fd [%d]\n", smb_fname_str_dbg(smb_fname), fd);
+ 
+ 	return fd;
+@@ -1816,6 +1857,11 @@ static int fruit_close_meta(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		ret = vfs_fake_fd_close(fsp_get_pathref_fd(fsp));
++		fsp_set_fd(fsp, -1);
++		return ret;
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -2034,6 +2080,11 @@ static int fruit_unlink_meta(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		int native_state = tc_native_finderinfo_remove_at(
++			handle, dirfsp, smb_fname);
++		return native_state < 0 ? -1 : 0;
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -2438,6 +2489,9 @@ static ssize_t fruit_pread_meta(vfs_handle_struct *handle,
+ 		DBG_ERR("Failed to fetch fsp extension\n");
+ 		return -1;
+ 	}
++	if (fio->config->native_hfs) {
++		return fruit_pread_meta_native(fsp, data, n);
++	}
+ 
+ 	/* Yes, macOS always reads from offset 0 */
+ 	offset = 0;
+@@ -2856,7 +2910,7 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+ {
+ 	struct fio *fio = fruit_get_complete_fio(handle, fsp);
+ 	ssize_t nwritten;
+-	uint8_t buf[AFP_INFO_SIZE];
++	uint8_t buf[AFP_INFO_SIZE] = {0};
+ 	size_t to_write;
+ 	size_t to_copy;
+ 	int cmp;
+@@ -2903,6 +2957,14 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+ 	if (to_write != AFP_INFO_SIZE) {
+ 		to_write = AFP_INFO_SIZE;
+ 	}
++	if (fio->config->native_hfs) {
++		if (tc_native_finderinfo_write_fsp(
++				fsp->base_fsp, &buf[AFP_OFF_FinderInfo]) != 0)
++		{
++			return -1;
++		}
++		return n;
++	}
+ 
+ 	switch (fio->config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -3264,6 +3326,10 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 	}
+ 
+ 	ino = hash_inode(sbuf, _smb_relname->stream_name);
++	if (config->native_hfs) {
++		return fruit_fstatat_meta_native(
++			handle, dirfsp, _smb_relname, sbuf, ino);
++	}
+ 
+ 	if (config->meta == FRUIT_META_STREAM) {
+ 		ret = SMB_VFS_NEXT_FSTATAT(
+@@ -3648,6 +3714,9 @@ static int fruit_fstat_meta(vfs_handle_struct *handle,
+ 	int ret;
+ 
+ 	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
++	if (fio->config->native_hfs) {
++		return fruit_fstat_meta_netatalk(handle, fsp, sbuf);
++	}
+ 
+ 	switch (fio->config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -3932,6 +4001,10 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
+ 				return NT_STATUS_INTERNAL_ERROR);
++	if (config->native_hfs) {
++		return fruit_streaminfo_meta_native(
++			handle, smb_fname, mem_ctx, pnum_streams, pstreams);
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_NETATALK:
+@@ -4375,7 +4448,8 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
+ 				return NT_STATUS_UNSUCCESSFUL);
+ 
+-	if (is_apple_stream(smb_fname->stream_name) &&
++	if (!config->native_hfs &&
++	    is_apple_stream(smb_fname->stream_name) &&
+ 	    !internal_open &&
+ 	    config->convert_adouble)
+ 	{
+@@ -4494,7 +4568,7 @@ static NTSTATUS fruit_freaddir_attr(struct vfs_handle_struct *handle,
+ 
+ 	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
+ 
+-	if (config->convert_adouble) {
++	if (!config->native_hfs && config->convert_adouble) {
+ 		if (config->wipe_intentionally_left_blank_rfork) {
+ 			conv_flags |= AD_CONV_WIPE_BLANK;
+ 		}

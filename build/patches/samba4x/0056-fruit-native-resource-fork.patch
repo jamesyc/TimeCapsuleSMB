@@ -1,0 +1,152 @@
+diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
+--- a/source3/modules/vfs_fruit.c
++++ b/source3/modules/vfs_fruit.c
+@@ -114,7 +114,13 @@ static struct global_fruit_config {
+ 
+ enum apple_fork {APPLE_FORK_DATA, APPLE_FORK_RSRC};
+ 
+-enum fruit_rsrc {FRUIT_RSRC_STREAM, FRUIT_RSRC_ADFILE, FRUIT_RSRC_XATTR};
++enum fruit_rsrc {
++	FRUIT_RSRC_STREAM,
++	FRUIT_RSRC_ADFILE,
++	FRUIT_RSRC_XATTR,
++	/* Internal effective backend; deliberately not accepted by smb.conf. */
++	FRUIT_RSRC_NATIVE_HFS
++};
+ enum fruit_meta {
+ 	FRUIT_META_STREAM,
+ 	FRUIT_META_NETATALK,
+@@ -404,9 +410,10 @@ static int init_fruit_config(vfs_handle_struct *handle)
+ 	config->native_hfs = tc_airport_path_is_hfs(handle->conn->connectpath);
+ 	if (config->native_hfs) {
+ 		/* Preserve the public settings for non-HFS filesystems. On an HFS
+-		 * share the AFP_AfpInfo stream uses the same native FinderInfo AFP
++		 * share both special Apple streams use the same native objects AFP
+ 		 * serves, without adding a public "hfs" configuration value. */
+ 		config->meta = FRUIT_META_NATIVE_HFS;
++		config->rsrc = FRUIT_RSRC_NATIVE_HFS;
+ 	}
+ 
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config,
+@@ -1155,6 +1162,8 @@ static uint64_t readdir_attr_rfork_size_stream(
+ 	return rfork_size;
+ }
+ 
++#include "tc_fruit_native_rsrc.c"
++
+ static uint64_t readdir_attr_rfork_size(struct vfs_handle_struct *handle,
+ 					const struct smb_filename *smb_fname)
+ {
+@@ -1164,6 +1173,9 @@ static uint64_t readdir_attr_rfork_size(struct vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data,
+ 				return 0);
++	if (config->native_hfs) {
++		return readdir_attr_rfork_size_native(handle, smb_fname);
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_ADFILE:
+@@ -1737,6 +1749,10 @@ static int fruit_open_rsrc(vfs_handle_struct *handle,
+ 	fio->fsp = fsp;
+ 	fio->type = ADOUBLE_RSRC;
+ 	fio->config = config;
++	if (config->native_hfs) {
++		fd = fruit_open_rsrc_native(handle, fsp, flags, mode);
++		goto done;
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM: {
+@@ -1767,6 +1783,7 @@ static int fruit_open_rsrc(vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++done:
+ 	DBG_DEBUG("Path [%s] fd [%d]\n", smb_fname_str_dbg(smb_fname), fd);
+ 
+ 	if (fd == -1) {
+@@ -1900,6 +1917,9 @@ static int fruit_close_rsrc(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		return SMB_VFS_NEXT_CLOSE(handle, fsp);
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -2231,6 +2251,9 @@ static int fruit_unlink_rsrc(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		return 0;
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -2588,6 +2611,9 @@ static ssize_t fruit_pread_rsrc(vfs_handle_struct *handle,
+ 		errno = EINVAL;
+ 		return -1;
+ 	}
++	if (fio->config->native_hfs) {
++		return SMB_VFS_NEXT_PREAD(handle, fsp, data, n, offset);
++	}
+ 
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -3068,6 +3094,9 @@ static ssize_t fruit_pwrite_rsrc(vfs_handle_struct *handle,
+ 		DBG_ERR("Failed to fetch fsp extension\n");
+ 		return -1;
+ 	}
++	if (fio->config->native_hfs) {
++		return SMB_VFS_NEXT_PWRITE(handle, fsp, data, n, offset);
++	}
+ 
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -3434,6 +3463,11 @@ static int fruit_fstatat_rsrc(struct vfs_handle_struct *handle,
+ 	int ret;
+ 	bool ok;
+ 
++	if (config->native_hfs) {
++		return fruit_fstatat_rsrc_native(
++			handle, dirfsp, smb_relname, sbuf, flags);
++	}
++
+ 	if (config->rsrc == FRUIT_RSRC_STREAM) {
+ 		ret = SMB_VFS_NEXT_FSTATAT(
+ 			handle, dirfsp, smb_relname, sbuf, flags);
+@@ -3790,6 +3824,10 @@ static int fruit_fstat_rsrc(vfs_handle_struct *handle, files_struct *fsp,
+ {
+ 	int ret;
+ 
++	if (fio->config->native_hfs) {
++		return fruit_fstat_rsrc_native(handle, fsp, sbuf);
++	}
++
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+ 		ret = fruit_fstat_rsrc_stream(handle, fsp, sbuf);
+@@ -4123,6 +4161,10 @@ static NTSTATUS fruit_streaminfo_rsrc(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
+ 				return NT_STATUS_INTERNAL_ERROR);
++	if (config->native_hfs) {
++		return fruit_streaminfo_rsrc_native(
++			handle, smb_fname, mem_ctx, pnum_streams, pstreams);
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -4349,6 +4391,9 @@ static int fruit_ftruncate_rsrc(struct vfs_handle_struct *handle,
+ 		DBG_ERR("Failed to fetch fsp extension\n");
+ 		return -1;
+ 	}
++	if (fio->config->native_hfs) {
++		return SMB_VFS_NEXT_FTRUNCATE(handle, fsp, offset);
++	}
+ 
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_XATTR:

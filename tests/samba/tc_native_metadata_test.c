@@ -24,7 +24,7 @@ struct test_store {
 };
 
 static struct test_store native_store;
-/* Attributes of a symlink itself, reached by path (patch 0045). */
+/* Attributes of a symlink itself, reached by path (patch 0059). */
 static struct test_store link_store;
 static const char *link_store_path = "/share/link";
 static bool link_list_duplicates;
@@ -1100,7 +1100,7 @@ static void test_finderinfo(struct vfs_handle_struct *handle,
 	handle->data = &config;
 	init_stream_file(mem_ctx, conn, base_fsp, &stream_fsp, &stream_name);
 	reset_stores();
-	seed_store(&native_store, TC_FINDERINFO_NATIVE_XATTR,
+	seed_store(&native_store, TC_FINDERINFO_XATTR,
 		   original, sizeof(original));
 	fd = fruit_open_meta(handle, NULL, &stream_name, &stream_fsp, O_RDWR, 0600);
 	CHECK(fd != -1);
@@ -1172,7 +1172,7 @@ static void test_finderinfo_views(struct vfs_handle_struct *handle,
 	finderinfo[24] = 0x20;
 	handle->data = &config;
 	reset_stores();
-	seed_store(&native_store, TC_FINDERINFO_NATIVE_XATTR,
+	seed_store(&native_store, TC_FINDERINFO_XATTR,
 		   finderinfo, sizeof(finderinfo));
 	CHECK(readdir_attr_meta_finderi(handle, smb_fname, &attr));
 	CHECK(attr.attr_data.aapl.finder_info[0] == 'T');

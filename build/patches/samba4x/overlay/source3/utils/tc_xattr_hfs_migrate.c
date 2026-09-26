@@ -16,7 +16,6 @@
 #define TC_STREAM_SUFFIX ":$DATA"
 #define TC_AFPINFO_XATTR TC_STREAM_PREFIX "AFP_AfpInfo" TC_STREAM_SUFFIX
 #define TC_NETATALK_META_XATTR "user.org.netatalk.Metadata"
-#define TC_FINDERINFO_XATTR "com.apple.FinderInfo"
 #define TC_AD_MAGIC 0x00051607
 #define TC_AD_VERSION 0x00020000
 #define TC_AD_HEADER_SIZE 26
@@ -1144,7 +1143,7 @@ static int tc_migrate_appledouble_xattrs(
 		name = (const char *)ad->header + entry_offset +
 			TC_AD_XATTR_ENTRY_SIZE;
 		if (strcmp(name, TC_FINDERINFO_XATTR) != 0 &&
-		    strcmp(name, "com.apple.ResourceFork") != 0)
+		    strcmp(name, TC_RESOURCEFORK_XATTR) != 0)
 		{
 			if (value_length > TC_HFS_XATTR_SIZE) {
 				fprintf(stderr,

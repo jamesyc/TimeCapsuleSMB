@@ -192,9 +192,14 @@
 # (E2BIG) instead of splitting it across extents: AFP must see the whole
 # attribute. Windows streams keep their extent layout.
 0054-streams-xattr-native-apple-streams.patch|whole native attributes for Apple streams
-# fruit reads and writes FinderInfo and resource forks in their native HFS
-# attributes (the resource fork through ..namedfork/rsrc).
-0055-fruit-native-hfs.patch|native HFS FinderInfo and resource forks in fruit
+# fruit serves the AFP_AfpInfo stream from the native com.apple.FinderInfo
+# attribute (overlay tc_fruit_native_finderinfo.c); an all-zero value counts
+# as absent, as it does for AFP.
+0055-fruit-native-finderinfo.patch|native HFS FinderInfo in fruit
+# fruit serves the AFP_Resource stream from the file's native resource fork,
+# opened as <file>/..namedfork/rsrc like AFP does (overlay
+# tc_fruit_native_rsrc.c).
+0056-fruit-native-resource-fork.patch|native HFS resource forks in fruit
 # The static helper in overlay tc_xattr_hfs_migrate.c moves legacy
 # TDB/AppleDouble metadata during deploy only; it merges several historical
 # databases without changing source mtimes, keeps anything it cannot prove
@@ -212,21 +217,30 @@
 # Native symlinks.
 # Apple's AFP server and SSH store real POSIX symlinks on these disks, while
 # macOS SMB clients create 1067-byte Minshall+French "XSym" files. Keep the
-# disk native (tc:native symlinks, set by the unified service's smb.conf):
-# list native links to every SMB client as symlink reparse points, treat a
+# disk native (tc:native symlinks, set by the unified service's smb.conf).
+# Existing XSym files stay as they are; there is no migration.
+#
+# List native links to every SMB client as symlink reparse points, and treat a
 # terminal link as the object for macOS (it resolves links itself and renames
-# without FILE_OPEN_REPARSE_POINT), keep a link's streams/xattrs and times on
-# the link itself (never its target), and map catia's private-use characters
-# for link reads and creates. When the only handle to a file it created closes,
-# replace an XSym file, or a placeholder carrying a symlink reparse payload
-# (Windows, Linux symlink=native/nfs/wsl), with a native link under the share
-# mode lock, never replacing another object, and carry its metadata over
-# (never Finder info or resource forks). The original is removed only after its
-# fd closes, and each conversion ends with sync(): without it the devices' HFS
-# journal panicked within a few test cycles ("jnl: start_tr: active_tr is NULL",
-# a kernel bug that then fires in whichever process ends the next transaction).
+# without FILE_OPEN_REPARSE_POINT).
+0045-smbd-native-links-reparse-points.patch|native POSIX symlinks as reparse points
+# Map catia's private-use characters in a link's own name when links are read
+# and created.
+0058-catia-native-link-names.patch|catia name mapping for link reads and creates
+# Keep a link's streams, xattrs and times on the link itself, never its
+# target: path-based fallbacks never follow a link, and the native HFS
+# backend reaches a link handle, which has no descriptor, by path.
+0059-smbd-native-links-own-metadata.patch|a link keeps its own streams, xattrs and times
+# When the only handle to a file it created closes, replace an XSym file, or a
+# placeholder carrying a symlink reparse payload (Windows, Linux
+# symlink=native/nfs/wsl), with a native link under the share mode lock, never
+# replacing another object, and carry its metadata over (never Finder info or
+# resource forks). The original is removed only after its fd closes, and each
+# conversion ends with sync(): without it the devices' HFS journal panicked
+# within a few test cycles ("jnl: start_tr: active_tr is NULL", a kernel bug
+# that then fires in whichever process ends the next transaction). The Mac
+# that created a link keeps reading and writing the XSym bytes it cached.
 # Other reparse tags (FIFOs, sockets, devices, junctions) are refused, and so
 # is mklink /D. Only non-Mac connections see FILE_SUPPORTS_REPARSE_POINTS, so
-# macOS keeps creating XSym. Existing XSym files stay as they are; there is no
-# migration.
-0045-smbd-native-links-reparse-points.patch|native POSIX symlinks as reparse points; new SMB links become native
+# macOS keeps creating XSym.
+0060-smbd-native-links-convert-on-close.patch|new SMB links become native links when their creator closes them

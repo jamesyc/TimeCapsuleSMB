@@ -101,7 +101,7 @@ def test_unavailable_volume_not_projected_and_usb_payload_remains_a_share(render
     assert conf.sections() == ["global", "Data"]
     assert conf["Data"]["path"] == "/Volumes/dk3"
     assert conf["Data"]["veto files"] == "/.samba4/.tc-xsym.*/"
-    # Patch 0045 moves a converted file aside under .tc-xsym.*; a leftover must
+    # Patch 0060 moves a converted file aside under .tc-xsym.*; a leftover must
     # not keep its folder from being deleted over SMB.
     assert conf["Data"]["delete veto files"] == "yes"
     assert "tc:volume dk2" not in conf["global"]

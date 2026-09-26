@@ -11,7 +11,11 @@ into 0023, and 0026 into 0003. 0020 was dropped: build/_samba4x.sh already
 clears configure's getifaddrs results. 0032's pthreadpool driver moved to
 tests/samba/tc_pthreadpool_sync_test.c. 0006, 0009, 0010, 0011, 0012 and 0044
 were dropped and 0022 was replaced on 2026-09-26 (see "No-pthread workaround
-review" below).
+review" below). Later that day every patch was renamed by the Samba component
+it changes and split where it held more than one change: 0001 into 0001 and
+0049, 0003 into 0003 and 0050, 0013 into 0051 and 0013, 0031 into 0052, 0053
+and 0031, 0038 into 0038 and 0054-0057, and 0045 into 0045 and 0058-0060 (see
+"Series restructuring" below).
 
 | Deliberately broken behavior | Case that rejects it |
 | --- | --- |

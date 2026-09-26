@@ -1,4 +1,4 @@
-/* Native symlinks (patch 0045): declarations for smbd/tc_native_links.c. */
+/* Native symlinks (patches 0045, 0058-0060): declarations for smbd/tc_native_links.c. */
 
 #ifndef _SMBD_TC_NATIVE_LINKS_H_
 #define _SMBD_TC_NATIVE_LINKS_H_

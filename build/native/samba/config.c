@@ -125,7 +125,7 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
     for (i = 0; i < shares->count; i++)
         fprintf(file, "    tc:volume %s = %s|%s\n", shares->values[i].device,
                 shares->values[i].uuid, shares->values[i].path);
-    /* tc:native symlinks (Samba patch 0045): AFP and SSH store real POSIX
+    /* tc:native symlinks (Samba patches 0045, 0058-0060): AFP and SSH store real POSIX
      * symlinks on these disks. Present them to SMB clients as symlink reparse
      * points and turn an XSym file or reparse placeholder a client just
      * created into a native link. The conversion moves the original aside as

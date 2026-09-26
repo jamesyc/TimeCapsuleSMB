@@ -1,4 +1,4 @@
-"""Native-symlink device suite (Samba patch 0045), run from a Mac against a deployed device.
+"""Native-symlink device suite (Samba patches 0045, 0058-0060), run from a Mac against a deployed device.
 
     .venv/bin/python -m tests.samba.links_device --env .env [--afp] [--no-windows]
 

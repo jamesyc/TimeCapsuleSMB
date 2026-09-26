@@ -1,4 +1,4 @@
-/* Execute the real vfs_catia link hooks (Samba patch 0045) against a recording NEXT module.
+/* Execute the real vfs_catia link hooks (Samba patches 0058 and 0059) against a recording NEXT module.
  * macOS sends ':' '*' '?' ... as private-use code points that vfs_fruit tells catia to map
  * back to the real characters on disk; symlink reads, creates and the xattr calls a
  * descriptor-less link makes by path must all see the name on disk. Link targets are mapped

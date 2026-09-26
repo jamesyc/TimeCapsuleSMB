@@ -1,0 +1,413 @@
+diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
+--- a/source3/modules/vfs_catia.c
++++ b/source3/modules/vfs_catia.c
+@@ -1047,6 +1047,33 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
+ 	*_num_streams = 0;
+ 	*_streams = NULL;
+ 
++	if (fsp_get_pathref_fd(fsp) == -1 &&
++	    S_ISLNK(smb_fname->st.st_ex_mode) &&
++	    tc_native_links_enabled(handle->conn))
++	{
++		/*
++		 * A Time Capsule native link opened as itself: re-resolving
++		 * it by name below would follow it and list its target's
++		 * streams. Translate this handle's name instead.
++		 */
++		struct catia_cache *cc = NULL;
++
++		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++		if (ret != 0) {
++			return map_nt_error_from_unix(errno);
++		}
++		status = SMB_VFS_NEXT_FSTREAMINFO(handle,
++						  fsp,
++						  mem_ctx,
++						  &num_streams,
++						  &streams);
++		CATIA_FETCH_FSP_POST_NEXT(&cc, fsp);
++		if (!NT_STATUS_IS_OK(status)) {
++			return status;
++		}
++		goto translate;
++	}
++
+ 	ret = catia_string_replace_allocate(handle->conn,
+ 					    smb_fname->base_name,
+ 					    &mapped_name,
+@@ -1080,6 +1107,8 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
+ 		return status;
+ 	}
+ 
++translate:
++
+ 	/*
+ 	 * Translate stream names just like the base names
+ 	 */
+@@ -1234,6 +1263,7 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+ 			       void *value,
+ 			       size_t size)
+ {
++	struct catia_cache *cc = NULL;
+ 	char *mapped_xattr_name = NULL;
+ 	ssize_t result;
+ 	int ret;
+@@ -1247,9 +1277,23 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++	/*
++	 * A native link opened as itself has no fd; the backend reaches it
++	 * by path, so it needs the mapped name as well (patch 0059). Handles
++	 * with an fd keep upstream behaviour.
++	 */
++	if (fsp_get_pathref_fd(fsp) == -1) {
++		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++		if (ret != 0) {
++			TALLOC_FREE(mapped_xattr_name);
++			return -1;
++		}
++	}
++
+ 	result = SMB_VFS_NEXT_FGETXATTR(handle, fsp, mapped_xattr_name,
+ 					value, size);
+ 
++	CATIA_FETCH_FSP_POST_NEXT(&cc, fsp);
+ 	TALLOC_FREE(mapped_xattr_name);
+ 
+ 	return result;
+@@ -1280,6 +1324,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+ 			      struct files_struct *fsp,
+ 			      const char *name)
+ {
++	struct catia_cache *cc = NULL;
+ 	char *mapped_name = NULL;
+ 	int ret;
+ 
+@@ -1292,8 +1337,17 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++	if (fsp_get_pathref_fd(fsp) == -1) {
++		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++		if (ret != 0) {
++			TALLOC_FREE(mapped_name);
++			return -1;
++		}
++	}
++
+ 	ret = SMB_VFS_NEXT_FREMOVEXATTR(handle, fsp, mapped_name);
+ 
++	CATIA_FETCH_FSP_POST_NEXT(&cc, fsp);
+ 	TALLOC_FREE(mapped_name);
+ 
+ 	return ret;
+@@ -1306,6 +1360,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+ 			   size_t size,
+ 			   int flags)
+ {
++	struct catia_cache *cc = NULL;
+ 	char *mapped_xattr_name = NULL;
+ 	int ret;
+ 
+@@ -1318,9 +1373,18 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++	if (fsp_get_pathref_fd(fsp) == -1) {
++		ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++		if (ret != 0) {
++			TALLOC_FREE(mapped_xattr_name);
++			return -1;
++		}
++	}
++
+ 	ret = SMB_VFS_NEXT_FSETXATTR(handle, fsp, mapped_xattr_name,
+ 				     value, size, flags);
+ 
++	CATIA_FETCH_FSP_POST_NEXT(&cc, fsp);
+ 	TALLOC_FREE(mapped_xattr_name);
+ 
+ 	return ret;
+diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
+--- a/source3/modules/vfs_default.c
++++ b/source3/modules/vfs_default.c
+@@ -2964,8 +2964,15 @@ static int vfswrap_fchmod(vfs_handle_struct *handle, files_struct *fsp, mode_t m
+ 	}
+ 
+ 	/*
+-	 * This is no longer a handle based call.
++	 * This is no longer a handle based call. A symlink pathref must not
++	 * follow the link (Time Capsule native links, patch 0059); a link's
++	 * own mode is not set.
+ 	 */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		errno = ENOTSUP;
++		END_PROFILE_X(syscall_fchmod);
++		return -1;
++	}
+ 	result = chmod(fsp->fsp_name->base_name, mode);
+ 
+ 	END_PROFILE_X(syscall_fchmod);
+@@ -2995,8 +3002,13 @@ static int vfswrap_fchown(vfs_handle_struct *handle, files_struct *fsp, uid_t ui
+ 	}
+ 
+ 	/*
+-	 * This is no longer a handle based call.
++	 * This is no longer a handle based call. Never follow a symlink.
+ 	 */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		result = lchown(fsp->fsp_name->base_name, uid, gid);
++		END_PROFILE_X(syscall_fchown);
++		return result;
++	}
+ 	result = chown(fsp->fsp_name->base_name, uid, gid);
+ 	END_PROFILE_X(syscall_fchown);
+ 	return result;
+@@ -3080,6 +3092,20 @@ static int vfswrap_fntimes(vfs_handle_struct *handle,
+ 		times = NULL;
+ 	}
+ 
++	if (fsp_get_pathref_fd(fsp) == -1 &&
++	    S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		/*
++		 * A symlink opened as itself (Time Capsule native links) has
++		 * no fd. Set the link's times; following it would change the
++		 * target's, or fail for a dangling link.
++		 */
++		result = utimensat(AT_FDCWD,
++				   fsp->fsp_name->base_name,
++				   times,
++				   AT_SYMLINK_NOFOLLOW);
++		goto out;
++	}
++
+ 	if (!fsp->fsp_flags.is_pathref) {
+ 		result = futimens(fsp_get_io_fd(fsp), times);
+ 		goto out;
+@@ -3546,8 +3572,13 @@ static int vfswrap_fchflags(vfs_handle_struct *handle,
+ 	}
+ 
+ 	/*
+-	 * This is no longer a handle based call.
++	 * This is no longer a handle based call. Never follow a symlink; a
++	 * link's own flags are not set.
+ 	 */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		errno = ENOTSUP;
++		return -1;
++	}
+ 	return chflags(fsp->fsp_name->base_name, flags);
+ #else
+ 	errno = ENOSYS;
+@@ -3792,8 +3823,14 @@ static ssize_t vfswrap_fgetxattr(struct vfs_handle_struct *handle,
+ 	}
+ 
+ 	/*
+-	 * This is no longer a handle based call.
++	 * This is no longer a handle based call. A symlink's own attributes
++	 * are served by the native HFS backend; never read the target's.
+ 	 */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		errno = ENOATTR;
++		res = -1;
++		goto out;
++	}
+ 	res = getxattr(fsp->fsp_name->base_name, name, value, size);
+ out:
+ 	END_PROFILE_X(syscall_fgetxattr);
+@@ -4132,6 +4169,11 @@ static ssize_t vfswrap_flistxattr(struct vfs_handle_struct *handle, struct files
+ 	/*
+ 	 * This is no longer a handle based call.
+ 	 */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		/* Never list a symlink target's attributes. */
++		res = 0;
++		goto out;
++	}
+ 	res = listxattr(fsp->fsp_name->base_name, list, size);
+ out:
+ 	END_PROFILE_X(syscall_flistxattr);
+@@ -4162,6 +4204,12 @@ static int vfswrap_fremovexattr(struct vfs_handle_struct *handle, struct files_s
+ 	/*
+ 	 * This is no longer a handle based call.
+ 	 */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		/* Never change a symlink target's attributes. */
++		errno = ENOTSUP;
++		res = -1;
++		goto out;
++	}
+ 	res = removexattr(fsp->fsp_name->base_name, name);
+ out:
+ 	END_PROFILE_X(syscall_fremovexattr);
+@@ -4196,6 +4244,12 @@ static int vfswrap_fsetxattr(struct vfs_handle_struct *handle, struct files_stru
+ 	/*
+ 	 * This is no longer a handle based call.
+ 	 */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		/* Never change a symlink target's attributes. */
++		errno = ENOTSUP;
++		res = -1;
++		goto out;
++	}
+ 	res = setxattr(fsp->fsp_name->base_name, name, value, size, flags);
+ out:
+ 	END_PROFILE_X(syscall_fsetxattr);
+diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
+--- a/source3/modules/vfs_streams_xattr.c
++++ b/source3/modules/vfs_streams_xattr.c
+@@ -676,9 +676,19 @@ static int streams_xattr_fstat(vfs_handle_struct *handle, files_struct *fsp,
+ 		return -1;
+ 	}
+ 
+-	ret = SMB_VFS_NEXT_FSTAT(handle, fsp->base_fsp, sbuf);
+-	if (ret == -1) {
+-		return -1;
++	if (fsp_get_pathref_fd(fsp->base_fsp) == -1 &&
++	    S_ISLNK(fsp->base_fsp->fsp_name->st.st_ex_mode) &&
++	    tc_native_links_enabled(fsp->conn)) {
++		/*
++		 * A stream on a Time Capsule native link: the fd-less base
++		 * already carries the link's own lstat (see vfs_stat_fsp()).
++		 */
++		*sbuf = fsp->base_fsp->fsp_name->st;
++	} else {
++		ret = SMB_VFS_NEXT_FSTAT(handle, fsp->base_fsp, sbuf);
++		if (ret == -1) {
++			return -1;
++		}
+ 	}
+ 
+ 	sbuf->st_ex_size = get_xattr_size_fsp(config,
+diff --git a/source3/smbd/close.c b/source3/smbd/close.c
+--- a/source3/smbd/close.c
++++ b/source3/smbd/close.c
+@@ -161,6 +161,17 @@ NTSTATUS delete_all_streams(struct files_struct *fsp,
+ 	TALLOC_CTX *frame = talloc_stackframe();
+ 	NTSTATUS status;
+ 
++	if (S_ISLNK(smb_fname->st.st_ex_mode) &&
++	    tc_native_links_enabled(fsp->conn)) {
++		/*
++		 * A Time Capsule native link's streams are attributes of the
++		 * link itself, removed with it by unlink. Deleting them by
++		 * name here would resolve through the link to its target.
++		 */
++		TALLOC_FREE(frame);
++		return NT_STATUS_OK;
++	}
++
+ 	status = vfs_fstreaminfo(fsp,
+ 				 talloc_tos(),
+ 				 &num_streams,
+diff --git a/source3/smbd/open.c b/source3/smbd/open.c
+--- a/source3/smbd/open.c
++++ b/source3/smbd/open.c
+@@ -5708,6 +5708,15 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
+ 	} else {
+ 		pathref = smb_fname;
+ 	}
++	if (S_ISLNK(pathref->st.st_ex_mode) && tc_native_links_enabled(conn)) {
++		/*
++		 * Streams on a Time Capsule native link are the link's own
++		 * attributes. Opening them here by name would follow the link
++		 * to its target; they go with the link on rename or unlink.
++		 */
++		TALLOC_FREE(frame);
++		return NT_STATUS_OK;
++	}
+ 	status = vfs_fstreaminfo(pathref->fsp, talloc_tos(),
+ 				&num_streams, &stream_info);
+ 
+@@ -6528,6 +6537,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+ 	    && is_named_stream(smb_fname))
+ 	{
+ 		uint32_t base_create_disposition;
++		uint32_t base_create_options;
+ 		struct smb_filename *smb_fname_base = NULL;
+ 		uint32_t base_privflags;
+ 
+@@ -6561,7 +6571,20 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+ 		 * if the basefile exists we want a handle so we can fstat() it.
+ 		 */
+ 
+-		status = openat_pathref_fsp(conn->cwd_fsp, smb_fname_base);
++		base_create_options = 0;
++		status = tc_native_links_stream_base(conn,
++						     dirfsp,
++						     smb_fname_base);
++		if (NT_STATUS_IS_OK(status)) {
++			/*
++			 * The base is a native link: its streams are the
++			 * link's own attributes, never its target's.
++			 */
++			base_create_options = FILE_OPEN_REPARSE_POINT;
++		} else if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_A_REPARSE_POINT)) {
++			status = openat_pathref_fsp(conn->cwd_fsp,
++						    smb_fname_base);
++		}
+ 
+ 		if (!NT_STATUS_IS_OK(status) &&
+ 		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
+@@ -6573,8 +6596,12 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+ 			goto fail;
+ 		}
+ 
+-		if (NT_STATUS_IS_OK(status)) {
++		if (NT_STATUS_IS_OK(status) && base_create_options == 0) {
+ 			/*
++			 * A native link's mode bits are always rwxrwxrwx and
++			 * its fd-less pathref has no access mask to check;
++			 * links skip this base check (see above).
++			 *
+ 			 * https://bugzilla.samba.org/show_bug.cgi?id=10229
+ 			 * We need to check if the requested access mask
+ 			 * could be used to open the underlying file (if
+@@ -6606,7 +6633,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+ 					      | FILE_SHARE_WRITE
+ 					      | FILE_SHARE_DELETE,
+ 					      base_create_disposition,
+-					      0,
++					      base_create_options,
+ 					      0,
+ 					      0,
+ 					      NULL,
+diff --git a/source3/smbd/smb2_trans2.c b/source3/smbd/smb2_trans2.c
+--- a/source3/smbd/smb2_trans2.c
++++ b/source3/smbd/smb2_trans2.c
+@@ -68,7 +68,14 @@ bool refuse_symlink_fsp(const files_struct *fsp)
+ 		return true;
+ 	}
+ 	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
+-		return true;
++		/*
++		 * A Time Capsule native link opened as itself has no fd;
++		 * the native HFS xattr backend acts on the link by path and
++		 * never follows it, so its own attributes are reachable,
++		 * as they are over AFP. Other backends fail without an fd.
++		 */
++		return !(fsp_get_pathref_fd(fsp) == -1 &&
++			 tc_native_links_enabled(fsp->conn));
+ 	}
+ 	if (fsp_get_pathref_fd(fsp) == -1) {
+ 		return true;
+diff --git a/source3/smbd/vfs.c b/source3/smbd/vfs.c
+--- a/source3/smbd/vfs.c
++++ b/source3/smbd/vfs.c
+@@ -1041,9 +1041,13 @@ NTSTATUS vfs_fstreaminfo(struct files_struct *fsp,
+                 return NT_STATUS_OK;
+         }
+ 
+-	if (fsp_get_pathref_fd(fsp) == -1) {
++	if (fsp_get_pathref_fd(fsp) == -1 &&
++	    !(S_ISLNK(fsp->fsp_name->st.st_ex_mode) &&
++	      tc_native_links_enabled(fsp->conn))) {
+ 		/*
+-		 * No streams on non-real files/directories.
++		 * No streams on non-real files/directories. A Time Capsule
++		 * native link has none of its own fd, but carries its own
++		 * attributes (see refuse_symlink_fsp()).
+ 		 */
+ 		return NT_STATUS_OK;
+ 	}

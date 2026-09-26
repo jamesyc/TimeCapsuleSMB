@@ -674,8 +674,8 @@ Operational note:
 ## Symbolic Links
 
 Symlinks are stored on disk as native POSIX links, the same objects Apple's AFP
-server and SSH create, so every protocol sees one link (Samba patch 0045,
-`tc:native symlinks` in the generated `smb.conf`):
+server and SSH create, so every protocol sees one link (Samba patches 0045 and
+0058-0060, `tc:native symlinks` in the generated `smb.conf`):
 
 - macOS clients see native links as links and create them as usual; each new
   link becomes native when its creating handle closes. XSym link files written
