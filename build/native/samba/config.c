@@ -105,10 +105,10 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
     if (config->debug)
         fputs("    log level = 10\n", file);
     fputs("    smb ports = 445\n", file);
+    /* aio_fork's helper buffers cover Samba's default 8 MiB SMB2 reads and
+     * writes (patch 0031), so the SMB2 sizes stay at their defaults. */
     if (config->aio_fork)
-        fputs("    smb2 max read = 131072\n    smb2 max write = 131072\n    aio read size = 1\n    aio write "
-              "size = 1\n",
-              file);
+        fputs("    aio read size = 1\n    aio write size = 1\n", file);
     else
         fputs("    aio read size = 0\n    aio write size = 0\n", file);
     fprintf(file,
@@ -139,8 +139,11 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
                 "    delete veto files = yes\n"
                 "    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb%s\n",
                 share->name, share->path, config->aio_fork ? " aio_fork" : "");
+        /* Each helper holds up to an 8 MiB buffer. One Mac used at most two
+         * helpers in benchmarks on both device families, and more were no
+         * faster; two bound the memory to 16 MiB per client. */
         if (config->aio_fork)
-            fputs("    aio_fork:max_children = 8\n", file);
+            fputs("    aio_fork:max_children = 2\n", file);
         fprintf(file,
                 "    acl_xattr:ignore system acls = yes\n    smbd max xattr size = 3802\n"
                 "    streams_xattr:max xattrs per stream = 35\n    fruit:resource = file\n"

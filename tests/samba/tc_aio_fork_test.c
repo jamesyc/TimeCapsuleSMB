@@ -206,6 +206,46 @@ static void test_io(struct vfs_handle_struct *h, const char *scenario)
 	}
 }
 
+/*
+ * Every byte passes through the helper's shared buffer, which is sized once at
+ * fork. A request that fills it must round-trip exactly, including sizes past
+ * the old 128 KiB buffer; one byte more must be refused before anything
+ * touches the caller's buffer or starts a helper.
+ */
+static void test_sizes(struct vfs_handle_struct *h, const char *scenario)
+{
+	const size_t full = AIO_FORK_BUFFER_SIZE;
+	char *out = malloc(full + 1), *in = malloc(full + 1);
+	size_t i, sizes[] = { 128 * 1024 + 1, full };
+	CHECK(out && in);
+	for (i = 0; i <= full; i++) out[i] = (char)(i * 131 + (i >> 16));
+	if (!strcmp(scenario, "over_buffer")) {
+		memset(in, 0x5a, full + 1);
+		finish(submit(h, in, full + 1, 0, READ_CMD), -1, EINVAL);
+		finish(submit(h, out, full + 1, 0, PWRITE_CMD), -1, EINVAL);
+		CHECK(in[0] == 0x5a && in[full] == 0x5a);
+		/* Refused before the helper pool is even set up. */
+		CHECK(pool(h) == NULL && worker_count == 0);
+		/* A refused request leaves the share usable. */
+		finish(submit(h, in, 4, 0, READ_CMD), 4, 0);
+		CHECK(!memcmp(in, "data", 4));
+	} else {
+		for (i = 0; i < ARRAY_SIZE(sizes); i++) {
+			memset(in, 0, full + 1);
+			finish(submit(h, out, sizes[i], 0, PWRITE_CMD), sizes[i], 0);
+			CHECK(pread(io_fd, in, sizes[i], 0) == (ssize_t)sizes[i]);
+			CHECK(!memcmp(in, out, sizes[i]));
+			memset(in, 0, full + 1);
+			finish(submit(h, in, sizes[i], 0, READ_CMD), sizes[i], 0);
+			CHECK(!memcmp(in, out, sizes[i]) && in[sizes[i]] == 0);
+		}
+		/* One helper, reused, carried every size. */
+		CHECK(pool(h)->num_children == 1 && worker_count == 1);
+	}
+	free(out);
+	free(in);
+}
+
 static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 {
 	struct tevent_req *requests[AIO_FORK_MAX_PENDING + 3];
@@ -479,7 +519,7 @@ static void test_exit_frames(void)
 
 int main(int argc, char **argv)
 {
-	char path[] = "/tmp/tc-aio-test.XXXXXX";
+	char path[PATH_MAX];
 	TALLOC_CTX *frame;
 	struct vfs_handle_struct *h;
 	int *marker, status;
@@ -494,6 +534,10 @@ int main(int argc, char **argv)
 	talloc_set_destructor(marker, mark_destroyed);
 	event = tevent_context_init(frame);
 	CHECK(event);
+	/* The full-buffer case writes 8 MiB: on the devices, /tmp is a tiny RAM
+	 * disk, so use TMPDIR or the working directory like the other drivers. */
+	CHECK(snprintf(path, sizeof(path), "%s/tc-aio-test.XXXXXX",
+		       getenv("TMPDIR") ? getenv("TMPDIR") : ".") < (int)sizeof(path));
 	io_fd = mkstemp(path);
 	CHECK(io_fd >= 0 && unlink(path) == 0);
 	CHECK(write(io_fd, "data", 4) == 4);
@@ -503,6 +547,7 @@ int main(int argc, char **argv)
 	else if (strstr(argv[1], "failure")) test_failures(h, argv[1]);
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
+	else if (!strcmp(argv[1], "full_buffer") || !strcmp(argv[1], "over_buffer")) test_sizes(h, argv[1]);
 	else if (!strcmp(argv[1], "exit_frames")) test_exit_frames();
 	else if (!strcmp(argv[1], "data_page_writes")) test_data_page_writes();
 	else test_io(h, argv[1]);

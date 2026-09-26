@@ -717,3 +717,67 @@ removing files that have forks. A fork written over SMB read back over AFP.
 | NetBSD 6 (NetBSD 7 SDK) | 10,228,312 |
 | NetBSD 4 LE | 10,250,528 |
 | NetBSD 4 BE | 10,249,412 |
+
+## aio_fork buffer size and helper count (2026-09-26)
+
+aio_fork stays off by default. When it is enabled, each helper's shared
+buffer is now 8 MiB (`AIO_FORK_BUFFER_SIZE` in patch 0031, was 128 KiB), so
+Samba's default 8 MiB SMB2 reads and writes pass through it, and each share
+gets `aio_fork:max_children = 2` (was 8).
+
+Upstream sizes the buffer once when it forks a helper. Every byte passes
+through it: smbd copies write data in, and the helper reads into it. The
+`n > 128*1024` check is the only bound on those copies, so the old config
+had to cap `smb2 max read/write` at 131072. Raising the check alone would
+overrun the buffer.
+
+Benchmark: a Mac on Wi-Fi 6 wrote and read each file set over a fresh SMB
+mount. Every write was fsynced, the share was remounted before reading, and
+every file was hash-checked. MB/s write / read, debug logging off, averaged
+over two runs unless noted.
+
+| NetBSD 6 | aio off | 128 KiB, 8 helpers | 8 MiB, 4 helpers |
+| --- | --- | --- | --- |
+| 100 x 1 MB | 4.2 / 8.4 | 3.9 / 8.2 | 4.3 / 8.5 |
+| 50 x 10 MB | 12.2 / 14.0 | 9.6 / 12.8 | 11.4 / 12.5 |
+| 4 x 500 MB | 17.0 / 15.0 | 13.9 / 14.7 | 15.1 / 13.6 |
+
+| NetBSD 4 LE | aio off | 128 KiB, 8 helpers (one run, stopped) | 8 MiB, 4 helpers (one run) |
+| --- | --- | --- | --- |
+| 100 x 1 MB | 3.0 / 4.2 | 2.8 / 3.7 | 2.9 / 4.1 |
+| 50 x 10 MB | 5.6 / 3.0-4.8 | 5.1 / 4.0 | 5.3 / 4.6 |
+| 2 x 500 MB | 6.2 / 5.0 | - | 5.8 / 4.2 |
+
+- The 128 KiB cap caused most of aio_fork's write loss. With 8 MiB buffers,
+  aio_fork is still about 10% slower on large files for one Mac copying one
+  file at a time. It was never faster, so it stays off.
+- A single Mac never used more than two helpers: smbd peaked at 3-4
+  processes and about 18 MB of RSS on both families. With 8 helpers it
+  peaked at 10 processes, and 2 helpers were no slower.
+- NetBSD 4 LE (256 MB RAM, no swap) was not OOM-killed with 8 MiB buffers
+  and 4 helpers. Free memory fell to about 5 MB during large transfers and
+  was back to 174 MB afterwards. smbd stayed near 17 MB, so the drop is most
+  likely the kernel's file cache.
+- Debug logging (log level 10) made 1 MB files about three times slower
+  (1.3 / 3.9 MB/s on NetBSD 6).
+
+Host regression run with sanitizers: 115 cases passed, including new
+`full_buffer` and `over_buffer` cases. An 8 MiB request and one just over
+128 KiB pass through a real helper byte for byte, and one byte over 8 MiB is
+refused before any helper starts. All three lanes were rebuilt; the NetBSD 6
+and NetBSD 4 LE smbd were byte-identical to the benchmarked builds.
+
+After `tcapsule deploy` on both LAN devices (aio_fork off), Doctor passed.
+Then aio_fork was turned on (2 helpers, default SMB2 sizes):
+- The links suite with `--afp` passed 87/87 on both devices.
+- NetBSD 6 ran the whole benchmark once: 4.3 / 9.0, 10.2 / 13.0 and
+  15.2 / 13.5 MB/s. NetBSD 4 LE ran the 10 MB set: 5.0 / 4.6 MB/s.
+- Every hash matched, smbd peaked at 4 processes, and dmesg showed no OOM
+  kills.
+- Both devices were then set back to aio_fork off.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,228,304 |
+| NetBSD 4 LE | 10,250,528 |
+| NetBSD 4 BE | 10,249,412 |

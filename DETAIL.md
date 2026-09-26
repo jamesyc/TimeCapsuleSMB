@@ -642,7 +642,7 @@ Current rendered Samba config characteristics:
 - `max log size = 128` in the normal generated config
 - `deadtime = 720`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
-- when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 8`, set 128 KiB SMB2 read/write limits, and enable AIO for requests of at least one byte
+- when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 2`, keep Samba's default 8 MiB SMB2 read/write sizes (each helper's buffer covers them, patch 0031), and enable AIO for requests of at least one byte
 - `fruit:resource = file`; this remains the non-HFS and migration-source setting, while HFS shares automatically use the native resource fork
 - `fruit:veto_appledouble = yes`
 - `fruit:metadata = netatalk` by default, or `fruit:metadata = stream` when Netatalk metadata mode is explicitly disabled; on HFS this selects the preferred legacy migration source while runtime FinderInfo is native

@@ -1,7 +1,7 @@
 diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 --- a/source3/modules/vfs_aio_fork.c
 +++ b/source3/modules/vfs_aio_fork.c
-@@ -42,10 +42,18 @@
+@@ -42,10 +42,27 @@
  #define MAP_FILE 0
  #endif
  
@@ -12,6 +12,15 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 + */
 +#define AIO_FORK_MAX_PENDING 16
 +
++/*
++ * Every helper gets one shared buffer of this size when it is forked, and
++ * all data passes through it. Requests larger than the buffer are refused,
++ * so it must cover the largest SMB2 read or write (Samba's default 8 MiB).
++ * Pages are only allocated once touched; aio_fork:max_children bounds the
++ * number of helpers per connection.
++ */
++#define AIO_FORK_BUFFER_SIZE (8 * 1024 * 1024)
++
  struct aio_child_list;
  
  struct aio_fork_config {
@@ -20,7 +29,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	struct aio_child_list *children;
  };
  
-@@ -141,6 +149,7 @@ struct rw_ret {
+@@ -141,6 +158,7 @@ struct rw_ret {
  };
  
  struct aio_child_list;
@@ -28,7 +37,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  struct aio_child {
  	struct aio_child *prev, *next;
-@@ -154,6 +163,11 @@ struct aio_child {
+@@ -154,6 +172,11 @@ struct aio_child {
  
  struct aio_child_list {
  	struct aio_child *children;
@@ -40,7 +49,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	struct tevent_timer *cleanup_event;
  };
  
-@@ -283,6 +297,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -283,6 +306,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  		if (config->children == NULL) {
  			return NULL;
  		}
@@ -49,7 +58,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	}
  	children = config->children;
  
-@@ -306,6 +322,24 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -306,6 +331,24 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  	return children;
  }
  
@@ -74,7 +83,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  static void aio_child_loop(int sockfd, struct mmap_area *map)
  {
  	while (true) {
-@@ -347,34 +381,9 @@ static void aio_child_loop(int sockfd, struct mmap_area *map)
+@@ -347,34 +390,9 @@ static void aio_child_loop(int sockfd, struct mmap_area *map)
  
  		PROFILE_TIMESTAMP(&start);
  
@@ -112,7 +121,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  		PROFILE_TIMESTAMP(&end);
  		ret_struct.duration = nsec_time_diff(&end, &start);
-@@ -419,6 +428,7 @@ static int aio_child_destructor(struct aio_child *child)
+@@ -419,6 +437,7 @@ static int aio_child_destructor(struct aio_child *child)
  	sys_write_v(child->sockfd, &c, sizeof(c));
  	close(child->sockfd);
  	DLIST_REMOVE(child->list->children, child);
@@ -120,7 +129,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	return 0;
  }
  
-@@ -490,6 +500,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -490,6 +509,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  
  	result->list = children;
  	DLIST_ADD(children->children, result);
@@ -128,7 +137,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  	talloc_set_destructor(result, aio_child_destructor);
  
-@@ -505,70 +516,202 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -505,70 +525,202 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  	return ret;
  }
  
@@ -233,7 +242,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	}
 +	aio_fork_schedule_pending(list);
 +}
-+
+ 
 +static void aio_fork_dispatch(struct aio_fork_state *state,
 +			      struct aio_child *child)
 +{
@@ -241,7 +250,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +	struct rw_cmd rw;
 +	ssize_t written;
 +	int err;
- 
++
 +	state->child = child;
 +	state->active = true;
  	child->dont_delete = true;
@@ -318,7 +327,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +		if (child == NULL) {
 +			DEBUG(10, ("no idle child found, creating new one\n"));
 +			ret = create_aio_child(
-+				list->sconn, list, 128*1024, &child);
++				list->sconn, list, AIO_FORK_BUFFER_SIZE, &child);
 +			if (ret != 0) {
 +				/*
 +				 * Without a helper the request still completes;
@@ -369,7 +378,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config,
  				struct aio_fork_config,
-@@ -578,9 +721,15 @@ static struct tevent_req *aio_fork_send(
+@@ -578,58 +730,44 @@ static struct tevent_req *aio_fork_send(
  	if (req == NULL) {
  		return NULL;
  	}
@@ -383,9 +392,10 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +	state->erratic_testing_mode = config->erratic_testing_mode;
 +	talloc_set_destructor(state, aio_fork_state_destructor);
  
- 	if (cmd != FSYNC_CMD && n > 128*1024) {
- 		/* TODO: support variable buffers */
-@@ -588,48 +737,29 @@ static struct tevent_req *aio_fork_send(
+-	if (cmd != FSYNC_CMD && n > 128*1024) {
+-		/* TODO: support variable buffers */
++	if (cmd != FSYNC_CMD && n > AIO_FORK_BUFFER_SIZE) {
+ 		tevent_req_error(req, EINVAL);
  		return tevent_req_post(req, ev);
  	}
  
@@ -450,7 +460,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	return req;
  }
  
-@@ -645,15 +775,14 @@ static void aio_fork_done(struct tevent_req *subreq)
+@@ -645,15 +783,14 @@ static void aio_fork_done(struct tevent_req *subreq)
  	struct rw_ret *retbuf;
  
  	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
@@ -468,7 +478,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	retbuf = (struct rw_ret *)buf;
  	state->ret = retbuf->size;
  	state->vfs_aio_state.error = retbuf->ret_errno;
-@@ -665,12 +794,14 @@ static void aio_fork_done(struct tevent_req *subreq)
+@@ -665,12 +802,14 @@ static void aio_fork_done(struct tevent_req *subreq)
  	 */
  	if (state->cmd == READ_CMD && state->ret != -1) {
  		if ((size_t)state->ret > state->n) {
@@ -483,7 +493,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	tevent_req_done(req);
  }
  
-@@ -739,6 +870,7 @@ static int aio_fork_fsync_recv(struct tevent_req *req,
+@@ -739,6 +878,7 @@ static int aio_fork_fsync_recv(struct tevent_req *req,
  static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
  			    const char *user)
  {
@@ -491,7 +501,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	int ret;
  	struct aio_fork_config *config;
  	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
-@@ -756,6 +888,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+@@ -756,6 +896,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
  
  	config->erratic_testing_mode = lp_parm_bool(SNUM(handle->conn), "vfs_aio_fork",
  						    "erratic_testing_mode", false);

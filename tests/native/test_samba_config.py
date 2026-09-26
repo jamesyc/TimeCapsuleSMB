@@ -71,10 +71,11 @@ def test_netbsd4_cache_remains_disk_backed(renderer):
 
 def test_tested_aio_and_debug_preferences(renderer):
     conf = render(renderer, {"VFS_AIO_FORK_ENABLED": 1, "SMBD_DEBUG_LOGGING": 1})
-    assert conf["global"]["smb2 max read"] == conf["global"]["smb2 max write"] == "131072"
+    # aio_fork's helper buffers cover Samba's default SMB2 sizes, so none are set.
+    assert "smb2 max read" not in conf["global"] and "smb2 max write" not in conf["global"]
     assert conf["global"]["aio read size"] == conf["global"]["aio write size"] == "1"
     assert conf["global"]["max log size"] == "0" and conf["global"]["log level"] == "10"
-    assert conf["Data"]["aio_fork:max_children"] == "8"
+    assert conf["Data"]["aio_fork:max_children"] == "2"
     assert conf["Data"]["vfs objects"].endswith(" aio_fork")
 
 
