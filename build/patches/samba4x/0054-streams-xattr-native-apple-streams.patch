@@ -1,0 +1,78 @@
+diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
+--- a/source3/modules/vfs_streams_xattr.c
++++ b/source3/modules/vfs_streams_xattr.c
+@@ -24,6 +24,7 @@
+ #include "includes.h"
+ #include "smbd/smbd.h"
+ #include "system/filesys.h"
++#include "airport_native_xattr.h"
+ #include "lib/util/tevent_unix.h"
+ #include "librpc/gen_ndr/ioctl.h"
+ #include "hash_inode.h"
+@@ -36,6 +37,7 @@ struct streams_xattr_config {
+ 	size_t prefix_len;
+ 	const char *ext_prefix;
+ 	size_t max_extents;
++	bool native_hfs;
+ 	bool store_stream_type;
+ };
+ 
+@@ -83,13 +85,29 @@ static char *streams_xattr_ext_name(TALLOC_CTX *mem_ctx,
+ 	return name;
+ }
+ 
++/* Only canonical Apple streams omit the marker in physical HFS storage.
++ * Windows ADS must retain their existing 3,802-byte extent layout. */
++static bool streams_xattr_native_apple(const struct streams_xattr_config *config,
++				     const char *name)
++{
++	size_t len = strlen(name);
++	const char *suffix = ":$DATA";
++
++	return config->native_hfs && len > strlen(suffix) &&
++		strncmp(name, "com.apple.", 10) == 0 &&
++		strcmp(name + len - strlen(suffix), suffix) == 0 &&
++		strcmp(name, "com.apple.FinderInfo:$DATA") != 0 &&
++		strcmp(name, "com.apple.ResourceFork:$DATA") != 0;
++}
++
+ static ssize_t fgetxattr_multi(const struct streams_xattr_config *config,
+ 			       struct files_struct *fsp,
+ 			       const char *raw_stream_name,
+ 			       void *_value,
+ 			       size_t size)
+ {
+-	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn));
++	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn)) +
++		streams_xattr_native_apple(config, raw_stream_name);
+ 	uint8_t *value = NULL;
+ 	size_t valuelen;
+ 	ssize_t ret = -1;
+@@ -221,12 +239,18 @@ static int fsetxattr_multi(const struct streams_xattr_config *config,
+ 			   size_t size,
+ 			   int flags)
+ {
+-	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn));
++	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn)) +
++		streams_xattr_native_apple(config, raw_stream_name);
+ 	uint8_t *frag = NULL;
+ 	size_t i, len_extents, num_extents, written;
+ 	int ret = -1;
+ 	char *xattr_name = NULL;
+ 
++	if (streams_xattr_native_apple(config, raw_stream_name) && size > fraglen) {
++		/* Reject before writing an anchor: AFP must see the whole xattr. */
++		errno = E2BIG;
++		return -1;
++	}
+ 	if (size < 1) {
+ 		errno = EINVAL;
+ 		return -1;
+@@ -1505,6 +1529,7 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 	config->max_extents = max_xattrs - 1;
++	config->native_hfs = tc_airport_path_is_hfs(handle->conn->connectpath);
+ 
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config,
+ 				NULL, struct stream_xattr_config,

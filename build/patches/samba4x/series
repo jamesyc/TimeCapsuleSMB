@@ -174,12 +174,26 @@
 # in native HFS attributes that its SMB server reaches only through private
 # xattr syscalls (overlay airport_native_xattr.h). Store them there so AFP and
 # SMB see one copy: fruit owns FinderInfo and resource-fork stream semantics,
-# xattr_tdb owns ordinary native attributes. The static helper in overlay
-# tc_xattr_hfs_migrate.c moves legacy TDB/AppleDouble metadata during deploy
-# only; it merges several historical databases without changing source mtimes,
-# keeps anything it cannot prove orphaned, and sets aside (never deletes)
-# databases left with only proven orphans.
-0038-xattr-tdb-native-hfs.patch|native HFS Mac metadata and legacy migration
+# xattr_tdb owns ordinary native attributes.
+#
+# On an HFS share, xattr_tdb keeps ordinary xattrs and Apple's com.apple.*
+# streams in native attributes instead of its database, and leaves FinderInfo
+# and resource forks to fruit.
+0038-xattr-tdb-native-hfs.patch|native HFS attributes for xattr_tdb
+# Apple's com.apple.* streams are one native attribute without the trailing
+# NUL that streams_xattr stores, so allow that byte and refuse a larger value
+# (E2BIG) instead of splitting it across extents: AFP must see the whole
+# attribute. Windows streams keep their extent layout.
+0054-streams-xattr-native-apple-streams.patch|whole native attributes for Apple streams
+# fruit reads and writes FinderInfo and resource forks in their native HFS
+# attributes (the resource fork through ..namedfork/rsrc).
+0055-fruit-native-hfs.patch|native HFS FinderInfo and resource forks in fruit
+# The static helper in overlay tc_xattr_hfs_migrate.c moves legacy
+# TDB/AppleDouble metadata during deploy only; it merges several historical
+# databases without changing source mtimes, keeps anything it cannot prove
+# orphaned, and sets aside (never deletes) databases left with only proven
+# orphans.
+0057-xattr-hfs-migrate-build.patch|build the deploy-only metadata migrator
 
 # Apple disk rebinding.
 # Apple can revoke a bumped USB disk's vnode and remount the same dkN. Record
