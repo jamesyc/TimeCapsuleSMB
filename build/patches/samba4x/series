@@ -5,6 +5,9 @@
 # Whole source files that do not exist upstream live in overlay/, mirroring the
 # Samba tree, and are copied in before the first patch (patch_copy_overlay).
 # Patches change upstream files only; never add or edit an overlay file here.
+#
+# The patch files are generated: edit them through build/samba4x_replay.py
+# (init, amend, export, verify), never by hand.
 
 # Build and toolchain.
 # Samba 4.25 marks some generated tools as hostcc but still lets waf inherit
