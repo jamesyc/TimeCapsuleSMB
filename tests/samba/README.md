@@ -194,11 +194,14 @@ reparse payloads (Windows, NFS and WSL forms), refusing FIFOs, sockets, devices,
 junctions and unknown tags. Hooks inside the replaced rename let other "clients"
 replace or recreate the name between the conversion's steps: nothing of theirs
 is replaced, and every failure (symlink, rename, attribute copy, times) puts the
-original file back. The original is only unlinked after its fd is closed. A
+original file back. Hooks in the replaced `sync()`, symlink and unlink let them
+also take the name while a failed conversion is undone: their object stays, and
+the original is kept aside rather than put over it. The original is only
+unlinked after its fd is closed. A
 file created without read access, as Linux `mfsymlinks` does, is read through an
 internal handle that must be the same file. Each
 conversion commits the journal with `sync()`, and so does a rollback before it
-removes the link it made; the test counts these calls (see the HFS journal note
+checks and removes the link it made; the test counts these calls (see the HFS journal note
 in `DETAIL.md`). The metadata case checks that attributes and
 streams set before close move to the link, but never Finder info or resource
 forks. Those are matched by their exact stored names, so a stream such as

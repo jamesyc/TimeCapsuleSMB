@@ -498,6 +498,32 @@ Review follow-up (2026-09-24):
 | NetBSD 4 LE | 321,648 | 10,243,352 |
 | NetBSD 4 BE | 321,048 | 10,242,220 |
 
+Rollback review follow-up (2026-09-26):
+- The metadata rollback commits the journal before it checks the new link, so
+  no `sync()` sits between that check and the unlink it guards. If another
+  client has replaced or removed the link by then, its change stands and the
+  original is dropped, as when that happens before the check.
+- New `rollback_races` case: other clients replace, remove or relink the name
+  during the rollback's `sync()`, make the link uncheckable, or take the name
+  the undo freed or the failed symlink left empty. Built against the old
+  source, it failed on the NetBSD 6 device (the other client's file was
+  unlinked); with the fix, `tc_native_links_test all` passed on NetBSD 6 and on
+  NetBSD 4 LE, both from the HFS disk. The window between
+  `tc_restore_aside()`'s check and its rename remains an accepted race.
+- NetBSD 6: the lane regression run passed all 63 driver runs on the device.
+  After `tcapsule deploy`, Doctor passed and the links suite passed 87/87 four
+  times in a row with no new `/mnt/Flash/dmesg.panic`.
+- NetBSD 4 LE: after `tcapsule deploy`, Doctor passed and the links suite
+  passed 87/87 three times in a row; no `/mnt/Flash/dmesg.panic` exists.
+- NetBSD 4 BE: build and ELF validation only.
+- The xattr migrators rebuilt byte-identical on all three lanes.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,224,920 |
+| NetBSD 4 LE | 10,246,580 |
+| NetBSD 4 BE | 10,245,468 |
+
 Second review follow-up (2026-09-24), smbd only:
 - Finder info and resource forks are left behind only under their exact stored
   names: native, netatalk, and streams_xattr under its configured prefix. A

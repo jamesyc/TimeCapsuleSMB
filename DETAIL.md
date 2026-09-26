@@ -691,8 +691,9 @@ server and SSH create, so every protocol sees one link (Samba patch 0045,
   requests the Linux source sends; no Linux mount was tested.
 - While converting, smbd moves the original aside as `.tc-xsym.<ino>.<pid>`
   and removes it when its handle closes. The generated `smb.conf` vetoes that
-  name, and `delete veto files = yes` lets a folder be removed even if a crash
-  left one behind.
+  name, and `delete veto files = yes` lets a folder be removed even if one is
+  left behind: by a crash, or by a failed conversion that could not put the
+  original back because another client had taken the name.
 - Attributes and streams set on a link stay on the link. `touch -h` does not
   change a link's times on HFS, the same as over AFP.
 

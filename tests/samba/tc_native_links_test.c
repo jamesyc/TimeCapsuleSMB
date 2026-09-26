@@ -41,6 +41,10 @@ static char workdir[PATH_MAX];
 static void (*before_grab)(void);
 static void (*after_grab)(void);
 static void (*after_symlink)(void);
+/* Something another client does while the conversion is undoing a step. */
+static void (*during_sync)(void);
+static void (*on_symlink_fail)(void);
+static void (*after_unlink_link)(void);
 /* Names read through an internal pathref because the creating handle was write-only. */
 static char pathref_reads[4][64];
 static size_t num_pathref_reads;
@@ -76,7 +80,11 @@ static int test_fstatat(const struct smb_filename *name, SMB_STRUCT_STAT *out)
 static int test_symlinkat(const struct smb_filename *target, const struct smb_filename *name)
 {
 	int ret;
-	if (fail_symlink) { errno = fail_symlink; return -1; }
+	if (fail_symlink) {
+		if (on_symlink_fail != NULL) on_symlink_fail();
+		errno = fail_symlink;
+		return -1;
+	}
 	ret = symlink(target->base_name, name->base_name);
 	if (ret == 0 && after_symlink != NULL) after_symlink();
 	return ret;
@@ -111,8 +119,20 @@ static int test_renameat(const struct smb_filename *from, const struct smb_filen
 
 static int test_unlinkat(const struct smb_filename *name)
 {
+	int ret;
 	if (fail_unlink_aside && is_aside(name->base_name)) { errno = fail_unlink_aside; return -1; }
-	return unlink(name->base_name);
+	ret = unlink(name->base_name);
+	if (ret == 0 && !is_aside(name->base_name) && after_unlink_link != NULL) after_unlink_link();
+	return ret;
+}
+
+/* Counts journal commits; another client may act while one runs. */
+static void test_sync(void)
+{
+	void (*hook)(void) = during_sync;
+	syncs++;
+	during_sync = NULL;
+	if (hook != NULL) hook();
 }
 
 static NTSTATUS test_parent_pathref(TALLOC_CTX *ctx, struct files_struct *dirfsp,
@@ -376,7 +396,7 @@ static bool test_stale(struct share_mode_entry *e)
 #define readlink_talloc test_readlink
 #define openat_pathref_fsp_lcomp test_openat_pathref_lcomp
 #define notify_fname(conn, action, filter, name, lease) (notifies++)
-#define sync() (syncs++)
+#define sync() test_sync()
 #define share_mode_forall_entries test_forall_entries
 #define messaging_server_id test_messaging_server_id
 #define share_entry_stale_pid test_stale
@@ -564,6 +584,7 @@ static bool no_temp_left(void)
 static void reset_hooks(void)
 {
 	before_grab = after_grab = after_symlink = NULL;
+	during_sync = on_symlink_fail = after_unlink_link = NULL;
 	fail_symlink = fail_rename = fail_readlink = fail_setxattr = fail_ntimes = fail_unlink_aside = 0;
 	fail_stat_link = 0;
 	resource_fork_size = 0;
@@ -623,6 +644,50 @@ static void replace_new_link(void)
 	put_file("relinked", "newer", 5);
 }
 
+/* Another client acts on the name while the conversion undoes a failed step. */
+static void replace_link_in_undo(void)
+{
+	CHECK(unlink("undo_replaced") == 0);
+	put_file("undo_replaced", "newer", 5);
+}
+
+static void remove_link_in_undo(void)
+{
+	CHECK(unlink("undo_removed") == 0);
+}
+
+static void relink_in_undo(void)
+{
+	/* Made before the old link goes, so it cannot reuse its inode number. */
+	CHECK(symlink("other", "undo_relinked.new") == 0);
+	CHECK(rename("undo_relinked.new", "undo_relinked") == 0);
+}
+
+static void fail_link_check_in_undo(void)
+{
+	fail_stat_link = EIO;
+}
+
+static void create_after_undo_unlink(void)
+{
+	put_file("undo_recreated", "newer", 5);
+}
+
+static void create_after_symlink_fail(void)
+{
+	put_file("undo_taken", "newer", 5);
+}
+
+/* A created XSym file carrying an attribute the conversion must copy to its link. */
+static SMB_INO_T put_undo_file(const char *name, const uint8_t *body)
+{
+	struct stat st;
+	put_file(name, body, TC_XSYM_FILE_SIZE);
+	CHECK(stat(name, &st) == 0);
+	xput(st.st_ino, "user.DOSATTRIB", "d", 1);
+	return st.st_ino;
+}
+
 /* The one aside name left in the directory, or NULL. */
 static const char *aside_left(char *out, size_t len)
 {
@@ -638,6 +703,15 @@ static const char *aside_left(char *out, size_t len)
 	}
 	closedir(d);
 	return found;
+}
+
+/* The original is still aside, unchanged, with what the client stored on it. */
+static bool original_aside(SMB_INO_T ino, const uint8_t *body)
+{
+	char name[64];
+	struct stat st;
+	return aside_left(name, sizeof(name)) != NULL && has_content(name, body, TC_XSYM_FILE_SIZE) &&
+	       stat(name, &st) == 0 && st.st_ino == ino && xfind(ino, "user.DOSATTRIB") >= 0;
 }
 
 /* A handle for opening "name" through the real default VFS module. */
@@ -1023,6 +1097,63 @@ int main(int argc, char **argv)
 		CHECK(has_content("relinked", "newer", 5));
 		CHECK(no_temp_left() && notifies == 0 && syncs == 1);
 	}
+	if (all || strcmp(c, "rollback_races") == 0) {
+		/* Other clients act while a failed conversion is undone. Nothing of theirs is lost. */
+		SMB_INO_T ino;
+		t_xsym_format("t.txt", body);
+		/* The link is replaced while the undo commits it: the newer file stays, the original
+		 * goes. The commit ran before the check, so the check sees the new file. */
+		reset_hooks();
+		put_undo_file("undo_replaced", body);
+		fail_setxattr = ENOSPC;
+		during_sync = replace_link_in_undo;
+		CHECK(!convert(frame, "undo_replaced", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(has_content("undo_replaced", "newer", 5));
+		CHECK(no_temp_left() && notifies == 0 && syncs == 2); /* the undo, removing the original */
+		/* The link is removed: that removal stands. */
+		reset_hooks();
+		put_undo_file("undo_removed", body);
+		fail_setxattr = ENOSPC;
+		during_sync = remove_link_in_undo;
+		CHECK(!convert(frame, "undo_removed", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(access("undo_removed", F_OK) != 0 && errno == ENOENT);
+		CHECK(no_temp_left() && syncs == 2);
+		/* The link is replaced by another link: a link is only removed if it is the new one. */
+		reset_hooks();
+		put_undo_file("undo_relinked", body);
+		fail_setxattr = ENOSPC;
+		during_sync = relink_in_undo;
+		CHECK(!convert(frame, "undo_relinked", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(is_link_to("undo_relinked", "other") && no_temp_left() && syncs == 2);
+		/* The link can no longer be checked: neither it nor the original is removed. */
+		reset_hooks();
+		ino = put_undo_file("undo_unchecked", body);
+		fail_setxattr = ENOSPC;
+		during_sync = fail_link_check_in_undo;
+		CHECK(!convert(frame, "undo_unchecked", FILE_WAS_CREATED, NORMAL_CLOSE));
+		fail_stat_link = 0;
+		CHECK(is_link_to("undo_unchecked", "t.txt") && original_aside(ino, body) && syncs == 1);
+		CHECK(system("rm -f .tc-xsym.*") == 0);
+		/* A new file takes the name the undo just freed: the original stays aside rather than
+		 * replace it. */
+		reset_hooks();
+		ino = put_undo_file("undo_recreated", body);
+		fail_setxattr = ENOSPC;
+		after_unlink_link = create_after_undo_unlink;
+		CHECK(!convert(frame, "undo_recreated", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(has_content("undo_recreated", "newer", 5) && original_aside(ino, body) && syncs == 1);
+		CHECK(system("rm -f .tc-xsym.*") == 0);
+		/* The same when the name is taken while the link cannot be made. */
+		reset_hooks();
+		ino = put_undo_file("undo_taken", body);
+		fail_symlink = EPERM;
+		on_symlink_fail = create_after_symlink_fail;
+		CHECK(!convert(frame, "undo_taken", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(has_content("undo_taken", "newer", 5) && original_aside(ino, body) && syncs == 0);
+		CHECK(system("rm -f .tc-xsym.*") == 0);
+		/* The window between tc_restore_aside()'s check and its rename is an accepted race
+		 * (see there) and is not exercised. */
+	}
 	if (all || strcmp(c, "metadata") == 0) {
 		/* What the client stored on the created file moves to the link. */
 		static const char *copied[] = {
@@ -1375,7 +1506,8 @@ int main(int argc, char **argv)
 	}
 	if (!all && strcmp(c, "apple_format") && strcmp(c, "format_limits") && strcmp(c, "parse_rejects") &&
 	    strcmp(c, "convert_created") && strcmp(c, "convert_write_only") && strcmp(c, "convert_refused") &&
-	    strcmp(c, "sole_open") && strcmp(c, "commit_races") && strcmp(c, "commit_failures") && strcmp(c, "metadata") &&
+	    strcmp(c, "sole_open") && strcmp(c, "commit_races") && strcmp(c, "commit_failures") &&
+	    strcmp(c, "rollback_races") && strcmp(c, "metadata") &&
 	    strcmp(c, "read_xsym") && strcmp(c, "write_xsym") && strcmp(c, "reparse_created") && strcmp(c, "reparse_refused") &&
 	    strcmp(c, "capabilities") && strcmp(c, "dos_mode") && strcmp(c, "nofollow_errno")) {
 		CHECK(false);

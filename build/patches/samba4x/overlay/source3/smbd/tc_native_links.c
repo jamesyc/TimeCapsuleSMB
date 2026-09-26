@@ -867,8 +867,9 @@ out:
  * first and checked to be this very file, still unchanged; the link is then
  * created with symlinkat(), which fails rather than replace an object that
  * appeared meanwhile. On any failure the original goes back, except when
- * the new link can no longer be checked: then the original stays aside,
- * where no other object can be lost to it. For the microseconds between
+ * another client has taken the name, whose object wins, or when the new
+ * link can no longer be checked: then the original stays aside, where no
+ * other object can be lost to it. For the microseconds between
  * the two steps the name does not exist: the creating client, whose
  * requests are handled one at a time, never sees that, other connections
  * may. An SMB open that walked to the file before the lock was
@@ -1030,16 +1031,29 @@ bool tc_native_links_close_commit(struct files_struct *fsp,
 			   "keeping it\n",
 			   fsp_str_dbg(fsp));
 		TALLOC_FREE(link);
+		/*
+		 * The link is new and set up: commit it before removing it.
+		 * Commit first, so no flush sits between the check below and
+		 * the unlink it guards.
+		 */
+		sync();
 		ret = SMB_VFS_FSTATAT(conn, parent->fsp, atname, &sbuf,
 				      AT_SYMLINK_NOFOLLOW);
 		if (ret == 0 && S_ISLNK(sbuf.st_ex_mode) &&
 		    sbuf.st_ex_dev == created.st_ex_dev &&
 		    sbuf.st_ex_ino == created.st_ex_ino) {
-			/* The link is new and set up: commit before removing it. */
-			sync();
 			atname->st = sbuf;
 			SMB_VFS_UNLINKAT(conn, parent->fsp, atname, 0);
 			tc_restore_aside(conn, parent->fsp, aside, atname);
+		} else if (ret == 0 || errno == ENOENT) {
+			/* Another client replaced or removed the link, as in step 4. */
+			DBG_NOTICE("the link for %s was taken while undoing\n",
+				   fsp_str_dbg(fsp));
+			cand->aside = talloc_strdup(fsp->fsp_name, tmp);
+		} else {
+			DBG_ERR("checking the link for %s failed: %s; leaving "
+				"the original as %s\n",
+				fsp_str_dbg(fsp), strerror(errno), tmp);
 		}
 		goto out;
 	}
