@@ -1,32 +1,20 @@
+diff --git a/source3/include/vfs.h b/source3/include/vfs.h
 --- a/source3/include/vfs.h
 +++ b/source3/include/vfs.h
-@@ -799,6 +799,12 @@
- 	/* Device number of the directory of the share mount.
+@@ -800,6 +800,12 @@ typedef struct connection_struct {
  	   Used to ensure unique FileIndex returns. */
  	SMB_DEV_T base_share_dev;
-+
+ 
 +	/* Time Capsule volume/export identity at tree connect. No directory FD:
 +	 * Apple's diskd must remain able to idle-unmount unused volumes. */
 +	char *tc_volume_binding;
 +	char *tc_volume_key;
 +	SMB_INO_T tc_root_ino;
- 
++
  	struct name_compare_entry *hide_list; /* Per-share list of files to return as hidden. */
  	struct name_compare_entry *veto_list; /* Per-share list of files to veto (never show). */
---- a/source3/smbd/smb2_service.c
-+++ b/source3/smbd/smb2_service.c
-@@ -819,6 +819,11 @@
- 
- 	conn->base_share_dev = conn->cwd_fsp->fsp_name->st.st_ex_dev;
- 
-+	if (!conn_record_bindings(conn)) {
-+		status = NT_STATUS_NO_MEMORY;
-+		goto err_root_exit;
-+	}
-+
- 	/* Figure out the characteristics of the underlying filesystem. This
- 	 * assumes that all the filesystem mounted within a share path have
- 	 * the same characteristics, which is likely but not guaranteed.
+ 	struct name_compare_entry *veto_oplock_list; /* Per-share list of files to refuse oplocks on. */
+diff --git a/source3/smbd/conn_idle.c b/source3/smbd/conn_idle.c
 --- a/source3/smbd/conn_idle.c
 +++ b/source3/smbd/conn_idle.c
 @@ -22,6 +22,8 @@
@@ -38,11 +26,10 @@
  #include "rpc_server/rpc_pipes.h"
  #include "lib/util/tevent_ntstatus.h"
  
-@@ -73,6 +75,107 @@
-  All shares where "check_fn" returns true are closed.
+@@ -74,6 +76,107 @@ bool conn_idle_all(struct smbd_server_connection *sconn, time_t t)
   The special sharename '*' forces unmount of all shares.
  ****************************************************************************/
-+
+ 
 +bool conn_record_bindings(connection_struct *conn)
 +{
 +	const char *uuid;
@@ -143,12 +130,14 @@
 +	reset_chdir_lastconn_cache();
 +	conn_force_tdis(sconn, tc_stale_disk_tree, &config_valid);
 +}
- 
++
  static struct tevent_req *conn_force_tdis_send(connection_struct *conn);
  static void conn_force_tdis_done(struct tevent_req *req);
+ 
+diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 --- a/source3/smbd/proto.h
 +++ b/source3/smbd/proto.h
-@@ -158,6 +158,8 @@
+@@ -158,6 +158,8 @@ connection_struct *conn_new(struct smbd_server_connection *sconn);
  bool conn_idle_all(struct smbd_server_connection *sconn, time_t t);
  void conn_clear_vuid_caches(struct smbd_server_connection *sconn, uint64_t vuid);
  void conn_setup_case_options(connection_struct *conn);
@@ -157,9 +146,10 @@
  void conn_force_tdis(
  	struct smbd_server_connection *sconn,
  	bool (*check_fn)(struct connection_struct *conn,
+diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -1889,9 +1889,14 @@
+@@ -1859,9 +1859,14 @@ static void smbd_parent_sig_hup_handler(struct tevent_context *ev,
  					void *siginfo,
  					void *private_data)
  {
@@ -176,9 +166,10 @@
  }
  
  struct smbd_claim_version_state {
+diff --git a/source3/smbd/smb2_process.c b/source3/smbd/smb2_process.c
 --- a/source3/smbd/smb2_process.c
 +++ b/source3/smbd/smb2_process.c
-@@ -1685,7 +1685,7 @@
+@@ -1685,7 +1685,7 @@ static void smbd_sig_hup_handler(struct tevent_context *ev,
  
  	change_to_root_user();
  	DBG_NOTICE("Reloading services after SIGHUP\n");
@@ -187,7 +178,7 @@
  }
  
  static void smbd_setup_sig_hup_handler(struct smbd_server_connection *sconn)
-@@ -1715,7 +1715,7 @@
+@@ -1715,7 +1715,7 @@ static void smbd_conf_updated(struct messaging_context *msg,
  	DEBUG(10,("smbd_conf_updated: Got message saying smb.conf was "
  		  "updated. Reloading.\n"));
  	change_to_root_user();
@@ -196,3 +187,18 @@
  }
  
  static void smbd_id_cache_kill(struct messaging_context *msg_ctx,
+diff --git a/source3/smbd/smb2_service.c b/source3/smbd/smb2_service.c
+--- a/source3/smbd/smb2_service.c
++++ b/source3/smbd/smb2_service.c
+@@ -819,6 +819,11 @@ NTSTATUS make_connection_snum(struct smbXsrv_connection *xconn,
+ 
+ 	conn->base_share_dev = conn->cwd_fsp->fsp_name->st.st_ex_dev;
+ 
++	if (!conn_record_bindings(conn)) {
++		status = NT_STATUS_NO_MEMORY;
++		goto err_root_exit;
++	}
++
+ 	/* Figure out the characteristics of the underlying filesystem. This
+ 	 * assumes that all the filesystem mounted within a share path have
+ 	 * the same characteristics, which is likely but not guaranteed.

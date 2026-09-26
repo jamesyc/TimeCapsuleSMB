@@ -1,5 +1,4 @@
 diff --git a/third_party/popt/poptconfig.c b/third_party/popt/poptconfig.c
-index f0a92e0..f68d554 100644
 --- a/third_party/popt/poptconfig.c
 +++ b/third_party/popt/poptconfig.c
 @@ -46,7 +46,7 @@ extern int glob_pattern_p (const char *__pattern, int __quote)

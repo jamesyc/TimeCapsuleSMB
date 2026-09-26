@@ -1,5 +1,4 @@
 diff --git a/source3/printing/queue_process.c b/source3/printing/queue_process.c
-index 51eafa3..5c0932d 100644
 --- a/source3/printing/queue_process.c
 +++ b/source3/printing/queue_process.c
 @@ -21,7 +21,28 @@
@@ -44,7 +43,6 @@ index 51eafa3..5c0932d 100644
  		goto fail;
  	}
 diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
-index e66e375..0c602b5 100644
 --- a/source3/rpc_client/local_np.c
 +++ b/source3/rpc_client/local_np.c
 @@ -16,7 +16,23 @@

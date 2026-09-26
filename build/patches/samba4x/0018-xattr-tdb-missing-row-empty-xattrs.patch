@@ -1,8 +1,7 @@
 diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
-index 3db5b82..2aa15e9 100644
 --- a/source3/lib/xattr_tdb.c
 +++ b/source3/lib/xattr_tdb.c
-@@ -105,7 +105,24 @@ static NTSTATUS xattr_tdb_load_attrs(TALLOC_CTX *mem_ctx,
+@@ -116,7 +116,24 @@ static NTSTATUS xattr_tdb_load_attrs(TALLOC_CTX *mem_ctx,
  			      &data);
  	if (!NT_STATUS_IS_OK(status)) {
  		if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {

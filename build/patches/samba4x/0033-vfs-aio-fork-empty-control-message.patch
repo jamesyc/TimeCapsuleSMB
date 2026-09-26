@@ -1,7 +1,8 @@
 diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 --- a/source3/modules/vfs_aio_fork.c
 +++ b/source3/modules/vfs_aio_fork.c
-@@ -195,6 +195,8 @@ static ssize_t read_fd(int fd, void *ptr, size_t nbytes, int *recvfd)
+@@ -195,7 +195,9 @@ static ssize_t read_fd(int fd, void *ptr, size_t nbytes, int *recvfd)
+ 
  	{
  		size_t num_fds = msghdr_extract_fds(&msg, NULL, 0);
 -		int fds[num_fds];

@@ -30,7 +30,7 @@ diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -497,6 +497,22 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
+@@ -480,6 +480,22 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
  		return (req != NULL);
  	}
  
@@ -53,7 +53,7 @@ diff --git a/source3/smbd/server.c b/source3/smbd/server.c
  	pid = fork();
  	if (pid == -1) {
  		DEBUG(1, ("%s: fork failed: %s\n", __func__,
-@@ -678,6 +694,22 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+@@ -661,6 +677,22 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
  	char c;
  	int up_pipe[2];
  
@@ -76,7 +76,7 @@ diff --git a/source3/smbd/server.c b/source3/smbd/server.c
  	if (interactive) {
  		req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
  		*ppid = messaging_server_id(msg);
-@@ -2688,9 +2720,19 @@ quic_disabled:
+@@ -2654,9 +2686,19 @@ quic_disabled:
  		exit_daemon("Samba cannot init notification", EACCES);
  	}
  

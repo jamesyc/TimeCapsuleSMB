@@ -1,5 +1,4 @@
 diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
-index 726f60e..f0ec2dc 100644
 --- a/source3/modules/vfs_streams_xattr.c
 +++ b/source3/modules/vfs_streams_xattr.c
 @@ -158,7 +158,7 @@ static ssize_t fgetxattr_multi(const struct streams_xattr_config *config,

@@ -1,8 +1,7 @@
 diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
-index 2aa15e9..68d0064 100644
 --- a/source3/lib/xattr_tdb.c
 +++ b/source3/lib/xattr_tdb.c
-@@ -366,8 +366,20 @@ ssize_t xattr_tdb_listattr(struct db_context *db_ctx,
+@@ -383,8 +383,20 @@ ssize_t xattr_tdb_listattr(struct db_context *db_ctx,
  
  	if (len > size) {
  		TALLOC_FREE(frame);

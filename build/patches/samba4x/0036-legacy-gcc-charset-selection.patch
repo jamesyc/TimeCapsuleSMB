@@ -1,5 +1,4 @@
 diff --git a/lib/util/charset/charset.h b/lib/util/charset/charset.h
-index d73c792..0e8808f 100644
 --- a/lib/util/charset/charset.h
 +++ b/lib/util/charset/charset.h
 @@ -190,6 +190,19 @@ char *strchr_m_nonconst(const char *s, char c);

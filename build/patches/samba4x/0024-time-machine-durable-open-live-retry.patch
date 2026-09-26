@@ -1,8 +1,7 @@
 diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
-index c33508f..1f8e29b 100644
 --- a/source3/smbd/smbXsrv_open.c
 +++ b/source3/smbd/smbXsrv_open.c
-@@ -1273,7 +1273,68 @@ static void smb2srv_open_recreate_fn(
+@@ -1297,7 +1297,68 @@ static void smb2srv_open_recreate_fn(
  
  	state->status = smbXsrv_open_global_verify_record(
  		key, oldval, state->op, &state->op->global);
@@ -72,7 +71,7 @@ index c33508f..1f8e29b 100644
  		DBG_WARNING("smbXsrv_open_global_verify_record for %s "
  			    "failed: %s\n",
  			    tdb_data_dbg(key),
-@@ -1367,6 +1428,13 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1391,6 +1452,13 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  	TDB_DATA key = smbXsrv_open_global_id_to_key(
  		persistent_id & UINT32_MAX, &key_buf);
  	int ret, local_id;
@@ -86,7 +85,7 @@ index c33508f..1f8e29b 100644
  	NTSTATUS status;
  
  	if (session_info == NULL) {
-@@ -1414,6 +1482,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1438,6 +1506,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  
  	state.op->idle_time = now;
  	state.op->status = NT_STATUS_FILE_CLOSED;
@@ -94,7 +93,7 @@ index c33508f..1f8e29b 100644
  
  	status = dbwrap_do_locked(
  		table->global.db_ctx, key, smb2srv_open_recreate_fn, &state);
-@@ -1424,6 +1493,46 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1448,6 +1517,46 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  		goto fail;
  	}
  

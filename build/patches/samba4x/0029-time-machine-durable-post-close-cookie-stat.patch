@@ -1,5 +1,4 @@
 diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
-index 1aad8d5..b9e7776 100644
 --- a/source3/smbd/durable.c
 +++ b/source3/smbd/durable.c
 @@ -189,6 +189,8 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,

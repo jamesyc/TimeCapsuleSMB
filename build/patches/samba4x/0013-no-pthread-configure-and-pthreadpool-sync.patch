@@ -1,5 +1,4 @@
 diff --git a/lib/pthreadpool/pthreadpool_tevent.c b/lib/pthreadpool/pthreadpool_tevent.c
-index 422a88c..27f0221 100644
 --- a/lib/pthreadpool/pthreadpool_tevent.c
 +++ b/lib/pthreadpool/pthreadpool_tevent.c
 @@ -19,7 +19,9 @@
@@ -182,10 +181,9 @@ index 422a88c..27f0221 100644
  
  	if (state->req == NULL) {
 diff --git a/lib/replace/replace.h b/lib/replace/replace.h
-index 051583c..1fa3cb9 100644
 --- a/lib/replace/replace.h
 +++ b/lib/replace/replace.h
-@@ -1122,6 +1122,7 @@ extern const char hexchars_upper[];
+@@ -1156,6 +1156,7 @@ extern const char hexchars_upper[];
  # ifdef HAVE_PTHREAD
  # error Configure failed to detect pthread library with missing TLS support
  # endif
@@ -321,7 +319,6 @@ diff --git a/lib/replace/wscript b/lib/replace/wscript
      if conf.CONFIG_SET('HAVE_PTHREAD') and not conf.CONFIG_SET('HAVE___THREAD'):
          conf.fatal('Missing required TLS support in pthread library')
 diff --git a/lib/tevent/tevent.c b/lib/tevent/tevent.c
-index 12e1f40..9f26982 100644
 --- a/lib/tevent/tevent.c
 +++ b/lib/tevent/tevent.c
 @@ -127,7 +127,9 @@ static void tevent_backend_init(void)
@@ -335,7 +332,6 @@ index 12e1f40..9f26982 100644
  	tevent_epoll_init();
  #endif
 diff --git a/lib/tevent/tevent_threads.c b/lib/tevent/tevent_threads.c
-index 2dc1f17..b45a5e5 100644
 --- a/lib/tevent/tevent_threads.c
 +++ b/lib/tevent/tevent_threads.c
 @@ -394,6 +394,7 @@ static int tevent_threaded_context_destructor(
@@ -355,7 +351,6 @@ index 2dc1f17..b45a5e5 100644
  	return 0;
  }
 diff --git a/wscript b/wscript
-index a14fd20..d40f6be 100644
 --- a/wscript
 +++ b/wscript
 @@ -74,6 +74,7 @@ def options(opt):
@@ -366,7 +361,7 @@ index a14fd20..d40f6be 100644
      opt.samba_add_onoff_option('pthreadpool', with_name="enable", without_name="disable", default=True)
  
      opt.add_option('--with-system-mitkrb5',
-@@ -200,7 +201,11 @@ def configure(conf):
+@@ -192,7 +193,11 @@ def configure(conf):
  
      conf.ADD_EXTRA_INCLUDES('#include/public #source4 #lib #source4/lib #source4/include #include #lib/replace')
  

@@ -1,5 +1,4 @@
 diff --git a/lib/dbwrap/dbwrap_tdb.c b/lib/dbwrap/dbwrap_tdb.c
-index d1886a0..afc0ad7 100644
 --- a/lib/dbwrap/dbwrap_tdb.c
 +++ b/lib/dbwrap/dbwrap_tdb.c
 @@ -1017,3 +1017,12 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
@@ -16,7 +15,6 @@ index d1886a0..afc0ad7 100644
 +	tdb_set_max_dead(db_ctx->wtdb->tdb, max_dead);
 +}
 diff --git a/lib/dbwrap/dbwrap_tdb.h b/lib/dbwrap/dbwrap_tdb.h
-index 9251538..3141a1d 100644
 --- a/lib/dbwrap/dbwrap_tdb.h
 +++ b/lib/dbwrap/dbwrap_tdb.h
 @@ -30,6 +30,7 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
@@ -28,7 +26,6 @@ index 9251538..3141a1d 100644
  
  #endif /* __DBWRAP_TDB_H__ */
 diff --git a/source3/lib/dbwrap/dbwrap_open.c b/source3/lib/dbwrap/dbwrap_open.c
-index eaf9092..4840c6d 100644
 --- a/source3/lib/dbwrap/dbwrap_open.c
 +++ b/source3/lib/dbwrap/dbwrap_open.c
 @@ -70,6 +70,7 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
