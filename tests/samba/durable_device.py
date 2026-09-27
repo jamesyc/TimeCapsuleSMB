@@ -1,7 +1,9 @@
-"""Durable-handle device suite (Samba patches 0019, 0024, 0029 and the parent
-scavenger in 0008), run from a Mac against a deployed device.
+"""Durable-handle and shutdown-close device suite (Samba patches 0019, 0024,
+0029, 0062 and the parent scavenger in 0008), run from a Mac against a deployed
+device.
 
     .venv/bin/python -m tests.samba.durable_device --env .env [--stall SECONDS]
+        [--case NAME ...]
 
 A durable handle survives a lost connection while the smbd that owns it is
 alive; it does not survive that smbd being killed (as on Windows, that needs a
@@ -14,6 +16,21 @@ it from a new connection with the same client GUID:
 - half-open: the old connection stays up. Without PreviousSessionId the open is
   still live, so after 0024's retry window the answer is FILE_NOT_AVAILABLE;
   naming the old session in the new session setup makes the old smbd close it.
+- rst+ipc-tdis: before the reset, IPC$ is connected and disconnected, as a Mac
+  listing shares does. That tree disconnect leaves smbd's working directory at
+  "/", and the logoff that follows the reset closes the durable open from
+  there; 0029 stats the closed file by name, so without 0062 the cookie is
+  refused and the reconnect fails.
+- rst+second-session: the durable open belongs to a second session on the
+  connection. The first session's trees close first only when the session
+  table is walked in that order, so this case can pass without 0062; the
+  ipc-tdis cases are the deterministic ones.
+
+The delete-on-close cases open a file with FILE_DELETE_ON_CLOSE and end the
+session without a CLOSE: by a reset connection (drop) or a bare SMB2 LOGOFF,
+which smbd serves without changing into any share. With +ipc-tdis the IPC$
+tree disconnect first leaves the working directory at "/", so without 0062
+the delete finds no parent directory and the file survives.
 
 The macOS case holds a file open on a mount, stops the smbd serving it long
 enough for macOS to open a new session, resumes it, and checks the pending
@@ -42,6 +59,9 @@ TEST_DIR = "__tc_durable_test__"
 STATUS_FILE_NOT_AVAILABLE = 0xC0000467
 # 0024 retries a live durable open 34 times, 150 ms apart.
 LIVE_RETRY_SECONDS = 34 * 0.150
+DROP_MODES = ("fin", "rst", "half-open", "half-open+previous", "rst+ipc-tdis", "rst+second-session")
+DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
+CASES = DROP_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
 
 
 class DurableClient:
@@ -154,20 +174,47 @@ def _quiet_dropped_socket(args) -> None:
     threading.__excepthook__(args)
 
 
+def _ipc_connect_disconnect(device: Device, session) -> None:
+    """Connect and disconnect IPC$, as a Mac listing shares does. smbd's
+    close_cnum() for that tree leaves its working directory at "/"."""
+    from smbprotocol.tree import TreeConnect
+
+    ipc = TreeConnect(session, rf"\\{device.host}\IPC$")
+    ipc.connect()
+    ipc.disconnect()
+
+
+def _reset(conn) -> None:
+    """Drop the connection with a TCP reset."""
+    sock = conn.transport._sock
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    sock.close()
+
+
 def drop_case(r: Results, device: Device, mode: str) -> None:
     from smbprotocol.exceptions import SMBResponseException
+    from smbprotocol.session import Session
+    from smbprotocol.tree import TreeConnect
 
     client = DurableClient(device)
     path = f"{TEST_DIR}\\{mode}.bin"
     payload = f"durable payload {mode}\n".encode()
     conn1, sess1, tree1 = client.connect()
+    if mode == "rst+second-session":
+        # The durable open belongs to a second session on this connection.
+        sess1 = Session(conn1, device.env.get("TC_SAMBA_USER") or "root", device.env["TC_PASSWORD"])
+        sess1.connect()
+        tree1 = TreeConnect(sess1, rf"\\{device.host}\{device.share}")
+        tree1.connect()
     handle, granted = client.open_durable(tree1, path)
     r.check(f"{mode}: durable handle granted", lambda: granted)
     handle.write(payload, 0)
+    if mode == "rst+ipc-tdis":
+        _ipc_connect_disconnect(device, sess1)
     sock = conn1.transport._sock
-    if mode == "rst":
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-    if mode in ("fin", "rst"):
+    if mode.startswith("rst"):
+        _reset(conn1)
+    elif mode == "fin":
         sock.close()
     time.sleep(2)
     previous = sess1.session_id if mode == "half-open+previous" else 0
@@ -198,6 +245,43 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
         if mode.startswith("half-open"):
             with contextlib.suppress(Exception):
                 conn1.disconnect()
+
+
+def delete_on_close_case(r: Results, device: Device, mode: str) -> None:
+    """A FILE_DELETE_ON_CLOSE file closed by smbd at session teardown, not by
+    a client CLOSE, must still be deleted."""
+    from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
+                                  ImpersonationLevel, Open, ShareAccess)
+
+    name = f"doc-{mode}.bin"
+    on_disk = f"{device.root}/{TEST_DIR}/{name}"
+    conn, sess, tree = DurableClient(device).connect()
+    try:
+        handle = Open(tree, f"{TEST_DIR}\\{name}")
+        handle.create(ImpersonationLevel.Impersonation,
+                      FilePipePrinterAccessMask.GENERIC_READ | FilePipePrinterAccessMask.GENERIC_WRITE
+                      | FilePipePrinterAccessMask.DELETE,
+                      0x80, ShareAccess.FILE_SHARE_READ | ShareAccess.FILE_SHARE_DELETE,
+                      CreateDisposition.FILE_OVERWRITE_IF,
+                      CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_DELETE_ON_CLOSE)
+        handle.write(b"delete me\n", 0)
+        r.check(f"doc:{mode}: the file exists while open",
+                lambda: device.sh(f"ls {shlex.quote(on_disk)}", check=False).strip() != "")
+        if mode.endswith("+ipc-tdis"):
+            _ipc_connect_disconnect(device, sess)
+        if mode.startswith("logoff"):
+            # A bare SMB2 LOGOFF: smbprotocol's default first closes every open
+            # and tree, which would delete the file through a normal CLOSE.
+            sess.disconnect(close=False)
+            time.sleep(2)
+        else:
+            _reset(conn)
+            time.sleep(3)
+        r.check(f"doc:{mode}: smbd deleted the file at session teardown",
+                lambda: device.sh(f"ls {shlex.quote(on_disk)} 2>/dev/null", check=False).strip() == "")
+    finally:
+        with contextlib.suppress(Exception):
+            conn.disconnect()
 
 
 def mac_stall_case(r: Results, device: Device, mount_dir: Path, stall: int) -> None:
@@ -271,7 +355,10 @@ def main() -> int:
     parser.add_argument("--share", help="share name (default: TC_SHARE_NAME, else the only share)")
     parser.add_argument("--stall", type=int, default=60,
                         help="seconds to stop the Mac mount's smbd (0 skips the macOS case)")
+    parser.add_argument("--case", action="append", choices=CASES + ("mac",),
+                        help="run only these cases (repeatable; default: all)")
     args = parser.parse_args()
+    wanted = set(args.case or CASES + ("mac",))
     device = Device(parse_env_file(Path(args.env)), args.share)
     test_dir = f"{device.root}/{TEST_DIR}"
     results = Results()
@@ -279,9 +366,13 @@ def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="tc-durable-"))
     device.sh(f"rm -rf {shlex.quote(test_dir)} && mkdir {shlex.quote(test_dir)} && chmod 777 {shlex.quote(test_dir)}")
     try:
-        for mode in ("fin", "rst", "half-open", "half-open+previous"):
-            drop_case(results, device, mode)
-        if args.stall:
+        for mode in DROP_MODES:
+            if mode in wanted:
+                drop_case(results, device, mode)
+        for mode in DELETE_ON_CLOSE_MODES:
+            if f"doc:{mode}" in wanted:
+                delete_on_close_case(results, device, mode)
+        if args.stall and "mac" in wanted:
             mac_stall_case(results, device, work / "smb", args.stall)
     finally:
         device.sh(f"rm -rf {shlex.quote(test_dir)}", check=False)

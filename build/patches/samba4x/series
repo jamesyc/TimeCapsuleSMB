@@ -43,9 +43,15 @@
 # NetBSD4 can lose Samba's cached is_directory flag even when stat still says
 # the handle is a directory; recover before rejecting SMB2 QUERY_DIRECTORY.
 0004-smb2-query-directory-stat-fallback.patch|NetBSD4 SMB2 directory stat fallback
-# NetBSD4 lacks posix_spawn, but local named pipe and print queue code still
-# compile into the static smbd target even though printing is not enabled.
-0015-spawn-fork-exec-fallback.patch|NetBSD posix_spawn fallbacks
+# NetBSD 4 has no posix_spawn (no spawn.h), so its lanes (TC_SAMBA4X_NETBSD4_COMPAT)
+# fork and execve instead. Samba's configure never defines HAVE_POSIX_SPAWN, so
+# gate on the lane, not on that. Apple's NetBSD 6.0 kernel has posix_spawn(2)
+# (tested on the device 2026-09-27), and the NetBSD 6 lane uses it. local_np.c
+# is live: every pipe but srvsvc (served inside smbd, 0005) tries to start
+# samba-dcerpcd, which the appliance does not ship; posix_spawn fails with
+# ENOENT and no child, the fallback after a fork. queue_process.c only has to
+# compile, as printing is disabled.
+0015-spawn-fork-exec-fallback.patch|posix_spawn fallback on NetBSD 4
 # tdb_open_ex() marks its fd close-on-exec, but tdb_reopen() replaces that fd
 # without the flag, so reopened databases leaked into helper execs. NetBSD4
 # also lacks O_CLOEXEC, which tdb_wrap uses.
@@ -157,9 +163,21 @@
 # the same durable open only, retry outside the open-global TDB lock for up to
 # about 5 seconds (34 x 150 ms) instead of reporting the handle as missing.
 0024-durable-open-live-retry.patch|retry transient live durable-open reconnect races
+# Not specific to Time Machine; an upstream bug that 0029 relies on. A shutdown
+# close (a dropped connection, a bare SMB2 LOGOFF, a tree disconnect) runs from
+# whatever working directory the last request left, which is "/" after any tree
+# disconnect (close_cnum) or another share's root. Delete on close then finds
+# no parent directory and leaves the file (upstream's wide-links check stops it
+# resolving anywhere else), and 0029's by-name stat refuses the durable cookie.
+# Change into the file's own share root first. A disk 0041 finds revoked stays
+# safe even when Apple remounted it at the same path: both steps fstat the old
+# descriptor before any lookup by name, and that fails on a revoked vnode.
+0062-smbd-shutdown-close-share-root.patch|shutdown closes resolve names from the file's share root
 # Time Capsule HFS can update ctime when the last writable fd closes. Record
 # durable cookies after that close so reconnect keeps strict ctime validation
-# without comparing against Samba's own stale pre-close snapshot.
+# without comparing against Samba's own stale pre-close snapshot (seen again
+# 2026-09-27 during durable_device's macOS stall case). The post-close stat is
+# by name, so it relies on 0062's share-root working directory.
 0029-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
 # macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
 # request while probing backup-disk capabilities. The default VFS can complete

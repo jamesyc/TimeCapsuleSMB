@@ -1,0 +1,32 @@
+diff --git a/source3/smbd/close.c b/source3/smbd/close.c
+--- a/source3/smbd/close.c
++++ b/source3/smbd/close.c
+@@ -1409,6 +1409,28 @@ NTSTATUS close_file_smb(struct smb_request *req,
+ 	 */
+ 	SMB_ASSERT(fsp->stream_fsp == NULL);
+ 
++	/*
++	 * A shutdown close (a dropped connection, an SMB2 LOGOFF, a tree
++	 * disconnect) is not a request on this file's tree, so nothing has
++	 * changed into its share: the working directory can be "/" after
++	 * another tree's close_cnum(), or another share's root. Closing a
++	 * file or directory resolves fsp_name from the working directory
++	 * (delete on close, durable disconnect), so start from this file's
++	 * share root. Named pipes and print files have no name to resolve.
++	 */
++	if (close_type == SHUTDOWN_CLOSE &&
++	    fsp->fsp_flags.is_fsa &&
++	    fsp->fake_file_handle == NULL &&
++	    fsp->print_file == NULL &&
++	    vfs_ChDir_shareroot(fsp->conn) != 0)
++	{
++		DBG_INFO("shutdown close of %s: vfs_ChDir_shareroot(%s) "
++			 "failed: %s\n",
++			 fsp_str_dbg(fsp),
++			 fsp->conn->connectpath,
++			 strerror(errno));
++	}
++
+ 	if (fsp->fake_file_handle != NULL) {
+ 		/*
+ 		 * Named pipes are opened as fake files and

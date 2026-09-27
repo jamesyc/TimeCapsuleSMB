@@ -10,7 +10,7 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
  
  	*new_cookie = data_blob_null;
  
-@@ -278,6 +280,51 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
+@@ -278,6 +280,56 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
  		return status;
  	}
  
@@ -27,6 +27,11 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 +		return status;
 +	}
 +
++	/*
++	 * With the fd closed this stats fsp_name by name, from the working
++	 * directory; a shutdown close starts from this file's share root
++	 * (0062), as every request does.
++	 */
 +	status = vfs_stat_fsp(fsp);
 +	if (!NT_STATUS_IS_OK(status)) {
 +		return status;
@@ -62,7 +67,7 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
  	ZERO_STRUCT(cookie);
  	cookie.allow_reconnect = true;
  	cookie.id = fsp->file_id;
-@@ -317,10 +364,14 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
+@@ -317,10 +369,14 @@ NTSTATUS vfs_default_durable_disconnect(struct files_struct *fsp,
  	}
  
  do_close:

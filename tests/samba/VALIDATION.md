@@ -886,3 +886,71 @@ their smbd now compiles upstream's forked helpers; only the lanes compile
 | NetBSD 6 (NetBSD 7 SDK) | 10,232,568 |
 | NetBSD 4 LE | 10,254,552 |
 | NetBSD 4 BE | 10,253,440 |
+
+## Shutdown closes from the share root (0062), durable post-close stat (0029), posix_spawn on NetBSD 6 (0015) (2026-09-27)
+
+A shutdown close (a dropped connection, a bare SMB2 LOGOFF, a tree disconnect)
+is not a request on the file's tree, so smbd does not change into its share
+first. `close_cnum()` for any tree ends with `chdir("/")`, and a LOGOFF request
+has no tree, so the close ran from "/" (or another share's root). Two things
+resolve the file by name from there:
+
+- 0029 stats the closed file by name for the durable cookie. The stat failed
+  (OBJECT_NAME_NOT_FOUND), close_durable logged "Failed to disconnect durable
+  handle ... proceeding with normal close", and the client's reconnect was
+  refused. Upstream fstats before closing and has no such failure.
+- Upstream's delete on close (files and directories) opens the parent with
+  `parent_pathref(conn->cwd_fsp, ...)`. The file survived. With a decoy at the
+  same relative path under the device's "/", the decoy also survived: the
+  wide-links check refuses a parent outside the share, so this is a missed
+  delete, not a wrong one.
+
+0062 changes into the file's own share root at the start of every shutdown
+close of a real file or directory (`vfs_ChDir_shareroot`, cached, so free when
+smbd is already there). 0060's native-link conversion is not affected: it runs
+only on a client CLOSE (NORMAL_CLOSE), after smbd changed into that tree.
+
+Reproduced with the old smbd from a Mac with smbprotocol (4LE: NetBSD 4 LE
+device; 6: NetBSD 6 device):
+
+| Case | Devices | Old smbd |
+| --- | --- | --- |
+| durable open, RST | 4LE, 6 | reconnects |
+| IPC$ tree connected last, never disconnected, then RST | 4LE | reconnects |
+| IPC$ connected and disconnected, then RST | 4LE, 6 | reconnect refused |
+| another tree on the share disconnected, then RST | 4LE | reconnect refused |
+| durable open in the second session on the connection, RST | 4LE, 6 | reconnect refused (order dependent) |
+| delete-on-close file, RST or bare LOGOFF | 6 | deleted |
+| delete-on-close file, IPC$ connected and disconnected, RST or bare LOGOFF | 6 | not deleted |
+
+The new `durable_device` cases (`rst+ipc-tdis`, `rst+second-session`,
+`doc:drop`, `doc:drop+ipc-tdis`, `doc:logoff`, `doc:logoff+ipc-tdis`) failed
+exactly the four bug cases on the NetBSD 6 device's old smbd, and passed every
+control. smbprotocol's default `Session.disconnect()` closes every open and
+tree before its LOGOFF, which hides the bug; the suite sends a bare LOGOFF.
+
+0015: Samba's configure never defines `HAVE_POSIX_SPAWN`, so every lane used
+the fork/exec fallback. A static probe built by the NetBSD 7 SDK ran on the
+NetBSD 6 device (Apple kernel `NetBSD 6.0`, AirPortFW-79100.2): `posix_spawn`
+started `/bin/echo`, and for a missing path returned ENOENT with no child. The
+fallback is now gated on `TC_SAMBA4X_NETBSD4_COMPAT`; the NetBSD 6 link map has
+`posix_spawn`, the NetBSD 4 maps do not. Every pipe except srvsvc goes to
+`local_np.c` to start samba-dcerpcd, which the appliance does not ship. With
+the fallback a client opening lsarpc got NT_STATUS_CONNECTION_DISCONNECTED
+(the forked child's exec failed and its ready pipe hit EOF); with posix_spawn
+the ENOENT maps to NT_STATUS_OBJECT_NAME_NOT_FOUND and no process is created.
+
+0029 is still needed: during `durable_device`'s macOS stall case the file's
+ctime moved from 05:04:29 to 05:05:33 across `fd_close` (NetBSD 4 LE log).
+
+- Host regression run (Docker, sanitizers): all 115 cases passed.
+- Each lane's stripped smbd has 0062's "shutdown close of" log line. The
+  migrators rebuilt byte-identical.
+- Devices: not yet deployed. The NetBSD 6 device was serving a Time Machine
+  backup and the NetBSD 4 LE device was in use for other service work.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,232,864 |
+| NetBSD 4 LE | 10,254,956 |
+| NetBSD 4 BE | 10,253,844 |

@@ -1,18 +1,21 @@
 diff --git a/source3/printing/queue_process.c b/source3/printing/queue_process.c
 --- a/source3/printing/queue_process.c
 +++ b/source3/printing/queue_process.c
-@@ -21,7 +21,28 @@
+@@ -21,7 +21,31 @@
  */
  
  #include "includes.h"
-+#ifdef HAVE_POSIX_SPAWN
++#ifndef TC_SAMBA4X_NETBSD4_COMPAT
  #include <spawn.h>
 +#else
 +/*
-+ * NetBSD4 has no spawn.h/posix_spawn(). The Time Capsule appliance config does
-+ * not use printing, but this file still compiles into the static smbd build.
-+ * Keep the existing helper-start shape with a minimal fork/exec fallback
-+ * instead of removing queue_process.c from the build.
++ * NetBSD 4 has no spawn.h/posix_spawn() (Samba's configure never defines
++ * HAVE_POSIX_SPAWN, so this is gated on the NetBSD 4 lanes). The appliance
++ * disables printing, but this file still compiles into the static smbd build.
++ * Keep the helper-start shape with a minimal fork/exec fallback instead of
++ * removing queue_process.c from the build. It returns -1 on failure because
++ * the caller tests ret == -1 (upstream's check, although posix_spawn()
++ * returns an error number).
 + */
 +static int samba_bgqd_fork_exec(const char *path, char *const argv[], char *const envp[], pid_t *pid)
 +{
@@ -30,11 +33,11 @@ diff --git a/source3/printing/queue_process.c b/source3/printing/queue_process.c
  #include "smbd/globals.h"
  #include "include/messages.h"
  #include "lib/util/util_process.h"
-@@ -393,7 +414,11 @@ pid_t start_background_queue(struct tevent_context *ev,
+@@ -393,7 +417,11 @@ pid_t start_background_queue(struct tevent_context *ev,
  		goto nomem;
  	}
  
-+#ifdef HAVE_POSIX_SPAWN
++#ifndef TC_SAMBA4X_NETBSD4_COMPAT
  	ret = posix_spawn(&pid, argv[0], NULL, NULL, argv, environ);
 +#else
 +	ret = samba_bgqd_fork_exec(argv[0], argv, environ, &pid);
@@ -45,13 +48,19 @@ diff --git a/source3/printing/queue_process.c b/source3/printing/queue_process.c
 diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
 --- a/source3/rpc_client/local_np.c
 +++ b/source3/rpc_client/local_np.c
-@@ -16,7 +16,23 @@
+@@ -16,7 +16,29 @@
   */
  
  #include "source3/include/includes.h"
-+#ifdef HAVE_POSIX_SPAWN
++#ifndef TC_SAMBA4X_NETBSD4_COMPAT
  #include <spawn.h>
 +#else
++/*
++ * NetBSD 4 has no posix_spawn(). Every named pipe but srvsvc (served inside
++ * smbd) comes here to start samba-dcerpcd, which the appliance does not ship:
++ * this fails after a fork, as posix_spawn() fails with ENOENT on the NetBSD 6
++ * lane, whose kernel has it.
++ */
 +static int samba_fork_exec(const char *path, char *const argv[], char *const envp[], pid_t *pid)
 +{
 +	pid_t child = fork();
@@ -69,11 +78,11 @@ diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
  #include "local_np.h"
  #include "lib/async_req/async_sock.h"
  #include "librpc/gen_ndr/ndr_named_pipe_auth.h"
-@@ -381,7 +397,11 @@ static struct tevent_req *start_rpc_host_send(
+@@ -381,7 +403,11 @@ static struct tevent_req *start_rpc_host_send(
  	}
  
  	become_root();
-+#ifdef HAVE_POSIX_SPAWN
++#ifndef TC_SAMBA4X_NETBSD4_COMPAT
  	ret = posix_spawn(&pid, argv[0], NULL, NULL, argv, environ);
 +#else
 +	ret = samba_fork_exec(argv[0], argv, environ, &pid);
