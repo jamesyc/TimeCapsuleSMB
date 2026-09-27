@@ -30,14 +30,24 @@ NAT_RECREATED = facts_text(acp={**MODE["nat"], "laIP": "10.0.1.1", "waIP": "192.
 NAT_NO_WAMA = NAT_OK.replace("key=waMA status=ok value=e8:8d:28:58:f1:5c", "key=waMA status=unavailable value=")
 
 
+# This host build's timings. The tests that check that nothing happens wait
+# a window worked out from the timing that would make it happen.
+TC_PLAN_POLL_MS = 300
+REG_BACKOFF_MAX_MS = 1000
+REG_PENDING_TIMEOUT_MS = 1000
+REG_IPC_ALARM_SECONDS = 2
+# Three plan polls: a facts change has been read and acted on by then.
+QUIET = 3 * TC_PLAN_POLL_MS / 1000
+
+
 @pytest.fixture(scope="module")
 def rig():
     root = Path(tempfile.mkdtemp(prefix="tcdnssd"))
     sock = root / "mDNSResponder"
     binary = compile_service(root / "service", flags=[
-        f'-DMDNS_UDS_SERVERPATH="{sock}"', "-DTC_PLAN_POLL_MS=300", "-DREG_BACKOFF_MIN_MS=200",
-        "-DREG_BACKOFF_MAX_MS=1000", "-DREG_PENDING_TIMEOUT_MS=1000",
-        "-DREG_IPC_ALARM_SECONDS=2", "-D_DNS_SD_LIBDISPATCH=0"])
+        f'-DMDNS_UDS_SERVERPATH="{sock}"', f"-DTC_PLAN_POLL_MS={TC_PLAN_POLL_MS}", "-DREG_BACKOFF_MIN_MS=200",
+        f"-DREG_BACKOFF_MAX_MS={REG_BACKOFF_MAX_MS}", f"-DREG_PENDING_TIMEOUT_MS={REG_PENDING_TIMEOUT_MS}",
+        f"-DREG_IPC_ALARM_SECONDS={REG_IPC_ALARM_SECONDS}", "-D_DNS_SD_LIBDISPATCH=0"])
     yield root, sock, binary
 
 
@@ -317,7 +327,7 @@ def test_startup_registers_with_apples_shared_default_name(rig, daemon):
         # No AFP unless MDNS_ADVERTISE_AFP=1 (macOS 27 hides AFP-advertising capsules).
         assert not any(r["regtype"] == "_afpovertcp._tcp" for r in regs)
         # Steady state: nothing gets re-registered while the plan is unchanged.
-        time.sleep(1.0)
+        time.sleep(QUIET)
         assert len(registered(daemon.transcript)) == 4
     finally:
         log = adv.stop()
@@ -337,12 +347,12 @@ def test_apple_conflict_rename_keeps_all_registration_connections(rig, daemon):
     adv = Advertiser(binary, root, NAT_DENIED, *adisk_args())
     try:
         assert daemon.wait_for(lambda t: len(registered(t)) == 2) is not None
-        time.sleep(0.7)
+        time.sleep(QUIET)
         daemon.rename_default("AirPort Time Capsule (3)")
         # ACP is not the owner of the Bonjour instance name. A changed or
         # unavailable syNm must not replace the daemon's live registrations.
         adv.replace_facts(NAT_DENIED.replace("value=AirPort Time Capsule", "value=Stale ACP Name"))
-        time.sleep(1.0)
+        time.sleep(QUIET)
         assert adv.proc.poll() is None
         assert len(registered(daemon.transcript)) == 2
         assert not any(entry["op"] == "close" for entry in daemon.transcript)
@@ -374,7 +384,7 @@ def test_cold_start_waits_for_critical_facts_then_registers(rig, daemon, missing
     assert cold != NAT_OK
     adv = Advertiser(binary, root, cold, *adisk_args())
     try:
-        time.sleep(1.0)
+        time.sleep(QUIET)
         assert registered(daemon.transcript) == [] and adv.proc.poll() is None
         adv.replace_facts(NAT_OK)
         assert daemon.wait_for(lambda t: len(registered(t)) >= 4) is not None
@@ -392,7 +402,7 @@ def test_aborted_identity_read_does_not_rename_or_withdraw(rig, daemon, key):
         aborted = NAT_OK.replace(f"key={key} status=ok value={value}", f"key={key} status=abort value=")
         assert aborted != NAT_OK
         adv.replace_facts(aborted)
-        time.sleep(1.5)
+        time.sleep(QUIET)
         assert sum(e["op"] == "close" for e in daemon.transcript) == 0
         assert len(registered(daemon.transcript)) == 4
         assert daemon.registrations() == [(2, "_adisk._tcp,_airport", "AirPort Time Capsule"), (2, "_smb._tcp", "AirPort Time Capsule"),
@@ -442,11 +452,12 @@ def test_name_conflict_backs_off_and_retries_until_the_name_is_free(rig, daemon)
         daemon.script("AirPort Time Capsule", "accept")
         before = len(regs)
         assert daemon.wait_for(lambda t: len(registered(t)) > before, timeout=6) is not None
-        time.sleep(0.5)
-        assert daemon.registrations() == [(9, "_smb._tcp", "AirPort Time Capsule")]
+        assert daemon.wait_for(lambda _t: daemon.registrations() == [(9, "_smb._tcp", "AirPort Time Capsule")],
+                               timeout=6) is not None
         settled = len(registered(daemon.transcript))
-        time.sleep(1.5)
-        assert len(registered(daemon.transcript)) == settled   # backoff stopped once registered
+        # Longer than the longest backoff: no retry was still scheduled.
+        time.sleep(REG_BACKOFF_MAX_MS / 1000 + 0.5)
+        assert len(registered(daemon.transcript)) == settled
     finally:
         adv.stop()
 
@@ -483,7 +494,7 @@ def test_daemon_absent_is_degraded_and_recovers_when_it_returns(rig, daemon):
     daemon.go_away()
     adv = Advertiser(binary, root, NAT_DENIED)
     try:
-        time.sleep(1.0)
+        time.sleep(QUIET)
         assert registered(daemon.transcript) == []
         assert adv.proc.poll() is None            # never exits, never spawns a daemon
         daemon.come_back()
@@ -540,7 +551,7 @@ def test_slow_but_answering_daemon_is_not_fenced(rig, daemon):
     adv = Advertiser(binary, root, NAT_DENIED)
     try:
         assert daemon.wait_for(lambda t: len(registered(t)) >= 1) is not None
-        time.sleep(2.5)
+        time.sleep(REG_IPC_ALARM_SECONDS + 0.5)  # past the IPC alarm
         assert adv.proc.poll() is None
         assert daemon.registrations() == [(9, "_smb._tcp", "AirPort Time Capsule")]
     finally:
@@ -572,9 +583,10 @@ def test_slow_ack_gets_full_pending_callback_deadline(rig, daemon):
     try:
         assert daemon.wait_for(lambda events: len(registered(events)) == 1) is not None
         assert daemon.wait_for(lambda _events: daemon.held_reply_count() == 1, timeout=3) is not None
-        time.sleep(0.6)
+        # Answer inside the pending deadline, then outlive it.
+        time.sleep(0.6 * REG_PENDING_TIMEOUT_MS / 1000)
         daemon.release("AirPort Time Capsule")
-        time.sleep(1.2)
+        time.sleep(1.2 * REG_PENDING_TIMEOUT_MS / 1000)
         assert len(registered(daemon.transcript)) == 1
         assert not any(event["op"] == "close" for event in daemon.transcript)
     finally:
@@ -628,10 +640,10 @@ def test_diskless_registers_nothing_but_stays_alive(rig, daemon):
     root, _, binary = rig
     adv = Advertiser(binary, root, NAT_OK, "--diskless", *adisk_args())
     try:
-        time.sleep(1.0)
+        time.sleep(QUIET)
         assert registered(daemon.transcript) == [] and adv.proc.poll() is None
         adv.replace_facts(NAT_DENIED)
-        time.sleep(0.8)
+        time.sleep(QUIET)
         assert registered(daemon.transcript) == []
     finally:
         adv.stop()
@@ -659,14 +671,14 @@ def test_adisk_skipped_without_wama_and_without_rows(rig, daemon):
     adv = Advertiser(binary, root, NAT_NO_WAMA, *adisk_args())
     try:
         assert daemon.wait_for(lambda t: len(registered(t)) >= 2) is not None
-        time.sleep(0.5)
+        time.sleep(QUIET)  # no _adisk follows the _smb pair
         assert daemon.registrations() == [(2, "_smb._tcp", "AirPort Time Capsule"), (9, "_smb._tcp", "AirPort Time Capsule")]
     finally:
         adv.stop()
     adv = Advertiser(binary, root, NAT_OK)
     try:
         assert daemon.wait_for(lambda t: len(registered(t)) >= 2) is not None
-        time.sleep(0.5)
+        time.sleep(QUIET)  # no _adisk follows the _smb pair
         assert all(r["regtype"] == "_smb._tcp" for r in registered(daemon.transcript))
     finally:
         adv.stop()

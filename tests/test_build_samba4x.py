@@ -771,12 +771,48 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             map_path = Path(env["SAMBA4X_NETBSD4BE_BUILD"]) / "smbd-link.map"
             self.assertIn("source3/smbd/smbd", map_path.read_text())
 
-    def test_regression_validation_gates_artifact_staging(self) -> None:
+    # Each case runs the whole lane script with fakes (about 2.5 s), so each is
+    # its own test and the parallel runner spreads them.
+    def test_regression_validation_passes_then_stages(self) -> None:
+        self.check_regression_validation_gates_artifact_staging(None)
+
+    def test_regression_validation_failed_aio_fork_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("failed")
+
+    def test_regression_validation_missing_aio_fork_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("missing")
+
+    def test_regression_validation_failed_streams_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("stream-failed")
+
+    def test_regression_validation_missing_streams_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("stream-missing")
+
+    def test_regression_validation_failed_native_metadata_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("native-failed")
+
+    def test_regression_validation_missing_native_metadata_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("native-missing")
+
+    def test_regression_validation_failed_migrator_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("migrate-failed")
+
+    def test_regression_validation_missing_migrator_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("migrate-missing")
+
+    def test_regression_validation_failed_storage_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("storage-failed")
+
+    def test_regression_validation_missing_storage_driver_blocks_staging(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("storage-missing")
+
+    def test_regression_drivers_compile_without_running_then_stage(self) -> None:
+        self.check_regression_validation_gates_artifact_staging("compile-only")
+
+    def check_regression_validation_gates_artifact_staging(self, *failures: str | None) -> None:
         from tests.samba.run import execution_cases
 
-        for failure in (None, "failed", "missing", "stream-failed", "stream-missing",
-                        "native-failed", "native-missing", "migrate-failed",
-                        "migrate-missing", "storage-failed", "storage-missing", "compile-only"):
+        for failure in failures:
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 capture = root / "configure-args.txt"
@@ -844,10 +880,17 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         for target, arguments in execution_cases(True)
                     ])
 
-    def test_data_faultahead_check_gates_staging_of_smbd_and_migrator(self) -> None:
-        for wrapper, lane in (("samba4x.sh", "netbsd7"),
-                              ("samba4xoldle.sh", "netbsd4le"),
-                              ("samba4xoldbe.sh", "netbsd4be")):
+    def test_data_faultahead_check_gates_staging_of_smbd_and_migrator_netbsd7(self) -> None:
+        self.check_data_faultahead_check_gates_staging_of_smbd_and_migrator("samba4x.sh", "netbsd7")
+
+    def test_data_faultahead_check_gates_staging_of_smbd_and_migrator_netbsd4le(self) -> None:
+        self.check_data_faultahead_check_gates_staging_of_smbd_and_migrator("samba4xoldle.sh", "netbsd4le")
+
+    def test_data_faultahead_check_gates_staging_of_smbd_and_migrator_netbsd4be(self) -> None:
+        self.check_data_faultahead_check_gates_staging_of_smbd_and_migrator("samba4xoldbe.sh", "netbsd4be")
+
+    def check_data_faultahead_check_gates_staging_of_smbd_and_migrator(self, *lane_wrapper: str) -> None:
+        for wrapper, lane in (lane_wrapper,):
             with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 env = self.env_for_lane(root, lane, root / "configure.txt")
@@ -916,10 +959,17 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 self.assertIn("smbd has thread-local storage; refusing to stage it", log)
                 self.assertFalse((stage / "sbin/smbd").exists())
 
-    def test_rc2_size_budget_accepts_boundary_and_rejects_growth(self) -> None:
-        for wrapper, lane in (("samba4x.sh", "netbsd7"),
-                              ("samba4xoldle.sh", "netbsd4le"),
-                              ("samba4xoldbe.sh", "netbsd4be")):
+    def test_rc2_size_budget_accepts_boundary_and_rejects_growth_netbsd7(self) -> None:
+        self.check_rc2_size_budget_accepts_boundary_and_rejects_growth("samba4x.sh", "netbsd7")
+
+    def test_rc2_size_budget_accepts_boundary_and_rejects_growth_netbsd4le(self) -> None:
+        self.check_rc2_size_budget_accepts_boundary_and_rejects_growth("samba4xoldle.sh", "netbsd4le")
+
+    def test_rc2_size_budget_accepts_boundary_and_rejects_growth_netbsd4be(self) -> None:
+        self.check_rc2_size_budget_accepts_boundary_and_rejects_growth("samba4xoldbe.sh", "netbsd4be")
+
+    def check_rc2_size_budget_accepts_boundary_and_rejects_growth(self, *lane_wrapper: str) -> None:
+        for wrapper, lane in (lane_wrapper,):
             for size in (10 * 1024 * 1024, 10 * 1024 * 1024 + 1):
                 with self.subTest(lane=lane, size=size), tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)

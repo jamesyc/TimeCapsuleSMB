@@ -25,8 +25,18 @@ class ServiceBuildWrapperTests(unittest.TestCase):
             self.assertTrue((root / "stage" / "service.stripped").exists())
             self.assertIn("service.sources", log.read_text())
 
-    def test_data_faultahead_check_gates_stripping(self) -> None:
-        for wrapper in ("service.sh", "serviceoldle.sh", "serviceoldbe.sh"):
+    # One test per lane wrapper, so the parallel runner spreads the builds.
+    def test_data_faultahead_check_gates_stripping_netbsd6(self) -> None:
+        self.check_data_faultahead_check_gates_stripping("service.sh")
+
+    def test_data_faultahead_check_gates_stripping_netbsd4le(self) -> None:
+        self.check_data_faultahead_check_gates_stripping("serviceoldle.sh")
+
+    def test_data_faultahead_check_gates_stripping_netbsd4be(self) -> None:
+        self.check_data_faultahead_check_gates_stripping("serviceoldbe.sh")
+
+    def check_data_faultahead_check_gates_stripping(self, *wrappers: str) -> None:
+        for wrapper in wrappers:
             with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 helper = BuildWrapperHarness()
