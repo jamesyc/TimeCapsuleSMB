@@ -1294,11 +1294,16 @@ else
     status=1
 fi
 
+# Only the daemon is managed. One-shot clients and the "rsync --server"
+# processes sshd starts for a remote client are the user's transfers
+# (issue #346), so they neither satisfy nor fail these checks.
 rsync_pids=
 if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
     old_ifs=$IFS
     IFS='
 '
+    # A client's arguments may hold glob patterns; never expand them.
+    set -f
     for line in $ps_out; do
         [ -n "$line" ] || continue
         line_ifs=$IFS
@@ -1308,8 +1313,20 @@ if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); th
         [ "$#" -ge 3 ] || continue
         case "$2" in Z*) continue ;; esac
         [ "$3" = rsync ] || continue
-        rsync_pids="$rsync_pids $1"
+        rsync_pid=$1
+        rsync_daemon=0
+        rsync_server=0
+        shift 3
+        for rsync_arg in "$@"; do
+            case "$rsync_arg" in
+                --daemon) rsync_daemon=1 ;;
+                --server) rsync_server=1 ;;
+            esac
+        done
+        [ "$rsync_daemon" = 1 ] && [ "$rsync_server" = 0 ] || continue
+        rsync_pids="$rsync_pids $rsync_pid"
     done
+    set +f
     IFS=$old_ifs
 fi
 

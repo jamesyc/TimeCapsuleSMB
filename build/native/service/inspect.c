@@ -23,8 +23,13 @@ static int starts_with_arguments(const char *command, const char *prefix) {
 static enum tc_process_role classify(const char *name, const char *command) {
     if (!strcmp(name, "smbd"))
         return TC_PROC_SMBD;
+    /* Only the daemon holds TCP 873, so only a daemon outside the managed
+     * group is stale. One-shot clients and the "rsync --server ..." (or
+     * "rsync --server --daemon .") processes sshd starts for a remote client
+     * are the user's transfers; stopping them kills the transfer (issue #346).
+     * The daemon's connection children keep its argv and group. */
     if (!strcmp(name, "rsync"))
-        return TC_PROC_RSYNC;
+        return argument(command, "--daemon") && !argument(command, "--server") ? TC_PROC_RSYNC : TC_PROC_OTHER;
     if (!strcmp(name, "wcifsfs"))
         return TC_PROC_WCIFSFS;
     if (!strcmp(name, "wcifsnd"))
@@ -56,10 +61,13 @@ int tc_process_table_parse(struct tc_process_table *table, const char *text) {
         const char *end = strchr(text, '\n');
         int pid, parent, group, offset = 0;
         size_t length = end ? (size_t)(end - text) : strlen(text);
-        if (length >= sizeof(line))
-            return -1;
-        memcpy(line, text, length);
-        line[length] = 0;
+        size_t kept = length < sizeof(line) ? length : sizeof(line) - 1;
+        /* A user's command line can run to kilobytes (an rsync file list).
+         * Every role is decided by ucomm and the leading arguments, so parse
+         * the line's start; rejecting the table would stall every audit for
+         * as long as that command runs. */
+        memcpy(line, text, kept);
+        line[kept] = 0;
         text += length + (end != NULL);
         if (!length)
             continue;

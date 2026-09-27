@@ -562,6 +562,96 @@ def test_rsync_is_owned_then_drained_before_its_ram_files_are_removed(manager):
     with pytest.raises(ProcessLookupError):os.kill(rsync['pid'],0)
 
 
+def enable_rsync(root):
+    shutil.copy2(root/'dk2/.samba4/smbd',root/'dk2/.samba4/rsync')
+    (root/'dk2/.samba4/rsyncd.conf').write_text('[Data]\npath = /old/ShareRoot\n')
+    (root/'config').write_text('TELEMETRY=0\nRSYNC_ENABLED=1\n')
+
+
+def sleeper(ignore_term=False):
+    code=('import signal,time\n'+('signal.signal(signal.SIGTERM,signal.SIG_IGN)\n' if ignore_term else '')+
+          'print("ready",flush=True)\ntime.sleep(60)\n')
+    child=subprocess.Popen([sys.executable,'-c',code],stdout=subprocess.PIPE,text=True,start_new_session=True)
+    assert child.stdout.readline().strip()=='ready'
+    return child
+
+
+def rsync_starts(rows):return [e for e in rows if e['role']=='rsync' and e['kind']=='start']
+
+
+@pytest.mark.parametrize('enabled',[False,True])
+def test_rsync_clients_and_ssh_servers_are_left_running(manager,enabled):
+    root,start,events,wait,_,_=manager
+    if enabled:enable_rsync(root)
+    # Issue #346: a client run by hand on the device, and the servers sshd
+    # starts for a remote client, are named rsync too. They are the user's
+    # transfers, not a stale daemon, and must not hold back the managed one.
+    commands=['/mnt/Memory/samba4/sbin/rsync -rlptD --info=progress2 /Volumes/dk2/ShareRoot/ 192.168.1.248::shareroot/',
+              'rsync --server -logDtpre.iLsfxCIvu . /Volumes/dk2/ShareRoot/',
+              'rsync --server --daemon .']
+    users=[sleeper() for _ in commands]
+    try:
+        (root/'external-processes').write_text(''.join(
+            f'{child.pid} 1 {child.pid} S rsync {command}\n' for child,command in zip(users,commands)))
+        (root/'record-ps').touch()
+        process=start()
+        wait(started('rsync') if enabled else started('smbd'))
+        for count in (2,3):
+            process.send_signal(signal.SIGHUP)
+            wait(lambda rows:sum(e['role']=='ps' for e in rows)>=count)
+        assert all(child.poll() is None for child in users)
+        assert len(rsync_starts(events()))==(1 if enabled else 0)
+        assert 'SIGKILL' not in runtime_log(root)
+    finally:
+        for child in users:
+            if child.poll() is None:child.kill()
+            child.wait()
+
+
+def test_foreign_rsync_daemon_is_stopped_before_the_managed_one_starts(manager):
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    foreign=sleeper()
+    try:
+        (root/'external-processes').write_text(
+            f'{foreign.pid} 1 {foreign.pid} S rsync /mnt/Memory/samba4/sbin/rsync --daemon --no-detach\n')
+        start()
+        values=wait(lambda rows:foreign.poll() is not None and rsync_starts(rows))
+        assert foreign.returncode==-signal.SIGTERM
+        assert len(rsync_starts(values))==1
+        # Routine SIGTERM cleanup is not logged.
+        assert 'foreign rsync' not in runtime_log(root)
+    finally:
+        if foreign.poll() is None:foreign.kill()
+        foreign.wait()
+
+
+def test_term_resistant_rsync_daemon_is_killed_and_logged_once(manager):
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    foreign=sleeper(ignore_term=True)
+    try:
+        (root/'external-processes').write_text(
+            f'{foreign.pid} 1 {foreign.pid} S rsync /mnt/Memory/samba4/sbin/rsync --daemon --no-detach\n')
+        (root/'record-ps').touch()
+        start()
+        log=wait_log(root,f'foreign rsync pid {foreign.pid} ',timeout=25)
+        assert re.search(rf'foreign rsync pid {foreign.pid} \(group {foreign.pid}\) ignored SIGTERM for \d+ ms; sending SIGKILL',log)
+        # Leave the killed child unreaped: the fake ps keeps listing it, as
+        # Apple's ps would list a process stuck in the kernel. Later audits
+        # resend SIGKILL without logging again, and rsync stays blocked.
+        audits=sum(e['role']=='ps' for e in events())
+        wait(lambda rows:sum(e['role']=='ps' for e in rows)>=audits+3)
+        assert runtime_log(root).count(f'foreign rsync pid {foreign.pid} ')==1
+        assert not rsync_starts(events())
+        assert foreign.wait(timeout=5)==-signal.SIGKILL
+        wait(started('rsync'))
+        assert runtime_log(root).count('sending SIGKILL')==1
+    finally:
+        if foreign.poll() is None:foreign.kill()
+        foreign.wait()
+
+
 def test_missing_diskd_is_started_on_loopback_and_survives_manager_stop(manager):
     root,start,_,wait,_,_=manager
     (root/'diskd-absent').touch()

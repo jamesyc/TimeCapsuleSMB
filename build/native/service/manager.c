@@ -27,6 +27,7 @@ enum { BLOCK_SMB = 1, BLOCK_RSYNC = 2, BLOCK_DISCOVERY = 4, BLOCK_TELEMETRY = 8 
 struct stale_process {
     pid_t pid;
     long long since;
+    int killed;
 };
 
 struct managed {
@@ -425,6 +426,11 @@ static void pump_storage(struct manager *m, long long now) {
             m->storage_at = now + JOB_RETRY_MS;
     }
 }
+static const char *role_name(enum tc_process_role role) {
+    static const char *const names[] = {"process", "smbd", "discovery", "telemetry", "rsync",
+                                        "wcifsfs", "wcifsnd", "diskd", "diskd"};
+    return (size_t)role < sizeof(names) / sizeof(names[0]) ? names[role] : "process";
+}
 static void apply_audit(struct manager *m, long long now) {
     size_t i;
     int diskd = 0, external = 0;
@@ -452,12 +458,23 @@ static void apply_audit(struct manager *m, long long now) {
         if (stop) {
             size_t j;
             long long since = now;
+            int killed = 0;
             for (j = 0; j < m->stale_count; j++)
-                if (m->stale[j].pid == p->pid)
+                if (m->stale[j].pid == p->pid) {
                     since = m->stale[j].since;
-            stale[stale_count].pid = p->pid;
-            stale[stale_count++].since = since;
+                    killed = m->stale[j].killed;
+                }
             int sig = now - since >= TC_STALE_KILL_MS && p->role != TC_PROC_TELEMETRY ? SIGKILL : SIGTERM;
+            /* SIGTERM is routine cleanup. A process that outlives it is
+             * rare and worth one line; later audits resend SIGKILL quietly. */
+            if (sig == SIGKILL && !killed) {
+                timestamped_fprintf(stderr, "manager: foreign %s pid %d (group %d) ignored SIGTERM for %lld ms; sending SIGKILL\n",
+                                    role_name(p->role), (int)p->pid, (int)p->group, now - since);
+                killed = 1;
+            }
+            stale[stale_count].pid = p->pid;
+            stale[stale_count].since = since;
+            stale[stale_count++].killed = killed;
             kill(p->pid, sig);
             external = 1;
             if (p->role == TC_PROC_TELEMETRY)

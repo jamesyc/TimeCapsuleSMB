@@ -592,6 +592,8 @@ The daemon exposes a writable, unauthenticated module named `shareroot`. Only en
 
 Disabling rsync on a later deploy leaves the persistent HDD files installed, but the manager stops the daemon and removes the RAM binary and configuration. No rsync PID file is used: the manager owns its foreground child and checks its listeners. This deliberately avoids stale runtime state files.
 
+The manager supervises only the `rsync --daemon` process and its connection children. An `rsync --daemon` outside its process group, such as one left by an earlier manager, is stopped with `SIGTERM`, then `SIGKILL` after 10 seconds; the first `SIGKILL` sent to each process is logged in `runtime.log`. One-shot rsync clients run on the device and the `rsync --server` processes sshd starts for a remote client are left alone, and doctor ignores them too.
+
 ## SMB Runtime Layout
 
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
