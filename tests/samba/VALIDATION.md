@@ -946,8 +946,21 @@ ctime moved from 05:04:29 to 05:05:33 across `fd_close` (NetBSD 4 LE log).
 - Host regression run (Docker, sanitizers): all 115 cases passed.
 - Each lane's stripped smbd has 0062's "shutdown close of" log line. The
   migrators rebuilt byte-identical.
-- Devices: not yet deployed. The NetBSD 6 device was serving a Time Machine
-  backup and the NetBSD 4 LE device was in use for other service work.
+- Devices: both deployed with this smbd (SHA256 matched the repo) at log level
+  10, then:
+  - `durable_device` passed 25/25 on each, the four cases that failed on the
+    old smbd included, and `doctor` passed (86 checks, no warnings) on each.
+  - The one-off reproductions not kept in the suite passed on each: another
+    tree on the share disconnected, IPC$ connected last, the durable open in
+    the first or the second session, and delete on close with a decoy under
+    the device's "/" (the share file was deleted, the decoy kept).
+  - lsarpc: NetBSD 6 returned NT_STATUS_OBJECT_NAME_NOT_FOUND and NetBSD 4 LE
+    NT_STATUS_CONNECTION_DISCONNECTED. On each, a session that failed lsarpc
+    three times still served srvsvc, and nothing was left under the client's
+    smbd (no child, no zombie; NetBSD 4's fallback children are reaped).
+    `smbutil view` listed the shares on each.
+  - The log since smbd's start had 14 durable disconnects and no failed one, no
+    0062 chdir failure, no failed delete on close, and no panic or signal.
 
 | Lane | smbd bytes |
 | --- | ---: |
