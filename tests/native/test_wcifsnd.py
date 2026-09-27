@@ -62,6 +62,13 @@ WCIFSND_UNIT_MODULES = (
 )
 
 
+# Base of the doubling retry backoff after a failed child (device 1 s). The
+# first retry comes two bases after a failure; waiting three first retries
+# proves that none was scheduled.
+WCIFSND_RETRY_MS = 200
+PAST_FIRST_RETRY = 3 * 2 * WCIFSND_RETRY_MS / 1000
+
+
 @pytest.fixture(scope="module")
 def rig():
     root = Path(tempfile.mkdtemp(prefix="tcwcifsnd-"))
@@ -77,7 +84,8 @@ def rig():
         f"-DWCIFSND_PORT={port}", "-DWCIFSND_START_MS=3000", "-DWCIFSND_INSPECT_MS=3000",
         "-DTC_CHILD_GRACE_MS=500", "-DWCIFSND_REPLY_MS=1500",
         "-DWCIFSND_STOP_MS=500", "-DTC_PLAN_POLL_MS=200", "-DREG_BACKOFF_MIN_MS=100",
-        "-DREG_BACKOFF_MAX_MS=200", "-DREG_IPC_ALARM_SECONDS=1", "-D_DNS_SD_LIBDISPATCH=0"])
+        "-DREG_BACKOFF_MAX_MS=200", "-DREG_IPC_ALARM_SECONDS=1", "-D_DNS_SD_LIBDISPATCH=0",
+        f"-DWCIFSND_RETRY_MS={WCIFSND_RETRY_MS}"])
     return root, sock, binary, port
 
 
@@ -421,7 +429,7 @@ def test_losing_ipv4_cancels_pending_inspection_without_restarting(rig, dnssd):
         discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
         assert wait_for(lambda: "STOP" in event_lines(discovery.events))
         assert wait_for(lambda: not process_exists(helper), timeout=3)
-        time.sleep(2.5)
+        time.sleep(PAST_FIRST_RETRY)
         assert len(children(discovery)) == 1
         assert not adds(discovery)
         assert discovery.proc.poll() is None
@@ -623,7 +631,7 @@ def test_recovery_can_be_cancelled_without_respawning(rig, dnssd, phase, action)
         if action == 'ipv4-loss':
             discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
             assert wait_for(lambda: 'STOP' in event_lines(discovery.events))
-            time.sleep(2.5)  # Beyond the first retry deadline; no new child.
+            time.sleep(PAST_FIRST_RETRY)  # No new child.
             # Losing IPv4 can also change Bonjour’s eligible interfaces.
             # Recovery must stop without terminating the discovery controller.
             assert discovery.proc.poll() is None
@@ -652,7 +660,7 @@ def test_retry_waits_for_valid_facts_without_dropping_bonjour(rig, dnssd):
         time.sleep(.6)  # Consume the new incomplete snapshot before faulting.
         old = children(discovery)[0]
         os.kill(old, signal.SIGKILL)
-        time.sleep(3)  # The retry deadline expires, but startup is not eligible.
+        time.sleep(PAST_FIRST_RETRY)  # The retry deadline expires, but startup is not eligible.
         assert_reaped(old, discovery.proc.pid)
         assert children(discovery) == [old]
         assert_bonjour_unchanged(discovery, dnssd, connections)

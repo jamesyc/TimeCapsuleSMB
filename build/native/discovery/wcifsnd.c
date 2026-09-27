@@ -10,6 +10,7 @@
 #undef WCIFSND_INSPECT_MS
 #undef WCIFSND_REPLY_MS
 #undef WCIFSND_STOP_MS
+#undef WCIFSND_RETRY_MS
 #endif
 #ifndef WCIFSND_PATH
 #define WCIFSND_PATH "/sbin/wcifsnd"
@@ -28,6 +29,10 @@
 #endif
 #ifndef WCIFSND_STOP_MS
 #define WCIFSND_STOP_MS 2000
+#endif
+/* Base of the doubling retry backoff after a failed child. */
+#ifndef WCIFSND_RETRY_MS
+#define WCIFSND_RETRY_MS 1000
 #endif
 
 static unsigned get16(const unsigned char *p) { return ((unsigned)p[0] << 8) | p[1]; }
@@ -252,7 +257,7 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
              * Bonjour keeps its independent mDNSResponder connections. */
             w->failed = 0;
             if (w->failures < 6) w->failures++;
-            w->wake = now + (1000LL << w->failures);
+            w->wake = now + ((long long)WCIFSND_RETRY_MS << w->failures);
             timestamped_fprintf(stderr, "wcifsnd: retry in %lld ms\n", w->wake - now);
         }
         if (!w->inspection.group && w->desired && w->validated && now >= w->wake) spawn_child(w, now);

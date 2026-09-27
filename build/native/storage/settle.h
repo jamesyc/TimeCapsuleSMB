@@ -2,7 +2,14 @@
 #define TC_STORAGE_SETTLE_H
 #include "mast.h"
 
+/* Host tests shorten these; tests/native/unit/test_storage_settle.c pins the
+ * device values. */
+#ifndef TC_STORAGE_SETTLE_MS
 #define TC_STORAGE_SETTLE_MS 5000
+#endif
+#ifndef TC_STORAGE_RETRY_MS
+#define TC_STORAGE_RETRY_MS 5000
+#endif
 struct tc_storage_settle {
     struct tc_inventory stable, candidate;
     int initialized, pending;

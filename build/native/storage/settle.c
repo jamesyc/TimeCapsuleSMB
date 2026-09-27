@@ -1,7 +1,7 @@
 #include "settle.h"
 
 void tc_storage_retry_finish(struct tc_storage_retry *retry, long long now, int pending) {
-    static const unsigned delays[] = {5000, 15000, 60000};
+    static const unsigned delays[] = {TC_STORAGE_RETRY_MS, 3 * TC_STORAGE_RETRY_MS, 12 * TC_STORAGE_RETRY_MS};
     if (!pending) { retry->at = 0; retry->failures = 0; return; }
     retry->at = now + delays[retry->failures];
     if (retry->failures < 2) retry->failures++;

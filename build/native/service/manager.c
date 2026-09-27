@@ -13,7 +13,13 @@
 #define SETTINGS_MS 30000
 #define INVENTORY_MS 10000
 #define AUDIT_MS 30000
+/* Host tests shorten these two; the device uses the defaults. */
+#ifndef JOB_RETRY_MS
 #define JOB_RETRY_MS 5000
+#endif
+#ifndef TC_STALE_KILL_MS
+#define TC_STALE_KILL_MS 10000
+#endif
 #ifndef TC_DISKD_PATH
 #define TC_DISKD_PATH "/sbin/diskd"
 #endif
@@ -400,7 +406,7 @@ static void apply_audit(struct manager *m, long long now) {
                     since = m->stale[j].since;
             stale[stale_count].pid = p->pid;
             stale[stale_count++].since = since;
-            int sig = now - since >= 10000 && p->role != TC_PROC_TELEMETRY ? SIGKILL : SIGTERM;
+            int sig = now - since >= TC_STALE_KILL_MS && p->role != TC_PROC_TELEMETRY ? SIGKILL : SIGTERM;
             kill(p->pid, sig);
             external = 1;
             if (p->role == TC_PROC_TELEMETRY)

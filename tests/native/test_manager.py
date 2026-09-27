@@ -17,6 +17,15 @@ import pytest
 from tests.native.build import compile_service
 
 
+# This host build shortens the manager's waits; the device keeps the defaults.
+# tests/native/unit/test_storage_settle.c pins the device settle and retry.
+TIMINGS=dict(
+    TC_STORAGE_SETTLE_MS=1000,  # device 5 s
+    TC_STORAGE_RETRY_MS=1000,   # device 5 s; automatic retries back off 1x, 3x, then 12x
+    JOB_RETRY_MS=1000,          # device 5 s
+    TC_STALE_KILL_MS=4000,      # device 10 s
+)
+
 CHILD = '''
 import json,os,signal,sys,time,select
 from pathlib import Path
@@ -116,6 +125,7 @@ if not (Path(os.environ['TC_TEST_ROOT'])/'no-listener').exists():
         f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
         f'-DTC_FLASH_CONFIG_PATH="{root}/config"',f'-DTC_VOLUMES_ROOT="{root}"',
         f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_PS_PATH="{root}/ps"',f'-DTC_FSTAT_PATH="{root}/fstat"',
+        *(f'-D{name}={value}' for name,value in TIMINGS.items()),
     ])
     return root,binary
 
@@ -468,8 +478,8 @@ def test_term_resistant_foreign_wcifsnd_does_not_reset_discovery(manager):
         wait(lambda rows:sum(e['role']=='ps' for e in rows)>=2)
         assert native.poll() is None
         assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==starts
-        # SIGKILL follows 10 s after first sighting, via ~1 s audits that
-        # can each run for seconds on a loaded host.
+        # SIGKILL follows TC_STALE_KILL_MS after first sighting, via ~1 s
+        # audits that can each run for seconds on a loaded host.
         wait(lambda rows:native.poll() is not None,timeout=25)
         assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==starts
         assert len([e for e in events() if e['role']=='discovery' and e['kind']=='stop'])==stops
@@ -611,7 +621,8 @@ def test_preparation_recovers_on_unchanged_inventory(manager,failure):
     assert not started('smbd')(events())
     repair()
     # No HUP/topology/mount/user-count change: the explicit retry must recover.
-    # Automatic storage retries back off 5 s then 15 s (storage/settle.c).
+    # Automatic storage retries back off TC_STORAGE_RETRY_MS, then three times
+    # that (storage/settle.c).
     wait(started('smbd'),25)
     wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
     assert '[Data]' in (root/'ram/etc/smb.conf').read_text()
@@ -704,7 +715,13 @@ def test_pending_payload_does_not_reclaim_unchanged_users_zero_volume(manager):
     (root/'record-acp').touch()
     home=root/'dk2/.samba4';(home/'private').rename(home/'private.saved')
     process=start();wait_storage_failure(root,'payload inspection')
-    time.sleep(7) # First automatic retry must inspect only the failed payload.
+    # The first automatic retry must inspect only the failed payload. Each
+    # failed inspection logs its stage; the next retry is 3 s after this one.
+    log=root/'ram/var/runtime.log'
+    deadline=time.monotonic()+15
+    while log.read_text().count('stage=payload inspection')<2 and time.monotonic()<deadline:time.sleep(.05)
+    assert log.read_text().count('stage=payload inspection')==2
+    time.sleep(.15) # Let the captured partial result reach the manager.
     claims=[e for e in events() if e['role']=='acp' and e.get('key')=='path:s:'+str(root/'dk2')]
     assert len(claims)==1
     (home/'private.saved').rename(home/'private')
