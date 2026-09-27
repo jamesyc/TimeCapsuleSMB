@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import socket
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -19,7 +20,11 @@ from timecapsulesmb.cli.runtime import (
     print_json,
 )
 from timecapsulesmb.core.config import AppConfig, ConfigError, DEFAULTS
+from timecapsulesmb.core.paths import AppPaths
+from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.services.runtime import resolve_env_connection, ssh_target_link_local_resolution_error
+
+from tests.cli_support import app_config, valid_env
 
 
 class RuntimeTests(unittest.TestCase):
@@ -161,6 +166,114 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("nested-secret", output.getvalue())
         self.assertNotIn("token-secret", output.getvalue())
         self.assertNotIn("session-secret-value", output.getvalue())
+
+    def test_optional_env_config_uses_missing_config_when_env_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            app_paths = AppPaths(
+                distribution_root=Path(tmp),
+                config_path=env_path,
+                state_dir=Path(tmp),
+                package_root=SRC_ROOT / "timecapsulesmb",
+            )
+            with mock.patch("timecapsulesmb.services.runtime.resolve_app_paths", return_value=app_paths):
+                config = service_runtime.load_optional_env_config()
+
+        self.assertFalse(config.exists)
+        self.assertEqual(config.path, env_path)
+        self.assertEqual(config.values, {})
+
+    def test_optional_env_config_reads_env_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("TC_HOST='root@10.0.0.2'\nTC_CONFIGURE_ID='cfg-1'\n")
+            app_paths = AppPaths(
+                distribution_root=Path(tmp),
+                config_path=env_path,
+                state_dir=Path(tmp),
+                package_root=SRC_ROOT / "timecapsulesmb",
+            )
+            with mock.patch("timecapsulesmb.services.runtime.resolve_app_paths", return_value=app_paths):
+                config = service_runtime.load_optional_env_config()
+
+        self.assertTrue(config.exists)
+        self.assertEqual(config.path, env_path)
+        self.assertEqual(config.get("TC_HOST"), "root@10.0.0.2")
+        self.assertEqual(config.get("TC_CONFIGURE_ID"), "cfg-1")
+
+    def test_managed_target_resolves_connection_without_probing(self) -> None:
+        config = app_config(valid_env())
+        with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", side_effect=AssertionError("should not probe")):
+            target = service_runtime.resolve_validated_managed_target(
+                config,
+                command_name="deploy",
+                profile="deploy",
+                include_probe=False,
+            )
+
+        self.assertEqual(target.connection.host, config.require("TC_HOST"))
+        self.assertIsNone(target.probe_state)
+
+    def test_managed_target_rejects_hostname_that_resolves_link_local(self) -> None:
+        config = app_config(valid_env(TC_HOST="root@capsule.local"))
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
+            with self.assertRaises(ConfigError) as ctx:
+                service_runtime.resolve_validated_managed_target(
+                    config,
+                    command_name="deploy",
+                    profile="deploy",
+                    include_probe=False,
+                )
+
+        self.assertIn("TC_HOST host capsule.local resolves to link-local address 169.254.44.9", str(ctx.exception))
+
+    def test_managed_target_allows_proxied_hostname_that_resolves_link_local(self) -> None:
+        config = app_config(
+            valid_env(
+                TC_HOST="root@capsule.local",
+                TC_SSH_OPTS="-o ProxyJump=bastion",
+            )
+        )
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=AssertionError("should not resolve")):
+            target = service_runtime.resolve_validated_managed_target(
+                config,
+                command_name="deploy",
+                profile="deploy",
+                include_probe=False,
+            )
+
+        self.assertEqual(target.connection.host, "root@capsule.local")
+
+    def test_resolve_env_connection_no_input_fails_instead_of_prompting_for_password(self) -> None:
+        config = app_config({"TC_HOST": "root@10.0.0.2"})
+        with mock.patch("getpass.getpass", side_effect=AssertionError("non-interactive callers must not prompt")):
+            with self.assertRaises(ConfigError) as ctx:
+                service_runtime.resolve_env_connection(config, allow_password_prompt=False)
+
+        self.assertIn("TC_PASSWORD is required when --no-input is used.", str(ctx.exception))
+
+    def test_flash_target_resolution_uses_connection_only_config(self) -> None:
+        config = app_config({
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "not a valid interface value",
+            "TC_AIRPORT_SYAP": "not-a-syap",
+            "TC_MDNS_DEVICE_MODEL": "not-a-model",
+        })
+        with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", side_effect=AssertionError("flash target resolution should not probe the device")):
+            target = service_runtime.resolve_validated_managed_target(
+                config,
+                command_name="flash",
+                profile="flash",
+                include_probe=True,
+            )
+
+        self.assertEqual(target.connection.host, "root@10.0.0.2")
+        self.assertEqual(target.connection.password, "pw")
+        self.assertEqual(target.connection.ssh_opts, "-o foo")
+        self.assertIsNone(target.probe_state)
 
 
 if __name__ == "__main__":

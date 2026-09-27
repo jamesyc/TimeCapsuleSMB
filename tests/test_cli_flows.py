@@ -18,63 +18,19 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
     ProbeStepResult,
-    ReadinessProbeResult,
 )
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.reboot import ACP_REBOOT_REQUEST_TIMEOUT_SECONDS, SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE
-from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import wait_for_tcp_port_state
 from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
+from tests.cli_support import FakeCommandContext, readiness_result
+
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
-
-
-def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
-    steps = []
-    for index, line in enumerate(lines):
-        if line.startswith("PASS:"):
-            steps.append(ProbeStepResult(f"test_{index}", "pass", line.removeprefix("PASS:")))
-        elif line.startswith("FAIL:"):
-            steps.append(ProbeStepResult(f"test_{index}", "fail", line.removeprefix("FAIL:")))
-        else:
-            steps.append(ProbeStepResult(f"test_{index}", "fail", line))
-    return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
-
-
-class FakeCommandContext:
-    def __init__(self) -> None:
-        self.stages: list[str] = []
-        self.finish_fields: dict[str, object] = {}
-        self.debug_fields: dict[str, object] = {}
-        self.error: str | None = None
-
-    def set_stage(self, stage: str) -> None:
-        self.stages.append(stage)
-
-    def update_fields(self, **fields: object) -> None:
-        for key, value in fields.items():
-            if value is not None:
-                self.finish_fields[key] = value
-
-    def add_debug_fields(self, **fields: object) -> None:
-        for key, value in fields.items():
-            if value is not None:
-                self.debug_fields[key] = value
-
-    def to_operation_callbacks(self) -> OperationCallbacks:
-        return OperationCallbacks(
-            set_stage=self.set_stage,
-            log=print,
-            add_debug_fields=self.add_debug_fields,
-            update_fields=self.update_fields,
-        )
-
-    def fail_with_error(self, message: str) -> None:
-        self.error = message
 
 
 class CliFlowTests(unittest.TestCase):

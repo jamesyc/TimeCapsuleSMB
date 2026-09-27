@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import plistlib
 import struct
 import sys
 import tempfile
@@ -16,7 +17,12 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import timecapsulesmb.flash as flash_module
+from timecapsulesmb import apple_firmware
+from timecapsulesmb.apple_firmware import APPLE_FIRMWARE_CATALOG_URL
+from timecapsulesmb.basebinary import BasebinaryKey, compose_basebinary, parse_nested_basebinary
+from timecapsulesmb.flash_payloads import build_patch_payload_for_bank, find_apple_firmware_match
 from timecapsulesmb.services import flash as flash_service
+from timecapsulesmb.services.flash import default_flash_backup_root
 from timecapsulesmb.flash import (
     PATCHED_LOGIN_SCRIPT,
     STOCK_LOGIN_NETBSD4_DUMMY,
@@ -26,6 +32,7 @@ from timecapsulesmb.flash import (
     classify_login,
     find_gzip_member,
     find_footer,
+    sha256_hex,
     inspect_flash_banks,
     inspection_to_jsonable,
     write_decision_for_bank,
@@ -35,35 +42,7 @@ from timecapsulesmb.flash_payloads import AcpFlashPayload
 from timecapsulesmb.flash_workflow import RESTORE_PRIMARY_AMBIGUOUS_WARNING, require_primary_patch_ready
 from timecapsulesmb.transport.ssh import SshConnection, SshError
 
-
-def make_gzip_member(data: bytes) -> bytes:
-    compressor = zlib.compressobj(level=1, wbits=16 + zlib.MAX_WBITS)
-    return compressor.compress(data) + compressor.flush()
-
-
-def make_bank(
-    *,
-    login: bytes = STOCK_LOGIN_NETBSD4_DUMMY,
-    release: bytes = b"NetBSD 4.0 #0: test",
-    extra_gzip_magic: bytes = b"",
-) -> bytes:
-    decompressed = b"kernel " + release + b"\n" + (b"A" * 128) + login + (b"\x00" * 64)
-    gz = make_gzip_member(decompressed)
-    prefix = b"BOOT" + extra_gzip_magic + (b"\x00" * 16)
-    body = prefix + gz + b"\x00\x00"
-    end_offset = len(body)
-    checksum = zlib.adler32(body) & 0xFFFFFFFF
-    return body + (b"\xff" * 16) + struct.pack(">II", checksum, end_offset) + (b"\xff" * 24)
-
-
-def bank_checksum(bank: bytes) -> int:
-    return find_footer(bank).checksum
-
-
-class FastFakeZopfliGzip:
-    @staticmethod
-    def compress(data: bytes, **_kwargs) -> bytes:
-        return make_gzip_member(data)
+from tests.flash_fixtures import FastFakeZopfliGzip, bank_checksum, firmware_template, make_bank, zopfli_available
 
 
 class FlashAnalysisTests(unittest.TestCase):
@@ -824,6 +803,294 @@ class FlashBackupServiceTests(unittest.TestCase):
 
         self.assertNotIn("flash_plan_error", saved)
         self.assertEqual(saved["operation"], "read_only")
+
+    def test_flash_live_login_read_uses_binary_capture(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        payload = b"#!/bin/sh\n\xff"
+        with mock.patch("timecapsulesmb.services.flash.run_ssh_capture_bytes", return_value=payload) as capture_mock:
+            self.assertEqual(flash_service.read_live_login(connection), payload)
+        capture_mock.assert_called_once_with(
+            connection,
+            "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null",
+            timeout=30,
+        )
+
+    def test_flash_backup_dir_sanitizes_dot_only_path_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backup_dir = flash_service.build_flash_backup_dir(base_dir=None, host="..", syap=".")
+
+        self.assertEqual(backup_dir.parent, default_flash_backup_root())
+        self.assertIn("-device-syAPdevice", backup_dir.name)
+        self.assertNotIn("..", backup_dir.parts)
+        self.assertNotIn(".", backup_dir.parts)
+
+        explicit_dir = flash_service.build_flash_backup_dir(base_dir=root / ".." / "chosen", host="..", syap=".")
+        self.assertEqual(explicit_dir, (root / ".." / "chosen").resolve())
+
+
+
+class FlashPayloadTests(unittest.TestCase):
+    """ACP flash payloads built from Apple firmware templates that match the live bank."""
+
+    def test_build_acp_flash_payload_for_primary_bank_uses_matching_template(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(firmware_template(primary, product_id=113))
+            with zopfli_available():
+                inspection = inspect_flash_banks(
+                    primary_data=primary,
+                    secondary_data=secondary,
+                    cks1=bank_checksum(primary),
+                    cks2=bank_checksum(secondary),
+                    os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
+                )
+            active = require_primary_patch_ready(inspection)
+
+            payload = build_patch_payload_for_bank(
+                active,
+                syap="113",
+                firmware_template=template_path,
+                cache_dir=Path(tmp) / "cache",
+            )
+
+        assert active.patch is not None
+        reparsed = parse_nested_basebinary(payload.data)
+        self.assertEqual(payload.key_id, "observed-k30a-78100")
+        self.assertEqual(payload.inner_model, 113)
+        self.assertEqual(reparsed.inner.payload, active.patch.target_bank[: active.footer.end_offset])
+        self.assertEqual(payload.template_sha256, sha256_hex(firmware_template(primary, product_id=113)))
+
+    def test_build_acp_flash_payload_auto_downloads_matching_template_by_syap(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        template = firmware_template(primary, product_id=113)
+        catalog = plistlib.dumps({
+            "firmwareUpdates": [
+                {
+                    "productID": "113",
+                    "version": "7.8.1",
+                    "location": "http://example.invalid/113/7.8.1.basebinary",
+                    "sizeInBytes": len(template),
+                    "newest": True,
+                }
+            ]
+        })
+
+        def fake_download(url: str, **_kwargs: object) -> bytes:
+            if url == APPLE_FIRMWARE_CATALOG_URL:
+                return catalog
+            self.assertEqual(url, "http://example.invalid/113/7.8.1.basebinary")
+            return template
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with zopfli_available():
+                inspection = inspect_flash_banks(
+                    primary_data=primary,
+                    secondary_data=secondary,
+                    cks1=bank_checksum(primary),
+                    cks2=bank_checksum(secondary),
+                    os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
+                )
+            active = require_primary_patch_ready(inspection)
+
+            with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download) as download_mock:
+                payload = build_patch_payload_for_bank(
+                    active,
+                    syap="113",
+                    firmware_template=None,
+                    cache_dir=Path(tmp) / "cache",
+                )
+
+            cached_templates = list((Path(tmp) / "cache" / "113").glob("*.basebinary"))
+
+        self.assertEqual(download_mock.call_count, 2)
+        self.assertEqual(len(cached_templates), 1)
+        self.assertEqual(payload.template_source, "http://example.invalid/113/7.8.1.basebinary")
+        self.assertEqual(payload.template_product_id, "113")
+        self.assertEqual(payload.template_version, "7.8.1")
+
+    def test_build_acp_flash_payload_redownloads_corrupt_cached_template(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        template = firmware_template(primary, product_id=113)
+        template_url = "http://example.invalid/113/7.8.1.basebinary"
+        catalog = plistlib.dumps({
+            "firmwareUpdates": [
+                {
+                    "productID": "113",
+                    "version": "7.8.1",
+                    "location": template_url,
+                    "sizeInBytes": len(template),
+                    "newest": True,
+                }
+            ]
+        })
+        calls: list[str] = []
+
+        def fake_download(url: str, **_kwargs: object) -> bytes:
+            calls.append(url)
+            if url == APPLE_FIRMWARE_CATALOG_URL:
+                return catalog
+            self.assertEqual(url, template_url)
+            return template
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            cached_path = apple_firmware.firmware_template_cache_path(
+                cache_dir=cache_dir,
+                product_id="113",
+                version="7.8.1",
+                url=template_url,
+            )
+            cached_path.parent.mkdir(parents=True)
+            cached_path.write_bytes(b"\x00" * len(template))
+            with zopfli_available():
+                inspection = inspect_flash_banks(
+                    primary_data=primary,
+                    secondary_data=secondary,
+                    cks1=bank_checksum(primary),
+                    cks2=bank_checksum(secondary),
+                    os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
+                )
+            active = require_primary_patch_ready(inspection)
+
+            with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
+                payload = build_patch_payload_for_bank(
+                    active,
+                    syap="113",
+                    firmware_template=None,
+                    cache_dir=cache_dir,
+                )
+            refreshed_cache = cached_path.read_bytes()
+
+        self.assertEqual(calls, [APPLE_FIRMWARE_CATALOG_URL, template_url])
+        self.assertEqual(refreshed_cache, template)
+        self.assertEqual(payload.template_sha256, sha256_hex(template))
+
+    def test_check_apple_redownloads_corrupt_cached_template(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        template = firmware_template(primary, product_id=113)
+        template_url = "http://example.invalid/113/7.8.1.basebinary"
+        catalog = plistlib.dumps({
+            "firmwareUpdates": [
+                {
+                    "productID": "113",
+                    "version": "7.8.1",
+                    "location": template_url,
+                    "sizeInBytes": len(template),
+                    "newest": True,
+                }
+            ]
+        })
+        calls: list[str] = []
+
+        def fake_download(url: str, **_kwargs: object) -> bytes:
+            calls.append(url)
+            if url == APPLE_FIRMWARE_CATALOG_URL:
+                return catalog
+            self.assertEqual(url, template_url)
+            return template
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            cached_path = apple_firmware.firmware_template_cache_path(
+                cache_dir=cache_dir,
+                product_id="113",
+                version="7.8.1",
+                url=template_url,
+            )
+            cached_path.parent.mkdir(parents=True)
+            cached_path.write_bytes(b"\x00" * len(template))
+            with zopfli_available():
+                inspection = inspect_flash_banks(
+                    primary_data=primary,
+                    secondary_data=secondary,
+                    cks1=bank_checksum(primary),
+                    cks2=bank_checksum(secondary),
+                    os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
+                )
+            active = require_primary_patch_ready(inspection)
+
+            with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
+                match = find_apple_firmware_match(
+                    active,
+                    syap="113",
+                    firmware_template=None,
+                    cache_dir=cache_dir,
+                )
+            refreshed_cache = cached_path.read_bytes()
+
+        self.assertEqual(calls, [APPLE_FIRMWARE_CATALOG_URL, template_url])
+        self.assertEqual(refreshed_cache, template)
+        self.assertTrue(match.matched)
+        self.assertEqual(match.template_sha256, sha256_hex(template))
+
+    def test_build_acp_flash_payload_refuses_template_that_does_not_match_live_bank(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template = parse_nested_basebinary(firmware_template(primary, product_id=113))
+            modified_payload = bytes([template.inner.payload[0] ^ 0x01]) + template.inner.payload[1:]
+            modified_inner = compose_basebinary(template.inner.header, modified_payload, key=template.inner.key)
+            template_path.write_bytes(compose_basebinary(template.outer.header, modified_inner, key=template.outer.key))
+            with zopfli_available():
+                inspection = inspect_flash_banks(
+                    primary_data=primary,
+                    secondary_data=secondary,
+                    cks1=bank_checksum(primary),
+                    cks2=bank_checksum(secondary),
+                    os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
+                )
+            active = require_primary_patch_ready(inspection)
+
+            with self.assertRaises(FlashAnalysisError) as raised:
+                build_patch_payload_for_bank(
+                    active,
+                    syap="113",
+                    firmware_template=template_path,
+                    cache_dir=Path(tmp) / "cache",
+                )
+
+        self.assertIn("does not match the live target bank", str(raised.exception))
+
+    def test_build_acp_flash_payload_refuses_unknown_key_with_issue_url(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        unknown_key = BasebinaryKey.from_hex("unknown-test", "00112233445566778899aabbccddeeff")
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(firmware_template(primary, product_id=113, key=unknown_key))
+            with zopfli_available():
+                inspection = inspect_flash_banks(
+                    primary_data=primary,
+                    secondary_data=secondary,
+                    cks1=bank_checksum(primary),
+                    cks2=bank_checksum(secondary),
+                    os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
+                )
+            active = require_primary_patch_ready(inspection)
+
+            with self.assertRaises(FlashAnalysisError) as raised:
+                build_patch_payload_for_bank(
+                    active,
+                    syap="113",
+                    firmware_template=template_path,
+                    cache_dir=Path(tmp) / "cache",
+                )
+
+        self.assertIn("do not have firmware encryption keys", str(raised.exception))
+        self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues", str(raised.exception))
 
 
 if __name__ == "__main__":
