@@ -6,8 +6,13 @@ static const char *scenario;
 static pid_t owner, collector;
 static int injected, forks, pipe_calls, fd_sets, clocks, waits;
 /* The deadline scenarios run the production 20 s ACP timeout on a clock that
- * the collector's own select() waits move forward, so no test waits 20 s. */
+ * only the collector's own select() waits move, so no test waits 20 s and a
+ * loaded host cannot move the deadline. */
+static struct timespec virtual_base;
 static long long virtual_ms;
+static int virtual_clock(void) {
+    return getpid() == owner && !strncmp(scenario, "deadline_", 9);
+}
 
 static int once(const char *name) {
     if (getpid() == owner && !injected && !strcmp(scenario, name)) {
@@ -59,9 +64,10 @@ int test_clock_gettime(clockid_t clock, struct timespec *value) {
     clocks++;
     if (clocks == 1 && once("initial_clock")) { errno = EIO; return -1; }
     if (clocks == 2 && once("running_clock")) { errno = EIO; return -1; }
-    if (clock_gettime(clock, value)) return -1;
-    value->tv_sec += virtual_ms / 1000;
-    value->tv_nsec += (virtual_ms % 1000) * 1000000;
+    if (!virtual_clock()) return clock_gettime(clock, value);
+    if (!virtual_base.tv_sec && clock_gettime(clock, &virtual_base)) return -1;
+    value->tv_sec = virtual_base.tv_sec + virtual_ms / 1000;
+    value->tv_nsec = virtual_base.tv_nsec + (virtual_ms % 1000) * 1000000;
     if (value->tv_nsec >= 1000000000) { value->tv_sec++; value->tv_nsec -= 1000000000; }
     return 0;
 }
@@ -69,11 +75,16 @@ int test_clock_gettime(clockid_t clock, struct timespec *value) {
 int test_select(int count, fd_set *readable, fd_set *writable, fd_set *errors, struct timeval *timeout) {
     if (once("select_error")) { errno = EBADF; return -1; }
     if (once("select_eintr")) { errno = EINTR; return -1; }
-    if (getpid() == owner && !strcmp(scenario, "deadline_success") && !injected) {
-        /* The reply arrives 18 s into the wait: the first wait lasts that long. */
-        injected = 1;
-        virtual_ms += 18000;
-    } else if (getpid() == owner && !strcmp(scenario, "deadline_timeout")) {
+    if (virtual_clock() && !strcmp(scenario, "deadline_success")) {
+        /* The reply arrives 18 s into the wait. Real waits for the child to
+         * write or exit leave the clock alone. */
+        int ready = select(count, readable, writable, errors, timeout);
+        if (ready > 0 && !injected) {
+            injected = 1;
+            virtual_ms += 18000;
+        }
+        return ready;
+    } else if (virtual_clock() && !strcmp(scenario, "deadline_timeout")) {
         /* A hung ACP never becomes ready; each wait takes its full timeout. */
         struct timeval now = {0, 0};
         int ready = select(count, readable, writable, errors, &now);
@@ -110,7 +121,7 @@ static int open_fds(void) {
 
 int main(int argc, char **argv) {
     int before, result, status, success, repeat, timed;
-    long long started, elapsed, waited;
+    long long started, elapsed;
     char output[256];
     pid_t guard;
     assert(argc == 2);
@@ -140,17 +151,14 @@ int main(int argc, char **argv) {
          * count the collector's own reads. */
         timed = !strncmp(scenario, "deadline_", 9);
         started = timed ? acp_monotonic_ms() : 0;
-        waited = virtual_ms;
         result = read_acp_value("syAP", output, sizeof(output));
         elapsed = timed ? acp_monotonic_ms() - started : 0;
-        waited = virtual_ms - waited;
         assert(result == (success ? ACP_OK : ACP_ABORT));
         /* The production timeout: an 18 s reply is kept, and a hung ACP is
-         * stopped at 20 s, not before (reaping it then takes about a second of
-         * real time) and not after (the waits on the clock stop at 20 s). */
-        if (!strcmp(scenario, "deadline_success")) assert(elapsed >= 18000 && elapsed < 20000);
-        if (!strcmp(scenario, "deadline_timeout"))
-            assert(elapsed >= 20000 && elapsed < 24000 && waited > 19000 && waited <= 20000);
+         * stopped at 20 s, not before and not after (the collector waits in
+         * 100 ms steps). */
+        if (!strcmp(scenario, "deadline_success")) assert(elapsed == 18000);
+        if (!strcmp(scenario, "deadline_timeout")) assert(elapsed >= 20000 && elapsed <= 20100);
         assert(success ? !strcmp(output, "0x77") : output[0] == '\0');
         assert(kill(guard, 0) == 0);
         if (!strcmp(scenario, "cancel_before_fork")) assert(!pipe_calls && !forks);
@@ -161,7 +169,9 @@ int main(int argc, char **argv) {
             /* The fault hid child readiness. Reap it with the real syscall so
              * the test itself leaves no zombie; production had to return. */
             assert(waitpid(collector, &status, 0) == collector);
-            assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+            /* SIGTERM when a loaded host had not yet run the fixture's
+             * signal(SIGTERM, SIG_IGN); the KILL then reached a zombie. */
+            assert(WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL || WTERMSIG(status) == SIGTERM));
         } else if (collector > 0) {
             errno = 0;
             assert(waitpid(collector, &status, WNOHANG) == -1 && errno == ECHILD);

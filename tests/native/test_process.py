@@ -10,12 +10,13 @@ from tests.native.build import ROOT, compile_modules
 def driver(tmp_path_factory):
     binary = tmp_path_factory.mktemp("process-native") / "process"
     compile_modules(binary, ("native/common/process.c", "native/common/parent.c"),
-                    flags=("-I", str(ROOT / "build/native")),
+                    flags=("-I", str(ROOT / "build/native"), "-Dsetpgid=tc_test_setpgid"),
                     extra_sources=(ROOT / "tests/native/unit/test_process.c",))
     return binary
 
 
-@pytest.mark.parametrize("case", ["lifetime", "group", "capture", "overflow", "exec_failure", "orphan", "stop", "drain"])
+@pytest.mark.parametrize("case", ["lifetime", "group", "capture", "overflow", "exec_failure", "orphan", "stop", "drain",
+                                  "term_before_reset"])
 def test_owned_process_lifecycle(driver, case):
     # Isolate the regression driver as well as its owned children: a failing
     # process-group test must never signal pytest or the user's terminal.

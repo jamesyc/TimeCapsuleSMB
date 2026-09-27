@@ -25,10 +25,25 @@ void tc_close_other_fds(int keep) {
             close(fd);
 }
 
+/* The parent makes the same call right after fork() to close its side of the
+ * signal race. Concurrent parent/child setpgid calls can fail with EPERM on
+ * Darwin even for the same target group (see acp.c); what matters is the
+ * group this child ends up leading. */
+static int own_group(void) {
+    int tries;
+    for (tries = 0; tries < 100; tries++) {
+        if (!setpgid(0, 0) || getpgrp() == getpid())
+            return 0;
+        usleep(1000);
+    }
+    return -1;
+}
+
 static int spawn(struct tc_child *child, tc_child_fn function, void *data, const char *log, void *capture,
                   size_t capacity, long long deadline, int nested) {
     int life[2], output[2] = {-1, -1};
     pid_t pid;
+    sigset_t stops, old;
     if (pipe_setup(life, 0))
         return -1;
     if (capacity && pipe_setup(output, 1)) {
@@ -36,18 +51,28 @@ static int spawn(struct tc_child *child, tc_child_fn function, void *data, const
         close(life[1]);
         return -1;
     }
+    /* Until the child resets its handlers below, a stop signal would run this
+     * process's handler in the child and be lost, and its owner would wait out
+     * the whole grace period before SIGKILL. Hold stop signals across fork();
+     * the child takes them only after the reset. */
+    sigemptyset(&stops);
+    sigaddset(&stops, SIGTERM);
+    sigaddset(&stops, SIGINT);
+    sigaddset(&stops, SIGHUP);
+    sigprocmask(SIG_BLOCK, &stops, &old);
     pid = fork();
     if (pid == 0) {
         int fd;
         /* smbd's atexit handler sends kill(0,SIGTERM). Establish isolation
          * before calling any child code, including the foreground exec. */
-        if (!nested && setpgid(0, 0))
+        if (!nested && own_group())
             _exit(126);
         signal(SIGTERM, SIG_DFL);
         signal(SIGINT, SIG_DFL);
         signal(SIGHUP, SIG_DFL);
         signal(SIGCHLD, SIG_DFL);
         signal(SIGPIPE, SIG_DFL);
+        sigprocmask(SIG_SETMASK, &old, NULL);
         if (dup2(life[0], STDIN_FILENO) < 0 || fcntl(STDIN_FILENO, F_SETFD, 0))
             _exit(126);
         fd = open(log ? log : "/dev/null", O_WRONLY | O_CREAT | O_APPEND, 0600);
@@ -56,6 +81,7 @@ static int spawn(struct tc_child *child, tc_child_fn function, void *data, const
         tc_close_other_fds(-1);
         _exit(function(data));
     }
+    sigprocmask(SIG_SETMASK, &old, NULL);
     /* Close the parent-side signal race too. EACCES after exec is harmless:
      * the child above refuses to enter any program without its own group. */
     if (pid > 0 && !nested)

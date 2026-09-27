@@ -137,8 +137,9 @@ def cycle(rig, tmp_path):
 @pytest.mark.parametrize('mode', ['false', 'legacy'])
 def test_no_debug_means_post_only(cycle, mode):
     run, state, marker, *_ = cycle
-    assert run(mode).returncode == 0
-    assert state['calls'] == [('POST', '/v1/router-heartbeats')]
+    result = run(mode)
+    assert result.returncode == 0, result.stderr
+    assert state['calls'] == [('POST', '/v1/router-heartbeats')], result.stderr
     assert not marker.exists()
     payload = state['payloads'][0]
     assert payload['target_lane'] == '6' and len(payload['debug_nonce']) == 32

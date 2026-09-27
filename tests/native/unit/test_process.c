@@ -2,6 +2,19 @@
 #include "common/parent.h"
 #include <assert.h>
 
+/* The driver build renames process.c's setpgid() to this hook (see
+ * test_process.py). term_before_reset holds a new child inside it, before the
+ * child resets the handlers it inherited from this driver. */
+#undef setpgid
+int setpgid(pid_t pid, pid_t group);
+static pid_t driver;
+static int hold_child_setup;
+int tc_test_setpgid(pid_t pid, pid_t group) {
+    if (hold_child_setup && getpid() != driver)
+        usleep(300000);
+    return setpgid(pid, group);
+}
+
 static volatile sig_atomic_t parent_signals;
 static void parent_term(int sig) {
     (void)sig;
@@ -12,10 +25,15 @@ static long long now_ms(void) {
     assert(clock_gettime(CLOCK_MONOTONIC, &t) == 0);
     return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
+/* Bounds on how long a child may take under a loaded host, not timing claims:
+ * main()'s alarm(15) caps a whole case. */
 static void finish(struct tc_child *child, int successful) {
-    long long deadline = now_ms() + 3000;
+    long long deadline = now_ms() + 5000;
     while (!tc_child_poll(child, now_ms()) && now_ms() < deadline)
         usleep(1000);
+    if (!child->exited || child->output >= 0 || tc_child_ok(child) != successful)
+        fprintf(stderr, "child %ld: exited=%d output=%d overflow=%d status=%#x\n", (long)child->pid,
+                child->exited, child->output, child->overflow, child->status);
     assert(child->exited && child->output < 0);
     assert(tc_child_ok(child) == successful);
 }
@@ -70,7 +88,7 @@ static int orphan_worker(void *unused) {
     if (worker == 0) {
         close(STDOUT_FILENO);
         signal(SIGTERM, SIG_IGN);
-        alarm(5);
+        alarm(12); /* Outlives both of the case's 5 s waits; main's alarm is 15 s. */
         for (;;)
             pause();
     }
@@ -82,6 +100,7 @@ int main(int argc, char **argv) {
     unsigned char capture[49152];
     size_t i;
     assert(argc == 2);
+    driver = getpid();
     /* Also isolate when this driver is launched over the device's SSH shell. */
     if (getpgrp() != getpid())
         assert(setpgid(0, 0) == 0);
@@ -127,7 +146,7 @@ int main(int argc, char **argv) {
         tc_child_close(&a);
     } else if (!strcmp(argv[1], "orphan")) {
         pid_t worker;
-        long long deadline = now_ms() + 2000;
+        long long deadline = now_ms() + 5000;
         int done = 0;
         assert(tc_child_fork(&a, orphan_worker, NULL, NULL, capture, sizeof(capture), 0) == 0);
         while (!a.exited && now_ms() < deadline) {
@@ -140,13 +159,25 @@ int main(int argc, char **argv) {
         /* Losing the direct parent must not authorize replacing binaries or
          * wiping locks while its old worker still owns this process group. */
         tc_child_poll(&a, a.deadline + 1);
-        deadline = now_ms() + 3000;
+        deadline = now_ms() + 5000;
         while (!(done = tc_child_poll(&a, now_ms())) && now_ms() < deadline)
             usleep(1000);
         assert(done);
         tc_child_close(&a);
+    } else if (!strcmp(argv[1], "term_before_reset")) {
+        /* A stop that reaches the child before its handler reset must still
+         * stop it, not run this driver's handler there and be lost while the
+         * child execs a long-running program. */
+        char *args[] = {"/bin/sleep", "10", NULL};
+        hold_child_setup = 1;
+        assert(tc_child_exec(&a, args, NULL) == 0);
+        assert(kill(a.pid, SIGTERM) == 0);
+        finish(&a, 0);
+        assert(WIFSIGNALED(a.status) && WTERMSIG(a.status) == SIGTERM);
+        assert(parent_signals == 0);
+        tc_child_close(&a);
     } else if (!strcmp(argv[1], "stop") || !strcmp(argv[1], "drain")) {
-        long long started = now_ms(), limit = started + 2000;
+        long long started = now_ms(), limit = started + 5000;
         int escalate = !strcmp(argv[1], "stop");
         assert(tc_child_fork(&a, stubborn, NULL, NULL, capture, sizeof(capture), 0) == 0);
         while (!a.used && now_ms() < limit) {

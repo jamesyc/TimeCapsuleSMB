@@ -51,7 +51,9 @@ def test_collector_syscall_failures_and_retries(device_driver, tmp_path, scenari
     process = subprocess.Popen([str(binary), scenario], env=env, start_new_session=True,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        stdout, stderr = process.communicate(timeout=8)
+        # A bound for a loaded host, not a timing claim: reap_stuck alone takes
+        # about 4 s unloaded.
+        stdout, stderr = process.communicate(timeout=20)
         assert process.returncode == 0, (scenario, stdout.decode(), stderr.decode())
     finally:
         # Kill only groups created by this test if a regression interrupted its
