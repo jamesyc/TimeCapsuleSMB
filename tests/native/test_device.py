@@ -38,12 +38,15 @@ def device_driver(tmp_path_factory):
     'cancel_before_group', 'child_group', 'initial_clock', 'running_clock',
     'select_error', 'select_eintr', 'read_error', 'read_eintr', 'read_eagain', 'wait_eintr',
     'cancel_before_fork', 'cancel_after_fork', 'reap_stuck',
+    'deadline_success', 'deadline_timeout',
 ])
 def test_collector_syscall_failures_and_retries(device_driver, tmp_path, scenario):
     calls = tmp_path / 'calls'
     env = {**os.environ, 'TC_TEST_ACP_CALLS': str(calls)}
     # Only this fault needs deadline expiry before exercising failed reaping.
     if scenario == 'reap_stuck': env['TC_TEST_ACP_MODE'] = 'ignore_term'
+    # The production-timeout driver advances its clock through the waits.
+    if scenario == 'deadline_timeout': env['TC_TEST_ACP_MODE'] = 'hang'
     binary = device_driver['short' if scenario == 'reap_stuck' else 'production']
     process = subprocess.Popen([str(binary), scenario], env=env, start_new_session=True,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)

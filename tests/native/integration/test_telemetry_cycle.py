@@ -637,21 +637,16 @@ def test_acp_unavailable_fields_and_extra_output_preserve_normal_reporting(cycle
     assert payload['router_id'].startswith('tc1-')
 
 
-def test_default_acp_deadline_allows_slow_success_and_stops_at_twenty_seconds(cycle, production_collector, acp_calls):
+def test_production_telemetry_uses_the_default_acp_deadline(cycle, production_collector):
+    # The slow fixture answers after 1.5 s, beyond short_collector's 1 s
+    # deadline, so a production build that took a shortened timeout fails
+    # here. test_device.c pins the default at exactly 20 s on a moved clock;
+    # the short_collector tests cover telemetry's handling of a timeout.
     _, state, _, _, env = cycle
     result = subprocess.run(telemetry_command(production_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'slow'},
-                            capture_output=True, timeout=25)
-    assert result.returncode == 0 and len(state['calls']) == 1
-    state['calls'].clear()
-    calls = acp_calls
-    started = time.monotonic()
-    result = subprocess.run(telemetry_command(production_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'hang',
-                            'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=25)
-    elapsed = time.monotonic() - started
-    assert result.returncode == 1 and 'timed out' in result.stderr
-    assert 20 <= elapsed < 24
-    assert state['calls'] == []
-    assert_collectors_stopped(calls)
+                            capture_output=True, text=True, timeout=25)
+    assert result.returncode == 0, result.stderr
+    assert len(state['calls']) == 1
 
 
 def test_each_acp_command_gets_its_own_deadline(cycle, short_collector, acp_calls):

@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(mode, "nonzero")) { puts("untrusted output"); return 1; }
     if (!strcmp(mode, "empty")) { puts(""); return 0; }
-    if (!strcmp(mode, "slow")) sleep(6);
+    if (!strcmp(mode, "slow")) usleep(1500000);
     if (!strcmp(mode, "slow_each")) usleep(300000);
     if (!strcmp(argv[2], "syAP")) value = "0x77";
     if (!strcmp(argv[2], "syAM")) value = "TimeCapsule8,119";
