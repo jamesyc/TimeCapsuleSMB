@@ -1028,6 +1028,19 @@ class SSHTransportTests(unittest.TestCase):
 
 
 class MigrationInputTransportTests(unittest.TestCase):
+    # The local ssh capability checks are cached for the process. Unpatched,
+    # they run through each test's patched subprocess.run only when no earlier
+    # test filled the cache, so call counts would depend on test order.
+    def setUp(self) -> None:
+        ssh_transport._ssh_option_supported.cache_clear()
+        ssh_transport._local_ssh_macs.cache_clear()
+        self.addCleanup(ssh_transport._local_ssh_macs.cache_clear)
+        self.addCleanup(ssh_transport._ssh_option_supported.cache_clear)
+        for name, value in (("_ssh_option_supported", True), ("_local_ssh_macs", ())):
+            patcher = mock.patch.object(ssh_transport, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_request_bytes_and_separate_output_use_existing_transport(self):
         connection = ssh_transport.SshConnection("device", "", "")
         process = subprocess.CompletedProcess(["ssh"], 0, b'{"version":1}\n', b'diagnostic\n')
