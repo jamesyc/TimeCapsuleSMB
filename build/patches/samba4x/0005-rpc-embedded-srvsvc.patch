@@ -61,9 +61,9 @@ diff --git a/source3/wscript_build b/source3/wscript_build
 +tc_smbd_embedded_srvsvc_sources = ''
 +tc_smbd_embedded_srvsvc_deps = ''
 +if bld.env.TC_SAMBA4X_EMBEDDED_SRVSVC:
-+    # Time Capsule appliance builds deploy only smbd. Keep srvsvc explicit so
-+    # future size audits can disable this endpoint without changing unrelated
-+    # RPC code.
++    # Time Capsule appliance builds run only smbd (no samba-dcerpcd). Keep
++    # srvsvc explicit so future size audits can disable this endpoint without
++    # changing unrelated RPC code.
 +    tc_smbd_embedded_srvsvc_sources = '''
 +                          rpc_server/rpc_handles.c
 +                          rpc_server/rpc_server.c

@@ -1028,8 +1028,10 @@ export CROSS_EXEC_REMOTE_DIR="$SAMBA4X_CROSS_EXEC_REMOTE_DIR"
 # Apple added Darwin-compatible descriptor xattr syscalls to both Time Capsule
 # kernels without adding libc wrappers. Only appliance builds may use that
 # private ABI; ordinary host regression builds retain the ENOSYS stubs.
-# TC_SAMBA4X_APPLIANCE likewise marks code only for those kernels (patch 0046's
-# fault-ahead workaround), and is not set by host regression builds.
+# TC_SAMBA4X_APPLIANCE marks code only for the shipped appliance binaries: patch
+# 0046's fault-ahead workaround for these kernels, and patch 0008's smbd without
+# helper processes, which saves the device's memory. Host regression builds
+# leave it unset, so their smbd compiles upstream's forked helpers.
 if [ "$SDK_FAMILY" = "netbsd4" ]; then
     export CC="$TOOLDIR/bin/$TRIPLE-gcc"
     export CXX="$TOOLDIR/bin/$TRIPLE-g++"

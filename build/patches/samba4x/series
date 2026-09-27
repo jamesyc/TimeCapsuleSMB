@@ -82,12 +82,6 @@
 # three "Dangling frame" lines and smbd -V/-b did too. pthread builds never run
 # that report at exit(); free the tracker the same way, quietly.
 0022-talloc-stack-quiet-exit.patch|quiet talloc stack teardown at exit
-# Keep smbd to one process: run notifyd, cleanupd and the durable-handle
-# scavenger on the parent's event loop, and skip the periodic datagram-socket
-# sweep that forks a helper. Forked helpers work (tested 2026-09-26), but each
-# is another resident smbd (about 2.5 MB RSS) on a device that runs smbd from a
-# RAM disk, and dropping this patch adds 14 KB to smbd.
-0008-smbd-single-process-helpers.patch|host smbd helper services in the parent event loop
 
 # Appliance kernel and disk.
 # Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
@@ -111,11 +105,28 @@
 # thousands of per-hash-chain dead records after Time Machine closes files.
 0017-dbwrap-tdb-max-dead.patch|configurable dbwrap TDB max-dead records
 
-# Single-binary smbd.
-# Finder and smbclient enumerate shares through IPC$ srvsvc. Embed that one
-# pipe in smbd because the Time Capsule RAM-disk deployment cannot rely on
-# external DCE/RPC helper binaries living on an Apple-managed HFS disk.
+# smbd without helper processes.
+# Samba runs on the device as the smbd binary alone, about 10 MB of a 15 MB
+# RAM disk, on a device with little memory. Stock smbd forks resident helpers
+# (notifyd, cleanupd, the durable-handle scavenger) and a datagram-socket sweep
+# every 15 minutes, and serves RPC pipes from the separate samba-dcerpcd and
+# rpcd_* binaries. Here smbd is the parent, one child per client connection
+# and, when VFS_AIO_FORK_ENABLED is on, aio_fork's helpers.
+#
+# Finder and smbclient -L list shares through IPC$ \PIPE\srvsvc; serve that
+# one pipe inside smbd (overlay tc_embedded_srvsvc.c). Other pipes (lsarpc,
+# samr, wkssvc, winreg) fall through to local_np_connect, which fails to start
+# the absent samba-dcerpcd.
 0005-rpc-embedded-srvsvc.patch|embedded srvsvc named pipe support
+# On appliance builds (TC_SAMBA4X_APPLIANCE), run notifyd and cleanupd in the
+# parent, as interactive smbd does, and the scavenger's durable-handle expiry
+# timers there too (upstream forks it even in interactive mode). Skip the
+# datagram-socket sweep, which forks each time it runs; cleanupd still removes
+# each exited child's socket. Forked helpers work without pthread (tested
+# 2026-09-26, tests/samba/VALIDATION.md); this saves two or three resident
+# smbds (about 2.5 MB RSS each, some of it shared with the parent) and 14 KB
+# of smbd.
+0008-smbd-helpers-in-parent.patch|host smbd helper services in the parent event loop
 
 # aio_fork.
 # Normal helper retirement sends a short message without SCM_RIGHTS data.

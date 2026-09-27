@@ -831,3 +831,58 @@ two NetBSD 4 LE builds of the new series gave the same smbd.
 | NetBSD 6 (NetBSD 7 SDK) | 10,232,624 |
 | NetBSD 4 LE | 10,254,608 |
 | NetBSD 4 BE | 10,253,496 |
+
+## smbd without helper processes, patches 0005 and 0008 (2026-09-27)
+
+Patch 0008 (renamed from `0008-smbd-single-process-helpers.patch` to
+`0008-smbd-helpers-in-parent.patch`) was gated on `#ifndef HAVE_PTHREAD`, a
+leftover from when forked helpers aborted without pthread. The 2026-09-26
+review above showed they work, and 0008 is kept only to save memory, so it is
+now gated on `TC_SAMBA4X_APPLIANCE`. It moved out of the no-pthread section
+into a new "smbd without helper processes" section with 0005, the in-smbd
+srvsvc pipe. Both patches' comments and 0005's overlay comment were corrected:
+smbd is not one process (the parent, one child per client and aio_fork's
+helpers remain), and the helpers stay off the device for memory, not because
+of the RAM disk. 0008's log lines no longer say "no-pthread". 0041 changed
+only in a hunk offset.
+
+Every lane defines `TC_SAMBA4X_APPLIANCE` and none defines `HAVE_PTHREAD`, so
+the shipped smbd behaves as before. Host regression builds define neither, so
+their smbd now compiles upstream's forked helpers; only the lanes compile
+0008's code.
+
+- Each lane tree's `server.c` and `scavenger.c` carry the new gate. Each
+  stripped smbd has the three new log strings, none with "no-pthread", and no
+  `smbd-notifyd`, `smbd-cleanupd` or `smbd-scavenger` title, as before. Each
+  smbd is 56 bytes smaller (shorter strings). The migrators rebuilt
+  byte-identical.
+- Host regression run (Docker, sanitizers): all 115 cases passed.
+- NetBSD 4 LE device, running this smbd (same SHA256) from a deploy for other
+  service work, with log level 10:
+  - Since smbd's last start its log has "Running notifyd in the smbd parent",
+    "Running cleanupd in the smbd parent" and "Skipping the periodic messaging
+    dgm cleanup" once each, and no "Started cleanupd pid", "forwarding message
+    to scavenger" or "no-pthread" line. All 38 connections since then logged
+    `notify_init: notifyd=<parent pid>`.
+  - `ps` shows no smbd helper, idle or after sessions: only the parent and one
+    child per open connection.
+  - `smbclient -L` and macOS `smbutil view` list `Data` and `IPC$` (0005's
+    srvsvc).
+  - Change notify: a watcher on one connection saw a file created from
+    another.
+  - cleanupd: a connection's child had a `msg.lock` file and a `msg.sock`
+    socket while open, and both were gone after it exited. After ten more
+    sessions the parent logged "cleaned up pid" for each and left no entry for
+    an exited child.
+  - Scavenger: after a durable handle's connection was reset, the parent (not
+    a forked scavenger) got the child's message and scheduled the timer. It ran
+    60 s later ("do cleanup for file", then share_mode_cleanup_disconnected),
+    and a reconnect was then refused with OBJECT_NAME_NOT_FOUND.
+  - `durable_device` passed 13/13 and `doctor` passed.
+- The NetBSD 6 device was not tested; it was running a backup.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,232,568 |
+| NetBSD 4 LE | 10,254,552 |
+| NetBSD 4 BE | 10,253,440 |

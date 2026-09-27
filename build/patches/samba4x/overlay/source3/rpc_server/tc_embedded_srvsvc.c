@@ -14,10 +14,11 @@ static NTSTATUS tc_smbd_init_embedded_srvsvc(struct dcesrv_context **_dce_ctx)
 	NTSTATUS status;
 
 	/*
-	 * Time Capsule appliance builds stage only smbd on the RAM disk. Finder
-	 * and smbclient -L still need IPC$ -> \PIPE\srvsvc for share
-	 * enumeration, so smbd hosts exactly srvsvc in-process instead of
-	 * starting samba-dcerpcd/rpcd_classic from the unmountable HFS disk.
+	 * Time Capsule appliance builds run only smbd, from a RAM disk with no
+	 * room for samba-dcerpcd and rpcd_classic (the HFS disk can be
+	 * unmounted at any time). Finder and smbclient -L still need IPC$ ->
+	 * \PIPE\srvsvc for share enumeration, so smbd hosts exactly srvsvc
+	 * in-process.
 	 */
 	if (dce_ctx == NULL) {
 		dce_ctx = global_dcesrv_context();

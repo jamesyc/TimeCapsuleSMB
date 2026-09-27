@@ -57,7 +57,7 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -1859,9 +1859,14 @@ static void smbd_parent_sig_hup_handler(struct tevent_context *ev,
+@@ -1857,9 +1857,14 @@ static void smbd_parent_sig_hup_handler(struct tevent_context *ev,
  					void *siginfo,
  					void *private_data)
  {
