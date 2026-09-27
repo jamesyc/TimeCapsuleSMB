@@ -1,8 +1,9 @@
 /* telemetry_http's parent deadline runs on the monotonic clock.
  *   test_http step    wall clock jumps an hour forward mid-request: still succeeds
  *   test_http expire  curl outlives TC_HTTP_DEADLINE_MS: killed, fails promptly
- * TC_CURL_PATH names a fake curl that sleeps $FAKE_CURL_SLEEP seconds, then
- * prints a body and a 200 status the way `-w "\n%{http_code}"` does. */
+ * TC_CURL_PATH names a fake curl: for step it briefly sleeps, then prints a
+ * body and a 200 status the way `-w "\n%{http_code}"` does; for expire it
+ * becomes a sleep that outlives the deadline. */
 #include "telemetry.h"
 #include "acp.h"
 #include <assert.h>
