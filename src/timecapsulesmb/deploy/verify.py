@@ -32,6 +32,8 @@ def render_managed_runtime_verification(
             lines.append(f"  ok: {step.detail}")
         elif step.status == "skip":
             lines.append(f"  skipped: {step.detail}")
+        elif step.status == "info":
+            lines.append(f"  note: {step.detail}")
         elif step.detail:
             lines.append(f"  failed: {step.detail}")
     return lines

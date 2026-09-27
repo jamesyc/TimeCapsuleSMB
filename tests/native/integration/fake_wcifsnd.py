@@ -4,6 +4,7 @@ import os
 import signal
 import socket
 import struct
+import threading
 import time
 
 
@@ -35,6 +36,13 @@ def hup(_signo, _frame):
     record("HUP")
 
 
+def send_later(delay, packet, peer):
+    # Daemon timers never hold a stopping fake open.
+    timer = threading.Timer(delay, sock.sendto, (packet, peer))
+    timer.daemon = True
+    timer.start()
+
+
 def reply(request, flags, rdlength, size):
     packet = bytearray(size)
     packet[:2] = request[:2]
@@ -58,6 +66,9 @@ record(f"START {os.getpid()}")
 record(f"OWNER {os.getppid()}")
 if mode_now() == "exit-7":
     raise SystemExit(7)
+if mode_now() == "exit-0":
+    # Apple wcifsnd exits 0 on every startup failure, e.g. a port in use.
+    raise SystemExit(0)
 while running and mode_now() == "no-listener":
     time.sleep(0.1)
 if not running:
@@ -76,9 +87,32 @@ while running:
         request, peer = sock.recvfrom(512)
     except socket.timeout:
         continue
-    record("ADD " + request.hex())
+    # The PID ties every add to one child generation: a child must never see
+    # a second add for a record it already answered.
+    record(f"ADD {os.getpid()} " + request.hex())
     adds += 1
     mode = mode_now()
+    if mode in ("defended", "defended-forever"):
+        # Apple's wcifsnd when a LAN host defends the name: 0xa803 for each of
+        # its two broadcasts, then (unless forever) 0xa800 on the same xid.
+        sock.sendto(reply(request, 0xA803, 6, 62), peer)
+        later = [(0.3, 0xA803)] + ([] if mode == "defended-forever" else [(0.6, 0xA800)])
+        for delay, flags in later:
+            send_later(delay, reply(request, flags, 6, 62), peer)
+        continue
+    if mode == "late-other-xid":
+        # A late per-interface success for the previous record's transaction.
+        stale = bytearray(request)
+        struct.pack_into(">H", stale, 0, (struct.unpack_from(">H", request)[0] - 1) & 0xFFFF)
+        sock.sendto(reply(stale, 0xA800, 6, 62), peer)
+        send_later(0.2, reply(request, 0xA800, 6, 62), peer)
+        continue
+    if mode == "malformed-then-success":
+        packet = reply(request, 0xA800, 6, 62)
+        packet[13] ^= 1
+        sock.sendto(packet, peer)
+        send_later(0.2, reply(request, 0xA800, 6, 62), peer)
+        continue
     if mode == "drop" or (mode == "drop-after-1" and adds > 1) or (mode == "drop-after-2" and adds > 2):
         continue
     if mode == "wack":

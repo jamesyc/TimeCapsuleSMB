@@ -115,6 +115,7 @@ from timecapsulesmb.services.runtime_verification import (
     ACTIVATION_SETTLE_SECONDS,
     BOOT_SETTLE_MESSAGE,
     BOOT_SETTLE_SECONDS,
+    verify_managed_runtime_ready,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
@@ -814,6 +815,64 @@ class DeployModuleTests(unittest.TestCase):
             ],
         )
 
+    def test_render_managed_runtime_verification_notes_advisory_findings(self) -> None:
+        detail = "discovery native NBNS is not ready; NetBIOS name lookups may fail, SMB and Bonjour are unaffected"
+        verification = ManagedRuntimeProbeResult(
+            ready=True,
+            detail="managed runtime is ready",
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=ReadinessProbeResult(ready=True, detail="managed mDNS registrant active", steps=(
+                ProbeStepResult("mdns_process", "pass", "discovery process is running"),
+                ProbeStepResult("native_nbns", "info", detail),
+            )),
+        )
+
+        self.assertEqual(
+            render_managed_runtime_verification(verification, heading="Runtime verification:"),
+            [
+                "Runtime verification:",
+                "  ok: managed smbd ready",
+                "  ok: discovery process is running",
+                f"  note: {detail}",
+            ],
+        )
+
+    def test_runtime_verification_measurement_keeps_advisory_native_nbns_result(self) -> None:
+        detail = "discovery native NBNS is not ready; NetBIOS name lookups may fail, SMB and Bonjour are unaffected"
+        smbd = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        cases = (
+            ((ProbeStepResult("native_nbns", "info", detail),), {"native_nbns_status": "info", "native_nbns_detail": detail, "info_step_count": 1}),
+            ((ProbeStepResult("native_nbns", "skip", "native NBNS is still starting; deploy does not wait for it"),), {"native_nbns_status": "skip", "info_step_count": 0}),
+            ((), {"native_nbns_status": "none", "info_step_count": 0}),
+        )
+        for nbns_steps, expected in cases:
+            with self.subTest(expected["native_nbns_status"]):
+                verification = ManagedRuntimeProbeResult(
+                    ready=True,
+                    detail="managed runtime is ready",
+                    smbd=smbd,
+                    mdns=ReadinessProbeResult(ready=True, detail="managed mDNS registrant active", steps=(
+                        ProbeStepResult("mdns_process", "pass", "discovery process is running"),
+                    ) + nbns_steps),
+                )
+                measurements: list[tuple[str, dict[str, object]]] = []
+                result = verify_managed_runtime_ready(
+                    SshConnection("host", "pw", ""),
+                    callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
+                    stage="verify_runtime_activation",
+                    timeout_seconds=200,
+                    heading="Runtime verification:",
+                    failure_message="not ready",
+                    probe_runtime=mock.Mock(return_value=verification),
+                )
+                self.assertIs(result, verification)
+                fields = next(fields for kind, fields in measurements if kind == "runtime_verification")
+                self.assertTrue(fields["ready"])
+                self.assertNotIn("final_blocker_step", fields)
+                self.assertEqual({key: fields.get(key) for key in expected}, expected)
+                if not nbns_steps:
+                    self.assertNotIn("native_nbns_detail", fields)
+
     def test_render_managed_runtime_verification_fails_when_runtime_probe_fails(self) -> None:
         verification = ManagedRuntimeProbeResult(
             ready=False,
@@ -1280,10 +1339,56 @@ describe_managed_smbd_status "" ""
         "link: name=bridge1 index=10 role=isolated mask=none\n"
     )
 
-    def _run_mdns_probe(self, responses: list[object]) -> tuple[object, mock.Mock]:
+    def _run_mdns_probe(self, responses: list[object], native_nbns: str = "required") -> tuple[object, mock.Mock]:
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=responses) as run_ssh_mock:
-            result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"))
+            result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"), native_nbns=native_nbns)
         return result, run_ssh_mock
+
+    def _mdns_probe_with(self, ps_out: str, fstat_out: str | None = None, plan: str | None = None,
+                         native_nbns: str = "required") -> object:
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31 if fstat_out is None else fstat_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31 if plan is None else plan, stderr=""),
+        ], native_nbns=native_nbns)
+        return result
+
+    def test_probe_managed_mdns_requires_native_nbns_to_finish_starting(self) -> None:
+        result = self._mdns_probe_with(self.PS_V31.replace("nbns=ready", "nbns=starting"))
+        self.assertFalse(result.ready)
+        self.assertIn("FAIL:discovery native NBNS is still starting", result.lines)
+
+    def test_probe_managed_mdns_advisory_reports_native_nbns_without_blocking_deploy(self) -> None:
+        no_wcifsnd_ps = self.PS_V31.replace("917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", "")
+        no_wcifsnd_fstat = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
+        unlisted = "; NetBIOS name lookups may fail, SMB and Bonjour are unaffected"
+        cases = [
+            ("ready", self.PS_V31, None, None,
+             "PASS:Apple wcifsnd is ready on UDP 137 and 138"),
+            ("starting", self.PS_V31.replace("nbns=ready", "nbns=starting"), None, None,
+             "SKIP:native NBNS is still starting; deploy does not wait for it"),
+            ("retrying", no_wcifsnd_ps.replace("nbns=ready", "nbns=waiting"), no_wcifsnd_fstat, None,
+             "INFO:discovery native NBNS is not ready" + unlisted),
+            ("no state", self.PS_V31.replace("nbns=ready mode=payload ", ""), None, None,
+             "INFO:discovery NBNS state is not available yet" + unlisted),
+            ("mismatch", self.PS_V31.replace("nbns=ready", "nbns=waiting"), None,
+             self.PLAN_V31.replace("addr=192.168.1.10", "addr=239.1.2.3"),
+             "INFO:discovery native NBNS state does not match the active plan" + unlisted),
+        ]
+        for name, ps_out, fstat_out, plan, line in cases:
+            with self.subTest(name):
+                result = self._mdns_probe_with(ps_out, fstat_out, plan, native_nbns="advisory")
+                self.assertTrue(result.ready, result.lines)
+                self.assertIn(line, result.lines)
+                # Advisory findings never become the probe's failure detail.
+                self.assertNotIn("NetBIOS name lookups", result.detail)
+
+    def test_probe_managed_mdns_advisory_still_requires_bonjour(self) -> None:
+        ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
+        result = self._mdns_probe_with(ps_out, native_nbns="advisory")
+        self.assertFalse(result.ready)
+        self.assertIn("FAIL:discovery process is not running", result.lines)
 
     def test_probe_managed_mdns_passes_when_apple_daemon_owns_5353_and_plan_grants_smb(self) -> None:
         result, run_ssh_mock = self._run_mdns_probe([
@@ -1741,6 +1846,8 @@ describe_managed_smbd_status "" ""
         smbd_mock.assert_called_once()
         self.assertEqual(smbd_mock.call_args.kwargs["timeout_seconds"], 30)
         self.assertEqual(mdns_mock.call_count, 2)
+        # Deploy never waits on or fails for native NBNS (first and settle probe).
+        self.assertEqual([call.kwargs.get("native_nbns") for call in mdns_mock.call_args_list], ["advisory", "advisory"])
         rsync_mock.assert_called_once_with(connection)
         self.assertEqual(sleep_mock.call_args_list, [mock.call(3.0)])
 

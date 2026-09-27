@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import struct
+from dataclasses import dataclass
 from typing import Optional
 import ipaddress
 
@@ -11,6 +12,7 @@ from timecapsulesmb.checks.models import CheckResult
 NBNS_PORT = 137
 NB_TYPE_NB = 0x0020
 DNS_CLASS_IN = 0x0001
+NBNS_QUERY_TIMEOUT_CODE = "nbns_query_timeout"
 
 
 def encode_netbios_name(name: str, suffix: int = 0x20) -> bytes:
@@ -40,13 +42,30 @@ def _skip_name(packet: bytes, offset: int) -> int:
     raise ValueError("truncated NBNS name")
 
 
-def extract_nbns_response_ip(packet: bytes) -> Optional[str]:
+@dataclass(frozen=True)
+class NbnsResponse:
+    rcode: int
+    addresses: tuple[str, ...] = ()
+
+
+def parse_nbns_response(packet: bytes) -> Optional[NbnsResponse]:
+    """Parse a name query response; None when it is not a well-formed one.
+
+    Apple's wcifsnd answers with flags 0x8500, no question, the full owner
+    name, TTL 0 and one 6-byte NB entry (flags + IPv4) per registered
+    interface, so a router-mode device lists its WAN and LAN addresses.
+    """
     if len(packet) < 12:
         return None
 
     try:
         _, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", packet[:12])
-        if (flags & 0x8000) == 0 or ancount < 1:
+        if (flags & 0x8000) == 0 or (flags & 0x7800) != 0:
+            return None
+        rcode = flags & 0x000F
+        if rcode:
+            return NbnsResponse(rcode)
+        if ancount < 1:
             return None
 
         offset = 12
@@ -64,10 +83,12 @@ def extract_nbns_response_ip(packet: bytes) -> Optional[str]:
         offset += 10
         if rtype != NB_TYPE_NB or rclass != DNS_CLASS_IN or offset + rdlength > len(packet):
             return None
-
-        if rdlength == 6:
-            return socket.inet_ntoa(packet[offset + 2 : offset + 6])
-        return None
+        if rdlength == 0 or rdlength % 6:
+            return None
+        return NbnsResponse(0, tuple(
+            socket.inet_ntoa(packet[entry + 2 : entry + 6])
+            for entry in range(offset, offset + rdlength, 6)
+        ))
     except (IndexError, OSError, ValueError, struct.error):
         return None
 
@@ -87,15 +108,20 @@ def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip:
         sock.sendto(query, (target_host, NBNS_PORT))
         packet, _ = sock.recvfrom(1024)
     except TimeoutError:
-        return CheckResult("FAIL", f"NBNS query for {netbios_name!r} timed out against {target_host}:137")
+        return CheckResult("FAIL", f"NBNS query for {netbios_name!r} timed out against {target_host}:137",
+                           {"code": NBNS_QUERY_TIMEOUT_CODE})
     except OSError as exc:
         return CheckResult("FAIL", f"NBNS query failed: {exc}")
     finally:
         sock.close()
 
-    actual_ip = extract_nbns_response_ip(packet)
-    if actual_ip is None:
+    response = parse_nbns_response(packet)
+    if response is None:
         return CheckResult("FAIL", f"NBNS query for {netbios_name!r} returned an invalid response")
-    if actual_ip != expected_ip:
-        return CheckResult("FAIL", f"NBNS query for {netbios_name!r} resolved to {actual_ip}, expected {expected_ip}")
-    return CheckResult("PASS", f"NBNS query for {netbios_name!r} resolved to {actual_ip}")
+    if response.rcode:
+        return CheckResult("FAIL", f"NBNS query for {netbios_name!r} returned a negative response (rcode {response.rcode})")
+    if expected_ip not in response.addresses:
+        return CheckResult("FAIL", f"NBNS query for {netbios_name!r} resolved to {', '.join(response.addresses)}, expected {expected_ip}")
+    others = [address for address in response.addresses if address != expected_ip]
+    also = f" (also lists {', '.join(others)})" if others else ""
+    return CheckResult("PASS", f"NBNS query for {netbios_name!r} resolved to {expected_ip}{also}")

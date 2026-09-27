@@ -24,8 +24,10 @@
 #ifndef WCIFSND_INSPECT_MS
 #define WCIFSND_INSPECT_MS 5000
 #endif
+/* Apple's own client (wcifsfs) gives each name 20 attempts of 5 s. A
+ * registration normally completes in ~2 s, ~24 s through WINS. */
 #ifndef WCIFSND_REPLY_MS
-#define WCIFSND_REPLY_MS 10000
+#define WCIFSND_REPLY_MS 100000
 #endif
 #ifndef WCIFSND_STOP_MS
 #define WCIFSND_STOP_MS 2000
@@ -63,18 +65,26 @@ static void request_name(struct wcifsnd *w) {
     w->request[60] = 6;
     if (w->record == 1) w->request[62] = 0x80;
     for (i = 0; i < 4; i++) w->request[64+i] = (unsigned long)getpid() >> (24-8*i);
+    w->last_reply = -1;
 }
 
-/* 0 = unrelated or bounded wait ACK, 1 = success, -1 = invalid/negative. */
+/* Log label of the current record: machine<00>, WORKGROUP<00>, machine<20>. */
+static const char *record_label(const struct wcifsnd *w, char *out, size_t size) {
+    snprintf(out, size, "%s<%s>", w->record == 1 ? "WORKGROUP" : w->name, w->record == 2 ? "20" : "00");
+    return out;
+}
+
+/* 0 = another transaction, 1 = success, -1 = not final. Apple's wcifsnd only
+ * ever answers an add with 0xa800 or 0xa803 (rcode 3: a LAN defender objected
+ * to one broadcast). 0xa803 changes no daemon state: the registration still
+ * completes and 0xa800 follows on the same transaction, so anything but
+ * success is provisional and only the deadline ends the wait. */
 static int response(const struct wcifsnd *w, const unsigned char *p, size_t n) {
-    unsigned flags;
     if (n < 2 || get16(p) != w->transaction) return 0;
-    if (n < 58 || memcmp(p + 12, w->request + 12, 34) ||
-        get16(p + 4) != 0 || get16(p + 6) != 1 || get16(p + 8) || get16(p + 10) ||
-        get16(p + 46) != 32 || get16(p + 48) != 1) return -1;
-    flags = get16(p + 2);
-    if ((flags & 0xf800) == 0xb800 && !(flags & 15) && n == 58 && get16(p + 54) == 2) return 0;
-    return n == 62 && get16(p + 54) == 6 && (flags & 0xf800) == 0xa800 && !(flags & 15) ? 1 : -1;
+    return n == 62 && !memcmp(p + 12, w->request + 12, 34) &&
+           get16(p + 4) == 0 && get16(p + 6) == 1 && !get16(p + 8) && !get16(p + 10) &&
+           get16(p + 46) == 32 && get16(p + 48) == 1 && get16(p + 54) == 6 &&
+           (get16(p + 2) & 0xf800) == 0xa800 && !(get16(p + 2) & 15) ? 1 : -1;
 }
 
 static struct sockaddr_in endpoint(unsigned port) {
@@ -199,7 +209,7 @@ static int ready_socket(struct wcifsnd *w) {
 static int observe_child(struct wcifsnd *w, long long now) {
     int status;
     pid_t child = w->child, got;
-    char reason[96];
+    char reason[160];
     if (child <= 0) return 0;
     got = waitpid(child, &status, WNOHANG);
     if (got == 0 || (got < 0 && errno == EINTR)) return 0;
@@ -210,7 +220,9 @@ static int observe_child(struct wcifsnd *w, long long now) {
     int stopping = w->phase == WC_STOPPING;
     w->child = 0; w->phase = WC_OFF; w->wake = 0;
     if (!stopping) {
-        if (got == child && WIFEXITED(status))
+        if (got == child && WIFEXITED(status) && !WEXITSTATUS(status))
+            snprintf(reason, sizeof(reason), "child %ld exited with status 0 (Apple wcifsnd exits 0 when UDP 137/138/922/923 is already bound)", (long)child);
+        else if (got == child && WIFEXITED(status))
             snprintf(reason, sizeof(reason), "child %ld exited with status %d", (long)child, WEXITSTATUS(status));
         else if (got == child && WIFSIGNALED(status))
             snprintf(reason, sizeof(reason), "child %ld killed by signal %d", (long)child, WTERMSIG(status));
@@ -299,7 +311,15 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
     }
     if (w->phase == WC_INSPECTING) { w->wake = now + 100; return 0; }
     if (w->phase == WC_REGISTERING) {
-        if (now >= w->deadline) { fail(w, "registration timed out", now); return 0; }
+        if (now >= w->deadline) {
+            char why[160], label[24], last[48];
+            if (w->last_reply < 0) snprintf(last, sizeof(last), "no reply");
+            else if (w->last_reply > 15) snprintf(last, sizeof(last), "unexpected reply");
+            else snprintf(last, sizeof(last), "reply rcode %d", w->last_reply);
+            snprintf(why, sizeof(why), "registration of %s timed out after %d ms (last %s)",
+                     record_label(w, label, sizeof(label)), WCIFSND_REPLY_MS, last);
+            fail(w, why, now); return 0;
+        }
         if (!w->sent && now >= w->wake) {
             ssize_t n = send(w->fd, w->request, sizeof(w->request), 0);
             if (n == (ssize_t)sizeof(w->request)) w->sent = 1;
@@ -316,8 +336,23 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
                 return 0;
             }
             result = response(w, reply, (size_t)n);
-            if (result < 0) { fail(w, "registration rejected or invalid reply", now); return 0; }
-            if (result > 0) {
+            if (result < 0) {
+                /* Logged once per record on purpose; the timeout message
+                 * carries the last reply. Never resend: a later add to this
+                 * child would add a reference once the name is registered. */
+                unsigned flags = n >= 4 ? get16(reply + 2) : 0;
+                int rcode = n == 62 && (flags & 0xf800) == 0xa800 && (flags & 15) ? (int)(flags & 15) : 16;
+                char label[24];
+                if (w->last_reply < 0) {
+                    if (rcode < 16)
+                        timestamped_fprintf(stderr, "wcifsnd: %s reply rcode %d; waiting for registration\n",
+                                            record_label(w, label, sizeof(label)), rcode);
+                    else
+                        timestamped_fprintf(stderr, "wcifsnd: %s unexpected reply (%ld bytes, flags 0x%04x); waiting for registration\n",
+                                            record_label(w, label, sizeof(label)), (long)n, flags);
+                }
+                w->last_reply = rcode;
+            } else if (result > 0) {
                 w->record++;
                 if (w->record == 1 && !strcmp(w->name, "WORKGROUP")) w->record++;
                 if (w->record == 3) {

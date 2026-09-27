@@ -90,7 +90,7 @@ def run_doctor_checks(
     _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_device_hostname(target, remote, sink)
     _doctor_check_managed_smbd(target, remote, sink)
-    _doctor_check_managed_mdns(target, remote, sink)
+    native_nbns_ready = _doctor_check_managed_mdns(target, remote, sink)
     _doctor_check_managed_rsync(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
     bonjour_result = _add_bonjour_results(
@@ -113,7 +113,7 @@ def run_doctor_checks(
     _doctor_add_bonjour_naming_info(bonjour_result, sink)
     _doctor_check_usb_printer(target, remote, bonjour_result, sink)
     _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
-    _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink)
+    _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns_ready)
     _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, direct_smb, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink)

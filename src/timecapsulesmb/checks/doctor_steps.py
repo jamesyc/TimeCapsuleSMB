@@ -45,7 +45,7 @@ from timecapsulesmb.checks.network import (
     select_route_to_address,
 )
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
-from timecapsulesmb.checks.nbns import check_nbns_name_resolution
+from timecapsulesmb.checks.nbns import NBNS_QUERY_TIMEOUT_CODE, check_nbns_name_resolution
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
     SmbClientTargetInput,
@@ -110,6 +110,10 @@ T = TypeVar("T")
 
 
 DOCTOR_TRANSIENT_RETRY_DELAYS = (10, 15)
+# Apple's client gives each NetBIOS name 20 x 5 s. Registration normally takes
+# ~2 s per name (~24 s through WINS), so only "still starting" waits this long.
+DOCTOR_NBNS_STARTING_RETRY_DELAYS = (20, 25, 30)
+NATIVE_NBNS_STILL_STARTING = "discovery native NBNS is still starting"
 TRANSIENT_SMBD_READINESS_FAILURES = {
     "managed smbd parent process is not running",
     "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
@@ -117,7 +121,7 @@ TRANSIENT_SMBD_READINESS_FAILURES = {
 TRANSIENT_MDNS_READINESS_FAILURES = {
     "discovery process is not running",
     "discovery NBNS state is not available yet",
-    "discovery native NBNS is still starting",
+    NATIVE_NBNS_STILL_STARTING,
     "discovery native NBNS is not ready",
 }
 TRANSIENT_RSYNC_READINESS_FAILURES = {
@@ -327,6 +331,9 @@ def _add_probe_line_results(
             emitted = True
         elif line.startswith("SKIP:"):
             add_result(CheckResult("SKIP", line.removeprefix("SKIP:")))
+            emitted = True
+        elif line.startswith("INFO:"):
+            add_result(CheckResult("INFO", line.removeprefix("INFO:")))
             emitted = True
 
     if emitted:
@@ -1298,6 +1305,7 @@ def _add_nbns_results(
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     reachable_addresses: tuple[str, ...],
     add_result: Callable[[CheckResult], None],
+    native_nbns_ready: bool | None = None,
 ) -> None:
     try:
         if proxied_ssh:
@@ -1316,9 +1324,26 @@ def _add_nbns_results(
             if expected_ip is None:
                 add_result(CheckResult("SKIP", "NBNS check skipped; no TCP-reachable IPv4 SMB address was discovered"))
                 return
-            add_result(check_nbns_name_resolution(expected_name, expected_ip, expected_ip))
+            def query() -> CheckResult:
+                return check_nbns_name_resolution(expected_name, expected_ip, expected_ip)
+
+            if native_nbns_ready is False:
+                # The device has not finished registering its name yet: a
+                # timeout may clear, and during startup grace it is a startup
+                # failure. Once native NBNS is ready a timeout is a network
+                # problem between here and the device that waiting cannot fix.
+                result = _run_doctor_retryable_check(query, _nbns_query_timed_out)
+                if _nbns_query_timed_out(result):
+                    result = _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
+            else:
+                result = query()
+            add_result(result)
     except Exception as e:
         add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
+
+
+def _nbns_query_timed_out(result: CheckResult) -> bool:
+    return result.status == "FAIL" and result.details.get("code") == NBNS_QUERY_TIMEOUT_CODE
 
 
 def _ip_literal(value: str) -> str | None:
@@ -1993,13 +2018,24 @@ def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink:
     )
 
 
-def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> bool | None:
+    """Return whether native NBNS passed (None when it was not probed)."""
     if not remote.remote_checks_enabled:
-        return
+        return None
+
+    retries = 0
+
+    def should_retry(probe: ReadinessProbeResult) -> bool:
+        nonlocal retries
+        retries += 1
+        if retries <= len(DOCTOR_TRANSIENT_RETRY_DELAYS):
+            return _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES)
+        return _readiness_probe_retryable(probe, {NATIVE_NBNS_STILL_STARTING})
 
     mdns_probe = _run_doctor_retryable_check(
         lambda: probe_managed_mdns_conn(target.connection),
-        lambda probe: _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES),
+        should_retry,
+        retry_delays=DOCTOR_TRANSIENT_RETRY_DELAYS + DOCTOR_NBNS_STARTING_RETRY_DELAYS,
     )
     mdns_probe_lines = getattr(mdns_probe, "lines", ())
     if not isinstance(mdns_probe_lines, (list, tuple)):
@@ -2011,6 +2047,9 @@ def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink:
         fallback_pass_message="managed mDNS registrant is active",
         fallback_fail_message=f"managed mDNS registrant is not active ({mdns_probe.detail})",
     )
+    steps = getattr(mdns_probe, "steps", ())
+    nbns = next((step for step in steps if getattr(step, "id", None) == "native_nbns"), None) if isinstance(steps, (list, tuple)) else None
+    return None if nbns is None else nbns.status == "pass"
 
 
 def _add_usb_printer_results(
@@ -2291,6 +2330,7 @@ def _doctor_check_nbns(
     naming: RuntimeNamingState,
     direct_smb: DirectSmbState,
     sink: DoctorSink,
+    native_nbns_ready: bool | None = None,
 ) -> None:
     if not remote.remote_checks_enabled:
         return
@@ -2302,6 +2342,7 @@ def _doctor_check_nbns(
         runtime_naming_identity=naming.identity,
         reachable_addresses=direct_smb.reachable_addresses,
         add_result=sink.add,
+        native_nbns_ready=native_nbns_ready,
     )
     if any("failed" in result.message for result in sink.new_results_since(result_start)):
         _add_remote_service_socket_debug(target, remote, sink)

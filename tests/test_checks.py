@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import socket
+import struct
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -47,7 +48,7 @@ from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import RouteSelection, check_smb_port, check_ssh_login
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
-from timecapsulesmb.checks.nbns import build_nbns_query, check_nbns_name_resolution, extract_nbns_response_ip
+from timecapsulesmb.checks.nbns import NBNS_QUERY_TIMEOUT_CODE, NbnsResponse, build_nbns_query, check_nbns_name_resolution, parse_nbns_response
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
     check_authenticated_smb_file_ops_detailed,
@@ -65,6 +66,8 @@ from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
     ManagerStartupAgeProbeResult,
+    ProbeStepResult,
+    ReadinessProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
@@ -92,6 +95,13 @@ DEFAULT_ACTIVE_SMB_CONF = """[global]
 [Data]
     path = /Volumes/dk2/ShareRoot
 """
+
+
+def _nbns_owner_name(name: str) -> bytes:
+    """Full (uncompressed) first-level encoded NetBIOS owner name, suffix 0x20."""
+    raw = (name.upper()[:15].ljust(15) + "\x20").encode("latin-1")
+    return b"\x20" + bytes(ord("A") + (c >> 4) if i % 2 == 0 else ord("A") + (c & 15)
+                           for c in raw for i in range(2)) + b"\x00"
 
 
 class CheckTests(unittest.TestCase):
@@ -3172,6 +3182,142 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(any(result.message == "discovery native NBNS is still starting" for result in run.results))
         self.assertTrue(any(result.status == "PASS" and result.message == "mdns bound to required UDP 5353 listeners" for result in run.results))
 
+    @staticmethod
+    def _native_nbns_probe(status: str, detail: str) -> ReadinessProbeResult:
+        return ReadinessProbeResult(
+            ready=status == "pass",
+            detail=detail,
+            steps=(
+                ProbeStepResult("mdns_process", "pass", "discovery process is running"),
+                ProbeStepResult("native_nbns", status, detail),
+            ),
+        )
+
+    @staticmethod
+    def _nbns_query_timeout() -> CheckResult:
+        return CheckResult("FAIL", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137",
+                           {"code": NBNS_QUERY_TIMEOUT_CODE})
+
+    def _run_doctor_nbns(self, mdns_mock, nbns_mock, *, startup_age: float = 3600.0):
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+                xattr_result=CheckResult("PASS", "xattr ok"),
+                read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+                skip_bonjour=True,
+                skip_smb=True,
+                extra_patches={
+                    "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock,
+                    "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
+                    "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                        return_value=ManagerStartupAgeProbeResult(startup_age, f"manager started {int(startup_age)}s ago")
+                    ),
+                    "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                    "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+                    "timecapsulesmb.checks.doctor_debug.read_remote_service_socket_diagnostics_conn": mock.Mock(return_value=""),
+                },
+            )
+        return run, [call.args[0] for call in sleep_mock.call_args_list]
+
+    def test_run_doctor_checks_waits_up_to_apple_budget_while_native_nbns_starts(self) -> None:
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        mdns_mock = mock.Mock(side_effect=[starting, starting, starting, ready])
+        nbns_mock = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
+
+        run, sleeps = self._run_doctor_nbns(mdns_mock, nbns_mock)
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10, 15, 20])
+        self.assertEqual(mdns_mock.call_count, 4)
+        nbns_mock.assert_called_once()
+
+    def test_run_doctor_checks_fails_after_apple_budget_when_native_nbns_never_finishes_starting(self) -> None:
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        mdns_mock = mock.Mock(return_value=starting)
+        nbns_mock = mock.Mock(side_effect=[self._nbns_query_timeout()] * 3)
+
+        run, sleeps = self._run_doctor_nbns(mdns_mock, nbns_mock)
+
+        self.assertTrue(run.fatal)
+        # 100 s for readiness, then the unregistered name's own two retries.
+        self.assertEqual(sleeps, [10, 15, 20, 25, 30, 10, 15])
+        self.assertEqual(mdns_mock.call_count, 6)
+        self.assertTrue(any(result.status == "FAIL" and result.message == "discovery native NBNS is still starting"
+                            for result in run.results))
+
+    def test_run_doctor_checks_keeps_short_retries_when_native_nbns_is_not_ready(self) -> None:
+        # "Not ready" is discovery backing off after a failed registration;
+        # only "still starting" earns Apple's longer registration budget.
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        mdns_mock = mock.Mock(return_value=not_ready)
+        nbns_mock = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
+
+        run, sleeps = self._run_doctor_nbns(mdns_mock, nbns_mock)
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(sleeps, [10, 15])
+        self.assertEqual(mdns_mock.call_count, 3)
+
+    def test_run_doctor_checks_reports_query_timeout_at_once_when_native_nbns_is_ready(self) -> None:
+        # Native NBNS registered its name, so a timeout is between this host
+        # and the device; waiting cannot fix it and startup grace must not
+        # hide it, even right after a boot.
+        ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        nbns_mock = mock.Mock(return_value=self._nbns_query_timeout())
+
+        run, sleeps = self._run_doctor_nbns(mock.Mock(return_value=ready), nbns_mock, startup_age=41.0)
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(sleeps, [])
+        nbns_mock.assert_called_once()
+        query = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(query.status, "FAIL")
+        self.assertNotIn("startup_grace", query.details)
+        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
+
+    def test_run_doctor_checks_retries_query_while_native_nbns_is_not_ready(self) -> None:
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        resolved = CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")
+        nbns_mock = mock.Mock(side_effect=[self._nbns_query_timeout(), resolved])
+
+        run, sleeps = self._run_doctor_nbns(mock.Mock(return_value=not_ready), nbns_mock)
+
+        self.assertEqual(sleeps, [10, 15, 10])
+        self.assertEqual(nbns_mock.call_count, 2)
+        self.assertIn(resolved, run.results)
+
+    def test_run_doctor_checks_startup_grace_collapses_unregistered_nbns_failures(self) -> None:
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        for startup_age, collapsed in ((41.0, True), (3600.0, False)):
+            with self.subTest(startup_age=startup_age):
+                nbns_mock = mock.Mock(side_effect=[self._nbns_query_timeout()] * 3)
+
+                run, _ = self._run_doctor_nbns(mock.Mock(return_value=not_ready), nbns_mock, startup_age=startup_age)
+
+                self.assertTrue(run.fatal)
+                self.assertEqual(nbns_mock.call_count, 3)
+                failures = [result for result in run.results if result.status == "FAIL"]
+                if collapsed:
+                    self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
+                    self.assertIn("NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137",
+                                  failures[0].details["masked_failures"])
+                    self.assertIn("discovery native NBNS is not ready", failures[0].details["masked_failures"])
+                else:
+                    self.assertEqual(
+                        {result.message for result in failures},
+                        {"discovery native NBNS is not ready", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137"},
+                    )
+
+    def test_run_doctor_checks_reports_query_timeout_at_once_when_native_nbns_was_not_probed(self) -> None:
+        nbns_mock = mock.Mock(return_value=self._nbns_query_timeout())
+
+        run, sleeps = self._run_doctor_nbns(mock.Mock(return_value=mock.Mock(ready=True, detail="ok")), nbns_mock)
+
+        self.assertEqual(sleeps, [])
+        nbns_mock.assert_called_once()
+
     def test_run_doctor_checks_exhausts_transient_mdns_process_retries(self) -> None:
         mdns_probe = mock.Mock(
             ready=False,
@@ -4864,7 +5010,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "PASS")
         self.assertEqual(captured_args[3:6], ["-g", "-p", "2445"])
 
-    def test_extract_nbns_response_ip_reads_first_answer_ipv4(self) -> None:
+    def test_parse_nbns_response_reads_single_answer_ipv4(self) -> None:
         packet = (
             b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
             + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
@@ -4872,33 +5018,58 @@ class CheckTests(unittest.TestCase):
             + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x06\x00\x00"
             + b"\xc0\xa8\x01\xd9"
         )
-        self.assertEqual(extract_nbns_response_ip(packet), "192.168.1.217")
+        self.assertEqual(parse_nbns_response(packet), NbnsResponse(0, ("192.168.1.217",)))
 
-    def test_extract_nbns_response_ip_rejects_non_rfc_ipv6_extension_answer(self) -> None:
-        packet = (
-            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
-            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
-            + b"\x00\x20\x00\x01"
-            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x12\x00\x00"
-            + socket.inet_pton(socket.AF_INET6, "fd00::217")
+    def test_parse_nbns_response_reads_every_apple_interface_entry(self) -> None:
+        # Apple's wcifsnd in router mode: no question, the full owner name,
+        # TTL 0 and one NB entry per registered interface, WAN first.
+        for entries in (["203.0.113.5", "10.0.1.1"], ["203.0.113.5", "10.0.1.1", "172.16.42.1"]):
+            with self.subTest(entries=entries):
+                rdata = b"".join(b"\x00\x00" + socket.inet_aton(address) for address in entries)
+                packet = (
+                    b"\x13\x37\x85\x00\x00\x00\x00\x01\x00\x00\x00\x00"
+                    + _nbns_owner_name("TimeCapsule")
+                    + b"\x00\x20\x00\x01\x00\x00\x00\x00" + struct.pack("!H", len(rdata)) + rdata
+                )
+                self.assertEqual(parse_nbns_response(packet), NbnsResponse(0, tuple(entries)))
+
+    def test_parse_nbns_response_rejects_bad_rdlength(self) -> None:
+        for rdlength, rdata in ((0, b""), (7, b"\x00" * 7), (12, b"\x00" * 6)):
+            with self.subTest(rdlength=rdlength):
+                packet = (
+                    b"\x13\x37\x85\x00\x00\x00\x00\x01\x00\x00\x00\x00"
+                    + _nbns_owner_name("TimeCapsule")
+                    + b"\x00\x20\x00\x01\x00\x00\x00\x00" + struct.pack("!H", rdlength) + rdata
+                )
+                self.assertIsNone(parse_nbns_response(packet))
+
+    def test_parse_nbns_response_rejects_non_query_opcode_and_requests(self) -> None:
+        answer = (
+            _nbns_owner_name("TimeCapsule")
+            + b"\x00\x20\x00\x01\x00\x00\x00\x00\x00\x06\x00\x00\xc0\xa8\x01\xd9"
         )
-        self.assertIsNone(extract_nbns_response_ip(packet))
+        self.assertIsNone(parse_nbns_response(b"\x13\x37\xad\x00\x00\x00\x00\x01\x00\x00\x00\x00" + answer))
+        self.assertIsNone(parse_nbns_response(b"\x13\x37\x05\x00\x00\x00\x00\x01\x00\x00\x00\x00" + answer))
 
-    def test_extract_nbns_response_ip_returns_none_for_truncated_name(self) -> None:
+    def test_parse_nbns_response_reports_negative_rcode(self) -> None:
+        packet = b"\x13\x37\x85\x03\x00\x00\x00\x00\x00\x00\x00\x00" + _nbns_owner_name("TimeCapsule")
+        self.assertEqual(parse_nbns_response(packet), NbnsResponse(3))
+
+    def test_parse_nbns_response_returns_none_for_truncated_name(self) -> None:
         packet = (
             b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
             + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA"
         )
-        self.assertIsNone(extract_nbns_response_ip(packet))
+        self.assertIsNone(parse_nbns_response(packet))
 
-    def test_extract_nbns_response_ip_returns_none_for_truncated_answer_header(self) -> None:
+    def test_parse_nbns_response_returns_none_for_truncated_answer_header(self) -> None:
         packet = (
             b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
             + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
             + b"\x00\x20\x00\x01"
             + b"\xc0\x0c\x00\x20\x00\x01\x00\x00"
         )
-        self.assertIsNone(extract_nbns_response_ip(packet))
+        self.assertIsNone(parse_nbns_response(packet))
 
     def test_build_nbns_query_has_expected_header_and_question(self) -> None:
         packet = build_nbns_query("TimeCapsule", transaction_id=0x1337)
@@ -4952,6 +5123,47 @@ class CheckTests(unittest.TestCase):
             result = check_nbns_name_resolution("TimeCapsule", "192.168.1.217", "192.168.1.217")
         self.assertEqual(result.status, "FAIL")
         self.assertIn("resolved to 192.168.1.16", result.message)
+
+    def _nbns_check_with_reply(self, packet: bytes, expected_ip: str = "10.0.1.1"):
+        fake_sock = mock.Mock()
+        fake_sock.recvfrom.return_value = (packet, (expected_ip, 137))
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            return check_nbns_name_resolution("TimeCapsule", expected_ip, expected_ip)
+
+    def test_check_nbns_name_resolution_passes_router_mode_answer_listing_lan_second(self) -> None:
+        rdata = b"\x00\x00" + socket.inet_aton("203.0.113.5") + b"\x00\x00" + socket.inet_aton("10.0.1.1")
+        result = self._nbns_check_with_reply(
+            b"\x13\x37\x85\x00\x00\x00\x00\x01\x00\x00\x00\x00" + _nbns_owner_name("TimeCapsule")
+            + b"\x00\x20\x00\x01\x00\x00\x00\x00\x00\x0c" + rdata
+        )
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(result.message, "NBNS query for 'TimeCapsule' resolved to 10.0.1.1 (also lists 203.0.113.5)")
+
+    def test_check_nbns_name_resolution_never_matches_ipv6_extension_answer(self) -> None:
+        # An 18-byte IPv6 extension answer happens to be three 6-byte entries;
+        # its bytes must never be read as the device's IPv4 address.
+        result = self._nbns_check_with_reply(
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x12\x00\x00"
+            + socket.inet_pton(socket.AF_INET6, "fd00::217"),
+            expected_ip="192.168.1.217",
+        )
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("expected 192.168.1.217", result.message)
+
+    def test_check_nbns_name_resolution_reports_negative_response(self) -> None:
+        result = self._nbns_check_with_reply(
+            b"\x13\x37\x85\x03\x00\x00\x00\x00\x00\x00\x00\x00" + _nbns_owner_name("TimeCapsule")
+        )
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.message, "NBNS query for 'TimeCapsule' returned a negative response (rcode 3)")
+
+    def test_check_nbns_name_resolution_reports_invalid_response(self) -> None:
+        result = self._nbns_check_with_reply(b"\x13\x37\x85")
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.message, "NBNS query for 'TimeCapsule' returned an invalid response")
 
     def test_run_doctor_checks_checks_nbns_without_flash_preference(self) -> None:
         values = {

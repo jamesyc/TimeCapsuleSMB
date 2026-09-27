@@ -342,7 +342,9 @@ class DeployedVersionProbeResult:
     detail: str
 
 
-ProbeStepStatus = Literal["pass", "fail", "timeout", "skip"]
+# "info" reports an advisory finding that never blocks readiness.
+ProbeStepStatus = Literal["pass", "fail", "timeout", "skip", "info"]
+NativeNbnsCheck = Literal["required", "advisory"]
 RuntimeProbeAttemptPhase = Literal["soft_window", "final_check"]
 
 
@@ -363,6 +365,8 @@ class ProbeStepResult:
             return f"PASS:{self.detail}"
         if self.status == "skip":
             return f"SKIP:{self.detail}"
+        if self.status == "info":
+            return f"INFO:{self.detail}"
         return f"FAIL:{self.detail}"
 
 
@@ -1029,10 +1033,15 @@ def probe_managed_mdns_conn(
     process_timeout_seconds: int = MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
     plan_timeout_seconds: int = MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
     fstat_timeout_seconds: int = MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
+    native_nbns: NativeNbnsCheck = "required",
 ) -> ReadinessProbeResult:
     """v3.1.0 mDNS health (guide C.9): Apple's mDNSResponder is the only
     responder on the device, diskd runs on loopback, and our registrant is
-    alive with a plan that grants SMB somewhere when a payload is active."""
+    alive with a plan that grants SMB somewhere when a payload is active.
+
+    Doctor requires native NBNS. Deploy only reports it ("advisory"): NetBIOS
+    is rarely used, and registration may still be running when Samba and
+    Bonjour are already up, so it must never fail or delay a deploy."""
     steps: list[ProbeStepResult] = []
     not_ready = "managed mDNS registrant not active"
 
@@ -1224,19 +1233,26 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
             and _fstat_has_udp_port(owned_fstat, "wcifsnd", "ipv4", 138)
         )
         if not marker:
-            _append_step(steps, "native_nbns", "fail", "discovery NBNS state is not available yet")
+            nbns_status, nbns_detail = "fail", "discovery NBNS state is not available yet"
         elif eligible and nbns_state == "starting":
-            _append_step(steps, "native_nbns", "fail", "discovery native NBNS is still starting")
+            nbns_status, nbns_detail = "fail", "discovery native NBNS is still starting"
         elif eligible and nbns_state == "ready" and len(owned_wcifsnd) == 1 and len(wcifsnd_lines) == 1 and ports_ready:
-            _append_step(steps, "native_nbns", "pass", "Apple wcifsnd is ready on UDP 137 and 138")
+            nbns_status, nbns_detail = "pass", "Apple wcifsnd is ready on UDP 137 and 138"
         elif eligible:
-            _append_step(steps, "native_nbns", "fail", "discovery native NBNS is not ready")
+            nbns_status, nbns_detail = "fail", "discovery native NBNS is not ready"
         elif nbns_state in {"disabled", "waiting"} and not wcifsnd_lines:
-            _append_step(steps, "native_nbns", "pass", f"native NBNS is {nbns_state}")
+            nbns_status, nbns_detail = "pass", f"native NBNS is {nbns_state}"
         else:
-            _append_step(steps, "native_nbns", "fail", "discovery native NBNS state does not match the active plan")
+            nbns_status, nbns_detail = "fail", "discovery native NBNS state does not match the active plan"
+        if native_nbns == "advisory" and nbns_status == "fail":
+            if nbns_detail == "discovery native NBNS is still starting":
+                nbns_status, nbns_detail = "skip", "native NBNS is still starting; deploy does not wait for it"
+            else:
+                nbns_status = "info"
+                nbns_detail += "; NetBIOS name lookups may fail, SMB and Bonjour are unaffected"
+        _append_step(steps, "native_nbns", nbns_status, nbns_detail)
 
-    ready = all(step.status == "pass" for step in steps)
+    ready = all(step.status in {"pass", "skip", "info"} for step in steps)
     return _readiness_result_from_steps(
         ready=ready,
         steps=steps,
@@ -1525,12 +1541,12 @@ def probe_managed_runtime_once_conn(
     smbd = probe_managed_smbd_conn(connection, timeout_seconds=smbd_timeout_seconds)
     if not smbd.ready and smbd_mdns_stagger_seconds > 0:
         time.sleep(smbd_mdns_stagger_seconds)
-    mdns = probe_managed_mdns_conn(connection)
+    mdns = probe_managed_mdns_conn(connection, native_nbns="advisory")
     rsync = probe_managed_rsync_conn(connection)
 
     if smbd.ready and mdns.ready and rsync.ready:
         time.sleep(mdns_settle_seconds)
-        settled_mdns = probe_managed_mdns_conn(connection)
+        settled_mdns = probe_managed_mdns_conn(connection, native_nbns="advisory")
         if settled_mdns.ready:
             return ManagedRuntimeProbeResult(
                 ready=True,

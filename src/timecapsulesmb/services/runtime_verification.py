@@ -113,7 +113,7 @@ def _runtime_verification_measurement(
     steps = verification.steps
     status_counts = {
         status: sum(1 for step in steps if step.status == status)
-        for status in ("pass", "fail", "timeout", "skip")
+        for status in ("pass", "fail", "timeout", "skip", "info")
     }
     failed_steps = [
         step
@@ -138,6 +138,7 @@ def _runtime_verification_measurement(
         "fail_step_count": status_counts["fail"],
         "timeout_step_count": status_counts["timeout"],
         "skip_step_count": status_counts["skip"],
+        "info_step_count": status_counts["info"],
         "attempt_count": len(attempts),
         "soft_window_attempt_count": len(soft_window_attempts),
         "final_check_attempt_count": len(final_check_attempts),
@@ -159,6 +160,12 @@ def _runtime_verification_measurement(
                 last_attempt_blocker_status=last_attempt.final_blocker_status,
                 last_attempt_blocker_detail=last_attempt.final_blocker_detail,
             )
+    # Deploy reports native NBNS without waiting for it (advisory); telemetry
+    # keeps its result so NBNS failures stay visible.
+    nbns = next((step for step in verification.mdns.steps if step.id == "native_nbns"), None)
+    measurement["native_nbns_status"] = "none" if nbns is None else nbns.status
+    if nbns is not None:
+        measurement["native_nbns_detail"] = nbns.detail
     if final_blocker is not None:
         measurement.update(
             final_blocker_step=final_blocker.id,

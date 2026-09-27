@@ -4,13 +4,16 @@
 #include "../common/process.h"
 
 /* Names belong to this child generation, not to the UDP client connection.
- * Never retransmit an accepted add: Apple's registrations are refcounted. */
+ * Each add is sent once per child: Apple's registrations are refcounted. A
+ * negative reply is provisional (Apple completes the registration anyway);
+ * only the reply deadline replaces the child. */
 enum wcifsnd_phase { WC_OFF, WC_STARTING, WC_INSPECTING, WC_REGISTERING, WC_ACTIVE, WC_STOPPING };
 struct wcifsnd {
     enum wcifsnd_phase phase;
     pid_t child;
     struct tc_child inspection;
     int fd, desired, validated, failed, killed, sent, record;
+    int last_reply;  /* -1 none, 0..15 rcode, 16 malformed; for the timeout log */
     unsigned failures;
     uint16_t transaction;
     long long deadline, wake, active_since, inspection_limit;

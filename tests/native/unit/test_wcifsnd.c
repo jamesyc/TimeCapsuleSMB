@@ -34,8 +34,15 @@ int main(void) {
     printf("success=%d\n", response(&w, p, 62));
     put16(p, w.transaction - 1); printf("stale=%d\n", response(&w, p, 62));
     put16(p, w.transaction); p[13] ^= 1; printf("malformed=%d\n", response(&w, p, 62));
+    /* Apple's defended-name reply and any other rcode are provisional. */
+    make_reply(&w, p, 62, 0xa803, 6); printf("defended=%d\n", response(&w, p, 62));
     make_reply(&w, p, 62, 0xa805, 6); printf("negative=%d\n", response(&w, p, 62));
+    make_reply(&w, p, 62, 0xa807, 6); printf("conflict=%d\n", response(&w, p, 62));
+    /* Apple never sends WACK on 922; it is not final like any other reply. */
     make_reply(&w, p, 58, 0xb800, 2); printf("wack=%d\n", response(&w, p, 58));
+    make_reply(&w, p, 62, 0xa800, 12); printf("rdlength=%d\n", response(&w, p, 62));
+    make_reply(&w, p, 62, 0xa800, 6); printf("short=%d\n", response(&w, p, 61));
+    printf("runt=%d\n", response(&w, p, 1));
 
     unrelated = fork();
     if (unrelated == 0) _exit(37);

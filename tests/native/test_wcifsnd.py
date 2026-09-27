@@ -137,8 +137,14 @@ def dnssd(rig):
     fake.close()
 
 
+def add_events(discovery):
+    """(child pid, request) for every add the fake daemon received."""
+    return [(int(line.split()[1]), bytes.fromhex(line.split()[2]))
+            for line in event_lines(discovery.events) if line.startswith("ADD ")]
+
+
 def adds(discovery):
-    return [bytes.fromhex(line[4:]) for line in event_lines(discovery.events) if line.startswith("ADD ")]
+    return [request for _, request in add_events(discovery)]
 
 
 def children(discovery):
@@ -237,7 +243,8 @@ def test_codec_golden_packets_and_adversarial_responses(tmp_path):
     assert [decode_name(packet) for packet in packets] == [
         ("MACHINE", 0x00), ("WORKGROUP", 0x00), ("MACHINE", 0x20)]
     assert all(len(packet) == 68 and packet[2:4] == b"\x29\x00" for packet in packets)
-    assert lines[3:] == ["success=1", "stale=0", "malformed=-1", "negative=-1", "wack=0", "unrelated=1"]
+    assert lines[3:] == ["success=1", "stale=0", "malformed=-1", "defended=-1", "negative=-1",
+                         "conflict=-1", "wack=-1", "rdlength=-1", "short=-1", "runt=0", "unrelated=1"]
 
 
 def test_retry_deadlines_cleanup_and_eligibility(tmp_path):
@@ -331,6 +338,85 @@ def test_failed_child_retries_without_withdrawing_bonjour(rig, dnssd, mode, requ
         assert_bonjour_unchanged(discovery, dnssd, connections)
     finally:
         discovery.stop()
+
+
+def adds_per_child(discovery):
+    counts = {}
+    for pid, _ in add_events(discovery):
+        counts[pid] = counts.get(pid, 0) + 1
+    return counts
+
+
+def test_defended_names_register_without_resend_or_replacement(rig, dnssd):
+    # Issue #342: another host on the LAN owns the name. Apple's wcifsnd
+    # reports each defended broadcast with rcode 3 but still registers the
+    # name ~2 s later on the same transaction, as stock firmware does.
+    discovery = Discovery(rig, mode="defended", shares=True)
+    try:
+        connections = bonjour_connections(dnssd)
+        assert wait_for(lambda: "HUP" in event_lines(discovery.events), timeout=15)
+        assert [decode_name(packet) for packet in adds(discovery)] == [
+            ("MACHINE", 0), ("WORKGROUP", 0), ("MACHINE", 0x20)]
+        time.sleep(PAST_FIRST_RETRY)
+        assert len(children(discovery)) == 1
+        assert adds_per_child(discovery) == {children(discovery)[0]: 3}
+        assert "STOP" not in event_lines(discovery.events)
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        log = discovery.stop()[1]
+    for label in ("MACHINE<00>", "WORKGROUP<00>", "MACHINE<20>"):
+        assert log.count(f"wcifsnd: {label} reply rcode 3; waiting for registration") == 1
+    assert "wcifsnd: registered MACHINE with Apple's native NetBIOS daemon" in log
+    assert "replacing native child" not in log
+
+
+def test_defended_forever_times_out_then_replaces_child_without_resend(rig, dnssd):
+    discovery = Discovery(rig, mode="defended-forever", shares=True)
+    try:
+        connections = bonjour_connections(dnssd)
+        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=20)
+        assert_reaped(children(discovery)[0], discovery.proc.pid)
+        # One add per child generation, however many rcode 3 replies arrive.
+        assert set(adds_per_child(discovery).values()) == {1}
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        log = discovery.stop()[1]
+    assert ("registration of MACHINE<00> timed out after 1500 ms (last reply rcode 3); "
+            "replacing native child") in log
+    assert "wcifsnd: registered" not in log
+
+
+@pytest.mark.parametrize("mode,waiting", [
+    ("late-other-xid", None),
+    ("malformed-then-success", "unexpected reply (62 bytes, flags 0xa800); waiting for registration"),
+])
+def test_stale_or_malformed_reply_then_success_registers(rig, dnssd, mode, waiting):
+    discovery = Discovery(rig, mode=mode)
+    try:
+        assert wait_for(lambda: "HUP" in event_lines(discovery.events), timeout=15)
+        time.sleep(PAST_FIRST_RETRY)
+        assert len(children(discovery)) == 1
+        assert adds_per_child(discovery) == {children(discovery)[0]: 3}
+    finally:
+        log = discovery.stop()[1]
+    assert "wcifsnd: registered MACHINE with Apple's native NetBIOS daemon" in log
+    assert "replacing native child" not in log
+    if waiting is None:
+        # Another transaction's success is ignored silently.
+        assert "waiting for registration" not in log
+    else:
+        assert log.count(waiting) == 3
+
+
+def test_child_exit_status_zero_names_the_likely_port_collision(rig, dnssd):
+    discovery = Discovery(rig, mode="exit-0")
+    try:
+        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=12)
+        assert not adds(discovery)
+    finally:
+        log = discovery.stop()[1]
+    assert ("exited with status 0 (Apple wcifsnd exits 0 when UDP 137/138/922/923 is already bound); "
+            "replacing native child") in log
 
 
 @pytest.mark.parametrize("fstat_mode,reason", [
