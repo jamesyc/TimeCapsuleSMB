@@ -26,7 +26,7 @@ from timecapsulesmb.device.probe import (
     runtime_ram_root_present_conn,
 )
 from timecapsulesmb.transport.errors import SshAlgorithmNegotiationError, SshAuthenticationError, SshNetworkError
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
 class ProbeTests(unittest.TestCase):
@@ -153,6 +153,83 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("etime=", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def test_device_hostname_probe_parses_name_hosts_title_and_boot_wait(self) -> None:
+        result = probe.parse_device_hostname_probe(
+            "hostname=capsule\n"
+            "ps=  250     1 Ss 0:41 service       service: role=manager waiting=hostname\n"
+            "ps=  251     1 S  0:41 service       service: role=discovery nbns=ready\n"
+            "hosts=127.0.0.1\tlocalhost localhost.\n"
+            "hosts=127.0.0.1\tcapsule capsule.local\n"
+            "found=4330\n"
+            "found=12\n"
+        )
+
+        self.assertEqual(result.hostname, "capsule")
+        self.assertTrue(result.manager_waiting)
+        self.assertTrue(result.mapped)
+        self.assertEqual(result.stale_names, ())
+        # A manager restarted during the boot logs again; its line is the last.
+        self.assertEqual(result.boot_wait_ms, 12)
+        self.assertIsNone(result.error)
+
+    def test_device_hostname_probe_ignores_lookalike_and_dead_managers(self) -> None:
+        result = probe.parse_device_hostname_probe(
+            "hostname=capsule\n"
+            "ps=  250 1 Z 0:05 service service: role=manager waiting=hostname\n"
+            "ps=  251 1 S 0:05 service service: role=manager-helper waiting=hostname\n"
+            "ps=  252 1 S 0:05 sh sh -c echo service: role=manager waiting=hostname\n"
+            "ps=  253 1 S 0:05 service service: role=manager\n"
+        )
+
+        self.assertFalse(result.manager_waiting)
+        self.assertIsNone(result.boot_wait_ms)
+
+    def test_device_hostname_probe_decides_what_counts_as_a_mapping(self) -> None:
+        cases = {
+            ("192.0.2.1 capsule",): True,
+            ("::1 capsule.local # Apple",): True,
+            ("127.0.0.1 localhost # capsule",): False,  # only a comment
+            ("capsule 127.0.0.1",): False,  # the address field is not a name
+            ("127.0.0.1\tcapsule2 capsule2.local",): False,
+            (): False,
+        }
+        for lines, mapped in cases.items():
+            with self.subTest(lines=lines):
+                self.assertEqual(probe.DeviceHostnameProbeResult("capsule", lines).mapped, mapped)
+        self.assertFalse(probe.DeviceHostnameProbeResult("", ("127.0.0.1\t capsule",)).mapped)
+
+    def test_device_hostname_probe_lists_our_lines_for_other_names_only(self) -> None:
+        result = probe.DeviceHostnameProbeResult("new", (
+            "127.0.0.1\told old.local",
+            "127.0.0.1\tnew new.local",
+            "127.0.0.1 other other.local",   # not our exact form
+            "127.0.0.1\tlocalhost old",       # Apple's line
+        ))
+
+        self.assertEqual(result.stale_names, ("old",))
+        # While the name is unset (ACPd cleared it) no mapping counts as earlier.
+        self.assertEqual(probe.DeviceHostnameProbeResult("", ("127.0.0.1\tnew new.local",)).stale_names, ())
+
+    def test_device_hostname_probe_conn_reports_timeouts_and_failures(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshCommandTimeout("slow")):
+            self.assertEqual(probe.probe_device_hostname_conn(connection).error, "device hostname probe timed out")
+        failed = subprocess.CompletedProcess([], 255, stdout="", stderr="")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=failed):
+            self.assertEqual(probe.probe_device_hostname_conn(connection).error, "device hostname probe failed (rc=255)")
+        ok = subprocess.CompletedProcess([], 0, stdout="hostname=capsule\nhosts=127.0.0.1\tcapsule capsule.local\n", stderr="")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=ok) as run_ssh:
+            result = probe.probe_device_hostname_conn(connection)
+        self.assertTrue(result.mapped)
+        self.assertEqual(run_ssh.call_args.args[1], probe.DEVICE_HOSTNAME_PROBE_COMMAND)
+
+    def test_probe_manager_startup_age_conn_reads_a_manager_waiting_for_the_hostname(self) -> None:
+        result, _ = self._probe_manager_age(
+            self._MANAGER_PEERS + "  250     1 Ss         0:41 service       service: role=manager waiting=hostname\n"
+        )
+
+        self.assertEqual(result.manager_started_seconds_ago, 41.0)
 
     def test_probe_manager_startup_age_conn_parses_every_elapsed_format(self) -> None:
         cases = {

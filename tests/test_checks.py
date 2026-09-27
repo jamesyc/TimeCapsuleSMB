@@ -61,6 +61,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
     UsbPrinterProbeResult,
+    DeviceHostnameProbeResult,
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
     ManagerStartupAgeProbeResult,
@@ -437,6 +438,13 @@ class CheckTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.flash_runtime_config_present_conn", return_value=True))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.runtime_ram_root_present_conn", return_value=True))
+        # A healthy device: the hostname is set and mapped for Samba.
+        self._device_hostname_probe = self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.checks.doctor_steps.probe_device_hostname_conn",
+            return_value=DeviceHostnameProbeResult(
+                "timecapsulesamba4", ("127.0.0.1\ttimecapsulesamba4 timecapsulesamba4.local",)
+            ),
+        ))
         self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn",
@@ -2435,6 +2443,146 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(transformed[0], results[0])
         self.assertEqual(transformed[1].status, "INFO")
         self.assertIn("some failures above may resolve", transformed[1].message)
+
+    def run_doctor_with_hostname(self, probe: DeviceHostnameProbeResult, *, started_seconds_ago: float = 3600.0):
+        return self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_device_hostname_conn": mock.Mock(return_value=probe),
+                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                    return_value=ManagerStartupAgeProbeResult(started_seconds_ago, f"manager started {int(started_seconds_ago)}s ago")
+                ),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+            },
+        )
+
+    MAPPED = ("127.0.0.1\tcapsule capsule.local",)
+    WAITING_MESSAGE = (
+        "Samba is waiting for the device hostname (ACPd has not set it); "
+        "Samba cannot start or restage until it is set, and the Samba and "
+        "Time Machine checks below may fail because of it"
+    )
+
+    def test_doctor_passes_a_mapped_hostname_ahead_of_the_samba_checks(self) -> None:
+        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
+
+        messages = [result.message for result in run.results]
+        passed = messages.index("device hostname capsule is mapped in /etc/hosts")
+        self.assertEqual(run.results[passed].status, "PASS")
+        samba = [index for index, message in enumerate(messages) if "smbd" in message]
+        self.assertTrue(samba and passed < min(samba))
+        self.assertFalse(any(result.status == "INFO" and "hostname" in result.message for result in run.results))
+
+    def test_doctor_fails_while_samba_waits_for_the_hostname(self) -> None:
+        for probe in (
+            DeviceHostnameProbeResult("", (), manager_waiting=True),
+            DeviceHostnameProbeResult("", ()),  # unset, whatever the manager shows
+            DeviceHostnameProbeResult("capsule", self.MAPPED, manager_waiting=True),
+        ):
+            with self.subTest(probe=probe):
+                run = self.run_doctor_with_hostname(probe)
+                failure = next(result for result in run.results if result.message == self.WAITING_MESSAGE)
+                self.assertEqual(failure.status, "FAIL")
+                self.assertEqual(failure.details["code"], "hostname_waiting")
+                self.assertTrue(run.fatal)
+
+    def test_doctor_reports_a_hostname_lost_after_boot_only_as_waiting(self) -> None:
+        # ACPd cleared the name while Samba runs: the manager waits to restage.
+        # The old name's line is not "earlier" and the name is not "unmapped".
+        run = self.run_doctor_with_hostname(
+            DeviceHostnameProbeResult("", self.MAPPED, manager_waiting=True, boot_wait_ms=4950)
+        )
+
+        hostname_results = [result for result in run.results if "hostname" in result.message]
+        self.assertEqual(
+            [(result.status, result.message) for result in hostname_results],
+            [("FAIL", self.WAITING_MESSAGE), ("INFO", "the manager waited 4950 ms for the device hostname at boot")],
+        )
+        self.assertFalse(any(result.details.get("code") == "hostname_unmapped" for result in run.results))
+
+    def test_doctor_fails_an_unmapped_hostname(self) -> None:
+        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", ("127.0.0.1\tlocalhost",)))
+
+        failure = next(result for result in run.results if result.details.get("code") == "hostname_unmapped")
+        self.assertEqual(failure.status, "FAIL")
+        self.assertEqual(
+            failure.message,
+            "device hostname capsule is not mapped in /etc/hosts; Samba logins stall until it is (issue #54)",
+        )
+
+    INVALID_MESSAGE = (
+        'device hostname "bad name" cannot be mapped in /etc/hosts because it is not a plain '
+        "host name (letters, digits, '.', '-', '_'); Samba logins may stall. "
+        "Rename the base station in AirPort Utility."
+    )
+
+    def test_doctor_names_a_hostname_that_cannot_be_mapped(self) -> None:
+        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("bad name", ("127.0.0.1\tlocalhost",)))
+
+        failure = next(result for result in run.results if result.details.get("code") == "hostname_invalid")
+        self.assertEqual((failure.status, failure.message), ("FAIL", self.INVALID_MESSAGE))
+        # Reported once, as invalid, not also as merely unmapped.
+        self.assertFalse(any(result.details.get("code") == "hostname_unmapped" for result in run.results))
+        self.assertTrue(run.fatal)
+
+    def test_doctor_keeps_an_invalid_hostname_failure_while_starting_up(self) -> None:
+        # Waiting cannot fix the name, so startup grace does not fold it away.
+        run = self.run_doctor_with_hostname(
+            DeviceHostnameProbeResult("bad name", ("127.0.0.1\tlocalhost",)), started_seconds_ago=20.0
+        )
+
+        failure = next(result for result in run.results if result.details.get("code") == "hostname_invalid")
+        self.assertEqual(failure.status, "FAIL")
+        self.assertNotIn("masked_by", failure.details)
+        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
+        self.assertTrue(any(
+            result.status == "INFO" and "some failures above may resolve once startup completes" in result.message
+            for result in run.results
+        ))
+
+    def test_doctor_masks_hostname_failures_while_the_device_is_starting_up(self) -> None:
+        for probe, code in (
+            (DeviceHostnameProbeResult("", (), manager_waiting=True), "hostname_waiting"),
+            (DeviceHostnameProbeResult("capsule", ()), "hostname_unmapped"),
+        ):
+            with self.subTest(code=code):
+                run = self.run_doctor_with_hostname(probe, started_seconds_ago=20.0)
+                masked = next(result for result in run.results if result.details.get("code") == code)
+                self.assertEqual(masked.status, "INFO")
+                self.assertEqual(masked.details["masked_by"], DOCTOR_CODE_DEVICE_STARTING_UP)
+                starting = [result for result in run.results if result.status == "FAIL"]
+                self.assertEqual([result.details["code"] for result in starting], [DOCTOR_CODE_DEVICE_STARTING_UP])
+                self.assertIn(masked.message, starting[0].details["masked_failures"])
+
+    def test_doctor_reports_the_boot_wait_and_stale_mappings_as_info(self) -> None:
+        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult(
+            "capsule",
+            self.MAPPED + ("127.0.0.1\told old.local",),
+            boot_wait_ms=4330,
+        ))
+
+        info = {result.message: result for result in run.results if result.status == "INFO"}
+        self.assertEqual(info["the manager waited 4330 ms for the device hostname at boot"].details["boot_wait_ms"], 4330)
+        self.assertEqual(info["/etc/hosts still maps an earlier hostname: old"].details["stale_names"], ["old"])
+        self.assertTrue(any(result.status == "PASS" and result.message == "device hostname capsule is mapped in /etc/hosts"
+                            for result in run.results))
+
+    def test_doctor_fails_when_the_hostname_cannot_be_read(self) -> None:
+        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("", error="device hostname probe timed out"))
+
+        self.assertTrue(any(
+            result.status == "FAIL" and result.message == "could not read the device hostname: device hostname probe timed out"
+            for result in run.results
+        ))
+
+    def test_doctor_skips_the_hostname_probe_without_ssh(self) -> None:
+        run = self.run_doctor_with_mocks(skip_ssh=True, skip_bonjour=True, skip_smb=True)
+
+        self._device_hostname_probe.assert_not_called()
+        self.assertFalse(any("hostname" in result.message for result in run.results))
 
     def test_run_doctor_checks_collapses_startup_failures_into_single_fail(self) -> None:
         debug_fields: dict[str, object] = {}

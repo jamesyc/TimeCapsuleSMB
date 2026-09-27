@@ -1798,6 +1798,92 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
     return ManagerStartupAgeProbeResult(float(seconds_ago), f"manager started {seconds_ago}s ago")
 
 
+# smbd resolves the device hostname at every login (issue #54), so the manager
+# holds Samba until ACPd has set it, and staging maps it in /etc/hosts. One
+# command reads the name, the manager's title, the hosts file, and the wait the
+# manager logged at boot (best effort: the manager trims runtime.log).
+DEVICE_HOSTNAME_PROBE_COMMAND = (
+    'echo "hostname=$(/bin/hostname 2>/dev/null)"; '
+    + MANAGER_ELAPSED_PS_COMMAND
+    + ' 2>/dev/null | sed "s/^/ps=/"; '
+    'sed "s/^/hosts=/" /etc/hosts 2>/dev/null; '
+    "sed -n 's/.*manager: hostname found: [^ ]* after \\([0-9]*\\) ms.*/found=\\1/p' "
+    + RUNTIME_RAM_ROOT
+    + "/var/runtime.log 2>/dev/null; true"
+)
+_OUR_HOSTS_LINE = re.compile(r"^127\.0\.0\.1\t([A-Za-z0-9._-]+) \1\.local$")
+# The manager's tc_hostname_plain(): what one /etc/hosts line can hold.
+# tests/native/test_hosts.py checks that both rules agree.
+_PLAIN_HOSTNAME = re.compile(r"^[A-Za-z0-9._-]{1,255}$")
+
+
+@dataclass(frozen=True)
+class DeviceHostnameProbeResult:
+    hostname: str
+    hosts_lines: tuple[str, ...] = ()
+    manager_waiting: bool = False
+    boot_wait_ms: int | None = None
+    error: str | None = None
+
+    @property
+    def plain(self) -> bool:
+        """Whether the manager can map this name: 1-255 of A-Z a-z 0-9 . _ -."""
+        return bool(_PLAIN_HOSTNAME.fullmatch(self.hostname))
+
+    @property
+    def mapped(self) -> bool:
+        """Whether any line (comments ignored) maps the hostname or hostname.local."""
+        if not self.hostname:
+            return False
+        names = {self.hostname, f"{self.hostname}.local"}
+        for line in self.hosts_lines:
+            words = line.split("#", 1)[0].split()
+            if any(word in names for word in words[1:]):
+                return True
+        return False
+
+    @property
+    def stale_names(self) -> tuple[str, ...]:
+        """Other names still mapped by lines in the manager's own form."""
+        if not self.hostname:
+            return ()  # with no current name, no mapping is "earlier"
+        stale = []
+        for line in self.hosts_lines:
+            match = _OUR_HOSTS_LINE.match(line)
+            if match and match.group(1) != self.hostname:
+                stale.append(match.group(1))
+        return tuple(stale)
+
+
+def parse_device_hostname_probe(stdout: str) -> DeviceHostnameProbeResult:
+    hostname = ""
+    ps_rows: list[str] = []
+    hosts_lines: list[str] = []
+    boot_wait_ms = None
+    for line in stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key == "hostname":
+            hostname = value.strip()
+        elif key == "ps":
+            ps_rows.append(value)
+        elif key == "hosts":
+            hosts_lines.append(value)
+        elif key == "found" and value.isdigit():
+            boot_wait_ms = int(value)  # the latest manager's line is the last one
+    waiting = any("waiting=hostname" in row.split()[6:] for row in service_role_lines("\n".join(ps_rows), "manager"))
+    return DeviceHostnameProbeResult(hostname, tuple(hosts_lines), waiting, boot_wait_ms)
+
+
+def probe_device_hostname_conn(connection: SshConnection) -> DeviceHostnameProbeResult:
+    try:
+        proc = run_ssh(connection, DEVICE_HOSTNAME_PROBE_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+    except SshCommandTimeout:
+        return DeviceHostnameProbeResult("", error="device hostname probe timed out")
+    if proc.returncode != 0:
+        return DeviceHostnameProbeResult("", error=f"device hostname probe failed (rc={proc.returncode})")
+    return parse_device_hostname_probe(proc.stdout or "")
+
+
 def _limit_remote_log_tail(text: str) -> str:
     if len(text) <= REMOTE_LOG_TAIL_MAX_CHARS:
         return text

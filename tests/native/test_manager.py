@@ -4,9 +4,11 @@ The fixtures replace only appliance interfaces (ACP, ps/fstat, mounted volumes,
 and daemon executables). Fork/exec, groups, signals, file staging, reloads,
 configuration publication, and the manager select loop remain real.
 """
+import errno
 import json
 import os
 import plistlib
+import re
 import shutil
 import signal
 import subprocess
@@ -32,7 +34,12 @@ from pathlib import Path
 role=sys.argv[1] if Path(sys.argv[0]).name=='roles' else Path(sys.argv[0]).name
 log=Path(os.environ['TC_TEST_ROOT'])/'events'
 def event(kind):
-    with log.open('a') as f:f.write(json.dumps(dict(kind=kind,role=role,pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),args=sys.argv[1:]))+'\\n')
+    row=dict(kind=kind,role=role,pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),args=sys.argv[1:])
+    if role=='smbd' and kind=='start':
+        # What smbd's own-name lookups would have found when it started.
+        hosts=Path(os.environ['TC_TEST_ROOT'])/'hosts'
+        row['hosts']=hosts.read_text() if hosts.is_file() else None
+    with log.open('a') as f:f.write(json.dumps(row)+'\\n')
 def stopped(sig,frame):
     event('stop')
     sys.exit(0)
@@ -135,6 +142,9 @@ def manager(manager_tools):
     root,binary=manager_tools
     for path in ('ram','dk2','dk3'):
         shutil.rmtree(root/path,ignore_errors=True)
+    hosts=root/'hosts'
+    if hosts.is_dir():hosts.rmdir()
+    else:hosts.unlink(missing_ok=True)
     for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','record-ps','hold-activation'):
         (root/name).unlink(missing_ok=True)
     (root/'ram/var').mkdir(parents=True)
@@ -145,6 +155,7 @@ def manager(manager_tools):
     (root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
     (root/'config').write_text('TELEMETRY=0\n')
     (root/'events').write_text('')
+    (root/'hostname').write_text('capsule\n')
     volumes=[dict(deviceName='sd0',builtin=True,partitions=[dict(deviceName='dk2',name='Data',format='hfs',users=1,
                   uuid='11111111-1111-1111-1111-111111111111')]),
              dict(deviceName='sd1',partitions=[dict(deviceName='dk3',name='USB',format='hfs',users=1,
@@ -157,7 +168,8 @@ def manager(manager_tools):
         log=(root/'stderr').open('w')
         process=subprocess.Popen([str(binary),'manager'],
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
-            env={**os.environ,'TC_TEST_ROOT':str(root),'TC_TEST_MOUNTS':str(root/'mounts')})
+            env={**os.environ,'TC_TEST_ROOT':str(root),'TC_TEST_MOUNTS':str(root/'mounts'),
+                 'TC_TEST_HOSTNAME':str(root/'hostname')})
         log.close()
         return process
     def events():
@@ -205,10 +217,201 @@ def test_supervision_direct_smb_child_and_applied_discovery(manager):
             with pytest.raises(ProcessLookupError):os.kill(item['pid'],0)
 
 
+def runtime_log(root):
+    # On the device the manager's own stderr is runtime.log too; here the rig
+    # captures it separately from its jobs' log.
+    return ''.join(path.read_text() for path in (root/'stderr',root/'ram/var/runtime.log') if path.exists())
+
+
+def wait_log(root,text,timeout=15):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if text in runtime_log(root):return runtime_log(root)
+        time.sleep(.05)
+    pytest.fail(f'{text!r} not logged: {runtime_log(root)}')
+
+
+def found_after_ms(log,name):
+    match=re.search(rf'hostname found: {re.escape(name)} after (\d+) ms',log)
+    assert match,log
+    return int(match.group(1))
+
+
+def smbd_starts(rows):return [e for e in rows if e['role']=='smbd' and e['kind']=='start']
+
+
+def test_samba_waits_for_the_hostname_and_starts_once_it_is_mapped(manager):
+    # ACPd sets the hostname seconds after boot and gives no notice. Discovery
+    # stays up in diskless mode (AirPort Utility needs _airport) meanwhile.
+    root,start,events,wait,_,_=manager
+    (root/'hostname').write_text('')
+    start()
+    wait(lambda rows:any(e['role']=='discovery' and '--diskless' in e['args'] for e in rows))
+    time.sleep(2) # Samba otherwise starts about a second after the manager.
+    assert not smbd_starts(events())
+    assert not (root/'hosts').exists()
+    (root/'hostname').write_text('capsule\n')
+    rows=wait(lambda rows:smbd_starts(rows))
+    # smbd found its own name mapped from its very first lookup.
+    assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\tcapsule capsule.local\n'
+    log=runtime_log(root)
+    assert log.count('manager: waiting for the device hostname before starting Samba')==1
+    # Staging waited for the name; it did not run and fail on an empty one.
+    assert 'stage: could not update' not in log and 'staging failed' not in log
+    assert found_after_ms(log,'capsule')>=2000
+    assert f'stage: mapped capsule in {root}/hosts' in log
+    wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+
+
+def test_hostname_set_at_start_is_found_without_waiting(manager):
+    root,start,events,wait,_,_=manager
+    start()
+    rows=wait(lambda rows:smbd_starts(rows))
+    assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\tcapsule capsule.local\n'
+    log=runtime_log(root)
+    assert found_after_ms(log,'capsule')<1500
+    assert 'waiting for the device hostname' not in log
+
+
+def test_existing_mapping_is_left_as_it_is(manager):
+    root,start,events,wait,_,_=manager
+    apple='::1\tlocalhost localhost.\n127.0.0.1\tlocalhost capsule\n'
+    (root/'hosts').write_text(apple)
+    start()
+    rows=wait(lambda rows:smbd_starts(rows))
+    assert smbd_starts(rows)[0]['hosts']==apple
+    assert 'stage: mapped' not in runtime_log(root)
+
+
+def test_rename_remaps_the_hostname_and_reloads_samba_without_restarting_it(manager):
+    root,start,events,wait,_,_=manager
+    start()
+    first=smbd_starts(wait(lambda rows:smbd_starts(rows)))[0]
+    (root/'hostname').write_text('renamed\n')
+    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
+    assert (root/'hosts').read_text()=='127.0.0.1\trenamed renamed.local\n'
+    log=runtime_log(root)
+    assert 'manager: hostname changed from capsule to renamed' in log
+    assert 'stage: removed the stale mapping for capsule' in log
+    assert [e['pid'] for e in smbd_starts(events())]==[first['pid']]
+    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
+
+
+@pytest.mark.parametrize(('returns','logged'),[
+    ('capsule','manager: hostname found again: capsule after '),
+    ('other','manager: hostname changed from capsule to other'),
+])
+def test_losing_the_hostname_keeps_samba_running_until_a_name_returns(manager,returns,logged):
+    root,start,events,wait,_,_=manager
+    start()
+    first=smbd_starts(wait(lambda rows:smbd_starts(rows)))[0]
+    (root/'hostname').write_text('')
+    wait_log(root,'manager: hostname is no longer set; Samba keeps running, new staging waits')
+    time.sleep(1.5)
+    assert runtime_log(root).count('hostname is no longer set')==1
+    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
+    (root/'hostname').write_text(returns+'\n')
+    wait_log(root,logged)
+    if returns=='other':
+        wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
+        assert (root/'hosts').read_text()=='127.0.0.1\tother other.local\n'
+    assert [e['pid'] for e in smbd_starts(events())]==[first['pid']]
+
+
+def test_invalid_hostname_is_left_unmapped_and_samba_starts(manager):
+    # ACPd copies a user-set syDN; a name /etc/hosts cannot hold never becomes
+    # writable, so staging logs it once per run and starts Samba anyway.
+    root,start,events,wait,_,_=manager
+    (root/'hostname').write_text('bad name\n')
+    (root/'hosts').write_text('127.0.0.1\tlocalhost\n')
+    start()
+    rows=wait(lambda rows:smbd_starts(rows))
+    assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\tlocalhost\n'
+    log=runtime_log(root)
+    assert f'stage: not mapping hostname "bad name" in {root}/hosts: not a plain host name; Samba logins may stall' in log
+    assert 'staging failed' not in log
+
+
+def test_rename_to_an_invalid_hostname_reloads_samba_and_leaves_hosts_alone(manager):
+    root,start,events,wait,_,_=manager
+    start()
+    first=smbd_starts(wait(lambda rows:smbd_starts(rows)))[0]
+    (root/'hostname').write_text('bad name\n')
+    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
+    assert (root/'hosts').read_text()=='127.0.0.1\tcapsule capsule.local\n'
+    assert 'stage: not mapping hostname "bad name"' in runtime_log(root)
+    assert [e['pid'] for e in smbd_starts(events())]==[first['pid']]
+
+
+def test_stale_mapping_from_an_earlier_manager_this_boot_is_removed(manager):
+    # /etc/hosts lives on the RAM root: only a manager earlier in this boot,
+    # under another hostname, can have left one of our lines behind.
+    root,start,events,wait,_,_=manager
+    (root/'hosts').write_text('127.0.0.1\tlocalhost\n127.0.0.1\toldname oldname.local\n')
+    start()
+    rows=wait(lambda rows:smbd_starts(rows))
+    assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\tlocalhost\n127.0.0.1\tcapsule capsule.local\n'
+    assert 'stage: removed the stale mapping for oldname' in runtime_log(root)
+
+
+def wait_for_fifo_reader(path,timeout=20):
+    """Return a write end of FIFO path once a reader has it open.
+
+    Only the staging job opens the hosts file, so a reader means staging is
+    running. Holding the returned end open keeps it blocked in read().
+    """
+    deadline=time.monotonic()+timeout
+    while True:
+        try:return os.open(path,os.O_WRONLY|os.O_NONBLOCK)
+        except OSError as error:
+            if error.errno!=errno.ENXIO:raise
+        assert time.monotonic()<deadline,f'nothing opened {path}'
+        time.sleep(.05)
+
+
+def test_rename_while_staging_is_in_flight_restages_with_the_new_name(manager):
+    root,start,events,wait,_,_=manager
+    hosts=root/'hosts';os.mkfifo(hosts)
+    start()
+    held=[wait_for_fifo_reader(hosts)] # staging now waits for our writer to finish
+    try:
+        assert not smbd_starts(events())
+        (root/'hostname').write_text('renamed\n')
+        # The manager stops the stale run, which cannot finish while our end
+        # stays open, and starts another that opens the FIFO again.
+        wait_log(root,'manager: staging failed or superseded; will retry',timeout=30)
+        held.append(wait_for_fifo_reader(hosts))
+    finally:
+        for fd in held:os.close(fd) # end of file: staging writes the real file
+    rows=wait(lambda rows:smbd_starts(rows),30)
+    # Nothing mapped the old name first: smbd saw only the new mapping.
+    assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\trenamed renamed.local\n'
+    assert len(smbd_starts(events()))==1
+    assert 'manager: hostname changed from capsule to renamed' in runtime_log(root)
+
+
+def test_failed_mapping_holds_samba_and_staging_retries_until_it_works(manager):
+    # The mapping is load-bearing: a write failure fails staging, which retries.
+    root,start,events,wait,_,_=manager
+    (root/'hosts').mkdir() # reading a directory fails with EISDIR
+    start()
+    wait_log(root,f'stage: could not update {root}/hosts for capsule: Is a directory')
+    wait_log(root,'manager: staging failed or superseded; will retry')
+    time.sleep(1.5)
+    assert not smbd_starts(events())
+    assert runtime_log(root).count('stage: could not update')>=2 # it kept retrying
+    (root/'hosts').rmdir()
+    rows=wait(lambda rows:smbd_starts(rows))
+    assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\tcapsule capsule.local\n'
+
+
 def test_shutdown_remains_responsive_during_slow_mast(manager):
-    root,start,_,_,_,_=manager
-    (root/'slow-mast').touch()
-    process=start();time.sleep(.5)
+    root,start,_,wait,_,_=manager
+    (root/'slow-mast').touch();(root/'record-acp').touch()
+    process=start()
+    # Stop only once the 60 s MaSt read is in flight. A fixed delay could land
+    # before a slow (sanitizer, loaded) manager has installed its handlers.
+    wait(lambda rows:any(e['role']=='acp' and e.get('key')=='MaSt' for e in rows))
     before=time.monotonic();process.terminate()
     assert process.wait(timeout=8)==0
     assert time.monotonic()-before<8

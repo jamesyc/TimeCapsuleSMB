@@ -913,6 +913,7 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
             SMBD_STATUS_HELPERS
             + r'''
 real_manager="203 1 S 0:00.00 service service: role=manager"
+waiting_manager="205 1 S 0:00.00 service service: role=manager waiting=hostname"
 retired_shell_manager="204 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
 self_match_manager=$(cat <<'EOF'
 3308 11745 S 0:00.01 sh /bin/sh -c probe='service: role=manager'
@@ -920,6 +921,7 @@ self_match_manager=$(cat <<'EOF'
 EOF
 )
 manager_process_present_for_volume "$real_manager"; echo "manager=$?"
+manager_process_present_for_volume "$waiting_manager"; echo "waiting=$?"
 manager_process_present_for_volume "$retired_shell_manager"; echo "retired=$?"
 manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
 '''
@@ -929,6 +931,7 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("manager=0", result.stdout)
+        self.assertIn("waiting=0", result.stdout)
         self.assertIn("retired=1", result.stdout)
         self.assertIn("self=1", result.stdout)
 

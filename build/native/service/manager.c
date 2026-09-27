@@ -75,6 +75,11 @@ struct manager {
     int copy_smbd, copy_rsync, binary_valid, rsync_valid;
     unsigned revision, storage_revision, storage_generation, stage_revision;
     long long mast_at, settings_at, storage_at, stage_at, audit_at;
+    /* The device hostname staging last mapped: empty until first found.
+     * Staging, and so Samba, waits while the kernel hostname is unset. */
+    char hostname[256];
+    int hostname_waiting;
+    long long hostname_wait_since;
 };
 
 static void lower(long long *deadline, long long value) {
@@ -95,6 +100,48 @@ static int wait_until(fd_set *reads, int maxfd, long long now, long long deadlin
         return 0;
     }
     return result;
+}
+static void set_manager_title(int waiting) {
+#if defined(__NetBSD__)
+    setproctitle(waiting ? "role=manager waiting=hostname" : "role=manager");
+#else
+    (void)waiting;
+#endif
+}
+static void changed(struct manager *m, long long now);
+/* ACPd sets the hostname a few seconds after the manager starts and gives no
+ * notice (sethostname() only); the loop wakes at least once a second, so each
+ * pass checks it. smbd resolves this name at every login (issue #54), so
+ * staging, and with it Samba, waits for it indefinitely. */
+static void observe_hostname(struct manager *m, long long now) {
+    char name[256];
+    tc_hostname_read(name, sizeof(name));
+    if (!name[0]) {
+        if (!m->hostname_waiting) {
+            if (m->hostname[0])
+                timestamped_fprintf(stderr, "manager: hostname is no longer set; Samba keeps running, new staging waits\n");
+            else
+                timestamped_fprintf(stderr, "manager: waiting for the device hostname before starting Samba\n");
+            m->hostname_waiting = 1;
+            m->hostname_wait_since = now;
+            set_manager_title(1);
+        }
+        return;
+    }
+    if (!m->hostname[0]) {
+        timestamped_fprintf(stderr, "manager: hostname found: %s after %lld ms\n", name, now - m->hostname_wait_since);
+    } else if (strcmp(name, m->hostname)) {
+        timestamped_fprintf(stderr, "manager: hostname changed from %s to %s\n", m->hostname, name);
+        changed(m, now); /* Restage: map the new name and reload Samba. */
+    } else if (m->hostname_waiting) {
+        timestamped_fprintf(stderr, "manager: hostname found again: %s after %lld ms\n", name, now - m->hostname_wait_since);
+    }
+    if (strcmp(name, m->hostname))
+        strcpy(m->hostname, name);
+    if (m->hostname_waiting) {
+        m->hostname_waiting = 0;
+        set_manager_title(0);
+    }
 }
 static void changed(struct manager *m, long long now) {
     m->revision++;
@@ -172,12 +219,6 @@ static int settings_job(void *opaque) {
     struct manager *m = opaque;
     struct tc_samba_settings result;
     tc_worker_begin("settings");
-    char hostname[256];
-    if (!gethostname(hostname, sizeof(hostname))) {
-        hostname[sizeof(hostname) - 1] = 0;
-        if (tc_hosts_ensure(TC_HOSTS_PATH, hostname))
-            fprintf(stderr, "settings: local hostname resolution could not update %s\n", TC_HOSTS_PATH);
-    }
     if (tc_samba_settings_read(&result))
         return tc_worker_finish(1);
     /* Hostname/model fallbacks are useful at cold boot. A later ACP failure
@@ -201,6 +242,16 @@ static int storage_job(void *opaque) {
 static int stage_job(void *opaque) {
     struct manager *m = opaque;
     tc_worker_begin("stage");
+    /* Samba logins stall without this mapping, so a failed write fails
+     * staging, which retries. A name /etc/hosts cannot hold (ACPd copies a
+     * user-set syDN) can never be written: log it and start Samba anyway. */
+    if (!tc_hostname_plain(m->hostname))
+        fprintf(stderr, "stage: not mapping hostname \"%s\" in %s: not a plain host name; Samba logins may stall\n",
+                m->hostname, TC_HOSTS_PATH);
+    else if (tc_hosts_update(TC_HOSTS_PATH, m->hostname) < 0) {
+        fprintf(stderr, "stage: could not update %s for %s: %s\n", TC_HOSTS_PATH, m->hostname, strerror(errno));
+        return tc_worker_finish(1);
+    }
     if (m->copy_smbd && tc_samba_clear_locks())
         return tc_worker_finish(1);
     return tc_worker_finish(tc_samba_stage(&m->storage, &m->settings, m->copy_smbd, m->copy_rsync) ? 1 : 0);
@@ -497,7 +548,7 @@ static void pump_stage(struct manager *m, long long now) {
         }
         tc_child_close(&m->stage_job);
     }
-    if (!m->config_dirty || !m->have_settings || m->storage.payload_index < 0 ||
+    if (!m->config_dirty || !m->have_settings || m->storage.payload_index < 0 || !m->hostname[0] || m->hostname_waiting ||
         m->storage_dirty || m->topology.pending || m->storage_job.group || m->stage_job.group ||
         !m->ownership_ready || (m->blocked & (BLOCK_SMB | (m->settings.config.rsync ? BLOCK_RSYNC : 0))) ||
         now < m->stage_at)
@@ -657,9 +708,8 @@ int tc_manager_main(int argc, char **argv) {
         close(lock);
         return 1;
     }
-#if defined(__NetBSD__)
-    setproctitle("role=manager");
-#endif
+    set_manager_title(0);
+    m->hostname_wait_since = acp_monotonic_ms();
     m->storage_dirty = 1;
     timestamped_fprintf(stderr, "manager: starting native supervision\n");
     for (;;) {
@@ -680,6 +730,7 @@ int tc_manager_main(int argc, char **argv) {
             if (drained(m, now))
                 break;
         } else {
+            observe_hostname(m, now);
             if (tc_events_disks(&m->events))
                 physical_event(m, now);
             if (events & TC_EVENT_RELOAD) {

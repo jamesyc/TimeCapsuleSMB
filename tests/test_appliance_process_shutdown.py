@@ -190,6 +190,7 @@ def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
     from timecapsulesmb.device.processes import service_role_lines
     rows = '\n'.join([
         '10 1 S 0:00 service service: role=manager',
+        '17 1 S 0:00 service service: role=manager waiting=hostname',
         '11 10 S 0:00 service service: role=discovery nbns=ready',
         '12 10 S 0:00 service /mnt/Flash/service discovery --netbios-name NAS',
         '13 10 S 0:00 service /mnt/Flash/service --print-link-plan',
@@ -197,13 +198,15 @@ def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
         '15 10 S 0:00 service /mnt/Flash/service telemetry --once role=discovery',
         '16 10 S 0:00 service service: role=telemetry --daemon',
     ])
-    assert [line.split()[0] for line in service_role_lines(rows,'manager')]==['10']
+    assert [line.split()[0] for line in service_role_lines(rows,'manager')]==['10','17']
     assert [line.split()[0] for line in service_role_lines(rows,'discovery')]==['11','12']
     assert [line.split()[0] for line in service_role_lines(rows,'telemetry')]==['16']
 
 
 @pytest.mark.parametrize('stuck_row,expected_label,manager_timeout', [
     ('30 S service service: role=manager', 'manager', True),
+    # While Samba waits for the device hostname the title carries that state.
+    ('35 S service service: role=manager waiting=hostname', 'manager', True),
     ('31 S service /mnt/Flash/service manager', 'manager', True),
     ('32 S sh /bin/sh /mnt/Flash/manager.sh', 'manager', True),
     ('33 S service service: role=discovery nbns=ready', 'service', False),

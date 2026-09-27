@@ -84,6 +84,7 @@ from timecapsulesmb.device.probe import (
     probe_managed_mdns_conn,
     probe_managed_rsync_conn,
     probe_usb_printer_conn,
+    probe_device_hostname_conn,
     probe_managed_smbd_conn,
     probe_manager_startup_age_conn,
     probe_remote_runtime_naming_identity_conn,
@@ -133,6 +134,9 @@ STARTUP_GRACE_DETAIL_KEY = "startup_grace"
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
+DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
+DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
+DOCTOR_CODE_HOSTNAME_INVALID = "hostname_invalid"
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_GRACE_SECONDS = 180
 STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
@@ -1910,6 +1914,63 @@ def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarge
             sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))
     except Exception as e:
         sink.add(CheckResult("FAIL", f"device compatibility check failed: {e}"))
+
+
+def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    """Samba resolves the device hostname at every login (issue #54).
+
+    The manager starts Samba only once ACPd has set the hostname, and staging
+    maps it in /etc/hosts. Runs before the Samba checks, so a stuck hostname is
+    reported ahead of the Samba failures it causes.
+    """
+    if not remote.remote_checks_enabled:
+        return
+    probe = probe_device_hostname_conn(target.connection)
+    if probe.error:
+        sink.add(CheckResult("FAIL", f"could not read the device hostname: {probe.error}"))
+        return
+    if probe.manager_waiting or not probe.hostname:
+        sink.add(_startup_transient_result(
+            "FAIL",
+            "Samba is waiting for the device hostname (ACPd has not set it); "
+            "Samba cannot start or restage until it is set, and the Samba and "
+            "Time Machine checks below may fail because of it",
+            {"code": DOCTOR_CODE_HOSTNAME_WAITING, "hostname": probe.hostname},
+        ))
+    elif not probe.plain:
+        # The manager never maps such a name, and waiting will not fix it.
+        sink.add(CheckResult(
+            "FAIL",
+            f'device hostname "{probe.hostname}" cannot be mapped in /etc/hosts because it is not a plain '
+            "host name (letters, digits, '.', '-', '_'); Samba logins may stall. "
+            "Rename the base station in AirPort Utility.",
+            {
+                "code": DOCTOR_CODE_HOSTNAME_INVALID,
+                "hostname": probe.hostname,
+                STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_PRESERVE,
+            },
+        ))
+    elif not probe.mapped:
+        sink.add(_startup_transient_result(
+            "FAIL",
+            f"device hostname {probe.hostname} is not mapped in /etc/hosts; "
+            "Samba logins stall until it is (issue #54)",
+            {"code": DOCTOR_CODE_HOSTNAME_UNMAPPED, "hostname": probe.hostname},
+        ))
+    else:
+        sink.add(CheckResult("PASS", f"device hostname {probe.hostname} is mapped in /etc/hosts"))
+    if probe.boot_wait_ms:
+        sink.add(CheckResult(
+            "INFO",
+            f"the manager waited {probe.boot_wait_ms} ms for the device hostname at boot",
+            {"boot_wait_ms": probe.boot_wait_ms},
+        ))
+    if probe.stale_names:
+        sink.add(CheckResult(
+            "INFO",
+            f"/etc/hosts still maps an earlier hostname: {', '.join(probe.stale_names)}",
+            {"stale_names": list(probe.stale_names)},
+        ))
 
 
 def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
