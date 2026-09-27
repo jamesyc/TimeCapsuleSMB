@@ -806,3 +806,28 @@ unchanged; all three lanes built without warnings in the changed files.
 | NetBSD 6 (NetBSD 7 SDK) | 10,232,608 |
 | NetBSD 4 LE | 10,254,592 |
 | NetBSD 4 BE | 10,253,480 |
+
+## Disk rebinding helpers moved to an overlay, patch 0041 (2026-09-27)
+
+Patch 0041's connection-binding helpers (`conn_record_bindings`,
+`tc_revoked_descriptor`, `tc_stale_disk_tree`, `conn_refresh_bindings`) moved
+unchanged into `overlay/source3/smbd/tc_disk_bindings.c`, which `conn_idle.c`
+includes where upstream's comment for `conn_force_tdis` begins. The patch went
+from 204 to 112 lines. Each smbd grew 16 bytes: talloc's `__location__`
+strings now name the overlay file. The migrators rebuilt byte-identical, and
+two NetBSD 4 LE builds of the new series gave the same smbd.
+
+- Host regression run (Docker, sanitizers): all 115 cases passed, including
+  `tc_storage_reload_test`, which includes `conn_idle.c` and so the overlay.
+- NetBSD 4 LE device: deploy and `doctor` passed. `tc_storage_reload_test all`
+  passed from `/mnt/Memory` with its working directory on `/Volumes/dk2`. With
+  an smbclient session open, SIGHUP to the smbd parent reached the session's
+  worker (`smbd_conf_updated` in its log) and the tree stayed connected: the
+  next put, list and get worked.
+- NetBSD 6 and NetBSD 4 BE were built, not deployed.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,232,624 |
+| NetBSD 4 LE | 10,254,608 |
+| NetBSD 4 BE | 10,253,496 |

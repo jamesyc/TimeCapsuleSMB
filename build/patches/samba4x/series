@@ -214,7 +214,8 @@
 # Apple can revoke a bumped USB disk's vnode and remount the same dkN. Record
 # each tree's volume identity at connect, forward the manager's reload signal
 # from the parent to every worker, and disconnect only trees whose disk binding
-# was revoked, replaced or removed; other shares on the session stay connected.
+# was revoked, replaced or removed; other shares on the session stay connected
+# (overlay source3/smbd/tc_disk_bindings.c).
 0041-smbd-stale-tree-reload.patch|forward parent reloads and disconnect only revoked Apple disk bindings
 
 # Native symlinks.
