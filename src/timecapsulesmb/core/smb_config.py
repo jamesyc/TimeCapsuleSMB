@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -9,6 +10,16 @@ from typing import Optional
 class SmbShare:
     name: str
     path: Optional[str] = None
+
+
+# Samba's parser (lib/util/params.c) compresses each run of whitespace in a
+# section name to one space, so "[Nicholas  McBride's]" serves a share named
+# "Nicholas McBride's". Mirror it so share names match what smbd lists.
+_SECTION_WHITESPACE = re.compile(r"[ \t\v\f\r]+")
+
+
+def _section_name(header: str) -> str:
+    return _SECTION_WHITESPACE.sub(" ", header).strip(" ")
 
 
 def _iter_global_option_lines(smb_conf: str):
@@ -74,7 +85,7 @@ def parse_active_shares(smb_conf: str) -> list[SmbShare]:
             continue
         if stripped.startswith("[") and stripped.endswith("]"):
             append_current()
-            section_name = stripped[1:-1].strip()
+            section_name = _section_name(stripped[1:-1])
             current_name = section_name or None
             current_path = None
             continue

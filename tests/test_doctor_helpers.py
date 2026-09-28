@@ -189,6 +189,18 @@ class DoctorHelperTests(unittest.TestCase):
 
         self.assertEqual(parse_active_share_names(smb_conf), ["Data", "Time Machine"])
 
+    def test_parse_active_share_names_collapses_whitespace_like_samba(self) -> None:
+        # Samba compresses each whitespace run in a section name to one space,
+        # so these sections serve "Nicholas McBride's Time Ca" and "Time Machine".
+        smb_conf = "[Nicholas  McBride's Time Ca]\n  path = /Volumes/dk2/ShareRoot\n[\tTime \t Machine ]\n"
+
+        self.assertEqual(parse_active_share_names(smb_conf), ["Nicholas McBride's Time Ca", "Time Machine"])
+
+    def test_parse_active_share_names_keeps_single_spaces_and_other_characters(self) -> None:
+        smb_conf = "[Data (dk3)]\n[Café Disk]\n"
+
+        self.assertEqual(parse_active_share_names(smb_conf), ["Data (dk3)", "Café Disk"])
+
     def test_parse_active_shares_tracks_section_paths(self) -> None:
         smb_conf = """
         [global]

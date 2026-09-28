@@ -116,7 +116,11 @@ def test_mast_command_preserves_all_text(capture_tools, tmp_path, data, success)
 
 
 def test_mast_command_accepts_bounded_timeout(capture_tools, tmp_path):
-    result = subprocess.run([str(capture_tools[1]), "--print-mast", "--timeout-seconds", "1"],
+    # The largest accepted bound (3601 is rejected below). A 1-second bound
+    # expired under a full parallel run: the first exec of the just-compiled
+    # fake acp can take that long while other workers compile. Timeouts that
+    # fire are covered by the device and telemetry hang tests.
+    result = subprocess.run([str(capture_tools[1]), "--print-mast", "--timeout-seconds", "3600"],
                             env=raw_env(tmp_path, b"MaSt\n"), capture_output=True, timeout=5)
     assert result.returncode == 0 and result.stdout == b"MaSt\n"
 

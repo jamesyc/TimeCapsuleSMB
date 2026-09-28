@@ -8,6 +8,7 @@ import pytest
 
 from tests.native.build import ROOT, compile_modules
 from tests.storage_fixtures import MAST_FIXTURES
+from timecapsulesmb.core.smb_config import parse_active_share_names
 
 
 @pytest.fixture(scope="module")
@@ -133,6 +134,49 @@ def test_names_sanitized_bounded_and_ascii_case_collisions_disambiguated(rendere
     assert conf.sections()[1:4] == ['_Bad___Name_________', 'data', 'DATA (dk4)']
     last = conf.sections()[-1]
     assert len(last.encode()) <= 194 and last.encode().decode() == last
+
+
+def test_space_runs_collapse_so_the_advertised_name_is_the_served_name(renderer):
+    # Samba serves "[A  B]" as "A B" and matches tree connects exactly, so the
+    # name used in smb.conf and the ADisk TXT must already be collapsed. Two
+    # volumes that differ only in spacing then collide and are disambiguated.
+    names = ["Nicholas  McBride's Time Ca", "Nicholas McBride's Time Ca", "Tab\tName", "One Space"]
+    parts = [{"deviceName": f"dk{i+2}", "format": "hfs", "name": name,
+              "uuid": f"00000000-0000-0000-0000-{i+1:012x}"} for i, name in enumerate(names)]
+    conf = render(renderer, inventory=plistlib.dumps([{"deviceName": "sd0", "partitions": parts}]))
+    assert conf.sections()[1:] == [
+        "Nicholas McBride's Time Ca", "Nicholas McBride's Time Ca (dk3)", "Tab_Name", "One Space",
+    ]
+
+
+def raw_share_sections(renderer, names):
+    """Render one share per volume name; return smb.conf's raw section names
+    (as the ADisk TXT carries them) and the names Samba's parser serves."""
+    binary, config = renderer
+    config.write_text("")
+    parts = [{"deviceName": f"dk{i+2}", "format": "hfs", "name": name,
+              "uuid": f"00000000-0000-0000-0000-{i+1:012x}"} for i, name in enumerate(names)]
+    result = subprocess.run([str(binary)], input=plistlib.dumps([{"deviceName": "sd0", "partitions": parts}]),
+                            capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    text = result.stdout.decode()
+    raw = [line[1:-1] for line in text.splitlines() if line.startswith("[") and line != "[global]"]
+    return raw, parse_active_share_names(text)
+
+
+@pytest.mark.parametrize("names,expected", [
+    # The ADisk budget for a 3-byte device name and a 36-byte UUID is 194
+    # bytes. Cut there, this name would end in a space, which Samba drops.
+    (["A" * 193 + " " + "B" * 20], ["A" * 193]),
+    # A collision cuts 6 bytes earlier for " (dk3)". Ending that cut in a
+    # space would leave "C...C  (dk3)", which Samba serves as "C...C (dk3)".
+    (["C" * 187 + " " + "D" * 20] * 2, ["C" * 187 + " " + "D" * 6, "C" * 187 + " (dk3)"]),
+])
+def test_cut_names_do_not_end_in_a_space_samba_would_change(renderer, names, expected):
+    raw, served = raw_share_sections(renderer, names)
+    assert raw == expected
+    # Time Machine asks for the advertised name; Samba must serve exactly it.
+    assert served == raw
 
 
 @pytest.mark.parametrize("text", ["RSYNC_ENABLED=maybe\n", "TELEMETRY=$(touch bad)\n",

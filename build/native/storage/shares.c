@@ -9,6 +9,11 @@ static size_t prefix_bytes(const char *text, size_t budget) {
      * point, which produces invalid DNS-SD names in the old byte-only cut. */
     while (length && ((unsigned char)text[length] & 0xc0) == 0x80)
         length--;
+    /* Samba drops a section name's trailing spaces, and a collision suffix
+     * after one would make a run Samba collapses; either way the ADisk name
+     * would not be the name Samba serves. */
+    while (length && text[length - 1] == ' ')
+        length--;
     return length;
 }
 static int name_exists(const struct tc_share_set *shares, const char *name) {
@@ -30,6 +35,11 @@ static void share_name(const struct tc_share_set *shares, const struct tc_volume
         unsigned char ch = name[i];
         if (ch < 32 || ch == 127 || strchr("/\\:*?\"<>|,=[]", ch))
             ch = '_';
+        /* Samba compresses each run of spaces in an smb.conf section name to
+         * one and looks shares up by exact name, so a Mac asking for the
+         * ADisk name "A  B" would not find the share Samba serves as "A B". */
+        if (ch == ' ' && used && base[used - 1] == ' ')
+            continue;
         base[used++] = ch;
     }
     while (used && isspace((unsigned char)base[used - 1]))

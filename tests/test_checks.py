@@ -4021,6 +4021,60 @@ class CheckTests(unittest.TestCase):
         self.assertIn("Bonjour IPv4: _adisk._tcp TXT does not advertise active Samba share(s): Data", messages)
         self.assertIn("Bonjour IPv4: _adisk._tcp TXT advertises stale share(s) not present in active Samba config: Backup", messages)
 
+    def test_run_doctor_checks_reports_adisk_name_samba_cannot_serve(self) -> None:
+        # Samba serves "[Home  Disk]" as "Home Disk" and matches tree connects
+        # exactly, so Time Machine cannot mount an ADisk name with two spaces.
+        instance_name = "Home"
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME=instance_name,
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", instance_name, "Home._smb._tcp.local."),
+            BonjourServiceInstance("_adisk._tcp.local.", instance_name, "Home._adisk._tcp.local."),
+        ]
+        records = [
+            BonjourResolvedService(instance_name, "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.2"]),
+            BonjourResolvedService(
+                instance_name,
+                "home.local",
+                "_adisk._tcp.local.",
+                port=9,
+                properties={
+                    "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                    "adVF": "0x1010",
+                    "dk2": "adVF=0x83,adVN=Home  Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                },
+            ),
+        ]
+        active_smb_conf = DEFAULT_ACTIVE_SMB_CONF.replace("[Data]", "[Home  Disk]")
+
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            read_active_smb_conf=active_smb_conf,
+            runtime_naming_identity=self.runtime_identity_from_values(values),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: _adisk._tcp TXT does not advertise active Samba share(s): Home Disk", messages)
+        self.assertIn(
+            "Bonjour IPv4: _adisk._tcp TXT advertises stale share(s) not present in active Samba config: Home  Disk",
+            messages,
+        )
+
     def _apple_responder_doctor_run(self, instances, records, *, advertise_afp: bool = False):
         values = self.valid_doctor_values(
             TC_HOST="root@10.0.0.2",
@@ -4276,6 +4330,46 @@ class CheckTests(unittest.TestCase):
             port=445,
         )
         self.assertTrue(any(result.status == "PASS" and "includes active share 'Data'" in result.message for result in run.results))
+
+    def test_run_doctor_checks_matches_active_share_whose_volume_name_has_double_spaces(self) -> None:
+        # A v3.1.1 smb.conf keeps the volume name's two spaces; Samba serves
+        # and lists the share with one. Doctor must match it and test that share.
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        active_smb_conf = DEFAULT_ACTIVE_SMB_CONF.replace("[Data]", "[Nicholas  McBride's Time Ca]")
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_bonjour=True,
+            smb_listing=self.smb_listing_result(disk_shares=["Nicholas McBride's Time Ca"]),
+            smb_file_ops=[mock.Mock(status="PASS", message="file ops ok")],
+            run_ssh_side_effect=self.run_ssh_with_active_smb_conf(active_smb_conf=active_smb_conf),
+            read_active_smb_conf=active_smb_conf,
+            runtime_naming_identity=self.runtime_identity_from_values(values),
+        )
+
+        self.assertFalse(run.fatal)
+        run.mocks.check_authenticated_smb_file_ops_detailed.assert_called_once_with(
+            "admin",
+            "pw",
+            "timecapsulesamba4.local",
+            "Nicholas McBride's Time Ca",
+            port=445,
+        )
+        self.assertIn(
+            "authenticated SMB listing includes active share \"Nicholas McBride's Time Ca\"",
+            [result.message for result in run.results if result.status == "PASS"],
+        )
 
     def test_run_doctor_checks_fails_when_active_share_missing_from_smb_listing(self) -> None:
         listing_mock = mock.Mock(return_value=self.smb_listing_result(disk_shares=["Public"]))
