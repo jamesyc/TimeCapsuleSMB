@@ -4,7 +4,7 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, print_json
+from timecapsulesmb.cli.runtime import add_config_argument, print_json, read_terminal_line
 from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourResolvedService,
@@ -121,7 +121,7 @@ def _run_discover(args: argparse.Namespace, command_context: CommandContext | No
             command_context.set_stage("interactive_select")
         while True:
             try:
-                raw = input("Select device number (q to quit): ").strip()
+                raw = read_terminal_line("Select device number (q to quit): ").strip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 if command_context is not None:

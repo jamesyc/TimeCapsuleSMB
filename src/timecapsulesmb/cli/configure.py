@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import sys
 import uuid
 from collections.abc import Callable, Sequence
@@ -30,6 +29,7 @@ from timecapsulesmb.cli.runtime import (
     no_input_enabled,
     print_json,
     read_password_source_args,
+    read_terminal_line,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
 from timecapsulesmb.core.paths import resolve_app_paths
@@ -73,7 +73,7 @@ def prompt(label: str, default: str, secret: bool) -> str:
     suffix = f" [{color_cyan(default)}]" if default and not secret else ""
     text = f"{label}{suffix}: "
     while True:
-        value = getpass.getpass(text) if secret else input(text)
+        value = read_terminal_line(text, secret=secret)
         if value != "":
             return value
         if default != "":
@@ -100,7 +100,7 @@ def list_devices(records: Sequence[BonjourResolvedService]) -> None:
 def choose_device(records: Sequence[BonjourResolvedService]) -> Optional[BonjourResolvedService]:
     while True:
         try:
-            raw = input("Select a device by number (q to skip discovery): ").strip()
+            raw = read_terminal_line("Select a device by number (q to skip discovery): ").strip()
         except EOFError:
             print()
             return None

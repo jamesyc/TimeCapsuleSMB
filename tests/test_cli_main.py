@@ -331,6 +331,30 @@ class CliMainTests(CliTestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("--json repair requires --yes", stderr.getvalue())
 
+    def test_discover_select_asks_again_after_input_the_terminal_encoding_cannot_decode(self) -> None:
+        record = BonjourResolvedService(
+            name="Time Capsule",
+            hostname="capsule.local",
+            ipv4=["10.0.0.2"],
+            ipv6=[],
+            services={"_airport._tcp.local."},
+            properties={"model": "AirPort Time Capsule"},
+        )
+        snapshot = BonjourDiscoverySnapshot(
+            instances=[BonjourServiceInstance("_airport._tcp.local.", "Time Capsule", "Time Capsule._airport._tcp.local.")],
+            resolved=[record],
+        )
+        output = io.StringIO()
+        bad = UnicodeDecodeError("utf-8", b"\xd0a", 0, 1, "invalid continuation byte")
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", return_value=(snapshot, None)):
+            with mock.patch("builtins.input", side_effect=[bad, "1"]) as input_mock:
+                with redirect_stdout(output):
+                    rc = discover.run_cli(["--select"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(input_mock.call_count, 2)
+        self.assertIn("could not be read as", output.getvalue())
+        self.assertEqual(output.getvalue().splitlines()[-1], record.display_host())
+
     def test_discover_json_outputs_records(self) -> None:
         output = io.StringIO()
         record = BonjourResolvedService(

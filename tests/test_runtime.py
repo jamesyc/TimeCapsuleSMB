@@ -16,8 +16,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli.runtime import (
+    TERMINAL_INPUT_ATTEMPTS,
     json_text,
     print_json,
+    prompt_device_password,
+    read_terminal_line,
 )
 from timecapsulesmb.core.config import AppConfig, ConfigError, DEFAULTS
 from timecapsulesmb.core.paths import AppPaths
@@ -244,6 +247,43 @@ class RuntimeTests(unittest.TestCase):
             )
 
         self.assertEqual(target.connection.host, "root@capsule.local")
+
+    def _bad_decode(self) -> UnicodeDecodeError:
+        # What a UTF-8 stdin raises for a KOI8/CP1251 byte (telemetry, v3.1.1).
+        return UnicodeDecodeError("utf-8", b"\xd0a", 0, 1, "invalid continuation byte")
+
+    def test_read_terminal_line_asks_again_after_undecodable_input(self) -> None:
+        output = io.StringIO()
+        with mock.patch("builtins.input", side_effect=[self._bad_decode(), "root@10.0.1.20"]) as input_mock:
+            with redirect_stdout(output):
+                value = read_terminal_line("SSH target: ")
+
+        self.assertEqual(value, "root@10.0.1.20")
+        self.assertEqual(input_mock.call_count, 2)
+        self.assertEqual(output.getvalue().count("could not be read as"), 1)
+        self.assertIn("set the terminal to UTF-8", output.getvalue())
+
+    def test_read_terminal_line_returns_first_good_answer_without_a_warning(self) -> None:
+        output = io.StringIO()
+        with mock.patch("getpass.getpass", return_value="pässword") as getpass_mock:
+            with redirect_stdout(output):
+                value = read_terminal_line("Password: ", secret=True)
+
+        self.assertEqual(value, "pässword")
+        getpass_mock.assert_called_once_with("Password: ")
+        self.assertEqual(output.getvalue(), "")
+
+    def test_device_password_prompt_gives_up_with_a_config_error_not_a_traceback(self) -> None:
+        # CommandContext turns ConfigError into a clean exit and telemetry error.
+        output = io.StringIO()
+        with mock.patch("getpass.getpass", side_effect=self._bad_decode()) as getpass_mock:
+            with redirect_stdout(output):
+                with self.assertRaises(ConfigError) as ctx:
+                    prompt_device_password("AirPort admin password: ")
+
+        self.assertEqual(getpass_mock.call_count, TERMINAL_INPUT_ATTEMPTS)
+        self.assertIn("could not be read as", str(ctx.exception))
+        self.assertNotIn("UnicodeDecodeError", str(ctx.exception))
 
     def test_resolve_env_connection_no_input_fails_instead_of_prompting_for_password(self) -> None:
         config = app_config({"TC_HOST": "root@10.0.0.2"})

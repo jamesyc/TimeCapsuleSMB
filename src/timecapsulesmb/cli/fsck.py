@@ -4,7 +4,12 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, no_input_enabled
+from timecapsulesmb.cli.runtime import (
+    add_config_argument,
+    add_no_input_argument,
+    no_input_enabled,
+    read_terminal_line,
+)
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import storage as storage_service
@@ -23,7 +28,7 @@ from timecapsulesmb.telemetry import TelemetryClient
 def prompt_fsck_target(targets: tuple[FsckTarget, ...]) -> FsckTarget:
     print(format_fsck_targets(targets))
     while True:
-        answer = input("Select a volume to fsck by number: ").strip()
+        answer = read_terminal_line("Select a volume to fsck by number: ").strip()
         if answer.isdigit():
             index = int(answer)
             if 1 <= index <= len(targets):

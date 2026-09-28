@@ -602,7 +602,7 @@ class CliConfigureTests(CliTestCase):
                 extra_patches={
                     "timecapsulesmb.cli.configure.prompt": mock.Mock(side_effect=AssertionError("configure --no-input should not prompt")),
                     "builtins.input": mock.Mock(side_effect=AssertionError("configure --no-input should not call input")),
-                    "timecapsulesmb.cli.configure.getpass.getpass": mock.Mock(side_effect=AssertionError("configure --no-input should not call getpass")),
+                    "timecapsulesmb.cli.runtime.getpass.getpass": mock.Mock(side_effect=AssertionError("configure --no-input should not call getpass")),
                 },
             )
 
@@ -617,7 +617,7 @@ class CliConfigureTests(CliTestCase):
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
             extra_patches={
                 "timecapsulesmb.cli.configure.prompt": mock.Mock(side_effect=AssertionError("configure --no-input should not prompt")),
-                "timecapsulesmb.cli.configure.getpass.getpass": mock.Mock(side_effect=AssertionError("configure --no-input should not call getpass")),
+                "timecapsulesmb.cli.runtime.getpass.getpass": mock.Mock(side_effect=AssertionError("configure --no-input should not call getpass")),
             },
         )
 
@@ -2289,7 +2289,7 @@ class CliConfigureTests(CliTestCase):
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
             extra_patches={
-                "timecapsulesmb.cli.configure.getpass.getpass": mock.Mock(side_effect=lambda _prompt: next(password_values))
+                "timecapsulesmb.cli.runtime.getpass.getpass": mock.Mock(side_effect=lambda _prompt: next(password_values))
             },
         )
         self.assertEqual(result.rc, 0)
@@ -2315,7 +2315,7 @@ class CliConfigureTests(CliTestCase):
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
             extra_patches={
-                "timecapsulesmb.cli.configure.getpass.getpass": mock.Mock(side_effect=lambda _prompt: next(password_values))
+                "timecapsulesmb.cli.runtime.getpass.getpass": mock.Mock(side_effect=lambda _prompt: next(password_values))
             },
         )
         self.assertEqual(result.rc, 0)
@@ -2639,6 +2639,31 @@ class CliConfigureTests(CliTestCase):
         self.assertNotIn("TC_AIRPORT_SYAP", result.values)
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
+
+
+
+class ConfigurePromptEncodingTests(unittest.TestCase):
+    """A non-UTF-8 terminal under a UTF-8 locale sends bytes input() cannot
+    decode; configure must ask again instead of dying with a traceback."""
+
+    def bad_decode(self) -> UnicodeDecodeError:
+        return UnicodeDecodeError("utf-8", b"\xd0a", 0, 1, "invalid continuation byte")
+
+    def test_host_prompt_asks_again_after_undecodable_input(self) -> None:
+        with mock.patch("builtins.input", side_effect=[self.bad_decode(), "root@10.0.1.20"]):
+            with redirect_stdout(io.StringIO()) as output:
+                value = configure.prompt("SSH target", "", False)
+
+        self.assertEqual(value, "root@10.0.1.20")
+        self.assertIn("could not be read as", output.getvalue())
+
+    def test_device_choice_asks_again_after_undecodable_input(self) -> None:
+        records = [SimpleNamespace(name="Capsule", display_host=lambda: "capsule.local", ipv4=["10.0.1.2"], ipv6=[])]
+        with mock.patch("builtins.input", side_effect=[self.bad_decode(), "1"]):
+            with redirect_stdout(io.StringIO()):
+                chosen = configure.choose_device(records)
+
+        self.assertIs(chosen, records[0])
 
 
 if __name__ == "__main__":

@@ -46,8 +46,31 @@ def no_input_enabled(args: argparse.Namespace | object) -> bool:
     return bool(getattr(args, "no_input", False))
 
 
+TERMINAL_INPUT_ATTEMPTS = 3
+
+
+def terminal_encoding_message() -> str:
+    encoding = getattr(sys.stdin, "encoding", None) or "the terminal's"
+    return (
+        f"That input could not be read as {encoding} text. "
+        "Check the keyboard layout, or set the terminal to UTF-8, and try again."
+    )
+
+
+def read_terminal_line(text: str, *, secret: bool = False) -> str:
+    """Read one line with input() or getpass(), asking again when the terminal
+    sends bytes that are not text in its encoding (a non-UTF-8 terminal under
+    a UTF-8 locale), instead of failing with a UnicodeDecodeError traceback."""
+    for _ in range(TERMINAL_INPUT_ATTEMPTS):
+        try:
+            return getpass.getpass(text) if secret else input(text)
+        except UnicodeDecodeError:
+            print(terminal_encoding_message())
+    raise ConfigError(terminal_encoding_message())
+
+
 def prompt_device_password(prompt: str) -> str:
-    return getpass.getpass(prompt)
+    return read_terminal_line(prompt, secret=True)
 
 
 def add_password_source_arguments(parser: argparse.ArgumentParser) -> None:
@@ -178,7 +201,7 @@ def confirm(
 ) -> bool:
     while True:
         try:
-            answer = input(f"{prompt_text} {_confirm_suffix(default)}: ").strip().lower()
+            answer = read_terminal_line(f"{prompt_text} {_confirm_suffix(default)}: ").strip().lower()
         except EOFError as exc:
             if eof_default is not None:
                 return eof_default
