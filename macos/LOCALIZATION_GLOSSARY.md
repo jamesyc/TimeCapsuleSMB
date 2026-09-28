@@ -147,7 +147,7 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 - Use consistent voice within a locale. German buttons use infinitives; Dutch buttons normally place the verb last; Russian buttons use infinitives. Avoid mixing polite commands, infinitives, and noun phrases arbitrarily.
 - French and Italian use the typographic apostrophe `’` (`l’appareil`, `dell’app`), never the straight `'`.
 - French uses *Paramètres* for this app's own settings and keeps *Réglages* for Apple's *Réglages Système*.
-- French puts a non-breaking space (U+00A0) before `?`, `!`, `:` and `;`, so the mark never starts a line: `Continuer ?`, `app : %@`.
+- French puts a non-breaking space (U+00A0) before `?`, `!`, `:` and `;`, and inside `« »` guillemets, so a mark never starts or ends a line alone: `Continuer ?`, `app : %@`.
 - Lithuanian *pataisomas* means repairable and *taisomas* means being repaired: "Repairable" is *Pataisoma*, "Repairing" is *Taisoma*. The act of repairing metadata is *taisymas* (`Po taisymo liko…`); *pataisymas* is reserved for the firmware **patch** (`Flash atminties pataisymo planas`), so "after the repair" is never *po pataisymo*.
 - Lithuanian "requested" in status lines is *Paprašyta …* (`Paprašyta įjungti SSH`), not *užklaustas*, which means "queried".
 - Lithuanian flash summaries name the storage as *flash atmintis* (`Flash atminties atsarginė kopija…`, `Įrašyti į flash atmintį nereikėjo.`), never a bare *Flash*.
@@ -189,6 +189,16 @@ Helper results carry an English `summary` plus a stable `summary_key` and positi
 - Changing an English summary's shape (adding, removing or retyping an argument) requires a new key name, so older app builds never format a new sentence with the wrong arguments.
 - A summary whose wording depends on a count is a plural entry (see Plurals). Turning an existing key into one keeps its name, since `%#@name@` is still an integer argument.
 
+## Error lines and recovery guidance
+
+A failed operation shows the error line `backend.error.<operation>.<code>` (or `backend.error.<code>`) and the helper's recovery guidance as `backend.recovery.<key>.title`, `.message` and `.action.N`. The key is the entry's place in `src/timecapsulesmb/app/recovery.py`: `<code>`, `<operation>.<code>` or `<operation>.<code>.<stage>`. The English catalog repeats the helper's English word for word, and every catalog has every entry with one `.action.N` per helper step; `tests/test_error_catalog.py` checks all of this.
+
+- Each distinct cause gets its own error code and line. Do not write one line that covers several causes ("could not write") when the helper can tell them apart.
+- Recovery text names the app's own operations, not CLI words: "deploy" is the **Install / Update Samba** operation, "run doctor" is the **Checkup**, "Open Diagnostics" is the Diagnostics screen. Keep literal CLI commands such as `tcapsule activate`.
+- Recovery messages carry no `%` placeholders except the slow-device message's `%@` (the device name).
+- Waking a sleeping disk is not *activating* it: Spanish *saque el disco del reposo*/*despierte el disco* and Italian *risveglia il disco*, never *reactivar*/*riattivare*, which belong to the Activate action.
+- "The device would not keep it mounted for TimeCapsuleSMB" means the device's disk manager refused to hold the volume mounted for the install; it is not a mount failure.
+
 ## Plurals
 
 A sentence whose wording depends on a count lives in `Localizable.stringsdict`, not `Localizable.strings`, in all ten languages. The current plural keys are the count summaries (`discovered_devices`, `hfs_volumes_found`, `repair_xattrs_found`, `repair_xattrs_no_safe_repairs`, `repair_xattrs_unresolved`, `flash.apple_some_match` and its `_version` variant), `bundle_issue.distribution_artifacts_missing_count.message`, and `activity.multiple_active`. Do not write "(s)", "(-ų)" or "problème(s)"-style forms, and do not pick one grammatical form for every count.
@@ -203,7 +213,7 @@ Foundation picks the form from the locale the app formats with, not the system l
 | pt-BR | zero, one, many (round millions), other | 0 dispositivos / 1 dispositivo / 2 dispositivos / 1.000.000 de dispositivos |
 | ru | one, few, many, other | 1, 21 устройство; 2, 22 устройства; 0, 5, 11 устройств |
 | lt | one, few, other (many optional) | 1, 21 įrenginys; 2, 9, 22 įrenginiai; 0, 10, 11, 20 įrenginių |
-| zh-Hans | no variable: a plain `%lld` format | 发现 %lld 个设备。 |
+| zh-Hans | no variable: a plain `%lld` format; a sentence that never shows its count (only "it"/"them" agrees) keeps its variable with a single `other` form | 发现 %lld 个设备。 |
 
 Russian and Lithuanian choose the form from the last digits (21 takes the singular, 11–19 the plural genitive), so never special-case only 1. CLDR puts Portuguese 0 in `one`, but Brazilian usage takes the plural (*0 dispositivos*), so every Portuguese plural variable also defines `zero`, worded like `other`; Foundation uses a zero form for exactly 0 and for no other count (verified 2026-09-25). French keeps 0 in the singular, which is correct French. Russian `other` and Lithuanian `many` apply only to fractions, but Russian still needs `other` because Foundation requires it as the fallback; use the genitive singular there.
 

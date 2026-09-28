@@ -45,9 +45,11 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
     MaStVolume,
+    PayloadCandidateCheck,
     PayloadHome,
     PayloadHomeSelection,
     StorageDeviceError,
+    VolumeMountResult,
     build_dry_run_payload_home,
 )
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
@@ -4323,7 +4325,10 @@ MaSt = (
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "read_mast")
 
-    def test_deploy_reports_unwritable_hfs_volume_as_disk_not_writable_code(self) -> None:
+    def test_deploy_reports_each_unusable_volume_cause_with_its_own_code(self) -> None:
+        # The app shows its own text for each code, so the cause decides it:
+        # an unwritable volume, one the device would not keep mounted, and
+        # one that never mounted.
         volume = MaStVolume(
             "wd0",
             "dk2",
@@ -4333,19 +4338,31 @@ MaSt = (
             True,
             "hfs",
         )
-        rc, collector = self.run_confirmed_deploy_with_mast(
-            MaStDiscoveryResult((volume,), 1, ""),
-            payload_home_selection=PayloadHomeSelection(None, ()),
+        cases = (
+            (VolumeMountResult(True, "use_volume_rcs=0 mounted=yes"), False,
+             "deploy_disk_not_writable", "No writable payload volume"),
+            (VolumeMountResult(False, "use_volume_rcs=1,1 mounted=yes"), None,
+             "deploy_disk_not_confirmed", "Disk not kept mounted"),
+            (VolumeMountResult(False, "use_volume_rcs=1,1 mounted=no"), None,
+             "deploy_disk_not_mounted", "HFS disk not mounted"),
         )
+        for mount, writable, code, title in cases:
+            with self.subTest(code=code):
+                self._telemetry_client.emit.reset_mock()
+                rc, collector = self.run_confirmed_deploy_with_mast(
+                    MaStDiscoveryResult((volume,), 1, ""),
+                    payload_home_selection=PayloadHomeSelection(None, (PayloadCandidateCheck(volume, mount, writable),)),
+                )
 
-        self.assertEqual(rc, 1)
-        error = collector.events_of_type("error")[0]
-        self.assertEqual(error["code"], "deploy_disk_not_writable")
-        self.assertEqual(error["recovery"]["title"], "No writable payload volume")
-        self.assertEqual(error["recovery"]["action_ids"], [])
-        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
-        self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["stage"], "select_payload_home")
+                self.assertEqual(rc, 1)
+                error = collector.events_of_type("error")[0]
+                self.assertEqual(error["code"], code)
+                self.assertEqual(error["recovery"]["title"], title)
+                self.assertEqual(error["recovery"]["localization_key"], f"deploy.{code}")
+                self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(finished["result"], "failure")
+                self.assertEqual(finished["stage"], "select_payload_home")
 
     def test_deploy_reports_write_test_timeout_code(self) -> None:
         volume = MaStVolume(

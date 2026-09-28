@@ -147,40 +147,66 @@ OVERSIZED_MESSAGE_EXAMPLES = 10
 OVERSIZED_TELEMETRY_NAMES = 10
 
 
-def _oversized_message(oversized: OversizedSummary) -> str:
-    """Shown after cleanup, when the kept values and their database's fate are final."""
-    too_large = oversized.total - oversized.folder_forks
-    sentences = []
+def _counted(count: int, one: str, other: str) -> str:
+    return (one if count == 1 else other).replace("%lld", str(count))
+
+
+def _oversized_summaries(oversized: OversizedSummary) -> list[Summary]:
+    """Shown after cleanup, when the kept values and their database's fate are
+    final. Each line is one whole sentence the app translates by its key; the
+    sentences that do not apply are left out, not rephrased."""
+    total = oversized.total
+    too_large = total - oversized.folder_forks
+    limit = f"{NATIVE_XATTR_LIMIT:,}"
+    lines: list[Summary] = []
     if too_large:
-        sentences.append(
-            f"{too_large} Mac metadata value(s) are larger than a native HFS attribute can hold "
-            f"({NATIVE_XATTR_LIMIT:,} bytes)."
-        )
+        lines.append(Summary("migration.kept_too_large", _counted(
+            too_large,
+            f"%lld Mac metadata value is larger than a native HFS attribute can hold ({limit} bytes).",
+            f"%lld Mac metadata values are larger than a native HFS attribute can hold ({limit} bytes).",
+        ), (too_large,)))
     if oversized.folder_forks:
-        sentences.append(
-            f"{oversized.folder_forks} folder(s) have a resource fork, which an HFS folder cannot hold."
-        )
-    sentences.append(
-        "Apple's firmware cannot store them either, so they stay in legacy storage and are not "
-        "visible over SMB; everything else was migrated."
-    )
+        lines.append(Summary("migration.kept_folder_forks", _counted(
+            oversized.folder_forks,
+            "%lld folder has a resource fork, which an HFS folder cannot hold.",
+            "%lld folders have a resource fork, which an HFS folder cannot hold.",
+        ), (oversized.folder_forks,)))
+    lines.append(Summary("migration.kept_not_visible", _counted(
+        total,
+        "Apple's firmware cannot store it either, so it stays in legacy storage and is not visible over SMB; "
+        "everything else was migrated.",
+        "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible over SMB; "
+        "everything else was migrated.",
+    ), (total,)))
     if oversized.tdb:
-        where = ("which was kept as xattr.tdb.orphaned.N instead of being deleted"
-                 if oversized.database_outcome == "quarantined"
+        quarantined = oversized.database_outcome == "quarantined"
+        where = ("which was kept as xattr.tdb.orphaned.N instead of being deleted" if quarantined
                  else "which stays in place until migration finishes on every disk")
-        sentences.append(f"{oversized.tdb} of them are in the legacy Samba database, {where}.")
+        lines.append(Summary(
+            "migration.kept_in_database_quarantined" if quarantined else "migration.kept_in_database_in_place",
+            _counted(oversized.tdb, f"%lld of these values is in the legacy Samba database, {where}.",
+                     f"%lld of these values are in the legacy Samba database, {where}."),
+            (oversized.tdb,),
+        ))
     if oversized.appledouble:
-        sentences.append(f"{oversized.appledouble} of them are in ._ files, which were kept.")
-    lines = [" ".join(sentences)]
+        lines.append(Summary("migration.kept_in_appledouble", _counted(
+            oversized.appledouble,
+            "%lld of these values is in a ._ file, which was kept.",
+            "%lld of these values are in ._ files, which were kept.",
+        ), (oversized.appledouble,)))
     shown = oversized.values[:OVERSIZED_MESSAGE_EXAMPLES]
-    lines.extend(
-        f"  {value.path} ({'folder resource fork' if value.reason == 'folder_fork' else value.name}, "
-        f"{value.size:,} bytes)"
-        for value in shown
-    )
-    if oversized.total > len(shown):
-        lines.append(f"  ...and {oversized.total - len(shown)} more")
-    return "\n".join(lines)
+    for value in shown:
+        size = _counted(value.size, "%lld byte", "%lld bytes")
+        if value.reason == "folder_fork":
+            lines.append(Summary("migration.kept_folder_fork", f"  {value.path} (folder resource fork, {size})",
+                                 (value.path, value.size)))
+        else:
+            lines.append(Summary("migration.kept_value", f"  {value.path} ({value.name}, {size})",
+                                 (value.path, value.name, value.size)))
+    if total > len(shown):
+        more = total - len(shown)
+        lines.append(Summary("migration.kept_more", f"  ...and {more} more", (more,)))
+    return lines
 
 
 def _oversized_measurement(oversized: OversizedSummary | None) -> dict[str, object]:
@@ -399,8 +425,8 @@ def no_mounted_mast_volumes_message(volume_count: int) -> str:
 
 def unconfirmed_mast_volumes_message(volume_count: int) -> str:
     return (
-        f"MaSt found {volume_count} deployable HFS volume(s). A volume was mounted, but the device did not "
-        "confirm it for TimeCapsuleSMB, so it could be unmounted during deploy. Wait a minute and retry, "
+        f"MaSt found {volume_count} deployable HFS volume(s). A volume is mounted, but the device would not "
+        "keep it mounted for TimeCapsuleSMB, so it could be unmounted during deploy. Wait a minute and retry, "
         "or restart the device."
     )
 
@@ -689,15 +715,14 @@ def select_deploy_payload_home(
     )
     if selection.payload_home is None:
         volume_count = len(mast_discovery.volumes)
-        # Same code for each: the app's text ("wake or remount the disk,
-        # check free space") covers every way a volume could not be used.
+        # One code per cause: the app shows its own text for each code.
         if any(check.mounted for check in selection.checks):
-            message = no_writable_mast_volumes_message(volume_count)
+            message, code = no_writable_mast_volumes_message(volume_count), "deploy_disk_not_writable"
         elif any(check.mount.present for check in selection.checks):
-            message = unconfirmed_mast_volumes_message(volume_count)
+            message, code = unconfirmed_mast_volumes_message(volume_count), "deploy_disk_not_confirmed"
         else:
-            message = no_mounted_mast_volumes_message(volume_count)
-        raise DeployDeviceError(message, code="deploy_disk_not_writable")
+            message, code = no_mounted_mast_volumes_message(volume_count), "deploy_disk_not_mounted"
+        raise DeployDeviceError(message, code=code)
     return selection.payload_home
 
 
@@ -925,7 +950,8 @@ def upload_and_verify_deployment_payload(
         # Copy and cleanup find the same values; tell the user once, after
         # cleanup has verified the rest and retired (or kept) the database.
         if phase == "cleanup" and oversized is not None and oversized.total:
-            callbacks.message(_oversized_message(oversized))
+            for line in _oversized_summaries(oversized):
+                callbacks.message(line)
         if isinstance(migration_result, XattrMigrationResult):
             migration_output = migration_result.output
             callbacks.debug(

@@ -372,9 +372,20 @@ class SummaryCatalogTests(unittest.TestCase):
                             with self.subTest(language=language, key=key):
                                 self.assertIsNone(straight.search(text), text)
 
+    def test_translations_use_their_own_quotation_marks(self) -> None:
+        # Each catalog quotes button names with its language's marks („…“,
+        # “…”, «…»); a straight " is a leftover from English.
+        for language in LANGUAGES:
+            if language == "en":
+                continue
+            for key, text in catalog(language).items():
+                with self.subTest(language=language, key=key):
+                    self.assertNotIn('\\"', text)
+
     def test_french_uses_a_non_breaking_space_before_double_punctuation(self) -> None:
-        # A plain space lets "?", "!", ":" or ";" wrap onto a line of its own.
-        plain = re.compile(r" [?!:;]")
+        # A plain space lets "?", "!", ":", ";" or a closing "»" wrap onto a
+        # line of its own, or leaves an opening "«" alone at a line's end.
+        plain = re.compile(r" [?!:;»]|« ")
         with open(RESOURCES / "fr.lproj" / "Localizable.stringsdict", "rb") as handle:
             plurals = plistlib.load(handle)
         texts = dict(catalog("fr"))

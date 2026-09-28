@@ -92,6 +92,168 @@
 			<string>Trovati %lld volumi HFS montati.</string>
 		</dict>
 	</dict>
+	<key>backend.summary.migration.kept_folder_fork</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@ (resource fork della cartella, %2$#@bytes@)</string>
+		<key>bytes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di byte</string>
+			<key>one</key>
+			<string>%lld byte</string>
+			<key>other</key>
+			<string>%lld byte</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_folder_forks</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@folders@</string>
+		<key>folders</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di cartelle hanno un resource fork, che una cartella HFS non può contenere.</string>
+			<key>one</key>
+			<string>%lld cartella ha un resource fork, che una cartella HFS non può contenere.</string>
+			<key>other</key>
+			<string>%lld cartelle hanno un resource fork, che una cartella HFS non può contenere.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_appledouble</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di questi valori si trovano in file ._, che sono stati conservati.</string>
+			<key>one</key>
+			<string>%lld di questi valori si trova in un file ._, che è stato conservato.</string>
+			<key>other</key>
+			<string>%lld di questi valori si trovano in file ._, che sono stati conservati.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_in_place</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di questi valori si trovano nel database Samba precedente, che resta al suo posto finché la migrazione non termina su tutti i dischi.</string>
+			<key>one</key>
+			<string>%lld di questi valori si trova nel database Samba precedente, che resta al suo posto finché la migrazione non termina su tutti i dischi.</string>
+			<key>other</key>
+			<string>%lld di questi valori si trovano nel database Samba precedente, che resta al suo posto finché la migrazione non termina su tutti i dischi.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_quarantined</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di questi valori si trovano nel database Samba precedente, che è stato conservato come xattr.tdb.orphaned.N invece di essere eliminato.</string>
+			<key>one</key>
+			<string>%lld di questi valori si trova nel database Samba precedente, che è stato conservato come xattr.tdb.orphaned.N invece di essere eliminato.</string>
+			<key>other</key>
+			<string>%lld di questi valori si trovano nel database Samba precedente, che è stato conservato come xattr.tdb.orphaned.N invece di essere eliminato.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@more@</string>
+		<key>more</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>  ...e altri %lld</string>
+			<key>one</key>
+			<string>  ...e %lld altro</string>
+			<key>other</key>
+			<string>  ...e altri %lld</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_not_visible</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>Nemmeno il firmware Apple può memorizzarli, quindi restano nel formato di archiviazione precedente e non sono visibili tramite SMB; tutto il resto è stato migrato.</string>
+			<key>one</key>
+			<string>Nemmeno il firmware Apple può memorizzarlo, quindi resta nel formato di archiviazione precedente e non è visibile tramite SMB; tutto il resto è stato migrato.</string>
+			<key>other</key>
+			<string>Nemmeno il firmware Apple può memorizzarli, quindi restano nel formato di archiviazione precedente e non sono visibili tramite SMB; tutto il resto è stato migrato.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_too_large</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di valori di metadati Mac superano la dimensione massima di un attributo HFS nativo (3.802 byte).</string>
+			<key>one</key>
+			<string>%lld valore di metadati Mac supera la dimensione massima di un attributo HFS nativo (3.802 byte).</string>
+			<key>other</key>
+			<string>%lld valori di metadati Mac superano la dimensione massima di un attributo HFS nativo (3.802 byte).</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_value</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@ (%2$@, %3$#@bytes@)</string>
+		<key>bytes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld di byte</string>
+			<key>one</key>
+			<string>%lld byte</string>
+			<key>other</key>
+			<string>%lld byte</string>
+		</dict>
+	</dict>
 	<key>backend.summary.repair_xattrs_found</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

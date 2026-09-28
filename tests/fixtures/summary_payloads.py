@@ -23,10 +23,12 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.core.summaries import Summary
+from timecapsulesmb.deploy.migration import OversizedSummary, OversizedValue
 from timecapsulesmb.repair_xattrs import RepairCandidate, RepairFinding, RepairSummary
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services.maintenance import fsck_failure_message, fsck_plan_to_jsonable, FsckTarget
 from timecapsulesmb.services.reachability import ReachabilityCheck, ReachabilityResult, result_from_checks, run_reachability
+from timecapsulesmb.services.deploy import _oversized_summaries
 from timecapsulesmb.services.runtime_verification import ACTIVATION_SETTLE_MESSAGE, BOOT_SETTLE_MESSAGE
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult, disable_set_ssh, enable_set_ssh
 from timecapsulesmb.services.version_check import VersionCheckResult
@@ -114,6 +116,27 @@ def _check_apple(matched: list[bool], version: str | None) -> dict[str, object]:
 
 def _flash_write(**outcome: object) -> dict[str, object]:
     return contracts.flash_write_payload({"backup_dir": BACKUP_DIR, "write_outcome": outcome})
+
+
+def _kept_values_logs() -> list[tuple[str, str, str, bool, object]]:
+    """The metadata migration's kept-values report, for mixes that together
+    use every sentence key with both a count of 1 and a larger count."""
+    big = OversizedValue("tdb", "/Volumes/dk2/Music/song", "com.apple.big", 41409)
+    folder = OversizedValue("appledouble", "/Volumes/dk2/pass.txt.rtfd", "com.apple.ResourceFork", 64, "folder_fork")
+    tiny = OversizedValue("appledouble", "/Volumes/dk2/b.rtfd", "com.apple.ResourceFork", 1, "folder_fork")
+    mixes = {
+        "one_folder": OversizedSummary(appledouble=1, values=[tiny], folder_forks=1),
+        "one_in_place": OversizedSummary(tdb=1, values=[big], database_outcome="in_place"),
+        "mixed_quarantined": OversizedSummary(tdb=1, appledouble=2, values=[big, folder, tiny], folder_forks=2,
+                                              database_outcome="quarantined"),
+        "many_quarantined": OversizedSummary(tdb=12, values=[big], database_outcome="quarantined"),
+        "two_in_place": OversizedSummary(tdb=2, values=[big], database_outcome="in_place"),
+    }
+    return [
+        (f"log_kept_{name}_{index}", "log", "deploy", True, line)
+        for name, summary in mixes.items()
+        for index, line in enumerate(_oversized_summaries(summary))
+    ]
 
 
 def cases() -> list[tuple[str, str, str, bool, object]]:
@@ -226,6 +249,7 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
     ]
     for name, ssh_result in _set_ssh_results():
         rows.append((name, result, "set-ssh", True, contracts.set_ssh_payload(ssh_result)))
+    rows.extend(_kept_values_logs())
     return rows
 
 

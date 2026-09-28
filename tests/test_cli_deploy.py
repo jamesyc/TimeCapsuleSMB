@@ -778,7 +778,7 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "MaSt found 1 deployable HFS volume(s). A volume was mounted, but the device did not confirm it "
+            "MaSt found 1 deployable HFS volume(s). A volume is mounted, but the device would not keep it mounted "
             "for TimeCapsuleSMB, so it could be unmounted during deploy. Wait a minute and retry, or restart the device.",
         )
         result.mocks.run_remote_actions.assert_not_called()

@@ -102,6 +102,186 @@
 			<string>Rasta %lld prijungtų HFS tomų.</string>
 		</dict>
 	</dict>
+	<key>backend.summary.migration.kept_folder_fork</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@ (aplanko išteklių šaka, %2$#@bytes@)</string>
+		<key>bytes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld baitai</string>
+			<key>many</key>
+			<string>%lld baito</string>
+			<key>one</key>
+			<string>%lld baitas</string>
+			<key>other</key>
+			<string>%lld baitų</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_folder_forks</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@folders@</string>
+		<key>folders</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld aplankai turi išteklių šaką (resource fork), kurios HFS aplankas negali saugoti.</string>
+			<key>many</key>
+			<string>%lld aplanko turi išteklių šaką (resource fork), kurios HFS aplankas negali saugoti.</string>
+			<key>one</key>
+			<string>%lld aplankas turi išteklių šaką (resource fork), kurios HFS aplankas negali saugoti.</string>
+			<key>other</key>
+			<string>%lld aplankų turi išteklių šaką (resource fork), kurios HFS aplankas negali saugoti.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_appledouble</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld iš šių reikšmių yra ._ failuose, kurie buvo išsaugoti.</string>
+			<key>many</key>
+			<string>%lld iš šių reikšmių yra ._ failuose, kurie buvo išsaugoti.</string>
+			<key>one</key>
+			<string>%lld iš šių reikšmių yra ._ failuose, kurie buvo išsaugoti.</string>
+			<key>other</key>
+			<string>%lld iš šių reikšmių yra ._ failuose, kurie buvo išsaugoti.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_in_place</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri lieka vietoje, kol perkėlimas bus baigtas visuose diskuose.</string>
+			<key>many</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri lieka vietoje, kol perkėlimas bus baigtas visuose diskuose.</string>
+			<key>one</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri lieka vietoje, kol perkėlimas bus baigtas visuose diskuose.</string>
+			<key>other</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri lieka vietoje, kol perkėlimas bus baigtas visuose diskuose.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_quarantined</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri buvo išsaugota kaip xattr.tdb.orphaned.N, o ne ištrinta.</string>
+			<key>many</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri buvo išsaugota kaip xattr.tdb.orphaned.N, o ne ištrinta.</string>
+			<key>one</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri buvo išsaugota kaip xattr.tdb.orphaned.N, o ne ištrinta.</string>
+			<key>other</key>
+			<string>%lld iš šių reikšmių yra senojoje Samba duomenų bazėje, kuri buvo išsaugota kaip xattr.tdb.orphaned.N, o ne ištrinta.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@more@</string>
+		<key>more</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>  ...ir dar %lld</string>
+			<key>many</key>
+			<string>  ...ir dar %lld</string>
+			<key>one</key>
+			<string>  ...ir dar %lld</string>
+			<key>other</key>
+			<string>  ...ir dar %lld</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_not_visible</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>Apple programinė įranga taip pat negali jų saugoti, todėl jos lieka senojoje saugykloje ir nėra matomos per SMB; visa kita perkelta.</string>
+			<key>many</key>
+			<string>Apple programinė įranga taip pat negali jų saugoti, todėl jos lieka senojoje saugykloje ir nėra matomos per SMB; visa kita perkelta.</string>
+			<key>one</key>
+			<string>Apple programinė įranga taip pat negali jos saugoti, todėl ji lieka senojoje saugykloje ir nėra matoma per SMB; visa kita perkelta.</string>
+			<key>other</key>
+			<string>Apple programinė įranga taip pat negali jų saugoti, todėl jos lieka senojoje saugykloje ir nėra matomos per SMB; visa kita perkelta.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_too_large</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld Mac metaduomenų reikšmės viršija didžiausią savojo HFS atributo dydį (3 802 baitai).</string>
+			<key>many</key>
+			<string>%lld Mac metaduomenų reikšmės viršija didžiausią savojo HFS atributo dydį (3 802 baitai).</string>
+			<key>one</key>
+			<string>%lld Mac metaduomenų reikšmė viršija didžiausią savojo HFS atributo dydį (3 802 baitai).</string>
+			<key>other</key>
+			<string>%lld Mac metaduomenų reikšmių viršija didžiausią savojo HFS atributo dydį (3 802 baitai).</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_value</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@ (%2$@, %3$#@bytes@)</string>
+		<key>bytes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld baitai</string>
+			<key>many</key>
+			<string>%lld baito</string>
+			<key>one</key>
+			<string>%lld baitas</string>
+			<key>other</key>
+			<string>%lld baitų</string>
+		</dict>
+	</dict>
 	<key>backend.summary.repair_xattrs_found</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

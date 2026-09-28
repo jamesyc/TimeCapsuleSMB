@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from timecapsulesmb.transport.errors import SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
@@ -92,7 +92,6 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
-        localization_key="auth_failed",
     ),
     "unsupported_device": RecoveryInfo(
         "Unsupported device",
@@ -144,7 +143,6 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
-        localization_key="configure.auth_failed",
     ),
     ("configure", "unsupported_device"): RecoveryInfo(
         "Unsupported device",
@@ -168,7 +166,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ("deploy", "validation_failed"): RecoveryInfo(
         "Deployment validation failed",
         "The bundled payload artifacts or deployment inputs are invalid.",
-        ("Open Readiness.", "Fix missing artifacts or invalid fields before retrying."),
+        ("Open Diagnostics.", "Fix missing artifacts or invalid fields before retrying."),
         retryable=True,
         suggested_operation="validate-install",
         action_ids=("open_diagnostics",),
@@ -216,6 +214,21 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "No writable payload volume",
         "MaSt found HFS volumes, but none accepted the managed payload directory.",
         ("Wake or remount the disk.", "Check available free space.", "Retry deploy."),
+        retryable=True,
+        suggested_operation="deploy",
+    ),
+    ("deploy", "deploy_disk_not_mounted"): RecoveryInfo(
+        "HFS disk not mounted",
+        "MaSt found HFS volumes, but none was mounted, and the device did not mount one when asked.",
+        ("Wait a minute, then retry deploy.", "Restart the device if the disk still does not mount."),
+        retryable=True,
+        suggested_operation="deploy",
+    ),
+    ("deploy", "deploy_disk_not_confirmed"): RecoveryInfo(
+        "Disk not kept mounted",
+        "An HFS volume is mounted, but the device would not keep it mounted for TimeCapsuleSMB, "
+        "so it could be unmounted during deploy.",
+        ("Wait a minute, then retry deploy.", "Restart the device if this keeps happening."),
         retryable=True,
         suggested_operation="deploy",
     ),
@@ -297,7 +310,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ),
         retryable=True,
         suggested_operation="configure",
-        localization_key="configure.remote_error.acp_port_probe",
     ),
     ("configure", "remote_error", "acp_enable_ssh"): RecoveryInfo(
         "ACP SSH enablement failed",
@@ -372,7 +384,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
-        localization_key="deploy.remote_error.wait_for_reboot_up",
     ),
     ("deploy", "remote_error", "verify_runtime_reboot"): RecoveryInfo(
         "Runtime not ready",
@@ -454,6 +465,21 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="repair-xattrs",
         action_ids=("repair_metadata",),
     ),
+}
+
+
+# The app shows each entry from its catalogs as backend.recovery.<key>.title,
+# .message and .action.N, keyed by where the entry sits in these tables:
+# "<code>", "<operation>.<code>" or "<operation>.<code>.<stage>". The English
+# catalog repeats this text (tests/test_error_catalog.py checks both).
+_DEFAULTS = {code: replace(info, localization_key=code) for code, info in _DEFAULTS.items()}
+_OPERATION_CODE_RECOVERY = {
+    (operation, code): replace(info, localization_key=f"{operation}.{code}")
+    for (operation, code), info in _OPERATION_CODE_RECOVERY.items()
+}
+_STAGE_RECOVERY = {
+    (operation, code, stage): replace(info, localization_key=f"{operation}.{code}.{stage}")
+    for (operation, code, stage), info in _STAGE_RECOVERY.items()
 }
 
 

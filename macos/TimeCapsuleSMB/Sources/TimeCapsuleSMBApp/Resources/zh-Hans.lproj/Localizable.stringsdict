@@ -27,6 +27,60 @@
 		<key>NSStringLocalizedFormatKey</key>
 		<string>找到 %lld 个已挂载的 HFS 卷。</string>
 	</dict>
+	<key>backend.summary.migration.kept_folder_fork</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@（文件夹资源分叉，%2$lld 字节）</string>
+	</dict>
+	<key>backend.summary.migration.kept_folder_forks</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%lld 个文件夹带有资源分叉，而 HFS 文件夹无法存储资源分叉。</string>
+	</dict>
+	<key>backend.summary.migration.kept_in_appledouble</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>其中 %lld 个值位于已保留的 ._ 文件中。</string>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_in_place</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>其中 %lld 个值位于旧版 Samba 数据库中，该数据库会保留在原处，直到所有磁盘上的迁移都完成。</string>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_quarantined</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>其中 %lld 个值位于旧版 Samba 数据库中，该数据库已保留为 xattr.tdb.orphaned.N，而未被删除。</string>
+	</dict>
+	<key>backend.summary.migration.kept_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  ...另有 %lld 个</string>
+	</dict>
+	<key>backend.summary.migration.kept_not_visible</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>other</key>
+			<string>苹果固件同样无法存储此类值，因此将其保留在旧版存储中，无法通过 SMB 查看；其余内容均已迁移。</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_too_large</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%lld 个 Mac 元数据值超出了 HFS 原生属性的容量上限（3,802 字节）。</string>
+	</dict>
+	<key>backend.summary.migration.kept_value</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@（%2$@，%3$lld 字节）</string>
+	</dict>
 	<key>backend.summary.repair_xattrs_found</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

@@ -115,6 +115,7 @@ from timecapsulesmb.services.deploy import (
     DeployPayloadContext,
     DeployRuntimeConfig,
     PreparedDeployPlan,
+    _oversized_summaries,
     complete_deployment_after_upload,
     device_has_no_internal_disk,
     mast_no_volume_error,
@@ -589,6 +590,20 @@ class DeployModuleTests(unittest.TestCase):
         )
         return messages, [fields for kind, fields in measurements if kind == "xattr_migration"]
 
+    def _kept_lines(self, messages: list[str]) -> list[str]:
+        """The kept-values report: its lines are consecutive log messages."""
+        markers = ("larger than a native HFS attribute", "resource fork, which an HFS folder", "legacy storage and",
+                   " of these values ")
+
+        def in_report(message: str) -> bool:
+            return message.startswith("  ") or any(marker in message for marker in markers)
+
+        first = next(index for index, message in enumerate(messages) if in_report(message))
+        last = first
+        while last + 1 < len(messages) and in_report(messages[last + 1]):
+            last += 1
+        return messages[first:last + 1]
+
     def test_kept_oversized_values_are_shown_once_after_cleanup_and_recorded_without_paths(self) -> None:
         """Issue 345: values too large for a native HFS attribute are reported, not fatal."""
         values = [OversizedValue("tdb", f"/Volumes/dk2/Users/me/Library/Containers/app{i}",
@@ -602,14 +617,18 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(len(kept), 1)  # copy and cleanup find the same values
         cleanup_start = next(index for index, message in enumerate(messages) if message.startswith("Verifying native HFS metadata"))
         self.assertGreater(kept[0], cleanup_start)  # the database outcome is known only after cleanup
-        lines = messages[kept[0]].splitlines()
-        self.assertEqual(lines[0], (
-            "132 Mac metadata value(s) are larger than a native HFS attribute can hold (3,802 bytes). "
+        lines = self._kept_lines(messages)
+        # One whole sentence per line, so the app can translate each by its key.
+        self.assertEqual(lines[:4], [
+            "132 Mac metadata values are larger than a native HFS attribute can hold (3,802 bytes).",
             "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible "
-            "over SMB; everything else was migrated. 131 of them are in the legacy Samba database, which was "
-            "kept as xattr.tdb.orphaned.N instead of being deleted. 1 of them are in ._ files, which were kept."))
-        self.assertEqual(lines[1], "  /Volumes/dk2/Users/me/Library/Containers/app0 (com.apple.data-container-personality, 8,090 bytes)")
-        self.assertEqual(len(lines), 1 + 10 + 1)
+            "over SMB; everything else was migrated.",
+            "131 of these values are in the legacy Samba database, which was kept as xattr.tdb.orphaned.N "
+            "instead of being deleted.",
+            "1 of these values is in a ._ file, which was kept.",
+        ])
+        self.assertEqual(lines[4], "  /Volumes/dk2/Users/me/Library/Containers/app0 (com.apple.data-container-personality, 8090 bytes)")
+        self.assertEqual(len(lines), 4 + 10 + 1)
         self.assertEqual(lines[-1], "  ...and 122 more")
 
         self.assertEqual([fields["phase"] for fields in migrations], ["copy", "cleanup"])
@@ -624,53 +643,83 @@ class DeployModuleTests(unittest.TestCase):
         self.assertNotIn("oversized_database", migrations[0])
         self.assertEqual(migrations[1]["oversized_database"], "quarantined")
 
-    def test_oversized_message_names_only_the_storage_that_holds_values(self) -> None:
+    def test_kept_values_report_uses_the_sentences_and_keys_that_apply(self) -> None:
         value = OversizedValue("tdb", "/Volumes/dk2/folder", "com.apple.big", 3803)
         cases = (
             # A deferred retirement keeps the live database: never claim it was set aside.
             (OversizedSummary(tdb=1, values=[value], database_outcome="in_place"),
-             "1 of them are in the legacy Samba database, which stays in place until migration finishes on every disk.",
-             ("orphaned", "._ files")),
-            (OversizedSummary(tdb=1, values=[value], database_outcome="quarantined"),
-             "which was kept as xattr.tdb.orphaned.N instead of being deleted.", ("._ files", "stays in place")),
-            (OversizedSummary(appledouble=1, values=[replace(value, kind="appledouble")]),
-             "1 of them are in ._ files, which were kept.", ("Samba database",)),
+             ["migration.kept_too_large", "migration.kept_not_visible", "migration.kept_in_database_in_place",
+              "migration.kept_value"],
+             ["1 Mac metadata value is larger than a native HFS attribute can hold (3,802 bytes).",
+              "Apple's firmware cannot store it either, so it stays in legacy storage and is not visible over SMB; "
+              "everything else was migrated.",
+              "1 of these values is in the legacy Samba database, which stays in place until migration finishes "
+              "on every disk.",
+              "  /Volumes/dk2/folder (com.apple.big, 3803 bytes)"]),
+            (OversizedSummary(tdb=2, values=[value], database_outcome="quarantined"),
+             ["migration.kept_too_large", "migration.kept_not_visible", "migration.kept_in_database_quarantined",
+              "migration.kept_value", "migration.kept_more"],
+             ["2 Mac metadata values are larger than a native HFS attribute can hold (3,802 bytes).",
+              "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible over "
+              "SMB; everything else was migrated.",
+              "2 of these values are in the legacy Samba database, which was kept as xattr.tdb.orphaned.N instead "
+              "of being deleted.",
+              "  /Volumes/dk2/folder (com.apple.big, 3803 bytes)",
+              "  ...and 1 more"]),
+            (OversizedSummary(appledouble=2, values=[replace(value, kind="appledouble")]),
+             ["migration.kept_too_large", "migration.kept_not_visible", "migration.kept_in_appledouble",
+              "migration.kept_value", "migration.kept_more"],
+             ["2 Mac metadata values are larger than a native HFS attribute can hold (3,802 bytes).",
+              "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible over "
+              "SMB; everything else was migrated.",
+              "2 of these values are in ._ files, which were kept.",
+              "  /Volumes/dk2/folder (com.apple.big, 3803 bytes)",
+              "  ...and 1 more"]),
         )
-        for summary, expected, absent in cases:
-            with self.subTest(expected=expected):
+        for summary, keys, texts in cases:
+            with self.subTest(keys=keys):
+                lines = _oversized_summaries(summary)
+                self.assertEqual([line.key for line in lines], keys)
+                self.assertEqual([line.text for line in lines], texts)
                 messages, _ = self._run_migration_reporting({"copy": summary, "cleanup": summary})
-                kept = next(message for message in messages if "native HFS attribute" in message)
-                self.assertIn(expected, kept.splitlines()[0])
-                for text in absent:
-                    self.assertNotIn(text, kept.splitlines()[0])
-                self.assertEqual(kept.splitlines()[1],
-                                 "  /Volumes/dk2/folder (com.apple.big, 3,803 bytes)")
-                self.assertEqual(len(kept.splitlines()), 2)  # no remainder line
+                self.assertEqual(self._kept_lines(messages), texts)
 
-    def test_oversized_message_explains_folder_resource_forks(self) -> None:
+    def test_kept_values_report_explains_folder_resource_forks(self) -> None:
         # An HFS folder holds no resource fork at any size; "larger than a
         # native attribute" would misstate why a 64-byte fork was kept.
         folder = OversizedValue("appledouble", "/Volumes/dk2/pass.txt.rtfd", "com.apple.ResourceFork", 64, "folder_fork")
+        tiny = replace(folder, path="/Volumes/dk2/b.rtfd", size=1)
         big = OversizedValue("tdb", "/Volumes/dk2/folder", "com.apple.big", 3803)
         cases = (
-            (OversizedSummary(appledouble=1, values=[folder], folder_forks=1),
-             "1 folder(s) have a resource fork, which an HFS folder cannot hold. Apple's firmware cannot "
-             "store them either, so they stay in legacy storage and are not visible over SMB; everything "
-             "else was migrated. 1 of them are in ._ files, which were kept."),
-            (OversizedSummary(tdb=1, appledouble=1, values=[big, folder], folder_forks=1, database_outcome="quarantined"),
-             "1 Mac metadata value(s) are larger than a native HFS attribute can hold (3,802 bytes). "
-             "1 folder(s) have a resource fork, which an HFS folder cannot hold. Apple's firmware cannot "
-             "store them either, so they stay in legacy storage and are not visible over SMB; everything "
-             "else was migrated. 1 of them are in the legacy Samba database, which was kept as "
-             "xattr.tdb.orphaned.N instead of being deleted. 1 of them are in ._ files, which were kept."),
+            (OversizedSummary(appledouble=1, values=[tiny], folder_forks=1),
+             ["1 folder has a resource fork, which an HFS folder cannot hold.",
+              "Apple's firmware cannot store it either, so it stays in legacy storage and is not visible over SMB; "
+              "everything else was migrated.",
+              "1 of these values is in a ._ file, which was kept.",
+              "  /Volumes/dk2/b.rtfd (folder resource fork, 1 byte)"]),
+            (OversizedSummary(tdb=1, appledouble=2, values=[big, folder, tiny], folder_forks=2,
+                              database_outcome="quarantined"),
+             ["1 Mac metadata value is larger than a native HFS attribute can hold (3,802 bytes).",
+              "2 folders have a resource fork, which an HFS folder cannot hold.",
+              "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible over "
+              "SMB; everything else was migrated.",
+              "1 of these values is in the legacy Samba database, which was kept as xattr.tdb.orphaned.N instead "
+              "of being deleted.",
+              "2 of these values are in ._ files, which were kept.",
+              "  /Volumes/dk2/folder (com.apple.big, 3803 bytes)",
+              "  /Volumes/dk2/pass.txt.rtfd (folder resource fork, 64 bytes)",
+              "  /Volumes/dk2/b.rtfd (folder resource fork, 1 byte)"]),
         )
         for summary, expected in cases:
-            with self.subTest(expected=expected):
+            with self.subTest(expected=expected[0]):
+                lines = _oversized_summaries(summary)
+                self.assertEqual([line.text for line in lines], expected)
+                folder_lines = [line for line in lines if line.key == "migration.kept_folder_fork"]
+                self.assertTrue(folder_lines)
+                self.assertTrue(all(len(line.args) == 2 for line in folder_lines))  # path and size, no attribute name
                 messages, migrations = self._run_migration_reporting({"copy": summary, "cleanup": summary})
-                kept = next(message for message in messages if "stay in legacy storage" in message).splitlines()
-                self.assertEqual(kept[0], expected)
-                self.assertIn("  /Volumes/dk2/pass.txt.rtfd (folder resource fork, 64 bytes)", kept[1:])
-                self.assertEqual([fields["oversized_folder_forks"] for fields in migrations], [1, 1])
+                self.assertEqual(self._kept_lines(messages), expected)
+                self.assertEqual([fields["oversized_folder_forks"] for fields in migrations], [summary.folder_forks] * 2)
 
     def test_no_oversized_message_when_nothing_was_kept(self) -> None:
         for summaries in ({"copy": OversizedSummary(), "cleanup": OversizedSummary()},

@@ -91,6 +91,17 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "flash_restore_write_validated_reboot_requested": (),
     "flash_restore_write_validated_manual_reboot": (),
     "flash_write_completed": (),
+    # Metadata migration: values kept in legacy storage (issue 345), one
+    # sentence per key; the app shows the ones that apply, in this order.
+    "migration.kept_too_large": ("int",),
+    "migration.kept_folder_forks": ("int",),
+    "migration.kept_not_visible": ("int",),
+    "migration.kept_in_database_quarantined": ("int",),
+    "migration.kept_in_database_in_place": ("int",),
+    "migration.kept_in_appledouble": ("int",),
+    "migration.kept_value": ("str", "str", "int"),
+    "migration.kept_folder_fork": ("str", "int"),
+    "migration.kept_more": ("int",),
 }
 
 

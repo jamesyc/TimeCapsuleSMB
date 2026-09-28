@@ -102,6 +102,186 @@
 			<string>Foram encontrados %lld volumes HFS montados.</string>
 		</dict>
 	</dict>
+	<key>backend.summary.migration.kept_folder_fork</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@ (resource fork da pasta, %2$#@bytes@)</string>
+		<key>bytes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld de bytes</string>
+			<key>one</key>
+			<string>%lld byte</string>
+			<key>other</key>
+			<string>%lld bytes</string>
+			<key>zero</key>
+			<string>%lld bytes</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_folder_forks</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@folders@</string>
+		<key>folders</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld de pastas têm um resource fork, que uma pasta HFS não pode armazenar.</string>
+			<key>one</key>
+			<string>%lld pasta tem um resource fork, que uma pasta HFS não pode armazenar.</string>
+			<key>other</key>
+			<string>%lld pastas têm um resource fork, que uma pasta HFS não pode armazenar.</string>
+			<key>zero</key>
+			<string>%lld pastas têm um resource fork, que uma pasta HFS não pode armazenar.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_appledouble</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld desses valores estão em arquivos ._, que foram mantidos.</string>
+			<key>one</key>
+			<string>%lld desses valores está em um arquivo ._, que foi mantido.</string>
+			<key>other</key>
+			<string>%lld desses valores estão em arquivos ._, que foram mantidos.</string>
+			<key>zero</key>
+			<string>%lld desses valores estão em arquivos ._, que foram mantidos.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_in_place</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld desses valores estão no banco de dados antigo do Samba, que permanece no lugar até a migração terminar em todos os discos.</string>
+			<key>one</key>
+			<string>%lld desses valores está no banco de dados antigo do Samba, que permanece no lugar até a migração terminar em todos os discos.</string>
+			<key>other</key>
+			<string>%lld desses valores estão no banco de dados antigo do Samba, que permanece no lugar até a migração terminar em todos os discos.</string>
+			<key>zero</key>
+			<string>%lld desses valores estão no banco de dados antigo do Samba, que permanece no lugar até a migração terminar em todos os discos.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_in_database_quarantined</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld desses valores estão no banco de dados antigo do Samba, que foi mantido como xattr.tdb.orphaned.N em vez de ser excluído.</string>
+			<key>one</key>
+			<string>%lld desses valores está no banco de dados antigo do Samba, que foi mantido como xattr.tdb.orphaned.N em vez de ser excluído.</string>
+			<key>other</key>
+			<string>%lld desses valores estão no banco de dados antigo do Samba, que foi mantido como xattr.tdb.orphaned.N em vez de ser excluído.</string>
+			<key>zero</key>
+			<string>%lld desses valores estão no banco de dados antigo do Samba, que foi mantido como xattr.tdb.orphaned.N em vez de ser excluído.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@more@</string>
+		<key>more</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>  ...e mais %lld</string>
+			<key>one</key>
+			<string>  ...e mais %lld</string>
+			<key>other</key>
+			<string>  ...e mais %lld</string>
+			<key>zero</key>
+			<string>  ...e mais %lld</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_not_visible</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>O firmware da Apple também não consegue armazená-los, então eles permanecem no armazenamento antigo e não ficam visíveis via SMB; todo o resto foi migrado.</string>
+			<key>one</key>
+			<string>O firmware da Apple também não consegue armazená-lo, então ele permanece no armazenamento antigo e não fica visível via SMB; todo o resto foi migrado.</string>
+			<key>other</key>
+			<string>O firmware da Apple também não consegue armazená-los, então eles permanecem no armazenamento antigo e não ficam visíveis via SMB; todo o resto foi migrado.</string>
+			<key>zero</key>
+			<string>O firmware da Apple também não consegue armazená-los, então eles permanecem no armazenamento antigo e não ficam visíveis via SMB; todo o resto foi migrado.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_too_large</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@values@</string>
+		<key>values</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld de valores de metadados do Mac são maiores do que um atributo HFS nativo comporta (3.802 bytes).</string>
+			<key>one</key>
+			<string>%lld valor de metadados do Mac é maior do que um atributo HFS nativo comporta (3.802 bytes).</string>
+			<key>other</key>
+			<string>%lld valores de metadados do Mac são maiores do que um atributo HFS nativo comporta (3.802 bytes).</string>
+			<key>zero</key>
+			<string>%lld valores de metadados do Mac são maiores do que um atributo HFS nativo comporta (3.802 bytes).</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.kept_value</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  %1$@ (%2$@, %3$#@bytes@)</string>
+		<key>bytes</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld de bytes</string>
+			<key>one</key>
+			<string>%lld byte</string>
+			<key>other</key>
+			<string>%lld bytes</string>
+			<key>zero</key>
+			<string>%lld bytes</string>
+		</dict>
+	</dict>
 	<key>backend.summary.repair_xattrs_found</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

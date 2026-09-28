@@ -2327,5 +2327,406 @@
       "type": "result"
     },
     "name": "ssh_disabled"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 folder has a resource fork, which an HFS folder cannot hold.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_folder_forks",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_folder_0"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Apple's firmware cannot store it either, so it stays in legacy storage and is not visible over SMB; everything else was migrated.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_not_visible",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_folder_1"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 of these values is in a ._ file, which was kept.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_in_appledouble",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_folder_2"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/b.rtfd (folder resource fork, 1 byte)",
+      "message_args": [
+        "/Volumes/dk2/b.rtfd",
+        1
+      ],
+      "message_key": "migration.kept_folder_fork",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_folder_3"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 Mac metadata value is larger than a native HFS attribute can hold (3,802 bytes).",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_too_large",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_in_place_0"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Apple's firmware cannot store it either, so it stays in legacy storage and is not visible over SMB; everything else was migrated.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_not_visible",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_in_place_1"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 of these values is in the legacy Samba database, which stays in place until migration finishes on every disk.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_in_database_in_place",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_in_place_2"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Music/song (com.apple.big, 41409 bytes)",
+      "message_args": [
+        "/Volumes/dk2/Music/song",
+        "com.apple.big",
+        41409
+      ],
+      "message_key": "migration.kept_value",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_one_in_place_3"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 Mac metadata value is larger than a native HFS attribute can hold (3,802 bytes).",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_too_large",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_0"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "2 folders have a resource fork, which an HFS folder cannot hold.",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.kept_folder_forks",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_1"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible over SMB; everything else was migrated.",
+      "message_args": [
+        3
+      ],
+      "message_key": "migration.kept_not_visible",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_2"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 of these values is in the legacy Samba database, which was kept as xattr.tdb.orphaned.N instead of being deleted.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_in_database_quarantined",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_3"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "2 of these values are in ._ files, which were kept.",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.kept_in_appledouble",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_4"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Music/song (com.apple.big, 41409 bytes)",
+      "message_args": [
+        "/Volumes/dk2/Music/song",
+        "com.apple.big",
+        41409
+      ],
+      "message_key": "migration.kept_value",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_5"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/pass.txt.rtfd (folder resource fork, 64 bytes)",
+      "message_args": [
+        "/Volumes/dk2/pass.txt.rtfd",
+        64
+      ],
+      "message_key": "migration.kept_folder_fork",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_6"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/b.rtfd (folder resource fork, 1 byte)",
+      "message_args": [
+        "/Volumes/dk2/b.rtfd",
+        1
+      ],
+      "message_key": "migration.kept_folder_fork",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_mixed_quarantined_7"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "12 Mac metadata values are larger than a native HFS attribute can hold (3,802 bytes).",
+      "message_args": [
+        12
+      ],
+      "message_key": "migration.kept_too_large",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_many_quarantined_0"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible over SMB; everything else was migrated.",
+      "message_args": [
+        12
+      ],
+      "message_key": "migration.kept_not_visible",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_many_quarantined_1"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "12 of these values are in the legacy Samba database, which was kept as xattr.tdb.orphaned.N instead of being deleted.",
+      "message_args": [
+        12
+      ],
+      "message_key": "migration.kept_in_database_quarantined",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_many_quarantined_2"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Music/song (com.apple.big, 41409 bytes)",
+      "message_args": [
+        "/Volumes/dk2/Music/song",
+        "com.apple.big",
+        41409
+      ],
+      "message_key": "migration.kept_value",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_many_quarantined_3"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  ...and 11 more",
+      "message_args": [
+        11
+      ],
+      "message_key": "migration.kept_more",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_many_quarantined_4"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "2 Mac metadata values are larger than a native HFS attribute can hold (3,802 bytes).",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.kept_too_large",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_two_in_place_0"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible over SMB; everything else was migrated.",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.kept_not_visible",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_two_in_place_1"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "2 of these values are in the legacy Samba database, which stays in place until migration finishes on every disk.",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.kept_in_database_in_place",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_two_in_place_2"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Music/song (com.apple.big, 41409 bytes)",
+      "message_args": [
+        "/Volumes/dk2/Music/song",
+        "com.apple.big",
+        41409
+      ],
+      "message_key": "migration.kept_value",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_two_in_place_3"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  ...and 1 more",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.kept_more",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_kept_two_in_place_4"
   }
 ]
