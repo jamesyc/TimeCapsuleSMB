@@ -600,8 +600,13 @@ def _run_piped_ssh(
         command_prefix = ["ssh"]
     proc: subprocess.CompletedProcess[bytes] | None = None
     cmd: list[str] = []
-    attempts = 1 if raw_remote_status else 3
-    for attempt in range(attempts):
+    # A rejected password is retried for every caller, raw_remote_status ones
+    # included: the remote command never started, so it cannot run twice. On
+    # macOS, sshpass sometimes starts ssh without a usable /dev/tty, and ssh
+    # then sends an empty password (2% of logins against a device, while the
+    # next login works); v3.1.x metadata migrations failed this way. Any other
+    # failure of a raw_remote_status call is still returned or raised at once.
+    for attempt in range(3):
         with _ssh_client_log_path() as client_log:
             cmd = [
                 *command_prefix,
@@ -639,7 +644,7 @@ def _run_piped_ssh(
             startup_output=startup_output,
         )
         if client_error is not None:
-            if not raw_remote_status and _should_retry_password_auth(connection, diagnostics, attempt):
+            if _should_retry_password_auth(connection, diagnostics, attempt):
                 time.sleep(1)
                 continue
             raise client_error

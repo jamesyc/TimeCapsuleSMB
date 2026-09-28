@@ -139,6 +139,24 @@ the preferred legacy value only during migration, and `fruit:resource=file`
 supplies AppleDouble sidecars to the migrator. Non-HFS shares retain the original
 TDB and AppleDouble behavior.
 
+The `long_names` and `folder_forks` cases (v3.1.1 telemetry) cover a 255-byte
+name, whose 257-byte `._` name cannot exist, and a folder's resource fork, which
+HFS cannot hold: its `._` file or TDB row keeps it and the rest of the folder
+migrates. Those cases mock the kernel. The `hfs` case checks the same rules
+against Apple's kernel and reports a skip anywhere else: with `TMPDIR` on the
+device's HFS disk, which cross-exec sets, it checks ENAMETOOLONG for the long
+`._` name and ENOENT and EPERM for a folder's fork, runs the single-database
+program over a scratch tree holding a file and a folder bundle with `._` files
+and a folder with a TDB row, and reads the real attributes back. Device runs of
+`all` include it. To run only this case on a NetBSD 6 device, build the driver
+in a lane tree (the fast single-driver loop: stage it with `run.py stage`, then
+`waf build --targets=tc_xattr_migrate_test`) and, with the stripped driver in
+`/Volumes/dk2`:
+
+```sh
+ssh root@<device> 'cd /Volumes/dk2 && TMPDIR=/Volumes/dk2 ./tc_xattr_migrate_test hfs; rc=$?; rm -f tc_xattr_migrate_test; exit $rc'
+```
+
 For a macOS mount of a device under test, also run:
 
 ```sh

@@ -1167,3 +1167,68 @@ fstatat, mkdirat, unlinkat and readlinkat; fdopendir works) is now recorded in
 | NetBSD 6 (NetBSD 7 SDK) | 10,234,616 | 2,151,044 |
 | NetBSD 4 LE | 10,256,960 | 2,166,860 |
 | NetBSD 4 BE | 10,255,848 | 2,166,444 |
+
+## Metadata migration: 255-byte names and folder resource forks (2026-09-28)
+
+v3.1.1 telemetry showed two inputs that failed a whole deploy's metadata
+migration (exit 4, rerun after rerun):
+
+- A file whose name is 255 bytes. Its sidecar name `._<name>` is 257 bytes,
+  which HFS refuses with ENAMETOOLONG (the headers claim `NAME_MAX` 511), so
+  only ENOENT counted as "no sidecar". Such a sidecar cannot exist; a
+  sidecar path over `PATH_MAX` still fails, since a real one could hide there.
+- A folder bundle (`pass.txt.rtfd`) whose `._` file holds a resource fork. A
+  device probe on NetBSD 6 showed that an HFS folder has no fork at all:
+  `dir/..namedfork/rsrc` is ENOENT for reads and creates, and every
+  `com.apple.ResourceFork` xattr call on a directory fd is EPERM (a regular
+  file accepts both). The migrator failed with a suppressed ENOENT.
+
+A folder's fork is now kept where it is, through the kept-value path used for
+oversized values: the `._` file is kept (`sidecars_kept`), a fork in the Samba
+database keeps its row and quarantines the database, and everything else about
+the folder still migrates. The report counts them as `folder_forks` and each
+kept item carries `reason` (`size` or `folder_fork`); deploy says why they were
+kept. An empty fork on a folder holds nothing and is not written.
+
+- Real HFS, NetBSD 6 (`/Volumes/dk2` scratch folder, single-database mode with
+  no TDB): the committed migrator failed both trees with exit 4 (the folder
+  with no message at all); the new one migrated both with exit 0, kept the
+  folder's 1,082-byte `._` file, and an ordinary file with FinderInfo and a
+  fork still migrated and lost its sidecar in cleanup.
+- Host regression run (Docker, sanitizers): all 122 cases passed, including
+  the new `long_names` and `folder_forks` cases.
+- Each lane first rebuilt the committed migrator byte for byte from its tree.
+
+| Lane | migrator bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 2,152,124 |
+| NetBSD 4 LE | 2,168,000 |
+| NetBSD 4 BE | 2,167,584 |
+
+### Real legacy metadata and the on-device `hfs` case (2026-09-28)
+
+- Real TDB, NetBSD 6: copies of the device's own `xattr.tdb.bak` (5,418 rows)
+  and quarantined `xattr.tdb.orphaned.1` (32) and `.2` (3) were re-keyed onto
+  5,421 scratch files under `/Volumes/dk2`. Deploy's migration code ran with
+  MaSt pointed at the scratch folder and the diskd claim skipped. All 5,749
+  expected values read back natively byte for byte, the 2 oversized values
+  stayed in their quarantined database, the other databases were deleted, and
+  a second run skipped the finished volume. The originals were not touched.
+  On NetBSD 4 LE the same run completed; its backup had no live rows.
+- The `hfs` case (see the README) checks the kernel rules the mocked cases
+  assume and runs the single-database program on real HFS. Host run (Docker,
+  sanitizers): all 123 cases passed; `hfs` takes its skip path on Linux.
+- NetBSD 6, driver built in the netbsd7 lane with `TMPDIR=/Volumes/dk2`: `hfs`
+  passed and removed its scratch folder. A mutant driver without the folder
+  rule (the v3.1.0 migrator) failed it the way v3.1.1 deploys did: reading the
+  folder's `com.apple.ResourceFork` is EPERM and the program exits non-zero.
+- NetBSD 4 LE (NetBSD 4.0_STABLE), driver built in the netbsd4le lane with
+  `TMPDIR=/Volumes/dk2`: `hfs` passed and removed its scratch folder, so the
+  NetBSD 4 kernel gives the same ENAMETOOLONG, ENOENT and EPERM answers. Only
+  `hfs` ran there: `long_names` and `folder_forks` keep scratch in `/tmp`, the
+  root RAM disk, which had 400 KB free. The NetBSD 4 BE driver was not built.
+- The migrator source change only names the folder rule for the driver. Its
+  comment keeps the file's line count, since `__location__` strings carry line
+  numbers. Each lane built identical stripped migrators from the old and new
+  source, and the NetBSD 4 BE one matches the manifest hash, so the committed
+  binaries stand.

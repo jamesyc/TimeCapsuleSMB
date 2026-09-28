@@ -26,15 +26,15 @@
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "d2019c78d8ca734702ae0663c9268b1abfa48d85597aeb823082ceebdd081e37"
+      "sha256": "20bd8fc5952154410919f2969a966ff770d3a16f4a3be34952bd2702af3e0db5"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
-      "sha256": "8879be8feeff322f8916bf65c944d614b28baa874f0c754bfd036fa5fb648948"
+      "sha256": "3f30217b784ef55318b6f6a243c5224c044d7bcb6eea8e6be3fffa5d519bf7f9"
     },
     "xattr-migrator-netbsd4be": {
       "path": "bin/xattr-migrate-netbsd4be/xattr-hfs-migrate",
-      "sha256": "77d03cb12d02130ffd2011e2020345630b4c50a24f37ed8b7e8f8e0c455bd4fd"
+      "sha256": "1edc20a3515fd68a5ba1b27a099a6277d013f7e9cc92a686e5c7b8c6e077249f"
     },
     "service": {
       "path": "bin/service/service",

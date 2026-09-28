@@ -1080,10 +1080,11 @@ class MigrationInputTransportTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertLess(command.index("ConnectTimeout=20"), command.index("device"))
 
-    def test_raw_remote_status_rejects_sshpass_failures_without_retry(self):
+    def test_raw_remote_status_rejects_sshpass_host_key_failures_without_retry(self):
+        # The command may or may not be safe to rerun; only a rejected login
+        # (retried below) proves it never started.
         connection = ssh_transport.SshConnection("device", "pw", "")
         cases = (
-            (5, b"", "root@device: Permission denied (password).\n", ssh_transport.SshAuthenticationError),
             (6, b"Host public key is unknown.\n", "", ssh_transport.SshError),
             (7, b"IP public key changed.\n", "", ssh_transport.SshError),
         )
@@ -1104,6 +1105,74 @@ class MigrationInputTransportTests(unittest.TestCase):
                                 )
                 run.assert_called_once()
                 sleep.assert_not_called()
+
+    @staticmethod
+    def login_sequence(outcomes):
+        """Fake sshpass+ssh runs: each outcome is ("rejected", None) for a
+        refused password, or ("ran", CompletedProcess) for a login that
+        reached the remote command. Records the stdin each run was given."""
+        outcomes = iter(outcomes)
+        inputs = []
+
+        def run(command, **kwargs):
+            if "-E" not in command:
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+            inputs.append(kwargs.get("input"))
+            kind, process = next(outcomes)
+            log = Path(command[command.index("-E") + 1])
+            if kind == "rejected":
+                # What ssh logs after sending an empty password three times.
+                log.write_text("Permission denied, please try again.\n"
+                               "root@device: Permission denied (publickey,password,keyboard-interactive).\n")
+                return subprocess.CompletedProcess(command, 5, b"", b"")
+            log.write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
+            return process
+
+        return run, inputs
+
+    def test_raw_remote_status_retries_a_rejected_login_with_the_same_input(self):
+        # A rejected login never started the migrator, so the request can be
+        # sent again; v3.1.x deploys failed their migration here instead.
+        connection = ssh_transport.SshConnection("device", "pw", "")
+        ran = subprocess.CompletedProcess(["sshpass"], 0, b'{"version":1}', b"")
+        run, inputs = self.login_sequence([("rejected", None), ("ran", ran)])
+        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
+            with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                    result = ssh_transport.run_ssh_input(
+                        connection,
+                        "helper multi cleanup",
+                        input_bytes=b"TCMIGRATE1\nE\n",
+                        raw_remote_status=True,
+                    )
+        self.assertIs(result, ran)
+        self.assertEqual(inputs, [b"TCMIGRATE1\nE\n", b"TCMIGRATE1\nE\n"])
+        sleep.assert_called_once_with(1)
+
+    def test_raw_remote_status_gives_up_after_three_rejected_logins(self):
+        connection = ssh_transport.SshConnection("device", "pw", "")
+        run, inputs = self.login_sequence([("rejected", None)] * 3)
+        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
+            with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                    with self.assertRaises(ssh_transport.SshAuthenticationError):
+                        ssh_transport.run_ssh_input(connection, "helper multi copy", raw_remote_status=True)
+        self.assertEqual(len(inputs), 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_raw_remote_status_never_reruns_a_command_that_started(self):
+        # After a login the remote status is the migrator's own, even one that
+        # mentions a denied permission; it is returned, never retried.
+        connection = ssh_transport.SshConnection("device", "pw", "")
+        ran = subprocess.CompletedProcess(["sshpass"], 4, b"", b"lstat failed error=Permission denied\n")
+        run, inputs = self.login_sequence([("ran", ran), ("ran", ran)])
+        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
+            with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                    result = ssh_transport.run_ssh_input(connection, "helper multi copy", raw_remote_status=True)
+        self.assertIs(result, ran)
+        self.assertEqual(len(inputs), 1)
+        sleep.assert_not_called()
 
     def test_explicit_unlimited_piped_timeout_preserves_ordinary_defaults(self):
         connection = ssh_transport.SshConnection("device", "", "")

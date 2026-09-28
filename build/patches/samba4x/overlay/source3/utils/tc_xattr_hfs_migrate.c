@@ -274,6 +274,9 @@ struct tc_counts {
 	uint64_t tdb_kept;
 	uint64_t oversized_tdb;
 	uint64_t oversized_appledouble;
+	/* The folder resource forks among the two counts above. */
+	uint64_t folder_forks_tdb;
+	uint64_t folder_forks_appledouble;
 	uint64_t sidecars_kept;
 	uint64_t errors;
 };
@@ -283,6 +286,7 @@ struct tc_counts {
 #define TC_OVERSIZED_REPORT_MAX 50
 struct tc_oversized_item {
 	bool appledouble;
+	bool folder_fork;
 	char *path;
 	char *name;
 	size_t size;
@@ -526,23 +530,37 @@ static int tc_native_write_verified(struct tc_migration *migration,
  * metadata, so it stays where it is and is never deleted: its TDB record is
  * treated like a proven orphan (complete, never rescanned, and its database
  * is quarantined rather than deleted) and its AppleDouble file is kept. The
- * rest of the file still migrates. */
+ * rest of the file still migrates.
+ *
+ * A folder's resource fork takes the same path (TC_KEEP_FOLDER_FORK): an HFS
+ * folder has none, so no native copy is possible and Apple's firmware could
+ * never have stored one either (only an SMB client could, through Samba). */
+enum tc_keep_reason {
+	TC_KEEP_OVERSIZED,
+	TC_KEEP_FOLDER_FORK,
+};
+
 static int tc_keep_oversized(struct tc_migration *migration,
 			     const char *path,
 			     const char *name,
 			     size_t size,
-			     bool appledouble)
+			     bool appledouble,
+			     enum tc_keep_reason reason)
 {
 	struct tc_oversized_report *report = migration->oversized;
 	struct tc_oversized_item *item;
+	bool folder_fork = reason == TC_KEEP_FOLDER_FORK;
 
-	fprintf(stderr, "oversized xattr kept in legacy storage kind=%s "
+	fprintf(stderr, "%s kept in legacy storage kind=%s "
 		"path=%s name=%s size=%zu\n",
+		folder_fork ? "folder resource fork" : "oversized xattr",
 		appledouble ? "appledouble" : "tdb", path, name, size);
 	if (appledouble) {
 		migration->counts.oversized_appledouble++;
+		migration->counts.folder_forks_appledouble += folder_fork;
 	} else {
 		migration->counts.oversized_tdb++;
+		migration->counts.folder_forks_tdb += folder_fork;
 	}
 	tc_progress();
 	if (report == NULL || report->count == TC_OVERSIZED_REPORT_MAX) {
@@ -558,9 +576,29 @@ static int tc_keep_oversized(struct tc_migration *migration,
 		return -1;
 	}
 	item->appledouble = appledouble;
+	item->folder_fork = folder_fork;
 	item->size = size;
 	report->count++;
 	return 0;
+}
+
+/* HFS gives a folder no resource fork: on Apple's kernels a folder's
+ * ..namedfork/rsrc is ENOENT and its com.apple.ResourceFork attribute EPERM.
+ * The test driver fakes file forks with directories, so it overrides the hook. */
+#define TC_HFS_HOLDS_RESOURCE_FORK(st) (!S_ISDIR((st)->st_mode))
+#ifndef TC_MIGRATE_HOLDS_RESOURCE_FORK
+#define TC_MIGRATE_HOLDS_RESOURCE_FORK(st) TC_HFS_HOLDS_RESOURCE_FORK(st)
+#endif
+
+/* 1 when fd can hold a native resource fork, 0 when not, -1 on error. */
+static int tc_holds_resource_fork(int fd)
+{
+	struct stat st;
+
+	if (fstat(fd, &st) != 0) {
+		return -1;
+	}
+	return TC_MIGRATE_HOLDS_RESOURCE_FORK(&st) ? 1 : 0;
 }
 
 static ssize_t tc_tdb_get(struct tc_migration *migration,
@@ -754,12 +792,28 @@ static int tc_migrate_stream(struct tc_migration *migration,
 		return -1;
 	}
 	native_name = tc_apple_native_name(frame, anchor_name);
+	if (native_name != NULL &&
+	    strcmp(native_name, TC_RESOURCEFORK_XATTR) == 0)
+	{
+		ret = tc_holds_resource_fork(fd);
+		if (ret <= 0) {
+			/* An empty fork on a folder holds nothing to keep. */
+			if (ret == 0 && logical.length != 0) {
+				ret = tc_keep_oversized(migration, path, native_name,
+							logical.length, false,
+							TC_KEEP_FOLDER_FORK);
+			}
+			TALLOC_FREE(frame);
+			return ret;
+		}
+	}
 	if (native_name != NULL) {
 		/* A canonical Apple attribute is one whole native value; AFP must
 		 * never see a first extent of it. */
 		if (logical.length > TC_HFS_XATTR_SIZE) {
 			ret = tc_keep_oversized(migration, path, native_name,
-						logical.length, false);
+						logical.length, false,
+						TC_KEEP_OVERSIZED);
 			TALLOC_FREE(frame);
 			return ret;
 		}
@@ -1006,9 +1060,25 @@ static int tc_migrate_tdb_record(struct tc_migration *migration,
 			TALLOC_FREE(frame);
 			return -1;
 		}
+		if (strcmp(name, TC_RESOURCEFORK_XATTR) == 0) {
+			int holds = tc_holds_resource_fork(fd);
+
+			if (holds < 0 ||
+			    (holds == 0 && blob.length != 0 &&
+			     tc_keep_oversized(migration, path, name, blob.length,
+					       false, TC_KEEP_FOLDER_FORK) != 0))
+			{
+				TALLOC_FREE(frame);
+				return -1;
+			}
+			if (holds == 0) {
+				continue;
+			}
+		}
 		if (blob.length > TC_HFS_XATTR_SIZE) {
 			if (tc_keep_oversized(migration, path, name,
-					      blob.length, false) != 0)
+					      blob.length, false,
+					      TC_KEEP_OVERSIZED) != 0)
 			{
 				TALLOC_FREE(frame);
 				return -1;
@@ -1232,7 +1302,8 @@ static int tc_migrate_appledouble_xattrs(
 		{
 			if (value_length > TC_HFS_XATTR_SIZE) {
 				if (tc_keep_oversized(migration, path, name,
-						      value_length, true) != 0)
+						      value_length, true,
+						      TC_KEEP_OVERSIZED) != 0)
 				{
 					return -1;
 				}
@@ -1440,6 +1511,16 @@ static int tc_migrate_resource(struct tc_migration *migration,
 		TALLOC_FREE(frame);
 		return blank < 0 ? -1 : 0;
 	}
+	result = tc_holds_resource_fork(base_fd);
+	if (result <= 0) {
+		/* The ._ file stays as the only copy (see tc_keep_oversized). */
+		TALLOC_FREE(frame);
+		return result < 0 ? -1 :
+			tc_keep_oversized(migration, path, TC_RESOURCEFORK_XATTR,
+					  resource->length, true,
+					  TC_KEEP_FOLDER_FORK);
+	}
+	result = -1;
 	resource_path = talloc_asprintf(
 		frame, "%s/..namedfork/rsrc", path);
 	if (resource_path == NULL) {
@@ -1586,7 +1667,12 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 	}
 	source_fd = open(appledouble, O_RDONLY | O_NOFOLLOW);
 	if (source_fd == -1) {
-		if (errno == ENOENT) {
+		/* ENAMETOOLONG for a path under PATH_MAX means "._" pushed the name
+		 * past the filesystem's component limit (255 bytes on HFS, though
+		 * NAME_MAX says 511), so no such sidecar can exist: neither Samba
+		 * nor a Mac could have created it. */
+		if (errno == ENOENT ||
+		    (errno == ENAMETOOLONG && strlen(appledouble) < PATH_MAX)) {
 			result = 0;
 		}
 		goto out;
@@ -1623,8 +1709,9 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 	    migration->counts.oversized_appledouble != kept_before)
 	{
 		/* The sidecar is the only copy of a value too large for a native
-		 * attribute (tc_keep_oversized). Samba vetoes ._ files, so it
-		 * stays invisible over SMB, as the value is on Apple's firmware. */
+		 * attribute, or of a folder's resource fork (tc_keep_oversized).
+		 * Samba vetoes ._ files, so it stays invisible over SMB, as the
+		 * value is on Apple's firmware. */
 		migration->counts.sidecars_kept++;
 	} else if (migration->phase == TC_PHASE_CLEANUP) {
 		if (fsync(base_fd) != 0 ||
@@ -1733,6 +1820,7 @@ static int tc_scan_path(struct tc_migration *migration,
 		fprintf(stderr, "scan progress entries=%"PRIu64" path=%s\n", migration->counts.entries, path);
 	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
 		uint64_t kept_before = migration->counts.oversized_tdb;
+		uint64_t folder_forks_before = migration->counts.folder_forks_tdb;
 		struct tc_tdb_key *key = migration->multi ? NULL : tc_tdb_key_of(migration, &st);
 		/* A hard link to a record that already kept a value. */
 		bool kept_revisit = key != NULL && key->kept;
@@ -1762,6 +1850,7 @@ static int tc_scan_path(struct tc_migration *migration,
 			}
 			if (kept_revisit) {
 				migration->counts.oversized_tdb = kept_before;
+				migration->counts.folder_forks_tdb = folder_forks_before;
 			}
 		} else if (!migration->multi && result == 0 &&
 			   tc_retire_tdb_record(migration, fd, &st) != 0)
@@ -2294,7 +2383,7 @@ static int tc_multi_file(struct tc_migration *migration, int fd, const char *pat
 	size_t name_count = 0, i;
 	int result = -1;
 	bool have_record = false, kept, revisit = false;
-	uint64_t kept_before;
+	uint64_t kept_before, folder_forks_before;
 	size_t listed_before;
 	push_file_id_16(one.data, &id);
 	file.multi = NULL;
@@ -2347,6 +2436,7 @@ static int tc_multi_file(struct tc_migration *migration, int fd, const char *pat
 		if (key != NULL && key->reported) revisit = true;
 	}
 	kept_before = file.counts.oversized_tdb;
+	folder_forks_before = file.counts.folder_forks_tdb;
 	listed_before = file.oversized ? file.oversized->count : 0;
 	if (tc_migrate_tdb_record(&file, fd, path, st)) goto done;
 	/* Only a TDB value marks the record; an AppleDouble value stays in its
@@ -2356,6 +2446,7 @@ static int tc_multi_file(struct tc_migration *migration, int fd, const char *pat
 	 * walk. Each link has its own ._ file, so those still count below. */
 	if (revisit) {
 		file.counts.oversized_tdb = kept_before;
+		file.counts.folder_forks_tdb = folder_forks_before;
 		if (file.oversized) file.oversized->count = listed_before;
 	}
 	if (sidecar && tc_migrate_appledouble(&file, fd, path)) goto done;
@@ -2545,9 +2636,11 @@ static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
 	}
 	*counts = scan.counts;
 	fprintf(stderr, "volume uuid=%s complete entries=%"PRIu64" sidecars_deleted=%"PRIu64
-			" oversized_tdb=%"PRIu64" oversized_appledouble=%"PRIu64" sidecars_kept=%"PRIu64"\n",
+			" oversized_tdb=%"PRIu64" oversized_appledouble=%"PRIu64" folder_forks=%"PRIu64
+			" sidecars_kept=%"PRIu64"\n",
 			multi->root_uuid, counts->entries, counts->sidecars_deleted,
-			counts->oversized_tdb, counts->oversized_appledouble, counts->sidecars_kept);
+			counts->oversized_tdb, counts->oversized_appledouble,
+			counts->folder_forks_tdb + counts->folder_forks_appledouble, counts->sidecars_kept);
 	return 0;
 }
 static int tc_multi_retire_path(struct tc_multi_source *source, const char *path, bool quarantine)
@@ -2619,11 +2712,15 @@ static void tc_multi_report(struct tc_multi *multi, const struct tc_counts *coun
 	size_t i, k;
 	printf("{\"version\":%d,\"entries\":%"PRIu64",", TC_MULTI_VERSION, counts->entries);
 	/* Deploy lists the kept values for the user; names are hex like paths. */
-	printf("\"oversized\":{\"tdb\":%"PRIu64",\"appledouble\":%"PRIu64",\"items\":[",
-		   counts->oversized_tdb, counts->oversized_appledouble);
+	/* folder_forks counts the folder resource forks within tdb and
+	 * appledouble; each item says why it was kept. */
+	printf("\"oversized\":{\"tdb\":%"PRIu64",\"appledouble\":%"PRIu64",\"folder_forks\":%"PRIu64",\"items\":[",
+		   counts->oversized_tdb, counts->oversized_appledouble,
+		   counts->folder_forks_tdb + counts->folder_forks_appledouble);
 	for (i = 0; i < multi->oversized.count; i++) {
 		const struct tc_oversized_item *item = &multi->oversized.items[i];
-		printf("%s{\"kind\":\"%s\",\"path_hex\":\"", i ? "," : "", item->appledouble ? "appledouble" : "tdb");
+		printf("%s{\"kind\":\"%s\",\"reason\":\"%s\",\"path_hex\":\"", i ? "," : "",
+		       item->appledouble ? "appledouble" : "tdb", item->folder_fork ? "folder_fork" : "size");
 		tc_hex_print(stdout, (const uint8_t *)item->path, strlen(item->path));
 		printf("\",\"name_hex\":\"");
 		tc_hex_print(stdout, (const uint8_t *)item->name, strlen(item->name));
@@ -2833,7 +2930,8 @@ int main(int argc, char **argv)
 	       " tdb_retired=%"PRIu64" tdb_deleted=%"PRIu64
 	       " tdb_quarantined=%"PRIu64" boundary_skipped=%"PRIu64
 	       " tdb_kept=%"PRIu64" oversized_tdb=%"PRIu64
-	       " oversized_appledouble=%"PRIu64" sidecars_kept=%"PRIu64
+	       " oversized_appledouble=%"PRIu64" folder_forks=%"PRIu64
+	       " sidecars_kept=%"PRIu64
 	       " errors=%"PRIu64"\n",
 	       migration.phase == TC_PHASE_COPY ? "copy" : "cleanup",
 	       migration.counts.entries,
@@ -2857,6 +2955,8 @@ int main(int argc, char **argv)
 	       migration.counts.tdb_kept,
 	       migration.counts.oversized_tdb,
 	       migration.counts.oversized_appledouble,
+	       migration.counts.folder_forks_tdb +
+		       migration.counts.folder_forks_appledouble,
 	       migration.counts.sidecars_kept,
 	       migration.counts.errors);
 	result = result == 0 ? 0 : 4;

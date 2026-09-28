@@ -3,6 +3,9 @@
 #include "includes.h"
 #include "system/filesys.h"
 #include "lib/dbwrap/dbwrap.h"
+#if defined(__NetBSD__)
+#include <sys/statvfs.h>
+#endif
 
 /* Linux aliases ENOATTR to ENODATA; keep them distinct there so a missing
  * attribute and missing data cannot be confused. NetBSD and macOS already
@@ -22,6 +25,16 @@ struct test_xattr {
 };
 
 static struct test_xattr test_xattrs[16];
+
+/* The hfs case runs against Apple's kernel on a device: while it runs, the
+ * mocked AirPort xattr syscalls below pass through to the real ones (the
+ * same numbers on NetBSD 4 and 6). Other platforms never set it. */
+static bool real_hfs;
+#if defined(__NetBSD__)
+#define TC_REAL_XATTR_SYSCALL(...) do { if (real_hfs) return syscall(__VA_ARGS__); } while (0)
+#else
+#define TC_REAL_XATTR_SYSCALL(...) do { } while (0)
+#endif
 
 static void reset_xattrs(void)
 {
@@ -49,9 +62,11 @@ static long test_migrate_syscall_377(int fd,
 				     size_t size,
 				     int flags)
 {
-	struct test_xattr *xattr = find_xattr(name);
+	struct test_xattr *xattr;
 	size_t i;
 
+	TC_REAL_XATTR_SYSCALL(377, fd, name, value, size, flags);
+	xattr = find_xattr(name);
 	(void)fd;
 	(void)flags;
 	if (size > sizeof(test_xattrs[0].value)) {
@@ -82,8 +97,10 @@ static long test_migrate_syscall_380(int fd,
 				     void *value,
 				     size_t size)
 {
-	struct test_xattr *xattr = find_xattr(name);
+	struct test_xattr *xattr;
 
+	TC_REAL_XATTR_SYSCALL(380, fd, name, value, size);
+	xattr = find_xattr(name);
 	(void)fd;
 	if (xattr == NULL) {
 		errno = ENOATTR;
@@ -105,6 +122,7 @@ static long test_migrate_syscall_383(int fd, char *list, size_t size)
 	size_t required = 0;
 	size_t i;
 
+	TC_REAL_XATTR_SYSCALL(383, fd, list, size);
 	(void)fd;
 	for (i = 0; i < ARRAY_SIZE(test_xattrs); i++) {
 		if (test_xattrs[i].exists) {
@@ -134,8 +152,10 @@ static long test_migrate_syscall_383(int fd, char *list, size_t size)
 
 static long test_migrate_syscall_386(int fd, const char *name)
 {
-	struct test_xattr *xattr = find_xattr(name);
+	struct test_xattr *xattr;
 
+	TC_REAL_XATTR_SYSCALL(386, fd, name);
+	xattr = find_xattr(name);
 	(void)fd;
 	if (xattr == NULL) {
 		errno = ENOATTR;
@@ -231,6 +251,12 @@ static void *migration_test_talloc_realloc_array(
 #define sync migration_test_sync
 #define dbwrap_transaction_commit migration_test_commit
 #define TC_MIGRATION_PROGRESS_HOOK() migration_test_progress()
+/* Production refuses a resource fork on any directory. The resource fixtures
+ * fake a file's fork with a directory, so here only the inode a test names
+ * is a folder; the hfs case uses the production rule on the real kernel. */
+static ino_t test_folder_inode;
+#define TC_MIGRATE_HOLDS_RESOURCE_FORK(st) \
+	(real_hfs ? TC_HFS_HOLDS_RESOURCE_FORK(st) : (st)->st_ino != test_folder_inode)
 #undef talloc_realloc
 #define talloc_realloc(ctx, ptr, type, count) \
 	(type *)migration_test_talloc_realloc_array( \
@@ -1780,7 +1806,7 @@ static void test_oversized_multi(void)
 	/* The report carries X and the kept values for deploy to show. */
 	report_multi = &multi; report_counts = &counts;
 	CHECK(read_stdout_capture(print_multi_report, "", report_output, sizeof(report_output)) == 0);
-	CHECK(strstr(report_output, "\"oversized\":{\"tdb\":1,\"appledouble\":1,\"items\":[") != NULL);
+	CHECK(strstr(report_output, "\"oversized\":{\"tdb\":1,\"appledouble\":1,\"folder_forks\":0,\"items\":[") != NULL);
 	push_file_id_16(key, &id);
 	hex_string(key_hex, key, sizeof(key));
 	snprintf(expected, sizeof(expected), "[\"X\",\"%s\"]", key_hex);
@@ -1793,17 +1819,17 @@ static void test_oversized_multi(void)
 	hex_string(name_hex, "com.apple.data-container-personality", strlen("com.apple.data-container-personality"));
 	hex_string(path_hex, object, strlen(object));
 	snprintf(expected, sizeof(expected),
-		 "{\"kind\":\"tdb\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":12979}", path_hex, name_hex);
+		 "{\"kind\":\"tdb\",\"reason\":\"size\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":12979}", path_hex, name_hex);
 	if (strstr(report_output, expected) == NULL) {
 		hex_string(path_hex, alias, strlen(alias));
 		snprintf(expected, sizeof(expected),
-			 "{\"kind\":\"tdb\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":12979}", path_hex, name_hex);
+			 "{\"kind\":\"tdb\",\"reason\":\"size\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":12979}", path_hex, name_hex);
 	}
 	CHECK(strstr(report_output, expected) != NULL);
 	hex_string(path_hex, object3, strlen(object3));
 	hex_string(name_hex, "com.apple.big", strlen("com.apple.big"));
 	snprintf(expected, sizeof(expected),
-		 "{\"kind\":\"appledouble\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":5000}", path_hex, name_hex);
+		 "{\"kind\":\"appledouble\",\"reason\":\"size\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":5000}", path_hex, name_hex);
 	CHECK(strstr(report_output, expected) != NULL);
 
 	/* X completes like O: both DBs are quarantined unchanged, never deleted,
@@ -1905,6 +1931,314 @@ static void test_oversized_multi(void)
 	rmdir(private_dir); rmdir(root);
 }
 
+static void test_long_sidecar_names(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[] = "/tmp/tc-long-names.XXXXXX", name[256], path[PATH_MAX];
+	char *too_long = malloc(PATH_MAX);
+	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY};
+	size_t used;
+	int fd, root_fd;
+
+	CHECK(too_long != NULL && mkdtemp(root) != NULL);
+	/* HFS, like Linux, allows a 255-byte name, and "._" makes its sidecar
+	 * name 257 bytes, which open() refuses with ENAMETOOLONG. No such
+	 * sidecar can exist, so the file simply has none (v3.1.1 telemetry:
+	 * these names failed the whole migration). */
+	memset(name, 'a', 255);
+	name[255] = '\0';
+	snprintf(path, sizeof(path), "%s/%s", root, name);
+	fd = open(path, O_CREAT | O_RDWR, 0600);
+	CHECK(fd >= 0);
+	reset_xattrs();
+	CHECK(tc_migrate_appledouble(&m, fd, path) == 0);
+	m.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_migrate_appledouble(&m, fd, path) == 0);
+	CHECK(m.counts.sidecars_seen == 0 && m.counts.sidecars_deleted == 0);
+	close(fd);
+	m.phase = TC_PHASE_COPY;
+	CHECK(tc_scan_root(&m, root) == 0);
+	CHECK(m.counts.entries == 2);
+
+	/* A path over PATH_MAX could hide a real sidecar, so that stays an
+	 * error: components stay short, only the whole path is too long. */
+	used = (size_t)snprintf(too_long, PATH_MAX, "%s", root);
+	while (used + 101 < PATH_MAX - 1) {
+		too_long[used++] = '/';
+		memset(too_long + used, 'd', 100);
+		used += 100;
+	}
+	memset(too_long + used, 'e', PATH_MAX - 1 - used);
+	too_long[PATH_MAX - 1] = '\0';
+	root_fd = open(root, O_RDONLY);
+	CHECK(root_fd >= 0);
+	CHECK(tc_migrate_appledouble(&m, root_fd, too_long) == -1);
+	close(root_fd);
+
+	unlink(path);
+	rmdir(root);
+	free(too_long);
+	TALLOC_FREE(frame);
+}
+
+static void test_folder_fork_single(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[] = "/tmp/tc-folder-fork.XXXXXX", folder[128], sidecar[128], native[160], tdb[128];
+	struct tc_oversized_report report = {.ctx = frame}, tdb_report = {.ctx = frame};
+	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY, .oversized = &report};
+	struct tc_migration t = {
+		.mem_ctx = frame, .legacy_metadata = "stream",
+		.phase = TC_PHASE_COPY, .oversized = &tdb_report,
+	};
+	uint8_t resource[64], value[82 + sizeof(resource)];
+	struct file_id id;
+	struct stat st;
+	int fd;
+
+	memset(resource, 0xa5, sizeof(resource));
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(folder, sizeof(folder), "%s/pass.txt.rtfd", root);
+	snprintf(sidecar, sizeof(sidecar), "%s/._pass.txt.rtfd", root);
+	snprintf(native, sizeof(native), "%s/..namedfork/rsrc", folder);
+	CHECK(mkdir(folder, 0700) == 0);
+	make_appledouble(value, sizeof(value), AFP_FinderSize, resource, sizeof(resource));
+	write_file(sidecar, value, sizeof(value));
+	fd = open(folder, O_RDONLY);
+	CHECK(fd >= 0 && fstat(fd, &st) == 0);
+	test_folder_inode = st.st_ino;
+
+	/* An HFS folder has no resource fork (Apple's kernel: ENOENT for
+	 * ..namedfork/rsrc, EPERM for the attribute). The ._ file keeps it as
+	 * the only copy, nothing is created, and the migration succeeds. */
+	reset_xattrs();
+	CHECK(tc_migrate_appledouble(&m, fd, folder) == 0);
+	CHECK(access(native, F_OK) == -1 && errno == ENOENT);
+	CHECK(m.counts.resources_written == 0 && m.counts.sidecars_seen == 1);
+	CHECK(m.counts.oversized_appledouble == 1 && m.counts.folder_forks_appledouble == 1);
+	CHECK(m.counts.oversized_tdb == 0 && m.counts.folder_forks_tdb == 0);
+	CHECK(report.count == 1 && report.items[0].appledouble && report.items[0].folder_fork);
+	CHECK(!strcmp(report.items[0].name, TC_RESOURCEFORK_XATTR));
+	CHECK(report.items[0].size == sizeof(resource) && !strcmp(report.items[0].path, folder));
+	m.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_migrate_appledouble(&m, fd, folder) == 0);
+	CHECK(access(sidecar, F_OK) == 0);
+	CHECK(m.counts.sidecars_kept == 1 && m.counts.sidecars_deleted == 0);
+
+	/* A fork in the Samba database, as a plain value or as its stream, stays
+	 * in its row too, which keeps the row and quarantines the database. An
+	 * empty fork holds nothing and is simply not written. */
+	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", root);
+	id = tc_file_id(&st);
+	multi_value(tdb, &id, TC_RESOURCEFORK_XATTR, resource, 10);
+	oversized_stream(tdb, &id, "com.apple.ResourceFork", 20, 3802, 'r');
+	multi_value(tdb, &id, "com.apple.small", "s", 1);
+	t.db = dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_RDONLY, 0,
+				 DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(t.db != NULL && tc_collect_tdb_keys(&t) == 0);
+	reset_xattrs();
+	CHECK(tc_migrate_tdb_record(&t, fd, folder, &st) == 0);
+	CHECK(find_xattr(TC_RESOURCEFORK_XATTR) == NULL);
+	CHECK(find_xattr("com.apple.small") != NULL);
+	CHECK(t.counts.oversized_tdb == 2 && t.counts.folder_forks_tdb == 2);
+	CHECK(tdb_report.count == 2);
+	CHECK(!tdb_report.items[0].appledouble && tdb_report.items[0].folder_fork);
+	CHECK(tdb_report.items[0].size + tdb_report.items[1].size == 30);
+	TALLOC_FREE(t.db);
+	unlink(tdb);
+	multi_value(tdb, &id, TC_RESOURCEFORK_XATTR, "", 0);
+	memset(&t.counts, 0, sizeof(t.counts));
+	t.db = dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_RDONLY, 0,
+				 DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(t.db != NULL && tc_collect_tdb_keys(&t) == 0);
+	reset_xattrs();
+	CHECK(tc_migrate_tdb_record(&t, fd, folder, &st) == 0);
+	CHECK(t.counts.oversized_tdb == 0 && t.counts.folder_forks_tdb == 0);
+	CHECK(find_xattr(TC_RESOURCEFORK_XATTR) == NULL);
+	TALLOC_FREE(t.db);
+
+	test_folder_inode = 0;
+	close(fd);
+	unlink(tdb); unlink(sidecar); rmdir(folder); rmdir(root);
+	TALLOC_FREE(frame);
+}
+
+static void test_folder_fork_report(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[] = "/tmp/tc-folder-multi.XXXXXX", private_dir[128], old[160], newer[160];
+	char folder[128], sidecar[128], expected[512], path_hex[256], name_hex[64];
+	struct timeval dates[2] = {{.tv_sec = 1234567890}, {.tv_sec = 1234567890}};
+	struct tc_multi multi;
+	struct tc_counts counts;
+	struct file_id id;
+	struct stat st;
+	uint8_t resource[64], value[82 + sizeof(resource)];
+
+	memset(resource, 0x5a, sizeof(resource));
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root);
+	CHECK(mkdir(private_dir, 0700) == 0);
+	snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
+	snprintf(newer, sizeof(newer), "%s/new.tdb", private_dir);
+	snprintf(folder, sizeof(folder), "%s/pass.txt.rtfd", root);
+	snprintf(sidecar, sizeof(sidecar), "%s/._pass.txt.rtfd", root);
+	CHECK(mkdir(folder, 0700) == 0 && stat(folder, &st) == 0);
+	id = tc_file_id(&st);
+	multi_value(old, &id, "com.apple.small", "s", 1);
+	multi_value(newer, &id, "com.apple.small", "s", 1);
+	make_appledouble(value, sizeof(value), AFP_FinderSize, resource, sizeof(resource));
+	write_file(sidecar, value, sizeof(value));
+	test_folder_inode = st.st_ino;
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	multi_prepare(&multi, frame, root, old, newer);
+	reset_xattrs();
+	CHECK(tc_multi_scan(&multi, &counts) == 0);
+	CHECK(counts.oversized_appledouble == 1 && counts.folder_forks_appledouble == 1);
+	multi.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_multi_scan(&multi, &counts) == 0);
+	/* The ._ file, not the database, keeps the fork: the row is plain M. */
+	CHECK(access(sidecar, F_OK) == 0 && counts.sidecars_kept == 1);
+	CHECK(coverage_of(&multi.sources[1], &id) == 1);
+
+	/* Deploy reads why each value was kept. */
+	report_multi = &multi; report_counts = &counts;
+	CHECK(read_stdout_capture(print_multi_report, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output,
+		      "\"oversized\":{\"tdb\":0,\"appledouble\":1,\"folder_forks\":1,\"items\":[") != NULL);
+	hex_string(path_hex, folder, strlen(folder));
+	hex_string(name_hex, TC_RESOURCEFORK_XATTR, strlen(TC_RESOURCEFORK_XATTR));
+	snprintf(expected, sizeof(expected),
+		 "{\"kind\":\"appledouble\",\"reason\":\"folder_fork\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":64}",
+		 path_hex, name_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+
+	test_folder_inode = 0;
+	unlink(sidecar); rmdir(folder);
+	unlink(old); unlink(newer); rmdir(private_dir); rmdir(root);
+	TALLOC_FREE(frame);
+}
+
+static void test_folder_forks(void)
+{
+	test_folder_fork_single();
+	test_folder_fork_report();
+}
+
+/* On a device only, with TMPDIR on its HFS disk (the cross-exec runner sets
+ * TMPDIR=/Volumes/dkN): the real kernel behaviour the migrator relies on for
+ * 255-byte names and folder forks, then the migrator program's own walk over a
+ * legacy database and ._ files, checked by reading the real attributes back.
+ * Elsewhere it reports a skip and passes. */
+static void test_hfs(void)
+{
+#if defined(__NetBSD__)
+	TALLOC_CTX *frame = talloc_stackframe();
+	const char *tmpdir = getenv("TMPDIR");
+	char root[PATH_MAX], tdb[PATH_MAX], quarantine[PATH_MAX], path[PATH_MAX];
+	char plain[PATH_MAX], plain_sidecar[PATH_MAX], bundle[PATH_MAX];
+	char bundle_sidecar[PATH_MAX], folder[PATH_MAX], name[256];
+	char *argv[] = {"migrate", "copy", tdb, "stream", root, NULL};
+	uint8_t finder[AFP_FinderSize] = {'T', 'E', 'X', 'T', 't', 't', 'x', 't'};
+	uint8_t fork_data[64], old_fork[10], value[82 + sizeof(fork_data)], got[128];
+	struct statvfs sv;
+	struct file_id id;
+	struct stat st;
+	int fd;
+
+	if (tmpdir == NULL || statvfs(tmpdir, &sv) != 0 || strcmp(sv.f_fstypename, "hfs") != 0) {
+		printf("hfs: skipped, TMPDIR is not on an HFS volume\n");
+		TALLOC_FREE(frame);
+		return;
+	}
+	CHECK(snprintf(root, sizeof(root), "%s/tc-migrate-hfs.XXXXXX", tmpdir) < (int)sizeof(root));
+	CHECK(mkdtemp(root) != NULL);
+	real_hfs = true;
+	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", root);
+	snprintf(quarantine, sizeof(quarantine), "%s.orphaned.1", tdb);
+	snprintf(plain, sizeof(plain), "%s/plain", root);
+	snprintf(plain_sidecar, sizeof(plain_sidecar), "%s/._plain", root);
+	snprintf(bundle, sizeof(bundle), "%s/pass.txt.rtfd", root);
+	snprintf(bundle_sidecar, sizeof(bundle_sidecar), "%s/._pass.txt.rtfd", root);
+	snprintf(folder, sizeof(folder), "%s/Old.rtfd", root);
+	memset(fork_data, 0xa5, sizeof(fork_data));
+	memset(old_fork, 0x5a, sizeof(old_fork));
+
+	/* A file with FinderInfo and a fork in its ._ file becomes native. */
+	write_file(plain, "plain", 5);
+	make_appledouble(value, sizeof(value), AFP_FinderSize, fork_data, sizeof(fork_data));
+	memcpy(value + TC_AD_HEADER_SIZE + 2 * TC_AD_ENTRY_SIZE, finder, sizeof(finder));
+	write_file(plain_sidecar, value, sizeof(value));
+	/* A folder bundle whose ._ file holds a fork (v3.1.1 telemetry). */
+	CHECK(mkdir(bundle, 0755) == 0);
+	make_appledouble(value, sizeof(value), AFP_FinderSize, fork_data, sizeof(fork_data));
+	write_file(bundle_sidecar, value, sizeof(value));
+	/* A folder whose fork and one plain value are in the Samba database. */
+	CHECK(mkdir(folder, 0755) == 0 && stat(folder, &st) == 0);
+	id = tc_file_id(&st);
+	multi_value(tdb, &id, TC_RESOURCEFORK_XATTR, old_fork, sizeof(old_fork));
+	multi_value(tdb, &id, "com.apple.test", "abc", 3);
+	/* A 255-byte name, which HFS allows; its "._" name is 257 bytes. */
+	memset(name, 'a', 255);
+	name[255] = '\0';
+	snprintf(path, sizeof(path), "%s/%s", root, name);
+	write_file(path, "long", 4);
+
+	/* The kernel behaviour the migrator's rules stand on. */
+	snprintf(path, sizeof(path), "%s/._%s", root, name);
+	CHECK(open(path, O_RDONLY | O_NOFOLLOW) == -1 && errno == ENAMETOOLONG);
+	snprintf(path, sizeof(path), "%s/..namedfork/rsrc", folder);
+	CHECK(open(path, O_RDWR | O_CREAT, 0600) == -1 && errno == ENOENT);
+	fd = open(folder, O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(tc_airport_fsetxattr(fd, TC_RESOURCEFORK_XATTR, "x", 1, 0) == -1 && errno == EPERM);
+	close(fd);
+
+	/* The migrator program over the whole tree, as deploy runs it. */
+	program_argv = argv;
+	CHECK(read_stdout_capture(run_program_main, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, " folder_forks=2 ") != NULL && strstr(report_output, " errors=0\n") != NULL);
+	argv[1] = "cleanup";
+	CHECK(read_stdout_capture(run_program_main, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, " folder_forks=2 ") != NULL && strstr(report_output, " errors=0\n") != NULL);
+	CHECK(strstr(report_output, " sidecars_deleted=1 ") != NULL && strstr(report_output, " sidecars_kept=1 ") != NULL);
+	CHECK(strstr(report_output, " tdb_quarantined=1 ") != NULL);
+
+	/* The file's metadata is native and its ._ file is gone. */
+	fd = open(plain, O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(tc_airport_fgetxattr(fd, TC_FINDERINFO_XATTR, got, sizeof(got)) == AFP_FinderSize);
+	CHECK(memcmp(got, finder, sizeof(finder)) == 0);
+	close(fd);
+	snprintf(path, sizeof(path), "%s/..namedfork/rsrc", plain);
+	fd = open(path, O_RDONLY);
+	CHECK(fd >= 0 && read(fd, got, sizeof(got)) == (ssize_t)sizeof(fork_data));
+	CHECK(memcmp(got, fork_data, sizeof(fork_data)) == 0);
+	close(fd);
+	CHECK(access(plain_sidecar, F_OK) == -1 && errno == ENOENT);
+	/* Folder forks stay in legacy storage; the folder's other value moved. */
+	CHECK(stat(bundle_sidecar, &st) == 0 && st.st_size == (off_t)sizeof(value));
+	fd = open(folder, O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(tc_airport_fgetxattr(fd, "com.apple.test", got, sizeof(got)) == 3 && memcmp(got, "abc", 3) == 0);
+	close(fd);
+	CHECK(access(tdb, F_OK) == -1 && access(quarantine, F_OK) == 0);
+
+	real_hfs = false;
+	unlink(quarantine);
+	unlink(plain);
+	unlink(bundle_sidecar);
+	rmdir(bundle);
+	rmdir(folder);
+	snprintf(path, sizeof(path), "%s/%s", root, name);
+	unlink(path);
+	CHECK(rmdir(root) == 0);
+	TALLOC_FREE(frame);
+#else
+	printf("hfs: skipped, needs an Apple AirPort NetBSD kernel\n");
+#endif
+}
+
 static void test_oversized(void)
 {
 	test_oversized_record();
@@ -1949,6 +2283,15 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "oversized") == 0 || strcmp(argv[1], "all") == 0) {
 		test_oversized();
 	}
+	if (strcmp(argv[1], "long_names") == 0 || strcmp(argv[1], "all") == 0) {
+		test_long_sidecar_names();
+	}
+	if (strcmp(argv[1], "folder_forks") == 0 || strcmp(argv[1], "all") == 0) {
+		test_folder_forks();
+	}
+	if (strcmp(argv[1], "hfs") == 0 || strcmp(argv[1], "all") == 0) {
+		test_hfs();
+	}
 	if (strcmp(argv[1], "multi") != 0 &&
 	    strcmp(argv[1], "guard") != 0 &&
 	    strcmp(argv[1], "all") != 0 &&
@@ -1959,6 +2302,9 @@ int main(int argc, char **argv)
 	    strcmp(argv[1], "tdb") != 0 &&
 	    strcmp(argv[1], "errors") != 0 &&
 	    strcmp(argv[1], "oversized") != 0 &&
+	    strcmp(argv[1], "long_names") != 0 &&
+	    strcmp(argv[1], "folder_forks") != 0 &&
+	    strcmp(argv[1], "hfs") != 0 &&
 	    strcmp(argv[1], "resume") != 0 &&
 	    strcmp(argv[1], "orphans") != 0 &&
 	    strcmp(argv[1], "scan") != 0)

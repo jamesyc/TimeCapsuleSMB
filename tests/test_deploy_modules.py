@@ -647,6 +647,31 @@ class DeployModuleTests(unittest.TestCase):
                                  "  /Volumes/dk2/folder (com.apple.big, 3,803 bytes)")
                 self.assertEqual(len(kept.splitlines()), 2)  # no remainder line
 
+    def test_oversized_message_explains_folder_resource_forks(self) -> None:
+        # An HFS folder holds no resource fork at any size; "larger than a
+        # native attribute" would misstate why a 64-byte fork was kept.
+        folder = OversizedValue("appledouble", "/Volumes/dk2/pass.txt.rtfd", "com.apple.ResourceFork", 64, "folder_fork")
+        big = OversizedValue("tdb", "/Volumes/dk2/folder", "com.apple.big", 3803)
+        cases = (
+            (OversizedSummary(appledouble=1, values=[folder], folder_forks=1),
+             "1 folder(s) have a resource fork, which an HFS folder cannot hold. Apple's firmware cannot "
+             "store them either, so they stay in legacy storage and are not visible over SMB; everything "
+             "else was migrated. 1 of them are in ._ files, which were kept."),
+            (OversizedSummary(tdb=1, appledouble=1, values=[big, folder], folder_forks=1, database_outcome="quarantined"),
+             "1 Mac metadata value(s) are larger than a native HFS attribute can hold (3,802 bytes). "
+             "1 folder(s) have a resource fork, which an HFS folder cannot hold. Apple's firmware cannot "
+             "store them either, so they stay in legacy storage and are not visible over SMB; everything "
+             "else was migrated. 1 of them are in the legacy Samba database, which was kept as "
+             "xattr.tdb.orphaned.N instead of being deleted. 1 of them are in ._ files, which were kept."),
+        )
+        for summary, expected in cases:
+            with self.subTest(expected=expected):
+                messages, migrations = self._run_migration_reporting({"copy": summary, "cleanup": summary})
+                kept = next(message for message in messages if "stay in legacy storage" in message).splitlines()
+                self.assertEqual(kept[0], expected)
+                self.assertIn("  /Volumes/dk2/pass.txt.rtfd (folder resource fork, 64 bytes)", kept[1:])
+                self.assertEqual([fields["oversized_folder_forks"] for fields in migrations], [1, 1])
+
     def test_no_oversized_message_when_nothing_was_kept(self) -> None:
         for summaries in ({"copy": OversizedSummary(), "cleanup": OversizedSummary()},
                           {"copy": None, "cleanup": None}):

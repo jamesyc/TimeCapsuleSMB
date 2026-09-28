@@ -149,11 +149,21 @@ OVERSIZED_TELEMETRY_NAMES = 10
 
 def _oversized_message(oversized: OversizedSummary) -> str:
     """Shown after cleanup, when the kept values and their database's fate are final."""
-    sentences = [
-        f"{oversized.total} Mac metadata value(s) are larger than a native HFS attribute can hold "
-        f"({NATIVE_XATTR_LIMIT:,} bytes). Apple's firmware cannot store them either, so they stay in "
-        "legacy storage and are not visible over SMB; everything else was migrated."
-    ]
+    too_large = oversized.total - oversized.folder_forks
+    sentences = []
+    if too_large:
+        sentences.append(
+            f"{too_large} Mac metadata value(s) are larger than a native HFS attribute can hold "
+            f"({NATIVE_XATTR_LIMIT:,} bytes)."
+        )
+    if oversized.folder_forks:
+        sentences.append(
+            f"{oversized.folder_forks} folder(s) have a resource fork, which an HFS folder cannot hold."
+        )
+    sentences.append(
+        "Apple's firmware cannot store them either, so they stay in legacy storage and are not "
+        "visible over SMB; everything else was migrated."
+    )
     if oversized.tdb:
         where = ("which was kept as xattr.tdb.orphaned.N instead of being deleted"
                  if oversized.database_outcome == "quarantined"
@@ -163,7 +173,11 @@ def _oversized_message(oversized: OversizedSummary) -> str:
         sentences.append(f"{oversized.appledouble} of them are in ._ files, which were kept.")
     lines = [" ".join(sentences)]
     shown = oversized.values[:OVERSIZED_MESSAGE_EXAMPLES]
-    lines.extend(f"  {value.path} ({value.name}, {value.size:,} bytes)" for value in shown)
+    lines.extend(
+        f"  {value.path} ({'folder resource fork' if value.reason == 'folder_fork' else value.name}, "
+        f"{value.size:,} bytes)"
+        for value in shown
+    )
     if oversized.total > len(shown):
         lines.append(f"  ...and {oversized.total - len(shown)} more")
     return "\n".join(lines)
@@ -181,6 +195,8 @@ def _oversized_measurement(oversized: OversizedSummary | None) -> dict[str, obje
     fields: dict[str, object] = {
         "oversized_tdb": oversized.tdb,
         "oversized_appledouble": oversized.appledouble,
+        # Of the two counts above.
+        "oversized_folder_forks": oversized.folder_forks,
         # Of the listed values (the native report lists at most 50).
         "oversized_max_size": max((value.size for value in oversized.values), default=0),
         "oversized_names": names,

@@ -51,6 +51,9 @@ NATIVE_XATTR_LIMIT = 3802
 # The native report lists at most this many kept values; its counts cover all.
 MAX_OVERSIZED_ITEMS = 50
 OVERSIZED_KINDS = frozenset({"tdb", "appledouble"})
+# Why a value stayed in legacy storage: too large for a native attribute, or a
+# resource fork on a folder, which HFS cannot hold at any size.
+KEPT_REASONS = frozenset({"size", "folder_fork"})
 
 
 class MigrationStalledError(RuntimeError):
@@ -177,11 +180,12 @@ def legacy_mode(text: str, fallback: str = "netatalk") -> str:
 
 @dataclass(frozen=True)
 class OversizedValue:
-    """A legacy value too large for a native HFS attribute, kept where it was."""
+    """A legacy value HFS cannot hold natively, kept where it was."""
     kind: str  # "tdb" (xattr.tdb row) or "appledouble" (._ file)
     path: str
     name: str
     size: int
+    reason: str = "size"  # see KEPT_REASONS
 
 
 @dataclass
@@ -189,6 +193,8 @@ class OversizedSummary:
     tdb: int = 0
     appledouble: int = 0
     values: list[OversizedValue] = field(default_factory=list)
+    # How many of the tdb + appledouble values are folder resource forks.
+    folder_forks: int = 0
     # Cleanup only: "quarantined" once every database holding a kept value
     # was set aside, "in_place" while retirement is deferred.
     database_outcome: str | None = None
@@ -203,20 +209,27 @@ def decode_oversized(report: dict) -> OversizedSummary:
     if not isinstance(block, dict):
         raise ValueError("missing oversized values")
     tdb, appledouble, items = block.get("tdb"), block.get("appledouble"), block.get("items")
+    folder_forks = block.get("folder_forks")
     if (type(tdb) is not int or type(appledouble) is not int or tdb < 0 or appledouble < 0
+            or type(folder_forks) is not int or not 0 <= folder_forks <= tdb + appledouble
             or not isinstance(items, list) or len(items) > min(MAX_OVERSIZED_ITEMS, tdb + appledouble)):
         raise ValueError("invalid oversized values")
     values = []
     for item in items:
-        if (not isinstance(item, dict) or item.get("kind") not in OVERSIZED_KINDS
+        reason = item.get("reason") if isinstance(item, dict) else None
+        # A folder cannot hold a fork of any size; any other kept value is
+        # one a native attribute could not hold.
+        smallest = 1 if reason == "folder_fork" else NATIVE_XATTR_LIMIT + 1
+        if (not isinstance(item, dict) or item.get("kind") not in OVERSIZED_KINDS or reason not in KEPT_REASONS
                 or not _HEX.fullmatch(str(item.get("path_hex", ""))) or not _HEX.fullmatch(str(item.get("name_hex", "")))
-                or type(item.get("size")) is not int or item["size"] <= NATIVE_XATTR_LIMIT):
+                or type(item.get("size")) is not int or item["size"] < smallest):
             raise ValueError("invalid oversized value")
         # Display only, never used to open a file: a name inside a ._ file is
         # arbitrary bytes, and a strict UTF-8 terminal rejects surrogates.
         values.append(OversizedValue(item["kind"], bytes.fromhex(item["path_hex"]).decode("utf-8", "replace"),
-                                     bytes.fromhex(item["name_hex"]).decode("utf-8", "replace"), item["size"]))
-    return OversizedSummary(tdb, appledouble, values)
+                                     bytes.fromhex(item["name_hex"]).decode("utf-8", "replace"), item["size"],
+                                     reason))
+    return OversizedSummary(tdb, appledouble, values, folder_forks=folder_forks)
 
 
 @dataclass
@@ -495,9 +508,11 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
         kept = decode_oversized(report)
         oversized.tdb += kept.tdb
         oversized.appledouble += kept.appledouble
+        oversized.folder_forks += kept.folder_forks
         oversized.values.extend(kept.values[:MAX_OVERSIZED_ITEMS - len(oversized.values)])
         inventory.output.append(f"phase={phase} uuid={key} entries={report['entries']} "
-                                f"oversized_tdb={kept.tdb} oversized_appledouble={kept.appledouble} complete")
+                                f"oversized_tdb={kept.tdb} oversized_appledouble={kept.appledouble} "
+                                f"folder_forks={kept.folder_forks} complete")
         if phase == "copy":
             inventory.copied.add(key)
         elif {source_id(s) for s in inventory.sources} == {source_id(s) for s in inventory.cohort}:

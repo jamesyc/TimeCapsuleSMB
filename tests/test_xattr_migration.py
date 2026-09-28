@@ -21,13 +21,14 @@ UUID_A = "11111111-1111-1111-1111-111111111111"
 UUID_B = "22222222-2222-2222-2222-222222222222"
 KEY_A = "01000000000000000100000000000000"
 KEY_B = "02000000000000000100000000000000"
-NO_OVERSIZED = {"tdb": 0, "appledouble": 0, "items": []}
+NO_OVERSIZED = {"tdb": 0, "appledouble": 0, "folder_forks": 0, "items": []}
 CONTAINER = "/Volumes/dk2/Users/me/Library/Containers/com.example.app"
 PERSONALITY = "com.apple.data-container-personality"
 
 
-def oversized_item(path=CONTAINER, name=PERSONALITY, size=12979, kind="tdb"):
-    return {"kind": kind, "path_hex": os.fsencode(path).hex(), "name_hex": os.fsencode(name).hex(), "size": size}
+def oversized_item(path=CONTAINER, name=PERSONALITY, size=12979, kind="tdb", reason="size"):
+    return {"kind": kind, "reason": reason, "path_hex": os.fsencode(path).hex(),
+            "name_hex": os.fsencode(name).hex(), "size": size}
 
 
 def fake_inventory():
@@ -290,6 +291,33 @@ def test_native_stall_reports_saved_log_with_bounded_diagnostic_read(monkeypatch
     assert reads == [{"check": False, "timeout": 30}]
 
 
+def test_native_call_survives_a_rejected_login(monkeypatch):
+    """sshpass on macOS sometimes sends ssh an empty password; the migrator
+    never started, so its request is sent again (v3.1.x deploys failed)."""
+    from timecapsulesmb.transport import ssh as transport
+    attempts = []
+
+    def run(command, **kwargs):
+        if "-E" not in command:
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        attempts.append(kwargs.get("input"))
+        log = Path(command[command.index("-E") + 1])
+        if len(attempts) == 1:
+            log.write_text("root@device: Permission denied (publickey,password,keyboard-interactive).\n")
+            return subprocess.CompletedProcess(command, 5, b"", b"")
+        log.write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
+        return subprocess.CompletedProcess(command, 0, b'{"version":1,"entries":0}', b"")
+
+    monkeypatch.setattr(transport, "find_command", lambda _name: "/usr/bin/sshpass")
+    monkeypatch.setattr(transport, "_ssh_option_supported", lambda _name: True)
+    monkeypatch.setattr(transport, "_local_ssh_macs", lambda: ())
+    monkeypatch.setattr(transport.subprocess, "run", run)
+    monkeypatch.setattr(transport.time, "sleep", lambda _seconds: None)
+    report = m._native(SshConnection("root@device", "pw", ""), ["multi", "cleanup"], request=b"TCMIGRATE1\nE\n")
+    assert report == {"version": 1, "entries": 0}
+    assert attempts == [b"TCMIGRATE1\nE\n", b"TCMIGRATE1\nE\n"]
+
+
 @pytest.mark.parametrize(
     "status, stdout, message",
     [
@@ -321,13 +349,15 @@ def test_rejects_unknown_duplicate_and_excess_key_coverage(device):
 @pytest.mark.parametrize("change", ["version", "entries", "count", "index", "total", "retired", "coverage",
                                     "coverage_kind", "oversized_missing", "oversized_negative", "oversized_type",
                                     "oversized_more_items_than_counted", "oversized_over_limit", "oversized_path_hex",
-                                    "oversized_name_hex", "oversized_kind", "oversized_fits_natively"])
+                                    "oversized_name_hex", "oversized_kind", "oversized_fits_natively",
+                                    "oversized_reason", "oversized_folder_forks_missing",
+                                    "oversized_folder_forks_over_count", "oversized_empty_folder_fork"])
 def test_native_report_validation_rejects_status_and_schema_mismatches(device, change):
     inv = device.inventory(); device.inspect(inv)
     report = {
         "version": 1,
         "entries": 1,
-        "oversized": {"tdb": 1, "appledouble": 0, "items": [oversized_item()]},
+        "oversized": {"tdb": 1, "appledouble": 0, "folder_forks": 0, "items": [oversized_item()]},
         "sources": [{"index": 0, "total": 1, "retired": 0, "coverage": [["M", KEY_A]]}],
     }
     m.validate_native_report(copy.deepcopy(report), inv)
@@ -345,11 +375,16 @@ def test_native_report_validation_rejects_status_and_schema_mismatches(device, c
     elif change == "oversized_type": report["oversized"]["tdb"] = True
     elif change == "oversized_more_items_than_counted": report["oversized"]["tdb"] = 0
     elif change == "oversized_over_limit":
-        report["oversized"] = {"tdb": 51, "appledouble": 0, "items": [oversized_item()] * 51}
+        report["oversized"] = {"tdb": 51, "appledouble": 0, "folder_forks": 0, "items": [oversized_item()] * 51}
     elif change == "oversized_path_hex": item["path_hex"] = "not hex"
     elif change == "oversized_name_hex": item["name_hex"] = ""
     elif change == "oversized_kind": item["kind"] = "sidecar"
-    else: item["size"] = m.NATIVE_XATTR_LIMIT
+    elif change == "oversized_reason": item["reason"] = "unknown"
+    elif change == "oversized_folder_forks_missing": del report["oversized"]["folder_forks"]
+    elif change == "oversized_folder_forks_over_count": report["oversized"]["folder_forks"] = 2
+    elif change == "oversized_empty_folder_fork": item.update(reason="folder_fork", size=0)
+    elif change == "oversized_fits_natively": item["size"] = m.NATIVE_XATTR_LIMIT
+    else: raise AssertionError(change)
     with pytest.raises(RuntimeError, match="Invalid migration"):
         m.validate_native_report(report, inv)
 
@@ -359,7 +394,7 @@ def test_native_report_accepts_kept_values_and_decodes_them(device):
     report = {
         "version": 1,
         "entries": 1,
-        "oversized": {"tdb": 60, "appledouble": 1, "items": [oversized_item(size=3803)] * 49 + [
+        "oversized": {"tdb": 60, "appledouble": 1, "folder_forks": 0, "items": [oversized_item(size=3803)] * 49 + [
             oversized_item("/Volumes/dk2/Photos/._x", "com.apple.big", 5000, "appledouble")]},
         "sources": [{"index": 0, "total": 2, "retired": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
     }
@@ -371,19 +406,41 @@ def test_native_report_accepts_kept_values_and_decodes_them(device):
     assert kept.values[-1] == m.OversizedValue("appledouble", "/Volumes/dk2/Photos/._x", "com.apple.big", 5000)
 
 
+def test_native_report_accepts_folder_forks_of_any_size(device):
+    """HFS folders hold no resource fork, so even a small one stays in the ._ file."""
+    inv = device.inventory(); device.inspect(inv)
+    report = {
+        "version": 1,
+        "entries": 2,
+        "oversized": {"tdb": 1, "appledouble": 2, "folder_forks": 2, "items": [
+            oversized_item("/Volumes/dk2/pass.txt.rtfd", "com.apple.ResourceFork", 64, "appledouble", "folder_fork"),
+            oversized_item("/Volumes/dk2/Old.rtfd", "com.apple.ResourceFork", 10, "tdb", "folder_fork"),
+            oversized_item("/Volumes/dk2/Photos/._x", "com.apple.big", 5000, "appledouble")]},
+        "sources": [{"index": 0, "total": 2, "retired": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
+    }
+    m.validate_native_report(report, inv)
+    kept = m.decode_oversized(report)
+    assert (kept.tdb, kept.appledouble, kept.folder_forks, kept.total) == (1, 2, 2, 3)
+    assert kept.values[0] == m.OversizedValue(
+        "appledouble", "/Volumes/dk2/pass.txt.rtfd", "com.apple.ResourceFork", 64, "folder_fork")
+    assert kept.values[2].reason == "size"
+
+
 def test_kept_values_complete_the_volume_like_orphans_and_quarantine_on_retirement(device):
     """Issue 345: a record with a value too large for HFS is done, never rescanned."""
     device.kind[UUID_A] = "X"
-    device.oversized[UUID_A] = {"tdb": 2, "appledouble": 1, "items": [
+    device.oversized[UUID_A] = {"tdb": 2, "appledouble": 1, "folder_forks": 1, "items": [
         oversized_item(), oversized_item(size=41409),
-        oversized_item("/Volumes/dk2/Music/._song", "com.apple.big", 5000, "appledouble")]}
+        oversized_item("/Volumes/dk2/Music/song.rtfd", "com.apple.ResourceFork", 50, "appledouble", "folder_fork")]}
     # Deploy 1: the second disk is absent, and retirement keeps the DB.
     device.mounted.remove(UUID_B)
     inv = device.inventory(); device.inspect(inv)
     device.phase(inv, "copy")
     output = device.phase(inv, "cleanup")
-    assert f"phase=copy uuid={UUID_A} entries=3 oversized_tdb=2 oversized_appledouble=1 complete" in output
+    assert (f"phase=copy uuid={UUID_A} entries=3 oversized_tdb=2 oversized_appledouble=1 folder_forks=1 "
+            "complete") in output
     assert inv.oversized["copy"].total == 3 and inv.oversized["cleanup"].total == 3
+    assert inv.oversized["copy"].folder_forks == 1 and inv.oversized["cleanup"].folder_forks == 1
     # Retirement did not set the database aside, so it is still live.
     assert inv.oversized["copy"].database_outcome is None
     assert inv.oversized["cleanup"].database_outcome == "in_place"
@@ -415,7 +472,7 @@ def test_kept_values_complete_the_volume_like_orphans_and_quarantine_on_retireme
     (2, False, "quarantined"), (0, False, "in_place"), (2, True, "in_place")])
 def test_cleanup_records_where_kept_database_values_ended_up(device, retire_value, absent_source, outcome):
     device.kind[UUID_A] = "X"
-    device.oversized[UUID_A] = {"tdb": 1, "appledouble": 0, "items": [oversized_item()]}
+    device.oversized[UUID_A] = {"tdb": 1, "appledouble": 0, "folder_forks": 0, "items": [oversized_item()]}
     device.retire_value = retire_value
     if absent_source:
         other = Path(device.volumes[1].volume_root) / ".samba4/private/xattr.tdb"
@@ -434,8 +491,9 @@ def test_cleanup_records_where_kept_database_values_ended_up(device, retire_valu
 
 def test_reported_names_are_decoded_for_display_only():
     """A ._ file can hold any bytes; a strict UTF-8 terminal must still print them."""
-    report = {"oversized": {"tdb": 0, "appledouble": 1, "items": [
-        {"kind": "appledouble", "path_hex": b"/Volumes/dk2/caf\xe9".hex(), "name_hex": b"com.apple.\xff".hex(), "size": 5000}]}}
+    report = {"oversized": {"tdb": 0, "appledouble": 1, "folder_forks": 0, "items": [
+        {"kind": "appledouble", "reason": "size", "path_hex": b"/Volumes/dk2/caf\xe9".hex(),
+         "name_hex": b"com.apple.\xff".hex(), "size": 5000}]}}
     value = m.decode_oversized(report).values[0]
     assert value.path == "/Volumes/dk2/caf\ufffd" and value.name == "com.apple.\ufffd"
     (value.path + value.name).encode("utf-8", "strict")
