@@ -25,9 +25,23 @@ def service_role_lines(ps_output: str, role: str) -> list[str]:
     return rows
 
 
-def render_stop_service_runtime(*, attempts: int = 5) -> str:
+# The manager gives each child TC_CHILD_GRACE_MS (build/native/common/process.h)
+# to exit after SIGTERM, then sends SIGKILL, reaps it and only then exits itself.
+# Stopping it takes up to that grace plus the kill and reap. v3.1.1 waited about
+# 10 s and reported healthy managers as stuck; a rerun minutes later worked.
+# Twice the grace also covers a slow NetBSD 4 process scan on each pass.
+MANAGER_CHILD_GRACE_SECONDS = 10
+SUPERVISOR_STOP_SECONDS = 2 * MANAGER_CHILD_GRACE_SECONDS
+# NetBSD ps reports the kernel wait channel: a Samba child blocked on disk I/O
+# is the usual reason a manager cannot finish stopping.
+STUCK_PROCESS_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o wchan= -o ucomm="
+
+
+def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = SUPERVISOR_STOP_SECONDS) -> str:
     # Stop every launcher before its workers, including launchers forked during
     # shutdown. Apple's daemons and unrelated `service` processes are not ours.
+    # Supervisors get supervisor_seconds of one-second passes; workers and the
+    # SIGKILL escalation of launcher shells keep the shorter attempts budget.
     return r'''
 set -f
 managed_processes() {
@@ -76,19 +90,33 @@ $managed_ps
 EOF_PS
     return 0
 }
+report_stuck() {
+    # Show what each process that did not stop, and each of its children, is
+    # waiting on, so a failed stop says whether the disk was the cause.
+    stuck=" $1 "
+    __STUCK_PS__ 2>/dev/null | while read -r pid ppid state wchan comm; do
+        case "$stuck" in
+            *" $pid "*|*" $ppid "*)
+                echo "still running: pid=$pid ppid=$ppid stat=$state wchan=$wchan comm=$comm" >&2 ;;
+        esac
+    done
+}
 for scope in supervisor worker; do
     attempt=0
     limit=__ATTEMPTS__
-    [ "$scope" != supervisor ] || limit=$((limit * 2))
+    [ "$scope" != supervisor ] || limit=__SUPERVISOR_SECONDS__
     while :; do
         processes=$(managed_processes) || exit 1
         [ -n "$processes" ] || break
         if [ "$attempt" -gt "$limit" ]; then
+            pids=
             while read -r pid kind label; do
                 echo "process $label did not stop; retry after its active work finishes" >&2
+                pids="$pids $pid"
             done <<EOF_BUSY
 $processes
 EOF_BUSY
+            report_stuck "$pids"
             exit 1
         fi
         # Signal the whole snapshot before waiting. Rescan each pass: a boot
@@ -108,7 +136,9 @@ EOF_STOP
         attempt=$((attempt + 1))
     done
 done
-'''.replace("__ATTEMPTS__", str(attempts)).strip()
+'''.replace("__ATTEMPTS__", str(attempts)).replace(
+        "__SUPERVISOR_SECONDS__", str(supervisor_seconds)
+    ).replace("__STUCK_PS__", STUCK_PROCESS_PS_COMMAND).strip()
 
 
 def render_wait_for_idle_jobs(*, attempts: int = 5) -> str:

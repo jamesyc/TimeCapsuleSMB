@@ -52,7 +52,7 @@ else:
         state.write_text(json.dumps([r for r in rows if r.split()[0] != pid]))
 ''')
     import sys
-    script = render_stop_service_runtime(attempts=0)
+    script = render_stop_service_runtime(attempts=0, supervisor_seconds=0)
     script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', f'{sys.executable} {helper} ps')
     script = script.replace('/bin/kill', f'{sys.executable} {helper} kill')
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
@@ -158,7 +158,7 @@ else:
         d['rows'].pop(pid, None)
 state.write_text(json.dumps(d))
 ''')
-    script = render_stop_service_runtime(attempts=1)
+    script = render_stop_service_runtime(attempts=1, supervisor_seconds=2)
     script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', shlex.join([sys.executable, str(tool), 'ps']))
     script = script.replace('/bin/kill', shlex.join([sys.executable, str(tool), 'kill']))
     script = script.replace('sleep 1', ':')
@@ -225,7 +225,7 @@ import sys
 if sys.argv[1] == 'ps':
     print({stuck_row!r})
 ''')
-    script = render_stop_service_runtime(attempts=0)
+    script = render_stop_service_runtime(attempts=0, supervisor_seconds=0)
     script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', shlex.join([sys.executable, str(tool), 'ps']))
     script = script.replace('/bin/kill', shlex.join([sys.executable, str(tool), 'kill']))
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
@@ -233,6 +233,97 @@ if sys.argv[1] == 'ps':
     assert result.returncode == 1
     assert f'process {expected_label} did not stop' in result.stderr
     assert _manager_stop_timed_out(RuntimeError(result.stderr)) is manager_timeout
+
+
+def _run_manager_stop(tmp_path, *, manager_scans, supervisor_seconds=None, extra_rows=()):
+    """Run the stop script against a manager that ignores TERM until it has
+    been seen by `manager_scans` process scans (None: it never exits)."""
+    import shlex
+    import sys
+    from timecapsulesmb.device.processes import STUCK_PROCESS_PS_COMMAND
+
+    state = tmp_path / 'manager.json'
+    state.write_text(json.dumps({'scans': 0, 'sleeps': 0}))
+    tool = tmp_path / 'manager-tool.py'
+    tool.write_text(f'''
+import json, sys
+from pathlib import Path
+state = Path({str(state)!r})
+d = json.loads(state.read_text())
+limit = {manager_scans!r}
+if sys.argv[1] == 'ps':
+    d['scans'] += 1
+    if limit is None or d['scans'] <= limit:
+        print('30 S service service: role=manager')
+elif sys.argv[1] == 'stuck-ps':
+    rows = ['30 1 S select service']
+    rows += {list(extra_rows)!r}
+    print('\\n'.join(rows))
+elif sys.argv[1] == 'sleep':
+    d['sleeps'] += 1
+state.write_text(json.dumps(d))
+''')
+    kwargs = {} if supervisor_seconds is None else {'supervisor_seconds': supervisor_seconds}
+    script = render_stop_service_runtime(attempts=0, **kwargs)
+    fake = lambda name: shlex.join([sys.executable, str(tool), name])
+    script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', fake('ps'))
+    script = script.replace(STUCK_PROCESS_PS_COMMAND, fake('stuck-ps'))
+    script = script.replace('/bin/kill', fake('kill'))
+    script = script.replace('sleep 1', fake('sleep'))
+    result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
+    return result, json.loads(state.read_text())
+
+
+def test_supervisor_stop_waits_out_the_managers_child_grace(tmp_path):
+    # The manager exits only after its children's TERM grace, SIGKILL and reap.
+    # A manager that needs slightly more than that grace is healthy, not stuck.
+    from timecapsulesmb.device.processes import MANAGER_CHILD_GRACE_SECONDS, SUPERVISOR_STOP_SECONDS
+
+    result, state = _run_manager_stop(tmp_path, manager_scans=MANAGER_CHILD_GRACE_SECONDS + 3)
+
+    assert result.returncode == 0, result.stderr
+    assert 'did not stop' not in result.stderr
+    assert state['sleeps'] == MANAGER_CHILD_GRACE_SECONDS + 3
+    assert SUPERVISOR_STOP_SECONDS > MANAGER_CHILD_GRACE_SECONDS + 3
+
+
+def test_supervisor_budget_outlasts_the_child_grace_the_manager_is_built_with(tmp_path):
+    # The stop script cannot ask the manager for its grace, so the two are
+    # tied here. The probe is compiled against the production header without
+    # a -DTC_CHILD_GRACE_MS override (the host tests shorten it; the device
+    # build does not), so it prints what the shipped manager waits.
+    from tests.native.build import ROOT, compile_modules
+    from timecapsulesmb.device.processes import MANAGER_CHILD_GRACE_SECONDS, SUPERVISOR_STOP_SECONDS
+
+    probe = tmp_path / 'grace.c'
+    probe.write_text('#include <stdio.h>\n#include "common/process.h"\n'
+                     'int main(void) { printf("%d\\n", TC_CHILD_GRACE_MS); return 0; }\n')
+    binary = compile_modules(tmp_path / 'grace', (), flags=('-I', str(ROOT / 'build/native')), extra_sources=(probe,))
+    grace_ms = int(subprocess.run([str(binary)], capture_output=True, text=True, check=True).stdout)
+
+    assert grace_ms == MANAGER_CHILD_GRACE_SECONDS * 1000
+    # After the grace the manager still sends SIGKILL, reaps and exits.
+    assert SUPERVISOR_STOP_SECONDS >= MANAGER_CHILD_GRACE_SECONDS + 5
+
+
+def test_supervisor_stop_gives_up_after_its_budget_and_reports_what_is_stuck(tmp_path):
+    # A manager that never exits still fails, after a bounded wait, and the
+    # error shows what it and its children are blocked on. Unrelated
+    # processes stay out of the report.
+    result, state = _run_manager_stop(
+        tmp_path,
+        manager_scans=None,
+        supervisor_seconds=3,
+        extra_rows=['41 30 D biowai smbd', '42 41 S select smbd', '50 1 D biowai other'],
+    )
+
+    assert result.returncode == 1
+    assert state['sleeps'] == 3
+    lines = result.stderr.splitlines()
+    assert 'process manager did not stop; retry after its active work finishes' in lines
+    assert 'still running: pid=30 ppid=1 stat=S wchan=select comm=service' in lines
+    assert 'still running: pid=41 ppid=30 stat=D wchan=biowai comm=smbd' in lines
+    assert not any('pid=42' in line or 'pid=50' in line for line in lines)
 
 
 FSCK_OTHER_MOUNTS = [
