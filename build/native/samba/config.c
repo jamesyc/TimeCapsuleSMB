@@ -144,11 +144,21 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
          * faster; two bound the memory to 16 MiB per client. */
         if (config->aio_fork)
             fputs("    aio_fork:max_children = 2\n", file);
+        /* Samba's default, "mangled names = illegal", lists DOS device names
+         * (AUX, CON, NUL, PRN, COM1-4 and LPT1-4, alone or with an extension)
+         * under 8.3 aliases such as AHY9U3~9, and a search for the real name
+         * then finds nothing. macOS looks up each path component with such a
+         * search, so a Mac could create a folder named Aux but not open it
+         * (issue 347). Apple's firmware has no device-name list, and
+         * fruit:encoding already maps the characters NTFS forbids, so list every
+         * name as stored. That includes a name AFP or SSH stored with a
+         * trailing dot or space, which a Mac cannot open: it sends that last
+         * character as U+F029 or U+F028. */
         fprintf(file,
                 "    acl_xattr:ignore system acls = yes\n    smbd max xattr size = 3802\n"
                 "    streams_xattr:max xattrs per stream = 35\n    fruit:resource = file\n"
-                "    fruit:metadata = %s\n    fruit:encoding = native\n    fruit:time machine = yes\n"
-                "    fruit:posix_rename = yes\n    tc:native symlinks = yes\n"
+                "    fruit:metadata = %s\n    fruit:encoding = native\n    mangled names = no\n"
+                "    fruit:time machine = yes\n    fruit:posix_rename = yes\n    tc:native symlinks = yes\n"
                 "    xattr_tdb:file = %s/private/xattr.tdb\n"
                 "    tc:volume uuid = %s\n"
                 "    tc:volume device = %s\n"

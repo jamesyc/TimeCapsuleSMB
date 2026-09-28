@@ -97,6 +97,22 @@ def test_root_browse_and_metadata_preferences(renderer):
     assert conf["global"]["restrict anonymous"] == "0"
 
 
+@pytest.mark.parametrize("options,args", [
+    ({}, ()),
+    ({"VFS_AIO_FORK_ENABLED": 1, "SMBD_DEBUG_LOGGING": 1}, ()),
+    ({"INTERNAL_SHARE_USE_DISK_ROOT": 1, "FRUIT_METADATA_NETATALK": 0}, ("netbsd4",)),
+    ({}, ("skip-first",)),
+])
+def test_every_share_lists_dos_device_names_as_stored(renderer, options, args):
+    # Samba's default, "illegal", lists AUX, CON, NUL, ... under 8.3 aliases
+    # that a Mac's lookup of the real name cannot find (issue 347).
+    conf = render(renderer, options, args=args)
+    shares = conf.sections()[1:]
+    assert shares
+    for name in shares:
+        assert conf[name].get("mangled names", conf["global"].get("mangled names", "illegal")) == "no", name
+
+
 def test_unavailable_volume_not_projected_and_usb_payload_remains_a_share(renderer):
     conf = render(renderer, args=("skip-first",))
     assert conf.sections() == ["global", "Data"]

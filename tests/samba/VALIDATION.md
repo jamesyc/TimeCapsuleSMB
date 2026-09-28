@@ -1054,3 +1054,56 @@ Two findings about when 0031's teardown path runs:
 | NetBSD 6 (NetBSD 7 SDK) | 10,234,624 | 2,151,036 |
 | NetBSD 4 LE | 10,256,880 | 2,166,740 |
 | NetBSD 4 BE | 10,255,768 | 2,166,324 |
+
+## DOS device names listed as stored, `mangled names = no` (issue 347) (2026-09-27)
+
+Samba's default, `mangled names = illegal`, applies hash2's `must_mangle()` to
+every directory entry. It is true for DOS device names: AUX, CON, NUL, PRN,
+COM1-COM4 and LPT1-LPT4, in any case, alone or followed by a dot (`con.txt`,
+`prn.tar.gz`). COM5-9 and LPT5-9 are in `reserved_names`, but the precomputed
+`char_flags` table allows only the digits 1-4 as a fourth character, so they
+pass (`LPT9` was listed as stored). `smbd_dirptr_lanman2_match_fn` replaces
+such a name with its 8.3 alias before comparing it with the search pattern, so
+an exact-name QUERY_DIRECTORY for `Aux` finds the entry and still returns
+NO_SUCH_FILE. macOS looks up each path component with that request: creating
+the folder succeeds, and nothing under it can be reached. The reporter's
+Carbon Copy Cloner backup failed on GarageBand's `Patches/Aux` and
+`Patches/Aux/Shared Aux`.
+
+Device checks on NetBSD 6, without a deploy: `mangled names = no` was added to
+the share in the RAM `smb.conf`, smbd was sent SIGHUP, and both were restored
+afterwards.
+- Default: a Mac `mkdir Aux` succeeded and was listed as `AHY9U3~9`. `ditto`
+  of a local `Patches/Aux/Shared Aux/a.patch` failed with
+  `.../Patches/Aux/Shared Aux: No such file or directory`, and no request for
+  `a.patch` reached smbd. The log showed
+  `hash2_name_to_8_3: Aux -> 40B34695 -> AHY9U3~9`, then NO_SUCH_FILE for the
+  lookup of `Aux`.
+- `mangled names = no`: the listing showed `Aux`, `aux.txt`, `CON`,
+  `COM1.log`, `nul.txt` and `prn.tar.gz`, `ditto` copied the whole tree, and
+  `aux.txt` read back.
+- Names stored with a trailing dot or space by another protocol (written over
+  SSH, as AFP and rsync write them): by default they are listed as aliases that
+  open (`K5DQBL~2/in.txt` for `King Jr./in.txt`). With `no` they are listed as
+  stored, and a stat served from the listing works, but opening them fails: a
+  Mac sends a trailing dot or space as U+F029 or U+F028. A Mac stores its own
+  such names with those characters (`mac` + U+F029 on disk), and they work
+  under both settings.
+- Apple's firmware image (`/sbin/wcifsfs`, one static binary with 150 links,
+  including the SMB1 server) has no DOS device-name strings; COM1 and LPT1 do
+  not occur. It links XNU's `utf8_decodestr`, whose SFM mapping turns a
+  trailing space into U+F028 and a trailing dot into U+F029, but its callers
+  pass flags 5, 8, 8 or 9, and 4, never `UTF_SFM_CONVERSIONS` (0x20); one
+  wrapper has no references.
+
+`tests/native/test_samba_config.py` checks the effective setting on every
+share of the default, aio and debug, disk-root on NetBSD 4, and missing-volume
+renders; without the line, all four cases fail. Only the service binaries
+changed; smbd is unchanged. A rebuild of the previous source first reproduced
+the committed service hashes on all three lanes.
+
+| Lane | service bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 365,740 |
+| NetBSD 4 LE | 325,064 |
+| NetBSD 4 BE | 324,472 |

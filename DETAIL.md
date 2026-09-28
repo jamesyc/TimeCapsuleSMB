@@ -680,6 +680,7 @@ Current rendered Samba config characteristics:
 - `fruit:metadata = netatalk` by default, or `fruit:metadata = stream` when Netatalk metadata mode is explicitly disabled; on HFS this selects the preferred legacy migration source while runtime FinderInfo is native
 - `fruit:time machine = yes`
 - `fruit:posix_rename = yes`
+- `mangled names = no`: names are listed as stored. Samba's default lists DOS device names (`AUX`, `CON`, `NUL`, `PRN`, `COM1`-`COM4`, `LPT1`-`LPT4`, also with an extension, such as `con.txt`) under 8.3 aliases, and a Mac's lookup of the real name then fails (issue 347). A name that AFP or SSH stored with a trailing dot or space is listed as stored too, but a Mac cannot open it, because it sends that last character as U+F029 or U+F028
 - `acl_xattr:ignore system acls = yes`
 - `xattr_tdb:file = /Volumes/dkX/.samba4/private/xattr.tdb`; HFS shares bypass this backend after migration, while the configured path remains available for a future non-HFS filesystem
 - `veto files = /.samba4/` on every share so the payload is hidden when it lives on a shared disk root
