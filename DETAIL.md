@@ -221,7 +221,8 @@ the configured TDB. It translates Mac stream names into canonical
 `com.apple.ResourceFork` because `fruit` owns their special SMB semantics.
 Windows-only streams remain encoded and may use HFS xattr extents. A canonical
 Apple xattr that exceeds the native HFS limit is rejected rather than exposing
-an incomplete first extent to AFP.
+an incomplete first extent to AFP. The deploy migrator keeps such a legacy value
+where it was (see "Values too large for HFS" below).
 
 FAT32 is not currently supported: TimeCapsuleSMB does not mount or discover
 FAT32 volumes. On non-HFS filesystems, the module follows its upstream TDB
@@ -241,9 +242,10 @@ The standalone `xattr-hfs-migrate` helper validates all offsets and lengths,
 migrates FinderInfo and embedded xattrs, streams
 the resource entry into `file/..namedfork/rsrc`, and verifies the result. It
 recognizes Samba's intentionally blank resource-fork placeholder. Malformed
-containers, unsupported top-level entries, oversized native xattrs, or failed
-read-back verification leave the sidecar untouched and fail that migration
-phase.
+containers, unsupported top-level entries, or failed read-back verification
+leave the sidecar untouched and fail that migration phase. An embedded xattr
+too large for a native attribute is not an error: the rest of the sidecar
+migrates and cleanup keeps the sidecar as that value's only copy.
 
 Every detected payload `xattr.tdb` is a migration input, including incomplete
 v2.2.9 and older installations. With no TDB, deploy skips both helper upload and
@@ -254,7 +256,7 @@ recursive scans. Migration is split around software replacement:
 3. `copy`: walk each unfinished available HFS volume once, merging logical attributes from all read-only input databases.
 4. Replace known project software, verify and flush it, keeping old runtime configuration through cleanup.
 5. `cleanup`: verify merged native values, flush files, remove verified sidecars, and save completed-volume key coverage.
-6. Retire whole databases in increasing source priority; unresolved older databases retain newer authorities. Fully verified files are deleted, files containing proven orphan metadata are quarantined intact.
+6. Retire whole databases in increasing source priority; unresolved older databases retain newer authorities. Fully verified files are deleted, files containing proven orphan metadata or values too large for HFS are quarantined intact.
 7. Write new configuration and `rc.local` last, flush, and reboot.
 
 Conflicting logical values use the source file's `(mtime seconds, nanoseconds,
@@ -314,6 +316,34 @@ like proven orphans of the current disk, which is why quarantine keeps the file.
 (This attachment-evidence definition is a deliberate decision: the rows carry
 nothing else, and refusing to prove any row would keep every leftover database
 live forever.)
+
+#### Values too large for HFS (issue 345)
+
+Apple's firmware stores at most 3,802 bytes in one HFS attribute, so AFP and a
+Mac never see a larger value on these disks. Its kernel runs Darwin 8's
+inline-only `hfs_setxattr`: the limit is (attributes B-tree node size - 20) / 2
+- 284, rounded down to even, which is 3,802 for the 8 KiB nodes it creates, and
+anything larger fails with `E2BIG`. It has no extent-based attribute code, and
+that function is its only writer of attribute records, AFP included. Legacy `xattr.tdb` rows and `._`
+files had no such limit: macOS sandbox containers carry 8-41 KB
+`com.apple.data-container-personality` values. Such a value cannot become
+native, and it is still someone's metadata, so the migrator leaves it where it
+is and migrates the rest of the file:
+
+- a TDB record that keeps a value is complete, like a proven orphan: its
+  coverage kind is `X` (beside `M` for verified and `O` for orphaned), its
+  volume is recorded as finished and never walked again, and retirement
+  quarantines the database as `xattr.tdb.orphaned.N` instead of deleting it;
+- a `._` file that keeps a value is not removed by cleanup. Samba vetoes `._`
+  files, so it stays invisible over SMB.
+
+After cleanup, deploy lists the kept values once (up to ten, with a total) and
+says whether the database holding them was set aside or stays live until
+migration finishes on every disk. The native report carries up to 50 with the
+full counts; a hard-linked record counts once per walk, while each link's own
+`._` file counts separately. Names are decoded for display only. Telemetry
+records the counts, the database outcome and Apple attribute names, never paths. Any other damage, such as a stream that
+claims more than 35 extents, still stops the deploy.
 
 Only deploy reads the adjacent JSON completion files. Runtime daemons never
 read or write migration state. Old `xattr-migration-completed.txt` files remain

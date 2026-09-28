@@ -40,7 +40,17 @@ RAM_HELPER = "/mnt/Memory/tc-xattr-hfs-migrate"
 _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 _KEY = re.compile(r"[0-9a-f]{32}\Z")
 _HASH = re.compile(r"[0-9a-f]{16}\Z")
+_HEX = re.compile(r"(?:[0-9a-f]{2})+\Z")
 STAT_FIELDS = ("inode", "size", "mtime", "nsec", "hash")
+# M: verified value. O: proven orphan. X: verified, except values too large for
+# a native HFS attribute that stay in the source DB. O and X both complete a
+# volume and make retirement quarantine the DB instead of deleting it.
+COVERAGE_KINDS = frozenset({"M", "O", "X"})
+# Apple's firmware stores at most this many bytes in one HFS attribute.
+NATIVE_XATTR_LIMIT = 3802
+# The native report lists at most this many kept values; its counts cover all.
+MAX_OVERSIZED_ITEMS = 50
+OVERSIZED_KINDS = frozenset({"tdb", "appledouble"})
 
 
 class MigrationStalledError(RuntimeError):
@@ -94,7 +104,7 @@ def validate_coverage(value: object, allowed_sources: set[str]) -> dict[str, lis
             raise ValueError("invalid key coverage")
         seen = set()
         for record in records:
-            if (not isinstance(record, list) or len(record) != 2 or record[0] not in {"M", "O"}
+            if (not isinstance(record, list) or len(record) != 2 or record[0] not in COVERAGE_KINDS
                     or not isinstance(record[1], str) or not _KEY.fullmatch(record[1]) or record[1] in seen):
                 raise ValueError("invalid or duplicate covered key")
             seen.add(record[1])
@@ -165,6 +175,50 @@ def legacy_mode(text: str, fallback: str = "netatalk") -> str:
     return ("netatalk" if matches[-1].lower() in {"1", "true", "yes"} else "stream") if matches else fallback
 
 
+@dataclass(frozen=True)
+class OversizedValue:
+    """A legacy value too large for a native HFS attribute, kept where it was."""
+    kind: str  # "tdb" (xattr.tdb row) or "appledouble" (._ file)
+    path: str
+    name: str
+    size: int
+
+
+@dataclass
+class OversizedSummary:
+    tdb: int = 0
+    appledouble: int = 0
+    values: list[OversizedValue] = field(default_factory=list)
+    # Cleanup only: "quarantined" once every database holding a kept value
+    # was set aside, "in_place" while retirement is deferred.
+    database_outcome: str | None = None
+
+    @property
+    def total(self) -> int:
+        return self.tdb + self.appledouble
+
+
+def decode_oversized(report: dict) -> OversizedSummary:
+    block = report.get("oversized")
+    if not isinstance(block, dict):
+        raise ValueError("missing oversized values")
+    tdb, appledouble, items = block.get("tdb"), block.get("appledouble"), block.get("items")
+    if (type(tdb) is not int or type(appledouble) is not int or tdb < 0 or appledouble < 0
+            or not isinstance(items, list) or len(items) > min(MAX_OVERSIZED_ITEMS, tdb + appledouble)):
+        raise ValueError("invalid oversized values")
+    values = []
+    for item in items:
+        if (not isinstance(item, dict) or item.get("kind") not in OVERSIZED_KINDS
+                or not _HEX.fullmatch(str(item.get("path_hex", ""))) or not _HEX.fullmatch(str(item.get("name_hex", "")))
+                or type(item.get("size")) is not int or item["size"] <= NATIVE_XATTR_LIMIT):
+            raise ValueError("invalid oversized value")
+        # Display only, never used to open a file: a name inside a ._ file is
+        # arbitrary bytes, and a strict UTF-8 terminal rejects surrogates.
+        values.append(OversizedValue(item["kind"], bytes.fromhex(item["path_hex"]).decode("utf-8", "replace"),
+                                     bytes.fromhex(item["name_hex"]).decode("utf-8", "replace"), item["size"]))
+    return OversizedSummary(tdb, appledouble, values)
+
+
 @dataclass
 class MigrationInventory:
     volumes: tuple[MaStVolume, ...]
@@ -177,6 +231,8 @@ class MigrationInventory:
     completed: dict = field(default_factory=dict)
     copied: set[str] = field(default_factory=set)
     output: list[str] = field(default_factory=list)
+    # Per phase, for deploy to show the user and record in telemetry.
+    oversized: dict[str, OversizedSummary] = field(default_factory=dict)
 
 
 def _read(connection: SshConnection, path: str, *, limit: int = 65536) -> bytes:
@@ -402,6 +458,7 @@ def validate_native_report(report: object, inventory: MigrationInventory) -> dic
         validate_coverage(active_coverage, {source_id(source) for source in inventory.sources})
         coverage.update(active_coverage)
         validate_coverage(coverage, {source_id(source) for source in inventory.cohort})
+        decode_oversized(report)
     except ValueError as exc:
         raise RuntimeError("Invalid migration source response") from exc
     return coverage
@@ -413,6 +470,7 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
     if not inventory.sources:
         return f"migration_phase={phase} skipped reason=no_legacy_tdb"
     log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
+    oversized = inventory.oversized.setdefault(phase, OversizedSummary())
     run_ssh(connection, f"mkdir -p {shlex.quote(str(PurePosixPath(log).parent))} && printf '%s\\n' {shlex.quote(f'phase={phase} sources={len(inventory.sources)} stall_seconds={STALL_SECONDS}')} > {shlex.quote(log)} && /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ' >> {shlex.quote(log)}")
     current = read_mast_volumes_conn(connection)
     available = {normalized_uuid(v.adisk_uuid): v for v in current}
@@ -429,13 +487,20 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
         stat = _native(connection, ["inspect-root", volume.volume_root], log=log)
         report = _native(connection, ["multi", phase], request=request_bytes(inventory, (volume, stat)), log=log)
         coverage = validate_native_report(report, inventory)
-        inventory.output.append(f"phase={phase} uuid={key} entries={report['entries']} complete")
+        kept = decode_oversized(report)
+        oversized.tdb += kept.tdb
+        oversized.appledouble += kept.appledouble
+        oversized.values.extend(kept.values[:MAX_OVERSIZED_ITEMS - len(oversized.values)])
+        inventory.output.append(f"phase={phase} uuid={key} entries={report['entries']} "
+                                f"oversized_tdb={kept.tdb} oversized_appledouble={kept.appledouble} complete")
         if phase == "copy":
             inventory.copied.add(key)
         elif {source_id(s) for s in inventory.sources} == {source_id(s) for s in inventory.cohort}:
             inventory.completed[key] = {"coverage": coverage, "completed_at": int(time.time()), "entries": report["entries"]}
             save_progress(connection, inventory)
     if phase == "cleanup":
+        if oversized.tdb:
+            oversized.database_outcome = "in_place"
         # A known but currently absent DB may still outrank or contribute unique
         # values. Preserve the cohort's active sources until it returns.
         if {source_id(s) for s in inventory.sources} != {source_id(s) for s in inventory.cohort}:
@@ -448,5 +513,15 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
                     source = inventory.sources[index]
                     paths = [source["path"], *source["aliases"]]
                     run_ssh(connection, "rm -f " + shlex.join([path + RECEIPT_SUFFIX for path in paths]) + " && /bin/sync")
+                    kinds = [kind for entry in inventory.completed.values()
+                             for kind, _key in entry["coverage"].get(source_id(source), [])]
+                    outcome = "quarantined" if result["retired"] == 2 else "deleted"
+                    inventory.output.append(f"retired source={source['relative']} uuid={source['uuid']} outcome={outcome} "
+                                            f"orphaned={kinds.count('O')} oversized={kinds.count('X')}")
             inventory.output.append("retirement complete" if all(r["retired"] for r in report["sources"]) else "retirement partial unresolved_metadata_retained")
+            holders = [index for index, source in enumerate(inventory.sources)
+                       if any(kind == "X" for entry in inventory.completed.values()
+                              for kind, _key in entry["coverage"].get(source_id(source), []))]
+            if oversized.tdb and holders and all(report["sources"][index]["retired"] == 2 for index in holders):
+                oversized.database_outcome = "quarantined"
     return "\n".join(inventory.output)

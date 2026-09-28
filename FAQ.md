@@ -271,7 +271,9 @@ All other files/folders are stored on ramdisks and will be deleted after a reboo
 
 Inside `.samba4/private` you may find legacy `xattr.tdb` rows awaiting a later
 deploy with their disk attached, or `xattr.tdb.orphaned.N` quarantines preserved
-for recovery. Migration runs during deploy only. Boot and hotplug do not run it;
+for recovery. A quarantine also holds any Mac metadata value larger than the
+3,802 bytes one HFS attribute can store (Apple's firmware cannot store it
+either); deploy lists those files, and a `._` file holding such a value is kept. Migration runs during deploy only. Boot and hotplug do not run it;
 attach missing disks and rerun deploy to migrate their metadata. Older
 `xattr-migration-completed.txt` files are ignored. See DETAIL.md for the storage
 and conflict rules.

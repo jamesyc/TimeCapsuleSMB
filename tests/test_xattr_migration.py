@@ -21,6 +21,13 @@ UUID_A = "11111111-1111-1111-1111-111111111111"
 UUID_B = "22222222-2222-2222-2222-222222222222"
 KEY_A = "01000000000000000100000000000000"
 KEY_B = "02000000000000000100000000000000"
+NO_OVERSIZED = {"tdb": 0, "appledouble": 0, "items": []}
+CONTAINER = "/Volumes/dk2/Users/me/Library/Containers/com.example.app"
+PERSONALITY = "com.apple.data-container-personality"
+
+
+def oversized_item(path=CONTAINER, name=PERSONALITY, size=12979, kind="tdb"):
+    return {"kind": kind, "path_hex": os.fsencode(path).hex(), "name_hex": os.fsencode(name).hex(), "size": size}
 
 
 def fake_inventory():
@@ -42,7 +49,8 @@ def device(tmp_path, monkeypatch):
     config = tmp_path / "old-config"
     config.write_text("FRUIT_METADATA_NETATALK=1\n")
     state = SimpleNamespace(volumes=volumes, source=source, calls=[], mounted={UUID_A, UUID_B}, fail=None,
-                            reads=[], native={UUID_A: "old", UUID_B: "old"}, retired=False)
+                            reads=[], native={UUID_A: "old", UUID_B: "old"}, retired=False,
+                            kind={UUID_A: "M", UUID_B: "M"}, oversized={}, retire_value=0)
     monkeypatch.setattr(m, "read_mast_volumes_conn", lambda _conn: state.volumes)
     monkeypatch.setattr(m, "ensure_volume_root_mounted_conn", lambda _c, root, *_a, **_k: any(v.volume_root == root and v.adisk_uuid in state.mounted for v in state.volumes))
 
@@ -72,12 +80,15 @@ def device(tmp_path, monkeypatch):
             raise RuntimeError("injected migration failure")
         if phase == "retire":
             state.retired = True
-            return {"version": 1, "entries": 0, "sources": [{"index": i, "total": 2, "coverage": [], "retired": 0} for i in range(len(sources))]}
+            return {"version": 1, "entries": 0, "oversized": NO_OVERSIZED, "sources": [
+                {"index": i, "total": 2, "coverage": [], "retired": state.retire_value} for i in range(len(sources))]}
         key = roots[0][1]
         if phase == "copy":
             state.native[key] = "migrated"
-        return {"version": 1, "entries": 3, "sources": [{"index": i, "total": 2, "retired": 0,
-            "coverage": [["M", KEY_A if key == UUID_A else KEY_B]] if phase == "cleanup" else []} for i in range(len(sources))]}
+        return {"version": 1, "entries": 3, "oversized": state.oversized.get(key, NO_OVERSIZED), "sources": [
+            {"index": i, "total": 2, "retired": 0,
+             "coverage": [[state.kind[key], KEY_A if key == UUID_A else KEY_B]] if phase == "cleanup" else []}
+            for i in range(len(sources))]}
 
     monkeypatch.setattr(m, "_read", read)
     monkeypatch.setattr(m, "run_ssh", ssh)
@@ -307,23 +318,138 @@ def test_rejects_unknown_duplicate_and_excess_key_coverage(device):
     assert m.decode_receipt(json.dumps(bad).encode()) is None
 
 
-@pytest.mark.parametrize("change", ["version", "entries", "count", "index", "total", "retired", "coverage"])
+@pytest.mark.parametrize("change", ["version", "entries", "count", "index", "total", "retired", "coverage",
+                                    "coverage_kind", "oversized_missing", "oversized_negative", "oversized_type",
+                                    "oversized_more_items_than_counted", "oversized_over_limit", "oversized_path_hex",
+                                    "oversized_name_hex", "oversized_kind", "oversized_fits_natively"])
 def test_native_report_validation_rejects_status_and_schema_mismatches(device, change):
     inv = device.inventory(); device.inspect(inv)
     report = {
         "version": 1,
         "entries": 1,
+        "oversized": {"tdb": 1, "appledouble": 0, "items": [oversized_item()]},
         "sources": [{"index": 0, "total": 1, "retired": 0, "coverage": [["M", KEY_A]]}],
     }
+    m.validate_native_report(copy.deepcopy(report), inv)
+    item = report["oversized"]["items"][0]
     if change == "version": report["version"] = True
     elif change == "entries": report["entries"] = True
     elif change == "count": report["sources"] = []
     elif change == "index": report["sources"][0]["index"] = 1
     elif change == "total": report["sources"][0]["total"] = 0
     elif change == "retired": report["sources"][0]["retired"] = 3
-    else: report["sources"][0]["coverage"] = [["M", "bad"]]
+    elif change == "coverage": report["sources"][0]["coverage"] = [["M", "bad"]]
+    elif change == "coverage_kind": report["sources"][0]["coverage"] = [["Z", KEY_A]]
+    elif change == "oversized_missing": del report["oversized"]
+    elif change == "oversized_negative": report["oversized"]["appledouble"] = -1
+    elif change == "oversized_type": report["oversized"]["tdb"] = True
+    elif change == "oversized_more_items_than_counted": report["oversized"]["tdb"] = 0
+    elif change == "oversized_over_limit":
+        report["oversized"] = {"tdb": 51, "appledouble": 0, "items": [oversized_item()] * 51}
+    elif change == "oversized_path_hex": item["path_hex"] = "not hex"
+    elif change == "oversized_name_hex": item["name_hex"] = ""
+    elif change == "oversized_kind": item["kind"] = "sidecar"
+    else: item["size"] = m.NATIVE_XATTR_LIMIT
     with pytest.raises(RuntimeError, match="Invalid migration"):
         m.validate_native_report(report, inv)
+
+
+def test_native_report_accepts_kept_values_and_decodes_them(device):
+    inv = device.inventory(); device.inspect(inv)
+    report = {
+        "version": 1,
+        "entries": 1,
+        "oversized": {"tdb": 60, "appledouble": 1, "items": [oversized_item(size=3803)] * 49 + [
+            oversized_item("/Volumes/dk2/Photos/._x", "com.apple.big", 5000, "appledouble")]},
+        "sources": [{"index": 0, "total": 2, "retired": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
+    }
+    coverage = m.validate_native_report(report, inv)
+    assert coverage == {m.source_id(inv.sources[0]): [["X", KEY_A], ["M", KEY_B]]}
+    kept = m.decode_oversized(report)
+    assert (kept.tdb, kept.appledouble, kept.total, len(kept.values)) == (60, 1, 61, 50)
+    assert kept.values[0] == m.OversizedValue("tdb", CONTAINER, PERSONALITY, 3803)
+    assert kept.values[-1] == m.OversizedValue("appledouble", "/Volumes/dk2/Photos/._x", "com.apple.big", 5000)
+
+
+def test_kept_values_complete_the_volume_like_orphans_and_quarantine_on_retirement(device):
+    """Issue 345: a record with a value too large for HFS is done, never rescanned."""
+    device.kind[UUID_A] = "X"
+    device.oversized[UUID_A] = {"tdb": 2, "appledouble": 1, "items": [
+        oversized_item(), oversized_item(size=41409),
+        oversized_item("/Volumes/dk2/Music/._song", "com.apple.big", 5000, "appledouble")]}
+    # Deploy 1: the second disk is absent, and retirement keeps the DB.
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv)
+    device.phase(inv, "copy")
+    output = device.phase(inv, "cleanup")
+    assert f"phase=copy uuid={UUID_A} entries=3 oversized_tdb=2 oversized_appledouble=1 complete" in output
+    assert inv.oversized["copy"].total == 3 and inv.oversized["cleanup"].total == 3
+    # Retirement did not set the database aside, so it is still live.
+    assert inv.oversized["copy"].database_outcome is None
+    assert inv.oversized["cleanup"].database_outcome == "in_place"
+    assert inv.oversized["copy"].values[0] == m.OversizedValue("tdb", CONTAINER, PERSONALITY, 12979)
+    saved = m.decode_receipt(Path(str(device.source) + m.RECEIPT_SUFFIX).read_bytes())
+    assert list(saved["completed"][UUID_A]["coverage"].values()) == [[["X", KEY_A]]]
+    retire = next(request for args, request, _ in device.calls if args == ["multi", "retire"])
+    assert f"K 0 X {KEY_A}\n".encode() in retire
+    assert device.source.read_bytes() == b"legacy metadata"
+
+    # Deploy 2: the completed volume is not walked again, the returning disk
+    # is, and retirement replays X from the receipt and quarantines the DB.
+    device.mounted.add(UUID_B)
+    device.calls.clear()
+    device.retire_value = 2
+    inv = device.inventory(); device.inspect(inv)
+    device.phase(inv, "copy")
+    output = device.phase(inv, "cleanup")
+    assert all(f"R {UUID_A} ".encode() not in request for _, request, _ in device.scan_calls())
+    assert inv.oversized["copy"].total == 0
+    retire = next(request for args, request, _ in device.calls if args == ["multi", "retire"])
+    assert f"K 0 X {KEY_A}\n".encode() in retire and f"K 0 M {KEY_B}\n".encode() in retire
+    assert (f"retired source=.samba4/private/xattr.tdb uuid={UUID_A} outcome=quarantined "
+            "orphaned=0 oversized=1") in output
+    assert not Path(str(device.source) + m.RECEIPT_SUFFIX).exists()
+
+
+@pytest.mark.parametrize("retire_value, absent_source, outcome", [
+    (2, False, "quarantined"), (0, False, "in_place"), (2, True, "in_place")])
+def test_cleanup_records_where_kept_database_values_ended_up(device, retire_value, absent_source, outcome):
+    device.kind[UUID_A] = "X"
+    device.oversized[UUID_A] = {"tdb": 1, "appledouble": 0, "items": [oversized_item()]}
+    device.retire_value = retire_value
+    if absent_source:
+        other = Path(device.volumes[1].volume_root) / ".samba4/private/xattr.tdb"
+        other.parent.mkdir(parents=True); other.write_bytes(b"other database")
+        inv = device.inventory(); device.inspect(inv)
+        device.mounted.remove(UUID_B)  # its source disk leaves before this deploy migrates
+        device.volumes = device.volumes[:1]
+        inv = device.inventory(); device.inspect(inv)
+    else:
+        inv = device.inventory(); device.inspect(inv)
+    device.phase(inv, "copy"); output = device.phase(inv, "cleanup")
+    assert inv.oversized["cleanup"].database_outcome == outcome
+    assert inv.oversized["copy"].database_outcome is None
+    assert ("source_volume_absent" in output) is absent_source
+
+
+def test_reported_names_are_decoded_for_display_only():
+    """A ._ file can hold any bytes; a strict UTF-8 terminal must still print them."""
+    report = {"oversized": {"tdb": 0, "appledouble": 1, "items": [
+        {"kind": "appledouble", "path_hex": b"/Volumes/dk2/caf\xe9".hex(), "name_hex": b"com.apple.\xff".hex(), "size": 5000}]}}
+    value = m.decode_oversized(report).values[0]
+    assert value.path == "/Volumes/dk2/caf\ufffd" and value.name == "com.apple.\ufffd"
+    (value.path + value.name).encode("utf-8", "strict")
+
+
+@pytest.mark.parametrize("kind, decodes", [("X", True), ("O", True), ("M", True), ("Z", False)])
+def test_receipt_accepts_known_coverage_kinds_and_rescans_on_unknown_ones(device, kind, decodes):
+    """Builds older than X reject it the same way this build rejects Z: a rescan."""
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    doc = json.loads(receipt.read_bytes())
+    for records in doc["completed"][UUID_A]["coverage"].values():
+        records[0][0] = kind
+    assert (m.decode_receipt(json.dumps(doc).encode()) is not None) is decodes
 
 
 def test_aliases_are_deduplicated_and_each_receipt_keeps_the_original_decoder(device):

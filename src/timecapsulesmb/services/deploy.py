@@ -16,6 +16,8 @@ from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import (
     MigrationStalledError,
     NATIVE_TIMEOUT_SECONDS,
+    NATIVE_XATTR_LIMIT,
+    OversizedSummary,
     RAM_HELPER,
     STALL_SECONDS,
     inspect_sources,
@@ -134,6 +136,51 @@ XATTR_MIGRATION_STALLED_MESSAGE = (
     "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
 )
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
+OVERSIZED_MESSAGE_EXAMPLES = 10
+OVERSIZED_TELEMETRY_NAMES = 10
+
+
+def _oversized_message(oversized: OversizedSummary) -> str:
+    """Shown after cleanup, when the kept values and their database's fate are final."""
+    sentences = [
+        f"{oversized.total} Mac metadata value(s) are larger than a native HFS attribute can hold "
+        f"({NATIVE_XATTR_LIMIT:,} bytes). Apple's firmware cannot store them either, so they stay in "
+        "legacy storage and are not visible over SMB; everything else was migrated."
+    ]
+    if oversized.tdb:
+        where = ("which was kept as xattr.tdb.orphaned.N instead of being deleted"
+                 if oversized.database_outcome == "quarantined"
+                 else "which stays in place until migration finishes on every disk")
+        sentences.append(f"{oversized.tdb} of them are in the legacy Samba database, {where}.")
+    if oversized.appledouble:
+        sentences.append(f"{oversized.appledouble} of them are in ._ files, which were kept.")
+    lines = [" ".join(sentences)]
+    shown = oversized.values[:OVERSIZED_MESSAGE_EXAMPLES]
+    lines.extend(f"  {value.path} ({value.name}, {value.size:,} bytes)" for value in shown)
+    if oversized.total > len(shown):
+        lines.append(f"  ...and {oversized.total - len(shown)} more")
+    return "\n".join(lines)
+
+
+def _oversized_measurement(oversized: OversizedSummary | None) -> dict[str, object]:
+    """Counts and Apple attribute names only: paths name the user's files."""
+    if oversized is None:
+        return {}
+    names: list[str] = []
+    for value in oversized.values:
+        name = value.name if value.name.startswith("com.apple.") else "other"
+        if name not in names and len(names) < OVERSIZED_TELEMETRY_NAMES:
+            names.append(name)
+    fields: dict[str, object] = {
+        "oversized_tdb": oversized.tdb,
+        "oversized_appledouble": oversized.appledouble,
+        # Of the listed values (the native report lists at most 50).
+        "oversized_max_size": max((value.size for value in oversized.values), default=0),
+        "oversized_names": names,
+    }
+    if oversized.database_outcome is not None:
+        fields["oversized_database"] = oversized.database_outcome
+    return fields
 
 
 @dataclass(frozen=True)
@@ -791,6 +838,7 @@ def upload_and_verify_deployment_payload(
             )
         except Exception as exc:
             raise_migration_failure(phase, migration_started, migration_log, exc)
+        oversized = migration_result.oversized if isinstance(migration_result, XattrMigrationResult) else None
         callbacks.measurement(
             "xattr_migration",
             phase=phase,
@@ -799,7 +847,12 @@ def upload_and_verify_deployment_payload(
             timeout_sec=NATIVE_TIMEOUT_SECONDS,
             log_path=migration_log,
             result="success",
+            **_oversized_measurement(oversized),
         )
+        # Copy and cleanup find the same values; tell the user once, after
+        # cleanup has verified the rest and retired (or kept) the database.
+        if phase == "cleanup" and oversized is not None and oversized.total:
+            callbacks.message(_oversized_message(oversized))
         if isinstance(migration_result, XattrMigrationResult):
             migration_output = migration_result.output
             callbacks.debug(

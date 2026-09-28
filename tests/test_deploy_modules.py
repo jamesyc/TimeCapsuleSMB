@@ -43,7 +43,7 @@ from timecapsulesmb.deploy.executor import (
     remote_uninstall_payload,
     upload_deployment_payload,
 )
-from timecapsulesmb.deploy.migration import MigrationStalledError, RAM_HELPER
+from timecapsulesmb.deploy.migration import MigrationStalledError, OversizedSummary, OversizedValue, RAM_HELPER
 from timecapsulesmb.deploy.planner import (
     BINARY_SERVICE_SOURCE,
     BINARY_RSYNC_SOURCE,
@@ -552,6 +552,102 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual([c.kwargs["phase"] for c in migrate.call_args_list], ["copy", "cleanup"])
                 self.assertIs(migrate.call_args_list[0].kwargs["inventory"], migrate.call_args_list[1].kwargs["inventory"])
                 self.assertNotIn("legacy_metadata", migrate.call_args_list[0].kwargs)
+
+    def _run_migration_reporting(self, summaries: dict[str, OversizedSummary | None]):
+        messages: list[str] = []
+        measurements: list[tuple[str, dict[str, object]]] = []
+        root = self._mast_volume()
+
+        def migrate(_connection, _plan, *, phase, inventory):
+            return XattrMigrationResult(f"phase={phase}", (root,), (), summaries[phase])
+
+        upload_and_verify_deployment_payload(
+            AppConfig.from_values({}),
+            SshConnection("host", "pw", ""),
+            self._prepared_deploy_plan(),
+            DeployRuntimeConfig(),
+            callbacks=OperationCallbacks(
+                log=messages.append,
+                record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields)),
+            ),
+            run_remote_actions_func=mock.Mock(),
+            upload_payload_func=mock.Mock(),
+            migrate_xattrs_func=migrate,
+            probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            flush_remote_writes=mock.Mock(),
+            verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+        )
+        return messages, [fields for kind, fields in measurements if kind == "xattr_migration"]
+
+    def test_kept_oversized_values_are_shown_once_after_cleanup_and_recorded_without_paths(self) -> None:
+        """Issue 345: values too large for a native HFS attribute are reported, not fatal."""
+        values = [OversizedValue("tdb", f"/Volumes/dk2/Users/me/Library/Containers/app{i}",
+                                 "com.apple.data-container-personality", 8090 + i) for i in range(11)]
+        values.append(OversizedValue("appledouble", "/Volumes/dk2/Music/song", "user.private-name", 41409))
+        copy_summary = OversizedSummary(tdb=131, appledouble=1, values=values)
+        cleanup_summary = OversizedSummary(tdb=131, appledouble=1, values=values, database_outcome="quarantined")
+        messages, migrations = self._run_migration_reporting({"copy": copy_summary, "cleanup": cleanup_summary})
+
+        kept = [index for index, message in enumerate(messages) if "larger than a native HFS attribute" in message]
+        self.assertEqual(len(kept), 1)  # copy and cleanup find the same values
+        cleanup_start = next(index for index, message in enumerate(messages) if message.startswith("Verifying native HFS metadata"))
+        self.assertGreater(kept[0], cleanup_start)  # the database outcome is known only after cleanup
+        lines = messages[kept[0]].splitlines()
+        self.assertEqual(lines[0], (
+            "132 Mac metadata value(s) are larger than a native HFS attribute can hold (3,802 bytes). "
+            "Apple's firmware cannot store them either, so they stay in legacy storage and are not visible "
+            "over SMB; everything else was migrated. 131 of them are in the legacy Samba database, which was "
+            "kept as xattr.tdb.orphaned.N instead of being deleted. 1 of them are in ._ files, which were kept."))
+        self.assertEqual(lines[1], "  /Volumes/dk2/Users/me/Library/Containers/app0 (com.apple.data-container-personality, 8,090 bytes)")
+        self.assertEqual(len(lines), 1 + 10 + 1)
+        self.assertEqual(lines[-1], "  ...and 122 more")
+
+        self.assertEqual([fields["phase"] for fields in migrations], ["copy", "cleanup"])
+        for fields in migrations:
+            self.assertEqual(fields["oversized_tdb"], 131)
+            self.assertEqual(fields["oversized_appledouble"], 1)
+            self.assertEqual(fields["oversized_max_size"], 41409)
+            # Apple names verbatim, any other name generalized; never a path.
+            self.assertEqual(fields["oversized_names"], ["com.apple.data-container-personality", "other"])
+            self.assertFalse(any(value.path in repr(fields) or value.name == "user.private-name" and value.name in repr(fields)
+                                 for value in values))
+        self.assertNotIn("oversized_database", migrations[0])
+        self.assertEqual(migrations[1]["oversized_database"], "quarantined")
+
+    def test_oversized_message_names_only_the_storage_that_holds_values(self) -> None:
+        value = OversizedValue("tdb", "/Volumes/dk2/folder", "com.apple.big", 3803)
+        cases = (
+            # A deferred retirement keeps the live database: never claim it was set aside.
+            (OversizedSummary(tdb=1, values=[value], database_outcome="in_place"),
+             "1 of them are in the legacy Samba database, which stays in place until migration finishes on every disk.",
+             ("orphaned", "._ files")),
+            (OversizedSummary(tdb=1, values=[value], database_outcome="quarantined"),
+             "which was kept as xattr.tdb.orphaned.N instead of being deleted.", ("._ files", "stays in place")),
+            (OversizedSummary(appledouble=1, values=[replace(value, kind="appledouble")]),
+             "1 of them are in ._ files, which were kept.", ("Samba database",)),
+        )
+        for summary, expected, absent in cases:
+            with self.subTest(expected=expected):
+                messages, _ = self._run_migration_reporting({"copy": summary, "cleanup": summary})
+                kept = next(message for message in messages if "native HFS attribute" in message)
+                self.assertIn(expected, kept.splitlines()[0])
+                for text in absent:
+                    self.assertNotIn(text, kept.splitlines()[0])
+                self.assertEqual(kept.splitlines()[1],
+                                 "  /Volumes/dk2/folder (com.apple.big, 3,803 bytes)")
+                self.assertEqual(len(kept.splitlines()), 2)  # no remainder line
+
+    def test_no_oversized_message_when_nothing_was_kept(self) -> None:
+        for summaries in ({"copy": OversizedSummary(), "cleanup": OversizedSummary()},
+                          {"copy": None, "cleanup": None}):
+            with self.subTest(summaries=summaries):
+                messages, migrations = self._run_migration_reporting(summaries)
+                self.assertFalse(any("native HFS attribute" in message for message in messages))
+                if summaries["copy"] is None:
+                    self.assertNotIn("oversized_tdb", migrations[0])
+                else:
+                    self.assertEqual((migrations[0]["oversized_tdb"], migrations[0]["oversized_names"],
+                                      migrations[0]["oversized_max_size"]), (0, [], 0))
 
     def test_migration_failure_diagnostics_distinguish_stall_timeout_and_scan_error(self) -> None:
         from timecapsulesmb.transport.errors import SshCommandTimeout

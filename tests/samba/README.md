@@ -119,7 +119,18 @@ The `multi` case opens real read-only TDBs through the deploy input parser. It
 covers mtime and nanosecond precedence, UUID/path ties, unique older values,
 fragment ownership, raw FinderInfo, source changes, failed flushes, unresolved
 older sources retaining newer databases, and whole-file quarantine without
-changing the original bytes. Python deployment tests cover completion receipts,
+changing the original bytes. The `oversized` case (issue 345) covers values
+larger than one native attribute: 3,802 bytes migrate without the stream
+marker, 3,803 bytes and a 12,979-byte extent-stored container value stay in the
+TDB while the rest of the file migrates, cleanup still verifies the rest, the
+single-database program quarantines instead of deleting (and keeps the database
+live beside an unresolved row), multi coverage marks every holding source `X`
+and quarantines both databases byte for byte, the deploy parser accepts `X` and
+rejects unknown kinds, the report lists at most 50 values while counting all,
+a hard link to a record with kept values counts and lists it once (deploy
+walks and the single-database stats line),
+a `._` file keeps its oversized value (and is retired at 3,802 bytes), and an
+anchor claiming 35 extents still fails the volume. Python deployment tests cover completion receipts,
 absent volumes, subsequent native edits, and interrupted software installation.
 During deploy migration, merged TDB values replace conflicting native values;
 cleanup requires exact readback before whole-database retirement. Native-only values and

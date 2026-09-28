@@ -3,12 +3,15 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
+
+if TYPE_CHECKING:
+    from timecapsulesmb.deploy.migration import OversizedSummary
 
 
 DETACHED_SHUTDOWN_REBOOT_COMMAND = (
@@ -30,12 +33,14 @@ class XattrMigrationResult:
     output: str
     roots: tuple[MaStVolume, ...]
     unavailable_roots: tuple[str, ...] = ()
+    # Values too large for a native HFS attribute, kept in legacy storage.
+    oversized: OversizedSummary | None = None
 
 
 def migrate_xattr_tdb_to_hfs(connection: SshConnection, plan: DeploymentPlan, *, phase: str, inventory) -> XattrMigrationResult:
     from timecapsulesmb.deploy.migration import migrate_phase
     output = migrate_phase(connection, plan, inventory, phase)
-    return XattrMigrationResult(output, inventory.volumes, tuple(inventory.unavailable))
+    return XattrMigrationResult(output, inventory.volumes, tuple(inventory.unavailable), inventory.oversized.get(phase))
 
 
 def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:

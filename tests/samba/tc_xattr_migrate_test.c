@@ -1418,6 +1418,500 @@ static void test_multi(void)
     unlink(object); rmdir(private_dir); rmdir(root);
 }
 
+/* Issue 345: a value larger than one native HFS attribute (3,802 bytes) stays
+ * in its legacy TDB row or AppleDouble file. Its record completes like a proven
+ * orphan: never rescanned, and its database is quarantined, never deleted. */
+static void oversized_stream(const char *db_path, const struct file_id *id,
+			     const char *raw, size_t size, size_t fragment, uint8_t fill)
+{
+	size_t first = MIN(size, fragment), offset, extent = 1;
+	uint8_t *data = malloc(size + 1);
+	char name[256];
+
+	CHECK(data != NULL);
+	memset(data, fill, size + 1);
+	/* The anchor holds the first fragment and then the extent count. */
+	data[first] = size > first ? (size - first + fragment - 1) / fragment : 0;
+	snprintf(name, sizeof(name), "user.DosStream.%s:$DATA", raw);
+	multi_value(db_path, id, name, data, first + 1);
+	memset(data, fill, size + 1);
+	for (offset = first; offset < size; offset += fragment, extent++) {
+		snprintf(name, sizeof(name), "user.DosStreamExt.%zu.%s:$DATA", extent, raw);
+		multi_value(db_path, id, name, data, MIN(fragment, size - offset));
+	}
+	free(data);
+}
+
+static void hex_string(char *out, const void *bytes, size_t size)
+{
+	size_t i;
+
+	for (i = 0; i < size; i++) {
+		snprintf(out + 2 * i, 3, "%02x", ((const uint8_t *)bytes)[i]);
+	}
+	out[2 * size] = '\0';
+}
+
+static size_t make_embedded_appledouble(uint8_t *value, size_t capacity,
+					const char *const *names, const uint32_t *sizes,
+					uint8_t fill, unsigned count)
+{
+	size_t finder_offset = 50;
+	size_t attr_header = finder_offset + AFP_FinderSize + 2;
+	size_t entry = attr_header + TC_AD_XATTR_HEADER_SIZE, data_start, offset;
+	size_t total, data_length = 0;
+	unsigned i;
+
+	for (i = 0; i < count; i++) {
+		entry = (entry + 3) & ~(size_t)3;
+		entry += TC_AD_XATTR_ENTRY_SIZE + strlen(names[i]) + 1;
+		data_length += sizes[i];
+	}
+	data_start = (entry + 3) & ~(size_t)3;
+	total = data_start + data_length;
+	CHECK(total <= capacity);
+	memset(value, 0, total);
+	PUSH_BE_U32(value, 0, TC_AD_MAGIC);
+	PUSH_BE_U32(value, 4, TC_AD_VERSION);
+	memcpy(value + TC_AD_FILLER_OFFSET, TC_AD_OSX_FILLER, TC_AD_FILLER_SIZE);
+	PUSH_BE_U16(value, 24, 2);
+	PUSH_BE_U32(value, 26, TC_AD_FINDERI);
+	PUSH_BE_U32(value, 30, finder_offset);
+	PUSH_BE_U32(value, 34, total - finder_offset);
+	PUSH_BE_U32(value, 38, TC_AD_RFORK);
+	PUSH_BE_U32(value, 42, total);
+	PUSH_BE_U32(value, 46, 0);
+	value[finder_offset] = 0x44;
+	PUSH_BE_U32(value, attr_header, TC_AD_XATTR_MAGIC);
+	PUSH_BE_U32(value, attr_header + 8, total);
+	PUSH_BE_U32(value, attr_header + 12, data_start);
+	PUSH_BE_U32(value, attr_header + 16, data_length);
+	PUSH_BE_U16(value, attr_header + 34, count);
+	entry = attr_header + TC_AD_XATTR_HEADER_SIZE;
+	offset = data_start;
+	for (i = 0; i < count; i++) {
+		entry = (entry + 3) & ~(size_t)3;
+		PUSH_BE_U32(value, entry, offset);
+		PUSH_BE_U32(value, entry + 4, sizes[i]);
+		value[entry + 10] = strlen(names[i]) + 1;
+		memcpy(value + entry + TC_AD_XATTR_ENTRY_SIZE, names[i], strlen(names[i]) + 1);
+		memset(value + offset, fill, sizes[i]);
+		offset += sizes[i];
+		entry += TC_AD_XATTR_ENTRY_SIZE + strlen(names[i]) + 1;
+	}
+	return total;
+}
+
+static void write_file(const char *path, const void *value, size_t size)
+{
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+	CHECK(fd != -1);
+	CHECK(write_all(fd, value, size) == 0);
+	close(fd);
+}
+
+static struct tc_multi *report_multi;
+static struct tc_counts *report_counts;
+static char report_output[64 * 1024];
+
+static int print_multi_report(const char *unused)
+{
+	(void)unused;
+	tc_multi_report(report_multi, report_counts);
+	return 0;
+}
+
+static char **program_argv;
+
+static int run_program_main(const char *unused)
+{
+	(void)unused;
+	return tc_xattr_hfs_migrate_program_main(5, program_argv);
+}
+
+static uint8_t coverage_of(struct tc_multi_source *source, const struct file_id *id)
+{
+	uint8_t key[16];
+	struct tc_tdb_key *entry;
+
+	push_file_id_16(key, id);
+	entry = tc_source_key(source, key);
+	CHECK(entry != NULL);
+	return source->coverage[entry - source->scan.tdb_keys];
+}
+
+static void test_oversized_record(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[] = "/tmp/tc-oversized.XXXXXX", object[128], tdb[128], slot[160], alias[128];
+	struct tc_oversized_report report = {.ctx = frame};
+	struct tc_migration m = {
+		.mem_ctx = frame, .legacy_metadata = "stream",
+		.phase = TC_PHASE_COPY, .oversized = &report,
+	};
+	char *argv[] = {"migrate", "copy", tdb, "stream", root, NULL};
+	uint8_t fits[3802], big[3803];
+	const uint8_t tags[] = {'r', 'e', 'd', 0};
+	struct test_xattr *stored;
+	struct db_context *db;
+	DATA_BLOB blob = data_blob_null;
+	struct file_id id;
+	struct stat st;
+	int fd;
+
+	memset(fits, 'u', sizeof(fits));
+	memset(big, 'v', sizeof(big));
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(object, sizeof(object), "%s/object", root);
+	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", root);
+	snprintf(slot, sizeof(slot), "%s.orphaned.1", tdb);
+	fd = open(object, O_CREAT | O_RDWR, 0600);
+	CHECK(fd >= 0 && fstat(fd, &st) == 0);
+	id = tc_file_id(&st);
+	/* 3,802 bytes is the largest native value; the stream's trailing extent
+	 * count is not part of it. One byte more stays in the TDB, as does the
+	 * 12,979-byte sandbox-container value from the report, stored in 3,802-byte
+	 * extents. Plain xattrs follow the same limit. */
+	oversized_stream(tdb, &id, "com.apple.fits", 3802, 3802, 'f');
+	oversized_stream(tdb, &id, "com.apple.over", 3803, 3803, 'o');
+	oversized_stream(tdb, &id, "com.apple.data-container-personality", 12979, 3802, 'p');
+	multi_value(tdb, &id, "user.fits", fits, sizeof(fits));
+	multi_value(tdb, &id, "user.big", big, sizeof(big));
+	multi_value(tdb, &id, "user.DosStream.com.apple.metadata:_kMDItemUserTags:$DATA", tags, sizeof(tags));
+
+	m.db = dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_RDONLY, 0,
+				 DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(m.db != NULL && tc_collect_tdb_keys(&m) == 0);
+	reset_xattrs();
+	CHECK(tc_migrate_tdb_record(&m, fd, object, &st) == 0);
+	CHECK(m.counts.oversized_tdb == 3 && m.counts.oversized_appledouble == 0);
+	stored = find_xattr("com.apple.fits");
+	CHECK(stored != NULL && stored->size == 3802 && stored->value[3801] == 'f');
+	stored = find_xattr("user.fits");
+	CHECK(stored != NULL && stored->size == 3802);
+	stored = find_xattr("com.apple.metadata:_kMDItemUserTags");
+	CHECK(stored != NULL && stored->size == 3 && memcmp(stored->value, "red", 3) == 0);
+	CHECK(find_xattr("com.apple.over") == NULL);
+	CHECK(find_xattr("com.apple.data-container-personality") == NULL);
+	CHECK(find_xattr("user.big") == NULL);
+	CHECK(report.count == 3);
+	CHECK(!strcmp(report.items[0].name, "com.apple.over") && report.items[0].size == 3803);
+	CHECK(!strcmp(report.items[1].name, "com.apple.data-container-personality"));
+	CHECK(report.items[1].size == 12979);
+	CHECK(!strcmp(report.items[2].name, "user.big") && report.items[2].size == 3803);
+	CHECK(!report.items[0].appledouble && !strcmp(report.items[0].path, object));
+	/* Cleanup verifies everything that became native and nothing else. */
+	m.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_migrate_tdb_record(&m, fd, object, &st) == 0);
+	CHECK(m.counts.oversized_tdb == 6);
+	TALLOC_FREE(m.db);
+
+	/* The single-database program never deletes the kept row: it completes
+	 * the database and quarantines it byte for byte. A hard link revisits the
+	 * same row, whose three kept values still count once. */
+	snprintf(alias, sizeof(alias), "%s/alias", root);
+	CHECK(link(object, alias) == 0);
+	reset_xattrs();
+	program_argv = argv;
+	CHECK(read_stdout_capture(run_program_main, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, " oversized_tdb=3 ") != NULL);
+	CHECK(strstr(report_output, " tdb_kept=1 ") != NULL);
+	argv[1] = "cleanup";
+	CHECK(read_stdout_capture(run_program_main, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, " oversized_tdb=3 ") != NULL);
+	CHECK(strstr(report_output, " tdb_quarantined=1 ") != NULL);
+	CHECK(unlink(alias) == 0);
+	CHECK(access(tdb, F_OK) == -1 && errno == ENOENT);
+	db = dbwrap_local_open(frame, slot, 0, TDB_DEFAULT, O_RDONLY, 0,
+			       DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(db != NULL);
+	CHECK(xattr_tdb_getattr(db, frame, &id,
+		"user.DosStream.com.apple.data-container-personality:$DATA", &blob) == 3803);
+	CHECK(xattr_tdb_getattr(db, frame, &id,
+		"user.DosStreamExt.3.com.apple.data-container-personality:$DATA", &blob) == 12979 - 3 * 3802);
+	CHECK(xattr_tdb_getattr(db, frame, &id, "user.big", &blob) == 3803);
+	TALLOC_FREE(db);
+	CHECK(unlink(slot) == 0);
+
+	/* An unresolved row (a device nobody walked) still keeps the database live,
+	 * with the kept row in it. */
+	oversized_stream(tdb, &id, "com.apple.over", 3803, 3803, 'o');
+	multi_value(tdb, &id, "user.DosStream.com.apple.metadata:_kMDItemUserTags:$DATA", tags, sizeof(tags));
+	write_orphan_rows(tdb, 0, 0, 0, 0x1122);
+	reset_xattrs();
+	argv[1] = "copy";
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	argv[1] = "cleanup";
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(tdb, F_OK) == 0 && access(slot, F_OK) == -1);
+	db = dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_RDONLY, 0,
+			       DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(db != NULL);
+	CHECK(xattr_tdb_getattr(db, frame, &id, "user.DosStream.com.apple.over:$DATA", &blob) == 3804);
+	TALLOC_FREE(db);
+
+	close(fd);
+	unlink(tdb); unlink(object); rmdir(root);
+	TALLOC_FREE(frame);
+}
+
+static void test_oversized_appledouble(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[] = "/tmp/tc-oversized-ad.XXXXXX", base[128], sidecar[128];
+	struct tc_oversized_report report = {.ctx = frame};
+	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY, .oversized = &report};
+	const char *const names[] = {"com.apple.tag", "com.apple.big"};
+	uint32_t sizes[] = {3, 3803};
+	uint8_t value[8192];
+	size_t size;
+	int fd;
+
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(base, sizeof(base), "%s/base", root);
+	snprintf(sidecar, sizeof(sidecar), "%s/._base", root);
+	fd = open(base, O_CREAT | O_RDWR, 0600);
+	CHECK(fd >= 0);
+	size = make_embedded_appledouble(value, sizeof(value), names, sizes, 'a', 2);
+	write_file(sidecar, value, size);
+	reset_xattrs();
+	CHECK(tc_migrate_appledouble(&m, fd, base) == 0);
+	CHECK(find_xattr("com.apple.tag") != NULL && find_xattr("com.apple.tag")->size == 3);
+	CHECK(find_xattr(TC_FINDERINFO_XATTR) != NULL);
+	CHECK(find_xattr("com.apple.big") == NULL);
+	CHECK(m.counts.oversized_appledouble == 1 && m.counts.oversized_tdb == 0);
+	CHECK(report.count == 1 && report.items[0].appledouble);
+	CHECK(!strcmp(report.items[0].name, "com.apple.big") && report.items[0].size == 3803);
+	/* Cleanup verifies the rest but keeps the only copy of the big value. */
+	m.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_migrate_appledouble(&m, fd, base) == 0);
+	CHECK(access(sidecar, F_OK) == 0);
+	CHECK(m.counts.sidecars_kept == 1 && m.counts.sidecars_deleted == 0);
+
+	/* At 3,802 bytes the value becomes native and the sidecar is retired. */
+	sizes[1] = 3802;
+	size = make_embedded_appledouble(value, sizeof(value), names, sizes, 'a', 2);
+	write_file(sidecar, value, size);
+	memset(&m.counts, 0, sizeof(m.counts));
+	m.phase = TC_PHASE_COPY;
+	reset_xattrs();
+	CHECK(tc_migrate_appledouble(&m, fd, base) == 0);
+	CHECK(find_xattr("com.apple.big") != NULL && find_xattr("com.apple.big")->size == 3802);
+	m.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_migrate_appledouble(&m, fd, base) == 0);
+	CHECK(access(sidecar, F_OK) == -1 && errno == ENOENT);
+	CHECK(m.counts.oversized_appledouble == 0 && m.counts.sidecars_kept == 0);
+	CHECK(m.counts.sidecars_deleted == 1);
+
+	close(fd);
+	unlink(base); rmdir(root);
+	TALLOC_FREE(frame);
+}
+
+static void test_oversized_multi(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[] = "/tmp/tc-oversized-multi.XXXXXX", private_dir[128], old[160], newer[160];
+	char object[128], object2[128], object3[128], sidecar3[128], quarantine[192], path[160], alias[128];
+	char expected[1024], key_hex[33], path_hex[256], name_hex[128];
+	const char *const names[] = {"com.apple.tag", "com.apple.big"};
+	const uint32_t sizes[] = {3, 5000};
+	struct timeval dates[2] = {{.tv_sec = 1234567890}, {.tv_sec = 1234567890}};
+	struct tc_source_stat before[2], after;
+	struct tc_multi multi;
+	struct tc_counts counts;
+	struct file_id id, id2, id3;
+	struct stat st;
+	struct db_context *db;
+	DATA_BLOB blob = data_blob_null;
+	uint8_t key[16], value[8192];
+	FILE *input;
+	size_t size;
+	int fd, i;
+
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root);
+	CHECK(mkdir(private_dir, 0700) == 0);
+	snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
+	snprintf(newer, sizeof(newer), "%s/new.tdb", private_dir);
+	snprintf(object, sizeof(object), "%s/object", root);
+	snprintf(object2, sizeof(object2), "%s/object2", root);
+	snprintf(object3, sizeof(object3), "%s/object3", root);
+	snprintf(sidecar3, sizeof(sidecar3), "%s/._object3", root);
+	fd = open(object, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0 && fstat(fd, &st) == 0); close(fd);
+	id = tc_file_id(&st);
+	fd = open(object2, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0 && fstat(fd, &st) == 0); close(fd);
+	id2 = tc_file_id(&st);
+	fd = open(object3, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0 && fstat(fd, &st) == 0); close(fd);
+	id3 = tc_file_id(&st);
+	/* object: both DBs, the newer one with a kept value. object2: an ordinary
+	 * record, so the newer DB holds M and X rows. object3: an ordinary record
+	 * whose kept value is in its ._ file, which never marks the TDB row. */
+	oversized_stream(newer, &id, "com.apple.data-container-personality", 12979, 3802, 'p');
+	multi_value(newer, &id, "com.apple.small", "s", 1);
+	multi_value(old, &id, "com.apple.small", "s", 1);
+	multi_value(newer, &id2, "com.apple.small", "s", 1);
+	multi_value(newer, &id3, "com.apple.small", "s", 1);
+	size = make_embedded_appledouble(value, sizeof(value), names, sizes, 'a', 2);
+	write_file(sidecar3, value, size);
+	/* A hard link to object revisits its record: counted and listed once. */
+	snprintf(alias, sizeof(alias), "%s/alias", root);
+	CHECK(link(object, alias) == 0);
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	CHECK(tc_source_stat_read(old, &before[0]) == 0 && tc_source_stat_read(newer, &before[1]) == 0);
+	multi_prepare(&multi, frame, root, old, newer);
+	reset_xattrs();
+	CHECK(tc_multi_scan(&multi, &counts) == 0);
+	CHECK(counts.oversized_tdb == 1 && counts.oversized_appledouble == 1);
+	CHECK(multi.oversized.count == 2);
+	CHECK(coverage_of(&multi.sources[1], &id) == 0);
+	CHECK(find_xattr("com.apple.small") != NULL && find_xattr("com.apple.tag") != NULL);
+	CHECK(find_xattr("com.apple.data-container-personality") == NULL);
+	CHECK(find_xattr("com.apple.big") == NULL);
+	multi.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_multi_scan(&multi, &counts) == 0);
+	CHECK(multi.oversized.count == 2);
+	CHECK(counts.oversized_tdb == 1 && counts.oversized_appledouble == 1);
+	CHECK(coverage_of(&multi.sources[0], &id) == 3 && coverage_of(&multi.sources[1], &id) == 3);
+	CHECK(coverage_of(&multi.sources[1], &id2) == 1 && coverage_of(&multi.sources[1], &id3) == 1);
+	CHECK(access(sidecar3, F_OK) == 0 && counts.sidecars_kept == 1);
+
+	/* The report carries X and the kept values for deploy to show. */
+	report_multi = &multi; report_counts = &counts;
+	CHECK(read_stdout_capture(print_multi_report, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, "\"oversized\":{\"tdb\":1,\"appledouble\":1,\"items\":[") != NULL);
+	push_file_id_16(key, &id);
+	hex_string(key_hex, key, sizeof(key));
+	snprintf(expected, sizeof(expected), "[\"X\",\"%s\"]", key_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+	push_file_id_16(key, &id2);
+	hex_string(key_hex, key, sizeof(key));
+	snprintf(expected, sizeof(expected), "[\"M\",\"%s\"]", key_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+	/* Whichever link the walk reached first names the record. */
+	hex_string(name_hex, "com.apple.data-container-personality", strlen("com.apple.data-container-personality"));
+	hex_string(path_hex, object, strlen(object));
+	snprintf(expected, sizeof(expected),
+		 "{\"kind\":\"tdb\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":12979}", path_hex, name_hex);
+	if (strstr(report_output, expected) == NULL) {
+		hex_string(path_hex, alias, strlen(alias));
+		snprintf(expected, sizeof(expected),
+			 "{\"kind\":\"tdb\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":12979}", path_hex, name_hex);
+	}
+	CHECK(strstr(report_output, expected) != NULL);
+	hex_string(path_hex, object3, strlen(object3));
+	hex_string(name_hex, "com.apple.big", strlen("com.apple.big"));
+	snprintf(expected, sizeof(expected),
+		 "{\"kind\":\"appledouble\",\"path_hex\":\"%s\",\"name_hex\":\"%s\",\"size\":5000}", path_hex, name_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+
+	/* X completes like O: both DBs are quarantined unchanged, never deleted,
+	 * including the newer one that holds only M and X rows. */
+	CHECK(tc_multi_retire(&multi) == 0);
+	CHECK(multi.sources[0].retired == 2 && multi.sources[1].retired == 2);
+	CHECK(access(old, F_OK) != 0 && access(newer, F_OK) != 0);
+	snprintf(quarantine, sizeof(quarantine), "%s.orphaned.1", old);
+	CHECK(tc_source_stat_read(quarantine, &after) == 0 && tc_source_stat_same(&before[0], &after));
+	CHECK(unlink(quarantine) == 0);
+	snprintf(quarantine, sizeof(quarantine), "%s.orphaned.1", newer);
+	CHECK(tc_source_stat_read(quarantine, &after) == 0 && tc_source_stat_same(&before[1], &after));
+	db = dbwrap_local_open(frame, quarantine, 0, TDB_DEFAULT, O_RDONLY, 0,
+			       DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(db != NULL);
+	CHECK(xattr_tdb_getattr(db, frame, &id,
+		"user.DosStream.com.apple.data-container-personality:$DATA", &blob) == 3803);
+	TALLOC_FREE(db);
+	CHECK(unlink(quarantine) == 0);
+	TALLOC_FREE(frame);
+
+	/* A later deploy replays X from its receipt; an unknown kind is refused. */
+	frame = talloc_stackframe();
+	multi_value(old, &id, "com.apple.small", "s", 1);
+	multi_value(newer, &id, "com.apple.small", "s", 1);
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	push_file_id_16(key, &id);
+	hex_string(key_hex, key, sizeof(key));
+	for (i = 0; i < 2; i++) {
+		input = tmpfile();
+		CHECK(input != NULL);
+		fprintf(input, "TCMIGRATE1\n");
+		multi_source_line(input, 0, "11111111-1111-1111-1111-111111111111", ".samba4/private/old.tdb", old);
+		multi_source_line(input, 1, "22222222-2222-2222-2222-222222222222", ".samba4/private/new.tdb", newer);
+		fprintf(input, "K 0 %s %s\nE\n", i == 0 ? "X" : "Z", key_hex);
+		rewind(input);
+		memset(&multi, 0, sizeof(multi)); multi.ctx = frame; multi.retire = true;
+		errno = 0;
+		if (i == 0) {
+			CHECK(tc_multi_read(&multi, input) == 0);
+			CHECK(coverage_of(&multi.sources[0], &id) == 3);
+		} else {
+			CHECK(tc_multi_read(&multi, input) == -1 && errno == EINVAL);
+		}
+		fclose(input);
+	}
+	TALLOC_FREE(frame);
+	unlink(old); unlink(newer);
+
+	/* The report lists at most 50 kept values but counts all of them. */
+	frame = talloc_stackframe();
+	multi_value(old, &id, "com.apple.small", "s", 1);
+	for (i = 0; i < 51; i++) {
+		snprintf(path, sizeof(path), "%s/many-%d", root, i);
+		fd = open(path, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0 && fstat(fd, &st) == 0); close(fd);
+		id2 = tc_file_id(&st);
+		oversized_stream(newer, &id2, "com.apple.over", 3803, 3803, 'o');
+	}
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	multi_prepare(&multi, frame, root, old, newer);
+	reset_xattrs();
+	CHECK(tc_multi_scan(&multi, &counts) == 0);
+	CHECK(counts.oversized_tdb == 51 && multi.oversized.count == TC_OVERSIZED_REPORT_MAX);
+	report_multi = &multi; report_counts = &counts;
+	CHECK(read_stdout_capture(print_multi_report, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, "\"oversized\":{\"tdb\":51,\"appledouble\":1,") != NULL);
+	{
+		const char *cursor = report_output;
+		unsigned items = 0;
+		while ((cursor = strstr(cursor, "\"kind\":")) != NULL) {
+			items++;
+			cursor++;
+		}
+		CHECK(items == TC_OVERSIZED_REPORT_MAX);
+	}
+	TALLOC_FREE(frame);
+	for (i = 0; i < 51; i++) {
+		snprintf(path, sizeof(path), "%s/many-%d", root, i);
+		unlink(path);
+	}
+	unlink(old); unlink(newer);
+
+	/* Other damage still stops the volume: an anchor claiming 35 extents. */
+	frame = talloc_stackframe();
+	multi_value(old, &id, "com.apple.small", "s", 1);
+	{
+		const uint8_t anchor[] = {'a', TC_HFS_STREAM_XATTRS};
+		multi_value(newer, &id, "user.DosStream.com.apple.huge:$DATA", anchor, sizeof(anchor));
+	}
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	multi_prepare(&multi, frame, root, old, newer);
+	reset_xattrs();
+	CHECK(tc_multi_scan(&multi, &counts) == -1);
+	CHECK(access(old, F_OK) == 0 && access(newer, F_OK) == 0);
+	TALLOC_FREE(frame);
+	unlink(old); unlink(newer);
+
+	unlink(sidecar3); unlink(alias); unlink(object); unlink(object2); unlink(object3);
+	rmdir(private_dir); rmdir(root);
+}
+
+static void test_oversized(void)
+{
+	test_oversized_record();
+	test_oversized_appledouble();
+	test_oversized_multi();
+}
+
 int main(int argc, char **argv)
 {
 	CHECK(argc == 2);
@@ -1452,6 +1946,9 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "errors") == 0 || strcmp(argv[1], "all") == 0) {
 		test_errors();
 	}
+	if (strcmp(argv[1], "oversized") == 0 || strcmp(argv[1], "all") == 0) {
+		test_oversized();
+	}
 	if (strcmp(argv[1], "multi") != 0 &&
 	    strcmp(argv[1], "guard") != 0 &&
 	    strcmp(argv[1], "all") != 0 &&
@@ -1461,6 +1958,7 @@ int main(int argc, char **argv)
 	    strcmp(argv[1], "cleanup") != 0 &&
 	    strcmp(argv[1], "tdb") != 0 &&
 	    strcmp(argv[1], "errors") != 0 &&
+	    strcmp(argv[1], "oversized") != 0 &&
 	    strcmp(argv[1], "resume") != 0 &&
 	    strcmp(argv[1], "orphans") != 0 &&
 	    strcmp(argv[1], "scan") != 0)

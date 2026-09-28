@@ -9,6 +9,11 @@
 #include "source3/modules/airport_native_xattr.h"
 #include <sys/time.h>
 
+/* Apple's kernel (hfs_vnop_setxattr, Darwin 8's inline-only HFS code) caps a
+ * native attribute at (attributes B-tree node size - 20) / 2 - 284, rounded
+ * down to even, and returns E2BIG above it. It has no extent-based attribute
+ * code, and it creates the attributes B-tree with 8 KiB nodes: 3,802 bytes.
+ * Checked by disassembling the NetBSD 6 kernel, 2026-09-27. */
 #define TC_HFS_XATTR_SIZE 3802
 #define TC_HFS_STREAM_XATTRS 35
 #define TC_STREAM_PREFIX "user.DosStream."
@@ -223,6 +228,12 @@ struct tc_tdb_key {
 	uint8_t data[16];
 	bool matched;
 	bool retired;
+	/* Verified, but at least one value was too large for a native HFS
+	 * attribute and stays only in this row (see tc_keep_oversized). */
+	bool kept;
+	/* Its kept values were already counted in this walk: another hard
+	 * link to the same inode must not count or list them again. */
+	bool reported;
 };
 
 struct tc_ad_entry {
@@ -258,7 +269,26 @@ struct tc_counts {
 	uint64_t unresolved;
 	uint64_t boundary_skipped;
 	uint64_t tdb_quarantined;
+	uint64_t tdb_kept;
+	uint64_t oversized_tdb;
+	uint64_t oversized_appledouble;
+	uint64_t sidecars_kept;
 	uint64_t errors;
+};
+
+/* Deploy shows the user which files kept a value. Bounded: a copied home
+ * folder can hold thousands of oversized sandbox-container attributes. */
+#define TC_OVERSIZED_REPORT_MAX 50
+struct tc_oversized_item {
+	bool appledouble;
+	char *path;
+	char *name;
+	size_t size;
+};
+struct tc_oversized_report {
+	TALLOC_CTX *ctx;
+	struct tc_oversized_item items[TC_OVERSIZED_REPORT_MAX];
+	size_t count;
 };
 
 struct tc_multi;
@@ -280,6 +310,9 @@ struct tc_migration {
 	 * orphan; any other unmatched row is unresolved and must be kept. */
 	uint64_t *complete_devs;
 	size_t num_complete_devs;
+	/* Shared with the per-file copies tc_multi_file makes; NULL outside
+	 * deploy's multi mode, where the log line is the only report. */
+	struct tc_oversized_report *oversized;
 	struct tc_counts counts;
 };
 
@@ -326,6 +359,8 @@ static int tc_collect_tdb_key(struct db_record *record, void *private_data)
 	memcpy(keys[migration->num_tdb_keys].data, key.dptr, key.dsize);
 	keys[migration->num_tdb_keys].matched = false;
 	keys[migration->num_tdb_keys].retired = false;
+	keys[migration->num_tdb_keys].kept = false;
+	keys[migration->num_tdb_keys].reported = false;
 	migration->num_tdb_keys++;
 	tc_progress();
 	return 0;
@@ -478,6 +513,51 @@ static int tc_native_write_verified(struct tc_migration *migration,
 	migration->counts.xattrs_written++;
 	tc_progress();
 	TALLOC_FREE(frame);
+	return 0;
+}
+
+/* Apple's firmware stores at most TC_HFS_XATTR_SIZE bytes in one HFS
+ * attribute, so AFP and a Mac never see a larger value on this disk. Legacy
+ * xattr_tdb rows and AppleDouble files had no such limit: macOS sandbox
+ * containers carry 8-41 KB com.apple.data-container-personality values
+ * (issue 345). Such a value cannot become native, and it is someone's
+ * metadata, so it stays where it is and is never deleted: its TDB record is
+ * treated like a proven orphan (complete, never rescanned, and its database
+ * is quarantined rather than deleted) and its AppleDouble file is kept. The
+ * rest of the file still migrates. */
+static int tc_keep_oversized(struct tc_migration *migration,
+			     const char *path,
+			     const char *name,
+			     size_t size,
+			     bool appledouble)
+{
+	struct tc_oversized_report *report = migration->oversized;
+	struct tc_oversized_item *item;
+
+	fprintf(stderr, "oversized xattr kept in legacy storage kind=%s "
+		"path=%s name=%s size=%zu\n",
+		appledouble ? "appledouble" : "tdb", path, name, size);
+	if (appledouble) {
+		migration->counts.oversized_appledouble++;
+	} else {
+		migration->counts.oversized_tdb++;
+	}
+	tc_progress();
+	if (report == NULL || report->count == TC_OVERSIZED_REPORT_MAX) {
+		return 0;
+	}
+	item = &report->items[report->count];
+	item->path = talloc_strdup(report->ctx, path);
+	item->name = talloc_strdup(report->ctx, name);
+	if (item->path == NULL || item->name == NULL) {
+		TALLOC_FREE(item->path);
+		TALLOC_FREE(item->name);
+		errno = ENOMEM;
+		return -1;
+	}
+	item->appledouble = appledouble;
+	item->size = size;
+	report->count++;
 	return 0;
 }
 
@@ -673,12 +753,13 @@ static int tc_migrate_stream(struct tc_migration *migration,
 	}
 	native_name = tc_apple_native_name(frame, anchor_name);
 	if (native_name != NULL) {
+		/* A canonical Apple attribute is one whole native value; AFP must
+		 * never see a first extent of it. */
 		if (logical.length > TC_HFS_XATTR_SIZE) {
-			fprintf(stderr, "Apple xattr too large path=%s name=%s size=%zu\n",
-				path, native_name, logical.length);
+			ret = tc_keep_oversized(migration, path, native_name,
+						logical.length, false);
 			TALLOC_FREE(frame);
-			errno = EOVERFLOW;
-			return -1;
+			return ret;
 		}
 		ret = tc_native_write_verified(
 			migration, fd, path, native_name,
@@ -924,11 +1005,13 @@ static int tc_migrate_tdb_record(struct tc_migration *migration,
 			return -1;
 		}
 		if (blob.length > TC_HFS_XATTR_SIZE) {
-			fprintf(stderr, "xattr too large path=%s name=%s size=%zu\n",
-				path, name, blob.length);
-			TALLOC_FREE(frame);
-			errno = EOVERFLOW;
-			return -1;
+			if (tc_keep_oversized(migration, path, name,
+					      blob.length, false) != 0)
+			{
+				TALLOC_FREE(frame);
+				return -1;
+			}
+			continue;
 		}
 		if (tc_native_write_verified(
 				migration, fd, path, name,
@@ -1146,13 +1229,12 @@ static int tc_migrate_appledouble_xattrs(
 		    strcmp(name, TC_RESOURCEFORK_XATTR) != 0)
 		{
 			if (value_length > TC_HFS_XATTR_SIZE) {
-				fprintf(stderr,
-					"AppleDouble xattr too large path=%s name=%s size=%u\n",
-					path, name, value_length);
-				errno = EOVERFLOW;
-				return -1;
-			}
-			if (tc_native_write_verified(
+				if (tc_keep_oversized(migration, path, name,
+						      value_length, true) != 0)
+				{
+					return -1;
+				}
+			} else if (tc_native_write_verified(
 					migration, base_fd, path, name,
 					ad->header + value_offset,
 					value_length, true) != 0)
@@ -1490,6 +1572,7 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 	char *appledouble = tc_appledouble_path(frame, path);
 	struct tc_appledouble ad = {0};
 	struct stat source_st;
+	uint64_t kept_before = migration->counts.oversized_appledouble;
 	int source_fd = -1;
 	int parse_state;
 	int result = -1;
@@ -1533,7 +1616,14 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 	{
 		goto out;
 	}
-	if (migration->phase == TC_PHASE_CLEANUP) {
+	if (migration->phase == TC_PHASE_CLEANUP &&
+	    migration->counts.oversized_appledouble != kept_before)
+	{
+		/* The sidecar is the only copy of a value too large for a native
+		 * attribute (tc_keep_oversized). Samba vetoes ._ files, so it
+		 * stays invisible over SMB, as the value is on Apple's firmware. */
+		migration->counts.sidecars_kept++;
+	} else if (migration->phase == TC_PHASE_CLEANUP) {
 		if (fsync(base_fd) != 0 ||
 		    tc_unlink_verified_sidecar(appledouble, &source_st) != 0) {
 			goto out;
@@ -1595,6 +1685,22 @@ static int tc_retire_tdb_record(struct tc_migration *migration,
 	return 0;
 }
 
+static struct tc_tdb_key *tc_tdb_key_of(struct tc_migration *migration,
+				       const struct stat *st)
+{
+	struct file_id id = tc_file_id(st);
+	uint8_t key[16];
+	size_t i;
+
+	push_file_id_16(key, &id);
+	for (i = 0; i < migration->num_tdb_keys; i++) {
+		if (memcmp(migration->tdb_keys[i].data, key, sizeof(key)) == 0) {
+			return &migration->tdb_keys[i];
+		}
+	}
+	return NULL;
+}
+
 static int tc_scan_path(struct tc_migration *migration,
 			const char *path,
 			bool scan_sidecar)
@@ -1623,6 +1729,11 @@ static int tc_scan_path(struct tc_migration *migration,
 	if (migration->multi && migration->counts.entries % 10000 == 0)
 		fprintf(stderr, "scan progress entries=%"PRIu64" path=%s\n", migration->counts.entries, path);
 	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
+		uint64_t kept_before = migration->counts.oversized_tdb;
+		struct tc_tdb_key *key = migration->multi ? NULL : tc_tdb_key_of(migration, &st);
+		/* A hard link to a record that already kept a value. */
+		bool kept_revisit = key != NULL && key->kept;
+
 		fd = open(path, O_RDONLY | O_NOFOLLOW);
 		if (fd == -1 || fstat(fd, &opened_st) != 0 ||
 		    st.st_dev != opened_st.st_dev || st.st_ino != opened_st.st_ino ||
@@ -1638,7 +1749,20 @@ static int tc_scan_path(struct tc_migration *migration,
 		{
 			result = -1;
 		}
-		if (!migration->multi && result == 0 && tc_retire_tdb_record(migration, fd, &st) != 0) {
+		if (!migration->multi && result == 0 &&
+		    migration->counts.oversized_tdb != kept_before)
+		{
+			/* Deleting the row would delete the value that could not
+			 * become native; the whole database is quarantined instead. */
+			if (key != NULL) {
+				key->kept = true;
+			}
+			if (kept_revisit) {
+				migration->counts.oversized_tdb = kept_before;
+			}
+		} else if (!migration->multi && result == 0 &&
+			   tc_retire_tdb_record(migration, fd, &st) != 0)
+		{
 			fprintf(stderr, "metadata retirement failed path=%s error=%s\n",
 				path, strerror(errno));
 			result = -1;
@@ -1774,11 +1898,17 @@ static void tc_classify_unmatched_keys(struct tc_migration *migration)
 
 	migration->counts.orphaned = 0;
 	migration->counts.unresolved = 0;
+	migration->counts.tdb_kept = 0;
 	for (i = 0; i < migration->num_tdb_keys; i++) {
 		const uint8_t *key = migration->tdb_keys[i].data;
 		uint64_t devid;
 
 		if (migration->tdb_keys[i].matched) {
+			if (migration->tdb_keys[i].kept &&
+			    !migration->tdb_keys[i].retired)
+			{
+				migration->counts.tdb_kept++;
+			}
 			continue;
 		}
 		devid = (uint64_t)IVAL(key, 0) | ((uint64_t)IVAL(key, 4) << 32);
@@ -1984,7 +2114,10 @@ struct tc_multi_source {
 	const char *mode;
 	struct tc_source_stat stat;
 	struct tc_migration scan;
-	uint8_t *coverage; /* 0 unresolved, 1 verified value, 2 proven orphan */
+	/* 0 unresolved, 1 verified value, 2 proven orphan, 3 verified except
+	 * values kept in this DB (tc_keep_oversized). 2 and 3 are both complete
+	 * and both quarantine the DB instead of deleting it. */
+	uint8_t *coverage;
 	unsigned retired;
 };
 struct tc_multi {
@@ -1996,6 +2129,7 @@ struct tc_multi {
 	uint64_t root_dev, root_inode;
 	enum tc_phase phase;
 	bool retire;
+	struct tc_oversized_report oversized;
 };
 
 static int tc_source_stat_read(const char *path, struct tc_source_stat *out)
@@ -2156,7 +2290,9 @@ static int tc_multi_file(struct tc_migration *migration, int fd, const char *pat
 	unsigned *owners = NULL;
 	size_t name_count = 0, i;
 	int result = -1;
-	bool have_record = false;
+	bool have_record = false, kept, revisit = false;
+	uint64_t kept_before;
+	size_t listed_before;
 	push_file_id_16(one.data, &id);
 	file.multi = NULL;
 	file.legacy_metadata = "stream"; /* Records need not contain FinderInfo. */
@@ -2203,8 +2339,23 @@ static int tc_multi_file(struct tc_migration *migration, int fd, const char *pat
 		}
 	}
 	if (!have_record) { TALLOC_FREE(file.db); file.num_tdb_keys = 0; }
-	if (tc_migrate_tdb_record(&file, fd, path, st) ||
-		(sidecar && tc_migrate_appledouble(&file, fd, path))) goto done;
+	for (i = 0; i < multi->count; i++) {
+		struct tc_tdb_key *key = tc_source_key(&multi->sources[i], one.data);
+		if (key != NULL && key->reported) revisit = true;
+	}
+	kept_before = file.counts.oversized_tdb;
+	listed_before = file.oversized ? file.oversized->count : 0;
+	if (tc_migrate_tdb_record(&file, fd, path, st)) goto done;
+	/* Only a TDB value marks the record; an AppleDouble value stays in its
+	 * kept ._ file and does not involve any source DB. */
+	kept = file.counts.oversized_tdb != kept_before;
+	/* A hard link revisits the same record: its kept values count once per
+	 * walk. Each link has its own ._ file, so those still count below. */
+	if (revisit) {
+		file.counts.oversized_tdb = kept_before;
+		if (file.oversized) file.oversized->count = listed_before;
+	}
+	if (sidecar && tc_migrate_appledouble(&file, fd, path)) goto done;
 	/* Do not call legacy per-record retirement: source contents and mtimes
 	 * must stay identical until whole DBs can be retired oldest-first. */
 	if (have_record && multi->phase == TC_PHASE_CLEANUP && fsync(fd)) goto done;
@@ -2214,9 +2365,13 @@ static int tc_multi_file(struct tc_migration *migration, int fd, const char *pat
 		if (key == NULL) continue;
 		if (!key->matched) source->scan.counts.tdb_matched++;
 		key->matched = true;
+		key->reported = true;
 		if (multi->phase == TC_PHASE_CLEANUP) {
 			key->retired = true;
-			source->coverage[key - source->scan.tdb_keys] = 1;
+			/* Marked in every source holding the key: the merged record
+			 * no longer says which DB the kept value came from, and
+			 * quarantining an extra DB costs only disk space. */
+			source->coverage[key - source->scan.tdb_keys] = kept ? 3 : 1;
 		}
 	}
 	migration->counts = file.counts;
@@ -2326,11 +2481,13 @@ static int tc_multi_read(struct tc_multi *multi, FILE *input)
 				struct tc_tdb_key *key;
 				uint8_t bytes[16];
 				if (!multi->retire || count != 4 || tc_number(words[1], &number, 10) || number >= multi->count ||
-					(strcmp(words[2], "M") && strcmp(words[2], "O")) || tc_hex_decode(words[3], bytes, 16) ||
+					(strcmp(words[2], "M") && strcmp(words[2], "O") && strcmp(words[2], "X")) ||
+				tc_hex_decode(words[3], bytes, 16) ||
 					++coverage_count > TC_MULTI_MAX_KEYS) goto invalid;
 				s = &multi->sources[number]; key = tc_source_key(s, bytes);
 				if (!key || s->coverage[key-s->scan.tdb_keys]) goto invalid;
-				s->coverage[key-s->scan.tdb_keys] = !strcmp(words[2], "M") ? 1 : 2;
+				s->coverage[key-s->scan.tdb_keys] = !strcmp(words[2], "M") ? 1 :
+					!strcmp(words[2], "O") ? 2 : 3;
 			}
 		} else goto invalid;
 		tc_progress();
@@ -2348,11 +2505,18 @@ static int tc_multi_root_valid(struct tc_multi *multi, struct stat *out)
 }
 static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
 {
-	struct tc_migration scan = {.mem_ctx = multi->ctx, .multi = multi, .phase = multi->phase};
+	struct tc_migration scan = {.mem_ctx = multi->ctx, .multi = multi, .phase = multi->phase,
+		.oversized = &multi->oversized};
 	struct stat st;
 	size_t i, k;
 	int fd, result;
 	if (tc_multi_root_valid(multi, &st)) return -1;
+	/* One report per walk. */
+	multi->oversized.ctx = multi->ctx;
+	multi->oversized.count = 0;
+	for (i = 0; i < multi->count; i++)
+		for (k = 0; k < multi->sources[i].scan.num_tdb_keys; k++)
+			multi->sources[i].scan.tdb_keys[k].reported = false;
 	fd = open(multi->root, O_RDONLY | O_NOFOLLOW);
 	if (fd < 0) return -1;
 	fprintf(stderr, "volume phase=%s uuid=%s root=%s sources=%zu start\n",
@@ -2377,11 +2541,13 @@ static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
 		}
 	}
 	*counts = scan.counts;
-	fprintf(stderr, "volume uuid=%s complete entries=%"PRIu64" sidecars_deleted=%"PRIu64"\n",
-			multi->root_uuid, counts->entries, counts->sidecars_deleted);
+	fprintf(stderr, "volume uuid=%s complete entries=%"PRIu64" sidecars_deleted=%"PRIu64
+			" oversized_tdb=%"PRIu64" oversized_appledouble=%"PRIu64" sidecars_kept=%"PRIu64"\n",
+			multi->root_uuid, counts->entries, counts->sidecars_deleted,
+			counts->oversized_tdb, counts->oversized_appledouble, counts->sidecars_kept);
 	return 0;
 }
-static int tc_multi_retire_path(struct tc_multi_source *source, const char *path, bool orphan)
+static int tc_multi_retire_path(struct tc_multi_source *source, const char *path, bool quarantine)
 {
 	struct tc_source_stat current;
 	struct stat alias;
@@ -2392,7 +2558,7 @@ static int tc_multi_retire_path(struct tc_multi_source *source, const char *path
 	*slash = 0;
 	if (tc_source_stat_read(path, &current) || !tc_source_stat_same(&current, &source->stat)) return -1;
 	if (lstat(path, &alias)) return -1;
-	if (orphan && !S_ISLNK(alias.st_mode)) return tc_quarantine_tdb(&temporary);
+	if (quarantine && !S_ISLNK(alias.st_mode)) return tc_quarantine_tdb(&temporary);
 	fd = open(directory[0] ? directory : "/", O_RDONLY);
 	if (fd < 0) return -1;
 	result = unlink(path);
@@ -2423,35 +2589,51 @@ static int tc_multi_retire(struct tc_multi *multi)
 	}
 	for (i = 0; i < multi->count; i++) {
 		struct tc_multi_source *s = ordered[i];
-		bool orphan = false;
+		size_t orphaned = 0, kept = 0;
+		bool quarantine;
 		for (k = 0; k < s->scan.num_tdb_keys; k++) {
-			if (s->coverage[k] == 2) orphan = true;
+			orphaned += s->coverage[k] == 2;
+			kept += s->coverage[k] == 3;
 			tc_progress();
 		}
+		quarantine = orphaned || kept;
 		TALLOC_FREE(s->scan.db);
 		/* Aliases go first; the ranked primary remains authoritative if this
 		 * is interrupted. No source row or original mtime is ever rewritten. */
 		for (k = 0; k < s->alias_count; k++)
-			if (tc_multi_retire_path(s, s->aliases[k], orphan)) return -1;
+			if (tc_multi_retire_path(s, s->aliases[k], quarantine)) return -1;
 			else tc_progress();
-		if (tc_multi_retire_path(s, s->path, orphan)) return -1;
+		if (tc_multi_retire_path(s, s->path, quarantine)) return -1;
 		tc_progress();
-		s->retired = orphan ? 2 : 1;
-		fprintf(stderr, "retired db=%u path=%s outcome=%s\n", s->index, s->path, orphan ? "quarantined" : "deleted");
+		s->retired = quarantine ? 2 : 1;
+		fprintf(stderr, "retired db=%u path=%s outcome=%s orphaned=%zu oversized=%zu\n", s->index, s->path,
+			quarantine ? "quarantined" : "deleted", orphaned, kept);
 	}
 	return 0;
 }
 static void tc_multi_report(struct tc_multi *multi, const struct tc_counts *counts)
 {
 	size_t i, k;
-	printf("{\"version\":%d,\"entries\":%"PRIu64",\"sources\":[", TC_MULTI_VERSION, counts->entries);
+	printf("{\"version\":%d,\"entries\":%"PRIu64",", TC_MULTI_VERSION, counts->entries);
+	/* Deploy lists the kept values for the user; names are hex like paths. */
+	printf("\"oversized\":{\"tdb\":%"PRIu64",\"appledouble\":%"PRIu64",\"items\":[",
+		   counts->oversized_tdb, counts->oversized_appledouble);
+	for (i = 0; i < multi->oversized.count; i++) {
+		const struct tc_oversized_item *item = &multi->oversized.items[i];
+		printf("%s{\"kind\":\"%s\",\"path_hex\":\"", i ? "," : "", item->appledouble ? "appledouble" : "tdb");
+		tc_hex_print(stdout, (const uint8_t *)item->path, strlen(item->path));
+		printf("\",\"name_hex\":\"");
+		tc_hex_print(stdout, (const uint8_t *)item->name, strlen(item->name));
+		printf("\",\"size\":%zu}", item->size);
+	}
+	printf("]},\"sources\":[");
 	for (i = 0; i < multi->count; i++) {
 		struct tc_multi_source *s = &multi->sources[i];
 		bool comma = false;
 		printf("%s{\"index\":%u,\"total\":%zu,\"retired\":%u,\"coverage\":[", i ? "," : "", s->index, s->scan.num_tdb_keys, s->retired);
 		for (k = 0; k < s->scan.num_tdb_keys; k++) {
 			if (!s->coverage[k]) continue;
-			printf("%s[\"%c\",\"", comma ? "," : "", s->coverage[k] == 1 ? 'M' : 'O');
+			printf("%s[\"%c\",\"", comma ? "," : "", "?MOX"[s->coverage[k]]);
 			tc_hex_print(stdout, s->scan.tdb_keys[k].data, 16); printf("\"]"); comma = true;
 			tc_progress();
 		}
@@ -2624,13 +2806,14 @@ int main(int argc, char **argv)
 		   migration.phase == TC_PHASE_CLEANUP &&
 		   migration.db != NULL &&
 		   migration.counts.unresolved == 0 &&
-		   migration.counts.orphaned > 0 &&
-		   migration.counts.tdb_retired + migration.counts.orphaned ==
-		   migration.counts.tdb_total)
+		   migration.counts.orphaned + migration.counts.tdb_kept > 0 &&
+		   migration.counts.tdb_retired + migration.counts.orphaned +
+		   migration.counts.tdb_kept == migration.counts.tdb_total)
 	{
-		/* Every remaining row is a proven orphan: nothing can ever claim
-		 * it, but it is still someone's metadata, so it is set aside
-		 * rather than deleted. Unresolved rows keep the database live. */
+		/* Every remaining row is a proven orphan or keeps a value too
+		 * large for a native attribute: no later run can migrate it, but
+		 * it is still someone's metadata, so it is set aside rather than
+		 * deleted. Unresolved rows keep the database live. */
 		TALLOC_FREE(migration.db);
 		if (tc_quarantine_tdb(&migration) != 0) {
 			migration.counts.errors++;
@@ -2646,6 +2829,8 @@ int main(int argc, char **argv)
 	       " tdb_orphaned=%"PRIu64" tdb_unresolved=%"PRIu64
 	       " tdb_retired=%"PRIu64" tdb_deleted=%"PRIu64
 	       " tdb_quarantined=%"PRIu64" boundary_skipped=%"PRIu64
+	       " tdb_kept=%"PRIu64" oversized_tdb=%"PRIu64
+	       " oversized_appledouble=%"PRIu64" sidecars_kept=%"PRIu64
 	       " errors=%"PRIu64"\n",
 	       migration.phase == TC_PHASE_COPY ? "copy" : "cleanup",
 	       migration.counts.entries,
@@ -2666,6 +2851,10 @@ int main(int argc, char **argv)
 	       migration.counts.tdb_deleted,
 	       migration.counts.tdb_quarantined,
 	       migration.counts.boundary_skipped,
+	       migration.counts.tdb_kept,
+	       migration.counts.oversized_tdb,
+	       migration.counts.oversized_appledouble,
+	       migration.counts.sidecars_kept,
 	       migration.counts.errors);
 	result = result == 0 ? 0 : 4;
 done:
