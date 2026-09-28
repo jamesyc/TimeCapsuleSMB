@@ -168,6 +168,10 @@ static inline ssize_t tc_airport_flistxattr(int fd, char *list, size_t size)
 		errno = error;
 		return -1;
 	}
+	/*
+	 * Apple's NetBSD 6 kernel can list the same HFS attribute twice (see
+	 * tests/samba/tc_native_metadata_test.c); keep each name once.
+	 */
 	while (in_offset < (size_t)ret) {
 		size_t entry_size = strnlen(
 			raw + in_offset, (size_t)ret - in_offset) + 1;
@@ -319,7 +323,7 @@ static inline ssize_t tc_airport_llistxattr(const char *path,
 		errno = error;
 		return -1;
 	}
-	/* NetBSD 6 can list an HFS attribute twice; see tc_airport_flistxattr. */
+	/* Keep each name once, as tc_airport_flistxattr explains. */
 	while (in_offset < (size_t)ret) {
 		size_t entry_size = strnlen(
 			raw + in_offset, (size_t)ret - in_offset) + 1;

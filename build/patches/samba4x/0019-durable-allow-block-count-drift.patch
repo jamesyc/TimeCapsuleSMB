@@ -1,7 +1,7 @@
 diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 --- a/source3/smbd/durable.c
 +++ b/source3/smbd/durable.c
-@@ -508,15 +508,26 @@ static bool vfs_default_durable_reconnect_check_stat(
+@@ -508,15 +508,28 @@ static bool vfs_default_durable_reconnect_check_stat(
  	}
  
  	if (cookie_st->st_ex_blocks != fsp_st->st_ex_blocks) {
@@ -16,6 +16,8 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 +		 * logical size, timestamps, block size, and flags still match.
 +		 * Keep those identity checks strict and downgrade only this
 +		 * allocation-block mismatch to a production-visible warning.
++		 * The downgrade applies to every durable reconnect, not only
++		 * to Time Machine bands.
 +		 */
 +		DEBUG(0, ("TIMECAPSULE_DURABLE_ST_BLOCKS_MISMATCH: "
 +			  "vfs_default_durable_reconnect (%s): "

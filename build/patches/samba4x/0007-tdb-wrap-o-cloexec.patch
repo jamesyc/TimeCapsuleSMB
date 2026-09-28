@@ -1,0 +1,19 @@
+diff --git a/lib/tdb_wrap/tdb_wrap.c b/lib/tdb_wrap/tdb_wrap.c
+--- a/lib/tdb_wrap/tdb_wrap.c
++++ b/lib/tdb_wrap/tdb_wrap.c
+@@ -25,6 +25,15 @@
+ #include "lib/util/debug.h"
+ #include "tdb_wrap.h"
+ 
++/*
++ * NetBSD 4 lacks O_CLOEXEC, which tdb_wrap passes to tdb_open. Define it as 0
++ * here only: tdb_open_ex() sets FD_CLOEXEC on the descriptor itself, and a
++ * global define would make other code skip its fcntl(FD_CLOEXEC) fallback.
++ */
++#ifndef O_CLOEXEC
++#define O_CLOEXEC 0
++#endif
++
+ /*
+  Log tdb messages via DEBUG().
+ */

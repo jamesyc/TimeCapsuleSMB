@@ -1,6 +1,6 @@
-"""Durable-handle and shutdown-close device suite (Samba patches 0019, 0024,
-0029, 0062 and the parent scavenger in 0008), run from a Mac against a deployed
-device.
+"""Durable-handle, shutdown-close and handle-time device suite (Samba patches
+0019, 0024, 0029, 0062, NetBSD 4's futimens in 0002, and the parent scavenger
+in 0008), run from a Mac against a deployed device.
 
     .venv/bin/python -m tests.samba.durable_device --env .env [--stall SECONDS]
         [--case NAME ...]
@@ -34,6 +34,13 @@ which smbd serves without changing into any share. With +ipc-tdis the IPC$
 tree disconnect first leaves the working directory at "/", so without 0062
 the delete finds no parent directory and the file survives.
 
+The settime cases set a file's last-write time with SET_INFO and read it back
+through a new handle. settime:data sets it on a handle opened for reading and
+writing, as Windows CopyFile does on the file it writes; smbd then calls
+futimens() on that handle's descriptor, which NetBSD 4 libc lacks, and 0002's
+replacement once always failed (NOT_SUPPORTED). settime:attributes uses a
+handle opened only for attributes, as macOS does, which smbd serves by name.
+
 The macOS case holds a file open on a mount, stops the smbd serving it long
 enough for macOS to open a new session, resumes it, and checks the pending
 write and the data. It works inside a `__tc_durable_test__` folder that it
@@ -66,7 +73,11 @@ LIVE_RETRY_SECONDS = 34 * 0.150
 LIVE_RETRY_SLACK_SECONDS = 3
 DROP_MODES = ("fin", "rst", "half-open", "half-open+previous", "rst+ipc-tdis", "rst+second-session")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
-CASES = DROP_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
+SETTIME_MODES = ("data", "attributes")
+CASES = (DROP_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
+         + tuple(f"settime:{mode}" for mode in SETTIME_MODES))
+# 2001-02-03 04:05:06 UTC as an SMB FILETIME (100 ns units since 1601).
+SETTIME_FILETIME = (981173106 + 11644473600) * 10_000_000
 
 
 class DurableClient:
@@ -292,6 +303,91 @@ def delete_on_close_case(r: Results, device: Device, mode: str) -> None:
             conn.disconnect()
 
 
+def _set_basic_info(handle, info) -> None:
+    """SMB2 SET_INFO on an open handle (smbprotocol's Open has no set_info)."""
+    from smbprotocol.open import SMB2SetInfoRequest, SMB2SetInfoResponse
+
+    request = SMB2SetInfoRequest()
+    request["info_type"] = info.INFO_TYPE
+    request["file_info_class"] = info.INFO_CLASS
+    request["file_id"] = handle.file_id
+    request["buffer"] = info
+    sent = handle.connection.send(request, handle.tree_connect.session.session_id,
+                                  handle.tree_connect.tree_connect_id)
+    SMB2SetInfoResponse().unpack(handle.connection.receive(sent)["data"].get_value())
+
+
+def _query_basic_info(handle):
+    """SMB2 QUERY_INFO FileBasicInformation on an open handle."""
+    from smbprotocol.file_info import FileBasicInformation
+    from smbprotocol.open import SMB2QueryInfoRequest, SMB2QueryInfoResponse
+
+    info = FileBasicInformation()
+    request = SMB2QueryInfoRequest()
+    request["info_type"] = info.INFO_TYPE
+    request["file_info_class"] = info.INFO_CLASS
+    request["file_id"] = handle.file_id
+    request["output_buffer_length"] = len(info)
+    sent = handle.connection.send(request, handle.tree_connect.session.session_id,
+                                  handle.tree_connect.tree_connect_id)
+    response = SMB2QueryInfoResponse()
+    response.unpack(handle.connection.receive(sent)["data"].get_value())
+    return response.parse_buffer(FileBasicInformation)
+
+
+def settime_case(r: Results, device: Device, mode: str) -> None:
+    """Set a file's last-write time on an open handle; a new handle must read it back."""
+    from smbprotocol.exceptions import SMBResponseException
+    from smbprotocol.file_info import FileBasicInformation
+    from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
+                                  ImpersonationLevel, Open, ShareAccess)
+
+    path = f"{TEST_DIR}\\settime-{mode}.bin"
+    share = ShareAccess.FILE_SHARE_READ | ShareAccess.FILE_SHARE_WRITE
+    conn, _, tree = DurableClient(device).connect()
+    try:
+        created = Open(tree, path)
+        created.create(ImpersonationLevel.Impersonation,
+                       FilePipePrinterAccessMask.GENERIC_READ | FilePipePrinterAccessMask.GENERIC_WRITE,
+                       0x80, share, CreateDisposition.FILE_OVERWRITE_IF, CreateOptions.FILE_NON_DIRECTORY_FILE)
+        created.write(b"settime\n", 0)
+        created.close()
+        if mode == "data":
+            access = FilePipePrinterAccessMask.GENERIC_READ | FilePipePrinterAccessMask.GENERIC_WRITE
+        else:
+            access = (FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES
+                      | FilePipePrinterAccessMask.FILE_WRITE_ATTRIBUTES)
+        handle = Open(tree, path)
+        handle.create(ImpersonationLevel.Impersonation, access, 0x80, share,
+                      CreateDisposition.FILE_OPEN, CreateOptions.FILE_NON_DIRECTORY_FILE)
+        info = FileBasicInformation()
+        for field in ("creation_time", "last_access_time", "change_time", "file_attributes"):
+            info[field] = 0  # 0 leaves the value unchanged
+        info["last_write_time"] = SETTIME_FILETIME
+
+        def accepted() -> bool:
+            try:
+                _set_basic_info(handle, info)
+                return True
+            except SMBResponseException as error:
+                print(f"    settime:{mode}: SET_INFO failed 0x{error.status:08x}", flush=True)
+                return False
+
+        r.check(f"settime:{mode}: SET_INFO accepts the last-write time", accepted)
+        handle.close()
+        check = Open(tree, path)
+        check.create(ImpersonationLevel.Impersonation, FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,
+                     0x80, share, CreateDisposition.FILE_OPEN, CreateOptions.FILE_NON_DIRECTORY_FILE)
+        try:
+            r.check(f"settime:{mode}: a new handle reads the time back",
+                    lambda: _query_basic_info(check)["last_write_time"].get_value() == SETTIME_FILETIME)
+        finally:
+            check.close()
+    finally:
+        with contextlib.suppress(Exception):
+            conn.disconnect()
+
+
 def mac_stall_case(r: Results, device: Device, mount_dir: Path, stall: int) -> None:
     """Stop the smbd serving the mount while a write is pending; resume it after
     macOS has opened a new session, which must reconnect the held handle."""
@@ -380,6 +476,9 @@ def main() -> int:
         for mode in DELETE_ON_CLOSE_MODES:
             if f"doc:{mode}" in wanted:
                 delete_on_close_case(results, device, mode)
+        for mode in SETTIME_MODES:
+            if f"settime:{mode}" in wanted:
+                settime_case(results, device, mode)
         if args.stall and "mac" in wanted:
             mac_stall_case(results, device, work / "smb", args.stall)
     finally:

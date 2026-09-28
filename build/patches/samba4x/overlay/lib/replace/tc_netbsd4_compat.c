@@ -3,11 +3,12 @@
 /*
  * NetBSD4 compatibility layer for symbols Samba can reference.
  *
- * NetBSD 6/7 do not compile this block; they use native libc support. For
- * NetBSD4, path-aware source3 VFS fallbacks handle normal SMB file I/O. These
- * libc-level shims are intentionally conservative: AT_FDCWD and absolute paths
- * can safely use older syscalls, but arbitrary relative dirfd operations do not
- * have enough information here to reconstruct a pathname safely.
+ * NetBSD 6/7 do not compile this block; they use native libc support. On every
+ * lane, SMB file I/O goes through vfs_default's path-aware fallbacks
+ * (source3/modules/tc_vfs_at_compat.c, patch 0003). These libc-level shims are
+ * intentionally conservative: AT_FDCWD and absolute paths can safely use older
+ * syscalls, but arbitrary relative dirfd operations do not have enough
+ * information here to reconstruct a pathname safely.
  */
 static int rep_at_path_is_direct(int dirfd, const char *path)
 {
@@ -104,9 +105,16 @@ static void rep_timespecs_to_timevals(const struct timespec times[2], struct tim
 	tv[1].tv_usec = times[1].tv_nsec / 1000;
 }
 
+/*
+ * NetBSD 4 libc has futimes() (microsecond times). Samba's configure checks
+ * lutimes but never futimes, so HAVE_FUTIMES is never defined: do not gate on
+ * it, or every handle-based time update fails with ENOSYS (SET_INFO on an open
+ * data handle, tdb's commit-time mtime). The callers pass real times or NULL
+ * for now, never UTIME_NOW or UTIME_OMIT (vfswrap_fntimes resolves omitted
+ * times first).
+ */
 int futimens(int fd, const struct timespec times[2])
 {
-#ifdef HAVE_FUTIMES
 	struct timeval tv[2];
 	struct timeval *tvp = NULL;
 	if (times != NULL) {
@@ -114,10 +122,6 @@ int futimens(int fd, const struct timespec times[2])
 		tvp = tv;
 	}
 	return futimes(fd, tvp);
-#else
-	errno = ENOSYS;
-	return -1;
-#endif
 }
 
 int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags)

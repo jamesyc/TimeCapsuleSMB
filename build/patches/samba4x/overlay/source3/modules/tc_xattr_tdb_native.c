@@ -1,8 +1,8 @@
 /*
- * Included by vfs_xattr_tdb.c (patch 0038) on a native HFS share. Mac xattrs
- * live in native HFS attributes (overlay airport_native_xattr.h): a
- * com.apple.* stream is its bare native attribute, and FinderInfo and
- * resource forks belong to fruit.
+ * Included by vfs_xattr_tdb.c (patch 0038) on a native HFS share. Every xattr
+ * lives in a native HFS attribute (overlay airport_native_xattr.h), DOS
+ * attributes, NT ACLs and Windows streams included: a com.apple.* stream is
+ * its bare native attribute, and FinderInfo and resource forks belong to fruit.
  */
 
 #define TC_APPLE_STREAM_XATTR_PREFIX "user.DosStream."
@@ -34,8 +34,8 @@ static bool tc_fruit_owned_native_xattr(const char *name)
 }
 
 /*
- * A native symlink opened as itself (Time Capsule native links, patch 0059)
- * has no descriptor. Its attributes live on the link, as Apple's AFP server
+ * A native symlink opened as itself (Time Capsule native links, patch 0045)
+ * has no descriptor; patch 0059 keeps its attributes on the link. Its attributes live on the link, as Apple's AFP server
  * stores them, and are reached by path with the no-follow syscalls. Any
  * other descriptor-less handle keeps failing with EBADF.
  *
@@ -302,8 +302,10 @@ static ssize_t tc_xattr_tdb_native_list(files_struct *fsp, char *list,
 
 /*
  * Native get, set and remove for a name xattr_tdb receives: a com.apple.*
- * stream name maps to its native attribute, and neither form may reach
- * fruit's FinderInfo or resource fork.
+ * stream name maps to its native attribute. Neither FinderInfo nor the resource
+ * fork is reachable as a stream, and the bare com.apple.ResourceFork name is
+ * refused; the bare com.apple.FinderInfo name passes through, because fruit
+ * reads and writes FinderInfo by that name through the VFS stack.
  */
 static ssize_t tc_xattr_tdb_native_get(files_struct *fsp, const char *name,
 				       void *value, size_t size)

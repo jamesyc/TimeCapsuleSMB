@@ -51,16 +51,17 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
 diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 --- a/source3/modules/vfs_default.c
 +++ b/source3/modules/vfs_default.c
-@@ -89,6 +89,18 @@ static int vfswrap_connect(vfs_handle_struct *handle, const char *service, const
+@@ -89,6 +89,19 @@ static int vfswrap_connect(vfs_handle_struct *handle, const char *service, const
  	handle->conn->open_how_resolve &= ~VFS_OPEN_HOW_RESOLVE_NO_XDEV;
  #endif
  
 +#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	/*
-+	 * Runtime Time Capsule kernels do not provide usable openat2()
-+	 * resolve constraints. Disable the optimistic direct openat2()
-+	 * probes so Samba falls back through its component path walk
-+	 * instead of weakening those constraints inside vfswrap_openat().
++	 * No NetBSD kernel has openat2(). Upstream clears these resolve bits on
++	 * openat2()'s first ENOSYS, but the path fallback in vfswrap_openat()
++	 * returns ENOSYS for them without clearing anything, so clear them here
++	 * once: Samba then walks components itself instead of asking for them
++	 * on every open.
 +	 */
 +	handle->conn->open_how_resolve &=
 +		~(VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS |
@@ -70,7 +71,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	return 0;    /* Return >= 0 for success */
  }
  
-@@ -393,6 +405,10 @@ static NTSTATUS vfswrap_get_dfs_referrals(struct vfs_handle_struct *handle,
+@@ -393,6 +406,10 @@ static NTSTATUS vfswrap_get_dfs_referrals(struct vfs_handle_struct *handle,
  	return NT_STATUS_OK;
  }
  
@@ -81,7 +82,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  static NTSTATUS vfswrap_create_dfs_pathat(struct vfs_handle_struct *handle,
  				struct files_struct *dirfsp,
  				const struct smb_filename *smb_fname,
-@@ -412,9 +428,17 @@ static NTSTATUS vfswrap_create_dfs_pathat(struct vfs_handle_struct *handle,
+@@ -412,9 +429,17 @@ static NTSTATUS vfswrap_create_dfs_pathat(struct vfs_handle_struct *handle,
  		goto out;
  	}
  
@@ -99,7 +100,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (ret == 0) {
  		status = NT_STATUS_OK;
  	} else {
-@@ -475,10 +499,19 @@ static NTSTATUS vfswrap_read_dfs_pathat(struct vfs_handle_struct *handle,
+@@ -475,10 +500,19 @@ static NTSTATUS vfswrap_read_dfs_pathat(struct vfs_handle_struct *handle,
  		}
  	}
  
@@ -119,7 +120,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (referral_len == -1) {
  		if (errno == EINVAL) {
  			/*
-@@ -515,11 +548,21 @@ static NTSTATUS vfswrap_read_dfs_pathat(struct vfs_handle_struct *handle,
+@@ -515,11 +549,21 @@ static NTSTATUS vfswrap_read_dfs_pathat(struct vfs_handle_struct *handle,
  		goto err;
  	}
  
@@ -141,15 +142,15 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (ret < 0) {
  		status = map_nt_error_from_unix(errno);
  		goto err;
-@@ -587,7 +630,26 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
+@@ -587,7 +631,26 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
  	DIR *result;
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_fdopendir);
 +#if defined(TC_SAMBA4X_VFS_AT_PATH_COMPAT) && defined(TC_SAMBA4X_NETBSD4_COMPAT)
 +	/*
-+	 * NetBSD4's libc does not provide fdopendir(), and Samba's replace
-+	 * fallback reports that as NT_STATUS_NOT_SUPPORTED during SMB2
-+	 * QUERY_DIRECTORY. Keep fd-relative emulation in the open/stat helpers,
++	 * NetBSD4's libc does not provide fdopendir(): sys_fdopendir() returns
++	 * ENOSYS, which SMB2 QUERY_DIRECTORY reports as NT_STATUS_NOT_SUPPORTED.
++	 * Keep fd-relative emulation in the open/stat helpers,
 +	 * but use Samba's tracked directory name here: NetBSD4's opendir(".")
 +	 * after fchdir() creates a DIR that does not enumerate reliably once
 +	 * Samba restores the connection cwd.
@@ -168,7 +169,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	END_PROFILE_X(syscall_fdopendir);
  	return result;
  }
-@@ -630,7 +692,11 @@ static int vfswrap_mkdirat(vfs_handle_struct *handle,
+@@ -630,7 +693,11 @@ static int vfswrap_mkdirat(vfs_handle_struct *handle,
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_mkdirat);
  
@@ -180,7 +181,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_mkdirat);
  	return result;
-@@ -654,16 +720,27 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -654,16 +721,28 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  			  files_struct *fsp,
  			  const struct vfs_open_how *how)
  {
@@ -201,14 +202,15 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	SMB_ASSERT((dirfd != -1) || (smb_fname->base_name[0] == '/'));
 +#else
 +	/*
-+	 * The appliance fallback accepts cwd-relative basenames when dirfsp is
-+	 * present, because it temporarily fchdir()s to that live pathref fd.
++	 * No assertion here: the appliance fallback resolves a relative name by
++	 * fchdir() to dirfsp's pathref fd, and fails with EINVAL when there is
++	 * no dirfsp or EBADF when it has no fd, where upstream would panic.
 +	 */
 +#endif
  
  	if (how->resolve & ~(VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS |
  			     VFS_OPEN_HOW_WITH_BACKUP_INTENT |
-@@ -676,6 +753,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -676,6 +755,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -216,7 +218,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  #ifdef O_PATH
  	have_opath = true;
  	if (fsp->fsp_flags.is_pathref) {
-@@ -700,7 +778,33 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -700,7 +780,33 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  		flags &= (O_PATH|O_CLOEXEC|O_DIRECTORY|O_NOFOLLOW);
  	}
  #endif
@@ -250,7 +252,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
  	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
  	{
-@@ -750,6 +854,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -750,6 +856,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  			smb_fname->base_name,
  			flags,
  			mode);
@@ -258,7 +260,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	if (became_root) {
  		int err = errno;
-@@ -1352,11 +1457,37 @@ static int vfswrap_renameat(vfs_handle_struct *handle,
+@@ -1352,11 +1459,37 @@ static int vfswrap_renameat(vfs_handle_struct *handle,
  		flags |= RENAME_NOREPLACE;
  	}
  
@@ -296,7 +298,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_renameat);
  	return result;
-@@ -1430,12 +1561,20 @@ static int vfswrap_fstatat(
+@@ -1430,12 +1563,20 @@ static int vfswrap_fstatat(
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -317,7 +319,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_fstatat);
  	return result;
-@@ -2790,9 +2929,13 @@ static int vfswrap_unlinkat(vfs_handle_struct *handle,
+@@ -2790,9 +2931,13 @@ static int vfswrap_unlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -331,7 +333,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_unlinkat);
  	return result;
-@@ -3255,9 +3398,15 @@ static int vfswrap_symlinkat(vfs_handle_struct *handle,
+@@ -3255,9 +3400,15 @@ static int vfswrap_symlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -347,7 +349,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	END_PROFILE_X(syscall_symlinkat);
  	return result;
  }
-@@ -3274,10 +3423,17 @@ static int vfswrap_readlinkat(vfs_handle_struct *handle,
+@@ -3274,10 +3425,17 @@ static int vfswrap_readlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -365,7 +367,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_readlinkat);
  	return result;
-@@ -3297,11 +3453,32 @@ static int vfswrap_linkat(vfs_handle_struct *handle,
+@@ -3297,11 +3455,32 @@ static int vfswrap_linkat(vfs_handle_struct *handle,
  	SMB_ASSERT(!is_named_stream(old_smb_fname));
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -398,7 +400,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  
  	END_PROFILE_X(syscall_linkat);
  	return result;
-@@ -3319,10 +3496,14 @@ static int vfswrap_mknodat(vfs_handle_struct *handle,
+@@ -3319,10 +3498,14 @@ static int vfswrap_mknodat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  

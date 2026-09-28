@@ -1,7 +1,7 @@
 diff --git a/source3/lib/dumpcore.c b/source3/lib/dumpcore.c
 --- a/source3/lib/dumpcore.c
 +++ b/source3/lib/dumpcore.c
-@@ -56,11 +56,27 @@ static char *get_default_corepath(const char *logbase, const char *progname)
+@@ -56,11 +56,29 @@ static char *get_default_corepath(const char *logbase, const char *progname)
  		return NULL;
  	}
  
@@ -11,8 +11,10 @@ diff --git a/source3/lib/dumpcore.c b/source3/lib/dumpcore.c
 +	 * reports root-created directories there with uid 4294967295, and the
 +	 * firmware does not provide chown. The strict owner check rejects an
 +	 * otherwise usable core directory and leaves smbd with no corepath.
-+	 * Keep the mode request, but accept the HFS ownership model for this
-+	 * appliance-only static build so panic cores land under the payload logs.
++	 * On this appliance-only static build use the non-strict create: it
++	 * still asks mkdir for 0700 but skips both the owner and the 0700 mode
++	 * checks on an existing directory, so panic cores land under the
++	 * payload logs.
 +	 */
 +	if (!directory_create_or_exist(tmp_corepath, mode)) {
 +		DEBUG(0, ("Failed to create %s with mode 0%o\n",

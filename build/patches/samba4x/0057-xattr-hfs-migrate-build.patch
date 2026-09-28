@@ -1,11 +1,12 @@
 diff --git a/source3/utils/wscript_build b/source3/utils/wscript_build
 --- a/source3/utils/wscript_build
 +++ b/source3/utils/wscript_build
-@@ -146,6 +146,14 @@ bld.SAMBA3_BINARY('dbwrap_tool',
+@@ -146,6 +146,15 @@ bld.SAMBA3_BINARY('dbwrap_tool',
                   cmdline_contexts
                   ''')
  
-+# AirPort deployments run this once before the first native-HFS Samba start.
++# Deploy runs this while legacy xattr.tdb sources remain; per-volume receipts
++# beside the databases skip disks it has finished.
 +# Keep it separate from smbd so migration-only TDB and tree-walk code does not
 +# occupy the device's small runtime RAM disk after conversion.
 +bld.SAMBA3_BINARY('tc_xattr_hfs_migrate',

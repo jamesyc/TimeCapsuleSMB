@@ -468,6 +468,11 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
     if phase not in {"copy", "cleanup"}:
         raise ValueError("unsupported migration phase")
     if not inventory.sources:
+        # AppleDouble ._ files are converted only alongside a legacy xattr.tdb:
+        # every release that wrote them (b18c5901 to 2629eaec) also wrote one,
+        # and skipping the whole-disk walk keeps deploys fast. On HFS shares
+        # fruit ignores ._ files (patch 0055), so a volume whose legacy payload
+        # was removed, e.g. by uninstall, keeps its ._ files unconverted.
         return f"migration_phase={phase} skipped reason=no_legacy_tdb"
     log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
     oversized = inventory.oversized.setdefault(phase, OversizedSummary())

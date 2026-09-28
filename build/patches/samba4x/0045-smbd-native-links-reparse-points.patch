@@ -152,7 +152,7 @@ diff --git a/source3/smbd/globals.h b/source3/smbd/globals.h
 diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 --- a/source3/smbd/open.c
 +++ b/source3/smbd/open.c
-@@ -1158,6 +1158,19 @@ static NTSTATUS open_file(
+@@ -1158,6 +1158,20 @@ static NTSTATUS open_file(
  		open_fd = true;
  	}
  
@@ -161,8 +161,9 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 +	    tc_native_links_enabled(conn)) {
 +		/*
 +		 * A native link reached as the object itself (macOS, or
-+		 * FILE_OPEN_REPARSE_POINT) has no data to read and cannot be
-+		 * opened with O_NOFOLLOW. macOS asks for FILE_READ_DATA when it
++		 * FILE_OPEN_REPARSE_POINT) has no data of its own (0060 serves
++		 * AAPL readers an XSym view of it) and cannot be opened with
++		 * O_NOFOLLOW. macOS asks for FILE_READ_DATA when it
 +		 * reads the reparse point; give it the same fd-less handle a
 +		 * stat open gets. can_read stays false below.
 +		 */
@@ -172,7 +173,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  	if (open_fd) {
  		int ret;
  
-@@ -6404,6 +6417,14 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6404,6 +6418,14 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		case S_IFDIR:
  			break;
  		case S_IFLNK:
@@ -187,7 +188,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  			/*
  			 * We should never get this far with a symlink
  			 * "as such". Report as not existing.
-@@ -6712,6 +6733,19 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6712,6 +6734,19 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		}
  	}
  

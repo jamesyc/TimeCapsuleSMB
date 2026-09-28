@@ -1,7 +1,7 @@
 diff --git a/source3/smbd/smb2_query_directory.c b/source3/smbd/smb2_query_directory.c
 --- a/source3/smbd/smb2_query_directory.c
 +++ b/source3/smbd/smb2_query_directory.c
-@@ -284,6 +284,22 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
+@@ -284,6 +284,21 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
  	}
  
  	if (!fsp->fsp_flags.is_directory) {
@@ -9,9 +9,8 @@ diff --git a/source3/smbd/smb2_query_directory.c b/source3/smbd/smb2_query_direc
 +		/*
 +		 * NetBSD4 Time Capsule builds can reach SMB2 QUERY_DIRECTORY
 +		 * with a directory handle whose cached is_directory flag has
-+		 * been lost. Trust stat when it still says directory; otherwise
-+		 * let the later directory open and enumeration path decide
-+		 * instead of failing on the stale flag.
++		 * been lost. Trust the handle's cached stat when it still says
++		 * directory; otherwise reject the request as upstream does.
 +		 */
 +		if (fsp->fsp_name != NULL &&
 +		    S_ISDIR(fsp->fsp_name->st.st_ex_mode))

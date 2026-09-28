@@ -1,5 +1,7 @@
-/* One-shot migration of xattr_tdb metadata into AirPort HFS storage.
- * This is a standalone deployment helper, not part of the resident smbd. */
+/* Deploy-only migration of legacy xattr_tdb and AppleDouble metadata into
+ * AirPort HFS storage. Deploy runs it (inspect, copy, cleanup, retire) on every
+ * deploy while legacy databases remain. This is a standalone deployment
+ * helper, not part of the resident smbd. */
 #include "includes.h"
 #include "system/filesys.h"
 #include "lib/dbwrap/dbwrap.h"
@@ -1258,8 +1260,9 @@ static char *tc_appledouble_path(TALLOC_CTX *mem_ctx, const char *path)
 		(int)(base - path), path, base + 1);
 }
 
-/* The exact placeholder vfs_fruit already removes when
- * fruit:wipe_intentionally_left_blank_rfork=yes. */
+/* The exact placeholder upstream fruit's AppleDouble conversion removes when
+ * fruit:wipe_intentionally_left_blank_rfork=yes. That conversion is off on
+ * HFS shares since patch 0055, so on these disks only this helper removes it. */
 static const uint8_t tc_empty_resourcefork[] = {
 	0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E,
@@ -1922,14 +1925,14 @@ static void tc_classify_unmatched_keys(struct tc_migration *migration)
 
 /* Move the closed database aside under a name nobody has used. rename() over
  * an existing file would destroy quarantined data, so a taken slot is skipped
- * and a full set of slots is an error that leaves the database in place. The
- * manager serializes migration runs, so the lstat/rename pair has no writer to
- * race against. Durability (review 2, R10): the directory is opened before
- * the rename so an unopenable directory aborts before anything moves; after
- * the rename the directory is fsync'd and a failure is reported with the
- * destination named -- the data is safe under that name, but the run is not
- * reported as durably complete. A filesystem that refuses directory fsync
- * (EINVAL/ENOTSUP) gets a whole-filesystem sync(2) instead. */
+ * and a full set of slots is an error that leaves the database in place.
+ * Deploy waits for any earlier migrator to exit and runs one at a time, so the
+ * lstat/rename pair has no writer to race against. Durability: the directory
+ * is opened before the rename so an unopenable directory aborts before
+ * anything moves; after the rename the directory is fsync'd and a failure is
+ * reported with the destination named -- the data is safe under that name,
+ * but the run is not reported as durably complete. A filesystem that refuses
+ * directory fsync (EINVAL/ENOTSUP) gets a whole-filesystem sync(2) instead. */
 static int tc_fsync_directory_or_sync(int dir_fd)
 {
 	if (fsync(dir_fd) == 0) {
@@ -2022,9 +2025,9 @@ static int tc_quarantine_tdb(struct tc_migration *migration)
 	return 0;
 }
 
-/* FNV-1a over the whole file. The manager records this after each run it
- * owns and refuses its checkpoint when the database no longer matches, so a
- * restored or foreign xattr.tdb is rescanned instead of trusted. */
+/* FNV-1a over the whole file, the same hash inspect reports. Deploy's
+ * per-volume receipts compare that hash, so a restored or foreign xattr.tdb is
+ * rescanned instead of trusted; this subcommand prints it for tests. */
 static int tc_print_fingerprint(const char *path)
 {
 	uint8_t buffer[TC_COPY_SIZE];
@@ -2576,7 +2579,7 @@ static int tc_multi_retire(struct tc_multi *multi)
 	/* A surviving receipt describes the whole cohort. Retiring an earlier DB
 	 * while a later DB is unresolved would make that receipt incompatible on
 	 * the next deploy and permit stale metadata replay. Preflight the entire
-	 * cohort before unlinking any source. */
+	 * cohort before retiring (deleting or quarantining) any source. */
 	for (i = 0; i < multi->count; i++) {
 		struct tc_multi_source *s = ordered[i];
 		for (k = 0; k < s->scan.num_tdb_keys; k++) {

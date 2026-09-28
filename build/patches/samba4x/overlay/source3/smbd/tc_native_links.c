@@ -186,7 +186,8 @@ static NTSTATUS tc_link_xsym_body(struct files_struct *fsp,
  * A Mac that created a link keeps its cached view of the XSym file it wrote
  * until its attribute cache expires, and reads that file's data to resolve
  * the link. After the close-time conversion the name is a native link, so
- * serve the same bytes from it. Only Mac link-object handles get here.
+ * serve the same bytes from it. Any Mac reading a native link's data gets
+ * them, links AFP or SSH made included. Only Mac link-object handles get here.
  */
 NTSTATUS tc_native_links_read_xsym(struct files_struct *fsp,
 				   TALLOC_CTX *mem_ctx,

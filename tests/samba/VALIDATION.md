@@ -1107,3 +1107,63 @@ the committed service hashes on all three lanes.
 | NetBSD 6 (NetBSD 7 SDK) | 365,740 |
 | NetBSD 4 LE | 325,064 |
 | NetBSD 4 BE | 324,472 |
+
+## NetBSD 4 futimens and patch comment audit (2026-09-28)
+
+A comment audit of every patch, `series` entry and overlay file found one code
+bug. NetBSD 4 libc has no `futimens()`, and 0002's replacement in overlay
+`lib/replace/tc_netbsd4_compat.c` called `futimes()` only under
+`#ifdef HAVE_FUTIMES`, which configure never defines (it checks `lutimes`, not
+`futimes`; both NetBSD 4 SDKs have `futimes` in `libc.a`). On both NetBSD 4
+lanes every handle-based time update therefore failed with ENOSYS:
+
+- SET_INFO of a last-write time on a handle opened for data returned
+  NOT_SUPPORTED and left the mtime unchanged, as Windows `CopyFile` does when
+  it copies dates. A handle opened only for attributes worked (smbd serves it by
+  name), and so did macOS `cp -p` and `ditto` onto a mount, which set times
+  through such a handle. NetBSD 6 was unaffected.
+- tdb's transaction commit also calls `futimens(fd, NULL)`, which failed
+  quietly.
+
+The shim now always calls `futimes()`; its callers pass real times or NULL,
+never UTIME_NOW or UTIME_OMIT. The NetBSD 4 LE and BE link maps now pull
+`futimes.o` from libc. New `durable_device` cases `settime:data` and
+`settime:attributes` set the time and read it back through a new handle: on
+the old smbd NetBSD 4 LE failed `settime:data` (0xC00000BB) and passed the
+other, and NetBSD 6 passed both.
+
+0007's `tdb_reopen` hunk was dead on every lane and on host builds (tdb reopens
+only where libreplace replaces pread/pwrite), so it was removed; lib/tdb's
+`open.c` is now pristine. The patch is renamed `0007-tdb-wrap-o-cloexec.patch`
+and keeps only tdb_wrap's `O_CLOEXEC` fallback. Everything else in this change
+is comments: stripping comments from both patched trees leaves only those two
+code differences. The NetBSD 6 kernel probe behind 0003 (ENOSYS for openat,
+fstatat, mkdirat, unlinkat and readlinkat; fdopendir works) is now recorded in
+`series`. The corrections cover 0002, 0003, 0004, 0008, 0013, 0014, 0015,
+0016, 0017, 0018, 0019, 0023, 0028, 0031, 0041, 0043, 0045, 0049, 0051,
+0055-0060, the native-metadata heading and seven overlay files, plus
+`_samba4x.sh`'s getifaddrs comments, `config.c`'s aio_fork memory note and
+`migration.py`'s note on converting `._` files only with a legacy xattr.tdb.
+
+- Host regression run (Docker, sanitizers): all 120 cases passed.
+- `make test-parallel`: 2606 passed.
+- NetBSD 4 LE device, with this smbd swapped in: `durable_device` passed 29/29
+  (`settime:data` included) and `doctor` passed (86 checks). The swap was then
+  undone.
+- NetBSD 6 device, with this smbd swapped in after a Time Machine backup: the
+  regression drivers ran on the device (68 runs, all passed; the rebuilt lane
+  reproduced the committed smbd byte for byte); `durable_device` passed 29/29
+  and `doctor` passed (86 checks). `cp -p` and `ditto` onto a Mac mount kept
+  the source mtime; lsarpc returned OBJECT_NAME_NOT_FOUND with srvsvc and
+  `smbutil view` working; the one-off shutdown-close reproductions (another
+  tree disconnected, IPC$ connected last, either session order, delete on
+  close with a decoy under "/") all passed; the log since smbd's start had 14
+  durable disconnects and no failed one, no chdir failure, no failed delete,
+  and no panic or signal. The swap was then undone.
+- The three service binaries rebuilt byte-identical (`config.c` comment only).
+
+| Lane | smbd bytes | migrator bytes |
+| --- | ---: | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,234,616 | 2,151,044 |
+| NetBSD 4 LE | 10,256,960 | 2,166,860 |
+| NetBSD 4 BE | 10,255,848 | 2,166,444 |

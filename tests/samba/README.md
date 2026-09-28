@@ -274,7 +274,11 @@ status) unless the new session names the old one. The `rst+ipc-tdis` and
 `rst+second-session` cases drop the connection after another tree or session
 has closed, and the `doc:` cases end a session holding a delete-on-close file
 without a CLOSE (by reset or a bare LOGOFF); without 0062 smbd closes those
-files from `/` and loses the durable handle or the delete. `--case NAME`
+files from `/` and loses the durable handle or the delete. The `settime:`
+cases set a file's last-write time through a handle opened for data (as
+Windows `CopyFile` does) and through one opened only for attributes (as macOS
+does), then read it back; NetBSD 4's `futimens` replacement (0002) once failed
+the data case with NOT_SUPPORTED. `--case NAME`
 (repeatable) runs only the named cases. The macOS case stops the smbd serving
 a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
 and checks that the Mac's reconnect keeps the handle and its data. It works in a

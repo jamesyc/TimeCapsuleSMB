@@ -141,7 +141,7 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
                 share->name, share->path, config->aio_fork ? " aio_fork" : "");
         /* Each helper holds up to an 8 MiB buffer. One Mac used at most two
          * helpers in benchmarks on both device families, and more were no
-         * faster; two bound the memory to 16 MiB per client. */
+         * faster; two bound the memory to 16 MiB per client per mounted share. */
         if (config->aio_fork)
             fputs("    aio_fork:max_children = 2\n", file);
         /* Samba's default, "mangled names = illegal", lists DOS device names

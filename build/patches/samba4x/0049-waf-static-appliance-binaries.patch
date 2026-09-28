@@ -1,13 +1,14 @@
 diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
 --- a/buildtools/wafsamba/wafsamba.py
 +++ b/buildtools/wafsamba/wafsamba.py
-@@ -446,6 +446,36 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
+@@ -446,6 +446,37 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
  
  
  #################################################################
 +def APPLY_TC_STATIC_BINARY_ENV(bld, taskgen):
-+    # Time Capsule runs smbd from a tiny RAM disk. Link the deployed smbd
-+    # fully static with its link map. The other shipped binary, the metadata
++    # The devices cannot load Samba's shared libraries (NetBSD 4 runs only
++    # static binaries). Link the deployed smbd fully static with its link
++    # map. The other shipped binary, the metadata
 +    # migrator, is named here too; only the opt-in regression drivers, never
 +    # shipped, are matched by their tc_*_test naming convention. Both link
 +    # fully static without smbd's map.
@@ -38,7 +39,7 @@ diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
  def SAMBA_BINARY(bld, binname, source,
                   deps='',
                   includes='',
-@@ -570,6 +600,7 @@ def SAMBA_BINARY(bld, binname, source,
+@@ -570,6 +601,7 @@ def SAMBA_BINARY(bld, binname, source,
          samba_use_hostcc = use_hostcc
          )
      APPLY_HOSTCC_ENV(bld, t)

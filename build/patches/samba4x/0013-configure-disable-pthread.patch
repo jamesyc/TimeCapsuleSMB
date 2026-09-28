@@ -19,7 +19,7 @@ diff --git a/lib/replace/wscript b/lib/replace/wscript
 -    conf.CHECK_FUNCS_IN('pthread_create', 'pthread', checklibc=True, headers='pthread.h')
 +    # The top-level wscript sets NO_PTHREADS for --disable-pthread. Skip
 +    # every pthread probe then: 'disabled' is not 'error', so none of the
-+    # checks below runs and HAVE_PTHREAD stays undefined.
++    # pthread probes below runs and HAVE_PTHREAD stays undefined.
 +    no_pthreads = bool(conf.env.NO_PTHREADS)
 +    if no_pthreads:
 +        conf.SET_TARGET_TYPE('pthread', 'EMPTY')

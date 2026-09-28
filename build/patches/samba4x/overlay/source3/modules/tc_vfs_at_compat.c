@@ -2,9 +2,10 @@
 
 /*
  * Time Capsule runtime kernels are older than the NetBSD SDKs used to build
- * Samba. The NetBSD 6 appliance binary is built against NetBSD 7 headers, and
- * NetBSD 4 lacks the same *at syscall family, so source3 can see *at/openat2
- * support at compile time that is missing on-device.
+ * Samba. The NetBSD 6 appliance binary is built against NetBSD 7 headers,
+ * which declare the *at family, but Apple's NetBSD 6.0 kernel returns ENOSYS
+ * for openat, fstatat, mkdirat, unlinkat and readlinkat (probed on the device
+ * 2026-09-27); NetBSD 4 has none of them. No NetBSD has openat2.
  *
  * Do not emulate relative dirfd operations in lib/replace: a raw fd is not
  * enough context there. The default VFS layer still has Samba's live dirfsp,

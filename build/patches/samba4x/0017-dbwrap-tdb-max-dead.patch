@@ -36,7 +36,7 @@ diff --git a/source3/lib/dbwrap/dbwrap_open.c b/source3/lib/dbwrap/dbwrap_open.c
  	struct loadparm_context *lp_ctx = NULL;
  	bool persistent = (tdb_flags & TDB_CLEAR_IF_FIRST) == 0;
  
-@@ -91,6 +92,20 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
+@@ -91,6 +92,22 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
  				base,
  				hash_size);
  
@@ -44,6 +44,8 @@ diff --git a/source3/lib/dbwrap/dbwrap_open.c b/source3/lib/dbwrap/dbwrap_open.c
 +	 * TDB_VOLATILE defaults to retaining dead records per hash chain.
 +	 * Small volatile lock directories may prefer immediate freelist reuse;
 +	 * expose TDB's max-dead knob through Samba's parametric dbwrap options.
++	 * It applies to every local TDB opened here; persistent ones already use
++	 * 0, so only a positive value changes them.
 +	 */
 +	max_dead = lp_parm_int(GLOBAL_SECTION_SNUM,
 +			       "dbwrap_tdb_max_dead",
@@ -57,7 +59,7 @@ diff --git a/source3/lib/dbwrap/dbwrap_open.c b/source3/lib/dbwrap/dbwrap_open.c
  	if (tdb_flags & TDB_CLEAR_IF_FIRST) {
  		bool try_readonly = false;
  
-@@ -238,6 +253,10 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
+@@ -238,6 +255,10 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
  				   lock_order,
  				   dbwrap_flags);
  	talloc_unlink(mem_ctx, lp_ctx);

@@ -238,9 +238,12 @@ apply_samba4x_runtime_waf_cache() {
         HAVE_EXECINFO_H \
         HAVE_SETPROCTITLE \
         HAVE_SETPROCTITLE_INIT
-    # Samba's fallback probe is executed during cross-configure and can fail
-    # to prove IFCONF even though NetBSD provides the ioctl interface. Force
-    # the exact libreplace backend we want after disabling native getifaddrs.
+    # Patch 0043 reads NetBSD interfaces from sysctl(NET_RT_IFLIST), so smbd no
+    # longer calls getifaddrs() or libreplace's rep_getifaddrs() backends.
+    # Clearing configure's getifaddrs results and forcing the IFCONF backend
+    # (after configure, which runs its interface probes either way) is left
+    # over from before that patch and harmless; removing it also means
+    # dropping verify_samba4x_runtime_config's check and its test.
     set_waf_cache_value "$cache_file" "HAVE_IFACE_IFCONF" "1"
 }
 
@@ -351,11 +354,11 @@ samba4x_max_stripped_bytes() {
 verify_samba4x_runtime_config() {
     config_header="$1"
 
-    # Native NetBSD getifaddrs can hang during interface enumeration on Time
-    # Capsule runtime kernels. apply_samba4x_runtime_waf_cache and the config
-    # header edits clear configure's getifaddrs results and select
-    # libreplace's ioctl-based IFCONF backend; patch 0043 then reads NetBSD
-    # interfaces from routing messages instead.
+    # apply_samba4x_runtime_waf_cache and the config header edits clear
+    # configure's getifaddrs results and select libreplace's ioctl-based
+    # IFCONF backend. Since patch 0043 smbd reads NetBSD interfaces from
+    # routing messages (libc getifaddrs() misparses Apple's NetBSD 4
+    # if_msghdr) and calls neither backend, so this check is vestigial.
     require_config_symbol_defined "$config_header" "HAVE_IFACE_IFCONF"
 }
 

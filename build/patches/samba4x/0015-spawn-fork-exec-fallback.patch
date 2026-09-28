@@ -48,7 +48,7 @@ diff --git a/source3/printing/queue_process.c b/source3/printing/queue_process.c
 diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
 --- a/source3/rpc_client/local_np.c
 +++ b/source3/rpc_client/local_np.c
-@@ -16,7 +16,29 @@
+@@ -16,7 +16,31 @@
   */
  
  #include "source3/include/includes.h"
@@ -57,9 +57,11 @@ diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
 +#else
 +/*
 + * NetBSD 4 has no posix_spawn(). Every named pipe but srvsvc (served inside
-+ * smbd) comes here to start samba-dcerpcd, which the appliance does not ship:
-+ * this fails after a fork, as posix_spawn() fails with ENOENT on the NetBSD 6
-+ * lane, whose kernel has it.
++ * smbd) comes here to start samba-dcerpcd, which the appliance does not ship.
++ * Here the forked child's execve fails and its ready pipe ends, so the client
++ * sees NT_STATUS_CONNECTION_DISCONNECTED; on the NetBSD 6 lane, whose kernel
++ * has posix_spawn(), it fails with ENOENT and no child, and the client sees
++ * NT_STATUS_OBJECT_NAME_NOT_FOUND.
 + */
 +static int samba_fork_exec(const char *path, char *const argv[], char *const envp[], pid_t *pid)
 +{
@@ -78,7 +80,7 @@ diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
  #include "local_np.h"
  #include "lib/async_req/async_sock.h"
  #include "librpc/gen_ndr/ndr_named_pipe_auth.h"
-@@ -381,7 +403,11 @@ static struct tevent_req *start_rpc_host_send(
+@@ -381,7 +405,11 @@ static struct tevent_req *start_rpc_host_send(
  	}
  
  	become_root();

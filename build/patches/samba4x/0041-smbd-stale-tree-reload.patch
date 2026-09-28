@@ -57,7 +57,7 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -1857,9 +1857,14 @@ static void smbd_parent_sig_hup_handler(struct tevent_context *ev,
+@@ -1858,9 +1858,15 @@ static void smbd_parent_sig_hup_handler(struct tevent_context *ev,
  					void *siginfo,
  					void *private_data)
  {
@@ -66,9 +66,10 @@ diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 +		private_data, struct smbd_parent_context);
  	DBG_NOTICE("parent: Reloading services after SIGHUP\n");
 -	reload_services(NULL, NULL, false);
-+	/* The appliance manager signals its direct parent child. Reuse the
-+	 * existing config-update message to reach all workers, including those
-+	 * retaining revoked Apple USB bindings after a short cable bump. */
++	/* The appliance manager sends SIGHUP only to the smbd parent, its direct
++	 * child. Reuse the existing config-update message to reach all workers,
++	 * including those retaining revoked Apple USB bindings after a short
++	 * cable bump. */
 +	smbd_parent_conf_updated(parent->msg_ctx, parent, MSG_SMB_CONF_UPDATED,
 +		messaging_server_id(parent->msg_ctx), NULL);
  }

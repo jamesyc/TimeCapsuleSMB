@@ -1,7 +1,7 @@
 diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 --- a/source3/modules/vfs_default.c
 +++ b/source3/modules/vfs_default.c
-@@ -3610,7 +3610,23 @@ static NTSTATUS vfswrap_fstreaminfo(vfs_handle_struct *handle,
+@@ -3612,7 +3612,23 @@ static NTSTATUS vfswrap_fstreaminfo(vfs_handle_struct *handle,
  	}
  	status = vfs_stat_fsp(fsp);
  	if (!NT_STATUS_IS_OK(status)) {
