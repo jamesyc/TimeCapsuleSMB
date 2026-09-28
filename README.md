@@ -6,15 +6,15 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
 [![macOS App](https://img.shields.io/badge/macOS%20app-download-brightgreen)](https://github.com/jamesyc/TimeCapsuleSMB/releases/latest)
 
-Apple AirPort Time Capsules only support AFP and SMB1 natively. Apple has removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). TimeCapsuleSMB is a Samba setup that runs directly on the Time Capsule itself and makes it compatible with macOS 27+ computers. Newer computers running macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. Your old backup will automatically work after updating, no wipe required!
+Apple AirPort Time Capsules only support AFP and SMB1 natively. Apple has removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). **TimeCapsuleSMB** is a Samba setup that runs directly on the Time Capsule itself and makes it compatible with macOS 27+ computers. A computer running macOS 27+ can connect to the Time Capsule as a network share, and use it for Time Machine backups. Your old backup will automatically work after updating, no wipe required!
 
 This project has 2 parts:
 - a fork of Samba 4, modified to work on the Apple Time Capsule 
 - the installers for the Samba binary, via terminal or the **macOS GUI app**. 
 
-The Apple Time Capsule will run its own Samba 4.25 server, and will advertise SMB over Bonjour (show up automatically in the "Network" folder on macOS). You can open Finder or use Connect to Server, and you can use a normal SMB URL without relying on Apple’s legacy SMB1 stack. You can also use the disk for Time Machine backups:\
+The Apple Time Capsule will run its own Samba 4.25 server and will advertise SMB over Bonjour (show up automatically in the "Network" folder on macOS). You can open Finder or use Connect to Server, and you can use a normal SMB URL without relying on Apple’s legacy SMB1 stack. You can also use the disk for Time Machine backups:\
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />  
-You get the full Apple experience reproduced: after you install this, you generally do not have to worry about it again, even if the device IP address changes. It will show up automatically in the Time Machine section in the Settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
+You should get the full Apple "It just works" experience reproduced. After you install this, you generally do not have to worry about it again, even if the device IP address changes. It will show up automatically in the Time Machine section in the Settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
@@ -30,7 +30,6 @@ If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buym
 
 You will need:  
 - A macOS 14+ or Linux machine on the same local network as the Time Capsule
-- External storage must currently use HFS+. FAT32 disks are not supported.
 - The password for the Time Capsule
 
 For the python setup, you need:  
@@ -40,12 +39,12 @@ For the python setup, you need:
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
-Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled. The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled. The working binaries are saved in this repository under [bin/](bin), and the normal installer uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
 
 ## Quick Start (macOS app)
 
 1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
-2. Unzip the app and run it. If you get a "cannot be opened" warning, you need to manually disable Gatekeeper for this app.
+2. Unzip the app and run it. 
 3. Make sure *Local Network* permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
 4. Click "Add Device" on the left sidebar, and select your device. 
 5. Enter your device password, and click "Save Device". 
