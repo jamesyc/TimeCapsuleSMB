@@ -3,11 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
     RcLocalAutostartProbeResult,
+    flash_runtime_config_present_conn,
     probe_managed_runtime_conn,
     probe_netbsd4_rc_local_autostart_conn,
+    read_deployed_version_conn,
 )
 from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import run_remote_actions
@@ -32,6 +36,68 @@ class ActivationDecision:
     detail: str
     runtime: ManagedRuntimeProbeResult | None = None
     autostart: RcLocalAutostartProbeResult | None = None
+
+
+INSTALL_UPDATE_HINT = (
+    'Run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line.'
+)
+# Activation starts the installed runtime and checks it with this version's
+# readiness probes. They hold for every release of this major version from
+# v3.1.0 on, older or newer than this one: v3.1.0 is the first runtime that
+# leaves Apple's mDNSResponder running, which the probes require (v3.0.x
+# stopped it). Keep this in this major version, and raise it when a release
+# changes what the probes check.
+OLDEST_ACTIVATABLE_RELEASE_TAG = "v3.1.0"
+OLDEST_ACTIVATABLE_VERSION_CODE = 30100
+
+
+class ActivationInstallError(DeviceError):
+    """The device does not hold an install this version can start and verify."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def require_compatible_install(connection: SshConnection, callbacks: OperationCallbacks) -> None:
+    """Refuse to start an install this version cannot verify.
+
+    Activation runs the installed /mnt/Flash/rc.local and then verifies the
+    runtime with this version's probes. Without an install that only fails
+    with "Can't open /mnt/Flash/rc.local"; an install from another major
+    version, or older than OLDEST_ACTIVATABLE_RELEASE_TAG, fails verification
+    after the full timeout. Any other release of this major version starts.
+    """
+    if not flash_runtime_config_present_conn(connection):
+        callbacks.debug(deployed_config_present=False)
+        raise ActivationInstallError(
+            f"TimeCapsuleSMB is not installed on this device. {INSTALL_UPDATE_HINT}",
+            code="runtime_not_installed",
+        )
+    version = read_deployed_version_conn(connection)
+    callbacks.debug(
+        deployed_config_present=True,
+        deployed_release_tag=version.release_tag,
+        deployed_cli_version_code=version.cli_version_code,
+    )
+    if version.release_tag is None or version.cli_version_code is None:
+        raise ActivationInstallError(
+            "The installed TimeCapsuleSMB has no version information, so it is older than "
+            f"{OLDEST_ACTIVATABLE_RELEASE_TAG}, the oldest release {RELEASE_TAG} can start. {INSTALL_UPDATE_HINT}",
+            code="runtime_outdated",
+        )
+    if release_major(version.cli_version_code) > release_major(CLI_VERSION_CODE):
+        raise ActivationInstallError(
+            f"The installed TimeCapsuleSMB {version.release_tag} is from a newer major version than this "
+            f"version, {RELEASE_TAG}. Update TimeCapsuleSMB, then start it again.",
+            code="client_outdated",
+        )
+    if version.cli_version_code < OLDEST_ACTIVATABLE_VERSION_CODE:
+        raise ActivationInstallError(
+            f"The installed TimeCapsuleSMB {version.release_tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}, "
+            f"the oldest release {RELEASE_TAG} can start. {INSTALL_UPDATE_HINT}",
+            code="runtime_outdated",
+        )
 
 
 def decide_manual_activation(
@@ -120,9 +186,11 @@ def activate_runtime(
 ) -> ActivationDecision:
     """Start an already-deployed NetBSD4 runtime unless it is already running.
 
-    Raises DeviceError when the started runtime does not become ready.
+    Raises ActivationInstallError when the device has no install this version
+    can start, and DeviceError when the started runtime does not become ready.
     """
     callbacks.stage("probe_runtime")
+    require_compatible_install(connection, callbacks)
     decision = decide_manual_activation(connection)
     callbacks.debug(
         activation_decision=decision.reason,

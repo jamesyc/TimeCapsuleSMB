@@ -646,6 +646,9 @@
 "backend.error.deploy.deploy_no_disk_detected" = "Vidinis diskas neaptiktas. Patikrinkite, ar diskas prijungtas ir tinkamai įstatytas. Pastaba: kai kurie įrenginiai negali visiškai aptikti kai kurių didesnių nei 2 TB diskų.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Diskas rastas, bet tinkamas HFS skaidinys neaptiktas. Bandykite dar kartą arba ištrinkite diską naudodami AirPort Utility (Erase Disk), kad jis būtų suformatuotas Time Capsule. Pastaba: kai kurie įrenginiai negali aptikti kai kurių didesnių nei 2 TB skaidinių.";
 "backend.error.deploy.deploy_disk_not_writable" = "Rastas tinkamas HFS diskas, bet TimeCapsuleSMB negalėjo į jį įrašyti paketo. Pažadinkite arba iš naujo prijunkite diską, patikrinkite laisvą vietą ir bandykite dar kartą.";
+"backend.error.activate.runtime_not_installed" = "Šiame įrenginyje TimeCapsuleSMB neįdiegta. Pirmiausia paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.error.activate.runtime_outdated" = "Šiame įrenginyje įdiegta TimeCapsuleSMB versija yra senesnė nei ši programa. Pirmiausia paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.error.activate.client_outdated" = "Šiame įrenginyje įdiegta TimeCapsuleSMB versija yra naujesnė nei ši programa. Atnaujinkite TimeCapsuleSMB ir bandykite dar kartą.";
 "backend.error.ssh_enable_timeout" = "Įrenginys priėmė nustatymą, bet SSH dar nepasiekiama. Palaukite kelias minutes (arba paleiskite įrenginį iš naujo) ir bandykite dar kartą.";
 "backend.error.disk_write_test_unresponsive" = "Diskas neatsakė atliekant testą. Jis gali gesti arba negalėti įsisukti. Paleiskite Disk Repair; jei tai kartojasi, diską gali reikėti pakeisti.";
 "backend.error.manager_stop_timeout" = "Įrenginio paslauga užstrigo, dažnai dėl gendančio disko. Atjunkite įrenginį nuo maitinimo, vėl prijunkite ir bandykite dar kartą.";

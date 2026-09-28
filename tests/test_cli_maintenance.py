@@ -191,6 +191,24 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("without file transfer", output.getvalue())
         self.assertIn(ACTIVATION_SETTLE_MESSAGE.text, output.getvalue())
 
+    def test_activate_on_a_device_without_an_install_exits_before_running_anything(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        self._installed_config_present.return_value = False
+        with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn") as runtime_probe:
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
+                        with redirect_stdout(output):
+                            rc = activate.main(["--yes"])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("TimeCapsuleSMB is not installed on this device.", output.getvalue())
+        self.assertIn("Install / Update Samba", output.getvalue())
+        self.assertNotIn("Activating NetBSD4 payload", output.getvalue())
+        runtime_probe.assert_not_called()
+        actions_mock.assert_not_called()
+
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()

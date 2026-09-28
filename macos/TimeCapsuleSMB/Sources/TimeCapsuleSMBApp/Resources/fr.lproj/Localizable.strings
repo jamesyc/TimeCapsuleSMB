@@ -646,6 +646,9 @@
 "backend.error.deploy.deploy_no_disk_detected" = "Aucun disque interne n’a été détecté. Vérifiez que le disque est connecté et bien inséré. Remarque : certains appareils ne peuvent pas détecter complètement certains disques de plus de 2 To.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Un disque a été trouvé, mais aucune partition HFS valide. Réessayez ou effacez le disque avec Utilitaire AirPort pour le formater pour Time Capsule. Certains appareils ne reconnaissent pas certaines partitions de plus de 2 To.";
 "backend.error.deploy.deploy_disk_not_writable" = "Un disque HFS valide a été trouvé, mais TimeCapsuleSMB n’a pas pu y écrire les fichiers d’installation. Réactivez ou remontez le disque, vérifiez l’espace libre, puis réessayez.";
+"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB n’est pas installé sur cet appareil. Exécutez d’abord « Installer / Mettre à jour Samba ».";
+"backend.error.activate.runtime_outdated" = "Le TimeCapsuleSMB installé sur cet appareil est plus ancien que cette app. Exécutez d’abord « Installer / Mettre à jour Samba ».";
+"backend.error.activate.client_outdated" = "Le TimeCapsuleSMB installé sur cet appareil est plus récent que cette app. Mettez à jour TimeCapsuleSMB, puis réessayez.";
 "backend.error.ssh_enable_timeout" = "L’appareil a accepté le réglage, mais SSH n’est pas encore disponible. Patientez quelques minutes (ou redémarrez l’appareil), puis réessayez.";
 "backend.error.disk_write_test_unresponsive" = "Le disque n’a pas répondu au test. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
 "backend.error.manager_stop_timeout" = "Un service de l’appareil est bloqué, souvent à cause d’un disque défaillant. Débranchez l’appareil, rebranchez-le, puis réessayez.";

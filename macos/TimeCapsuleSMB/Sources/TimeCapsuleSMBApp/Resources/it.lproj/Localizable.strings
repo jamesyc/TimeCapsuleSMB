@@ -646,6 +646,9 @@
 "backend.error.deploy.deploy_no_disk_detected" = "Non è stato rilevato alcun disco interno. Controlla che il disco sia collegato e inserito correttamente. Nota: alcuni dispositivi non riescono a rilevare completamente alcuni dischi più grandi di 2 TB.";
 "backend.error.deploy.deploy_no_hfs_partition" = "È stato trovato un disco, ma nessuna partizione HFS valida. Riprova o inizializza il disco con Utility AirPort per formattarlo per Time Capsule. Alcuni dispositivi non rilevano determinate partizioni superiori a 2 TB.";
 "backend.error.deploy.deploy_disk_not_writable" = "È stato trovato un disco HFS valido, ma TimeCapsuleSMB non ha potuto scrivere i file di installazione. Riattiva o rimonta il disco, controlla lo spazio libero e riprova.";
+"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB non è installato su questo dispositivo. Esegui prima \"Installa/Aggiorna Samba\".";
+"backend.error.activate.runtime_outdated" = "Il TimeCapsuleSMB installato su questo dispositivo è più vecchio di questa app. Esegui prima \"Installa/Aggiorna Samba\".";
+"backend.error.activate.client_outdated" = "Il TimeCapsuleSMB installato su questo dispositivo è più recente di questa app. Aggiorna TimeCapsuleSMB, poi riprova.";
 "backend.error.ssh_enable_timeout" = "Il dispositivo ha accettato l’impostazione, ma SSH non è ancora disponibile. Attendi qualche minuto (o riavvia il dispositivo) e riprova.";
 "backend.error.disk_write_test_unresponsive" = "Il disco non ha risposto durante il test. Potrebbe essere guasto o non riuscire a mettersi in rotazione. Esegui la riparazione del disco; se il problema persiste, potrebbe essere necessario sostituirlo.";
 "backend.error.manager_stop_timeout" = "Un servizio sul dispositivo è bloccato, spesso a causa di un disco guasto. Scollega il dispositivo, ricollegalo e riprova.";

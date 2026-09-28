@@ -10,7 +10,9 @@ from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.probe import (
+    DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
     ProbeResult,
     ProbeStepResult,
@@ -257,6 +259,17 @@ class CliTestCase(unittest.TestCase):
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
+        # activate first checks the device holds an install of this version;
+        # tests that model a missing or other install set these return values.
+        self._installed_config_present = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", return_value=True)
+        )
+        self._installed_version = self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.services.activation.read_deployed_version_conn",
+                return_value=DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok"),
+            )
+        )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=None))
         def fake_configure_acp_probe(_connection, *, callbacks=None, **_kwargs):
             callbacks.add_debug_fields(

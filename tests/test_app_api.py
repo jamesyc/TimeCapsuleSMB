@@ -32,7 +32,9 @@ from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, ConfigError, parse_env_file
 from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.probe import (
+    DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
     ProbeResult,
     ProbeStepResult,
@@ -198,6 +200,17 @@ class AppApiTests(unittest.TestCase):
             mock.patch("timecapsulesmb.telemetry.urllib.request.urlopen", side_effect=AssertionError("tests must not send telemetry"))
         )
         self._runtime_wait_sleep = self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
+        # activate first checks the device holds an install of this version;
+        # tests that model a missing or other install set these return values.
+        self._installed_config_present = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", return_value=True)
+        )
+        self._installed_version = self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.services.activation.read_deployed_version_conn",
+                return_value=DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok"),
+            )
+        )
         self._flash_capacity = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
         )
@@ -4494,6 +4507,57 @@ MaSt = (
         self.assertEqual(payload["summary_args"], [])
         self.assertEqual(payload["summary"], NETBSD4_ACTIVATION_COMPLETED)
         self.assertEqual(payload["message"], NETBSD4_ACTIVATION_COMPLETED)
+
+    def run_activate_against_install(self, *, config_present: bool, version: DeployedVersionProbeResult):
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        params = {}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
+        self._installed_config_present.return_value = config_present
+        self._installed_version.return_value = version
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn") as runtime_probe:
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
+                        rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+
+        runtime_probe.assert_not_called()
+        remote_actions.assert_not_called()
+        return rc, self.assert_single_terminal_event(collector, "error")
+
+    def test_activate_without_an_install_offers_install_instead_of_running_rc_local(self) -> None:
+        rc, error = self.run_activate_against_install(
+            config_present=False, version=DeployedVersionProbeResult(None, None, "missing version metadata"),
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(error["code"], "runtime_not_installed")
+        self.assertIn("not installed", error["message"])
+        self.assertEqual(error["debug"]["stage"], "probe_runtime")
+        self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+        self.assertFalse(error["recovery"]["retryable"])
+
+    def test_activate_against_an_older_install_offers_install(self) -> None:
+        rc, error = self.run_activate_against_install(
+            config_present=True, version=DeployedVersionProbeResult("v2.2.7", 20207, "ok"),
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(error["code"], "runtime_outdated")
+        self.assertIn("v2.2.7 is older than v3.1.0", error["message"])
+        self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+
+    def test_activate_against_a_newer_install_asks_to_update_the_app(self) -> None:
+        rc, error = self.run_activate_against_install(
+            config_present=True, version=DeployedVersionProbeResult("v9.0.0", 90000, "ok"),
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(error["code"], "client_outdated")
+        self.assertIsNone(error["recovery"]["suggested_operation"])
 
     def test_activate_runtime_failure_reports_remote_error_with_runtime_logs(self) -> None:
         collector = CollectingSink()

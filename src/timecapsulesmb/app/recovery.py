@@ -209,6 +209,26 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
+    ("activate", "runtime_not_installed"): RecoveryInfo(
+        "TimeCapsuleSMB not installed",
+        "The device has no TimeCapsuleSMB installation to start.",
+        ("Run Install / Update Samba.",),
+        retryable=False,
+        suggested_operation="deploy",
+    ),
+    ("activate", "runtime_outdated"): RecoveryInfo(
+        "Installation is out of date",
+        "The installed TimeCapsuleSMB is too old for this app to start or check.",
+        ("Run Install / Update Samba.",),
+        retryable=False,
+        suggested_operation="deploy",
+    ),
+    ("activate", "client_outdated"): RecoveryInfo(
+        "App is out of date",
+        "The installed TimeCapsuleSMB is from a newer major version, which this app cannot start or check.",
+        ("Update TimeCapsuleSMB, then start it again.",),
+        retryable=False,
+    ),
     ("activate", "confirmation_required"): RecoveryInfo(
         "Activation confirmation required",
         "NetBSD4 activation starts the deployed runtime and must be confirmed.",

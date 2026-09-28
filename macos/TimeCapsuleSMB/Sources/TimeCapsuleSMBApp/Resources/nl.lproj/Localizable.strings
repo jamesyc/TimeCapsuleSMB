@@ -646,6 +646,9 @@
 "backend.error.deploy.deploy_no_disk_detected" = "Er is geen interne schijf gedetecteerd. Controleer of de schijf is aangesloten en goed vastzit. Opmerking: sommige apparaten kunnen sommige schijven groter dan 2 TB niet volledig detecteren.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Er is een schijf gevonden, maar geen geldige HFS-partitie. Probeer het opnieuw of wis de schijf met AirPort-configuratieprogramma om deze voor Time Capsule te formatteren. Sommige apparaten herkennen bepaalde partities groter dan 2 TB niet.";
 "backend.error.deploy.deploy_disk_not_writable" = "Er is een geldige HFS-schijf gevonden, maar TimeCapsuleSMB kon de installatiebestanden niet schrijven. Haal de schijf uit de slaapstand of koppel deze opnieuw, controleer de vrije ruimte en probeer het opnieuw.";
+"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is niet geïnstalleerd op dit apparaat. Voer eerst “Samba installeren / bijwerken” uit.";
+"backend.error.activate.runtime_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is ouder dan deze app. Voer eerst “Samba installeren / bijwerken” uit.";
+"backend.error.activate.client_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is nieuwer dan deze app. Werk TimeCapsuleSMB bij en probeer het daarna opnieuw.";
 "backend.error.ssh_enable_timeout" = "Het apparaat heeft de instelling geaccepteerd, maar SSH is nog niet beschikbaar. Wacht een paar minuten (of start het apparaat opnieuw op) en probeer het opnieuw.";
 "backend.error.disk_write_test_unresponsive" = "De schijf reageerde niet tijdens de test. Deze is mogelijk defect of kan niet gaan draaien. Voer Schijfreparatie uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "backend.error.manager_stop_timeout" = "Een service op het apparaat zit vast, vaak door een defecte schijf. Haal de stekker uit het apparaat, sluit het opnieuw aan en probeer het opnieuw.";

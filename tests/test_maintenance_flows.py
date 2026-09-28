@@ -8,7 +8,14 @@ from unittest import mock
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
-from timecapsulesmb.services.activation import activate_runtime
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
+from timecapsulesmb.device.probe import DeployedVersionProbeResult
+from timecapsulesmb.services.activation import (
+    OLDEST_ACTIVATABLE_RELEASE_TAG,
+    OLDEST_ACTIVATABLE_VERSION_CODE,
+    ActivationInstallError,
+    activate_runtime,
+)
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.maintenance import (
     FSCK_DID_NOT_RUN_MESSAGE,
@@ -225,19 +232,32 @@ class UninstallTests(unittest.TestCase):
 class ActivateRuntimeTests(unittest.TestCase):
     ACTIONS = [SimpleNamespace(name="start runtime")]
 
-    def activate(self, *, ready: bool, verify_error=None):
+    def activate(
+        self,
+        *,
+        ready: bool,
+        verify_error=None,
+        config_present: bool = True,
+        installed: tuple[str | None, int | None] = (RELEASE_TAG, CLI_VERSION_CODE),
+    ):
         recorder = RecordingCallbacks()
         runtime = SimpleNamespace(ready=ready, detail="managed runtime is ready" if ready else "managed runtime is not ready")
-        with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime):
-            with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as run_actions:
-                with mock.patch("timecapsulesmb.services.activation.wait_for_activation_settle") as settle:
-                    with mock.patch(
-                        "timecapsulesmb.services.activation.verify_managed_runtime_ready", side_effect=verify_error,
-                    ) as verify:
-                        try:
-                            result = activate_runtime(CONNECTION, self.ACTIONS, callbacks=recorder.callbacks)
-                        except DeviceError as exc:
-                            result = exc
+        version = DeployedVersionProbeResult(installed[0], installed[1], "ok")
+        with mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", return_value=config_present):
+            with mock.patch("timecapsulesmb.services.activation.read_deployed_version_conn", return_value=version):
+                with mock.patch(
+                    "timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime,
+                ) as probe:
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as run_actions:
+                        with mock.patch("timecapsulesmb.services.activation.wait_for_activation_settle") as settle:
+                            with mock.patch(
+                                "timecapsulesmb.services.activation.verify_managed_runtime_ready", side_effect=verify_error,
+                            ) as verify:
+                                try:
+                                    result = activate_runtime(CONNECTION, self.ACTIONS, callbacks=recorder.callbacks)
+                                except DeviceError as exc:
+                                    result = exc
+        self.probe = probe
         return result, recorder, run_actions, settle, verify
 
     def test_running_runtime_is_left_alone(self) -> None:
@@ -246,10 +266,89 @@ class ActivateRuntimeTests(unittest.TestCase):
         self.assertFalse(decision.run_actions)
         self.assertEqual(recorder.stages, ["probe_runtime"])
         self.assertEqual(recorder.messages, ["managed runtime is ready"])
-        self.assertEqual(recorder.debug, {"activation_decision": "runtime_already_ready", "manual_activation_required": False})
+        self.assertEqual(recorder.debug, {
+            "deployed_config_present": True,
+            "deployed_release_tag": RELEASE_TAG,
+            "deployed_cli_version_code": CLI_VERSION_CODE,
+            "activation_decision": "runtime_already_ready",
+            "manual_activation_required": False,
+        })
         run_actions.assert_not_called()
         settle.assert_not_called()
         verify.assert_not_called()
+
+    def assert_refused_before_touching_the_runtime(self, result, run_actions, settle, verify, *, code: str) -> None:
+        self.assertIsInstance(result, ActivationInstallError)
+        self.assertEqual(result.code, code)
+        self.probe.assert_not_called()
+        run_actions.assert_not_called()
+        settle.assert_not_called()
+        verify.assert_not_called()
+
+    def test_device_without_an_install_is_refused_before_running_rc_local(self) -> None:
+        # v3.1.1 ran the missing /mnt/Flash/rc.local and failed with a raw
+        # "Can't open /mnt/Flash/rc.local" from the device shell.
+        result, recorder, run_actions, settle, verify = self.activate(ready=False, config_present=False)
+
+        self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="runtime_not_installed")
+        self.assertIn("not installed", str(result))
+        self.assertIn("Install / Update Samba", str(result))
+        self.assertEqual(recorder.debug, {"deployed_config_present": False})
+
+    def test_install_without_version_information_is_refused_as_outdated(self) -> None:
+        result, _recorder, run_actions, settle, verify = self.activate(ready=False, installed=(None, None))
+
+        self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="runtime_outdated")
+        self.assertIn(f"older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", str(result))
+
+    def test_install_older_than_the_oldest_startable_release_is_refused(self) -> None:
+        # v2.x and v3.0.x lack what this version verifies (v3.0.x stopped
+        # Apple's mDNSResponder), so v3.1.1 waited the full 200 s and failed.
+        for tag, code in (("v2.2.9", 20215), ("v3.0.0", 30000), ("v3.0.9", OLDEST_ACTIVATABLE_VERSION_CODE - 1)):
+            with self.subTest(tag=tag):
+                result, _recorder, run_actions, settle, verify = self.activate(ready=True, installed=(tag, code))
+
+                self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="runtime_outdated")
+                self.assertIn(f"{tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", str(result))
+                self.assertIn("Install / Update Samba", str(result))
+
+    def test_other_releases_of_this_major_version_are_started_and_verified(self) -> None:
+        # Activation needs the same major version, not the same release: an
+        # app update without a redeploy still starts the installed runtime.
+        for tag, code in (("v3.1.0", OLDEST_ACTIVATABLE_VERSION_CODE), ("v3.9.0", 30900)):
+            with self.subTest(tag=tag):
+                decision, recorder, run_actions, _settle, verify = self.activate(ready=False, installed=(tag, code))
+
+                self.assertTrue(decision.run_actions)
+                self.assertEqual(recorder.debug["deployed_release_tag"], tag)
+                run_actions.assert_called_once_with(CONNECTION, self.ACTIONS)
+                verify.assert_called_once()
+
+    def test_running_install_of_an_older_release_is_left_alone(self) -> None:
+        decision, _recorder, run_actions, _settle, verify = self.activate(
+            ready=True, installed=("v3.1.0", OLDEST_ACTIVATABLE_VERSION_CODE),
+        )
+
+        self.assertEqual(decision.reason, "runtime_already_ready")
+        run_actions.assert_not_called()
+        verify.assert_not_called()
+
+    def test_install_from_a_newer_major_version_asks_for_an_update_of_this_tool(self) -> None:
+        newer_major = (release_major(CLI_VERSION_CODE) + 1) * 10000
+        result, _recorder, run_actions, settle, verify = self.activate(ready=False, installed=("v9.0.0", newer_major))
+
+        self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="client_outdated")
+        self.assertIn("v9.0.0 is from a newer major version", str(result))
+        self.assertIn("Update TimeCapsuleSMB", str(result))
+
+    def test_oldest_startable_release_is_in_this_major_version(self) -> None:
+        # A new major version must set its own floor; the gate compares majors
+        # only above it.
+        self.assertEqual(release_major(OLDEST_ACTIVATABLE_VERSION_CODE), release_major(CLI_VERSION_CODE))
+        self.assertLessEqual(OLDEST_ACTIVATABLE_VERSION_CODE, CLI_VERSION_CODE)
+        # The tag in the messages names the release the code gates on.
+        code = OLDEST_ACTIVATABLE_VERSION_CODE
+        self.assertEqual(OLDEST_ACTIVATABLE_RELEASE_TAG, f"v{code // 10000}.{code // 100 % 100}.{code % 100}")
 
     def test_stopped_runtime_is_started_then_verified(self) -> None:
         decision, recorder, run_actions, settle, verify = self.activate(ready=False)

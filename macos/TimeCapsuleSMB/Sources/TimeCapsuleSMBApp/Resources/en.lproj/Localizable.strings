@@ -644,6 +644,9 @@
 "backend.error.deploy.deploy_no_disk_detected" = "No internal disk was detected. Check that the disk is connected and seated. Note: some devices cannot fully detect some disks larger than 2 TB.";
 "backend.error.deploy.deploy_no_hfs_partition" = "A disk was found, but no valid HFS partition was detected. Retry again, or erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. Note: some devices cannot detect some partitions larger than 2 TB.";
 "backend.error.deploy.deploy_disk_not_writable" = "A valid HFS disk was found, but TimeCapsuleSMB could not write the payload to it. Wake or remount the disk, check free space, then retry.";
+"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is not installed on this device. Run \"Install / Update Samba\" first.";
+"backend.error.activate.runtime_outdated" = "The TimeCapsuleSMB installed on this device is older than this app. Run \"Install / Update Samba\" first.";
+"backend.error.activate.client_outdated" = "The TimeCapsuleSMB installed on this device is newer than this app. Update TimeCapsuleSMB, then try again.";
 "backend.error.ssh_enable_timeout" = "The device accepted the setting, but SSH hasn't come up yet. Wait a few minutes (or restart the device) and try again.";
 "backend.error.disk_write_test_unresponsive" = "The disk did not respond when tested. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.";
 "backend.error.manager_stop_timeout" = "A service on the device is stuck, often due to a failing disk. Unplug the device, plug it back in, and try again.";
