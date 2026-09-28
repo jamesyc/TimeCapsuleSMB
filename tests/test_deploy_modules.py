@@ -4,6 +4,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import plistlib
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -97,8 +98,15 @@ from timecapsulesmb.device.probe import (
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
 )
-from timecapsulesmb.device.storage import MaStVolume, PayloadHome, PayloadVerificationResult, mounted_mast_volumes_conn
+from timecapsulesmb.device.storage import (
+    MaStDiscoveryResult,
+    MaStVolume,
+    PayloadHome,
+    PayloadVerificationResult,
+    mounted_mast_volumes_conn,
+)
 from timecapsulesmb.services.activation import ActivationDecision, decide_manual_activation, decide_netbsd4_post_reboot_activation
+from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
     DeployArtifactPaths,
@@ -108,6 +116,8 @@ from timecapsulesmb.services.deploy import (
     DeployRuntimeConfig,
     PreparedDeployPlan,
     complete_deployment_after_upload,
+    device_has_no_internal_disk,
+    mast_no_volume_error,
     upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.runtime_verification import (
@@ -2373,6 +2383,51 @@ describe_managed_smbd_status "" ""
                     self.assertFalse(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=1))
         run_ssh_mock.assert_called_once()
         sleep_mock.assert_called_once_with(5)
+
+
+class NoDiskErrorTests(unittest.TestCase):
+    """An empty MaSt means different things on a Time Capsule and an Extreme."""
+
+    EMPTY_MAST = MaStDiscoveryResult((), 10, "MaSt=<plist><array/></plist>")
+
+    def compatibility(self, syaps: tuple[str, ...] = (), models: tuple[str, ...] = ()) -> DeviceCompatibility:
+        return DeviceCompatibility(
+            os_name="NetBSD", os_release="6.0", arch="earmv4", elf_endianness="little",
+            payload_family="netbsd6_samba4", device_generation="gen5", supported=True,
+            reason_code="supported_netbsd6", syap_candidates=syaps, model_candidates=models,
+        )
+
+    def test_extreme_models_have_no_internal_disk(self) -> None:
+        self.assertTrue(device_has_no_internal_disk(self.compatibility(("120",))))
+        self.assertTrue(device_has_no_internal_disk(self.compatibility(("114", "117"))))
+        self.assertTrue(device_has_no_internal_disk(self.compatibility(models=("AirPort5,117",))))
+
+    def test_time_capsules_mixed_and_unknown_models_keep_the_internal_disk_message(self) -> None:
+        self.assertFalse(device_has_no_internal_disk(self.compatibility(("119",))))
+        # A NetBSD 4 LE probe that cannot tell a Time Capsule from an Extreme.
+        self.assertFalse(device_has_no_internal_disk(self.compatibility(("116", "117"))))
+        self.assertFalse(device_has_no_internal_disk(self.compatibility(("999",))))
+        self.assertFalse(device_has_no_internal_disk(self.compatibility()))
+        self.assertFalse(device_has_no_internal_disk(None))
+
+    def test_empty_mast_on_an_extreme_asks_for_a_usb_disk(self) -> None:
+        error = mast_no_volume_error(self.EMPTY_MAST, no_internal_disk=True)
+
+        self.assertEqual(error.code, "deploy_no_usb_disk_detected")
+        self.assertIn("No USB disk was detected after 10 MaSt queries", str(error))
+
+    def test_empty_mast_on_a_time_capsule_still_reports_the_internal_disk(self) -> None:
+        error = mast_no_volume_error(self.EMPTY_MAST)
+
+        self.assertEqual(error.code, "deploy_no_disk_detected")
+        self.assertIn("No internal disk was detected", str(error))
+
+    def test_an_unformatted_usb_disk_on_an_extreme_is_a_partition_problem(self) -> None:
+        raw = plistlib.dumps([{"deviceName": "sd0", "name": "USB HDD", "builtin": False, "partitions": []}]).decode()
+        error = mast_no_volume_error(MaStDiscoveryResult((), 1, raw), no_internal_disk=True)
+
+        self.assertEqual(error.code, "deploy_no_hfs_partition")
+
 
 
 if __name__ == "__main__":

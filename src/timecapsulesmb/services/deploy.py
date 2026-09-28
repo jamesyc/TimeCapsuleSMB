@@ -8,7 +8,14 @@ from pathlib import Path
 import time
 import tempfile
 
-from timecapsulesmb.core.config import DEFAULTS, MANAGED_PAYLOAD_DIR_NAME, AppConfig, parse_bool, shell_quote
+from timecapsulesmb.core.config import (
+    DEFAULTS,
+    MANAGED_PAYLOAD_DIR_NAME,
+    AppConfig,
+    airport_identity_from_model_or_syap,
+    parse_bool,
+    shell_quote,
+)
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
@@ -333,6 +340,28 @@ def no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
     )
 
 
+def no_usb_disk_message(*, attempts: int, delay_seconds: int) -> str:
+    return (
+        f"No USB disk was detected after {attempts} MaSt queries spaced {delay_seconds} seconds apart. "
+        "An AirPort Extreme has no internal disk: connect a USB disk formatted for Mac (HFS+), then retry."
+    )
+
+
+def device_has_no_internal_disk(compatibility: DeviceCompatibility | None) -> bool:
+    """True when every model the probe could be is an AirPort Extreme.
+
+    An Extreme has no internal disk, so an empty MaSt means no USB disk is
+    attached, not that an internal disk failed to appear."""
+    if compatibility is None:
+        return False
+    identities = [airport_identity_from_model_or_syap(syap=syap) for syap in compatibility.syap_candidates]
+    if not identities:
+        identities = [airport_identity_from_model_or_syap(model=model) for model in compatibility.model_candidates]
+    return bool(identities) and all(
+        identity is not None and identity.family == "airport_extreme" for identity in identities
+    )
+
+
 def no_hfs_partition_message() -> str:
     return (
         "A disk was found, but no valid HFS partition was detected. "
@@ -343,6 +372,21 @@ def no_hfs_partition_message() -> str:
 
 def no_writable_mast_volumes_message(volume_count: int) -> str:
     return f"MaSt found {volume_count} deployable HFS volume(s), but deploy could not write to any of them."
+
+
+def no_mounted_mast_volumes_message(volume_count: int) -> str:
+    return (
+        f"MaSt found {volume_count} deployable HFS volume(s), but none of them was mounted "
+        "and the device did not mount one when asked. Wait a minute and retry, or restart the device."
+    )
+
+
+def unconfirmed_mast_volumes_message(volume_count: int) -> str:
+    return (
+        f"MaSt found {volume_count} deployable HFS volume(s). A volume was mounted, but the device did not "
+        "confirm it for TimeCapsuleSMB, so it could be unmounted during deploy. Wait a minute and retry, "
+        "or restart the device."
+    )
 
 
 def mast_disk_inventory_debug_summary(disks: tuple[MaStDiskSnapshot, ...]) -> list[dict[str, object]]:
@@ -365,13 +409,18 @@ def mast_disk_inventory_debug_summary(disks: tuple[MaStDiskSnapshot, ...]) -> li
     ]
 
 
-def mast_no_volume_error(mast_discovery: MaStDiscoveryResult) -> DeployDeviceError:
+def mast_no_volume_error(mast_discovery: MaStDiscoveryResult, *, no_internal_disk: bool = False) -> DeployDeviceError:
     try:
         disks = parse_mast_inventory(mast_discovery.raw_output)
     except Exception:
         disks = ()
     if disks:
         return DeployDeviceError(no_hfs_partition_message(), code="deploy_no_hfs_partition")
+    if no_internal_disk:
+        return DeployDeviceError(
+            no_usb_disk_message(attempts=MAST_DISCOVERY_ATTEMPTS, delay_seconds=MAST_DISCOVERY_DELAY_SECONDS),
+            code="deploy_no_usb_disk_detected",
+        )
     return DeployDeviceError(
         no_mast_volumes_message(
             attempts=MAST_DISCOVERY_ATTEMPTS,
@@ -586,6 +635,7 @@ def select_deploy_payload_home(
     callbacks: OperationCallbacks | None = None,
     wait_for_mast_volumes: Callable[..., MaStDiscoveryResult] | None = None,
     select_payload_home: Callable[..., PayloadHomeSelection] | None = None,
+    no_internal_disk: bool = False,
 ) -> PayloadHome:
     callbacks = callbacks or OperationCallbacks()
     if dry_run:
@@ -604,7 +654,7 @@ def select_deploy_payload_home(
         except Exception:
             disks = ()
         callbacks.debug(mast_disk_inventory=mast_disk_inventory_debug_summary(disks))
-        raise mast_no_volume_error(mast_discovery)
+        raise mast_no_volume_error(mast_discovery, no_internal_disk=no_internal_disk)
 
     callbacks.stage("select_payload_home")
     if select_payload_home is None:
@@ -618,14 +668,20 @@ def select_deploy_payload_home(
     callbacks.debug(
         mast_candidate_checks=_best_effort_debug_summary(
             payload_candidate_checks_debug_summary,
-            getattr(selection, "checks", ()),
+            selection.checks,
         ),
     )
     if selection.payload_home is None:
-        raise DeployDeviceError(
-            no_writable_mast_volumes_message(len(mast_discovery.volumes)),
-            code="deploy_disk_not_writable",
-        )
+        volume_count = len(mast_discovery.volumes)
+        # Same code for each: the app's text ("wake or remount the disk,
+        # check free space") covers every way a volume could not be used.
+        if any(check.mounted for check in selection.checks):
+            message = no_writable_mast_volumes_message(volume_count)
+        elif any(check.mount.present for check in selection.checks):
+            message = unconfirmed_mast_volumes_message(volume_count)
+        else:
+            message = no_mounted_mast_volumes_message(volume_count)
+        raise DeployDeviceError(message, code="deploy_disk_not_writable")
     return selection.payload_home
 
 
@@ -660,6 +716,7 @@ def prepare_deployment_plan(
         callbacks=callbacks,
         wait_for_mast_volumes=wait_for_mast_volumes or storage_service.wait_for_mast_volumes_conn,
         select_payload_home=select_payload_home or select_payload_home_with_diagnostics_conn,
+        no_internal_disk=device_has_no_internal_disk(payload_context.compatibility),
     )
     if callbacks is not None:
         callbacks.stage("build_deployment_plan")

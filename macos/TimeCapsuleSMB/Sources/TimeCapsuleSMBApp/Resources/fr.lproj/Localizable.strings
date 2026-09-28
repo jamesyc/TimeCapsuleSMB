@@ -644,6 +644,7 @@
 "backend.error.auth_failed" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.error.configure.auth_failed" = "Le mot de passe administrateur AirPort n’a pas fonctionné.";
 "backend.error.deploy.deploy_no_disk_detected" = "Aucun disque interne n’a été détecté. Vérifiez que le disque est connecté et bien inséré. Remarque : certains appareils ne peuvent pas détecter complètement certains disques de plus de 2 To.";
+"backend.error.deploy.deploy_no_usb_disk_detected" = "Aucun disque USB n’a été détecté. L’AirPort Extreme n’a pas de disque interne : connectez un disque USB formaté pour Mac (HFS+), puis réessayez.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Un disque a été trouvé, mais aucune partition HFS valide. Réessayez ou effacez le disque avec Utilitaire AirPort pour le formater pour Time Capsule. Certains appareils ne reconnaissent pas certaines partitions de plus de 2 To.";
 "backend.error.deploy.deploy_disk_not_writable" = "Un disque HFS valide a été trouvé, mais TimeCapsuleSMB n’a pas pu y écrire les fichiers d’installation. Réactivez ou remontez le disque, vérifiez l’espace libre, puis réessayez.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB n’est pas installé sur cet appareil. Exécutez d’abord « Installer / Mettre à jour Samba ».";

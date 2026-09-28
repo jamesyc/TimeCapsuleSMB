@@ -190,6 +190,16 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
+    ("deploy", "deploy_no_usb_disk_detected"): RecoveryInfo(
+        "No USB disk detected",
+        "An AirPort Extreme has no internal disk, and the device reported no USB disk through MaSt.",
+        (
+            "Connect a USB disk formatted for Mac (HFS+).",
+            "If a disk is connected, check its power and cable, then retry.",
+        ),
+        retryable=True,
+        suggested_operation="deploy",
+    ),
     ("deploy", "deploy_no_hfs_partition"): RecoveryInfo(
         "No valid HFS partition",
         "A disk was found, but it does not expose a valid HFS partition that TimeCapsuleSMB can deploy to.",

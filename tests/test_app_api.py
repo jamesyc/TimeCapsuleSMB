@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import io
 import json
@@ -3593,7 +3593,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
@@ -3700,7 +3700,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
@@ -3778,7 +3778,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload", side_effect=fake_upload):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
@@ -3870,7 +3870,7 @@ class AppApiTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                                 with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                                     with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                        with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                        with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                             with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                                 with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=inventory):
                                                     with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload", side_effect=fail_in_stage):
@@ -3922,7 +3922,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
@@ -3981,7 +3981,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
@@ -4036,7 +4036,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
@@ -4098,7 +4098,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
-                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=PayloadHomeSelection(payload_home, ())):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
@@ -4182,10 +4182,11 @@ class AppApiTests(unittest.TestCase):
         select_payload_home_side_effect=None,
         run_remote_actions_side_effect=None,
         upload_side_effect=None,
+        probe_state: ProbedDeviceState | None = None,
     ) -> tuple[int, CollectingSink]:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        target = SimpleNamespace(connection=connection, probe_state=probe_state or probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
@@ -4272,6 +4273,27 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["reboot_was_attempted"], False)
         self.assertEqual(finished["device_came_back_after_reboot"], False)
         self.assertEqual(finished["deploy_startup_mode"], "reboot_then_verify")
+
+    def airport_extreme_probed_state(self) -> ProbedDeviceState:
+        state = probed_state()
+        compatibility = replace(
+            state.compatibility, syap_candidates=("120",), model_candidates=("AirPort7,120",),
+        )
+        return replace(state, compatibility=compatibility)
+
+    def test_deploy_on_airport_extreme_without_usb_disk_asks_for_a_usb_disk(self) -> None:
+        # An Extreme has no internal disk; "No internal disk detected" sent
+        # AirPort Extreme owners to reseat a disk they do not have.
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            SimpleNamespace(volumes=(), attempts=10, raw_output="MaSt=<plist><array/></plist>"),
+            probe_state=self.airport_extreme_probed_state(),
+        )
+
+        self.assertEqual(rc, 1)
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "deploy_no_usb_disk_detected")
+        self.assertIn("An AirPort Extreme has no internal disk", error["message"])
+        self.assertEqual(error["recovery"]["title"], "No USB disk detected")
 
     def test_deploy_reports_disk_without_hfs_as_no_hfs_partition_code(self) -> None:
         raw_mast_output = """

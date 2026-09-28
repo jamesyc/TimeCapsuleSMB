@@ -111,8 +111,12 @@ class MaStProbeDiagnostics:
 @dataclass(frozen=True)
 class PayloadCandidateCheck:
     volume: MaStVolume
-    mounted: bool
+    mount: VolumeMountResult
     writable: bool | None
+
+    @property
+    def mounted(self) -> bool:
+        return bool(self.mount)
 
 
 @dataclass(frozen=True)
@@ -608,16 +612,21 @@ def _remote_mounted_test(volume_root: str) -> str:
 
 def render_ensure_volume_root_mounted_script(volume_root: str, _device_path: str, wait_seconds: int) -> str:
     root = shlex.quote(volume_root)
-    mounted_test = _remote_mounted_test(volume_root)
+    mounted_test = shlex.quote(_remote_mounted_test(volume_root))
     attempts = DISKD_USE_VOLUME_GUARD_ATTEMPTS
+    # The last line reports each diskd.useVolume exit status and whether the
+    # volume was mounted in the end (see VolumeMountResult).
     return (
         f"mkdir -p {root}; "
+        "use_volume_rcs=; "
         "diskd_attempt=1; "
         f"while [ \"$diskd_attempt\" -le {attempts} ]; do "
-        f"if /usr/bin/acp rpc diskd.useVolume path:s:{root} >/dev/null 2>&1; then "
+        f"/usr/bin/acp rpc diskd.useVolume path:s:{root} >/dev/null 2>&1; use_volume_rc=$?; "
+        'use_volume_rcs="$use_volume_rcs${use_volume_rcs:+,}$use_volume_rc"; '
+        'if [ "$use_volume_rc" -eq 0 ]; then '
         "wait_attempt=0; "
         f'while [ "$wait_attempt" -le {wait_seconds} ]; do '
-        f"if /bin/sh -c {shlex.quote(mounted_test)}; then exit 0; fi; "
+        f'if /bin/sh -c {mounted_test}; then echo "use_volume_rcs=$use_volume_rcs mounted=yes"; exit 0; fi; '
         f'if [ "$wait_attempt" -eq {wait_seconds} ]; then break; fi; '
         'wait_attempt=$((wait_attempt + 1)); sleep 1; '
         "done; "
@@ -625,8 +634,31 @@ def render_ensure_volume_root_mounted_script(volume_root: str, _device_path: str
         f'if [ "$diskd_attempt" -lt {attempts} ]; then sleep 1; fi; '
         'diskd_attempt=$((diskd_attempt + 1)); '
         "done; "
+        f"if /bin/sh -c {mounted_test}; then mounted=yes; else mounted=no; fi; "
+        'echo "use_volume_rcs=$use_volume_rcs mounted=$mounted"; '
         "exit 1"
     )
+
+
+@dataclass(frozen=True)
+class VolumeMountResult:
+    """Whether diskd claimed the volume and it is mounted; truthy on success.
+
+    `detail` is the script's last line: each diskd.useVolume exit status and
+    whether the volume was mounted in the end, e.g. "use_volume_rcs=1,1
+    mounted=no". A failed request can still end with the volume mounted
+    (`present`): diskd refused it, or mounted it after the wait. Deploy does
+    not use such a volume, since diskd may unmount it under us."""
+
+    mounted: bool
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.mounted
+
+    @property
+    def present(self) -> bool:
+        return self.mounted or "mounted=yes" in self.detail.split()
 
 
 def ensure_volume_root_mounted_conn(
@@ -635,11 +667,12 @@ def ensure_volume_root_mounted_conn(
     device_path: str,
     *,
     wait_seconds: int,
-) -> bool:
+) -> VolumeMountResult:
     script = render_ensure_volume_root_mounted_script(volume_root, device_path, wait_seconds)
     timeout = max(30, wait_seconds * DISKD_USE_VOLUME_GUARD_ATTEMPTS + 45)
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=timeout)
-    return proc.returncode == 0
+    lines = (proc.stdout or "").strip().splitlines()
+    return VolumeMountResult(proc.returncode == 0, lines[-1].strip() if lines else "")
 
 
 def verify_payload_home_conn(
@@ -739,6 +772,8 @@ def payload_candidate_checks_debug_summary(checks: Sequence[PayloadCandidateChec
         summary = mast_volume_debug_summary(check.volume)
         summary["mounted"] = check.mounted
         summary["writable"] = check.writable
+        if check.mount.detail:
+            summary["mount"] = check.mount.detail
         summaries.append(summary)
     return summaries
 
@@ -752,14 +787,15 @@ def select_payload_home_with_diagnostics_conn(
 ) -> PayloadHomeSelection:
     checks: list[PayloadCandidateCheck] = []
     for volume in ordered_payload_candidate_volumes(volumes):
-        mounted = ensure_volume_root_mounted_conn(
+        mount = ensure_volume_root_mounted_conn(
             connection,
             volume.volume_root,
             volume.device_path,
             wait_seconds=wait_seconds,
         )
+        mounted = bool(mount)
         writable = volume_root_is_writable_conn(connection, volume.volume_root) if mounted else None
-        checks.append(PayloadCandidateCheck(volume, mounted, writable))
+        checks.append(PayloadCandidateCheck(volume, mount, writable))
         if mounted and writable:
             return PayloadHomeSelection(
                 PayloadHome(

@@ -21,6 +21,7 @@ from timecapsulesmb.device.storage import (
     PayloadHome,
     PayloadHomeSelection,
     PayloadVerificationResult,
+    VolumeMountResult,
 )
 from timecapsulesmb.deploy.commands import RunScriptAction
 from timecapsulesmb.deploy.planner import (
@@ -84,7 +85,7 @@ class CliDeployTests(CliTestCase):
         if mast_discovery is None:
             mast_discovery = MaStDiscoveryResult(mast_volumes, 1)
         if payload_home_selection is None:
-            checks = (PayloadCandidateCheck(mast_volumes[0], True, True),) if mast_volumes else ()
+            checks = (PayloadCandidateCheck(mast_volumes[0], VolumeMountResult(True), True),) if mast_volumes else ()
             payload_home_selection = PayloadHomeSelection(payload_home, checks)
         with ExitStack() as stack:
             if ensure_install_id:
@@ -715,7 +716,9 @@ class CliDeployTests(CliTestCase):
         result = self.run_deploy_cli(
             ["--yes"],
             mast_volumes=volumes,
-            payload_home_selection=PayloadHomeSelection(None, (PayloadCandidateCheck(volumes[0], True, False),)),
+            payload_home_selection=PayloadHomeSelection(
+                None, (PayloadCandidateCheck(volumes[0], VolumeMountResult(True, "use_volume_rcs=0 mounted=yes"), False),),
+            ),
             patch_actions=True,
             patch_upload=True,
             raises=SystemExit,
@@ -734,6 +737,55 @@ class CliDeployTests(CliTestCase):
         self.assertIn("mast_candidate_checks=[{disk:wd0,part:dk2", telemetry_error)
         self.assertIn("mounted:true", telemetry_error)
         self.assertIn("writable:false", telemetry_error)
+
+    def test_deploy_says_not_mounted_when_no_mast_volume_could_be_mounted(self) -> None:
+        # MaSt lists the volume but diskd never mounted it: "could not write"
+        # would send the user to check free space for a disk that is asleep.
+        volumes = (self._mast_volume("dk2"),)
+        check = PayloadCandidateCheck(volumes[0], VolumeMountResult(False, "use_volume_rcs=1,1 mounted=no"), None)
+        result = self.run_deploy_cli(
+            ["--yes"],
+            mast_volumes=volumes,
+            payload_home_selection=PayloadHomeSelection(None, (check,)),
+            patch_actions=True,
+            patch_upload=True,
+            raises=SystemExit,
+        )
+
+        self.assertEqual(
+            str(result.exception),
+            "MaSt found 1 deployable HFS volume(s), but none of them was mounted and the device did not "
+            "mount one when asked. Wait a minute and retry, or restart the device.",
+        )
+        result.mocks.run_remote_actions.assert_not_called()
+        telemetry_error = self.telemetry_payload("deploy_finished")["error"]
+        self.assertIn("mounted:false", telemetry_error)
+        self.assertIn("mount:use_volume_rcs=1,1 mounted=no", telemetry_error)
+
+    def test_deploy_says_the_device_did_not_confirm_a_volume_that_is_mounted(self) -> None:
+        # diskd refused the claim, but the volume is mounted: "none of them
+        # was mounted" would be wrong, and deploy must still not use it.
+        volumes = (self._mast_volume("dk2"),)
+        check = PayloadCandidateCheck(volumes[0], VolumeMountResult(False, "use_volume_rcs=1,1 mounted=yes"), None)
+        result = self.run_deploy_cli(
+            ["--yes"],
+            mast_volumes=volumes,
+            payload_home_selection=PayloadHomeSelection(None, (check,)),
+            patch_actions=True,
+            patch_upload=True,
+            raises=SystemExit,
+        )
+
+        self.assertEqual(
+            str(result.exception),
+            "MaSt found 1 deployable HFS volume(s). A volume was mounted, but the device did not confirm it "
+            "for TimeCapsuleSMB, so it could be unmounted during deploy. Wait a minute and retry, or restart the device.",
+        )
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+        telemetry_error = self.telemetry_payload("deploy_finished")["error"]
+        self.assertIn("mounted:false", telemetry_error)
+        self.assertIn("mount:use_volume_rcs=1,1 mounted=yes", telemetry_error)
 
     def test_deploy_exits_when_mast_discovery_never_finds_disks(self) -> None:
         raw_mast_output = "MaSt=<plist><array/></plist>"

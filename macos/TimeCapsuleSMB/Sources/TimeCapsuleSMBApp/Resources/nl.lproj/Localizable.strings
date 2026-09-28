@@ -644,6 +644,7 @@
 "backend.error.auth_failed" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
 "backend.error.configure.auth_failed" = "Het AirPort-beheerderswachtwoord werkte niet.";
 "backend.error.deploy.deploy_no_disk_detected" = "Er is geen interne schijf gedetecteerd. Controleer of de schijf is aangesloten en goed vastzit. Opmerking: sommige apparaten kunnen sommige schijven groter dan 2 TB niet volledig detecteren.";
+"backend.error.deploy.deploy_no_usb_disk_detected" = "Er is geen USB-schijf gedetecteerd. AirPort Extreme heeft geen interne schijf: sluit een voor de Mac (HFS+) geformatteerde USB-schijf aan en probeer het opnieuw.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Er is een schijf gevonden, maar geen geldige HFS-partitie. Probeer het opnieuw of wis de schijf met AirPort-configuratieprogramma om deze voor Time Capsule te formatteren. Sommige apparaten herkennen bepaalde partities groter dan 2 TB niet.";
 "backend.error.deploy.deploy_disk_not_writable" = "Er is een geldige HFS-schijf gevonden, maar TimeCapsuleSMB kon de installatiebestanden niet schrijven. Haal de schijf uit de slaapstand of koppel deze opnieuw, controleer de vrije ruimte en probeer het opnieuw.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is niet geïnstalleerd op dit apparaat. Voer eerst “Samba installeren / bijwerken” uit.";

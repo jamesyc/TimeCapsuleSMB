@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import sys
+import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -33,6 +36,7 @@ from timecapsulesmb.device.storage import (
     render_ensure_volume_root_mounted_script,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
+    VolumeMountResult,
     volume_root_is_writable_conn,
     wait_for_mast_volumes_conn,
 )
@@ -277,7 +281,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[True]) as writable_mock:
                 selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=30)
 
@@ -287,7 +291,10 @@ MaSt = (
 
     def test_ensure_volume_root_mounted_conn_claims_diskd_without_mount_hfs_fallback(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
-        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=0)) as run_ssh_mock:
+        with mock.patch(
+            "timecapsulesmb.device.storage.run_ssh",
+            return_value=mock.Mock(returncode=0, stdout="use_volume_rcs=0 mounted=yes\n"),
+        ) as run_ssh_mock:
             self.assertTrue(ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=12))
 
         run_ssh_mock.assert_called_once()
@@ -305,8 +312,102 @@ MaSt = (
 
     def test_ensure_volume_root_mounted_conn_reports_failure(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
-        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=1)):
-            self.assertFalse(ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0))
+        with mock.patch(
+            "timecapsulesmb.device.storage.run_ssh",
+            return_value=mock.Mock(returncode=1, stdout="use_volume_rcs=1,1 mounted=no\n"),
+        ):
+            result = ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0)
+        self.assertFalse(result)
+        self.assertEqual(result.detail, "use_volume_rcs=1,1 mounted=no")
+
+    def test_ensure_volume_root_mounted_conn_tolerates_missing_status_line(self) -> None:
+        # An SSH failure produces no script output; the result is still usable.
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=255, stdout="")):
+            result = ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0)
+        self.assertFalse(result)
+        self.assertEqual(result.detail, "")
+
+    def _run_mount_script(self, tmp: Path, *, use_volume_rcs: list[int], mounted_after_claim: bool, mounted_at_start: bool = False):
+        """Run the real mount script with fake acp, df, tail and sleep.
+
+        The fake acp answers with the given exit codes in order; the volume
+        appears in df once a claim succeeds (if mounted_after_claim) or is
+        mounted from the start (mounted_at_start)."""
+        state = tmp / "state.json"
+        state.write_text(json.dumps({"rcs": use_volume_rcs, "calls": 0, "mounted": mounted_at_start}))
+        tool = tmp / "tool.py"
+        tool.write_text(f"""
+import json, sys
+from pathlib import Path
+state = Path({str(state)!r})
+d = json.loads(state.read_text())
+if sys.argv[1] == "acp":
+    rc = d["rcs"][d["calls"]]
+    d["calls"] += 1
+    if rc == 0 and {mounted_after_claim!r}:
+        d["mounted"] = True
+    state.write_text(json.dumps(d))
+    sys.exit(rc)
+if sys.argv[1] == "df":
+    print("Filesystem 1K-blocks Used Avail Capacity Mounted on")
+    if d["mounted"]:
+        print("/dev/dk2 100 1 99 1% /Volumes/dk2")
+""")
+        script = render_ensure_volume_root_mounted_script("/Volumes/dk2", "/dev/dk2", 1)
+        fake = lambda name: f"{sys.executable} {tool} {name}"
+        script = script.replace("mkdir -p /Volumes/dk2", ":")
+        script = script.replace("/usr/bin/acp rpc diskd.useVolume", fake("acp"))
+        script = script.replace("/bin/df -k", fake("df"))
+        script = script.replace("/usr/bin/tail -n +2", "sed 1d")
+        script = script.replace("sleep 1", ":")
+        result = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True)
+        return result, json.loads(state.read_text())
+
+    def test_mount_script_reports_a_successful_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(Path(tmp), use_volume_rcs=[0], mounted_after_claim=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=0 mounted=yes")
+        self.assertEqual(state["calls"], 1)
+
+    def test_mount_script_reports_each_refused_claim_and_an_unmounted_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(Path(tmp), use_volume_rcs=[1, 3], mounted_after_claim=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=1,3 mounted=no")
+        self.assertEqual(state["calls"], 2)
+
+    def test_mount_script_reports_a_mounted_volume_diskd_would_not_claim(self) -> None:
+        # Mounted but unclaimed still fails: diskd may unmount it mid-deploy.
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _ = self._run_mount_script(
+                Path(tmp), use_volume_rcs=[1, 1], mounted_after_claim=False, mounted_at_start=True,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=1,1 mounted=yes")
+
+    def test_mount_result_tells_a_mounted_but_unconfirmed_volume_from_a_missing_one(self) -> None:
+        cases = [
+            (VolumeMountResult(True, "use_volume_rcs=0 mounted=yes"), True, True),
+            # diskd refused, or mounted it only after the wait: not usable, but there.
+            (VolumeMountResult(False, "use_volume_rcs=1,1 mounted=yes"), False, True),
+            (VolumeMountResult(False, "use_volume_rcs=0,0 mounted=yes"), False, True),
+            (VolumeMountResult(False, "use_volume_rcs=1,1 mounted=no"), False, False),
+            # No script output (the SSH command failed): nothing is known.
+            (VolumeMountResult(False, ""), False, False),
+        ]
+        for result, usable, present in cases:
+            with self.subTest(detail=result.detail, mounted=result.mounted):
+                self.assertIs(bool(result), usable)
+                self.assertIs(result.present, present)
+
+    def test_mount_script_reports_an_accepted_claim_whose_volume_never_appears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(Path(tmp), use_volume_rcs=[0, 0], mounted_after_claim=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=0,0 mounted=no")
+        self.assertEqual(state["calls"], 2)
 
     def test_render_ensure_volume_root_mounted_script_quotes_paths(self) -> None:
         script = render_ensure_volume_root_mounted_script("/Volumes/dk 2", "/dev/dk2", 1)
@@ -316,7 +417,7 @@ MaSt = (
     def test_verify_payload_home_conn_passes_for_boot_compatible_payload(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=0, stdout="ok\n")) as run_ssh_mock:
                 result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
 
@@ -331,11 +432,11 @@ MaSt = (
     def test_verify_payload_home_conn_reports_mount_and_payload_failures(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=False):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(False)):
             result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
         self.assertEqual(result, PayloadVerificationResult(False, "volume /Volumes/dk2 is not mounted"))
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)):
             with mock.patch(
                 "timecapsulesmb.device.storage.run_ssh",
                 return_value=mock.Mock(returncode=1, stdout="missing smbd; missing private directory\n"),
@@ -348,7 +449,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[False, True]) as mount_mock:
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[VolumeMountResult(False), VolumeMountResult(True)]) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=True) as writable_mock:
                 selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=9)
 
@@ -367,7 +468,13 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[False, True]):
+        with mock.patch(
+            "timecapsulesmb.device.storage.ensure_volume_root_mounted_conn",
+            side_effect=[
+                VolumeMountResult(False, "use_volume_rcs=1,1 mounted=no"),
+                VolumeMountResult(True, "use_volume_rcs=0 mounted=yes"),
+            ],
+        ):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=True):
                 selection = select_payload_home_with_diagnostics_conn(
                     connection,
@@ -396,6 +503,7 @@ MaSt = (
                     "uuid": "f42bdb83-c265-5522-a087-25606a4d0abf",
                     "mounted": False,
                     "writable": None,
+                    "mount": "use_volume_rcs=1,1 mounted=no",
                 },
                 {
                     "disk": "sd0",
@@ -407,6 +515,7 @@ MaSt = (
                     "uuid": "51f93e6f-dc69-524d-986d-cee4d7cb3573",
                     "mounted": True,
                     "writable": True,
+                    "mount": "use_volume_rcs=0 mounted=yes",
                 },
             ],
         )
@@ -416,7 +525,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=False):
                 selection = select_payload_home_with_diagnostics_conn(
                     connection,
@@ -447,7 +556,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=False):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(False)):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn") as writable_mock:
                 selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
 
@@ -460,12 +569,12 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[False, True]):
                 selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
         self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=VolumeMountResult(True)):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=False):
                 selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
         self.assertIsNone(selection.payload_home)
