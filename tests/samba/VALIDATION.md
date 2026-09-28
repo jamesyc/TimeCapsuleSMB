@@ -28,12 +28,18 @@ and 0031, 0038 into 0038 and 0054-0057, and 0045 into 0045 and 0058-0060 (see
 | Wait from inside the locked recreate callback | `transition` |
 | Leave a dangling pool pointer after freeing the pthreadpool | existing pthreadpool lifecycle test, ASan exit 86 |
 | Restore the zero-length fd array during worker shutdown | `read`, UBSan detected in worker and rejected by parent |
-| Leave the cancelled request's read watcher alive during worker replacement | `cancel_active`, bounded timeout |
+| Run the aio_fork FIFO synchronously instead of from the event loop | `queue`, `queued_fork_failure` (2026-09-28) |
+| Retire a freed request's helper instead of leaving it to finish | `cancel_active`, `teardown`, `orphan_error` (2026-09-28) |
+| Keep asserting that a helper freed with its tree connection is idle | `teardown`, smb_panic (2026-09-28) |
+| Report an exhausted live-open reconnect as FILE_NOT_AVAILABLE | `exhausted` (2026-09-28) |
+| Leave the talloc stack tracker pointer dangling at exit | `exit_late_frames`, ASan exit 86 (2026-09-28) |
+| Read the NULL tracker in the no-pthread atexit handler (upstream) | `exit_no_frames`, ASan exit 86 (2026-09-28) |
 
 The retry tests check eventual success/failure and unlocked waiting without
 asserting the particular retry limit of 34. Timing-sensitive cancellation is
-also run under sanitizers, which reproduced the stale-watcher failure that an
-ordinary build could miss.
+also run under sanitizers. An earlier row here, a stale read watcher during
+worker replacement, went with the replacement itself on 2026-09-28: a freed
+request's helper now finishes instead of being retired.
 
 Samba 4.24.3 validation on 2026-09-12:
 
@@ -967,3 +973,84 @@ ctime moved from 05:04:29 to 05:05:33 across `fd_close` (NetBSD 4 LE log).
 | NetBSD 6 (NetBSD 7 SDK) | 10,232,864 |
 | NetBSD 4 LE | 10,254,956 |
 | NetBSD 4 BE | 10,253,844 |
+
+## aio_fork queue from the event loop (0031), exhausted reconnect status (0024), poll_mt (0051), talloc tracker (0022) (2026-09-28)
+
+0031: only a tevent immediate on the helper list runs the aio_fork FIFO, as
+tevent_queue does. Freeing, completing or failing a request only arms it, so no
+request is dispatched or completed inside another's destructor or callback; a
+scheduler turn completes at most one request synchronously, arming the next
+turn first. A request freed while its helper works leaves the helper busy with
+the pending reply read (pthreadpool_tevent's orphaned job, without refusing the
+free); the reply is dropped and the helper reused, or retired if it failed. The
+child destructor now accepts a busy helper that holds such a read, because
+smbd frees the tree connection, and the helpers with it, before their replies
+arrive. 0024: FILE_NOT_AVAILABLE stays the retry loop's internal signal; after
+the retries the client gets OBJECT_NAME_NOT_FOUND (MS-SMB2 3.3.5.9.12, as
+upstream). 0051 no longer skips registering poll_mt, which needs no pthread.
+0022 also clears the tracker pointer after freeing it.
+
+Two findings about when 0031's teardown path runs:
+- A connection reset does not free outstanding requests:
+  smbXsrv_connection_shutdown_send waits for every pending SMB2 request, and
+  the FIFO runs to completion in both versions. The free-every-request path
+  is exit_server (SIGTERM, as when the manager stops smbd), which disconnects
+  the transport and then closes files with the requests outstanding.
+- With debug logging and 8 MiB reads, smbd reads a connection's next request
+  only once a large reply is sent, so the FIFO rarely holds anything. The
+  device checks below forced it by stopping (SIGSTOP) both idle helpers, so
+  that two reads could never finish and the rest waited.
+
+- Host regression run (Docker, sanitizers): all 120 invocations passed, with
+  new `teardown`, `orphan_error`, `exit_no_frames` and `exit_late_frames`
+  cases and `queue`, `cancel_active`, `queued_fork_failure` and `exhausted`
+  updated. Each of the six mutations in the table at the top of this file was
+  applied to the built tree in turn, and every listed case failed; restored,
+  they passed.
+- Device driver runs: the NetBSD 6 lane build ran every regression driver on
+  the NetBSD 6 device (SAMBA4X_RUN_REGRESSION_TESTS=1, 68 invocations), and
+  all 47 aio_fork and durable cases passed on the NetBSD 4 LE device by hand.
+  `full_buffer` had never run on a device: build/samba4-cross-exec.sh ran
+  drivers in the login directory, so its 8 MiB scratch file went to the ~4 MB
+  RAM root and the case failed. The wrapper now sets TMPDIR to its /Volumes
+  scratch directory (tests/test_build_cross_exec.py).
+- The migrators changed too: they link lib/util, and 0022 changed
+  talloc_stack.c (16-32 bytes).
+- Both LAN devices deployed (debug logging): `doctor` passed 86/86 and
+  `durable_device` 25/25 on each. `half-open` now gets OBJECT_NAME_NOT_FOUND
+  after 34 retries over 5100 ms ("returning NT_STATUS_OBJECT_NAME_NOT_FOUND" in
+  the log).
+- aio_fork on (VFS_AIO_FORK_ENABLED=1 in /mnt/Flash/tcapsulesmb.conf, runtime
+  restarted), two stopped helpers holding one read each and sixteen more
+  8 MiB reads sent, then SIGTERM to that client's smbd. NetBSD 6 queued all
+  sixteen; NetBSD 4 LE queued 13 and failed three (below). On NetBSD 4 LE, the
+  old smbd was run from a symlinked RAM path for comparison:
+
+  | smbd | Teardown | Fork attempts | Queued reads run | Replies built |
+  | --- | ---: | ---: | ---: | ---: |
+  | old (0031 before) | 2.7 s | 13 (mmap ENOMEM) | 13 | 13 |
+  | new | 10 ms | 0 | 0 | 0 |
+
+  The new smbd freed the two helpers once, with the tree connection, on both
+  devices, and nothing panicked. On NetBSD 4 LE the limit was smbd's heap,
+  not the device's RAM: both devices keep the default 128 MiB data size limit
+  (`ulimit -d`), and the NetBSD 4 smbd's phkmalloc grows its heap with sbrk,
+  which that limit caps. Samba allocates each read's 8 MiB reply buffer before
+  aio_fork sees the request, so fifteen live reads (two at the helpers, 13
+  queued) filled it. The next three reads got NO_MEMORY, and helpers forked
+  later could not map their 8 MiB buffers, because NetBSD 4's mmap refuses an
+  anonymous mapping larger than the room left under that limit. Both versions
+  did this. RAM was not the constraint: a queued read's buffer is not written
+  until the read runs. The NetBSD 6 smbd's jemalloc (NetBSD 7 libc) maps large
+  blocks with mmap before it tries sbrk, so all eighteen buffers fit there.
+  Macs stay far below both: Apple's SMB client (SMBClient source) splits I/O
+  into 256 KiB to 1 MiB requests with eight in flight per transfer.
+
+  With aio_fork on, `durable_device` passed 25/25 and `doctor` passed on both
+  devices; both were then set back to aio_fork off, and `doctor` passed again.
+
+| Lane | smbd bytes | migrator bytes |
+| --- | ---: | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,234,624 | 2,151,036 |
+| NetBSD 4 LE | 10,256,880 | 2,166,740 |
+| NetBSD 4 BE | 10,255,768 | 2,166,324 |

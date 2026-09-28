@@ -180,19 +180,6 @@ diff --git a/lib/pthreadpool/pthreadpool_tevent.c b/lib/pthreadpool/pthreadpool_
  	}
  
  	if (state->req == NULL) {
-diff --git a/lib/tevent/tevent.c b/lib/tevent/tevent.c
---- a/lib/tevent/tevent.c
-+++ b/lib/tevent/tevent.c
-@@ -127,7 +127,9 @@ static void tevent_backend_init(void)
- 	done = true;
- 
- 	tevent_poll_init();
-+#ifdef HAVE_PTHREAD
- 	tevent_poll_mt_init();
-+#endif
- #if defined(HAVE_EPOLL)
- 	tevent_epoll_init();
- #endif
 diff --git a/lib/tevent/tevent_threads.c b/lib/tevent/tevent_threads.c
 --- a/lib/tevent/tevent_threads.c
 +++ b/lib/tevent/tevent_threads.c

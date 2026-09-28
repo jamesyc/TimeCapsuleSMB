@@ -149,7 +149,9 @@ int main(int argc, char **argv)
 		.create_guid = create_guid, .open_owner = owner,
 	};
 	disconnect_at = 3;
-	if (!strcmp(argv[1], "exhausted")) { disconnect_at = 0; expected = NT_STATUS_FILE_NOT_AVAILABLE; }
+	/* The retries run out: FILE_NOT_AVAILABLE stays internal, and the client gets
+	 * OBJECT_NAME_NOT_FOUND, as MS-SMB2 3.3.5.9.12 gives for an attached open. */
+	if (!strcmp(argv[1], "exhausted")) { disconnect_at = 0; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; }
 	else if (!strcmp(argv[1], "already_disconnected")) { server_id_set_disconnected(&record.server_id); immediate = true; }
 	else if (!strcmp(argv[1], "client_mismatch")) { record.client_guid.time_low++; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; immediate = true; }
 	else if (!strcmp(argv[1], "create_mismatch")) { record.create_guid.time_low++; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; immediate = true; }

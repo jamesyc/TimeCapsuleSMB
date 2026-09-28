@@ -23,11 +23,16 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
  		DBG_WARNING("smbXsrv_open_global_verify_record for %s "
  			    "failed: %s\n",
  			    tdb_data_dbg(key),
-@@ -1349,6 +1359,16 @@ static void smb2srv_open_recreate_fn(
+@@ -1349,6 +1359,21 @@ static void smb2srv_open_recreate_fn(
  		goto not_found;
  	}
  
 +	if (live) {
++		/*
++		 * NT_STATUS_FILE_NOT_AVAILABLE is only the caller's "still
++		 * busy, retry" signal; the client never sees it (see
++		 * smb2srv_open_recreate).
++		 */
 +		DBG_DEBUG("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
 +			  "open %s is still attached to a live smbd; "
 +			  "treating matching durable reconnect as transiently "
@@ -40,7 +45,7 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
  	global->open_volatile_id = state->op->local_id;
  	global->server_id = state->me;
  	global->session_global_id = state->session->global->session_global_id;
-@@ -1391,6 +1411,13 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1391,6 +1416,16 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  	TDB_DATA key = smbXsrv_open_global_id_to_key(
  		persistent_id & UINT32_MAX, &key_buf);
  	int ret, local_id;
@@ -48,13 +53,16 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
 +	/*
 +	 * Time Machine can leave dozens of durable handles for the old smbd to
 +	 * disconnect. Allow that teardown to finish before rejecting reconnect.
++	 * The wait blocks only this client's own smbd (one process per client;
++	 * multichannel is off), which meanwhile answers nothing, including
++	 * lease breaks for handles this reconnect has already restored.
 +	 */
 +	const int live_open_retry_max = 34;
 +	int live_open_retries = 0;
  	NTSTATUS status;
  
  	if (session_info == NULL) {
-@@ -1438,6 +1465,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1438,6 +1473,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  
  	state.op->idle_time = now;
  	state.op->status = NT_STATUS_FILE_CLOSED;
@@ -62,7 +70,7 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
  
  	status = dbwrap_do_locked(
  		table->global.db_ctx, key, smb2srv_open_recreate_fn, &state);
-@@ -1448,6 +1476,46 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1448,6 +1484,53 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  		goto fail;
  	}
  
@@ -97,13 +105,20 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
 +	}
 +
 +	if (NT_STATUS_EQUAL(state.status, NT_STATUS_FILE_NOT_AVAILABLE)) {
++		/*
++		 * Still attached after the retries: answer as upstream and
++		 * MS-SMB2 3.3.5.9.12 do for an open whose session is not
++		 * NULL. macOS revokes the file on any reconnect error, so this
++		 * status only matters to the protocol.
++		 */
 +		DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
 +			   "open %s is still attached to a live smbd after "
 +			   "%d retries over %dms; returning "
-+			   "NT_STATUS_FILE_NOT_AVAILABLE\n",
++			   "NT_STATUS_OBJECT_NAME_NOT_FOUND\n",
 +			   tdb_data_dbg(key),
 +			   live_open_retries,
 +			   live_open_retries * live_open_retry_delay_msec);
++		state.status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
 +	}
 +
  	if (!NT_STATUS_IS_OK(state.status)) {

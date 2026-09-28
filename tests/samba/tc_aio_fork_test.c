@@ -246,16 +246,33 @@ static void test_sizes(struct vfs_handle_struct *h, const char *scenario)
 	free(in);
 }
 
+static unsigned calls_of(struct tevent_req *req)
+{
+	return *(unsigned *)tevent_req_callback_data(req, unsigned);
+}
+
+/* Run event loop turns until the scheduler has handed req to a helper. */
+static void run_until_active(struct tevent_req *req)
+{
+	unsigned turns;
+	for (turns = 0; !request_state(req)->active; turns++) {
+		CHECK(turns < 8);
+		CHECK(tevent_loop_once(event) == 0);
+	}
+}
+
 static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 {
 	struct tevent_req *requests[AIO_FORK_MAX_PENDING + 3];
 	char buffers[AIO_FORK_MAX_PENDING + 3][4];
 	unsigned i, count = ARRAY_SIZE(requests);
 	struct aio_child_list *list;
+	struct aio_child *worker;
 	for (i = 0; i < count; i++) {
 		requests[i] = submit(h, buffers[i], 4, 0, READ_CMD);
 	}
 	list = pool(h);
+	worker = list->children;
 	CHECK(list->num_children == 1 && worker_count == 1);
 	CHECK(list->num_pending == AIO_FORK_MAX_PENDING);
 	CHECK(request_state(requests[0])->active);
@@ -267,15 +284,44 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 		TALLOC_FREE(requests[2]);
 		CHECK(list->num_pending == AIO_FORK_MAX_PENDING - 1);
 	}
-	if (!strcmp(scenario, "cancel_active") || !strcmp(scenario, "queued_fork_failure")) {
-		if (!strcmp(scenario, "queued_fork_failure")) fail_fork = 1;
+	if (!strcmp(scenario, "cancel_active")) {
+		/* Freed while its helper works: the helper stays, busy with the
+		 * pending reply, instead of being killed, and nothing else is
+		 * dispatched or completed inside the destructor. */
 		TALLOC_FREE(requests[0]);
-		CHECK(list->num_children <= 1);
+		CHECK(list->num_children == 1 && list->children == worker);
+		CHECK(worker->busy && worker->orphan_read != NULL);
+		CHECK(request_state(requests[1])->queued && calls_of(requests[1]) == 0);
+		/* Its reply frees it, and a later turn hands it the FIFO head. */
+		run_until_active(requests[1]);
+		CHECK(list->children == worker && worker->orphan_read == NULL);
+		CHECK(worker_count == 1);
+	}
+	if (!strcmp(scenario, "queued_fork_failure")) {
+		/* requests[0]'s reply fails, so its helper is retired and no
+		 * replacement can be forked: the FIFO runs here instead, one
+		 * request per event loop turn, never inside another request's
+		 * callback. */
+		fail_read = 1;
+		fail_fork = 1;
+		finish(requests[0], -1, EIO);
+		requests[0] = NULL;
+		CHECK(list->num_children == 0);
+		for (i = 1; i <= AIO_FORK_MAX_PENDING; i++) {
+			CHECK(calls_of(requests[i]) == 0);
+			CHECK(tevent_loop_once(event) == 0);
+			CHECK(calls_of(requests[i]) == 1);
+		}
 	}
 	for (i = 0; i < count; i++) {
 		if (!requests[i]) continue;
-		if (i > 0 && i <= AIO_FORK_MAX_PENDING && !fail_fork) {
-			/* Completion of each preceding request must dispatch the FIFO head. */
+		if (i > 0 && i <= AIO_FORK_MAX_PENDING && !fail_fork &&
+		    !(i == 1 && !strcmp(scenario, "cancel_active"))) {
+			/* The preceding completion only armed the FIFO: this request
+			 * is still queued, and the next event loop turn hands it the
+			 * freed helper. (cancel_active already dispatched requests[1].) */
+			CHECK(request_state(requests[i])->queued);
+			CHECK(tevent_loop_once(event) == 0);
 			CHECK(request_state(requests[i])->active);
 		}
 		finish(requests[i], 4, 0);
@@ -285,6 +331,56 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 	fail_fork = 0;
 	finish(submit(h, buffers[0], 4, 0, READ_CMD), 4, 0);
 	CHECK(list->num_children == 1 && !list->children->busy);
+}
+
+/*
+ * smbd's teardown frees every outstanding request in turn (close.c's
+ * assert_no_pending_aio), then the tree connection and with it the helpers
+ * (main frees h). Nothing may be forked, dispatched or completed while the
+ * requests go, and freeing a helper still working for a freed request must not
+ * trip its destructor's assertion.
+ */
+static void test_teardown(struct vfs_handle_struct *h)
+{
+	struct tevent_req *requests[AIO_FORK_MAX_PENDING + 1];
+	char buffers[AIO_FORK_MAX_PENDING + 1][4];
+	unsigned i, j, count = ARRAY_SIZE(requests);
+	struct aio_child_list *list;
+	for (i = 0; i < count; i++) {
+		requests[i] = submit(h, buffers[i], 4, 0, READ_CMD);
+	}
+	list = pool(h);
+	CHECK(list->num_children == 1 && worker_count == 1);
+	CHECK(list->num_pending == AIO_FORK_MAX_PENDING);
+	for (i = 0; i < count; i++) {
+		TALLOC_FREE(requests[i]);
+		/* No fork, and no request completed inside that destructor. */
+		CHECK(worker_count == 1 && list->num_children == 1);
+		for (j = i + 1; j < count; j++) {
+			CHECK(calls_of(requests[j]) == 0);
+		}
+	}
+	CHECK(list->num_pending == 0 && list->pending == NULL);
+	CHECK(list->children->busy && list->children->orphan_read != NULL);
+}
+
+/* A freed request's helper whose reply fails is retired like any failed
+ * helper, and the FIFO moves on with a new one. */
+static void test_orphan_error(struct vfs_handle_struct *h)
+{
+	char buffers[2][4];
+	struct tevent_req *first = submit(h, buffers[0], 4, 0, READ_CMD);
+	struct tevent_req *next = submit(h, buffers[1], 4, 0, READ_CMD);
+	struct aio_child_list *list = pool(h);
+	struct aio_child *worker = list->children;
+	CHECK(worker_count == 1 && request_state(next)->queued);
+	fail_read = 1;
+	TALLOC_FREE(first);
+	CHECK(worker->busy && worker->orphan_read != NULL && worker_count == 1);
+	run_until_active(next);
+	CHECK(worker_count == 2 && list->num_children == 1);
+	finish(next, 4, 0);
+	CHECK(!memcmp(buffers[1], "data", 4));
 }
 
 static void test_failures(struct vfs_handle_struct *h, const char *scenario)
@@ -517,6 +613,39 @@ static void test_exit_frames(void)
 	CHECK(strstr(out, "Dangling frame") == NULL);
 }
 
+/* Registered before the talloc stack is first used, so it runs after 0022's
+ * handler has freed the tracker (atexit handlers run in reverse order). With a
+ * dangling tracker pointer this would be a use-after-free, which the host
+ * run's AddressSanitizer reports. */
+static void late_stackframe(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	if (frame == NULL || talloc_tos() != frame) {
+		/* exit() must not be called again from an exit handler. */
+		fprintf(stderr, "%s:%d: late talloc frame\n", __FILE__, __LINE__);
+		_exit(90);
+	}
+	TALLOC_FREE(frame);
+}
+
+/* The exit cases must run before anything touches the talloc stack. */
+static bool test_exit_handlers(const char *scenario)
+{
+	if (!strcmp(scenario, "exit_no_frames")) {
+		/* talloc_stackframe_exists() registers the atexit handler
+		 * before any frame exists; upstream's handler then
+		 * dereferenced the NULL tracker (Samba patch 0022). */
+		CHECK(!talloc_stackframe_exists());
+		return true;
+	}
+	if (!strcmp(scenario, "exit_late_frames")) {
+		CHECK(atexit(late_stackframe) == 0);
+		CHECK(talloc_stackframe() != NULL);
+		return true;
+	}
+	return false;
+}
+
 int main(int argc, char **argv)
 {
 	char path[PATH_MAX];
@@ -525,6 +654,11 @@ int main(int argc, char **argv)
 	int *marker, status;
 	size_t i;
 	CHECK(argc == 2);
+	if (test_exit_handlers(argv[1])) {
+		/* The check is the process exiting 0 after its handlers ran. */
+		printf("PASS %s\n", argv[1]);
+		return 0;
+	}
 	setup_logging(argv[0], DEBUG_STDERR);
 	alarm(15);
 	signal(SIGPIPE, SIG_IGN);
@@ -544,6 +678,8 @@ int main(int argc, char **argv)
 	h = share(frame, 1);
 	if (!strcmp(argv[1], "queue") || !strncmp(argv[1], "cancel_", 7) ||
 	    !strcmp(argv[1], "queued_fork_failure")) test_queue(h, argv[1]);
+	else if (!strcmp(argv[1], "teardown")) test_teardown(h);
+	else if (!strcmp(argv[1], "orphan_error")) test_orphan_error(h);
 	else if (strstr(argv[1], "failure")) test_failures(h, argv[1]);
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);

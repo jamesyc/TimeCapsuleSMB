@@ -14,7 +14,9 @@ it from a new connection with the same client GUID:
 - fin/rst: the client closes or resets TCP; the old smbd notices and marks the
   open disconnected.
 - half-open: the old connection stays up. Without PreviousSessionId the open is
-  still live, so after 0024's retry window the answer is FILE_NOT_AVAILABLE;
+  still live, so after 0024's retry window the answer is OBJECT_NAME_NOT_FOUND
+  (MS-SMB2 3.3.5.9.12). An immediate refusal has the same status, so the case
+  also requires the wait to have lasted about the retry window;
   naming the old session in the new session setup makes the old smbd close it.
 - rst+ipc-tdis: before the reset, IPC$ is connected and disconnected, as a Mac
   listing shares does. That tree disconnect leaves smbd's working directory at
@@ -56,9 +58,12 @@ from timecapsulesmb.core.config import parse_env_file
 from tests.samba.links_device import Device, Results, mount, unmount
 
 TEST_DIR = "__tc_durable_test__"
-STATUS_FILE_NOT_AVAILABLE = 0xC0000467
+STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
 # 0024 retries a live durable open 34 times, 150 ms apart.
 LIVE_RETRY_SECONDS = 34 * 0.150
+# Slack for the device's reply after the retries: an answer much later than the
+# window is not 0024's retry running out.
+LIVE_RETRY_SLACK_SECONDS = 3
 DROP_MODES = ("fin", "rst", "half-open", "half-open+previous", "rst+ipc-tdis", "rst+second-session")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 CASES = DROP_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
@@ -227,7 +232,10 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
                     client.reconnect(tree2, path, handle.file_id)
                 except SMBResponseException as error:
                     waited = time.monotonic() - started
-                    return error.status == STATUS_FILE_NOT_AVAILABLE and waited >= LIVE_RETRY_SECONDS - 1
+                    # The status alone cannot tell a retried refusal from an
+                    # immediate one, so the wait must match 0024's window.
+                    return (error.status == STATUS_OBJECT_NAME_NOT_FOUND and
+                            LIVE_RETRY_SECONDS - 1 <= waited <= LIVE_RETRY_SECONDS + LIVE_RETRY_SLACK_SECONDS)
                 return False
 
             r.check(f"{mode}: a live open is refused after the retry window", refused)

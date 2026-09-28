@@ -70,8 +70,8 @@
 # No-pthread build.
 # Without HAVE_PTHREAD, pthreadpool_tevent still used pthread mutexes and
 # atfork glue and tevent_threads.c's context destructor still locked a mutex.
-# Guard those on HAVE_PTHREAD, and skip registering tevent's poll_mt backend,
-# which only threaded callers select. Pthread builds are unchanged.
+# Guard those on HAVE_PTHREAD. The poll_mt backend needs no pthread and stays
+# registered; nothing here selects it. Pthread builds are unchanged.
 0051-tevent-no-pthread-build.patch|build tevent and pthreadpool_tevent without pthread
 # Disable pthread before libreplace constructs the dependency graph (the
 # synchronous pthreadpool backend itself comes from --disable-pthreadpool in
@@ -86,7 +86,11 @@
 # Without pthread, talloc_stack frees its frame tracker from an atexit handler
 # that logs every frame still open, so every smbd connection child logged about
 # three "Dangling frame" lines and smbd -V/-b did too. pthread builds never run
-# that report at exit(); free the tracker the same way, quietly.
+# that report at exit(); free the tracker the same way, quietly, and clear the
+# pointer so a later exit handler starts a new tracker. This also fixes an
+# upstream NULL dereference: talloc_stackframe_exists() (smb2_signing.c)
+# registers the handler before any frame exists, and upstream's handler then
+# reads the NULL tracker at exit.
 0022-talloc-stack-quiet-exit.patch|quiet talloc stack teardown at exit
 
 # Appliance kernel and disk.
@@ -145,13 +149,23 @@
 # Refactor only: pread, pwrite and fsync had three copies of the same
 # send/done/recv code; use one path that takes the command.
 0053-aio-fork-single-request-path.patch|one request path for pread, pwrite and fsync
-# aio_fork:max_children bounds the helpers per share (0 keeps upstream's no
-# limit). Requests wait in a short FIFO for a free helper and are dispatched
-# oldest first; past the FIFO bound, or when fork() fails, a request runs in
-# the client's own smbd, which slows that client instead of failing its I/O.
-# A request freed while its helper works retires that helper, cancelling its
-# event watcher first so a reused descriptor cannot lose the next request's
-# events.
+# aio_fork:max_children bounds each tree connection's helpers (0 keeps
+# upstream's no limit). Requests wait in a short FIFO for a free helper and are
+# dispatched oldest first; past the FIFO bound, or when fork() fails, a request
+# runs in the client's own smbd, which slows that client instead of failing its
+# I/O. Each helper's shared buffer is 8 MiB, Samba's default SMB2 read and write
+# size: stock aio_fork refused anything over 128 KiB with EINVAL.
+#
+# Only the event loop runs the FIFO (a tevent immediate, as tevent_queue
+# does): freeing, completing or failing a request never dispatches or completes
+# another. A request freed while its helper works (a cancel, or smbd freeing
+# every request at teardown) leaves the helper busy until it replies; the reply
+# is dropped and the helper reused, as pthreadpool_tevent orphans a job, but by
+# handing the helper the pending read instead of refusing the free. So a
+# teardown forks, runs and completes nothing, and frees each helper once with
+# its tree connection; stock aio_fork panicked (SMB_ASSERT) when a busy helper
+# was freed. A helper stuck in a hung read keeps its slot until the read
+# returns, as a pool thread would.
 0031-aio-fork-max-children.patch|bounded aio_fork helpers with FIFO backpressure
 
 # Time Machine.
@@ -162,6 +176,11 @@
 # open disconnected. Check that live record like a disconnected one and, for
 # the same durable open only, retry outside the open-global TDB lock for up to
 # about 5 seconds (34 x 150 ms) instead of reporting the handle as missing.
+# FILE_NOT_AVAILABLE is only the internal "still busy" signal: once the retries
+# run out the client gets OBJECT_NAME_NOT_FOUND, as upstream and MS-SMB2
+# 3.3.5.9.12 give for an open still attached to a session (macOS revokes the
+# file on any reconnect error). The wait sleeps in the reconnecting client's own
+# smbd, which meanwhile answers nothing; other clients are not affected.
 0024-durable-open-live-retry.patch|retry transient live durable-open reconnect races
 # Not specific to Time Machine; an upstream bug that 0029 relies on. A shutdown
 # close (a dropped connection, a bare SMB2 LOGOFF, a tree disconnect) runs from

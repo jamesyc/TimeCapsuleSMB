@@ -24,7 +24,10 @@ shift
 if [ -f "$LOCAL_CMD" ]; then
     REMOTE_DIR="${CROSS_EXEC_REMOTE_DIR:-/tmp/tc-samba4-probes}"
     REMOTE_BIN="$REMOTE_DIR/$(basename "$LOCAL_CMD").$$"
-    REMOTE_CMD=$(quote_arg "$REMOTE_BIN")
+    # Run with TMPDIR in the scratch directory: regression drivers keep their
+    # scratch files there (tc_aio_fork_test's full_buffer case writes 8 MiB),
+    # and the login directory is on the device's few-MB RAM root filesystem.
+    REMOTE_CMD="TMPDIR=$(quote_arg "$REMOTE_DIR") $(quote_arg "$REMOTE_BIN")"
     REMOTE_BIN_Q=$(quote_arg "$REMOTE_BIN")
     REMOTE_DIR_Q=$(quote_arg "$REMOTE_DIR")
 

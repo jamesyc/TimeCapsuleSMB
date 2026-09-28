@@ -1,7 +1,7 @@
 diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 --- a/source3/modules/vfs_aio_fork.c
 +++ b/source3/modules/vfs_aio_fork.c
-@@ -42,10 +42,27 @@
+@@ -42,10 +42,32 @@
  #define MAP_FILE 0
  #endif
  
@@ -9,6 +9,11 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 + * With aio_fork:max_children helpers busy, requests wait in a short FIFO.
 + * Past this bound a request runs synchronously in the client's own smbd,
 + * which slows that client down instead of failing its I/O.
++ *
++ * Only the event loop runs the FIFO (aio_fork_kick): freeing, completing or
++ * failing a request never dispatches or completes another. A request freed
++ * while its helper works leaves the helper busy until it replies; the reply is
++ * dropped and the helper reused, not killed.
 + */
 +#define AIO_FORK_MAX_PENDING 16
 +
@@ -29,7 +34,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	struct aio_child_list *children;
  };
  
-@@ -141,6 +158,7 @@ struct rw_ret {
+@@ -141,6 +163,7 @@ struct rw_ret {
  };
  
  struct aio_child_list;
@@ -37,7 +42,12 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  struct aio_child {
  	struct aio_child *prev, *next;
-@@ -154,6 +172,11 @@ struct aio_child {
+@@ -150,11 +173,18 @@ struct aio_child {
+ 	struct mmap_area *map;
+ 	bool dont_delete;	/* Marked as in use since last cleanup */
+ 	bool busy;
++	struct tevent_req *orphan_read;	/* reply for a request freed meanwhile */
+ };
  
  struct aio_child_list {
  	struct aio_child *children;
@@ -47,18 +57,26 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +	unsigned int num_children;
 +	unsigned int num_pending;
  	struct tevent_timer *cleanup_event;
++	struct tevent_immediate *schedule_im;	/* runs the FIFO: aio_fork_kick */
  };
  
-@@ -283,6 +306,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+ static ssize_t read_fd(int fd, void *ptr, size_t nbytes, int *recvfd)
+@@ -283,6 +313,14 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  		if (config->children == NULL) {
  			return NULL;
  		}
 +		config->children->sconn = handle->conn->sconn;
 +		config->children->max_children = config->max_children;
++		config->children->schedule_im =
++			tevent_create_immediate(config->children);
++		if (config->children->schedule_im == NULL) {
++			TALLOC_FREE(config->children);
++			return NULL;
++		}
  	}
  	children = config->children;
  
-@@ -306,6 +331,24 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -306,6 +344,24 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  	return children;
  }
  
@@ -83,7 +101,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  static void aio_child_loop(int sockfd, struct mmap_area *map)
  {
  	while (true) {
-@@ -347,34 +390,9 @@ static void aio_child_loop(int sockfd, struct mmap_area *map)
+@@ -347,34 +403,9 @@ static void aio_child_loop(int sockfd, struct mmap_area *map)
  
  		PROFILE_TIMESTAMP(&start);
  
@@ -121,7 +139,23 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  		PROFILE_TIMESTAMP(&end);
  		ret_struct.duration = nsec_time_diff(&end, &start);
-@@ -419,6 +437,7 @@ static int aio_child_destructor(struct aio_child *child)
+@@ -407,7 +438,14 @@ static int aio_child_destructor(struct aio_child *child)
+ {
+ 	char c=0;
+ 
+-	SMB_ASSERT(!child->busy);
++	/*
++	 * Only a helper finishing an abandoned request may be freed busy: smbd's
++	 * teardown frees the tree connection, and with it the helpers, before
++	 * their replies arrive. Remove that reply's socket watcher before the
++	 * socket is closed.
++	 */
++	SMB_ASSERT(!child->busy || child->orphan_read != NULL);
++	TALLOC_FREE(child->orphan_read);
+ 
+ 	DEBUG(10, ("aio_child_destructor: removing child %d on fd %d\n",
+ 		   (int)child->pid, child->sockfd));
+@@ -419,6 +457,7 @@ static int aio_child_destructor(struct aio_child *child)
  	sys_write_v(child->sockfd, &c, sizeof(c));
  	close(child->sockfd);
  	DLIST_REMOVE(child->list->children, child);
@@ -129,7 +163,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	return 0;
  }
  
-@@ -490,6 +509,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -490,6 +529,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  
  	result->list = children;
  	DLIST_ADD(children->children, result);
@@ -137,7 +171,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  	talloc_set_destructor(result, aio_child_destructor);
  
-@@ -505,70 +525,202 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -505,70 +545,276 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  	return ret;
  }
  
@@ -174,13 +208,14 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 -	}
 +static void aio_fork_schedule_pending(struct aio_child_list *list);
 +static void aio_fork_done(struct tevent_req *subreq);
- 
--	for (child = children->children; child != NULL; child = child->next) {
++static void aio_child_orphan_done(struct tevent_req *subreq);
++
 +static struct aio_child *aio_fork_find_idle_child(
 +	struct aio_child_list *list)
 +{
 +	struct aio_child *child;
-+
+ 
+-	for (child = children->children; child != NULL; child = child->next) {
 +	for (child = list->children; child != NULL; child = child->next) {
  		if (!child->busy) {
 -			break;
@@ -201,8 +236,41 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +	state->list->num_pending -= 1;
 +	state->queued = false;
 +}
++
++static void aio_fork_schedule_handler(struct tevent_context *ev,
++				      struct tevent_immediate *im,
++				      void *private_data)
++{
++	struct aio_child_list *list = talloc_get_type_abort(
++		private_data, struct aio_child_list);
  
 -		DEBUG(10, ("no idle child found, creating new one\n"));
++	aio_fork_schedule_pending(list);
++}
+ 
+-		ret = create_aio_child(handle->conn->sconn, children,
+-					  128*1024, &child);
+-		if (ret != 0) {
+-			DEBUG(10, ("create_aio_child failed: %s\n",
+-				   strerror(errno)));
+-			return ret;
+-		}
++/*
++ * Run the FIFO on the next event loop turn. Freeing, completing or failing a
++ * request only calls this, so no request is ever dispatched or completed from
++ * inside another request's destructor or callback.
++ */
++static void aio_fork_kick(struct aio_child_list *list)
++{
++	if (list->pending == NULL) {
++		return;
++	}
++	tevent_schedule_immediate(list->schedule_im,
++				  global_event_context(),
++				  aio_fork_schedule_handler,
++				  list);
++}
++
 +/* Complete a request in this process when no helper can take it. */
 +static void aio_fork_run_sync(struct aio_fork_state *state)
 +{
@@ -216,17 +284,10 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +	state->vfs_aio_state.duration = nsec_time_diff(&end, &start);
 +	tevent_req_done(state->req);
 +}
- 
--		ret = create_aio_child(handle->conn->sconn, children,
--					  128*1024, &child);
--		if (ret != 0) {
--			DEBUG(10, ("create_aio_child failed: %s\n",
--				   strerror(errno)));
--			return ret;
--		}
++
 +/*
-+ * Free the helper for the next request. A helper that failed, or whose request
-+ * was abandoned while it worked, may still write into its mapping: retire it.
++ * Free the helper for the next request. A helper that failed may still write
++ * into its mapping or be out of step with its socket: retire it.
 + */
 +static void aio_fork_release_child(struct aio_fork_state *state,
 +				   bool retire)
@@ -240,11 +301,15 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +	if (retire) {
 +		TALLOC_FREE(child);
  	}
-+	aio_fork_schedule_pending(list);
++	aio_fork_kick(list);
 +}
  
-+static void aio_fork_dispatch(struct aio_fork_state *state,
-+			      struct aio_child *child)
++/*
++ * Hand a request to a helper. Returns 0, or an errno after retiring the
++ * helper; completing the request is then left to the caller.
++ */
++static int aio_fork_dispatch(struct aio_fork_state *state,
++			     struct aio_child *child)
 +{
 +	struct tevent_req *subreq;
 +	struct rw_cmd rw;
@@ -257,7 +322,6 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	child->busy = true;
  
 -	*pchild = child;
--	return 0;
 +	if (state->cmd == PWRITE_CMD || state->cmd == WRITE_CMD) {
 +		memcpy(child->map->ptr, state->data, state->n);
 +	}
@@ -281,26 +345,26 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +		err = errno;
 +		DEBUG(10, ("write_fd failed: %s\n", strerror(err)));
 +		aio_fork_release_child(state, true);
-+		tevent_req_error(state->req, err);
-+		return;
++		return err;
 +	}
 +
 +	subreq = read_packet_send(state, state->ev, child->sockfd,
 +				  sizeof(struct rw_ret), NULL, NULL);
 +	if (subreq == NULL) {
 +		aio_fork_release_child(state, true); /* we sent sth down */
-+		tevent_req_error(state->req, ENOMEM);
-+		return;
++		return ENOMEM;
 +	}
 +	tevent_req_set_callback(subreq, aio_fork_done, state->req);
 +	state->pending_read = subreq;
+ 	return 0;
  }
  
  /*
 - * pread, pwrite and fsync share one request path; they differ only in the
 - * data copied into or out of the child's shared mapping.
 + * Hand queued requests, oldest first, to idle helpers, forking new ones up to
-+ * aio_fork:max_children. Called whenever a request is queued or a helper frees.
++ * aio_fork:max_children. Only aio_fork_send (for a request queued alone) and
++ * the event loop (aio_fork_kick) run this.
   */
 -struct aio_fork_state {
 -	struct aio_child *child;
@@ -321,6 +385,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +		child = aio_fork_find_idle_child(list);
 +		if (child == NULL && list->max_children != 0 &&
 +		    list->num_children >= list->max_children) {
++			/* The next busy helper to free kicks the FIFO again. */
 +			return;
 +		}
 +		aio_fork_unqueue(state);
@@ -332,32 +397,74 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +				/*
 +				 * Without a helper the request still completes;
 +				 * none may be left waiting for one that never
-+				 * comes.
++				 * comes. Its callback may free this list, so arm
++				 * the next turn first and touch nothing after it.
 +				 */
 +				DEBUG(10, ("create_aio_child failed: %s\n",
 +					   strerror(ret)));
++				aio_fork_kick(list);
 +				aio_fork_run_sync(state);
-+				continue;
++				return;
 +			}
 +		}
-+		aio_fork_dispatch(state, child);
++		ret = aio_fork_dispatch(state, child);
++		if (ret != 0) {
++			/* As above: arm the next turn, then complete. */
++			aio_fork_kick(list);
++			tevent_req_error(state->req, ret);
++			return;
++		}
 +	}
++}
++
++/*
++ * A helper's reply for a request freed while it worked: drop the reply (that
++ * request's buffer is gone) and reuse the helper, or retire it if it failed.
++ */
++static void aio_child_orphan_done(struct tevent_req *subreq)
++{
++	struct aio_child *child = tevent_req_callback_data(
++		subreq, struct aio_child);
++	struct aio_child_list *list = child->list;
++	uint8_t *buf = NULL;
++	ssize_t nread;
++	int err;
++
++	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
++	TALLOC_FREE(subreq);
++	TALLOC_FREE(buf);
++	child->orphan_read = NULL;
++	child->busy = false;
++	if (nread == -1) {
++		DEBUG(10, ("child %d failed an abandoned request: %s\n",
++			   (int)child->pid, strerror(err)));
++		TALLOC_FREE(child);
++	}
++	aio_fork_kick(list);
 +}
 +
 +static int aio_fork_state_destructor(struct aio_fork_state *state)
 +{
++	struct aio_child *child = state->child;
++
 +	aio_fork_unqueue(state);
-+	if (state->active) {
-+		/* Remove the old socket watcher before a replacement worker can
-+		 * reuse its descriptor. Talloc frees children after this destructor;
-+		 * leaving the read until then can unregister the replacement fd. */
-+		TALLOC_FREE(state->pending_read);
-+		/*
-+		 * The caller may free a submitted request if later setup fails.
-+		 * Retire the worker and its mapping before another job can use it.
-+		 */
-+		aio_fork_release_child(state, true);
++	if (!state->active) {
++		return 0;
 +	}
++	/*
++	 * Freed while its helper works: cancelled, or freed by smbd's teardown
++	 * (assert_no_pending_aio). The helper keeps writing into its own mapping
++	 * until it replies, so keep it busy and give it the pending reply read;
++	 * aio_child_orphan_done drops the reply and reuses the helper. Nothing
++	 * is dispatched or completed here, and this request's buffer is never
++	 * touched again.
++	 */
++	SMB_ASSERT(state->pending_read != NULL);
++	state->active = false;
++	state->child = NULL;
++	child->orphan_read = talloc_steal(child, state->pending_read);
++	state->pending_read = NULL;
++	tevent_req_set_callback(child->orphan_read, aio_child_orphan_done, child);
 +	return 0;
 +}
  
@@ -378,7 +485,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  
  	SMB_VFS_HANDLE_GET_DATA(handle, config,
  				struct aio_fork_config,
-@@ -578,58 +730,44 @@ static struct tevent_req *aio_fork_send(
+@@ -578,58 +824,52 @@ static struct tevent_req *aio_fork_send(
  	if (req == NULL) {
  		return NULL;
  	}
@@ -452,7 +559,15 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
 +	state->queued = true;
 +	DLIST_ADD_END(list->pending, state);
 +	list->num_pending += 1;
-+	aio_fork_schedule_pending(list);
++	if (list->pending == state) {
++		/*
++		 * Nothing else waits: start this request now. Only this request
++		 * can complete here, and tevent_req_post() delivers that.
++		 * Otherwise it waits its turn, and the next helper to free kicks
++		 * the FIFO.
++		 */
++		aio_fork_schedule_pending(list);
++	}
 +	if (!tevent_req_is_in_progress(req)) {
  		return tevent_req_post(req, ev);
  	}
@@ -460,7 +575,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	return req;
  }
  
-@@ -645,15 +783,14 @@ static void aio_fork_done(struct tevent_req *subreq)
+@@ -645,15 +885,14 @@ static void aio_fork_done(struct tevent_req *subreq)
  	struct rw_ret *retbuf;
  
  	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
@@ -478,7 +593,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	retbuf = (struct rw_ret *)buf;
  	state->ret = retbuf->size;
  	state->vfs_aio_state.error = retbuf->ret_errno;
-@@ -665,12 +802,14 @@ static void aio_fork_done(struct tevent_req *subreq)
+@@ -665,12 +904,14 @@ static void aio_fork_done(struct tevent_req *subreq)
  	 */
  	if (state->cmd == READ_CMD && state->ret != -1) {
  		if ((size_t)state->ret > state->n) {
@@ -493,7 +608,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	tevent_req_done(req);
  }
  
-@@ -739,6 +878,7 @@ static int aio_fork_fsync_recv(struct tevent_req *req,
+@@ -739,6 +980,7 @@ static int aio_fork_fsync_recv(struct tevent_req *req,
  static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
  			    const char *user)
  {
@@ -501,7 +616,7 @@ diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
  	int ret;
  	struct aio_fork_config *config;
  	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
-@@ -756,6 +896,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+@@ -756,6 +998,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
  
  	config->erratic_testing_mode = lp_parm_bool(SNUM(handle->conn), "vfs_aio_fork",
  						    "erratic_testing_mode", false);

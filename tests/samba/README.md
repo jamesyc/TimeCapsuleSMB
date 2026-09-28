@@ -268,8 +268,9 @@ from a Mac (it needs `smbprotocol` on the host):
 
 It opens a file with a lease and a durable v2 request, drops the connection by
 FIN, by RST and half-open, and reconnects from a new connection. A half-open
-connection's open is refused with FILE_NOT_AVAILABLE after 0024's retry window
-unless the new session names the old one. The `rst+ipc-tdis` and
+connection's open is refused with OBJECT_NAME_NOT_FOUND after 0024's retry
+window (the case checks the wait too, as an immediate refusal has the same
+status) unless the new session names the old one. The `rst+ipc-tdis` and
 `rst+second-session` cases drop the connection after another tree or session
 has closed, and the `doc:` cases end a session holding a delete-on-close file
 without a CLOSE (by reset or a bare LOGOFF); without 0062 smbd closes those
