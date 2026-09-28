@@ -74,6 +74,13 @@ class LocalTransportTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "ok")
 
+    def test_run_local_capture_survives_output_that_is_not_valid_utf8(self) -> None:
+        # Device output is not guaranteed to be UTF-8: a localized message or a
+        # stray byte would otherwise raise UnicodeDecodeError while decoding.
+        proc = run_local_capture(["/bin/sh", "-c", "printf 'caf\\351'"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "caf\ufffd")
+
 
 if __name__ == "__main__":
     unittest.main()

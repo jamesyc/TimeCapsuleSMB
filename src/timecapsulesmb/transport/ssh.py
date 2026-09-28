@@ -304,6 +304,8 @@ def _ssh_option_supported(option_name: str) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except OSError:
@@ -320,6 +322,8 @@ def _local_ssh_macs() -> tuple[str, ...]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except OSError:

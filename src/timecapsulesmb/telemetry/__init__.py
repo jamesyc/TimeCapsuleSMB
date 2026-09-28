@@ -201,7 +201,14 @@ def sys_platform_is_linux() -> bool:
 
 def run_text_command(command: list[str]) -> str | None:
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
     except OSError:
         return None
     value = proc.stdout.strip()
