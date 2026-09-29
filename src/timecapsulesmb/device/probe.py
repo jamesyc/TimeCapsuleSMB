@@ -2083,8 +2083,8 @@ def wait_for_ssh_state_conn(
     expected_up: bool,
     timeout_seconds: int = 180,
 ) -> bool:
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
         try:
             proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=30)
             is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")

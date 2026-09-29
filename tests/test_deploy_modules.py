@@ -2452,7 +2452,7 @@ describe_managed_smbd_status "" ""
     def test_wait_for_ssh_state_times_out_when_state_never_matches(self) -> None:
         ok = mock.Mock(returncode=0, stdout="ok\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=ok) as run_ssh_mock:
-            with mock.patch("timecapsulesmb.device.probe.time.time", side_effect=[0.0, 0.0, 2.0]):
+            with mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=[0.0, 0.0, 2.0]):
                 with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
                     self.assertFalse(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=1))
         run_ssh_mock.assert_called_once()

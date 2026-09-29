@@ -831,7 +831,7 @@ class SSHTransportTests(unittest.TestCase):
         with mock.patch("pexpect.spawn", return_value=fake_child):
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
                 with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=False):
-                    with mock.patch("timecapsulesmb.transport.ssh.time.time", side_effect=[100.0, 106.0]):
+                    with mock.patch("timecapsulesmb.transport.ssh.time.monotonic", side_effect=[100.0, 106.0]):
                         with self.assertRaises(ssh_transport.SshError) as exc:
                             with ssh_transport.ssh_local_forward(
                                 ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),

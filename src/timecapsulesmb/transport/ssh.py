@@ -742,7 +742,7 @@ def ssh_local_forward(
         except OSError as exc:
             raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
         output: list[str] = []
-        start_time = time.time()
+        start_time = time.monotonic()
         password_sent = False
         try:
             while True:
@@ -771,7 +771,7 @@ def ssh_local_forward(
                         raise diagnostics.error
                     if tcp_open("127.0.0.1", local_port, timeout=0.2):
                         break
-                    if child.isalive() and time.time() - start_time < ready_timeout:
+                    if child.isalive() and time.monotonic() - start_time < ready_timeout:
                         continue
                     raise SshError(
                         "Timed out waiting for ssh tunnel to become ready: "

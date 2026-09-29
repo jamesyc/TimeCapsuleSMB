@@ -179,14 +179,14 @@ def wait_for_tcp_port_state(
     expected_state_string = "open" if expected_state else "closed"
     if log is not None:
         log(f"Waiting for {label} to be {expected_state_string}...")
-    deadline = time.time() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
     while True:
         is_open = tcp_open_func(host, port)
         if is_open == expected_state:
             if log is not None:
                 log(f"{label} is {expected_state_string}.")
             return True
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             break
         time.sleep(interval_seconds)
     if log is not None:
