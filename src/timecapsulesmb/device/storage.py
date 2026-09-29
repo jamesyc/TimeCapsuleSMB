@@ -139,6 +139,20 @@ def build_dry_run_payload_home(payload_dir_name: str) -> PayloadHome:
     )
 
 
+def _is_usable_share_name(name: str) -> bool:
+    """Reject a disk label that would break out of its smb.conf section.
+
+    The volume name is written verbatim into a `[name]` section header in
+    smb.conf, and it comes from the MaSt the device stores on the disk. A
+    label containing `]`, a newline or a control character would end the
+    section early and let the rest of the label be read as further
+    smb.conf directives, so such a volume must not become a share.
+    """
+    if not name or name.strip() != name:
+        return False
+    return not any(ch in name for ch in "[]\n\r") and all(ch.isprintable() for ch in name)
+
+
 def _uuid_from_value(value: object) -> str:
     if isinstance(value, uuid.UUID):
         return str(value)
@@ -229,6 +243,8 @@ def _volumes_from_plist_root(root: object) -> tuple[MaStVolume, ...]:
                 continue
             if not name or not adisk_uuid:
                 continue
+            if not _is_usable_share_name(name):
+                continue
             volumes.append(
                 MaStVolume(
                     disk_device=disk_device,
@@ -288,7 +304,8 @@ def _parse_mast_openstep(content: str) -> tuple[MaStVolume, ...]:
         nonlocal part_device, part_name, part_format, part_uuid
         fmt = part_format.lower()
         adisk_uuid = _uuid_from_value(part_uuid)
-        if part_device.startswith("dk") and fmt == "hfs" and part_name and adisk_uuid:
+        if part_device.startswith("dk") and fmt == "hfs" and part_name and adisk_uuid \
+                and _is_usable_share_name(part_name):
             pending_partitions.append((part_device, part_name, adisk_uuid, fmt))
         part_device = ""
         part_name = ""

@@ -28,6 +28,7 @@ from timecapsulesmb.device.storage import (
     ensure_volume_root_mounted_conn,
     mast_probe_debug_summary,
     mast_volumes_debug_summary,
+    _is_usable_share_name,
     ordered_payload_candidate_volumes,
     payload_candidate_checks_debug_summary,
     parse_mast_inventory,
@@ -46,6 +47,49 @@ from tests.storage_fixtures import MAST_FIXTURES, SHELL_MAST_FIXTURES
 
 class StorageRuntimeTests(unittest.TestCase):
 
+
+    def test_share_name_that_would_break_out_of_its_smb_conf_section_is_rejected(self) -> None:
+        # The volume name is written verbatim into a `[name]` header in
+        # smb.conf, so a label carrying `]`, a newline or brackets would end
+        # the section early and let the rest be read as further directives.
+        for name in (
+            "Evil]",
+            "[Evil",
+            "Evil]\n    read only = no\n    path = /etc\n[Zorla",
+            "Evil\r",
+            "  leading",
+            "trailing  ",
+            "line\nbreak",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(_is_usable_share_name(name))
+
+    def test_ordinary_share_names_are_kept(self) -> None:
+        for name in ("Time Capsule One", "Yedek Diski 2TB", "Sauvegarde externe", "Mac (2024)"):
+            with self.subTest(name=name):
+                self.assertTrue(_is_usable_share_name(name))
+
+    def test_parse_mast_plist_drops_a_volume_whose_label_would_inject_smb_conf(self) -> None:
+        raw = """\
+[
+    {
+        product="MCE7215P0BG0NW"
+        deviceName="wd0"
+        partitions=
+        [
+            {
+                format="hfs"
+                deviceName="dk2"
+                name="Evil]\n    read only = no\n    path = /etc\n[Zorla"
+                uuid=a82453b2 3ada50cf 93b57334 482fb58a
+            }
+        ]
+    }
+]
+
+MaSt=
+"""
+        self.assertEqual(parse_mast_plist(raw), ())
 
     def test_parse_mast_plist_matches_golden_fixtures(self) -> None:
         for fixture in MAST_FIXTURES:
