@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.net import ipv6_scope_index, scoped_ip_literal
+from timecapsulesmb.core.net import (
+    endpoint_host,
+    ipv6_literal,
+    ipv6_scope_index,
+    scoped_ip_literal,
+)
 from timecapsulesmb.device.probe import probe_ssh_command_conn
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
@@ -108,7 +113,48 @@ def select_route_to_address(address: str, *, port: int = 445) -> RouteSelection:
     return RouteSelection("available", source=source)
 
 
-def check_ssh_login(connection: SshConnection) -> CheckResult:
+def find_relocated_device_addresses(
+    configured_host: str,
+    *,
+    timeout_sec: float = 3.0,
+) -> tuple[str, tuple[str, ...], ...]:
+    """Find devices that advertise over mDNS but no longer answer at a host.
+
+    A DHCP lease renewal moves the device to a new address while the
+    configured one stops answering. The device stays healthy and keeps
+    advertising, so browsing _smb._tcp can name the address the
+    configuration lost. Returns (instance name, advertised addresses)
+    pairs for every advertised device, newest browse result first.
+    """
+    from timecapsulesmb.discovery.bonjour import SMB_SERVICE
+    from timecapsulesmb.discovery.native_dns_sd import (
+        discover_native_dns_sd_snapshot_detailed,
+    )
+
+    discovered = discover_native_dns_sd_snapshot_detailed(
+        SMB_SERVICE,
+        timeout_sec=timeout_sec,
+    )
+    if discovered is None:
+        return ()
+    snapshot, _diagnostics = discovered
+    found: list[tuple[str, tuple[str, ...]]] = []
+    for service in snapshot.resolved:
+        addresses: list[str] = []
+        for candidate in list(service.ipv4) + list(service.ipv6):
+            address = scoped_ip_literal(candidate) or ipv6_literal(candidate)
+            if address and address not in addresses:
+                addresses.append(address)
+        if addresses:
+            found.append((service.name, tuple(addresses)))
+    return tuple(found)
+
+
+def check_ssh_login(
+    connection: SshConnection,
+    *,
+    relocation_hint: bool = False,
+) -> CheckResult:
     result = probe_ssh_command_conn(
         connection,
         "/bin/echo ok",
@@ -117,9 +163,32 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
     )
     if result.ok:
         return CheckResult("PASS", f"SSH command works for {connection.host}")
-    if result.detail.startswith("Connecting to the device failed, SSH error:"):
-        return CheckResult("FAIL", result.detail)
-    return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}")
+    if not result.detail.startswith("Connecting to the device failed, SSH error:"):
+        failure = CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}")
+        if relocation_hint and result.detail.startswith("Timed out"):
+            hint = _relocated_device_hint(connection.host)
+            if hint:
+                return CheckResult("FAIL", f"{failure.message}. {hint}")
+        return failure
+    if relocation_hint and "Timed out" in result.detail:
+        hint = _relocated_device_hint(connection.host)
+        if hint:
+            return CheckResult("FAIL", f"{result.detail}. {hint}")
+    return CheckResult("FAIL", result.detail)
+
+
+def _relocated_device_hint(configured: str) -> str:
+    """Name the address a still-advertising device uses after a DHCP change."""
+    host = endpoint_host(configured)
+    for name, addresses in find_relocated_device_addresses(host):
+        if host in addresses:
+            continue
+        return (
+            f"The device is still advertising over mDNS as {name!r} at "
+            f"{', '.join(addresses)}, so its address changed. Update TC_HOST "
+            f"from {configured} to {addresses[0]}."
+        )
+    return ""
 
 
 def check_smb_port(host: str) -> CheckResult:

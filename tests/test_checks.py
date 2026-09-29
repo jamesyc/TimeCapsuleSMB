@@ -2197,7 +2197,7 @@ class CheckTests(unittest.TestCase):
         )
         self.assertFalse(run.fatal)
         self.assertTrue(any(result.status == "PASS" and result.message == "ssh ok" for result in run.results))
-        run.mocks.check_ssh_login.assert_called_once_with(connection)
+        run.mocks.check_ssh_login.assert_called_once_with(connection, relocation_hint=True)
 
     def test_run_doctor_checks_reports_managed_mdns_takeover_state(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -3483,6 +3483,56 @@ class CheckTests(unittest.TestCase):
             result.message,
             "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
         )
+
+    def test_check_ssh_login_names_the_address_after_a_dhcp_change(self) -> None:
+        connection = SshConnection("root@192.168.1.56", "pw", "")
+        with (
+            mock.patch(
+                "timecapsulesmb.checks.network.probe_ssh_command_conn",
+                return_value=mock.Mock(ok=False, detail="Timed out waiting for ssh command to finish: /bin/echo ok"),
+            ),
+            mock.patch(
+                "timecapsulesmb.checks.network.find_relocated_device_addresses",
+                return_value=(("Time Capsule One", ("192.168.1.57", "169.254.100.156")),),
+            ),
+        ):
+            result = check_ssh_login(connection, relocation_hint=True)
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("still advertising over mDNS as 'Time Capsule One'", result.message)
+        self.assertIn("Update TC_HOST from root@192.168.1.56 to 192.168.1.57", result.message)
+
+    def test_check_ssh_login_stays_quiet_when_no_device_advertises(self) -> None:
+        connection = SshConnection("root@192.168.1.56", "pw", "")
+        with (
+            mock.patch(
+                "timecapsulesmb.checks.network.probe_ssh_command_conn",
+                return_value=mock.Mock(ok=False, detail="Timed out waiting for ssh command to finish: /bin/echo ok"),
+            ),
+            mock.patch(
+                "timecapsulesmb.checks.network.find_relocated_device_addresses",
+                return_value=(),
+            ),
+        ):
+            result = check_ssh_login(connection, relocation_hint=True)
+        self.assertEqual(result.status, "FAIL")
+        self.assertNotIn("mDNS", result.message)
+        self.assertNotIn("TC_HOST", result.message)
+
+    def test_check_ssh_login_ignores_a_device_still_at_the_configured_address(self) -> None:
+        connection = SshConnection("root@192.168.1.57", "pw", "")
+        with (
+            mock.patch(
+                "timecapsulesmb.checks.network.probe_ssh_command_conn",
+                return_value=mock.Mock(ok=False, detail="Timed out waiting for ssh command to finish: /bin/echo ok"),
+            ),
+            mock.patch(
+                "timecapsulesmb.checks.network.find_relocated_device_addresses",
+                return_value=(("Time Capsule One", ("192.168.1.57",)),),
+            ),
+        ):
+            result = check_ssh_login(connection, relocation_hint=True)
+        self.assertEqual(result.status, "FAIL")
+        self.assertNotIn("TC_HOST", result.message)
 
     def test_run_doctor_checks_proxy_target_skips_local_network_checks(self) -> None:
         values = {

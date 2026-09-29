@@ -1688,7 +1688,7 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
             active_smb_conf_reason="SSH check skipped",
         )
 
-    ssh_result = check_ssh_login(target.connection)
+    ssh_result = check_ssh_login(target.connection, relocation_hint=True)
     sink.add(ssh_result)
     ssh_ok = ssh_result.status == "PASS"
     return RemoteAccess(
