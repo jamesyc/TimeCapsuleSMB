@@ -773,6 +773,12 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     for name in ("fork", "_fork", "mmap", "_mmap", "munmap", "mremap", "mprotect"):
                         self.assertEqual(f"--wrap={name}'" in flags, lane == "netbsd7", (lane, name, flags))
                 self.assertEqual("-DTC_FORK_REPAIR=1" in cflags, lane == "netbsd7")
+                # NetBSD 6 keeps times past 2038 (64-bit time_t); NetBSD 4 lanes
+                # keep Samba's INT32_MAX cap, the limit of their 32-bit time_t.
+                cppflags = next(line for line in log if line.startswith("CPPFLAGS="))
+                for flags in (cflags, cppflags):
+                    self.assertEqual(flags.count("-DTIME_T_MAX=253402300799LL"), 1 if lane == "netbsd7" else 0,
+                                     (lane, flags))
                 # The wrappers' own object joins those links too (it cannot live in
                 # libreplace, which Samba also links as a shared library).
                 # Only in LINKFLAGS: 0049 also passes LDFLAGS, and twice the

@@ -162,11 +162,14 @@ class Vm:
         self.env = dict(os.environ, SSHPASS=password, VMPASS=password)
         self.run, self.sleep = run, sleep
 
-    def _retry(self, argv: list[str], **kwargs):
-        # Password SSH to the VM sometimes refuses a good password; retry.
+    def _retry(self, argv: list[str], copy: bool = False, **kwargs):
+        # Password SSH to the VM sometimes refuses a good password; retry. ssh
+        # reports that as 255, scp as 1 like any failed copy (seen 2026-09-29),
+        # so a copy, which is safe to repeat, is retried after any failure.
         for attempt in range(4):
             proc = self.run(argv, env=self.env, capture_output=True, text=kwargs.pop("text", True), **kwargs)
-            if proc.returncode != 255 or attempt == 3:
+            refused = proc.returncode != 0 if copy else proc.returncode == 255
+            if not refused or attempt == 3:
                 return proc
             self.sleep(4)
         return proc
@@ -178,12 +181,12 @@ class Vm:
         return proc.stdout
 
     def put(self, local: Path, remote: str) -> None:
-        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *SSH_OPTS, str(local), f"{VM}:{remote}"])
+        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *SSH_OPTS, str(local), f"{VM}:{remote}"], copy=True)
         if proc.returncode != 0:
             raise RuntimeError(f"copy to the VM failed: {remote}")
 
     def get(self, remote: str, local: Path) -> None:
-        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *SSH_OPTS, f"{VM}:{remote}", str(local)])
+        proc = self._retry(["sshpass", "-e", "scp", "-O", "-q", *SSH_OPTS, f"{VM}:{remote}", str(local)], copy=True)
         if proc.returncode != 0:
             raise RuntimeError(f"copy from the VM failed: {remote}")
 

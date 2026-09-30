@@ -45,6 +45,12 @@
 # and reported success when removing the stream's xattr failed for any reason
 # other than ENOATTR. Return -1 with errno set in every failure.
 0069-streams-xattr-unlinkat-errors.patch|report every failed stream unlink
+# nt_time_to_unix_timespec_raw() cast the seconds to time_t unchecked. With a
+# 32-bit time_t (the NetBSD 4 lanes) a time after 2038-01-19 03:14:07 wrapped
+# before nt_time_to_full_timespec() compared it with TIME_T_MAX: a client
+# setting 2040-02-05 got 1903-12-30 stored, and 2106-02-07 got 1969-12-31.
+# Saturate at time_t's range, so the TIME_T_MAX/TIME_T_MIN clamps apply.
+0071-util-time-32bit-time-t-saturate.patch|saturate NTTIME conversions at a 32-bit time_t
 
 # Upstream proposals.
 # Changes upstream would have to agree to; they need no appliance patch.

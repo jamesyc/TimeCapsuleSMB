@@ -58,6 +58,7 @@ as NEW or GONE rather than as changes.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 from pathlib import Path
@@ -112,6 +113,23 @@ ACCESS = {
 }
 # 2001-02-03 04:05:06 UTC as an SMB FILETIME (100 ns units since 1601).
 SETTIME_FILETIME = (981173106 + 11644473600) * 10_000_000
+# What the devices keep of a time (lib/replace/tc_at_emulation.c clamps to
+# it): HFS keeps 1904-01-01 to 2040-02-06 06:28:15, and NetBSD 4's 32-bit
+# time_t ends at 2038-01-19 03:14:07, which Samba reads back as "never", so
+# its last is one second earlier. Unix times.
+HFS_FIRST, HFS_LAST, NETBSD4_LAST = -2082844800, 2212122495, 2147483646
+TIME_RANGE = (("2038-01-18", 2147385600), ("2040-02-05", 2212012800), ("2106-02-07", 4294967295),
+              ("1903-12-31", -2082844801), ("1968-01-01", -63158400))
+
+
+def filetime(unix: int) -> int:
+    return (unix + 11644473600) * 10_000_000
+
+
+def kept_time(unix: int, netbsd4: bool) -> int:
+    """The time a device keeps when unix is set (read back while the kernel
+    still caches it; from disk a time before 1970 reads as 1970)."""
+    return min(max(unix, HFS_FIRST), NETBSD4_LAST if netbsd4 else HFS_LAST)
 
 
 def status_of(fn):
@@ -641,8 +659,30 @@ def times(r: Results, device: Device) -> None:
                     h.close()
 
             r.check(f"times: last-write time set through an attribute-only handle on a {name}", settime)
+        time_range(r, client, device.sh("uname -r").strip().startswith("4."))
     finally:
         client.close()
+
+
+def time_range(r: Results, client, netbsd4: bool) -> None:
+    """Write times at and past what the device keeps come back clamped to it,
+    not as 30828 ("never") or wrapped decades away."""
+    for label, unix in TIME_RANGE:
+        want = kept_time(unix, netbsd4)
+
+        def settime(unix: int = unix, want: int = want) -> bool:
+            h = client.open(rel("times", "file"), FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, 1,
+                            FILE_NON_DIRECTORY_FILE)
+            client.set_write_time(h, filetime(unix))
+            h.close()
+            h = client.open(rel("times", "file"), FILE_READ_ATTRIBUTES, 1, FILE_NON_DIRECTORY_FILE)
+            try:
+                return client.write_time(h) == filetime(want)
+            finally:
+                h.close()
+
+        shown = (datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=want)).strftime("%Y-%m-%d %H:%M:%S")
+        r.check(f"times: last-write time {label} reads back as {shown}", settime)
 
 
 def tree_contents(root: Path) -> dict[str, bytes | None]:

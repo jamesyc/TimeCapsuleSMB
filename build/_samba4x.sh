@@ -1061,6 +1061,16 @@ export CROSS_EXEC_REMOTE_DIR="$SAMBA4X_CROSS_EXEC_REMOTE_DIR"
 # 0046's fault-ahead workaround for these kernels, and patch 0008's smbd without
 # helper processes, which saves the device's memory. Host regression builds
 # leave it unset, so their smbd compiles upstream's forked helpers.
+# Samba caps every file time at TIME_T_MAX (lib/util/time.h) and reads that
+# value itself back as "never" (the year 30828). configure raises the cap from
+# INT32_MAX only when gmtime() handles 67768036191676799, which the NetBSD 7
+# libc refuses with EOVERFLOW (probed on the NetBSD 6 device 2026-09-29), so the
+# cross answers say NO and NetBSD 6 files stopped at 2038-01-19 03:14:07.
+# NetBSD 6 has a 64-bit time_t and its HFS keeps dates to 2040-02-06 06:28:15:
+# raise the cap to the end of year 9999, where that gmtime() still works.
+# lib/replace/tc_at_emulation.c clamps times to HFS's range before the kernel
+# sees them. NetBSD 4's time_t is 32 bits, so its lanes keep INT32_MAX.
+TC_SAMBA4X_NETBSD7_TIME_CFLAGS="-DTIME_T_MAX=253402300799LL"
 if [ "$SDK_FAMILY" = "netbsd4" ]; then
     export CC="$TOOLDIR/bin/$TRIPLE-gcc"
     export CXX="$TOOLDIR/bin/$TRIPLE-g++"
@@ -1088,9 +1098,9 @@ else
     export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
     export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1 $TC_FORK_REPAIR_CORE_CFLAGS"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1 $TC_FORK_REPAIR_CORE_CFLAGS $TC_SAMBA4X_NETBSD7_TIME_CFLAGS"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1 $TC_FORK_REPAIR_CORE_CFLAGS"
+    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1 $TC_FORK_REPAIR_CORE_CFLAGS $TC_SAMBA4X_NETBSD7_TIME_CFLAGS"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     # The fork repair's wrappers (flags and object) go only on these final
     # static links (smbd, the migrator and the regression drivers), never into

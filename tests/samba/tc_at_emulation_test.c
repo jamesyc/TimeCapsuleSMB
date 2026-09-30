@@ -3,7 +3,8 @@
  * directory descriptor, absolute and AT_FDCWD; its errno contract; that the
  * working directory is always restored and no descriptor leaks; that names
  * resolve from the descriptor's directory after it is renamed; renames within
- * and across directories, also past PATH_MAX; utimensat/futimens with UTIME_NOW and UTIME_OMIT;
+ * and across directories, also past PATH_MAX; utimensat/futimens with UTIME_NOW and UTIME_OMIT,
+ * and their clamp of times to what HFS keeps;
  * fdopendir over a large directory, and listings of a directory that changes
  * while another descriptor on it is closed. Appliance builds link the library's
  * emulation (NetBSD 4 also its fdopendir); host builds compile the same file
@@ -18,6 +19,10 @@
 #include "system/filesys.h"
 #include "system/dir.h"
 #include "system/time.h"
+#if defined(__NetBSD__)
+#include <sys/statvfs.h>
+#include <sys/sysctl.h>
+#endif
 #ifdef TC_AT_EMULATION_IN_DRIVER
 #include "../../lib/replace/tc_at_emulation.c"
 #endif
@@ -920,6 +925,180 @@ static void test_times(void)
 	CHECK(chdir(workdir) == 0);
 }
 
+#if defined(__NetBSD__)
+static bool on_hfs(const char *path)
+{
+	struct statvfs sv;
+	CHECK(statvfs(path, &sv) == 0);
+	return strcmp(sv.f_fstypename, "hfs") == 0;
+}
+
+/* Make the kernel drop its cached vnodes of earlier files: create twice as
+ * many files as it caches (kern.maxvnodes) and look each up twice, as the
+ * probe of 2026-09-29 did; its next stat of an earlier file reads HFS's
+ * catalog. */
+static void churn_vnodes(void)
+{
+	int mib[2] = { CTL_KERN, KERN_MAXVNODES }, maxvnodes, i, n, pass;
+	size_t len = sizeof(maxvnodes);
+	char name[32];
+	struct stat st;
+
+	CHECK(sysctl(mib, 2, &maxvnodes, &len, NULL, 0) == 0);
+	n = 2 * maxvnodes;
+	CHECK(mkdir("churn", 0755) == 0);
+	for (i = 0; i < n; i++) {
+		int fd;
+		snprintf(name, sizeof(name), "churn/%d", i);
+		fd = open(name, O_CREAT | O_WRONLY, 0644);
+		CHECK(fd >= 0 && close(fd) == 0);
+	}
+	for (pass = 0; pass < 2; pass++) {
+		for (i = 0; i < n; i++) {
+			snprintf(name, sizeof(name), "churn/%d", i);
+			CHECK(stat(name, &st) == 0);
+		}
+	}
+	for (i = 0; i < n; i++) {
+		snprintf(name, sizeof(name), "churn/%d", i);
+		CHECK(unlink(name) == 0);
+	}
+	CHECK(rmdir("churn") == 0);
+}
+#endif
+
+/*
+ * Times outside what HFS keeps (1904-01-01 to 2040-02-06 06:28:15, and to
+ * 2038-01-19 03:14:06 with NetBSD 4's 32-bit time_t) are clamped to the
+ * nearest time it keeps; -1 in both times, which the kernels take as "leave
+ * both alone", goes one second earlier, and a single -1 is kept. On HFS the stored times are read back from the catalog too:
+ * both kernels store the clamped time, and read a time before 1970 back as
+ * 1970 (probed on both devices 2026-09-29).
+ */
+static void test_time_range(void)
+{
+	const int64_t last = sizeof(time_t) > 4 ? 2212122495LL : INT32_MAX - 1;
+	const struct { const char *name; int64_t set, want; } cases[] = {
+		{ "2038jan18", 2147385600LL, 2147385600LL },		/* 2038-01-18 00:00:00 */
+		{ "i32max", INT32_MAX, sizeof(time_t) > 4 ? INT32_MAX : INT32_MAX - 1 },
+		{ "2040feb5", 2212012800LL, 2212012800LL },		/* 2040-02-05 00:00:00 */
+		{ "hfslast", 2212122495LL, 2212122495LL },		/* 2040-02-06 06:28:15 */
+		{ "hfslast1", 2212122496LL, 2212122495LL },
+		{ "2106", 4294967295LL, 2212122495LL },
+		{ "big", 15032385535LL, 2212122495LL },
+		{ "2026", 1790000000LL, 1790000000LL },
+		{ "1904", -2082844800LL, -2082844800LL },		/* HFS's first */
+		{ "1903", -2082844801LL, -2082844800LL },
+		{ "i32min", INT32_MIN, -2082844800LL },
+		{ "1968", -63158400LL, -63158400LL },
+		{ "m1", -1, -2 },
+	};
+	const size_t n = sizeof(cases) / sizeof(cases[0]);
+	struct timespec set[2];
+	struct stat st;
+	size_t i;
+	int d, fd;
+	bool hfs = false;
+
+	enter_case("time_range");
+	CHECK(mkdir("d", 0755) == 0);
+	d = open_dir("d");
+	for (i = 0; i < n; i++) {
+		if ((int64_t)(time_t)cases[i].set != cases[i].set) {
+			continue;	/* not a time_t here (NetBSD 4) */
+		}
+		/* Empty: a vnode that caches file pages sits on the kernel's
+		 * hold list and outlives the churn below (probed 2026-09-29). */
+		make_file(d, cases[i].name, "");
+		set[0].tv_sec = set[1].tv_sec = (time_t)cases[i].set;
+		set[0].tv_nsec = set[1].tv_nsec = 500000000;
+		/* Both calls convert the same way: alternate between them. */
+		if (i % 2 == 0) {
+			CHECK(utimensat(d, cases[i].name, set, 0) == 0);
+		} else {
+			fd = openat(d, cases[i].name, O_RDWR);
+			CHECK(fd >= 0 && futimens(fd, set) == 0 && close(fd) == 0);
+		}
+		CHECK(fstatat(d, cases[i].name, &st, 0) == 0);
+		if (file_time(&st, 1).tv_sec != (time_t)cases[i].want ||
+		    file_time(&st, 0).tv_sec != (time_t)cases[i].want) {
+			fprintf(stderr, "%s: set %lld, mtime %lld atime %lld, want %lld\n", cases[i].name,
+				(long long)cases[i].set, (long long)file_time(&st, 1).tv_sec,
+				(long long)file_time(&st, 0).tv_sec, (long long)cases[i].want);
+			exit(90);
+		}
+		/* A clamped time loses its fraction; others keep theirs where the
+		 * filesystem keeps fractions (HFS does not). */
+		if (cases[i].set != cases[i].want) {
+			CHECK(file_time(&st, 1).tv_nsec == 0);
+		} else if (file_time(&st, 1).tv_nsec != 0) {
+			CHECK(file_time(&st, 1).tv_nsec / 1000 == 500000);
+		}
+	}
+	/* One -1 beside another time is stored as it is. */
+	make_file(d, "m1_one", "");
+	set[0].tv_sec = 1790000000; set[0].tv_nsec = 0;
+	set[1].tv_sec = -1; set[1].tv_nsec = 0;
+	CHECK(utimensat(d, "m1_one", set, 0) == 0);
+	CHECK(fstatat(d, "m1_one", &st, 0) == 0);
+	CHECK(file_time(&st, 0).tv_sec == 1790000000 && file_time(&st, 1).tv_sec == -1);
+	/* An omitted time is left alone while the other is clamped. */
+	set[0].tv_sec = 0; set[0].tv_nsec = UTIME_OMIT;
+	set[1].tv_sec = sizeof(time_t) > 4 ? (time_t)4294967295LL : INT32_MAX; set[1].tv_nsec = 0;
+	CHECK(utimensat(d, "2026", set, 0) == 0);
+	CHECK(fstatat(d, "2026", &st, 0) == 0);
+	CHECK(file_time(&st, 0).tv_sec == 1790000000 && file_time(&st, 1).tv_sec == (time_t)last);
+	set[1].tv_sec = 1790000000;
+	CHECK(utimensat(d, "2026", set, 0) == 0);
+	check_cwd();
+
+#if defined(__NetBSD__)
+	hfs = on_hfs(".");
+	if (hfs) {
+		int round;
+		/* A vnode with unwritten times is not recycled: write every
+		 * file's times to the catalog first. */
+		for (i = 0; i <= n; i++) {
+			const char *name = i < n ? cases[i].name : "m1_one";
+			if (i < n && (int64_t)(time_t)cases[i].set != cases[i].set) {
+				continue;
+			}
+			fd = openat(d, name, O_RDWR);
+			CHECK(fd >= 0 && fsync(fd) == 0 && close(fd) == 0);
+		}
+		/* Until the kernel drops its cached vnode it returns any time as
+		 * set; "1968" reads back as 1970 once it reads the catalog. */
+		for (round = 0; round < 2; round++) {
+			churn_vnodes();
+			CHECK(fstatat(d, "1968", &st, 0) == 0);
+			if (file_time(&st, 1).tv_sec == 0) {
+				break;
+			}
+		}
+		CHECK(file_time(&st, 1).tv_sec == 0);
+		CHECK(fstatat(d, "m1_one", &st, 0) == 0);
+		CHECK(file_time(&st, 0).tv_sec == 1790000000 && file_time(&st, 1).tv_sec == 0);
+		for (i = 0; i < n; i++) {
+			time_t want = cases[i].want < 0 ? 0 : (time_t)cases[i].want;
+			if ((int64_t)(time_t)cases[i].set != cases[i].set) {
+				continue;
+			}
+			CHECK(fstatat(d, cases[i].name, &st, 0) == 0);
+			if (file_time(&st, 1).tv_sec != want || file_time(&st, 0).tv_sec != want) {
+				fprintf(stderr, "%s on disk: mtime %lld atime %lld, want %lld\n", cases[i].name,
+					(long long)file_time(&st, 1).tv_sec, (long long)file_time(&st, 0).tv_sec,
+					(long long)want);
+				exit(90);
+			}
+		}
+	}
+#endif
+	printf("time_range: %s, %u-bit time_t\n", hfs ? "HFS, read back from its catalog" : "not HFS",
+	       (unsigned)sizeof(time_t) * 8);
+	CHECK(close(d) == 0);
+	CHECK(chdir(workdir) == 0);
+}
+
 static int cmpstr(const void *a, const void *b)
 {
 	return strcmp(*(char *const *)a, *(char *const *)b);
@@ -1043,6 +1222,7 @@ int main(int argc, char **argv)
 	if (all || strcmp(c, "listing_changes") == 0) test_listing_changes();
 	if (all || strcmp(c, "fds") == 0) test_fds();
 	if (all || strcmp(c, "times") == 0) test_times();
+	if (all || strcmp(c, "time_range") == 0) test_time_range();
 	if (all || strcmp(c, "fdopendir") == 0) test_fdopendir();
 
 	/* Leave nothing on the scratch disk. */

@@ -60,7 +60,12 @@ smb2.getinfo.qfs_buffercheck
 smb2.create.quota-fake-file
 
 # HFS: dates are 32-bit seconds from 1904, names are case-insensitive and
-# Unicode-normalized, times have one-second resolution.
+# Unicode-normalized, times have one-second resolution. The time_t tests set
+# 2106 and later; smbd clamps the write time to the last one kept, 2040-02-06
+# 06:28:15 on NetBSD 6 and 2038-01-19 03:14:06 on NetBSD 4 (its 32-bit time_t).
+# time_t_1968, -1 and -2 pass because the kernel returns the time as set until
+# it drops its cached vnode; from HFS's catalog both kernels read any time
+# before 1970 as 1970.
 smb2.timestamps.time_t_15032385535
 smb2.timestamps.time_t_10000000000
 smb2.timestamps.time_t_4294967295

@@ -6,7 +6,9 @@ import struct
 import unittest
 from unittest import mock
 
-from tests.samba.dir_device import Client, compare_records
+from tests.samba.dir_device import (HFS_FIRST, HFS_LAST, NETBSD4_LAST, TIME_RANGE, Client, compare_records,
+                                    filetime, kept_time, time_range)
+from tests.samba.links_device import Results
 
 
 class CompareRecordsTest(unittest.TestCase):
@@ -72,6 +74,74 @@ class LinkRequestTest(unittest.TestCase):
             c.args for c in client.set_info.call_args_list)
         self.assertEqual((link_class, rename_class), (11, 10))
         self.assertEqual(link_buffer, rename_buffer)
+
+
+
+class DeviceTimes:
+    """A client over a device that keeps [first, last] of a write time the way
+    tc_at_emulation.c clamps it, or returns what `answer` says."""
+
+    def __init__(self, answer) -> None:
+        self.answer = answer
+        self.stored = None
+        self.set_calls: list[int] = []
+
+    def open(self, path, access, disposition, options):
+        return mock.Mock(path=path)
+
+    def set_write_time(self, handle, value: int) -> None:
+        self.set_calls.append(value)
+        self.stored = self.answer(value)
+
+    def write_time(self, handle) -> int:
+        return self.stored
+
+
+def unix_of(value: int) -> int:
+    return value // 10_000_000 - 11644473600
+
+
+class TimeRangeTest(unittest.TestCase):
+    def test_kept_time_per_device(self) -> None:
+        self.assertEqual(kept_time(2147385600, netbsd4=False), 2147385600)   # 2038-01-18
+        self.assertEqual(kept_time(2147385600, netbsd4=True), 2147385600)
+        self.assertEqual(kept_time(2212012800, netbsd4=False), 2212012800)   # 2040-02-05
+        self.assertEqual(kept_time(2212012800, netbsd4=True), NETBSD4_LAST)
+        self.assertEqual(kept_time(HFS_LAST + 1, netbsd4=False), HFS_LAST)
+        self.assertEqual(kept_time(HFS_FIRST - 1, netbsd4=False), HFS_FIRST)
+        self.assertEqual(kept_time(HFS_FIRST - 1, netbsd4=True), HFS_FIRST)
+        self.assertEqual(kept_time(-63158400, netbsd4=True), -63158400)      # 1968 while cached
+
+    def run_range(self, netbsd4: bool, answer):
+        client, r = DeviceTimes(answer), Results()
+        with mock.patch("builtins.print"):
+            time_range(r, client, netbsd4)
+        return client, r
+
+    def test_a_device_that_clamps_passes(self) -> None:
+        for netbsd4 in (False, True):
+            client, r = self.run_range(netbsd4, lambda v, n=netbsd4: filetime(kept_time(unix_of(v), n)))
+            self.assertEqual(r.failed, [], netbsd4)
+            self.assertEqual(r.passed, len(TIME_RANGE))
+            self.assertEqual([unix_of(v) for v in client.set_calls], [unix for _, unix in TIME_RANGE])
+
+    def test_samba_s_never_or_a_wrapped_time_fails(self) -> None:
+        never = 0x7FFFFFFFFFFFFFFF
+        _, r = self.run_range(False, lambda v: never if unix_of(v) > 2147483647 else v)
+        # Today's smbd also hands 1903 to the kernel unclamped.
+        self.assertEqual(r.failed, ["times: last-write time 2040-02-05 reads back as 2040-02-05 00:00:00",
+                                    "times: last-write time 2106-02-07 reads back as 2040-02-06 06:28:15",
+                                    "times: last-write time 1903-12-31 reads back as 1904-01-01 00:00:00"])
+        # The kernel's own wrap: 2106 stored modulo 2^32 reads back as 1970.
+        _, r = self.run_range(False, lambda v: filetime(0) if unix_of(v) > HFS_LAST else
+                              filetime(kept_time(unix_of(v), False)))
+        self.assertEqual(r.failed, ["times: last-write time 2106-02-07 reads back as 2040-02-06 06:28:15"])
+
+    def test_netbsd4_expects_its_own_last_second(self) -> None:
+        # A NetBSD 6 answer on NetBSD 4 fails where the two differ.
+        _, r = self.run_range(True, lambda v: filetime(kept_time(unix_of(v), False)))
+        self.assertEqual(r.failed, ["times: last-write time 2040-02-05 reads back as 2038-01-19 03:14:06",
+                                    "times: last-write time 2106-02-07 reads back as 2038-01-19 03:14:06"])
 
 
 if __name__ == "__main__":

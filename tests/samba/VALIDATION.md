@@ -1747,6 +1747,57 @@ master of 2026-09-25). 0066 lets root skip only the ACL check.
   rsync 6849fe9f (+416), each passing `verify_fork_repair`. The NetBSD 4 LE
   and BE services and rsync are byte-identical to the committed ones.
 
+## File times past 2038 and 2040, and before 1970 (2026-09-29)
+
+What each layer keeps, probed on both devices by setting times with utimes()
+and reading them back after the kernel dropped its cached vnodes (creating 2 x
+`kern.maxvnodes` empty files and looking each up twice; a file holding cached
+pages sits on the hold list and outlives that):
+- Both kernels store `(uint32)t + 2082844800` modulo 2^32 in HFS and read a
+  time back as that minus 2082844800, except that anything before 1970 reads
+  as 0. So 1904-1969 is stored but reads as 1970; 2040-02-06 06:28:16 and 2106
+  read as 1970; 15032385535 as 2038-01-19; 1901-1903 lands in 2038-2040. Until
+  the vnode is dropped, stat returns exactly what was set. Both take -1 in both
+  times as "leave them alone" (VNOVAL); one -1 beside another time is stored.
+- NetBSD 6 keeps 1970 to 2040-02-06 06:28:15 exactly. NetBSD 4's 32-bit
+  time_t ends at 2038-01-19 03:14:07 (its kernel reads 2038-2040 HFS dates as
+  1901-1903).
+- Apple's afpserver (set from a Mac with mount_afp): only 1970-01-01 to
+  2038-01-19 03:14:07 is kept; every other time, 2039 and 1968 included, is
+  stored as 0 and shown to the Mac as an invalid date (2068-01-19), on both.
+- Samba before this change: TIME_T_MAX was INT32_MAX on every lane (the NetBSD
+  7 libc gmtime() fails configure's 64-bit probe with EOVERFLOW), so every
+  time after 2038-01-19 03:14:07 was stored as that second and read back as
+  "never" (the year 30828). NetBSD 4 was worse: nt_time_to_unix_timespec_raw()
+  cast to the 32-bit time_t before the TIME_T_MAX check, so 2040-02-05 became
+  1903-12-30 and 2106-02-07 became 1969-12-31.
+
+The change (deliberately better than afpserver, which throws dates away):
+- NetBSD 6 lane: `-DTIME_T_MAX=253402300799LL` (year 9999, where gmtime works).
+- Patch 0071 (upstream fix): saturate nt_time_to_unix_timespec_raw() at
+  time_t's range, so the TIME_T_MAX/TIME_T_MIN clamps apply on 32-bit time_t.
+- `tc_at_emulation.c`: every explicit time is clamped to what HFS keeps
+  (1904-01-01 to 2040-02-06 06:28:15; 2038-01-19 03:14:06 on NetBSD 4), and -1
+  in both times becomes -2. Times before 1970 still read back as 1970 once
+  uncached: nothing short of reading the catalog would fix that.
+
+Validation (no deploy, no full tier): pytest passed; host regression passed
+(time_range on a 64-bit host, no HFS). Clean builds of all three lanes: smbd
+6 42d66742 (+272 bytes), 4le 6d35fc5d (+260), 4be 31543efe (+268); migrators
+6 2900f769, 4le 14089612, 4be fa82a935. When the history was squashed the
+fork repair's read-only skip moved before this change, and a clean NetBSD 6
+rebuild gave smbd f5276dca (the migrator byte-identical); the device checks
+below ran with 42d66742. With each device's new smbd swapped in:
+- `tc_at_emulation_test time_range` read back from the catalog: passed on
+  both (NetBSD 6: 2038-01-18, 2040-02-05 and HFS's last second exact, later
+  times at 2040-02-06 06:28:15, before 1904 at 1904; NetBSD 4: 2038-01-18
+  exact, later times at 2038-01-19 03:14:06). The other quick-tier driver
+  cases passed.
+- `dir_device.py --case times`: all 7 passed on both, including 2040-02-05
+  and 2106 through SMB (NetBSD 4: both at 2038-01-19 03:14:06).
+- `smb2.timestamps`: no unknown failures on either; the three time_t tests
+  past 2106 still fail as listed.
+
 ## Fork repair skips read-only mappings (2026-09-29)
 
 The repair cycled and advised every recorded private mapping, read-only ones

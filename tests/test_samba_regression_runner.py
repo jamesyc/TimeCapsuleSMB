@@ -65,6 +65,7 @@ def test_device_execution_uploads_large_native_fixture_once():
         (run.TARGETS[5], ("all",)),
     ]
     assert run.case_timeout(run.TARGETS[4], True) == 180
+    assert run.case_timeout(run.TARGETS[9], True) == 180  # time_range's vnode churn on HFS
     assert run.case_timeout(run.TARGETS[3], True) == 60
     assert run.case_timeout(run.TARGETS[4], False) == 25
 

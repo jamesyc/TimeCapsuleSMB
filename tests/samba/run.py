@@ -56,7 +56,7 @@ NATIVE_LINKS_CASES = ("apple_format", "format_limits", "parse_rejects", "convert
                       "dos_mode", "nofollow_errno")
 CATIA_LINKS_CASES = ("catia_links",)
 AT_EMULATION_CASES = ("calls", "absolute", "errors", "flags", "renamed", "rename", "long_paths",
-                      "cross_directory", "listing_changes", "fds", "times", "fdopendir")
+                      "cross_directory", "listing_changes", "fds", "times", "time_range", "fdopendir")
 FILE_GROWTH_CASES = ("unchecked", "stale_size", "fits", "exceeds", "boundary", "not_hfs", "no_volume",
                      "fstat_error", "real_volume", "real_resource_fork", "call_write", "call_pwrite_send",
                      "call_set_filelen", "call_offload")
@@ -169,7 +169,9 @@ def execution_cases(cross_exec: bool):
 
 
 def case_timeout(target: str, cross_exec: bool) -> int:
-    if cross_exec and target in {TARGETS[4], TARGETS[5]}:
+    # time_range creates 1.5 x kern.maxvnodes files on the device's HFS (about
+    # 20,000 on NetBSD 6) to read times back from the catalog.
+    if cross_exec and target in {TARGETS[4], TARGETS[5], TARGETS[9]}:
         return 180
     return 60 if cross_exec else 25
 

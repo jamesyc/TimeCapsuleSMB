@@ -1,0 +1,23 @@
+diff --git a/lib/util/time.c b/lib/util/time.c
+--- a/lib/util/time.c
++++ b/lib/util/time.c
+@@ -844,6 +844,19 @@ struct timespec nt_time_to_unix_timespec_raw(
+ 	/* Now adjust by 369 years to make the secs since 1970 */
+ 	d -= TIME_FIXUP_CONSTANT_INT;
+ 
++	/*
++	 * A 32-bit time_t cannot hold every NTTIME. Saturate instead of
++	 * letting the cast wrap, so the callers' TIME_T_MAX and TIME_T_MIN
++	 * checks see a time out of range: 2040 must not become 1903.
++	 */
++	if (d > (int64_t)_TYPE_MAXIMUM(time_t)) {
++		d = _TYPE_MAXIMUM(time_t);
++		ret.tv_nsec = 0;
++	} else if (d < (int64_t)_TYPE_MINIMUM(time_t)) {
++		d = _TYPE_MINIMUM(time_t);
++		ret.tv_nsec = 0;
++	}
++
+ 	ret.tv_sec = (time_t)d;
+ 	return ret;
+ }

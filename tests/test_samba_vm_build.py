@@ -214,6 +214,42 @@ class BuildTest(unittest.TestCase):
         self.assertIn("root rm -rf /tmp/tc-x-out /tmp/tc-x-job.log /tmp/tc-x-job.sh", vm.commands)
 
 
+class VmRetryTest(unittest.TestCase):
+    def vm(self, codes):
+        calls, sleeps = [], []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, codes.pop(0), "", "")
+
+        return vm_build.Vm("pw", run=run, sleep=sleeps.append), calls, sleeps
+
+    def test_a_copy_is_retried_after_scp_s_refusal(self) -> None:
+        vm, calls, sleeps = self.vm([1, 1, 0])
+        vm.get("/tmp/o/smbd.6", Path("/x"))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [4, 4])
+        vm, calls, _ = self.vm([1, 0])
+        vm.put(Path("/x"), "/tmp/o/job.sh")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_copy_that_keeps_failing_raises_after_four_tries(self) -> None:
+        vm, calls, _ = self.vm([1, 1, 1, 1])
+        with self.assertRaisesRegex(RuntimeError, "copy from the VM failed: /tmp/o/smbd.6"):
+            vm.get("/tmp/o/smbd.6", Path("/x"))
+        self.assertEqual(len(calls), 4)
+
+    def test_a_command_is_retried_only_after_ssh_s_refusal(self) -> None:
+        vm, calls, _ = self.vm([255, 0])
+        vm.ssh("true")
+        self.assertEqual(len(calls), 2)
+        # A command that ran and failed is not run again.
+        vm, calls, _ = self.vm([1])
+        with self.assertRaises(RuntimeError):
+            vm.ssh("false")
+        self.assertEqual(len(calls), 1)
+
+
 class ExpectTest(unittest.TestCase):
     script = vm_build.EXPECT.format(vm="james@192.0.2.1")
 

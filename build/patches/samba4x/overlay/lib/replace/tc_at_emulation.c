@@ -460,6 +460,33 @@ static bool rep_at_times_omit(const struct timespec times[2])
 		times[1].tv_nsec == UTIME_OMIT);
 }
 
+/*
+ * HFS keeps a time as unsigned 32-bit seconds from 1904-01-01, and both
+ * kernels convert without a range check: they store the time plus
+ * 2082844800 modulo 2^32, so a time past 2040-02-06 06:28:15 or before 1904
+ * lands decades away once the kernel drops its cached copy (2040-02-06
+ * 06:28:16 becomes 1970, 1903 becomes 2039; probed on both devices
+ * 2026-09-29). Clamp to the nearest time HFS keeps instead. NetBSD 4's
+ * time_t is 32 bits: its last is 2038-01-19 03:14:06, one second before
+ * INT32_MAX, which Samba reads back as "never" (lib/util/time.h).
+ * Apple's own afpserver keeps only
+ * 1970 to 2038-01-19 03:14:07 and stores 0 for the rest; keeping every
+ * time HFS can hold is deliberately better than that. Times before 1970
+ * are stored, but both kernels read them back as 1970 once uncached.
+ */
+static void rep_at_hfs_range(struct timeval *tv)
+{
+	const int64_t first = -2082844800LL;	/* 1904-01-01 00:00:00 */
+	/* 2040-02-06 06:28:15, or 2038-01-19 03:14:06 with a 32-bit time_t */
+	const int64_t last = sizeof(time_t) > 4 ? 2212122495LL : INT32_MAX - 1;
+	int64_t sec = tv->tv_sec;
+
+	if (sec < first || sec > last) {
+		tv->tv_sec = (time_t)(sec < first ? first : last);
+		tv->tv_usec = 0;
+	}
+}
+
 static void rep_at_timevals(const struct timespec times[2],
 			    const struct stat *st, struct timeval tv[2])
 {
@@ -477,6 +504,14 @@ static void rep_at_timevals(const struct timespec times[2],
 						   : times[i];
 		tv[i].tv_sec = ts.tv_sec;
 		tv[i].tv_usec = ts.tv_nsec / 1000;
+		rep_at_hfs_range(&tv[i]);
+	}
+	/* Both kernels take -1 in both times as "leave the times alone"
+	 * (VNOVAL) and change nothing; one -1 beside another time is stored.
+	 * Set 1969-12-31 23:59:58 instead, the nearest time that is kept. */
+	if (tv[0].tv_sec == -1 && tv[1].tv_sec == -1) {
+		tv[0].tv_sec = tv[1].tv_sec = -2;
+		tv[0].tv_usec = tv[1].tv_usec = 0;
 	}
 }
 
