@@ -1949,6 +1949,83 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("Device SSH target host must not be a link-local address", error["message"])
         self.assertFalse(config_path.exists())
 
+    def test_configure_link_local_only_record_reports_its_addresses(self) -> None:
+        # v3.1.1 telemetry: 12 installs hit this rejection 99 times, and the
+        # failure carried no addresses, so nobody could tell whether the device
+        # lacked a LAN IPv4 address or discovery missed one.
+        collector = CollectingSink()
+        record = {
+            "name": "Beaulieu",
+            "hostname": "Beaulieu.local.",
+            "service_type": "_airport._tcp.local.",
+            "port": 5009,
+            "ipv4": ["169.254.44.113"],
+            "ipv6": ["fe80::bac7:5dff:fecf:d8ea%en0"],
+            "properties": {"syAP": "116"},
+            "fullname": "Beaulieu._airport._tcp.local.",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch(
+                "timecapsulesmb.app.ops.configure.probe_connection_state",
+                side_effect=AssertionError("a link-local-only record must fail before probing"),
+            ):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {"config": str(config_path), "selected_record": record, "password": "goodpw"},
+                    },
+                    collector.sink,
+                )
+            saved = config_path.read_text()
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertIn("only advertised link-local addresses", error["message"])
+        self.assertEqual(error["debug"]["stage"], "load_existing_config")
+        self.assertIn("169.254.44.113", json.dumps(error["debug"]["selected_bonjour_record"]))
+        self.assertIn("fe80::bac7:5dff:fecf:d8ea%en0", json.dumps(error["debug"]["selected_bonjour_record"]))
+        self.assertNotIn("configure_target_source", error["debug"])
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("only advertised link-local addresses", telemetry_error)
+        self.assertIn("selected_bonjour_record=", telemetry_error)
+        self.assertIn("169.254.44.113", telemetry_error)
+        self.assertIn("fe80::bac7:5dff:fecf:d8ea%en0", telemetry_error)
+        self.assertNotIn("goodpw", repr(self._telemetry_client.emit.call_args_list))
+        # The saved target of another device is neither used nor overwritten.
+        self.assertEqual(saved, "TC_HOST=root@10.0.0.2\n")
+
+    def test_configure_without_a_selected_record_reports_none(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch(
+                "timecapsulesmb.app.ops.configure.probe_connection_state",
+                side_effect=AssertionError("a link-local host must fail before probing"),
+            ):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@169.254.189.7",
+                            # Not a record: ignored, as the resolver ignores it.
+                            "selected_record": "Office Capsule",
+                            "password": "goodpw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertNotIn("selected_bonjour_record", error["debug"])
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertNotIn("selected_bonjour_record=", telemetry_error)
+
     def test_configure_selected_record_refreshes_stale_existing_host(self) -> None:
         collector = CollectingSink()
         captured_connections: list[SshConnection] = []

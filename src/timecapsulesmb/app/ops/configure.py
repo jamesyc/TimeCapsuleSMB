@@ -177,8 +177,12 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     existing = parse_env_file(env_path)
     configure_id = str(uuid.uuid4())
     ssh_opts = string_param(params, "ssh_opts", existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
+    selected_record = params.get("selected_record")
+    # Before resolving: a rejected record (only link-local addresses, v3.1.1
+    # telemetry) must still report which addresses the device advertised.
+    if isinstance(selected_record, dict):
+        context.add_debug_fields(selected_bonjour_record=selected_record)
     try:
-        selected_record = params.get("selected_record")
         target = resolve_configure_target(
             explicit_host=string_param(params, "host"),
             selected_record=selected_record if isinstance(selected_record, dict) else None,
@@ -189,8 +193,6 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         raise AppOperationError(str(exc), code="validation_failed") from exc
     host = target.host
     password = require_string_param(params, "password")
-    if isinstance(selected_record, dict):
-        context.add_debug_fields(selected_bonjour_record=selected_record)
     context.add_debug_fields(configure_target_source=target.source)
     any_protocol = bool_param(
         params,
