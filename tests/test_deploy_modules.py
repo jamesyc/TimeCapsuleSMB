@@ -564,13 +564,15 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertIs(migrate.call_args_list[0].kwargs["inventory"], migrate.call_args_list[1].kwargs["inventory"])
                 self.assertNotIn("legacy_metadata", migrate.call_args_list[0].kwargs)
 
-    def _run_migration_reporting(self, summaries: dict[str, OversizedSummary | None]):
+    def _run_migration_reporting(self, summaries: dict[str, OversizedSummary | None], dropped: int = 0):
         messages: list[str] = []
         measurements: list[tuple[str, dict[str, object]]] = []
         root = self._mast_volume()
 
         def migrate(_connection, _plan, *, phase, inventory):
-            return XattrMigrationResult(f"phase={phase}", (root,), (), summaries[phase])
+            # Only cleanup's retirement can drop verified rows.
+            rows = dropped if phase == "cleanup" else 0
+            return XattrMigrationResult(f"phase={phase}", (root,), (), summaries[phase], rows, bool(rows))
 
         upload_and_verify_deployment_payload(
             AppConfig.from_values({}),
@@ -720,6 +722,16 @@ class DeployModuleTests(unittest.TestCase):
                 messages, migrations = self._run_migration_reporting({"copy": summary, "cleanup": summary})
                 self.assertEqual(self._kept_lines(messages), expected)
                 self.assertEqual([fields["oversized_folder_forks"] for fields in migrations], [summary.folder_forks] * 2)
+
+    def test_dropped_verified_rows_are_recorded_for_cleanup_without_the_copy_path(self) -> None:
+        for dropped in (0, 3):
+            with self.subTest(dropped=dropped):
+                _messages, migrations = self._run_migration_reporting({"copy": None, "cleanup": None}, dropped)
+                copy_fields, cleanup_fields = migrations
+                self.assertNotIn("dropped_rows", copy_fields)
+                self.assertNotIn("backup", copy_fields)
+                self.assertEqual((cleanup_fields["dropped_rows"], cleanup_fields["backup"]), (dropped, dropped > 0))
+                self.assertFalse(any("orphaned" in str(value) for value in cleanup_fields.values()))
 
     def test_no_oversized_message_when_nothing_was_kept(self) -> None:
         for summaries in ({"copy": OversizedSummary(), "cleanup": OversizedSummary()},

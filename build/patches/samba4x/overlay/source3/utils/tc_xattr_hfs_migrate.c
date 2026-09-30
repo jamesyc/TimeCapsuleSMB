@@ -970,6 +970,17 @@ static int tc_migrate_finderinfo(struct tc_migration *migration,
 		TALLOC_FREE(frame);
 		return -1;
 	}
+	/* An all-zero FinderInfo is no FinderInfo, as for a ._ file below.
+	 * Apple's kernel keeps none: it accepts the write, drops the attribute
+	 * and then reports it missing (NetBSD 6, 2026-09-30), so verifying one
+	 * failed the whole migration (v3.1.1 telemetry). fruit lists no
+	 * AFP_AfpInfo stream for it and removes the stream when a client writes
+	 * zeros, as a macOS server does, so it migrates like a row without
+	 * FinderInfo: any native value stays. */
+	if (all_zero(finderinfo, AFP_FinderSize)) {
+		TALLOC_FREE(frame);
+		return 0;
+	}
 	ret = tc_native_write_verified(
 		migration, fd, path, TC_FINDERINFO_XATTR,
 		finderinfo, AFP_FinderSize, false);
@@ -2034,18 +2045,19 @@ static int tc_fsync_directory_or_sync(int dir_fd)
 	return -1;
 }
 
-static int tc_quarantine_tdb(struct tc_migration *migration)
+/* Open the database's directory and name its first unused quarantine slot.
+ * Returns the directory descriptor, or -1 with nothing opened. */
+static int tc_quarantine_slot(TALLOC_CTX *frame, const char *tdb_path,
+			      char **directory_out, char **destination_out)
 {
-	TALLOC_CTX *frame = talloc_stackframe();
 	char *destination = NULL;
 	char *directory;
 	int slot;
 	int dir_fd;
 
-	directory = talloc_strdup(frame, migration->tdb_path);
+	directory = talloc_strdup(frame, tdb_path);
 	if (directory == NULL) {
 		errno = ENOMEM;
-		TALLOC_FREE(frame);
 		return -1;
 	}
 	if (strrchr(directory, '/') != NULL) {
@@ -2057,19 +2069,17 @@ static int tc_quarantine_tdb(struct tc_migration *migration)
 	if (dir_fd == -1) {
 		fprintf(stderr, "quarantine directory open failed path=%s error=%s\n",
 			directory, strerror(errno));
-		TALLOC_FREE(frame);
 		return -1;
 	}
 	for (slot = 1; slot <= TC_QUARANTINE_MAX_SLOTS; slot++) {
 		struct stat st;
 
 		TALLOC_FREE(destination);
-		destination = talloc_asprintf(frame, "%s%s%d", migration->tdb_path,
+		destination = talloc_asprintf(frame, "%s%s%d", tdb_path,
 					      TC_QUARANTINE_SUFFIX, slot);
 		if (destination == NULL) {
 			errno = ENOMEM;
 			close(dir_fd);
-			TALLOC_FREE(frame);
 			return -1;
 		}
 		if (lstat(destination, &st) == 0) {
@@ -2079,16 +2089,31 @@ static int tc_quarantine_tdb(struct tc_migration *migration)
 			fprintf(stderr, "quarantine probe failed path=%s error=%s\n",
 				destination, strerror(errno));
 			close(dir_fd);
-			TALLOC_FREE(frame);
 			return -1;
 		}
 		break;
 	}
 	if (slot > TC_QUARANTINE_MAX_SLOTS) {
 		fprintf(stderr, "quarantine collision: every slot up to %s%s%d exists\n",
-			migration->tdb_path, TC_QUARANTINE_SUFFIX, TC_QUARANTINE_MAX_SLOTS);
+			tdb_path, TC_QUARANTINE_SUFFIX, TC_QUARANTINE_MAX_SLOTS);
 		errno = EEXIST;
 		close(dir_fd);
+		return -1;
+	}
+	*directory_out = directory;
+	*destination_out = destination;
+	return dir_fd;
+}
+
+static int tc_quarantine_tdb(struct tc_migration *migration)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char *destination = NULL;
+	char *directory = NULL;
+	int dir_fd;
+
+	dir_fd = tc_quarantine_slot(frame, migration->tdb_path, &directory, &destination);
+	if (dir_fd == -1) {
 		TALLOC_FREE(frame);
 		return -1;
 	}
@@ -2112,6 +2137,75 @@ static int tc_quarantine_tdb(struct tc_migration *migration)
 	migration->counts.tdb_quarantined = 1;
 	TALLOC_FREE(frame);
 	return 0;
+}
+
+/* Copy the database, unchanged, to its first unused quarantine slot and flush
+ * the copy and its directory. The original stays in place and in use. Returns
+ * the copy's path (allocated on ctx) or NULL. */
+static char *tc_backup_tdb(TALLOC_CTX *ctx, const char *tdb_path)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char *directory = NULL, *destination = NULL, *result = NULL;
+	uint8_t buffer[TC_COPY_SIZE];
+	int dir_fd, source_fd = -1, copy_fd = -1;
+	ssize_t got;
+
+	dir_fd = tc_quarantine_slot(frame, tdb_path, &directory, &destination);
+	if (dir_fd == -1) {
+		TALLOC_FREE(frame);
+		return NULL;
+	}
+	source_fd = open(tdb_path, O_RDONLY);
+	copy_fd = source_fd == -1 ? -1 :
+		open(destination, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (copy_fd == -1) {
+		goto out;
+	}
+	while ((got = read(source_fd, buffer, sizeof(buffer))) != 0) {
+		ssize_t done = 0;
+
+		if (got < 0 && errno == EINTR) {
+			continue;
+		}
+		if (got < 0) {
+			goto out;
+		}
+		while (done < got) {
+			ssize_t put = write(copy_fd, buffer + done, got - done);
+
+			if (put < 0 && errno == EINTR) {
+				continue;
+			}
+			if (put <= 0) {
+				errno = put == 0 ? EIO : errno;
+				goto out;
+			}
+			done += put;
+		}
+		tc_progress();
+	}
+	if (fsync(copy_fd) != 0 || tc_fsync_directory_or_sync(dir_fd) != 0) {
+		goto out;
+	}
+	result = talloc_strdup(ctx, destination);
+out:
+	if (result == NULL) {
+		fprintf(stderr, "backup failed path=%s destination=%s error=%s\n",
+			tdb_path, destination, strerror(errno));
+		/* Only this call created it: an unfinished copy is no quarantine. */
+		if (copy_fd != -1) {
+			int error = errno;
+			unlink(destination);
+			errno = error;
+		}
+	} else {
+		fprintf(stderr, "backup path=%s destination=%s\n", tdb_path, result);
+	}
+	if (copy_fd != -1) close(copy_fd);
+	if (source_fd != -1) close(source_fd);
+	close(dir_fd);
+	TALLOC_FREE(frame);
+	return result;
 }
 
 /* FNV-1a over the whole file, the same hash inspect reports. Deploy's
@@ -2186,11 +2280,17 @@ static int tc_scan_roots_file(struct tc_migration *migration,
 
 /* Deploy-only multi-TDB migration. Each invocation walks one volume;
  * Python owns durable per-volume JSON receipts and never needs a roots file.
- * Source databases stay read-only until whole-file retirement in rank order. */
+ * The copy and cleanup walks never write a source database. Several sources
+ * stay unchanged until whole-file retirement in rank order: their precedence
+ * is their mtime. A lone source may also drop its verified rows while
+ * retirement is deferred (tc_multi_drop_verified). */
 #define TC_MULTI_VERSION 1
 #define TC_MULTI_MAX_SOURCES 32
 #define TC_MULTI_MAX_KEYS 262144
 #define TC_MULTI_LINE_MAX (PATH_MAX * 4 + 1024)
+/* Rows dropped per TDB transaction. A transaction holds a copy of every page
+ * it touches, and the NetBSD 4 appliances have little memory to spare. */
+#define TC_MULTI_DROP_CHUNK 1000
 
 struct tc_source_stat {
 	uint64_t dev, inode, size, hash;
@@ -2211,6 +2311,8 @@ struct tc_multi_source {
 	 * and both quarantine the DB instead of deleting it. */
 	uint8_t *coverage;
 	unsigned retired;
+	/* Verified rows this retire dropped (tc_multi_drop_verified). */
+	size_t deleted;
 };
 struct tc_multi {
 	TALLOC_CTX *ctx;
@@ -2221,6 +2323,11 @@ struct tc_multi {
 	uint64_t root_dev, root_inode;
 	enum tc_phase phase;
 	bool retire;
+	/* The request's D line: a deferred retire of the lone source drops its
+	 * verified rows. Only deploy decides this, knowing the whole cohort. */
+	bool drop_verified;
+	/* The copy made before dropping any row. */
+	char *backup;
 	struct tc_oversized_report oversized;
 };
 
@@ -2450,8 +2557,9 @@ static int tc_multi_file(struct tc_migration *migration, int fd, const char *pat
 		if (file.oversized) file.oversized->count = listed_before;
 	}
 	if (sidecar && tc_migrate_appledouble(&file, fd, path)) goto done;
-	/* Do not call legacy per-record retirement: source contents and mtimes
-	 * must stay identical until whole DBs can be retired oldest-first. */
+	/* Do not call legacy per-record retirement: the walks never write a
+	 * source. Its contents and mtime are its precedence and its receipt
+	 * identity; only retire changes it (tc_multi_drop_verified). */
 	if (have_record && multi->phase == TC_PHASE_CLEANUP && fsync(fd)) goto done;
 	for (i = 0; i < multi->count; i++) {
 		struct tc_multi_source *source = &multi->sources[i];
@@ -2484,7 +2592,8 @@ static int tc_multi_open(struct tc_multi *multi, struct tc_multi_source *source)
 	source->scan.tdb_path = source->path;
 	source->scan.legacy_metadata = source->mode;
 	source->scan.db = dbwrap_local_open(multi->ctx, source->path, 0,
-		TDB_DEFAULT, O_RDONLY, 0, DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+		TDB_DEFAULT, multi->drop_verified ? O_RDWR : O_RDONLY, 0,
+		DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
 	if (source->scan.db == NULL || tc_collect_tdb_keys(&source->scan)) return -1;
 	multi->total_keys += source->scan.num_tdb_keys;
 	if (multi->total_keys > TC_MULTI_MAX_KEYS) { errno = E2BIG; return -1; }
@@ -2523,7 +2632,7 @@ static int tc_multi_read(struct tc_multi *multi, FILE *input)
 		if (!strcmp(words[0], "S")) {
 			struct tc_multi_source *s;
 			char *end;
-			if (opened || count != 12 || multi->count == TC_MULTI_MAX_SOURCES ||
+			if (opened || count != 12 || multi->count == TC_MULTI_MAX_SOURCES || multi->drop_verified ||
 				tc_number(words[1], &number, 10) || number != multi->count || !tc_uuid_valid(words[2])) goto invalid;
 			s = &multi->sources[multi->count]; s->index = number;
 			memcpy(s->uuid, words[2], sizeof(s->uuid));
@@ -2554,6 +2663,13 @@ static int tc_multi_read(struct tc_multi *multi, FILE *input)
 			s->aliases = talloc_realloc(multi->ctx, s->aliases, char *, s->alias_count + 1);
 			if (!s->aliases) return -1;
 			s->aliases[s->alias_count++] = path;
+		} else if (!strcmp(words[0], "D")) {
+			/* Before the first K or E: the source opens read-write only
+			 * for a D. Several sources rank by mtime, so only a lone one
+			 * may change. */
+			if (opened || count != 1 || !multi->retire || multi->count != 1 ||
+				multi->drop_verified) goto invalid;
+			multi->drop_verified = true;
 		} else if (!strcmp(words[0], "R")) {
 			if (multi->retire || count != 5 || multi->root || !tc_uuid_valid(words[1])) goto invalid;
 			memcpy(multi->root_uuid, words[1], sizeof(multi->root_uuid));
@@ -2662,6 +2778,56 @@ static int tc_multi_retire_path(struct tc_multi_source *source, const char *path
 	close(fd);
 	return result;
 }
+/* A lone source whose retirement is deferred (some rows belong to a disk that
+ * is not attached) drops the rows whose values cleanup verified natively. A
+ * later deploy that loses its receipt then has nothing to replay over native
+ * edits on those finished volumes; it only walks them again. Whole-file
+ * retirement would delete these rows anyway. Orphaned, kept and unresolved
+ * rows stay. The unchanged database is first copied to a quarantine slot,
+ * as retirement would have kept it: a row a reused /dev/dkN matched to the
+ * wrong disk can still be recovered from it. Rows go in chunks; one that
+ * fails leaves the earlier chunks dropped, which only costs deploy a walk. */
+static int tc_multi_drop_verified(struct tc_multi *multi, struct tc_multi_source *s)
+{
+	size_t k = 0, verified = 0, j;
+	for (j = 0; j < s->scan.num_tdb_keys; j++) {
+		verified += s->coverage[j] == 1;
+		tc_progress();
+	}
+	if (verified == 0) return 0;
+	multi->backup = tc_backup_tdb(multi->ctx, s->path);
+	if (multi->backup == NULL) return -1;
+	for (;;) {
+		size_t start, taken = 0;
+		while (k < s->scan.num_tdb_keys && s->coverage[k] != 1) k++;
+		if (k == s->scan.num_tdb_keys) break;
+		start = k;
+		if (dbwrap_transaction_start(s->scan.db) != 0) return -1;
+		for (; k < s->scan.num_tdb_keys && taken < TC_MULTI_DROP_CHUNK; k++) {
+			TDB_DATA key = {.dptr = s->scan.tdb_keys[k].data, .dsize = 16};
+			if (s->coverage[k] != 1) continue;
+			if (!NT_STATUS_IS_OK(dbwrap_delete(s->scan.db, key))) {
+				dbwrap_transaction_cancel(s->scan.db);
+				errno = EIO;
+				return -1;
+			}
+			taken++;
+			tc_progress();
+		}
+		if (dbwrap_transaction_commit(s->scan.db) != 0) {
+			fprintf(stderr, "drop failed db=%u path=%s dropped=%zu\n", s->index, s->path, s->deleted);
+			return -1;
+		}
+		for (j = start; j < k; j++) {
+			if (s->coverage[j] != 1) continue;
+			s->coverage[j] = 0;
+			s->deleted++;
+		}
+	}
+	fprintf(stderr, "dropped verified rows db=%u path=%s count=%zu backup=%s\n",
+		s->index, s->path, s->deleted, multi->backup);
+	return 0;
+}
 static int tc_multi_retire(struct tc_multi *multi)
 {
 	struct tc_multi_source *ordered[TC_MULTI_MAX_SOURCES];
@@ -2678,7 +2844,7 @@ static int tc_multi_retire(struct tc_multi *multi)
 		for (k = 0; k < s->scan.num_tdb_keys; k++) {
 			if (!s->coverage[k]) {
 				fprintf(stderr, "retirement deferred db=%u path=%s; whole cohort retained for unresolved records\n", s->index, s->path);
-				return 0;
+				return multi->drop_verified ? tc_multi_drop_verified(multi, &multi->sources[0]) : 0;
 			}
 			tc_progress();
 		}
@@ -2695,7 +2861,7 @@ static int tc_multi_retire(struct tc_multi *multi)
 		quarantine = orphaned || kept;
 		TALLOC_FREE(s->scan.db);
 		/* Aliases go first; the ranked primary remains authoritative if this
-		 * is interrupted. No source row or original mtime is ever rewritten. */
+		 * is interrupted. Whole-file retirement rewrites no row and no mtime. */
 		for (k = 0; k < s->alias_count; k++)
 			if (tc_multi_retire_path(s, s->aliases[k], quarantine)) return -1;
 			else tc_progress();
@@ -2726,11 +2892,18 @@ static void tc_multi_report(struct tc_multi *multi, const struct tc_counts *coun
 		tc_hex_print(stdout, (const uint8_t *)item->name, strlen(item->name));
 		printf("\",\"size\":%zu}", item->size);
 	}
-	printf("]},\"sources\":[");
+	printf("]},");
+	if (multi->backup != NULL) {
+		printf("\"backup_hex\":\"");
+		tc_hex_print(stdout, (const uint8_t *)multi->backup, strlen(multi->backup));
+		printf("\",");
+	}
+	printf("\"sources\":[");
 	for (i = 0; i < multi->count; i++) {
 		struct tc_multi_source *s = &multi->sources[i];
 		bool comma = false;
-		printf("%s{\"index\":%u,\"total\":%zu,\"retired\":%u,\"coverage\":[", i ? "," : "", s->index, s->scan.num_tdb_keys, s->retired);
+		printf("%s{\"index\":%u,\"total\":%zu,\"retired\":%u,\"deleted\":%zu,\"coverage\":[", i ? "," : "",
+		       s->index, s->scan.num_tdb_keys, s->retired, s->deleted);
 		for (k = 0; k < s->scan.num_tdb_keys; k++) {
 			if (!s->coverage[k]) continue;
 			printf("%s[\"%c\",\"", comma ? "," : "", "?MOX"[s->coverage[k]]);
@@ -2760,6 +2933,28 @@ static int tc_multi_main(const char *phase)
 	TALLOC_FREE(frame);
 	return result ? 4 : 0;
 }
+/* A power loss during a tc_multi_drop_verified commit leaves a TDB recovery
+ * area, and TDB refuses every read-only open until a writer replays it, so the
+ * copy walks would fail on every later deploy. Inspect runs first in each
+ * deploy, after writers have stopped: a failed read-only open gets one
+ * read-write open, which replays the area, before the fingerprint is taken.
+ * The same applies to a database of several sources left that way. */
+static int tc_source_recover(const char *path)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct db_context *db = dbwrap_local_open(frame, path, 0, TDB_DEFAULT,
+		O_RDONLY, 0, DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	int result;
+	if (db == NULL) {
+		db = dbwrap_local_open(frame, path, 0, TDB_DEFAULT,
+			O_RDWR, 0, DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+		fprintf(stderr, "read-only open failed path=%s; read-write open %s\n",
+			path, db == NULL ? "failed too" : "replayed any interrupted transaction");
+	}
+	result = db == NULL ? -1 : 0;
+	TALLOC_FREE(frame);
+	return result;
+}
 static int tc_multi_inspect(const char *path, bool root)
 {
 	struct tc_source_stat s = {0};
@@ -2769,7 +2964,7 @@ static int tc_multi_inspect(const char *path, bool root)
 	if (root) {
 		if (stat(canonical, &st) || !S_ISDIR(st.st_mode) || !tc_airport_path_is_hfs(canonical)) return 3;
 		s.dev = st.st_dev; s.inode = st.st_ino;
-	} else if (tc_source_stat_read(canonical, &s)) return 3;
+	} else if (tc_source_recover(canonical) || tc_source_stat_read(canonical, &s)) return 3;
 	printf("{\"path_hex\":\""); tc_hex_print(stdout, (const uint8_t *)canonical, strlen(canonical));
 	printf("\",\"dev\":%"PRIu64",\"inode\":%"PRIu64",\"size\":%"PRIu64
 		   ",\"mtime\":%"PRId64",\"nsec\":%ld,\"hash\":\"%016"PRIx64"\"}\n",

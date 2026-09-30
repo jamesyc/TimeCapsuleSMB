@@ -246,6 +246,9 @@ class MigrationInventory:
     output: list[str] = field(default_factory=list)
     # Per phase, for deploy to show the user and record in telemetry.
     oversized: dict[str, OversizedSummary] = field(default_factory=dict)
+    # Verified rows a lone retained source dropped, and the copy made first.
+    dropped_rows: int = 0
+    backup: str | None = None
 
 
 def _read(connection: SshConnection, path: str, *, limit: int = 65536) -> bytes:
@@ -402,24 +405,45 @@ def inspect_sources(connection: SshConnection, inventory: MigrationInventory) ->
         save_progress(connection, inventory)
 
 
-def request_bytes(inventory: MigrationInventory, root: tuple[MaStVolume, dict] | None = None) -> bytes:
+def covered_keys(inventory: MigrationInventory, source: dict) -> dict[str, str]:
+    """Every completed volume's saved coverage of one source, by key."""
+    keys: dict[str, str] = {}
+    for entry in inventory.completed.values():
+        for kind, key in entry["coverage"][source_id(source)]:
+            if key in keys and keys[key] != kind:
+                raise RuntimeError("Inconsistent saved metadata key coverage")
+            keys[key] = kind
+    return keys
+
+
+def drops_verified_rows(inventory: MigrationInventory) -> bool:
+    """A deferred retirement may drop verified rows only from a lone source.
+
+    Several sources rank by their unchanged mtimes, and a cohort source on an
+    absent disk may still outrank this one.
+    """
+    return len(inventory.sources) == 1 and len(inventory.cohort) == 1
+
+
+def request_bytes(inventory: MigrationInventory, root: tuple[MaStVolume, dict] | None = None,
+                  *, drop_verified: bool = False) -> bytes:
+    if root and drop_verified:
+        raise ValueError("only retirement drops verified rows")
     lines = ["TCMIGRATE1"]
     for index, source in enumerate(inventory.sources):
         lines.append(" ".join(map(str, ("S", index, source["uuid"], os.fsencode(source["relative"]).hex(),
             os.fsencode(source["path"]).hex(), source["mode"], source["dev"], source["inode"], source["size"],
             source["mtime"], source["nsec"], source["hash"]))))
         lines.extend(f"A {index} {os.fsencode(path).hex()}" for path in source["aliases"])
+    if drop_verified:
+        # Before any K line: the helper opens the source read-write for it.
+        lines.append("D")
     if root:
         volume, stat = root
         lines.append(f"R {normalized_uuid(volume.adisk_uuid)} {os.fsencode(volume.volume_root).hex()} {stat['dev']} {stat['inode']}")
     else:
         for index, source in enumerate(inventory.sources):
-            keys = {}
-            for entry in inventory.completed.values():
-                for kind, key in entry["coverage"][source_id(source)]:
-                    if key in keys and keys[key] != kind:
-                        raise RuntimeError("Inconsistent saved metadata key coverage")
-                    keys[key] = kind
+            keys = covered_keys(inventory, source)
             lines.extend(f"K {index} {kind} {key}" for key, kind in sorted(keys.items()))
     lines.append("E")
     return ("\n".join(lines) + "\n").encode("ascii")
@@ -432,13 +456,20 @@ def save_progress(connection: SshConnection, inventory: MigrationInventory) -> N
     if len(data) > MAX_RECEIPT_BYTES or decode_receipt(data) is None:
         raise RuntimeError("Invalid migration completion document")
     for source in inventory.sources:
-        # A truncated update only loses the optimization: it cannot become a
-        # valid receipt. Flush before recording success in the deploy log.
+        # A truncated update cannot become a valid receipt, but losing a
+        # receipt is not free: the next deploy walks every volume again and
+        # rewrites native values from rows still in the source. Only a lone
+        # source drops its verified rows (drops_verified_rows); several keep
+        # them until retirement. Flush before recording success in the log.
         for path in [source["path"], *source["aliases"]]:
             run_ssh_input(connection, f"umask 077; cat > {shlex.quote(path + RECEIPT_SUFFIX)} && /bin/sync", input_bytes=data)
 
 
-def validate_native_report(report: object, inventory: MigrationInventory) -> dict[str, list[list[str]]]:
+def validate_native_report(report: object, inventory: MigrationInventory,
+                           *, verified_rows: int | None = None) -> dict[str, list[list[str]]]:
+    """Check the helper's JSON. verified_rows is the M keys a D request sent:
+    a lone source not retired must have dropped exactly those, and nothing
+    else may drop a row."""
     if (
         not isinstance(report, dict)
         or type(report.get("version")) is not int
@@ -456,17 +487,24 @@ def validate_native_report(report: object, inventory: MigrationInventory) -> dic
             raise RuntimeError("Invalid migration source response")
         total = result.get("total")
         retired = result.get("retired")
+        deleted = result.get("deleted")
         records = result.get("coverage")
         if (
             type(total) is not int
             or total < 0
             or type(retired) is not int
             or retired not in {0, 1, 2}
+            or type(deleted) is not int
+            or deleted != (verified_rows if verified_rows is not None and not retired else 0)
             or not isinstance(records, list)
             or len(records) > total
         ):
             raise RuntimeError("Invalid migration source response")
         active_coverage[source_id(inventory.sources[index])] = records
+    backup = report.get("backup_hex")
+    if (backup is not None) != any(result["deleted"] for result in results) or (
+            backup is not None and not _HEX.fullmatch(str(backup))):
+        raise RuntimeError("Invalid migration source response")
     try:
         validate_coverage(active_coverage, {source_id(source) for source in inventory.sources})
         coverage.update(active_coverage)
@@ -475,6 +513,30 @@ def validate_native_report(report: object, inventory: MigrationInventory) -> dic
     except ValueError as exc:
         raise RuntimeError("Invalid migration source response") from exc
     return coverage
+
+
+def forget_dropped_rows(connection: SshConnection, inventory: MigrationInventory, dropped: int, backup: str) -> None:
+    """Record that the lone source no longer holds its verified rows.
+
+    Its fingerprint changed, so its receipt is saved again with the new one
+    and without the dropped keys, which the next retire request must not name.
+    A deploy that stops first finds a stale receipt and only walks again.
+    """
+    source = inventory.sources[0]
+    key = source_id(source)
+    stat = _native(connection, ["inspect", source["path"]])
+    if os.fsdecode(bytes.fromhex(stat["path_hex"])) != source["path"]:
+        raise RuntimeError(f"Legacy database moved while dropping verified rows: {source['path']}")
+    for entry in inventory.completed.values():
+        entry["coverage"][key] = [record for record in entry["coverage"][key] if record[0] != "M"]
+    source.update({name: stat[name] for name in ("dev", *STAT_FIELDS)})
+    validate_source(source)
+    inventory.cohort = [source_identity(source)]
+    save_progress(connection, inventory)
+    inventory.dropped_rows += dropped
+    inventory.backup = backup
+    inventory.output.append(f"dropped_verified_rows source={source['relative']} uuid={source['uuid']} "
+                            f"count={dropped} backup={backup}")
 
 
 def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory, phase: str) -> str:
@@ -526,8 +588,14 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
         if {source_id(s) for s in inventory.sources} != {source_id(s) for s in inventory.cohort}:
             inventory.output.append("retirement deferred reason=source_volume_absent")
         else:
-            report = _native(connection, ["multi", "retire"], request=request_bytes(inventory), log=log)
-            validate_native_report(report, inventory)
+            drop = drops_verified_rows(inventory)
+            verified = (sum(kind == "M" for kind in covered_keys(inventory, inventory.sources[0]).values())
+                        if drop else None)
+            report = _native(connection, ["multi", "retire"], request=request_bytes(inventory, drop_verified=drop), log=log)
+            validate_native_report(report, inventory, verified_rows=verified)
+            if drop and report["sources"][0]["deleted"]:
+                forget_dropped_rows(connection, inventory, report["sources"][0]["deleted"],
+                                    os.fsdecode(bytes.fromhex(report["backup_hex"])))
             for index, result in enumerate(report["sources"]):
                 if result["retired"]:
                     source = inventory.sources[index]

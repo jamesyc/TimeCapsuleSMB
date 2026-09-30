@@ -94,6 +94,17 @@ static long test_migrate_syscall_377(int fd,
 		errno = E2BIG;
 		return -1;
 	}
+	/* Apple's kernels keep no all-zero FinderInfo: the write succeeds and
+	 * removes the attribute, so a read reports it missing (NetBSD 6 and
+	 * NetBSD 4 LE, 2026-09-30; the hfs case checks it on the device). */
+	if (strcmp(name, "com.apple.FinderInfo") == 0 && size == 32 &&
+	    all_zero(value, size))
+	{
+		if (xattr != NULL) {
+			ZERO_STRUCTP(xattr);
+		}
+		return 0;
+	}
 	if (xattr == NULL) {
 		for (i = 0; i < ARRAY_SIZE(test_xattrs); i++) {
 			if (!test_xattrs[i].exists) {
@@ -207,6 +218,8 @@ static int interrupted_reads;
 static bool partial_reads;
 static bool directory_read_error;
 static bool commit_error;
+/* Commits that succeed before commit_error takes effect (-1: from the first). */
+static int commits_before_error = -1;
 static int fsync_error;              /* errno the fsync hook fails with (0 = real fsync) */
 static int sync_calls;
 static unsigned progress_resets;
@@ -251,6 +264,10 @@ static struct dirent *migration_test_readdir(DIR *dir)
 }
 static int migration_test_commit(struct db_context *db)
 {
+	if (commit_error && commits_before_error > 0) {
+		commits_before_error--;
+		return dbwrap_transaction_commit(db);
+	}
 	if (commit_error) { dbwrap_transaction_cancel(db); errno = EIO; return -1; }
 	return dbwrap_transaction_commit(db);
 }
@@ -2146,11 +2163,443 @@ static void test_folder_forks(void)
 	test_folder_fork_report();
 }
 
+/* A lone retained database drops its verified rows while its retirement is
+ * deferred, so a lost receipt cannot replay them over later native edits.
+ * Retire needs no walk: the rows' kinds come from the receipt's K lines, so
+ * these rows carry made-up device numbers. */
+#define DROP_DEV 0x51ULL
+#define DROP_ABSENT_DEV 0x52ULL
+#define DROP_UUID "11111111-1111-1111-1111-111111111111"
+
+static void drop_key_hex(char out[33], uint64_t dev, uint64_t inode)
+{
+	struct file_id id = {.devid = dev, .inode = inode};
+	uint8_t key[16];
+
+	push_file_id_16(key, &id);
+	hex_string(out, key, sizeof(key));
+}
+
+/* The retire request deploy sends: one source, an optional D, then K lines
+ * for M rows at inodes [100, 100 + verified), O rows at 5000 and 5001 and an
+ * X row at 9000. Returns tc_multi_read's result. */
+static int drop_request(struct tc_multi *multi, TALLOC_CTX *ctx, const char *tdb,
+			bool drop, unsigned verified, bool orphans)
+{
+	FILE *input = tmpfile();
+	char key_hex[33];
+	unsigned i;
+	int result;
+
+	CHECK(input != NULL);
+	fprintf(input, "TCMIGRATE1\n");
+	multi_source_line(input, 0, DROP_UUID, ".samba4/private/xattr.tdb", tdb);
+	if (drop) fprintf(input, "D\n");
+	for (i = 0; i < verified; i++) {
+		drop_key_hex(key_hex, DROP_DEV, 100 + i);
+		fprintf(input, "K 0 M %s\n", key_hex);
+	}
+	if (orphans) {
+		for (i = 0; i < 2; i++) {
+			drop_key_hex(key_hex, DROP_DEV, 5000 + i);
+			fprintf(input, "K 0 O %s\n", key_hex);
+		}
+		drop_key_hex(key_hex, DROP_DEV, 9000);
+		fprintf(input, "K 0 X %s\n", key_hex);
+	}
+	fprintf(input, "E\n");
+	rewind(input);
+	memset(multi, 0, sizeof(*multi));
+	multi->ctx = ctx;
+	multi->retire = true;
+	errno = 0;
+	result = tc_multi_read(multi, input);
+	fclose(input);
+	return result;
+}
+
+/* verified M rows, the O and X rows, and (unless absent is 0) one row of a
+ * disk that is not attached, which keeps retirement deferred. */
+static void drop_rows(const char *tdb, unsigned verified, uint64_t absent)
+{
+	struct timeval dates[2] = {{.tv_sec = 1234567890}, {.tv_sec = 1234567890}};
+
+	unlink(tdb);
+	write_orphan_rows(tdb, DROP_DEV, 100, verified, absent);
+	write_orphan_rows(tdb, DROP_DEV, 5000, 2, 0);
+	multi_value(tdb, &(struct file_id){.devid = DROP_DEV, .inode = 9000},
+		    "com.apple.kept", "k", 1);
+	CHECK(utimes(tdb, dates) == 0);
+}
+
+/* How many of the rows at inodes [first, first + count) the database holds. */
+static unsigned drop_present(const char *tdb, uint64_t dev, uint64_t first, unsigned count)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct db_context *db = dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_RDONLY, 0,
+						  DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	unsigned i, present = 0;
+
+	CHECK(db != NULL);
+	for (i = 0; i < count; i++) {
+		struct file_id id = {.devid = dev, .inode = first + i};
+		uint8_t key[16];
+
+		push_file_id_16(key, &id);
+		present += dbwrap_exists(db, (TDB_DATA){.dptr = key, .dsize = sizeof(key)});
+	}
+	TALLOC_FREE(frame);
+	return present;
+}
+
+static int inspect_source(const char *path)
+{
+	return tc_multi_inspect(path, false);
+}
+
+static void test_drop_verified(void)
+{
+	TALLOC_CTX *frame;
+	char root[PATH_MAX] = "/tmp/tc-drop-verified.XXXXXX", private_dir[PATH_MAX];
+	char tdb[PATH_MAX], other[PATH_MAX], slot1[PATH_MAX + 16], slot2[PATH_MAX + 16];
+	char expected[256], backup_hex[2 * (PATH_MAX + 16) + 1];
+	struct tc_source_stat before, after;
+	struct tc_counts counts = {0};
+	struct tc_multi multi;
+	size_t k, unverified;
+
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
+	snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root);
+	CHECK(mkdir(private_dir, 0700) == 0);
+	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", private_dir);
+	snprintf(other, sizeof(other), "%s/other.tdb", private_dir);
+	snprintf(slot1, sizeof(slot1), "%s.orphaned.1", tdb);
+	snprintf(slot2, sizeof(slot2), "%s.orphaned.2", tdb);
+
+	/* Deferred with D: the verified rows go, everything else stays, and the
+	 * unchanged file was copied to the first quarantine slot beforehand. */
+	drop_rows(tdb, 3, DROP_ABSENT_DEV);
+	CHECK(tc_source_stat_read(tdb, &before) == 0);
+	frame = talloc_stackframe();
+	CHECK(drop_request(&multi, frame, tdb, true, 3, true) == 0);
+	CHECK(tc_multi_retire(&multi) == 0);
+	CHECK(multi.sources[0].retired == 0 && multi.sources[0].deleted == 3);
+	CHECK(multi.backup != NULL && strcmp(multi.backup, slot1) == 0);
+	for (k = 0; k < multi.sources[0].scan.num_tdb_keys; k++) CHECK(multi.sources[0].coverage[k] != 1);
+	report_multi = &multi; report_counts = &counts;
+	CHECK(read_stdout_capture(print_multi_report, "", report_output, sizeof(report_output)) == 0);
+	hex_string(backup_hex, slot1, strlen(slot1));
+	snprintf(expected, sizeof(expected), "\"backup_hex\":\"%.64s", backup_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+	CHECK(strstr(report_output, "\"retired\":0,\"deleted\":3,") != NULL);
+	CHECK(strstr(report_output, "[\"M\",") == NULL && strstr(report_output, "[\"O\",") != NULL);
+	TALLOC_FREE(frame);
+	CHECK(access(tdb, F_OK) == 0);
+	CHECK(drop_present(tdb, DROP_DEV, 100, 3) == 0);
+	CHECK(drop_present(tdb, DROP_DEV, 5000, 2) == 2 && drop_present(tdb, DROP_DEV, 9000, 1) == 1);
+	CHECK(drop_present(tdb, DROP_ABSENT_DEV, 0x3344, 1) == 1);
+	CHECK(tc_source_stat_read(slot1, &after) == 0);
+	CHECK(after.size == before.size && after.hash == before.hash);
+	CHECK(drop_present(slot1, DROP_DEV, 100, 3) == 3);
+
+	/* The next deploy names no dropped key: nothing is left to drop, so
+	 * neither the database nor the slots change. */
+	CHECK(tc_source_stat_read(tdb, &before) == 0);
+	frame = talloc_stackframe();
+	CHECK(drop_request(&multi, frame, tdb, true, 0, true) == 0);
+	CHECK(tc_multi_retire(&multi) == 0);
+	CHECK(multi.sources[0].deleted == 0 && multi.backup == NULL);
+	report_multi = &multi;
+	CHECK(read_stdout_capture(print_multi_report, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, "backup_hex") == NULL && strstr(report_output, "\"deleted\":0,") != NULL);
+	TALLOC_FREE(frame);
+	CHECK(tc_source_stat_read(tdb, &after) == 0 && tc_source_stat_same(&before, &after));
+	CHECK(access(slot2, F_OK) == -1 && errno == ENOENT);
+	/* A key that is no longer in the database is not a valid K line. */
+	frame = talloc_stackframe();
+	CHECK(drop_request(&multi, frame, tdb, true, 1, false) == -1 && errno == EINVAL);
+	TALLOC_FREE(frame);
+	unlink(slot1);
+
+	/* Without D a deferred retire changes nothing, as before. */
+	drop_rows(tdb, 3, DROP_ABSENT_DEV);
+	CHECK(tc_source_stat_read(tdb, &before) == 0);
+	frame = talloc_stackframe();
+	CHECK(drop_request(&multi, frame, tdb, false, 3, true) == 0);
+	CHECK(tc_multi_retire(&multi) == 0);
+	CHECK(multi.sources[0].retired == 0 && multi.sources[0].deleted == 0 && multi.backup == NULL);
+	TALLOC_FREE(frame);
+	CHECK(tc_source_stat_read(tdb, &after) == 0 && tc_source_stat_same(&before, &after));
+	CHECK(access(slot1, F_OK) == -1 && errno == ENOENT);
+
+	/* Every row covered: D changes nothing about whole-file retirement. The
+	 * orphans quarantine the original bytes; no row is dropped first. */
+	drop_rows(tdb, 3, 0);
+	CHECK(tc_source_stat_read(tdb, &before) == 0);
+	frame = talloc_stackframe();
+	CHECK(drop_request(&multi, frame, tdb, true, 3, true) == 0);
+	CHECK(tc_multi_retire(&multi) == 0);
+	CHECK(multi.sources[0].retired == 2 && multi.sources[0].deleted == 0 && multi.backup == NULL);
+	TALLOC_FREE(frame);
+	CHECK(access(tdb, F_OK) == -1 && errno == ENOENT);
+	CHECK(tc_source_stat_read(slot1, &after) == 0 && after.hash == before.hash && after.size == before.size);
+	CHECK(access(slot2, F_OK) == -1 && errno == ENOENT);
+	unlink(slot1);
+
+	/* Rows go 1,000 per transaction. A commit that fails keeps the earlier
+	 * chunks dropped and every row of its own. */
+	drop_rows(tdb, 2500, DROP_ABSENT_DEV);
+	frame = talloc_stackframe();
+	CHECK(drop_request(&multi, frame, tdb, true, 2500, true) == 0);
+	commit_error = true; commits_before_error = 1;
+	CHECK(tc_multi_retire(&multi) == -1);
+	commit_error = false; commits_before_error = -1;
+	CHECK(multi.sources[0].deleted == TC_MULTI_DROP_CHUNK);
+	for (k = 0, unverified = 0; k < multi.sources[0].scan.num_tdb_keys; k++)
+		unverified += multi.sources[0].coverage[k] == 1;
+	CHECK(unverified == 2500 - TC_MULTI_DROP_CHUNK);
+	TALLOC_FREE(frame);
+	CHECK(drop_present(tdb, DROP_DEV, 100, 2500) == 2500 - TC_MULTI_DROP_CHUNK);
+	CHECK(drop_present(slot1, DROP_DEV, 100, 2500) == 2500);
+	unlink(slot1);
+
+	/* A copy that cannot be flushed drops nothing and leaves no copy that
+	 * could pass for a quarantine. */
+	drop_rows(tdb, 3, DROP_ABSENT_DEV);
+	CHECK(tc_source_stat_read(tdb, &before) == 0);
+	frame = talloc_stackframe();
+	CHECK(drop_request(&multi, frame, tdb, true, 3, true) == 0);
+	fsync_error = EIO;
+	CHECK(tc_multi_retire(&multi) == -1);
+	fsync_error = 0;
+	CHECK(multi.sources[0].deleted == 0 && multi.backup == NULL);
+	TALLOC_FREE(frame);
+	CHECK(tc_source_stat_read(tdb, &after) == 0 && tc_source_stat_same(&before, &after));
+	CHECK(access(slot1, F_OK) == -1 && errno == ENOENT);
+
+	/* D belongs to a lone source's retire, before any K line, once. */
+	frame = talloc_stackframe();
+	{
+		FILE *input;
+		unsigned variant;
+
+		multi_value(other, &(struct file_id){.devid = DROP_DEV, .inode = 1}, "com.apple.test", "o", 1);
+		for (variant = 0; variant < 4; variant++) {
+			char key_hex[33];
+			struct stat st;
+
+			input = tmpfile();
+			CHECK(input != NULL);
+			fprintf(input, "TCMIGRATE1\n");
+			multi_source_line(input, 0, DROP_UUID, ".samba4/private/xattr.tdb", tdb);
+			drop_key_hex(key_hex, DROP_DEV, 100);
+			if (variant == 0) {
+				/* Two sources: their order is their mtimes. */
+				multi_source_line(input, 1, "22222222-2222-2222-2222-222222222222",
+						  ".samba4/private/other.tdb", other);
+				fprintf(input, "D\nE\n");
+			} else if (variant == 1) {
+				fprintf(input, "K 0 M %s\nD\nE\n", key_hex);
+			} else if (variant == 2) {
+				fprintf(input, "D\nD\nE\n");
+			} else {
+				/* A copy or cleanup walk never writes a source. */
+				CHECK(stat(root, &st) == 0);
+				fprintf(input, "D\nR 33333333-3333-3333-3333-333333333333 ");
+				tc_hex_print(input, (const uint8_t *)root, strlen(root));
+				fprintf(input, " %"PRIu64" %"PRIu64"\nE\n", (uint64_t)st.st_dev, (uint64_t)st.st_ino);
+			}
+			rewind(input);
+			memset(&multi, 0, sizeof(multi));
+			multi.ctx = frame;
+			multi.retire = variant != 3;
+			errno = 0;
+			CHECK(tc_multi_read(&multi, input) == -1 && errno == EINVAL);
+			fclose(input);
+		}
+		/* An S line after D would make the lone source one of two. */
+		input = tmpfile();
+		CHECK(input != NULL);
+		fprintf(input, "TCMIGRATE1\n");
+		multi_source_line(input, 0, DROP_UUID, ".samba4/private/xattr.tdb", tdb);
+		fprintf(input, "D\n");
+		multi_source_line(input, 1, "22222222-2222-2222-2222-222222222222",
+				  ".samba4/private/other.tdb", other);
+		fprintf(input, "E\n");
+		rewind(input);
+		memset(&multi, 0, sizeof(multi));
+		multi.ctx = frame;
+		multi.retire = true;
+		errno = 0;
+		CHECK(tc_multi_read(&multi, input) == -1 && errno == EINVAL);
+		fclose(input);
+	}
+	TALLOC_FREE(frame);
+	unlink(other);
+
+	/* A power loss mid-commit leaves a recovery area that makes every
+	 * read-only open fail. Inspect replays it before fingerprinting, and the
+	 * interrupted drop is undone. */
+	drop_rows(tdb, 3, DROP_ABSENT_DEV);
+	{
+		pid_t child = fork();
+		CHECK(child != -1);
+		if (child == 0) {
+			struct tdb_context *raw = tdb_open(tdb, 0, TDB_DEFAULT, O_RDWR, 0);
+			struct file_id id = {.devid = DROP_DEV, .inode = 100};
+			uint8_t key[16];
+
+			push_file_id_16(key, &id);
+			if (raw == NULL || tdb_transaction_start(raw) != 0 ||
+			    tdb_delete(raw, (TDB_DATA){.dptr = key, .dsize = sizeof(key)}) != 0 ||
+			    tdb_transaction_prepare_commit(raw) != 0) {
+				_exit(1);
+			}
+			_exit(0);
+		}
+		CHECK(child_exit_status(child) == 0);
+	}
+	frame = talloc_stackframe();
+	CHECK(dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_RDONLY, 0,
+				DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE) == NULL);
+	TALLOC_FREE(frame);
+	CHECK(read_stdout_capture(inspect_source, tdb, report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, "\"hash\":\"") != NULL);
+	CHECK(drop_present(tdb, DROP_DEV, 100, 3) == 3);
+	/* An intact database is never opened read-write. */
+	CHECK(tc_source_stat_read(tdb, &before) == 0);
+	CHECK(read_stdout_capture(inspect_source, tdb, report_output, sizeof(report_output)) == 0);
+	CHECK(tc_source_stat_read(tdb, &after) == 0 && tc_source_stat_same(&before, &after));
+
+	unlink(tdb);
+	rmdir(private_dir);
+	CHECK(rmdir(root) == 0);
+}
+
 /* On a device only, with TMPDIR on its HFS disk (the cross-exec runner sets
  * TMPDIR=/Volumes/dkN): the real kernel behaviour the migrator relies on for
  * 255-byte names and folder forks, then the migrator program's own walk over a
  * legacy database and ._ files, checked by reading the real attributes back.
  * Elsewhere it reports a skip and passes. */
+/* Run the single-database program's copy and cleanup over root, as deploy
+ * did before multi mode, and return cleanup's stats line in report_output. */
+static void run_copy_and_cleanup(char **argv, const char *mode)
+{
+	argv[1] = discard_const_p(char, "copy");
+	argv[3] = discard_const_p(char, mode);
+	program_argv = argv;
+	CHECK(read_stdout_capture(run_program_main, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, " errors=0\n") != NULL);
+	argv[1] = discard_const_p(char, "cleanup");
+	CHECK(read_stdout_capture(run_program_main, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, " errors=0\n") != NULL);
+}
+
+/* v3.1.1 telemetry: one file failed a deploy on every retry because its TDB
+ * row held an all-zero FinderInfo. Apple's kernel drops that write (see the
+ * syscall mock), so the verification read found nothing. In each legacy form
+ * it is now no FinderInfo: nothing is written, a native value stays, and
+ * cleanup retires the database. A value with any bit set still replaces the
+ * native one. */
+static void test_zero_finderinfo(void)
+{
+	char root[PATH_MAX] = "/tmp/tc-migrate-zero-finder.XXXXXX";
+	char object[PATH_MAX], tdb_path[PATH_MAX];
+	const uint8_t native[AFP_FinderSize] = {'M', '4', 'A', ' ', 'h', 'o', 'o', 'k'};
+	const uint8_t acl[] = {1, 2, 3};
+	uint8_t zero[AFP_FinderSize] = {0};
+	uint8_t flagged[AFP_FinderSize] = {0};
+	uint8_t afpinfo[AFP_INFO_SIZE + 1] = {0};
+	uint8_t netatalk[82], flagged_netatalk[82];
+	char *argv[] = {
+		discard_const_p(char, "tc_xattr_hfs_migrate"), NULL, tdb_path, NULL, root, NULL,
+	};
+	const struct {
+		const char *mode;
+		const char *name;
+		const uint8_t *value;
+		size_t size;
+	} forms[] = {
+		{"netatalk", TC_NETATALK_META_XATTR, netatalk, sizeof(netatalk)},
+		{"stream", TC_AFPINFO_XATTR, afpinfo, sizeof(afpinfo)},
+		/* Neither decoder finds a value, so the raw Apple name is read. */
+		{"netatalk", TC_FINDERINFO_XATTR, zero, sizeof(zero)},
+	};
+	struct test_xattr *stored;
+	struct stat st;
+	struct file_id id;
+	size_t i;
+	int with_native;
+
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
+	CHECK(snprintf(object, sizeof(object), "%s/object", root) < (int)sizeof(object));
+	CHECK(snprintf(tdb_path, sizeof(tdb_path), "%s/xattr.tdb", root) < (int)sizeof(tdb_path));
+	make_appledouble(netatalk, sizeof(netatalk), AFP_FinderSize, NULL, 0);
+	PUSH_BE_U32(afpinfo, 0, AFP_Signature);
+	PUSH_BE_U32(afpinfo, 4, AFP_Version);
+
+	for (i = 0; i < ARRAY_SIZE(forms); i++) {
+		for (with_native = 0; with_native < 2; with_native++) {
+			write_file(object, "m4a", 3);
+			CHECK(stat(object, &st) == 0);
+			id = tc_file_id(&st);
+			multi_value(tdb_path, &id, forms[i].name, forms[i].value, forms[i].size);
+			multi_value(tdb_path, &id, "security.NTACL", acl, sizeof(acl));
+			reset_xattrs();
+			if (with_native) {
+				int fd = open(object, O_RDONLY);
+
+				CHECK(fd != -1);
+				CHECK(tc_airport_fsetxattr(fd, TC_FINDERINFO_XATTR,
+							   native, sizeof(native), 0) == 0);
+				close(fd);
+			}
+			run_copy_and_cleanup(argv, forms[i].mode);
+			/* The row's other value moved and the database was retired. */
+			CHECK(strstr(report_output, " finderinfo_written=0 ") != NULL);
+			CHECK(strstr(report_output, " tdb_deleted=1 ") != NULL);
+			CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
+			stored = find_xattr("security.NTACL");
+			CHECK(stored != NULL && stored->size == sizeof(acl) &&
+			      memcmp(stored->value, acl, sizeof(acl)) == 0);
+			stored = find_xattr(TC_FINDERINFO_XATTR);
+			if (with_native) {
+				CHECK(stored != NULL && stored->size == sizeof(native) &&
+				      memcmp(stored->value, native, sizeof(native)) == 0);
+			} else {
+				CHECK(stored == NULL);
+			}
+			unlink(object);
+		}
+	}
+
+	/* Only exactly zero is absent: one bit in the extended half still makes
+	 * the legacy value replace the native one. */
+	flagged[AFP_FinderSize - 1] = 0x01;
+	make_appledouble(flagged_netatalk, sizeof(flagged_netatalk), AFP_FinderSize, NULL, 0);
+	memcpy(flagged_netatalk + TC_AD_HEADER_SIZE + 2 * TC_AD_ENTRY_SIZE, flagged, sizeof(flagged));
+	write_file(object, "m4a", 3);
+	CHECK(stat(object, &st) == 0);
+	id = tc_file_id(&st);
+	multi_value(tdb_path, &id, TC_NETATALK_META_XATTR, flagged_netatalk, sizeof(flagged_netatalk));
+	reset_xattrs();
+	{
+		int fd = open(object, O_RDONLY);
+
+		CHECK(fd != -1);
+		CHECK(tc_airport_fsetxattr(fd, TC_FINDERINFO_XATTR, native, sizeof(native), 0) == 0);
+		close(fd);
+	}
+	run_copy_and_cleanup(argv, "netatalk");
+	CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
+	stored = find_xattr(TC_FINDERINFO_XATTR);
+	CHECK(stored != NULL && stored->size == sizeof(flagged) &&
+	      memcmp(stored->value, flagged, sizeof(flagged)) == 0);
+
+	unlink(object);
+	CHECK(rmdir(root) == 0);
+}
+
 static void test_hfs(void)
 {
 #if defined(__NetBSD__)
@@ -2159,8 +2608,11 @@ static void test_hfs(void)
 	char root[PATH_MAX], tdb[PATH_MAX], quarantine[PATH_MAX], path[PATH_MAX];
 	char plain[PATH_MAX], plain_sidecar[PATH_MAX], bundle[PATH_MAX];
 	char bundle_sidecar[PATH_MAX], folder[PATH_MAX], name[256];
+	char zero_none[PATH_MAX], zero_keep[PATH_MAX];
 	char *argv[] = {"migrate", "copy", tdb, "stream", root, NULL};
 	uint8_t finder[AFP_FinderSize] = {'T', 'E', 'X', 'T', 't', 't', 'x', 't'};
+	const uint8_t zero_finder[AFP_FinderSize] = {0};
+	uint8_t zero_meta[82];
 	uint8_t fork_data[64], old_fork[10], value[82 + sizeof(fork_data)], got[128];
 	struct statvfs sv;
 	struct file_id id;
@@ -2204,6 +2656,24 @@ static void test_hfs(void)
 	name[255] = '\0';
 	snprintf(path, sizeof(path), "%s/%s", root, name);
 	write_file(path, "long", 4);
+	/* Two rows whose netatalk FinderInfo is all zero (v3.1.1 telemetry):
+	 * one file has no native FinderInfo, the other has its own. */
+	make_appledouble(zero_meta, sizeof(zero_meta), AFP_FinderSize, NULL, 0);
+	snprintf(zero_none, sizeof(zero_none), "%s/none.m4a", root);
+	write_file(zero_none, "m4a", 3);
+	CHECK(stat(zero_none, &st) == 0);
+	id = tc_file_id(&st);
+	multi_value(tdb, &id, TC_NETATALK_META_XATTR, zero_meta, sizeof(zero_meta));
+	multi_value(tdb, &id, "com.apple.test", "abc", 3);
+	snprintf(zero_keep, sizeof(zero_keep), "%s/keep.m4a", root);
+	write_file(zero_keep, "m4a", 3);
+	CHECK(stat(zero_keep, &st) == 0);
+	id = tc_file_id(&st);
+	multi_value(tdb, &id, TC_NETATALK_META_XATTR, zero_meta, sizeof(zero_meta));
+	fd = open(zero_keep, O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(tc_airport_fsetxattr(fd, TC_FINDERINFO_XATTR, finder, sizeof(finder), 0) == 0);
+	close(fd);
 
 	/* The kernel behaviour the migrator's rules stand on. */
 	snprintf(path, sizeof(path), "%s/._%s", root, name);
@@ -2213,6 +2683,13 @@ static void test_hfs(void)
 	fd = open(folder, O_RDONLY);
 	CHECK(fd >= 0);
 	CHECK(tc_airport_fsetxattr(fd, TC_RESOURCEFORK_XATTR, "x", 1, 0) == -1 && errno == EPERM);
+	close(fd);
+	/* Writing an all-zero FinderInfo succeeds and leaves none. */
+	fd = open(zero_none, O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(tc_airport_fsetxattr(fd, TC_FINDERINFO_XATTR, finder, sizeof(finder), 0) == 0);
+	CHECK(tc_airport_fsetxattr(fd, TC_FINDERINFO_XATTR, zero_finder, sizeof(zero_finder), 0) == 0);
+	CHECK(tc_airport_fgetxattr(fd, TC_FINDERINFO_XATTR, got, sizeof(got)) == -1 && errno == ENOATTR);
 	close(fd);
 
 	/* The migrator program over the whole tree, as deploy runs it. */
@@ -2237,6 +2714,18 @@ static void test_hfs(void)
 	CHECK(memcmp(got, fork_data, sizeof(fork_data)) == 0);
 	close(fd);
 	CHECK(access(plain_sidecar, F_OK) == -1 && errno == ENOENT);
+	/* An all-zero FinderInfo row wrote none; its other value moved, and the
+	 * file with its own FinderInfo kept it. */
+	fd = open(zero_none, O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(tc_airport_fgetxattr(fd, TC_FINDERINFO_XATTR, got, sizeof(got)) == -1 && errno == ENOATTR);
+	CHECK(tc_airport_fgetxattr(fd, "com.apple.test", got, sizeof(got)) == 3 && memcmp(got, "abc", 3) == 0);
+	close(fd);
+	fd = open(zero_keep, O_RDONLY);
+	CHECK(fd >= 0);
+	CHECK(tc_airport_fgetxattr(fd, TC_FINDERINFO_XATTR, got, sizeof(got)) == AFP_FinderSize);
+	CHECK(memcmp(got, finder, sizeof(finder)) == 0);
+	close(fd);
 	/* Folder forks stay in legacy storage; the folder's other value moved. */
 	CHECK(stat(bundle_sidecar, &st) == 0 && st.st_size == (off_t)sizeof(value));
 	fd = open(folder, O_RDONLY);
@@ -2248,6 +2737,8 @@ static void test_hfs(void)
 	real_hfs = false;
 	unlink(quarantine);
 	unlink(plain);
+	unlink(zero_none);
+	unlink(zero_keep);
 	unlink(bundle_sidecar);
 	rmdir(bundle);
 	rmdir(folder);
@@ -2288,6 +2779,7 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "tdb") == 0 || strcmp(argv[1], "all") == 0) {
 		test_tdb_migration();
 		test_tdb_collection_failures();
+		test_zero_finderinfo();
 	}
 	if (strcmp(argv[1], "resume") == 0 || strcmp(argv[1], "all") == 0) { test_resume(); }
 	if (strcmp(argv[1], "scan") == 0 || strcmp(argv[1], "all") == 0) {
@@ -2310,6 +2802,9 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "folder_forks") == 0 || strcmp(argv[1], "all") == 0) {
 		test_folder_forks();
 	}
+	if (strcmp(argv[1], "drop_verified") == 0 || strcmp(argv[1], "all") == 0) {
+		test_drop_verified();
+	}
 	if (strcmp(argv[1], "hfs") == 0 || strcmp(argv[1], "all") == 0) {
 		test_hfs();
 	}
@@ -2325,6 +2820,7 @@ int main(int argc, char **argv)
 	    strcmp(argv[1], "oversized") != 0 &&
 	    strcmp(argv[1], "long_names") != 0 &&
 	    strcmp(argv[1], "folder_forks") != 0 &&
+	    strcmp(argv[1], "drop_verified") != 0 &&
 	    strcmp(argv[1], "hfs") != 0 &&
 	    strcmp(argv[1], "resume") != 0 &&
 	    strcmp(argv[1], "orphans") != 0 &&

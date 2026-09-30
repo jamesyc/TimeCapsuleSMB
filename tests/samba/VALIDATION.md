@@ -48,6 +48,7 @@ and 0031, 0038 into 0038 and 0054-0057, and 0045 into 0045 and 0058-0060 (see
 | Truncate first, then check | `call_set_filelen` (2026-09-28) |
 | Drop it from server-side copies (`vfswrap_offload_write_send`) | `call_offload` (2026-09-28) |
 | Return -1 with errno 0 after a failed size refresh | `fstat_error`, `call_pwrite_send` (2026-09-28) |
+| Migrate an all-zero legacy FinderInfo and verify it (v3.1.1) | `tdb`, "native verification failed" (2026-09-30) |
 
 The retry tests check eventual success/failure and unlocked waiting without
 asserting the particular retry limit of 34. Timing-sensitive cancellation is
@@ -1827,3 +1828,123 @@ Validation: the host unit tests (`read_only_ranges_skipped` is new). Clean
 NetBSD 6 builds: smbd 4d288d44, service 21e8bb57, rsync 17b5b495, each
 passing `verify_fork_repair`; the migrator came out byte-identical
 (4c07bc68). Not run on a device.
+
+## A lone retained database drops its verified rows (2026-09-30)
+
+A receipt that is lost or damaged while a legacy `xattr.tdb` is retained (some
+of its rows belong to a disk that is not attached) made the next deploy walk
+every volume again and rewrite native values from the verified rows still in
+the database, over edits made since. With a single source, a deferred retire
+now copies the unchanged database to the next free `xattr.tdb.orphaned.N` and
+drops the rows cleanup verified, 1,000 per TDB transaction; deploy saves the
+receipt with the new fingerprint and without the dropped keys. `inspect`
+replays a TDB recovery area a power loss left behind, since TDB refuses
+read-only opens until a writer does. Several sources are unchanged.
+
+Validation:
+- pytest (2805 passed) and the host regression in Docker with sanitizers,
+  including the new `drop_verified` case.
+- NetBSD 6 and NetBSD 4 LE, every `tc_xattr_migrate_test` case from the
+  drivers' RAM disk (the recovery case replays a real prepared commit there).
+- NetBSD 6, deploy's own `migration.py` over SSH against a copy of the
+  device's `xattr.tdb.bak` (5,418 rows from 2026-09-14, all on dk2) plus one
+  row of a missing `dk7`, in a scratch directory on dk2, with a receipt that
+  recorded dk2 complete (5,362 rows verified, 56 orphaned). Only the retire
+  step ran: no file was walked or changed and smbd kept serving a Time
+  Machine backup. The retire took 8.2 s end to end (the helper under 2 s),
+  left 57 rows (56 orphans and the missing disk's row), made
+  `xattr.tdb.orphaned.1` byte-identical to the input, and saved a receipt
+  that decodes with the database's new fingerprint (14b435d7...) and only the
+  56 orphan keys. The file grew from 8,880,128 to 11,100,160 bytes: TDB's
+  transaction recovery area. A second retire dropped nothing and left the
+  database byte-identical. SIGKILL during the drop left 4,419 and 1,419 rows
+  (whole 1,000-row chunks); the next `inspect` opened the database, and the
+  stale receipt made the next deploy's completion empty (a walk, as intended).
+- Clean builds of all three lanes; smbd came out byte-identical on each. The
+  migrator: NetBSD 6 2,157,224 bytes (35775320, the binary tested above),
+  NetBSD 4 LE 2,171,080 (98e5ed66), NetBSD 4 BE 2,170,640 (e2c7d81b), each
+  about 3-5 KB larger.
+- NetBSD 4 LE with the committed migrator (392670f0; a clean LE build of
+  6f83f1af reproduces it byte for byte). Every `tc_xattr_migrate_test` case
+  passed from the drivers' RAM disk. The same retire against the NetBSD 6
+  `.bak` copy dropped 5,362 rows in 15-16 s end to end, left 57 and a
+  byte-identical copy; the helper's peak RSS was 3.7 MB (3.8 MB virtual).
+- NetBSD 4 LE deploys (`tcapsule deploy`, four in a row). The device's own
+  `xattr.tdb.bak` is an empty TDB, so a 5-row database was built with
+  tdbtool: one DOS-attribute row (from the NetBSD 6 `.bak`) for each of three
+  new files on dk2, an orphan row and a row of a missing dk7.
+  1. Walked dk2, verified the three files (their creation time over SMB became
+     the row's, 2026-09-14), deferred retirement for dk7, copied the unchanged
+     file to `xattr.tdb.orphaned.1` and dropped the 3 rows. The receipt
+     decoded with the new fingerprint and only the orphan key.
+  2. A file's creation date changed over SMB (SetFile) to 2025-01-02 and the
+     receipt corrupted: the deploy walked dk2 again, dropped and copied
+     nothing, left the database unchanged, and the edit stayed.
+  3. Control: the full 5-row database restored and the receipt removed, as the
+     previous build left things. The walk rewrote the edited date back to
+     2026-09-14 (the replay this change prevents), then dropped the rows again
+     into `xattr.tdb.orphaned.2`.
+  4. The edit made again, then a deploy with a valid receipt: no walk, no drop,
+     database and receipt byte-identical, the edit intact.
+  Doctor passed afterwards. The test files were removed.
+- NetBSD 6 with the committed migrator (a45e636f; a clean NetBSD 6 build of
+  6f83f1af reproduces it byte for byte, smbd unchanged). Every
+  `tc_xattr_migrate_test` case passed. The `.bak` retire: 8.2 s, peak RSS
+  3.4 MB; a rerun left the database byte-identical; SIGKILL before the first
+  commit left every row and the receipt valid, after three chunks 2,419 rows,
+  after all six 57, each reopened by the next `inspect`.
+- NetBSD 6 deploys, four in a row, with the device's real `xattr.tdb.bak`
+  (5,418 rows, nearly all Time Machine band files) plus the dk7 row and
+  DOS-attribute rows for three new files: 5,422 rows.
+  1. Walked dk2 (6,230 entries), deferred retirement for dk7, copied the
+     unchanged file to `xattr.tdb.orphaned.3` (the device's own `.1` and `.2`
+     untouched) and dropped 5,339 verified rows; 83 remained (82 rows whose
+     band files a later backup had replaced, and dk7's). The receipt decoded
+     with the new fingerprint and only the 82 orphan keys.
+  2. A file's creation date changed over SMB to 2025-01-02 and the receipt
+     corrupted: a walk, no drop, no copy, the database unchanged, the edit kept.
+  3. Control: the full database restored without a receipt. The walk put the
+     date back to 2026-09-14, then dropped the rows again (`.orphaned.4`).
+  4. The edit made again, then a deploy with a valid receipt: no walk, no drop,
+     database and receipt byte-identical, the edit intact.
+  The test files were removed; doctor passed on both devices afterwards.
+- Not run: NetBSD 4 BE.
+
+## An all-zero FinderInfo in a legacy row (2026-09-30)
+
+v3.1.1 telemetry: one NetBSD 6 install failed three deploys on the same file
+with "native verification failed ... name=com.apple.FinderInfo", then
+"metadata migration failed ... Input/output error". A static probe calling the
+migrator's native xattr syscalls on scratch files under `/Volumes/dk2` (NetBSD
+6, then NetBSD 4 LE from `/mnt/Memory`) showed how both kernels store
+FinderInfo. Every 32-byte value read back byte for byte on a file and a folder:
+each of the 256 single bits over zero and over `M4A `/`hook`, every field set
+to 0xff, `slnk`/`rhap` and `hlnk`/`hfs+`. All zeros did not: the write
+succeeds (NetBSD 6 returns 0, NetBSD 4 the 32 bytes written) and removes the
+attribute, and both reads then report ENOATTR. The TDB path wrote such a value
+and its verification read found nothing (cleanup would have reported a
+mismatch the same way); the `._` path already skipped one.
+
+An all-zero legacy FinderInfo, as a netatalk entry, an `AFP_AfpInfo` stream or
+the raw Apple name, now migrates as no FinderInfo: nothing is written and any
+native FinderInfo stays, as for a row without one. fruit lists no
+`AFP_AfpInfo` stream for it and removes the stream when a client writes zeros,
+as a macOS server does.
+
+Validation:
+- Host regression in Docker with sanitizers: all 159 invocations passed. The
+  `tdb` case runs the three forms with and without a native FinderInfo through
+  the program's copy and cleanup, plus a value with one extended-half bit set
+  that still replaces the native one. The syscall mock now drops an all-zero
+  FinderInfo write as the kernels do. With the skip disabled, `tdb` failed
+  with "native verification failed", as the deploys did.
+- NetBSD 4 LE, the netbsd4le lane's driver from the drivers' RAM disk with
+  `TMPDIR` on dk2: `tdb`, `hfs` (on real HFS: the kernel rule, then two
+  all-zero rows through the program) and `all` passed.
+- pytest: 2805 passed.
+- Clean builds of all three lanes; smbd came out byte-identical on each. The
+  migrator: NetBSD 6 2,157,304 bytes (a45e636f), NetBSD 4 LE 2,171,156
+  (392670f0), NetBSD 4 BE 2,170,716 (3b67a7c1), 76-80 bytes larger than the
+  builds in the entry above, whose change they include.
+- Not run: anything on NetBSD 6 (a Time Machine backup was in progress), a
+  deploy, and NetBSD 4 BE.

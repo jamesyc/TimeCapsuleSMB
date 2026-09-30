@@ -35,12 +35,17 @@ class XattrMigrationResult:
     unavailable_roots: tuple[str, ...] = ()
     # Values too large for a native HFS attribute, kept in legacy storage.
     oversized: OversizedSummary | None = None
+    # Verified rows a lone retained database dropped, and whether it was
+    # copied first (the path names the user's disk, so telemetry gets a flag).
+    dropped_rows: int = 0
+    backup: bool = False
 
 
 def migrate_xattr_tdb_to_hfs(connection: SshConnection, plan: DeploymentPlan, *, phase: str, inventory) -> XattrMigrationResult:
     from timecapsulesmb.deploy.migration import migrate_phase
     output = migrate_phase(connection, plan, inventory, phase)
-    return XattrMigrationResult(output, inventory.volumes, tuple(inventory.unavailable), inventory.oversized.get(phase))
+    return XattrMigrationResult(output, inventory.volumes, tuple(inventory.unavailable), inventory.oversized.get(phase),
+                                inventory.dropped_rows, inventory.backup is not None)
 
 
 def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:

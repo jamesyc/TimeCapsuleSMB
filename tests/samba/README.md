@@ -136,13 +136,36 @@ a hard link to a record with kept values counts and lists it once (deploy
 walks and the single-database stats line),
 a `._` file keeps its oversized value (and is retired at 3,802 bytes), and an
 anchor claiming 35 extents still fails the volume. Python deployment tests cover completion receipts,
-absent volumes, subsequent native edits, and interrupted software installation.
+absent volumes, subsequent native edits, interrupted software installation, and
+a lone database dropping its verified rows so that a lost receipt costs a walk.
 During deploy migration, merged TDB values replace conflicting native values;
 cleanup requires exact readback before whole-database retirement. Native-only values and
 resource-fork conflicts retain their existing behavior. `fruit:metadata=stream|netatalk` selects
 the preferred legacy value only during migration, and `fruit:resource=file`
 supplies AppleDouble sidecars to the migrator. Non-HFS shares retain the original
 TDB and AppleDouble behavior.
+
+The `drop_verified` case covers a lone retained database whose retirement is
+deferred. Built through the deploy parser with real `K` and `D` lines, it
+checks that a `D` retire drops exactly the verified rows and keeps orphaned,
+kept and unresolved ones; that the unchanged file is first copied to the next
+quarantine slot; that a rerun with nothing verified writes nothing; that
+without `D`, or with every row covered, retirement is unchanged; that a commit
+failing on the second 1,000-row chunk keeps the first chunk dropped and every
+row of its own; that a copy which cannot be flushed drops nothing and leaves no
+copy behind; that `D` is refused with two sources, in a walk, after a `K` line
+or twice; and that `inspect` replays the recovery area a
+`tdb_transaction_prepare_commit` left behind, which makes read-only opens fail.
+
+The `tdb` case also covers a legacy FinderInfo that is all zero (v3.1.1
+telemetry). Apple's kernels accept such a write, drop the attribute and then
+report it missing, and the syscall mock does the same, so verifying one failed
+the migration on every run. In its netatalk, `AFP_AfpInfo` stream and raw forms
+it now migrates as no FinderInfo: the program's copy and cleanup write none,
+leave a native FinderInfo alone, move the row's other value and delete the
+database, while one bit set in the extended half still replaces the native
+value. The `hfs` case checks that kernel behavior and migrates two such rows on
+the device.
 
 The `long_names` and `folder_forks` cases (v3.1.1 telemetry) cover a 255-byte
 name, whose 257-byte `._` name cannot exist, and a folder's resource fork, which

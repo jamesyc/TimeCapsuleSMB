@@ -937,6 +937,11 @@ def upload_and_verify_deployment_payload(
         except Exception as exc:
             raise_migration_failure(phase, migration_started, migration_log, exc)
         oversized = migration_result.oversized if isinstance(migration_result, XattrMigrationResult) else None
+        # Only cleanup's retirement drops verified rows from a lone database.
+        dropped: dict[str, object] = (
+            {"dropped_rows": migration_result.dropped_rows, "backup": migration_result.backup}
+            if phase == "cleanup" and isinstance(migration_result, XattrMigrationResult) else {}
+        )
         callbacks.measurement(
             "xattr_migration",
             phase=phase,
@@ -946,6 +951,7 @@ def upload_and_verify_deployment_payload(
             log_path=migration_log,
             result="success",
             **_oversized_measurement(oversized),
+            **dropped,
         )
         # Copy and cleanup find the same values; tell the user once, after
         # cleanup has verified the rest and retired (or kept) the database.

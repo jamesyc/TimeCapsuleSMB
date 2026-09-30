@@ -118,6 +118,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("  copy and verify native metadata before replacing the Samba payload")
     lines.append("  reverify merged metadata, save completed volumes, then retire whole TDBs oldest-first")
     lines.append("  retain unmatched records; migrate unavailable disks on a later explicit deploy")
+    lines.append("  while a lone TDB waits for such a disk, copy it aside and drop its verified records")
     lines.append("")
     lines.append("Remote actions (after metadata copy):")
     for command in render_remote_actions(plan.replace_software_actions):

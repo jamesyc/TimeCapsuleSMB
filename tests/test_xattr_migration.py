@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -21,6 +22,9 @@ UUID_A = "11111111-1111-1111-1111-111111111111"
 UUID_B = "22222222-2222-2222-2222-222222222222"
 KEY_A = "01000000000000000100000000000000"
 KEY_B = "02000000000000000100000000000000"
+# A disk the legacy database has rows for but that is not attached (not in MaSt).
+UUID_C = "33333333-3333-3333-3333-333333333333"
+KEY_C = "03000000000000000100000000000000"
 NO_OVERSIZED = {"tdb": 0, "appledouble": 0, "folder_forks": 0, "items": []}
 CONTAINER = "/Volumes/dk2/Users/me/Library/Containers/com.example.app"
 PERSONALITY = "com.apple.data-container-personality"
@@ -49,9 +53,17 @@ def device(tmp_path, monkeypatch):
     Path(volumes[1].volume_root).mkdir()
     config = tmp_path / "old-config"
     config.write_text("FRUIT_METADATA_NETATALK=1\n")
+    # rows: the attached volumes each source (uuid, relative) still holds rows
+    # for. absent: every source also holds a row of disk C, which is never
+    # attached, so retirement waits, as the helper decides it.
+    # fail_save_after_drop: receipt paths whose writes fail once rows were
+    # dropped. moved: after a drop, inspect finds the database under another
+    # canonical path.
     state = SimpleNamespace(volumes=volumes, source=source, calls=[], mounted={UUID_A, UUID_B}, fail=None,
-                            reads=[], native={UUID_A: "old", UUID_B: "old"}, retired=False,
-                            kind={UUID_A: "M", UUID_B: "M"}, oversized={}, retire_value=0)
+                            reads=[], native={UUID_A: "old", UUID_B: "old"},
+                            kind={UUID_A: "M", UUID_B: "M"}, oversized={}, rows={}, absent=True,
+                            dropped=False, fail_save_after_drop=set(), moved=False)
+    keys = {UUID_A: KEY_A, UUID_B: KEY_B, UUID_C: KEY_C}
     monkeypatch.setattr(m, "read_mast_volumes_conn", lambda _conn: state.volumes)
     monkeypatch.setattr(m, "ensure_volume_root_mounted_conn", lambda _c, root, *_a, **_k: any(v.volume_root == root and v.adisk_uuid in state.mounted for v in state.volumes))
 
@@ -61,7 +73,9 @@ def device(tmp_path, monkeypatch):
         return path.read_bytes() if path.is_file() else b""
 
     def ssh(_conn, command, *, input_bytes=b"", check=True, **_kwargs):
-        if state.fail == "save" and command.startswith("umask"):
+        if command.startswith("umask") and (state.fail == "save" or (state.fail == "save_after_drop" and state.dropped)
+                                            or (state.dropped and any(shlex.quote(path) in command
+                                                                      for path in state.fail_save_after_drop))):
             raise RuntimeError("flush failed")
         return subprocess.run(command.replace("/bin/sync", "true"), shell=True, executable="/bin/sh",
                               input=input_bytes, capture_output=True, check=check)
@@ -70,25 +84,65 @@ def device(tmp_path, monkeypatch):
         state.calls.append((args, request, kwargs))
         if args[0] in {"inspect", "inspect-root"}:
             path = Path(args[1]); st = path.stat()
-            return {"path_hex": os.fsencode(path.resolve()).hex(), "dev": st.st_dev, "inode": st.st_ino,
+            canonical = path.resolve()
+            if args[0] == "inspect" and state.moved and state.dropped:
+                canonical = canonical.with_name(canonical.name + ".moved")
+            return {"path_hex": os.fsencode(canonical).hex(), "dev": st.st_dev, "inode": st.st_ino,
                     "size": st.st_size, "mtime": st.st_mtime_ns // 10**9, "nsec": st.st_mtime_ns % 10**9,
                     "hash": hashlib.sha256(path.read_bytes()).hexdigest()[:16] if path.is_file() else "0" * 16}
         lines = request.decode().splitlines()
         roots = [line.split() for line in lines if line.startswith("R ")]
         sources = [line.split() for line in lines if line.startswith("S ")]
+        rows = [state.rows.setdefault((words[2], words[3]), {UUID_A, UUID_B}) for words in sources]
         phase = args[1]
         if state.fail == phase or (roots and state.fail == roots[0][1]):
             raise RuntimeError("injected migration failure")
         if phase == "retire":
-            state.retired = True
-            return {"version": 1, "entries": 0, "oversized": NO_OVERSIZED, "sources": [
-                {"index": i, "total": 2, "coverage": [], "retired": state.retire_value} for i in range(len(sources))]}
+            covered = [[] for _ in sources]
+            for words in (line.split() for line in lines if line.startswith("K ")):
+                volume_uuid = next(uuid for uuid, key in keys.items() if key == words[3])
+                if volume_uuid not in rows[int(words[1])]:
+                    raise RuntimeError("K names a row the database does not hold")
+                covered[int(words[1])].append((words[2], volume_uuid))
+            # The helper's whole-cohort preflight: any unnamed row anywhere defers.
+            deferred = state.absent or any(
+                held - {uuid for _kind, uuid in named} for held, named in zip(rows, covered))
+            report = {"version": 1, "entries": 0, "oversized": NO_OVERSIZED, "sources": [
+                {"index": i, "total": 2, "coverage": [], "retired": 0, "deleted": 0} for i in range(len(sources))]}
+            if not deferred:
+                # Aliases first, then the file: quarantined whole when an orphaned
+                # or kept row remains, deleted otherwise.
+                aliases = [line.split() for line in lines if line.startswith("A ")]
+                for index, words in enumerate(sources):
+                    path = Path(os.fsdecode(bytes.fromhex(words[4])))
+                    quarantine = any(kind in {"O", "X"} for kind, _uuid in covered[index])
+                    for alias in aliases:
+                        if int(alias[1]) == index:
+                            Path(os.fsdecode(bytes.fromhex(alias[2]))).unlink()
+                    if quarantine:
+                        path.rename(next(slot for slot in (Path(f"{path}.orphaned.{n}") for n in range(1, 100))
+                                         if not slot.exists()))
+                    else:
+                        path.unlink()
+                    report["sources"][index]["retired"] = 2 if quarantine else 1
+            if "D" in lines and deferred:
+                verified = {uuid for kind, uuid in covered[0] if kind == "M"}
+                if verified:
+                    path = Path(os.fsdecode(bytes.fromhex(sources[0][4])))
+                    slot = next(Path(f"{path}.orphaned.{n}") for n in range(1, 100) if not Path(f"{path}.orphaned.{n}").exists())
+                    slot.write_bytes(path.read_bytes())
+                    path.write_bytes(path.read_bytes() + b" dropped")
+                    rows[0] -= verified
+                    state.dropped = True
+                    report["sources"][0]["deleted"] = len(verified)
+                    report["backup_hex"] = os.fsencode(slot).hex()
+            return report
         key = roots[0][1]
-        if phase == "copy":
+        if phase == "copy" and any(key in held for held in rows):
             state.native[key] = "migrated"
         return {"version": 1, "entries": 3, "oversized": state.oversized.get(key, NO_OVERSIZED), "sources": [
-            {"index": i, "total": 2, "retired": 0,
-             "coverage": [[state.kind[key], KEY_A if key == UUID_A else KEY_B]] if phase == "cleanup" else []}
+            {"index": i, "total": 2, "retired": 0, "deleted": 0,
+             "coverage": [[state.kind[key], keys[key]]] if phase == "cleanup" and key in rows[i] else []}
             for i in range(len(sources))]}
 
     monkeypatch.setattr(m, "_read", read)
@@ -335,14 +389,33 @@ def test_native_requires_zero_status_and_valid_json(monkeypatch, status, stdout,
         m._native(SshConnection("test", "", ""), ["inspect", "/disk/tdb"])
 
 
-def test_rejects_unknown_duplicate_and_excess_key_coverage(device):
-    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
-    doc = json.loads(Path(str(device.source) + m.RECEIPT_SUFFIX).read_bytes())
+KEY_X = "04000000000000000100000000000000"
+
+
+def saved_receipt(device) -> dict:
+    """A receipt deploy's own writer saved, recording one of each coverage kind.
+
+    Built without a retire step, so its format does not depend on whether
+    retirement dropped any rows."""
+    inv = device.inventory(); device.inspect(inv)
+    inv.completed[UUID_A] = {"coverage": {m.source_id(inv.sources[0]): [["M", KEY_A], ["O", KEY_B], ["X", KEY_X]]},
+                             "completed_at": 1, "entries": 3}
+    m.save_progress(device.connection, inv)
+    return json.loads(Path(str(device.source) + m.RECEIPT_SUFFIX).read_bytes())
+
+
+def records_of(doc: dict) -> list:
+    return next(iter(doc["completed"][UUID_A]["coverage"].values()))
+
+
+@pytest.mark.parametrize("change", ["repeated_key", "key_repeated_as_another_kind", "unknown_source"])
+def test_rejects_unknown_duplicate_and_excess_key_coverage(device, change):
+    doc = saved_receipt(device)
+    assert m.decode_receipt(json.dumps(doc).encode()) is not None
     bad = copy.deepcopy(doc)
-    coverage = bad["completed"][UUID_A]["coverage"]
-    records = next(iter(coverage.values())); records.append(records[0])
-    assert m.decode_receipt(json.dumps(bad).encode()) is None
-    bad = copy.deepcopy(doc); bad["completed"][UUID_A]["coverage"]["unknown"] = []
+    if change == "repeated_key": records_of(bad).append(["M", KEY_A])
+    elif change == "key_repeated_as_another_kind": records_of(bad).append(["O", KEY_A])
+    else: bad["completed"][UUID_A]["coverage"]["unknown"] = []
     assert m.decode_receipt(json.dumps(bad).encode()) is None
 
 
@@ -351,14 +424,16 @@ def test_rejects_unknown_duplicate_and_excess_key_coverage(device):
                                     "oversized_more_items_than_counted", "oversized_over_limit", "oversized_path_hex",
                                     "oversized_name_hex", "oversized_kind", "oversized_fits_natively",
                                     "oversized_reason", "oversized_folder_forks_missing",
-                                    "oversized_folder_forks_over_count", "oversized_empty_folder_fork"])
+                                    "oversized_folder_forks_over_count", "oversized_empty_folder_fork",
+                                    "deleted_missing", "deleted_type", "deleted_negative", "deleted_without_d",
+                                    "backup_without_deleted"])
 def test_native_report_validation_rejects_status_and_schema_mismatches(device, change):
     inv = device.inventory(); device.inspect(inv)
     report = {
         "version": 1,
         "entries": 1,
         "oversized": {"tdb": 1, "appledouble": 0, "folder_forks": 0, "items": [oversized_item()]},
-        "sources": [{"index": 0, "total": 1, "retired": 0, "coverage": [["M", KEY_A]]}],
+        "sources": [{"index": 0, "total": 1, "retired": 0, "deleted": 0, "coverage": [["M", KEY_A]]}],
     }
     m.validate_native_report(copy.deepcopy(report), inv)
     item = report["oversized"]["items"][0]
@@ -384,9 +459,48 @@ def test_native_report_validation_rejects_status_and_schema_mismatches(device, c
     elif change == "oversized_folder_forks_over_count": report["oversized"]["folder_forks"] = 2
     elif change == "oversized_empty_folder_fork": item.update(reason="folder_fork", size=0)
     elif change == "oversized_fits_natively": item["size"] = m.NATIVE_XATTR_LIMIT
+    elif change == "deleted_missing": del report["sources"][0]["deleted"]
+    elif change == "deleted_type": report["sources"][0]["deleted"] = True
+    elif change == "deleted_negative": report["sources"][0]["deleted"] = -1
+    elif change == "deleted_without_d": report.update(backup_hex="2f78"); report["sources"][0]["deleted"] = 1
+    elif change == "backup_without_deleted": report["backup_hex"] = "2f78"
     else: raise AssertionError(change)
     with pytest.raises(RuntimeError, match="Invalid migration"):
         m.validate_native_report(report, inv)
+
+
+def drop_report(deleted=1, retired=0, backup="/x.orphaned.1"):
+    report = {"version": 1, "entries": 0, "oversized": NO_OVERSIZED,
+              "sources": [{"index": 0, "total": 3, "retired": retired, "deleted": deleted, "coverage": [["O", KEY_B]]}]}
+    if backup is not None:
+        report["backup_hex"] = os.fsencode(backup).hex()
+    return report
+
+
+@pytest.mark.parametrize("report, verified", [
+    (drop_report(), 1),                                  # deferred: every verified row named was dropped
+    (drop_report(deleted=0, backup=None), 0),            # deferred with nothing verified: no copy either
+    (drop_report(deleted=0, retired=2, backup=None), 1),  # not deferred: whole-file retirement drops none
+])
+def test_native_report_accepts_dropped_rows_only_as_requested(device, report, verified):
+    inv = device.inventory(); device.inspect(inv)
+    m.validate_native_report(report, inv, verified_rows=verified)
+
+
+@pytest.mark.parametrize("report, verified", [
+    (drop_report(deleted=1), 2),                          # fewer rows dropped than were verified
+    (drop_report(deleted=0, backup=None), 1),             # a deferred retire that kept verified rows
+    (drop_report(deleted=1, retired=2), 1),               # retired and dropped at once
+    (drop_report(deleted=1, backup=None), 1),             # dropped rows without their copy
+    (drop_report(deleted=0), 0),                          # a copy without dropped rows
+    (drop_report(backup="not hex"), 1),
+])
+def test_native_report_rejects_dropped_rows_that_do_not_match_the_request(device, report, verified):
+    inv = device.inventory(); device.inspect(inv)
+    if report.get("backup_hex") == os.fsencode("not hex").hex():
+        report["backup_hex"] = "not hex"
+    with pytest.raises(RuntimeError, match="Invalid migration"):
+        m.validate_native_report(report, inv, verified_rows=verified)
 
 
 def test_native_report_accepts_kept_values_and_decodes_them(device):
@@ -396,7 +510,7 @@ def test_native_report_accepts_kept_values_and_decodes_them(device):
         "entries": 1,
         "oversized": {"tdb": 60, "appledouble": 1, "folder_forks": 0, "items": [oversized_item(size=3803)] * 49 + [
             oversized_item("/Volumes/dk2/Photos/._x", "com.apple.big", 5000, "appledouble")]},
-        "sources": [{"index": 0, "total": 2, "retired": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
+        "sources": [{"index": 0, "total": 2, "retired": 0, "deleted": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
     }
     coverage = m.validate_native_report(report, inv)
     assert coverage == {m.source_id(inv.sources[0]): [["X", KEY_A], ["M", KEY_B]]}
@@ -416,7 +530,7 @@ def test_native_report_accepts_folder_forks_of_any_size(device):
             oversized_item("/Volumes/dk2/pass.txt.rtfd", "com.apple.ResourceFork", 64, "appledouble", "folder_fork"),
             oversized_item("/Volumes/dk2/Old.rtfd", "com.apple.ResourceFork", 10, "tdb", "folder_fork"),
             oversized_item("/Volumes/dk2/Photos/._x", "com.apple.big", 5000, "appledouble")]},
-        "sources": [{"index": 0, "total": 2, "retired": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
+        "sources": [{"index": 0, "total": 2, "retired": 0, "deleted": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
     }
     m.validate_native_report(report, inv)
     kept = m.decode_oversized(report)
@@ -433,6 +547,7 @@ def test_kept_values_complete_the_volume_like_orphans_and_quarantine_on_retireme
         oversized_item(), oversized_item(size=41409),
         oversized_item("/Volumes/dk2/Music/song.rtfd", "com.apple.ResourceFork", 50, "appledouble", "folder_fork")]}
     # Deploy 1: the second disk is absent, and retirement keeps the DB.
+    device.absent = False  # disk B is the only one missing
     device.mounted.remove(UUID_B)
     inv = device.inventory(); device.inspect(inv)
     device.phase(inv, "copy")
@@ -455,7 +570,6 @@ def test_kept_values_complete_the_volume_like_orphans_and_quarantine_on_retireme
     # is, and retirement replays X from the receipt and quarantines the DB.
     device.mounted.add(UUID_B)
     device.calls.clear()
-    device.retire_value = 2
     inv = device.inventory(); device.inspect(inv)
     device.phase(inv, "copy")
     output = device.phase(inv, "cleanup")
@@ -468,12 +582,12 @@ def test_kept_values_complete_the_volume_like_orphans_and_quarantine_on_retireme
     assert not Path(str(device.source) + m.RECEIPT_SUFFIX).exists()
 
 
-@pytest.mark.parametrize("retire_value, absent_source, outcome", [
-    (2, False, "quarantined"), (0, False, "in_place"), (2, True, "in_place")])
-def test_cleanup_records_where_kept_database_values_ended_up(device, retire_value, absent_source, outcome):
+@pytest.mark.parametrize("absent_disk, absent_source, outcome", [
+    (False, False, "quarantined"), (True, False, "in_place"), (False, True, "in_place")])
+def test_cleanup_records_where_kept_database_values_ended_up(device, absent_disk, absent_source, outcome):
     device.kind[UUID_A] = "X"
     device.oversized[UUID_A] = {"tdb": 1, "appledouble": 0, "folder_forks": 0, "items": [oversized_item()]}
-    device.retire_value = retire_value
+    device.absent = absent_disk
     if absent_source:
         other = Path(device.volumes[1].volume_root) / ".samba4/private/xattr.tdb"
         other.parent.mkdir(parents=True); other.write_bytes(b"other database")
@@ -499,15 +613,15 @@ def test_reported_names_are_decoded_for_display_only():
     (value.path + value.name).encode("utf-8", "strict")
 
 
-@pytest.mark.parametrize("kind, decodes", [("X", True), ("O", True), ("M", True), ("Z", False)])
-def test_receipt_accepts_known_coverage_kinds_and_rescans_on_unknown_ones(device, kind, decodes):
+def test_receipt_accepts_known_coverage_kinds_and_rescans_on_unknown_ones(device):
     """Builds older than X reject it the same way this build rejects Z: a rescan."""
-    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
-    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
-    doc = json.loads(receipt.read_bytes())
-    for records in doc["completed"][UUID_A]["coverage"].values():
-        records[0][0] = kind
-    assert (m.decode_receipt(json.dumps(doc).encode()) is not None) is decodes
+    doc = saved_receipt(device)
+    decoded = m.decode_receipt(json.dumps(doc).encode())
+    assert decoded is not None and sorted(kind for kind, _key in records_of(decoded)) == ["M", "O", "X"]
+    for index in range(3):
+        bad = copy.deepcopy(doc)
+        records_of(bad)[index][0] = "Z"
+        assert m.decode_receipt(json.dumps(bad).encode()) is None
 
 
 def test_aliases_are_deduplicated_and_each_receipt_keeps_the_original_decoder(device):
@@ -522,3 +636,207 @@ def test_aliases_are_deduplicated_and_each_receipt_keeps_the_original_decoder(de
     for path in [other, device.source]:
         doc = m.decode_receipt(Path(str(path) + m.RECEIPT_SUFFIX).read_bytes())
         assert doc is not None and doc["sources"][0]["mode"] == "netatalk" and not doc["completed"]
+
+
+def retire_request(device):
+    return next(request for args, request, _ in reversed(device.calls) if args == ["multi", "retire"])
+
+
+def test_lone_source_drops_verified_rows_so_a_lost_receipt_cannot_replay(device):
+    """Retirement waits for disk B, so the database stays. Its verified rows
+    for disk A go: losing A's receipt later costs a walk, not native edits."""
+    device.mounted.remove(UUID_B)
+    original = device.source.read_bytes()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    output = device.phase(inv, "cleanup")
+    backup = Path(f"{device.source}.orphaned.1")
+    lines = retire_request(device).decode().splitlines()
+    assert lines.index("D") < lines.index(f"K 0 M {KEY_A}")
+    assert f"dropped_verified_rows source=.samba4/private/xattr.tdb uuid={UUID_A} count=1 backup={backup}" in output
+    assert (inv.dropped_rows, inv.backup) == (1, str(backup))
+    assert backup.read_bytes() == original and device.source.read_bytes() != original
+    # The receipt names the changed database and no longer lists A's dropped key.
+    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    saved = m.decode_receipt(receipt.read_bytes())
+    assert list(saved["completed"][UUID_A]["coverage"].values()) == [[]]
+    assert saved["sources"][0]["hash"] == hashlib.sha256(device.source.read_bytes()).hexdigest()[:16]
+
+    device.native[UUID_A] = "new native edit"
+    receipt.write_text('{"version":1,')
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert any(f"R {UUID_A} ".encode() in request for _, request, _ in device.scan_calls())
+    assert device.native[UUID_A] == "new native edit"
+    assert UUID_A in inv.completed and inv.dropped_rows == 0
+    assert not Path(f"{device.source}.orphaned.2").exists()
+
+
+def test_receipt_lost_after_the_drop_costs_only_a_walk(device):
+    device.mounted.remove(UUID_B)
+    device.fail = "save_after_drop"
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    with pytest.raises(RuntimeError, match="flush failed"):
+        device.phase(inv, "cleanup")
+    device.fail = None
+    device.native[UUID_A] = "new native edit"
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    # The receipt still names the database before the drop: a walk, no replay.
+    assert any(f"R {UUID_A} ".encode() in request for _, request, _ in device.scan_calls())
+    assert device.native[UUID_A] == "new native edit"
+    assert UUID_A in inv.completed
+
+
+def test_redeploy_after_the_drop_changes_nothing(device):
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    database, saved = device.source.read_bytes(), receipt.read_bytes()
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); output = device.phase(inv, "cleanup")
+    assert not device.scan_calls() and "D" in retire_request(device).decode().splitlines()
+    assert "K 0 M" not in retire_request(device).decode()
+    assert inv.dropped_rows == 0 and inv.backup is None and "dropped_verified_rows" not in output
+    assert device.source.read_bytes() == database and receipt.read_bytes() == saved
+    assert not Path(f"{device.source}.orphaned.2").exists()
+
+
+def test_receipt_from_before_row_dropping_drops_its_rows_without_a_walk(device, monkeypatch):
+    """A v3.1.x receipt still lists verified rows in a retained database."""
+    device.mounted.remove(UUID_B)
+    with monkeypatch.context() as old_build:
+        old_build.setattr(m, "drops_verified_rows", lambda _inventory: False)
+        inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert "D" not in retire_request(device).decode().splitlines()
+    assert device.source.read_bytes() == b"legacy metadata"
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert not device.scan_calls()
+    assert f"K 0 M {KEY_A}" in retire_request(device).decode()
+    assert inv.dropped_rows == 1 and Path(f"{device.source}.orphaned.1").read_bytes() == b"legacy metadata"
+
+
+def test_returning_disk_retires_the_database_whole_after_a_drop(device):
+    device.absent = False  # disk B is the only one missing
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    backup = Path(f"{device.source}.orphaned.1")
+    copied = backup.read_bytes()
+    device.mounted.add(UUID_B)
+    device.kind[UUID_B] = "O"
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); output = device.phase(inv, "cleanup")
+    request = retire_request(device).decode()
+    assert f"K 0 O {KEY_B}" in request and "K 0 M" not in request
+    assert "outcome=quarantined" in output and inv.dropped_rows == 0
+    assert not Path(str(device.source) + m.RECEIPT_SUFFIX).exists() and not device.source.exists()
+    # The quarantine takes the next slot; the copy made before the drop stays.
+    assert backup.read_bytes() == copied
+    assert Path(f"{device.source}.orphaned.2").read_bytes() == copied + b" dropped"
+
+
+def test_lone_source_with_every_row_resolved_is_deleted_whole(device):
+    """Nothing waits for a disk, so D asks for nothing: no drop, no copy."""
+    device.absent = False
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); output = device.phase(inv, "cleanup")
+    assert "D" in retire_request(device).decode().splitlines()
+    assert f"retired source=.samba4/private/xattr.tdb uuid={UUID_A} outcome=deleted orphaned=0 oversized=0" in output
+    assert "retirement complete" in output and inv.dropped_rows == 0 and inv.backup is None
+    assert not device.source.exists() and not Path(str(device.source) + m.RECEIPT_SUFFIX).exists()
+    assert not Path(f"{device.source}.orphaned.1").exists()
+
+
+def test_several_sources_never_drop_rows(device):
+    """Their precedence is their mtimes, and a cohort source may be absent."""
+    second = Path(device.volumes[0].volume_root) / "tc-netbsd7/private/xattr.tdb"
+    second.parent.mkdir(parents=True)
+    second.write_bytes(b"newer legacy metadata")
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert "D" not in retire_request(device).decode().splitlines()
+    assert device.source.read_bytes() == b"legacy metadata" and second.read_bytes() == b"newer legacy metadata"
+    assert inv.dropped_rows == 0
+
+
+def test_only_a_retire_request_can_ask_to_drop_rows(device):
+    inv = device.inventory(); device.inspect(inv)
+    stat = {"dev": 1, "inode": 2}
+    with pytest.raises(ValueError):
+        m.request_bytes(inv, (inv.volumes[0], stat), drop_verified=True)
+    assert "D" not in m.request_bytes(inv).decode().splitlines()
+
+
+def test_database_path_changing_during_the_drop_saves_nothing(device):
+    """Deploy cannot tell which file it changed: it stops before pruning its
+    coverage or writing a receipt. The receipt from before the drop no longer
+    matches the file, so the next deploy walks again; the dropped rows were
+    verified, so the walk rewrites nothing."""
+    device.mounted.remove(UUID_B)
+    device.moved = True
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    with pytest.raises(RuntimeError, match="moved while dropping"):
+        device.phase(inv, "cleanup")
+    key = m.source_id(inv.sources[0])
+    assert ["M", KEY_A] in inv.completed[UUID_A]["coverage"][key] and inv.dropped_rows == 0
+    saved = m.decode_receipt(Path(str(device.source) + m.RECEIPT_SUFFIX).read_bytes())
+    assert ["M", KEY_A] in records_of(saved)
+    assert saved["sources"][0]["hash"] == hashlib.sha256(b"legacy metadata").hexdigest()[:16]
+
+    device.moved = False
+    device.native[UUID_A] = "new native edit"
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert any(f"R {UUID_A} ".encode() in request for _, request, _ in device.scan_calls())
+    assert device.native[UUID_A] == "new native edit"
+
+
+def aliased_source(device) -> Path:
+    """A second payload spelling of the same database: a symlinked file."""
+    alias = Path(device.volumes[0].volume_root) / "tc-netbsd7/private/xattr.tdb"
+    alias.parent.mkdir(parents=True)
+    alias.symlink_to(device.source)
+    return alias
+
+
+def test_after_a_drop_every_spelling_of_the_database_has_a_current_receipt(device):
+    alias = aliased_source(device)
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert inv.dropped_rows == 1 and inv.sources[0]["aliases"] == [str(alias)]
+    current = hashlib.sha256(device.source.read_bytes()).hexdigest()[:16]
+    receipts = [Path(str(path) + m.RECEIPT_SUFFIX).read_bytes() for path in (device.source, alias)]
+    assert receipts[0] == receipts[1]
+    saved = m.decode_receipt(receipts[0])
+    assert saved["sources"][0]["hash"] == current and records_of(saved) == []
+
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert not device.scan_calls() and "K 0 M" not in retire_request(device).decode()
+    assert inv.dropped_rows == 0
+
+
+def test_a_stale_alias_receipt_after_a_drop_is_ignored_and_rewritten(device):
+    """The canonical receipt is written first. If the alias's write fails, the
+    current receipt is trusted, the stale one ignored, and the next inspect
+    rewrites both."""
+    alias = aliased_source(device)
+    alias_receipt = Path(str(alias) + m.RECEIPT_SUFFIX)
+    canonical_receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    device.mounted.remove(UUID_B)
+    device.fail_save_after_drop = {str(alias_receipt)}
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    with pytest.raises(RuntimeError, match="flush failed"):
+        device.phase(inv, "cleanup")
+    current = hashlib.sha256(device.source.read_bytes()).hexdigest()[:16]
+    assert m.decode_receipt(canonical_receipt.read_bytes())["sources"][0]["hash"] == current
+    stale = m.decode_receipt(alias_receipt.read_bytes())
+    assert stale["sources"][0]["hash"] != current and ["M", KEY_A] in records_of(stale)
+
+    device.fail_save_after_drop = set()
+    device.native[UUID_A] = "new native edit"
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv)
+    assert UUID_A in inv.completed and alias_receipt.read_bytes() == canonical_receipt.read_bytes()
+    device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert not device.scan_calls() and "K 0 M" not in retire_request(device).decode()
+    assert device.native[UUID_A] == "new native edit" and inv.dropped_rows == 0

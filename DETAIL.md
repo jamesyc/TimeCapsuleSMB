@@ -209,6 +209,11 @@ resource backend opens `file/..namedfork/rsrc` as a real descriptor, so large
 resource forks use normal offset I/O and are not limited by the device's
 3,802-byte ordinary-xattr ceiling.
 
+An all-zero FinderInfo is no FinderInfo. Apple's kernels keep none (writing one
+removes the attribute), and `fruit` lists no `AFP_AfpInfo` stream for one, so
+the migrator writes nothing for an all-zero legacy value and leaves any native
+FinderInfo in place, as it does for a row without FinderInfo.
+
 All other named streams continue down the configured stack:
 
 ```text
@@ -256,7 +261,7 @@ recursive scans. Migration is split around software replacement:
 3. `copy`: walk each unfinished available HFS volume once, merging logical attributes from all read-only input databases.
 4. Replace known project software, verify and flush it, keeping old runtime configuration through cleanup.
 5. `cleanup`: verify merged native values, flush files, remove verified sidecars, and save completed-volume key coverage.
-6. Retire whole databases in increasing source priority; unresolved older databases retain newer authorities. Fully verified files are deleted, files containing proven orphan metadata or values too large for HFS are quarantined intact.
+6. Retire whole databases in increasing source priority; unresolved older databases retain newer authorities. Fully verified files are deleted, files containing proven orphan metadata or values too large for HFS are quarantined intact. While a lone database's retirement waits for an absent disk, it is copied to `xattr.tdb.orphaned.N` and its verified rows are dropped (below).
 7. Write new configuration and `rc.local` last, flush, and reboot.
 
 Conflicting logical values use the source file's `(mtime seconds, nanoseconds,
@@ -288,7 +293,29 @@ An unavailable external disk keeps its legacy TDB rows; attach it and run deploy
 again to migrate them. An interrupted deployment can be rerun. Validated `xattr.tdb.migration-progress.json` files remember completed volume
 UUIDs and verified key coverage for the entire source cohort. Later deploys skip
 those volumes in both phases, preserving subsequent native edits. Missing or
-invalid progress may cause replay, which is an accepted recovery behavior.
+invalid progress makes the next deploy walk those volumes again and rewrite
+native values from any rows still in a database.
+
+A lone database therefore does not keep verified rows. When its retirement is
+deferred because some rows belong to a disk that is not attached, retirement
+copies the unchanged file to the next free `xattr.tdb.orphaned.N` (a reused
+`/dev/dkN` can match a row to the wrong disk; the copy keeps it recoverable),
+then drops every row that cleanup verified natively, 1,000 per TDB
+transaction. Whole-file retirement would delete those rows anyway; orphaned,
+kept and unresolved rows stay. Deploy then saves the receipts with the new
+fingerprint and without the dropped keys. From then on a lost receipt costs a
+walk, not native edits. Rows with values HFS cannot hold natively (too large,
+or a folder's resource fork) stay whole, so a lost receipt can still rewrite
+the other attributes of those files, such as a folder's FinderInfo label.
+Several databases keep every row until whole-file retirement: their
+precedence is their unchanged mtime, and they still depend on their receipts.
+An older database found later, on a disk that was absent before, can still
+write its values over volumes whose rows were already dropped or retired.
+A power loss during a drop leaves a TDB recovery area, and TDB refuses
+read-only opens until a writer replays it. The first helper call of each
+deploy (`inspect`) therefore opens a database read-write when a read-only open
+fails, before fingerprinting it; that applies to any source, including one of
+several.
 An unfinished volume may therefore replay authoritative TDB metadata after a
 reboot; the legacy database is deliberately presumed newer than an interim AFP
 edit until cleanup records that volume as complete.
