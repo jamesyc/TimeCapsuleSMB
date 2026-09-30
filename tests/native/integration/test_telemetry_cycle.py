@@ -23,6 +23,13 @@ HANG_TIMEOUT = 20
 def telemetry_command(binary, *args):
     return [str(binary), 'telemetry', *args]
 
+
+def first_exec(binary, *args):
+    # macOS checks each newly written binary on its first exec, one binary at
+    # a time host-wide: ~0.2 s alone, seconds when parallel workers queue up.
+    # Pay it here, not inside a deadline a test measures.
+    subprocess.run([str(binary), *args], capture_output=True, env={}, timeout=HANG_TIMEOUT)
+
 @pytest.fixture(scope='module')
 def rig(tmp_path_factory):
     root = tmp_path_factory.mktemp('telemetry-integration')
@@ -32,6 +39,7 @@ def rig(tmp_path_factory):
     subprocess.run(['cc', str(Path(__file__).with_name('debug_fixture.c')), '-o', str(fixture)], check=True, timeout=30)
     acp = root / 'acp'
     subprocess.run(['cc', str(Path(__file__).with_name('acp_fixture.c')), '-o', str(acp)], check=True, timeout=30)
+    first_exec(acp, '-q', 'syAP')
     state = {'mode': 'false', 'calls': [], 'payloads': [], 'hold': threading.Event(), 'signature_started': threading.Event()}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
@@ -438,10 +446,12 @@ def short_collector(rig):
     # Only deadline tests need a shortened clock. Ordinary HTTP/JSON tests
     # use the production allowance so fixture startup isn't the assertion.
     root, _, _ = rig
-    return compile_service(root / 'service-short-timeout',
-                           flags=['-include', str(root / 'test_config.h'),
-                                  '-DTC_ACP_TIMEOUT_SECONDS=1', '-I', str(ROOT / 'build/native')],
-                           exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
+    binary = compile_service(root / 'service-short-timeout',
+                             flags=['-include', str(root / 'test_config.h'),
+                                    '-DTC_ACP_TIMEOUT_SECONDS=1', '-I', str(ROOT / 'build/native')],
+                             exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
+    first_exec(binary)
+    return binary
 
 
 @pytest.fixture
@@ -457,8 +467,15 @@ def acp_calls(tmp_path):
             except ProcessLookupError: pass
 
 
+def recorded_collectors(calls):
+    # The fake ACP records itself before it can fork anything. On a loaded host
+    # the short deadline can kill a child before it execs and records; that
+    # child ran no fixture code, so nothing of it can be left running.
+    return calls.read_text().splitlines() if calls.exists() else []
+
+
 def assert_collectors_stopped(calls):
-    for line in calls.read_text().splitlines():
+    for line in recorded_collectors(calls):
         pid = int(line.split()[1])
         def stopped():
             # Container PID 1 may leave adopted descendants as zombies.
@@ -539,6 +556,8 @@ def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_
     assert time.monotonic() - started < 5
     assert 'acp: syAP' in result.stderr
     if mode in ('drip', 'drip_after_line'): assert 'timed out' in result.stderr
+    # Only the deadline may stop the child before the fixture records itself.
+    if not recorded_collectors(calls): assert 'acp: syAP timed out' in result.stderr
     assert state['calls'] == [] and not marker.exists()
     assert_collectors_stopped(calls)
     assert subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT).returncode == 0
@@ -601,7 +620,11 @@ def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_co
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 1 and f'acp: {key} timed out' in result.stderr
     assert state['calls'] == []
-    assert calls.read_text().splitlines()[-1].startswith(key + ' ')
+    # Collection stopped at key. The deadline may kill key's child before the
+    # fixture records it, leaving the previous key as the last record.
+    identity = ['syAP', 'syAM', 'syNm', 'sySN', 'waMA', 'raMA']
+    recorded = [line.split()[0] for line in calls.read_text().splitlines()]
+    assert recorded in (identity[:identity.index(key) + 1], identity[:identity.index(key)])
     assert_collectors_stopped(calls)
 
 
