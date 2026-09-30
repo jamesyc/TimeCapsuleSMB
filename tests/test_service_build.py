@@ -63,6 +63,42 @@ class ServiceBuildWrapperTests(unittest.TestCase):
                 self.assertIn("disable_data_faultahead does not call madvise", log.read_text())
                 self.assertFalse((root / "stage" / "service.stripped").exists())
 
+    def test_fork_repair_links_only_into_the_netbsd6_service(self) -> None:
+        # Patch 0070's overlay file is in service.sources for every lane; only
+        # NetBSD 6 defines TC_FORK_REPAIR and wraps libc's fork and mmap family.
+        for wrapper, triple, netbsd6 in (("service.sh", "arm--netbsdelf", True),
+                                         ("serviceoldle.sh", "arm--netbsdelf", False),
+                                         ("serviceoldbe.sh", "armeb--netbsdelf", False)):
+            with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                helper = BuildWrapperHarness()
+                env, log, gcc_args, _ = helper.env_for(root, triple=triple)
+
+                result = helper.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                args = gcc_args.read_text().splitlines()
+                self.assertTrue(any(arg.endswith("overlay/lib/replace/tc_fork_repair.c") for arg in args))
+                self.assertEqual("-DTC_FORK_REPAIR=1" in args, netbsd6)
+                for name in ("fork", "_fork", "mmap", "_mmap", "munmap", "mremap", "mprotect"):
+                    self.assertEqual(f"-Wl,--wrap={name}" in args, netbsd6, name)
+                self.assertEqual("go through the fork repair" in log.read_text(), netbsd6)
+
+    def test_fork_repair_check_gates_stripping_netbsd6(self) -> None:
+        helper = BuildWrapperHarness()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, log, _, _ = helper.env_for(root, triple="arm--netbsdelf")
+            unwrapped = root / "nm.txt"
+            unwrapped.write_text("0009248c T _fork\n0009248c W fork\n")
+            env["TEST_NM_SYMBOLS"] = str(unwrapped)
+
+            result = helper.run_wrapper("service.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("links libc's _fork without the fork repair's wrapper", log.read_text())
+            self.assertFalse((root / "stage" / "service.stripped").exists())
+
     def test_netbsd4le_uses_little_endian_lane_without_sysroot(self) -> None:
         helper = BuildWrapperHarness()
         with tempfile.TemporaryDirectory() as tmp:

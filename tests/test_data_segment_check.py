@@ -125,5 +125,73 @@ class DataFaultaheadCheckTests(unittest.TestCase):
                 self.assert_rejected(result, "disable_data_faultahead does not call madvise")
 
 
+
+# nm of a NetBSD 6 link with the fork repair's wrappers (patch 0070): libc's
+# fork/_fork and _mmap/mmap stay, reached through __wrap_ functions.
+WRAPPED_NM = (
+    "0009248c T _fork\n"
+    "0009248c W fork\n"
+    "000b6414 W mmap\n"
+    "000b6414 T _mmap\n"
+    "000d6d58 T munmap\n"
+    "000d6bf0 T mremap\n"
+    "00012000 T __wrap_fork\n"
+    "00012040 T __wrap__mmap\n"
+    "00012080 T __wrap_mmap\n"
+    "000120c0 T __wrap_munmap\n"
+    "00012100 T __wrap_mremap\n"
+    "00012140 t tc_fork_repair_cycle\n"
+)
+
+
+class ForkRepairCheckTests(unittest.TestCase):
+    def check(self, nm: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_fake_elf_tools(root / "tools/bin", TRIPLE)
+            symbols = root / "nm"
+            symbols.write_text(nm)
+            env = dict(os.environ, TOOLDIR=str(root / "tools"), TRIPLE=TRIPLE, TEST_NM_SYMBOLS=str(symbols))
+            return subprocess.run(
+                ["/bin/sh", "-c", '. build/_data_segment_check.sh; verify_fork_repair "$0"', "smbd"],
+                cwd=REPO_ROOT, env=env, text=True, capture_output=True, check=False)
+
+    def without(self, *names: str) -> str:
+        return "".join(line + "\n" for line in WRAPPED_NM.splitlines() if line.split()[-1] not in names)
+
+    def test_a_wrapped_link_passes(self) -> None:
+        result = self.check(WRAPPED_NM)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("go through the fork repair", result.stdout)
+
+    def test_a_binary_that_never_forks_or_maps_needs_no_wrapper(self) -> None:
+        # The migrator links neither; --gc-sections drops the unused wrappers.
+        result = self.check("00012000 T open\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_either_name_of_fork_and_mmap_is_enough(self) -> None:
+        # Only daemon()-style _fork callers: __wrap__fork alone.
+        nm = self.without("__wrap_fork") + "00012200 T __wrap__fork\n"
+        self.assertEqual(self.check(nm).returncode, 0)
+        self.assertEqual(self.check(self.without("__wrap_mmap")).returncode, 0)
+
+    def test_each_linked_function_needs_its_wrapper(self) -> None:
+        for libc, wrappers in (("_fork", ("__wrap_fork",)), ("_mmap", ("__wrap_mmap", "__wrap__mmap")),
+                               ("munmap", ("__wrap_munmap",)), ("mremap", ("__wrap_mremap",))):
+            with self.subTest(libc=libc):
+                result = self.check(self.without(*wrappers))
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"links libc's {libc} without the fork repair's wrapper", result.stdout)
+        # mprotect is checked only when linked (smbd links none).
+        result = self.check(WRAPPED_NM + "000d6c00 T mprotect\n")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("links libc's mprotect", result.stdout)
+
+    def test_forking_requires_the_repair_routine(self) -> None:
+        result = self.check(self.without("tc_fork_repair_cycle"))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("forks without tc_fork_repair_cycle", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

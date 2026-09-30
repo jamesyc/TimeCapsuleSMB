@@ -163,6 +163,19 @@
 # binary, turns fault-ahead off for the writable segment with MADV_RANDOM, and
 # talloc_lib_init repeats it where NetBSD 4's GCC has no constructor priorities.
 0046-talloc-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment
+# Apple's NetBSD 6 kernel shows a child the writes its parent makes after
+# fork() to pages whose reference bit was cleared before it: its ARM
+# pmap_protect() skips the invalid PTEs that reference emulation leaves, so
+# their PVF_WRITE survives and the parent's next write makes the shared page
+# writable without a copy-on-write fault (proven on the device 2026-09-29; a
+# connection child spun forever on a half-updated copy of the parent's
+# context). NetBSD 4's pmap is not affected. On the NetBSD 6 lanes
+# (TC_FORK_REPAIR), libreplace includes overlay lib/replace/tc_fork_repair.c:
+# linker wrappers keep a registry of private mappings, and right before each
+# fork() every private mapping is protected PROT_NONE and back (dropping the
+# stale page state) and the stack in use is written back. The native service
+# and rsync link the same file. Appliance only; nothing here is for upstream.
+0070-replace-fork-repair.patch|fork() repair for Apple's NetBSD 6 kernel
 # Time Capsule HFS can report file and directory owner/group as 4294967295.
 # Normalize only that sentinel at Samba's stat_ex boundary so ACL, stream, and
 # security descriptor paths see the forced root/wheel appliance identity. The

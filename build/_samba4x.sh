@@ -1031,7 +1031,7 @@ if [ "$SAMBA4X_RUN_REGRESSION_TESTS" = "1" ]; then
     SAMBA4X_BUILD_REGRESSION_TESTS=1
 fi
 # The drivers staged from tests/samba (tests/samba/run.py TARGETS).
-SAMBA4X_REGRESSION_TARGETS=tc_pthreadpool_sync_test,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test,tc_at_emulation_test,tc_file_growth_test
+SAMBA4X_REGRESSION_TARGETS=tc_pthreadpool_sync_test,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test,tc_at_emulation_test,tc_file_growth_test,tc_fork_repair_test
 # Link flags for the static binaries other than smbd: the shipped metadata
 # migrator and the regression drivers. Unlike smbd's, they write no link map.
 TC_STATIC_LINKFLAGS=
@@ -1088,14 +1088,22 @@ else
     export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
     export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1 $TC_FORK_REPAIR_CORE_CFLAGS"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
+    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1 $TC_FORK_REPAIR_CORE_CFLAGS"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
-    TC_STATIC_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
-    TC_STATIC_LDFLAGS="$TC_STATIC_LINKFLAGS"
-    SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
-    SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST"
+    # The fork repair's wrappers (flags and object) go only on these final
+    # static links (smbd, the migrator and the regression drivers), never into
+    # LDFLAGS: configure links its probes with LDFLAGS, and a probe that calls
+    # mmap or fork would fail to link and turn the feature off.
+    # 0049 passes both a target's LINKFLAGS and LDFLAGS to its link; a
+    # repeated --wrap is harmless, a repeated object a duplicate definition, so
+    # the object joins the LINKFLAGS lists only.
+    TC_FORK_REPAIR_WRAPPERS_OBJECT="$SAMBA4X_BUILD/tc_fork_repair_wrappers.o"
+    TC_STATIC_LDFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'$(tc_fork_repair_waf_list)"
+    TC_STATIC_LINKFLAGS="$TC_STATIC_LDFLAGS, '$TC_FORK_REPAIR_WRAPPERS_OBJECT'"
+    SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'$(tc_fork_repair_waf_list)"
+    SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST, '$TC_FORK_REPAIR_WRAPPERS_OBJECT'"
     export LDFLAGS="-Wl,-Bstatic -static -Wl,--gc-sections -L$SAMBA4X_DEPS/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib"
 fi
 export PKG_CONFIG_DIR=
@@ -1208,6 +1216,12 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         export LDFLAGS="$SAMBA4X_NETBSD4_FINAL_LDFLAGS"
         echo "Final NetBSD4 build LDFLAGS=$LDFLAGS"
     fi
+    if [ "$SDK_FAMILY" = "netbsd7" ]; then
+        # Patch 0070's linker wrappers, from the patched tree's overlay file,
+        # for the static links' flag lists above (_data_segment_check.sh).
+        $CC $CPPFLAGS $CFLAGS -UTC_FORK_REPAIR $TC_FORK_REPAIR_WRAPPERS_CFLAGS \
+            -c "$SAMBA4X_SRC_DIR/lib/replace/tc_fork_repair.c" -o "$TC_FORK_REPAIR_WRAPPERS_OBJECT"
+    fi
 
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
         PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets="$SAMBA4X_REGRESSION_TARGETS"
@@ -1274,6 +1288,10 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         # Patch 0046's constructor in talloc, linked into every Samba binary.
         verify_data_faultahead "$built_path" tc_disable_data_faultahead || exit 1
         verify_at_emulation "$built_path" || exit 1
+        # Patch 0070's fork repair, NetBSD 6 lanes only (see _data_segment_check.sh).
+        if [ "$SDK_FAMILY" = "netbsd7" ]; then
+            verify_fork_repair "$built_path" || exit 1
+        fi
 
         mkdir -p "$(dirname "$stage_path")"
         cp "$built_path" "$stage_path"

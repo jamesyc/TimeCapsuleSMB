@@ -11,8 +11,9 @@ Phases, in order, each step's output in DIR/<device>-<step>.log:
            into bin/ and updates the manifest;
   install  quick: swap the built smbd in without deploying
            (tests/samba/swap_smbd.py); full: deploy NetBSD 6, then NetBSD 4;
-  devices  per device, the devices in parallel: the regression drivers from
-           RAM, doctor, dir_device, growth_device, full only durable_device
+  devices  per device, the devices in parallel: the regression drivers
+           (quick: three of them; full: the whole device plan of
+           tests/samba/run.py) from RAM, doctor, dir_device, growth_device, full only durable_device
            and links_device, then smbtorture (tests/samba/torture.py).
 
 Without --build or --binaries there is nothing new to install or to run the
@@ -39,7 +40,11 @@ from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 ENVS = {"6": ".env.backup6", "4le": ".env.backup4"}
-DRIVERS = ("tc_at_emulation_test", "tc_file_growth_test")
+# The quick tier's regression drivers; the full tier runs every one.
+QUICK_DRIVERS = ("tc_at_emulation_test", "tc_file_growth_test", "tc_fork_repair_test")
+RAM = "/mnt/Memory"
+# Room left on the RAM disk after a driver is copied there.
+RAM_SPARE = 512 * 1024
 GROWTH_AIO = ("write:maxfilesize", "write:past-volume", "allowed:hole", "allowed:sequential")
 
 
@@ -70,7 +75,7 @@ def device_steps(tier: str, lane: str, env: str, out: Path, drivers_from: Path |
     quick = tier == "quick"
     steps: list[Step] = []
     if drivers_from is not None:
-        steps.append(Step("drivers", lane, func=functools.partial(run_drivers, env, lane, drivers_from)))
+        steps.append(Step("drivers", lane, func=functools.partial(run_drivers, tier, env, lane, drivers_from)))
     steps.append(Step("doctor", lane, py("timecapsulesmb.cli.main", "doctor", "--config", env)))
     steps.append(Step("dir_device", lane, py("tests.samba.dir_device", "--env", env,
                                              *(["--quick"] if quick else ["--record", str(out / f"{lane}-dir.json")]))))
@@ -144,40 +149,78 @@ def run_host_regression(log: Path) -> bool:
         return subprocess.run(["sh", "-c", script], cwd=ROOT, stdout=out, stderr=subprocess.STDOUT).returncode == 0
 
 
-def driver_cases() -> dict[str, tuple[str, ...]]:
-    from tests.samba.run import AT_EMULATION_CASES, FILE_GROWTH_CASES
-    return {"tc_at_emulation_test": AT_EMULATION_CASES, "tc_file_growth_test": FILE_GROWTH_CASES}
+def driver_plan(tier: str) -> dict[str, list[tuple[str, ...]]]:
+    """Each driver's invocations in order: tests/samba/run.py's device plan
+    (which runs its large drivers once with "all"), the quick tier's drivers
+    only."""
+    from tests.samba.run import execution_cases
+
+    drivers: dict[str, list[tuple[str, ...]]] = {}
+    for target, arguments in execution_cases(cross_exec=True):
+        if tier == "full" or target in QUICK_DRIVERS:
+            drivers.setdefault(target, []).append(tuple(arguments))
+    return drivers
 
 
-def run_drivers(env: str, lane: str, binaries: Path, log: Path) -> bool:
-    """Each driver from /mnt/Memory (AGENTS.md: not from the HFS disk on NetBSD 4),
-    with TMPDIR on the data disk, one case at a time."""
+def ram_free(device) -> int:
+    """Free bytes on /mnt/Memory; 0 when df's answer cannot be read."""
+    lines = device.sh(f"/bin/df -k {RAM}", check=False).strip().splitlines()
+    try:
+        return int(lines[-1].split()[3]) * 1024
+    except (IndexError, ValueError):
+        return 0
+
+
+def driver_home(device, lane: str, size: int, bins: str) -> str | None:
+    """Where a driver runs: /mnt/Memory, where production runs smbd, when it
+    fits; otherwise the data disk on NetBSD 6. On NetBSD 4 large drivers
+    aborted in talloc from the HFS disk and one run there stayed in disk wait
+    (tests/samba/README.md), so one that does not fit is skipped (None)."""
+    if ram_free(device) >= size + RAM_SPARE:
+        return RAM
+    return bins if lane == "6" else None
+
+
+def run_drivers(tier: str, env: str, lane: str, binaries: Path, log: Path) -> bool:
+    """Each driver's cases one at a time, with the working directory and TMPDIR
+    on the data disk. Each driver is copied once and removed after its cases."""
     from tests.samba.links_device import Device
     from tests.samba.swap_smbd import disk_of
     from timecapsulesmb.core.config import parse_env_file
 
     device = Device(parse_env_file(ROOT / env))
     scratch = f"{disk_of(device.root)}/__tc_drivers__"
-    failed = []
+    bins, tmp = f"{scratch}/bin", f"{scratch}/tmp"
+    failed: list[str] = []
+    skipped: list[str] = []
     with log.open("w") as out:
-        device.sh(f"rm -rf {scratch} && mkdir -p {scratch}")
+        device.sh(f"rm -rf {scratch} && mkdir -p {bins} {tmp}")
         try:
-            for driver, cases in driver_cases().items():
-                binary = binaries / f"{driver}.{lane}"
-                ram = f"/mnt/Memory/{driver}"
-                device.put(ram, binary.read_bytes())
+            for driver, invocations in driver_plan(tier).items():
+                data = (binaries / f"{driver}.{lane}").read_bytes()
+                home = driver_home(device, lane, len(data), bins)
+                if home is None:
+                    out.write(f"== {driver} SKIPPED: {len(data)} bytes do not fit {RAM}\n")
+                    skipped.append(driver)
+                    continue
+                path = f"{home}/{driver}"
                 try:
-                    device.sh(f"chmod 755 {ram}")
-                    for case in cases:
-                        text = device.sh(f"TMPDIR={scratch} {ram} {shlex.quote(case)} 2>&1; echo rc=$?", check=False)
-                        out.write(f"== {driver} {case}\n{text}")
+                    device.put(path, data)
+                    device.sh(f"chmod 755 {path}")
+                    for arguments in invocations:
+                        name = " ".join((driver, *arguments))
+                        text = device.sh(f"cd {tmp} && TMPDIR={tmp} {path} {shlex.join(arguments)} 2>&1; "
+                                         "echo rc=$?", check=False)
+                        out.write(f"== {name} (from {home})\n{text}")
                         if not text.rstrip().endswith("rc=0"):
-                            failed.append(f"{driver} {case}")
+                            failed.append(name)
                 finally:
-                    device.sh(f"rm -f {ram}", check=False)
+                    device.sh(f"rm -f {path}", check=False)
         finally:
             device.sh(f"rm -rf {scratch}", check=False)
         out.write(f"{len(failed)} failed: {failed}\n")
+        if skipped:
+            out.write(f"{len(skipped)} skipped (too large for {RAM} on NetBSD 4): {skipped}\n")
     return not failed
 
 

@@ -1,0 +1,13 @@
+diff --git a/lib/replace/replace.c b/lib/replace/replace.c
+--- a/lib/replace/replace.c
++++ b/lib/replace/replace.c
+@@ -51,6 +51,9 @@
+ #ifdef TC_SAMBA4X_AT_EMULATION
+ #include "tc_at_emulation.c"
+ #endif
++#ifdef TC_FORK_REPAIR
++#include "tc_fork_repair.c"
++#endif
+ 
+ void replace_dummy(void);
+ void replace_dummy(void) {}

@@ -65,6 +65,7 @@ class RsyncBuildScriptTests(unittest.TestCase):
                 """\
                 #!/bin/sh
                 printf '%s\\n' "$@" > "$TEST_MAKE_ARGS"
+                if [ -e rsync ]; then echo stale > "$TEST_MAKE_ARGS.found"; fi
                 printf 'fake rsync\\n' > rsync
                 exit 0
                 """
@@ -200,6 +201,60 @@ class RsyncBuildScriptTests(unittest.TestCase):
             self.assertIn("tc_disable_data_faultahead does not call madvise", log.read_text())
             self.assertFalse((stage / "bin" / "rsync").exists())
             self.assertFalse((stage / "rsync.stripped").exists())
+
+    def test_fork_repair_goes_only_on_the_netbsd6_final_link(self) -> None:
+        # Patch 0070's object and wrappers join make's link on NetBSD 6 only;
+        # configure's probes never see them (a probe calling fork would fail).
+        for wrapper, lane in (("rsync.sh", "netbsd7"), ("rsyncoldle.sh", "netbsd4le"), ("rsyncoldbe.sh", "netbsd4be")):
+            with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env_capture = root / "configure-env.txt"
+                env = self.env_for_lane(root, lane, root / "configure-args.txt", env_capture)
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("--wrap=", env_capture.read_text())
+                make_args = (root / "make-args.txt").read_text()
+                link = [arg for arg in make_args.splitlines() if arg.startswith("LDFLAGS=")]
+                if lane == "netbsd7":
+                    self.assertEqual(len(link), 1, make_args)
+                    for name in ("fork", "_fork", "mmap", "_mmap", "munmap", "mremap", "mprotect"):
+                        self.assertIn(f"-Wl,--wrap={name}", link[0])
+                    self.assertTrue(link[0].endswith("/tc_fork_repair.o"), link[0])
+                else:
+                    self.assertEqual(link, [])
+
+    def test_every_build_relinks_rsync(self) -> None:
+        # make does not relink when only LDFLAGS changed (the NetBSD 6 lane's
+        # fork repair once went missing this way), so the old binary goes first.
+        for wrapper, lane in (("rsync.sh", "netbsd7"), ("rsyncoldle.sh", "netbsd4le")):
+            with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure-args.txt", root / "configure-env.txt")
+                build = Path(env[f"RSYNC_{lane.upper()}_BUILD"])
+                build.mkdir(parents=True)
+                (build / "rsync").write_text("stale rsync\n")
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse((root / "make-args.txt.found").exists())
+
+    def test_fork_repair_check_gates_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt", root / "configure-env.txt")
+            unwrapped = root / "nm.txt"
+            unwrapped.write_text("0009248c T _fork\n0009248c W fork\n")
+            env["TEST_NM_SYMBOLS"] = str(unwrapped)
+
+            result = self.run_wrapper("rsync.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["RSYNC_NETBSD7_LOG"]).read_text()
+            self.assertIn("links libc's _fork without the fork repair's wrapper", log)
+            self.assertFalse((Path(env["RSYNC_NETBSD7_STAGE"]) / "rsync.stripped").exists())
 
     def test_missing_source_fails_before_configure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

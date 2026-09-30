@@ -88,7 +88,23 @@ mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirna
         --disable-locale \
         --disable-md2man
 
-    "$RSYNC_MAKE" -j"$RSYNC_JOBS"
+    # The build directory is reused and make does not relink when only the
+    # flags changed; always relink so the final link has the current ones.
+    rm -f "$RSYNC_BUILD/rsync"
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        "$RSYNC_MAKE" -j"$RSYNC_JOBS"
+    else
+        # rsync's workers keep running the forked image, so on NetBSD 6 every
+        # fork() goes through the fork repair (_data_segment_check.sh; the
+        # source is Samba patch 0070's overlay file). Its object and wrappers
+        # go only on make's final link: configure links its probes with
+        # LDFLAGS, and a probe calling fork or mmap would fail to link.
+        $CC $CPPFLAGS $CFLAGS $TC_FORK_REPAIR_CFLAGS \
+            -c "$SCRIPT_DIR/patches/samba4x/overlay/lib/replace/tc_fork_repair.c" \
+            -o "$RSYNC_BUILD/tc_fork_repair.o"
+        "$RSYNC_MAKE" -j"$RSYNC_JOBS" \
+            LDFLAGS="$LDFLAGS $TC_FORK_REPAIR_LDFLAGS $RSYNC_BUILD/tc_fork_repair.o"
+    fi
 
     if [ ! -f "$RSYNC_BUILD/rsync" ]; then
         echo "Unable to locate built rsync at $RSYNC_BUILD/rsync"
@@ -97,6 +113,9 @@ mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirna
 
     # rsync patch 0003's constructor keeps .data writes on Apple's kernels.
     verify_data_faultahead "$RSYNC_BUILD/rsync" tc_disable_data_faultahead || exit 1
+    if [ "$SDK_FAMILY" != "netbsd4" ]; then
+        verify_fork_repair "$RSYNC_BUILD/rsync" || exit 1
+    fi
     cp "$RSYNC_BUILD/rsync" "$RSYNC_STAGE/bin/$RSYNC_BIN_NAME"
     cp "$RSYNC_STAGE/bin/$RSYNC_BIN_NAME" "$RSYNC_STAGE/$RSYNC_BIN_NAME.stripped"
     "$STRIP" --strip-unneeded "$RSYNC_STAGE/$RSYNC_BIN_NAME.stripped"

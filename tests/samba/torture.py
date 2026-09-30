@@ -221,6 +221,42 @@ def run_all(tag: str, env: dict[str, str], host: str, share: str, names: list[st
     return results
 
 
+# How long stuck_children() watches, and the CPU share that marks a child as
+# spinning: with every test connection closed, no smbd child should compute.
+SPIN_INTERVAL = 5.0
+SPIN_SHARE = 0.8
+PS_COMMAND = "ps -ax -o pid,ppid,utime,command"
+
+
+def cpu_seconds(text: str) -> float:
+    """ps's utime: "1.375368", "22:40.62" or "0:44:17.45"."""
+    total = 0.0
+    for part in text.split(":"):
+        total = total * 60 + float(part)
+    return total
+
+
+def smbd_children(ps: str) -> dict[int, float]:
+    """smbd processes forked by another smbd (the parent's is the manager),
+    with their user CPU seconds."""
+    rows = []
+    for line in ps.splitlines()[1:]:
+        fields = line.split(None, 3)
+        if len(fields) == 4 and "/smbd" in fields[3].split()[0]:
+            rows.append((int(fields[0]), int(fields[1]), cpu_seconds(fields[2])))
+    pids = {pid for pid, _, _ in rows}
+    return {pid: utime for pid, ppid, utime in rows if ppid in pids}
+
+
+def stuck_children(first: str, second: str, interval: float = SPIN_INTERVAL) -> list[int]:
+    """Children that used at least SPIN_SHARE of a CPU between two ps samples
+    taken interval seconds apart. On NetBSD 6 without patch 0070 a connection
+    child could spin forever after smb2.dir.large-files."""
+    before, after = smbd_children(first), smbd_children(second)
+    return sorted(pid for pid, utime in after.items()
+                  if pid in before and utime - before[pid] >= SPIN_SHARE * interval)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--env", required=True)
@@ -244,7 +280,12 @@ def main() -> int:
     results = run_all(tag, env, device.host, device.share, names, args.out)
     report = compare(results, parse_known(KNOWN_FAILURES.read_text()), name)
     print(format_report(report, name))
-    return 0 if report.ok else 1
+    first = device.sh(PS_COMMAND)
+    time.sleep(SPIN_INTERVAL)
+    stuck = stuck_children(first, device.sh(PS_COMMAND))
+    for pid in stuck:
+        print(f"  STUCK CHILD smbd pid {pid} is spinning with no client (kill it by PID)")
+    return 0 if report.ok and not stuck else 1
 
 
 if __name__ == "__main__":

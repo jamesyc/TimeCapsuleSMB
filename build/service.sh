@@ -29,6 +29,11 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     SERVICE_LDFLAGS="${SERVICE_LDFLAGS_NETBSD4:--static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu}"
 else
     SERVICE_CC_SYSROOT_FLAGS="--sysroot=$DESTDIR"
+    # The manager's jobs keep running the forked image, so on NetBSD 6 every
+    # fork() goes through the fork repair (_data_segment_check.sh; the source
+    # is Samba patch 0070's overlay file, listed in service.sources).
+    SERVICE_CFLAGS="$SERVICE_CFLAGS $TC_FORK_REPAIR_CFLAGS"
+    SERVICE_LDFLAGS="$SERVICE_LDFLAGS $TC_FORK_REPAIR_LDFLAGS"
 fi
 
 if [ ! -x "$TOOLDIR/bin/nbmake" ] || [ ! -d "$DESTDIR" ]; then
@@ -83,6 +88,9 @@ if ! {
         $SERVICE_LDFLAGS || exit 1
     # entry.c's constructor keeps .data writes on Apple's kernels.
     verify_data_faultahead "$SERVICE_STAGE/$SERVICE_BIN_NAME" disable_data_faultahead || exit 1
+    if [ "$SDK_FAMILY" != "netbsd4" ]; then
+        verify_fork_repair "$SERVICE_STAGE/$SERVICE_BIN_NAME" || exit 1
+    fi
 
     cp "$SERVICE_STAGE/$SERVICE_BIN_NAME" "$SERVICE_STAGE/$SERVICE_BIN_NAME.stripped" || exit 1
     "$TOOLDIR/bin/$TRIPLE-strip" --strip-unneeded "$SERVICE_STAGE/$SERVICE_BIN_NAME.stripped" || exit 1

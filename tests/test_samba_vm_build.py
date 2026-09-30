@@ -199,6 +199,7 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(len(moved), 1)
         self.assertLess(vm.commands.index(moved[0]), vm.commands.index("put /tmp/tc-x-job.sh"))
         self.assertIn("mv $f ~/TimeCapsuleSMB/$f", vm.commands[-1])  # put back last
+        self.assertIn("root rm -rf /tmp/tc-x-out /tmp/tc-x-job.log /tmp/tc-x-job.sh", vm.commands)
 
     def test_a_failed_lane_raises_and_still_puts_files_back(self) -> None:
         vm = FakeVm(self.local + ["build/patches/samba4x/0065-theirs.patch"], "6 BUILD_RC=1 secs=9\nJOB_DONE\n", {})
@@ -209,6 +210,8 @@ class BuildTest(unittest.TestCase):
                                log=lambda *_: None)
             self.assertEqual((root / LANES["6"]["smbd"]).read_bytes(), b"old 6smbd")
         self.assertIn("mv $f ~/TimeCapsuleSMB/$f", vm.commands[-1])
+        # A failed build's outputs do not stay on the VM's shared tmpfs either.
+        self.assertIn("root rm -rf /tmp/tc-x-out /tmp/tc-x-job.log /tmp/tc-x-job.sh", vm.commands)
 
 
 class ExpectTest(unittest.TestCase):

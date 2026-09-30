@@ -2,7 +2,7 @@
   "artifacts": {
     "rsync": {
       "path": "bin/rsync/rsync",
-      "sha256": "27bd70b9f56cdb4292af253c3b3069b1f04a095f5e07f5f707e2fc4b3b9602c7"
+      "sha256": "17b5b495f5835d452e70d77d79a8d658c0f381061cf7b086f51aacbc69c2da3a"
     },
     "rsync-netbsd4le": {
       "path": "bin/rsync-netbsd4le/rsync",
@@ -14,7 +14,7 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "1556a125d665eeb0b604ad0efc5c35e89796d6dd4ce9bb693246ea7bd72aa45b"
+      "sha256": "4d288d44295c1ff5ca69bcc6c3b9153719fa091d50fa8054015d542c9108cf4e"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
@@ -26,7 +26,7 @@
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "72691cce13818e77cd0cff5ba670c28e55dbc39c1f66614271021ebb7697df0e"
+      "sha256": "4c07bc684d839b0c24d48abe02eee08909e1268e2e9920c64eee361004d4c602"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
@@ -38,7 +38,7 @@
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "ecf0d710aa8b1f536da9fe514b74d0e895f672beea23e519422bbf90e59f615b"
+      "sha256": "21e8bb5734b409498dbe26a9d331a4e4a66844b3a7bad9f885e7c54960ce82bc"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",

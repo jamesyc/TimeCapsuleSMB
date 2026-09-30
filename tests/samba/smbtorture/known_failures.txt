@@ -79,9 +79,3 @@ smb2.streams.names
 
 # The share has no "hide files" option, which upstream's test setup has.
 smb2.dosmode.dosmode
-
-# NetBSD 6: started right after smb2.dir.large-files (in the same smbtorture
-# process or a new one), this subtest cannot connect: NT_STATUS_IO_TIMEOUT
-# after 60 s. It passes on its own. Under investigation (VALIDATION.md,
-# 2026-09-29); remove this entry once it is explained or fixed.
-flaky only=6 smb2.dir.1kfiles_rename

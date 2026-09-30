@@ -248,6 +248,13 @@ def build(root: Path, lanes: list[str], out: Path, password: str, tag: str, inst
                 vm.get(f"{vm_out}/{name}.{lane}", out / f"{name}.{lane}")
                 hashes[f"{name}.{lane}"] = hashlib.sha256((out / f"{name}.{lane}").read_bytes()).hexdigest()
     finally:
+        # The VM's /tmp is a 1 GB tmpfs that other agents share; every run's
+        # outputs (all drivers, three lanes) once filled it. The lane logs the
+        # scripts write stay under /root.
+        try:
+            vm.root(f"rm -rf /tmp/{tag}-out /tmp/{tag}-job.log /tmp/{tag}-job.sh")
+        except RuntimeError as error:
+            log(f"could not remove /tmp/{tag}-out on the VM: {error}")
         if aside:
             vm.ssh(f"cd {stash} && for f in $(find . -type f); do mkdir -p ~/{VM_REPO}/$(dirname $f) && "
                    f"mv $f ~/{VM_REPO}/$f; done; cd / && rm -rf {stash}")

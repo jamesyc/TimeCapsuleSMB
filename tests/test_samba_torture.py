@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 from tests.samba.torture import (FULL_SUITES, KNOWN_FAILURES, QUICK_EXCLUDE, Known, command, compare,
-                                 format_report, outcomes, parse_known, plan, run_all, selected)
+                                 cpu_seconds, format_report, outcomes, parse_known, plan, run_all, selected,
+                                 smbd_children, stuck_children)
 
 
 class PlanTest(unittest.TestCase):
@@ -129,6 +130,44 @@ class RunTest(unittest.TestCase):
                                                        "smb2.create.blob": "success"}})
             self.assertIn("failure: open", (out / "smb2.create.txt").read_text())
         self.assertEqual(seen, [("username = admin\npassword = pw\n", "0o600")])
+
+
+
+PS_HEAD = "  PID  PPID      UTIME COMMAND\n"
+
+
+def ps(*rows: tuple[int, int, str, str]) -> str:
+    return PS_HEAD + "".join(f"{pid:5d} {ppid:5d} {utime:>10} {command}\n" for pid, ppid, utime, command in rows)
+
+
+class StuckChildTest(unittest.TestCase):
+    SMBD = "/mnt/Memory/samba4/sbin/smbd -F --no-process-group -s /mnt/Memory/samba4/etc/smb.conf"
+
+    def test_cpu_seconds_formats(self) -> None:
+        self.assertEqual(cpu_seconds("1.375368"), 1.375368)
+        self.assertAlmostEqual(cpu_seconds("22:40.62"), 1360.62)
+        self.assertAlmostEqual(cpu_seconds("0:44:17.45"), 2657.45)
+
+    def test_children_are_smbd_processes_of_an_smbd_parent(self) -> None:
+        text = ps((132, 1, "0.5", "service: role=manager"), (21323, 132, "1.3", self.SMBD),
+                  (22862, 21323, "0:44:17.45", self.SMBD), (25000, 21323, "0.1", self.SMBD),
+                  (26000, 132, "0.2", "/sbin/diskd -i lo0"), (27000, 25000, "0.0", "sh -c ps"))
+        self.assertEqual(smbd_children(text), {22862: 2657.45, 25000: 0.1})
+
+    def test_a_child_that_keeps_computing_is_stuck(self) -> None:
+        first = ps((21323, 132, "1.3", self.SMBD), (22862, 21323, "0:44:17.45", self.SMBD),
+                   (25000, 21323, "0.10", self.SMBD))
+        second = ps((21323, 132, "9.9", self.SMBD), (22862, 21323, "0:44:22.40", self.SMBD),
+                    (25000, 21323, "0.20", self.SMBD))
+        self.assertEqual(stuck_children(first, second, 5.0), [22862])
+
+    def test_idle_new_or_gone_children_are_not_stuck(self) -> None:
+        first = ps((21323, 132, "1.3", self.SMBD), (25000, 21323, "3.00", self.SMBD),
+                   (26000, 21323, "0.0", self.SMBD))
+        # 25000 used 3.9 s of 5 (78%), 26000 exited, 27000 is new; the parent may compute.
+        second = ps((21323, 132, "60.0", self.SMBD), (25000, 21323, "6.90", self.SMBD),
+                    (27000, 21323, "9.0", self.SMBD))
+        self.assertEqual(stuck_children(first, second, 5.0), [])
 
 
 if __name__ == "__main__":

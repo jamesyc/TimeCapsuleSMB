@@ -1615,3 +1615,145 @@ master of 2026-09-25). 0066 lets root skip only the ACL check.
   comment lines, `verify` matched, and a clean build of all three lanes gave
   byte-identical smbd and migrators (1556a125, 4279108e, a7a52000; 72691cce,
   aed8ee6e, 41b33052), so nothing was redeployed. pytest 2,729.
+
+## NetBSD 6: a connection child spinning in talloc after `large-files` (2026-09-29)
+
+- Symptom: smbtorture's first connection after `smb2.dir.large-files`
+  timed out (NT_STATUS_IO_TIMEOUT after 60 s), both when the two ran in one
+  smbtorture process and in separate containers. The smbd child forked for
+  that connection (pid 22862) was still running 45 minutes later at 100% CPU,
+  all user time, 9 minor faults, 160 KB resident, and had logged nothing.
+- Registers, read without stopping it (`ps -o uaddr`, then the trapframe at
+  the top of its uarea through /dev/kmem), and later with a ptrace reader:
+  the loop is `_tc_free_children_internal` / `_tc_free_internal`, under the
+  child's first action after fork(), `talloc_free(s->parent)` in
+  smbd_accept_connection() (location server.c:1365).
+- The talloc tree it frees, from its heap (symbols from the lane tree's
+  unstripped smbd, which strips to the deployed 1556a125):
+  `struct smbd_parent_context`'s first child is a freed 16-byte chunk
+  (FREE|LOOP, stamped "talloc.c:1765", the talloc_pop() of the parent's
+  per-loop stackframe), so `_tc_free_internal` returns 0 without unlinking it
+  and the loop never ends. `children` (offset 0x64) and `num_children` (1)
+  still name that chunk, whose data is the list entry of the previous child,
+  21383 (the `large-files` connection, which exited 0.3 s earlier).
+- The same heap page also holds the list entry for 22862 itself, which the
+  parent creates with add_child_pid() only after fork() returns, and shows
+  21383's entry already freed and its memory reused by cleanupd's per-child
+  record. The pages holding `smbd_parent_context` and the listening
+  `tevent_fd` show the state at fork(). So one page of the child's heap
+  carries writes the parent made after fork(): the parent accepted the new
+  connection before handling 21383's SIGCHLD, then removed that entry,
+  added the new one and ran cleanupd (patch 0008 runs it in the parent).
+- Not reproduced outside smbd: static test programs on the NetBSD 6 device
+  (private anonymous memory and libc malloc; plain writes, concurrent
+  child reads, MADV_FREE before and after fork(), repeated forks, with and
+  without MADV_RANDOM) never showed a child the parent's post-fork writes.
+  libc's jemalloc does call madvise(MADV_FREE) when it purges pages.
+- Other connections are unaffected: a new connection made while 22862 was
+  spinning got a normal child. The parent keeps running; each such child
+  holds one CPU until it is killed or the device restarts.
+
+## The fork() repair for Apple's NetBSD 6 kernel, patch 0070 (2026-09-29)
+
+- Root cause of the spinning child above. The NetBSD 6 kernel's ARM pmap
+  (stock NetBSD 6 code; the device is a single-core Cortex-A9) marks a page
+  unreferenced by making its PTE invalid and keeping the rest.
+  pmap_protect() skips invalid PTEs (`l2pte_valid` is `type != INV`), so when
+  fork() write-protects the parent, such a page keeps PVF_WRITE in its pv
+  entry, and the parent's next write goes through the pmap's "modified"
+  emulation, which makes the page writable without a copy-on-write fault.
+  The page daemon clears references under memory pressure (as after
+  `large-files`); madvise(MADV_DONTNEED) does it on demand. Apple's
+  uvmspace_fork, uvm_fault and amap_copy disassemble to the stock code. NetBSD
+  4's pmap_protect() treats any non-zero PTE as present and is not affected
+  (0 of 16 pages on the NetBSD 4 LE device).
+- Measured before choosing: mlockall() in the parent (the kernel then copies
+  the parent's memory to the child at fork) cost 15 ms and about 4 MB per
+  connection child, since it faults in the whole 2 MiB stack region and every
+  heap chunk; repairing before fork() cost 0.4 ms and nothing.
+- The repair (overlay lib/replace/tc_fork_repair.c): right before fork(),
+  every private mapping is protected PROT_NONE and straight back (in two raw
+  system calls, so nothing touches the range meanwhile) and the stack in use
+  is written back a page at a time; each repaired range also gets
+  MADV_RANDOM. Linker wrappers (fork, _fork, mmap, _mmap, munmap, mremap,
+  mprotect) keep a registry of private mappings; the data segment runs from
+  __preinit_array_start to sbrk(0), the stack to __ps_strings. A full
+  registry falls back to mlockall() around the fork. smbd, the migrator and
+  the drivers link it on the NetBSD 6 lane (the wrappers as a separate object
+  on the final static links only: configure's probes and Samba's shared
+  libreplace must not see them), and so do the NetBSD 6 service and rsync.
+  Staging refuses a NetBSD 6 binary that links libc's fork or mmap family
+  without the wrappers (`verify_fork_repair`).
+- Found while validating: weak `__real_` references leave libc's mmap
+  unlinked (every binary died with "TLS allocation failed"); without
+  MADV_RANDOM, .bss still leaked, because jemalloc's atfork handler writes
+  between the repair and the system call and fault-ahead enters the
+  neighbouring pages unreferenced; rsync's reused build directory did not
+  relink after a flags change (the staging check caught it; the build now
+  always relinks).
+- `tc_fork_repair_test` on NetBSD 6: a plain fork() leaked 28 of 28 pages
+  (.data, .bss, sbrk heap, jemalloc blocks, a huge block, a private mapping,
+  the stack); through the repair 0, three forks in a row, after a read, in a
+  nested fork and on the fallback; `regions` and `read_after_repair` passed 20
+  of 20 runs. `bounds`: data 0x4d000-0x7b000, stack top 0x7ffff000 (the end
+  of the stack mapping).
+- With the NetBSD 6 smbd swapped in (59da9f12): doctor passed; every private
+  writable mapping of the parent and of a connection child is in the
+  registry, the data run or the stack, except 0x99f000-0x9b4000 (.eh_frame,
+  no anonymous pages: never written); `smb2.dir.large-files` then
+  `smb2.dir.1kfiles_rename` passed (the listing in 525 s), and no smbd child
+  was left running. Connection setup (median of 12): 381 ms with the old
+  smbd, 391 ms with this one, 452 ms with the old one again; an idle
+  connection child took 352 KiB; the parent's map stayed at 28 entries over
+  50 connections.
+- Clean builds: NetBSD 6 smbd 59da9f12 (+2,608 bytes), migrator 5b3ee6bc,
+  service ac37b22f (+2,376), rsync b20b8c4d (+2,376). The NetBSD 4 LE and BE
+  smbd, migrators, services and rsync are byte-identical to the previous
+  build. pytest and the host regression (the driver skips there) pass.
+- Full tier, deployed (NetBSD 6: smbd 59da9f12, service ac37b22f, rsync
+  b20b8c4d; NetBSD 4 LE unchanged, smbd 4279108e, service 5b5c579e): doctor
+  86/86 on both; `dir_device.py` 101/101, `growth_device.py` 23/23, its
+  `--aio` subset 11/11, `durable_device.py` 29/29 and `links_device.py` 85/85
+  on both; the tier's drivers 33/33 on both (on NetBSD 4 "kernel" checks that
+  a plain fork() leaks nothing), and every driver case 88/88 on NetBSD 6
+  (`tc_aio_fork_test`'s helpers are forked through the repair). smbtorture's
+  full list: NetBSD 6 79 passed, 51 failed, all known (`smb2.dir.1kfiles_rename`
+  now passes after `large-files`, and its known-failure entry is gone);
+  NetBSD 4 LE 78, 52, all known (`1kfiles_rename` now runs as its own
+  subtest). The new stuck-child check found none. Sampled once a minute during
+  NetBSD 6's run, no smbd process held more than 3 registry ranges (of 512),
+  with no fallback.
+
+## Fork repair follow-ups: advice, remap, lock failure; every driver in the full tier (2026-09-29)
+
+- `tc_fork_repair.c`:
+  - After `fork()` returns, the parent and the child put `MADV_NORMAL` back on
+    what the repair gave `MADV_RANDOM` (the registry ranges, the sbrk() heap
+    and the stack), so neither process loses UVM fault-ahead between forks.
+    The static data and .bss keep `MADV_RANDOM` for patch 0046 (and the
+    service's and rsync's constructors).
+  - `mremap()` drops whatever the registry held at the new range even when
+    the old range was unrecorded. NetBSD's `uvm_mremap()` never moves onto
+    mapped pages (`uvm_map_reserve()` refuses them), so this only clears
+    stale entries; the host unit tests cover it.
+  - The fallback checks `mlockall()`: when it fails, fork() still runs, logs
+    "fork() unprotected" once and counts `tc_fork_repair_lock_failures`.
+- `tests.samba.check`: the full tier runs `run.execution_cases()` (every
+  driver); a driver goes to `/mnt/Memory` when `df` shows room, else to the
+  data disk on NetBSD 6, and is skipped with a log line on NetBSD 4.
+- Validation, Mac and VM only (no device run, no deploy): pytest 2,768
+  passed; host regression passed. Clean NetBSD 6 lane: smbd a47880b7
+  (+496 bytes), migrator 4c07bc68 (same size), service d6d046e7 (+416),
+  rsync 6849fe9f (+416), each passing `verify_fork_repair`. The NetBSD 4 LE
+  and BE services and rsync are byte-identical to the committed ones.
+
+## Fork repair skips read-only mappings (2026-09-29)
+
+The repair cycled and advised every recorded private mapping, read-only ones
+included, though the parent cannot write to those after fork(), so nothing of
+theirs can leak. It now skips ranges without PROT_WRITE (they stay in the
+registry, so an mprotect() that makes one writable is still followed).
+Validation: the host unit tests (`read_only_ranges_skipped` is new). Clean
+NetBSD 6 builds: smbd 4d288d44, service 21e8bb57, rsync 17b5b495, each
+passing `verify_fork_repair`; the migrator came out byte-identical
+(4c07bc68). Not run on a device.

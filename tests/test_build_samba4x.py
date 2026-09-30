@@ -215,7 +215,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                                    "tc_streams_xattr_test", "tc_native_metadata_test",
                                    "tc_xattr_migrate_test", "tc_storage_reload_test",
                                    "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test",
-                                   "tc_file_growth_test"):
+                                   "tc_file_growth_test", "tc_fork_repair_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -763,6 +763,26 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 self.assertIn("-static", tc_flags)
                 self.assertNotIn("-Map=", tc_flags)
                 self.assertIn("-Map=", smbd_flags)
+                # Patch 0070's fork repair: NetBSD 6 only, on the final static
+                # links only. configure links its probes with LDFLAGS, and a
+                # probe calling fork or mmap must not see the wrappers.
+                ldflags = next(line for line in log if line.startswith("LDFLAGS="))
+                cflags = next(line for line in log if line.startswith("CFLAGS="))
+                self.assertNotIn("--wrap=", ldflags)
+                for flags in (tc_flags, smbd_flags):
+                    for name in ("fork", "_fork", "mmap", "_mmap", "munmap", "mremap", "mprotect"):
+                        self.assertEqual(f"--wrap={name}'" in flags, lane == "netbsd7", (lane, name, flags))
+                self.assertEqual("-DTC_FORK_REPAIR=1" in cflags, lane == "netbsd7")
+                # The wrappers' own object joins those links too (it cannot live in
+                # libreplace, which Samba also links as a shared library).
+                # Only in LINKFLAGS: 0049 also passes LDFLAGS, and twice the
+                # object is a duplicate definition.
+                for flags in (tc_flags, smbd_flags):
+                    self.assertEqual(flags.count("/tc_fork_repair_wrappers.o'"), 1 if lane == "netbsd7" else 0, flags)
+                for name in ("TC_STATIC_LDFLAGS=", "SAMBA4X_FINAL_LDFLAGS_LIST="):
+                    logged = [line for line in log if line.startswith(name)]
+                    self.assertTrue(all("tc_fork_repair_wrappers.o" not in line for line in logged), logged)
+                self.assertNotIn("TC_FORK_REPAIR_WRAPPERS", cflags)
 
     def test_netbsd4_without_gc_sections_still_generates_smbd_map(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -881,6 +901,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         self.assertIn("tc_catia_links_test", built)
                         self.assertIn("tc_at_emulation_test", built)
                         self.assertIn("tc_file_growth_test", built)
+                        self.assertIn("tc_fork_repair_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [

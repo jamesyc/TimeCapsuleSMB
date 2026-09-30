@@ -112,6 +112,8 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
             "tc_catia_links_test": ["smbd_base", "STRING_REPLACE"],
             # The *at emulation lives in libreplace; the driver needs nothing else.
             "tc_at_emulation_test": ["replace"],
+            # So does the NetBSD 6 fork repair (patch 0070).
+            "tc_fork_repair_test": ["replace"],
         }.get(name, ["smbd_base"])
         assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False
