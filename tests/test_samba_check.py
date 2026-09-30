@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 from tests.samba import run
-from tests.samba.check import (QUICK_DRIVERS, RAM, Outcome, Phase, Step, describe, driver_plan, plan,
+from tests.samba.check import (DRIVER_RAM, QUICK_DRIVERS, Outcome, Phase, Step, describe, driver_plan, plan,
                                run_drivers, run_phases, summary)
 
 ENVS = {"6": "/env6", "4le": "/env4"}
@@ -167,22 +167,40 @@ class DriverPlanTest(unittest.TestCase):
 
 
 class FakeDevice:
-    """A device whose /mnt/Memory has free_kib free; each command's reply comes
-    from reply(command), and every command and upload is recorded."""
+    """A device with the drivers' RAM disk: mounting and unmounting it change
+    what /sbin/mount lists, df reports free_kib free on it, each driver run's
+    reply comes from reply(command), and every command and upload is
+    recorded."""
     root = "/Volumes/dk2/ShareRoot"
 
-    def __init__(self, free_kib="4000", reply=None, raise_on=None) -> None:
+    def __init__(self, free_kib="12200", reply=None, raise_on=None, mounted=False, umount_fails=False,
+                 mount_fails=False) -> None:
         self.free_kib = free_kib
         self.reply = reply or (lambda command: "PASS\nrc=0\n")
         self.raise_on = raise_on
+        self.mounted = mounted
+        self.umount_fails = umount_fails
+        self.mount_fails = mount_fails
         self.commands: list[str] = []
         self.uploads: list[tuple[str, int]] = []
 
     def sh(self, command: str, *, check: bool = True) -> str:
         self.commands.append(command)
+        if command == "/sbin/mount":
+            ram = f"tmpfs on {DRIVER_RAM} type tmpfs (local)\n" if self.mounted else ""
+            return "/dev/md0a on / type ffs (local)\n" + ram
         if command.startswith("/bin/df"):
             return ("Filesystem 1K-blocks Used Avail %Cap Mounted on\n"
-                    f"/dev/md0 15000 11000 {self.free_kib} 70% /mnt/Memory\n")
+                    f"tmpfs 12288 0 {self.free_kib} 0% {DRIVER_RAM}\n")
+        if "/sbin/mount_" in command:
+            if self.mount_fails:
+                raise RuntimeError("mount_mfs: Cannot allocate memory")
+            self.mounted = True
+            return ""
+        if command.startswith("/sbin/umount"):
+            if not self.umount_fails:
+                self.mounted = False
+            return ""
         if self.raise_on and self.raise_on in command:
             raise RuntimeError("ssh dropped")
         if "rc=$?" in command:
@@ -193,19 +211,19 @@ class FakeDevice:
         self.uploads.append((path, len(data)))
 
 
+TMP = "/Volumes/dk2/__tc_drivers__"
+
+
 class RunDriversTest(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp())
         self.binaries = self.dir / "binaries"
         self.binaries.mkdir()
         self.sizes = {"tc_at_emulation_test": 200_000, "tc_file_growth_test": 1_400_000,
-                      "tc_fork_repair_test": 170_000}
+                      "tc_fork_repair_test": 170_000, "tc_native_links_test": 9_700_000}
         for driver in run.TARGETS:
             for lane in ("6", "4le"):
-                size = self.sizes.get(driver, 100_000)
-                if driver == "tc_native_links_test":
-                    size = 9_700_000
-                (self.binaries / f"{driver}.{lane}").write_bytes(b"x" * size)
+                (self.binaries / f"{driver}.{lane}").write_bytes(b"x" * self.sizes.get(driver, 100_000))
         self.log = self.dir / "drivers.log"
 
     def drive(self, device: FakeDevice, tier: str = "quick", lane: str = "6") -> bool:
@@ -213,26 +231,73 @@ class RunDriversTest(unittest.TestCase):
              mock.patch("timecapsulesmb.core.config.parse_env_file", return_value={}):
             return run_drivers(tier, ".env.x", lane, self.binaries, self.log)
 
-    def test_each_driver_goes_to_ram_once_and_every_case_runs(self) -> None:
+    def runs(self, device: FakeDevice) -> list[str]:
+        return [c for c in device.commands if "rc=$?" in c]
+
+    def test_every_driver_runs_from_the_ram_disk_which_is_removed_after(self) -> None:
         device = FakeDevice()
         self.assertTrue(self.drive(device))
-        self.assertEqual(device.uploads, [(f"{RAM}/{d}", self.sizes[d]) for d in QUICK_DRIVERS])
-        runs = [c for c in device.commands if "rc=$?" in c]
+        self.assertEqual(device.commands[:3], [f"rm -rf {TMP} && mkdir -p {TMP}", "/sbin/mount",
+                                               f"mkdir -p {DRIVER_RAM} && /sbin/mount_tmpfs -s 12m tmpfs {DRIVER_RAM}"])
+        self.assertEqual(device.uploads, [(f"{DRIVER_RAM}/{d}", self.sizes[d]) for d in QUICK_DRIVERS])
+        runs = self.runs(device)
         self.assertEqual(len(runs), len(run.AT_EMULATION_CASES) + 1 + len(run.FORK_REPAIR_CASES))
-        scratch = "/Volumes/dk2/__tc_drivers__"
-        self.assertEqual(runs[0], f"cd {scratch}/tmp && TMPDIR={scratch}/tmp {RAM}/tc_at_emulation_test calls 2>&1; "
-                                  "echo rc=$?")
-        # Each copy is removed after its cases, and the scratch directory at the end.
-        removals = [c for c in device.commands if c.startswith("rm -f ")]
-        self.assertEqual(removals, [f"rm -f {RAM}/{d}" for d in QUICK_DRIVERS])
-        self.assertEqual(device.commands[-1], f"rm -rf {scratch}")
-        self.assertIn("0 failed: []", self.log.read_text())
+        self.assertEqual(runs[0], f"cd {TMP} && TMPDIR={TMP} {DRIVER_RAM}/tc_at_emulation_test calls 2>&1; echo rc=$?")
+        # Each driver is removed before the next is copied: one at a time.
+        order = [c for c in device.commands if c.startswith(("rm -f ", "chmod"))]
+        self.assertEqual(order, [x for d in QUICK_DRIVERS for x in (f"chmod 755 {DRIVER_RAM}/{d}",
+                                                                     f"rm -f {DRIVER_RAM}/{d}")])
+        self.assertEqual(device.commands[-4:], [f"/sbin/umount {DRIVER_RAM}", "/sbin/mount",
+                                                f"rmdir {DRIVER_RAM}", f"rm -rf {TMP}"])
+        self.assertFalse(device.mounted)
+        self.assertTrue(self.log.read_text().endswith("0 failed: []\n"))
+
+    def test_netbsd4_mounts_mfs_and_gives_the_migrator_its_scratch(self) -> None:
+        device = FakeDevice()
+        self.assertTrue(self.drive(device, tier="full", lane="4le"))
+        self.assertIn(f"mkdir -p {DRIVER_RAM} && /sbin/mount_mfs -s 24576 swap {DRIVER_RAM}", device.commands)
+        self.assertFalse(any("mount_tmpfs" in c for c in device.commands))
+        # Every driver sees it; only the migrator driver reads it.
+        self.assertTrue(all(f"TMPDIR={TMP} TC_MIGRATE_SCRATCH={DRIVER_RAM} {DRIVER_RAM}/" in c
+                            for c in self.runs(device)))
+
+    def test_netbsd6_migrator_scratch_stays_in_tmp(self) -> None:
+        device = FakeDevice()
+        self.assertTrue(self.drive(device, tier="full"))
+        self.assertFalse(any("TC_MIGRATE_SCRATCH" in c for c in device.commands))
+
+    def test_a_ram_disk_left_by_a_crashed_run_is_unmounted_first(self) -> None:
+        device = FakeDevice(mounted=True)
+        self.assertTrue(self.drive(device))
+        first_mount = next(i for i, c in enumerate(device.commands) if "/sbin/mount_tmpfs" in c)
+        self.assertIn(f"/sbin/umount {DRIVER_RAM}", device.commands[:first_mount])
+
+    def test_the_full_tier_runs_every_driver_the_largest_included(self) -> None:
+        device = FakeDevice()
+        self.assertTrue(self.drive(device, tier="full", lane="4le"))
+        self.assertEqual([path for path, _ in device.uploads], [f"{DRIVER_RAM}/{d}" for d in run.TARGETS])
+        self.assertEqual(len(self.runs(device)), len(list(run.execution_cases(True))))
+        self.assertTrue(any(c.endswith("tc_pthreadpool_sync_test  2>&1; echo rc=$?") for c in self.runs(device)))
+
+    def test_a_driver_that_does_not_fit_fails_and_the_rest_still_run(self) -> None:
+        device = FakeDevice(free_kib="9000")   # less than tc_native_links_test
+        self.assertFalse(self.drive(device, tier="full"))
+        self.assertNotIn("tc_native_links_test", " ".join(path for path, _ in device.uploads))
+        self.assertIn(f"{DRIVER_RAM}/tc_fork_repair_test", dict(device.uploads))
+        text = self.log.read_text()
+        self.assertIn(f"== tc_native_links_test FAILED: 9700000 bytes do not fit {DRIVER_RAM} (9216000 free)", text)
+        self.assertTrue(text.endswith("1 failed: ['tc_native_links_test']\n"))
+
+    def test_unreadable_df_counts_as_no_room(self) -> None:
+        device = FakeDevice(free_kib="-")
+        self.assertFalse(self.drive(device))
+        self.assertEqual(device.uploads, [])
+        self.assertIn("3 failed", self.log.read_text())
 
     def test_a_failed_case_is_reported_and_the_rest_still_run(self) -> None:
         device = FakeDevice(reply=lambda c: "boom\nrc=1\n" if " times " in c else "PASS\nrc=0\n")
         self.assertFalse(self.drive(device))
-        runs = [c for c in device.commands if "rc=$?" in c]
-        self.assertTrue(any("tc_fork_repair_test fallback" in c for c in runs))
+        self.assertTrue(any("tc_fork_repair_test fallback" in c for c in self.runs(device)))
         self.assertIn("1 failed: ['tc_at_emulation_test times']", self.log.read_text())
 
     def test_output_ending_in_another_status_fails(self) -> None:
@@ -241,43 +306,29 @@ class RunDriversTest(unittest.TestCase):
         self.assertFalse(self.drive(device))
         self.assertIn("['tc_fork_repair_test fallback']", self.log.read_text())
 
-    def test_full_tier_runs_every_driver(self) -> None:
-        device = FakeDevice(free_kib="40000")
-        self.assertTrue(self.drive(device, tier="full"))
-        self.assertEqual([path for path, _ in device.uploads], [f"{RAM}/{d}" for d in run.TARGETS])
-        runs = [c for c in device.commands if "rc=$?" in c]
-        self.assertEqual(len(runs), len(list(run.execution_cases(True))))
-        self.assertTrue(any(c.endswith("tc_pthreadpool_sync_test  2>&1; echo rc=$?") for c in runs))
-
-    def test_too_large_for_ram_runs_from_the_data_disk_on_netbsd6(self) -> None:
-        device = FakeDevice(free_kib="5000")
-        self.assertTrue(self.drive(device, tier="full"))
-        homes = dict(device.uploads)
-        self.assertIn("/Volumes/dk2/__tc_drivers__/bin/tc_native_links_test", homes)
-        self.assertIn(f"{RAM}/tc_native_metadata_test", homes)
-        self.assertIn("(from /Volumes/dk2/__tc_drivers__/bin)", self.log.read_text())
-
-    def test_too_large_for_ram_is_skipped_on_netbsd4(self) -> None:
-        device = FakeDevice(free_kib="5000")
-        self.assertTrue(self.drive(device, tier="full", lane="4le"))
-        self.assertNotIn("tc_native_links_test", " ".join(path for path, _ in device.uploads))
-        self.assertFalse(any("tc_native_links_test" in c for c in device.commands if "rc=$?" in c))
-        text = self.log.read_text()
-        self.assertIn("== tc_native_links_test SKIPPED: 9700000 bytes do not fit /mnt/Memory", text)
-        self.assertIn("1 skipped (too large for /mnt/Memory on NetBSD 4): ['tc_native_links_test']", text)
-
-    def test_unreadable_df_counts_as_no_room(self) -> None:
-        device = FakeDevice(free_kib="-")
-        self.assertTrue(self.drive(device, lane="4le"))
-        self.assertEqual(device.uploads, [])
-        self.assertIn("3 skipped", self.log.read_text())
-
-    def test_copies_are_removed_when_the_connection_fails(self) -> None:
+    def test_a_dropped_connection_still_removes_the_driver_and_the_ram_disk(self) -> None:
         device = FakeDevice(raise_on=" flags ")
         with self.assertRaises(RuntimeError):
             self.drive(device)
-        self.assertEqual(device.commands[-2:], [f"rm -f {RAM}/tc_at_emulation_test", "rm -rf /Volumes/dk2/__tc_drivers__"])
+        self.assertEqual(device.commands[-6:], [f"rm -f {DRIVER_RAM}/tc_at_emulation_test", "/sbin/mount",
+                                                f"/sbin/umount {DRIVER_RAM}", "/sbin/mount", f"rmdir {DRIVER_RAM}",
+                                                f"rm -rf {TMP}"])
+        self.assertFalse(device.mounted)
 
+    def test_a_ram_disk_that_stays_mounted_fails_the_step(self) -> None:
+        device = FakeDevice(umount_fails=True)
+        self.assertFalse(self.drive(device))
+        text = self.log.read_text()
+        self.assertIn(f"FAILED: {DRIVER_RAM} is still mounted; unmount it by hand", text)
+        self.assertNotIn(f"rmdir {DRIVER_RAM}", device.commands)
+        self.assertTrue(text.endswith(f"1 failed: ['unmount {DRIVER_RAM}']\n"))
+
+    def test_a_failed_mount_copies_nothing(self) -> None:
+        device = FakeDevice(mount_fails=True)
+        with self.assertRaisesRegex(RuntimeError, "Cannot allocate memory"):
+            self.drive(device)
+        self.assertEqual(device.uploads, [])
+        self.assertEqual(device.commands[-1], f"rm -rf {TMP}")
 
 if __name__ == "__main__":
     unittest.main()

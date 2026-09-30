@@ -1798,6 +1798,25 @@ below ran with 42d66742. With each device's new smbd swapped in:
 - `smb2.timestamps`: no unknown failures on either; the three time_t tests
   past 2106 still fail as listed.
 
+## Regression drivers from a RAM disk of their own (2026-09-29)
+
+`tests.samba.check`'s driver step mounts a 12 MiB RAM disk at `/mnt/TcTests`
+(tmpfs on NetBSD 6, a 24576-sector mfs on NetBSD 4, which has no tmpfs), runs
+every driver from it one at a time with its working directory and TMPDIR on
+the data disk, and unmounts it afterwards (a leftover from a crashed run is
+unmounted first; one that will not unmount fails the step). Before this, a
+driver ran from `/mnt/Memory` only when it fitted (3-5 MB free with the runtime
+installed) and was skipped on NetBSD 4 otherwise, so the 2-10 MB drivers never
+ran there. The first NetBSD 4 run showed why `tc_xattr_migrate_test` was
+listed as NetBSD 6 only: its off-HFS cases make their scratch under /tmp, a
+10 MB RAM disk with about 250 KB free there, and its oversized cases failed
+with ENOSPC. They now take `TC_MIGRATE_SCRATCH` (the drivers' RAM disk, UFS
+like /tmp), which the step sets on NetBSD 4 only.
+
+Validation: the full tier's driver plan, 89 invocations, passed on both
+devices from the RAM disk (NetBSD 6 265 s, NetBSD 4 LE 233 s), every driver
+included; the RAM disk and scratch were gone afterwards. pytest passed.
+
 ## Fork repair skips read-only mappings (2026-09-29)
 
 The repair cycled and advised every recorded private mapping, read-only ones

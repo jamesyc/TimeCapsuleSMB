@@ -13,8 +13,9 @@ Phases, in order, each step's output in DIR/<device>-<step>.log:
            (tests/samba/swap_smbd.py); full: deploy NetBSD 6, then NetBSD 4;
   devices  per device, the devices in parallel: the regression drivers
            (quick: three of them; full: the whole device plan of
-           tests/samba/run.py) from RAM, doctor, dir_device, growth_device, full only durable_device
-           and links_device, then smbtorture (tests/samba/torture.py).
+           tests/samba/run.py) from a RAM disk of their own, doctor,
+           dir_device, growth_device, full only durable_device and
+           links_device, then smbtorture (tests/samba/torture.py).
 
 Without --build or --binaries there is nothing new to install or to run the
 drivers from, so those steps are skipped and the devices are tested as they
@@ -42,9 +43,20 @@ ROOT = Path(__file__).resolve().parents[2]
 ENVS = {"6": ".env.backup6", "4le": ".env.backup4"}
 # The quick tier's regression drivers; the full tier runs every one.
 QUICK_DRIVERS = ("tc_at_emulation_test", "tc_file_growth_test", "tc_fork_repair_test")
-RAM = "/mnt/Memory"
-# Room left on the RAM disk after a driver is copied there.
-RAM_SPARE = 512 * 1024
+# The drivers run from a RAM disk of their own. /mnt/Memory has 3-5 MB free
+# with the runtime installed, less than the largest drivers (9.7 MB), and on
+# NetBSD 4 large drivers aborted in talloc when run from the HFS disk and one
+# run there stayed in disk wait (tests/samba/README.md). Mounted as boot.sh
+# mounts /mnt/Locks: tmpfs on NetBSD 6, mfs on NetBSD 4 (which has no tmpfs;
+# mfs sizes are 512-byte sectors). 12 MiB holds the largest driver, one at a
+# time; both devices have 256 MiB of RAM.
+DRIVER_RAM = "/mnt/TcTests"
+DRIVER_RAM_MOUNT = {"6": "/sbin/mount_tmpfs -s 12m tmpfs", "4": "/sbin/mount_mfs -s 24576 swap"}
+# tc_xattr_migrate_test makes its off-HFS scratch under /tmp, which on NetBSD 4
+# is a nearly full 10 MB RAM disk (its oversized cases failed with ENOSPC):
+# point it at the drivers' RAM disk there, UFS like /tmp. NetBSD 6's /tmp has
+# room.
+DRIVER_ENV = {"6": "", "4": f"TC_MIGRATE_SCRATCH={DRIVER_RAM} "}
 GROWTH_AIO = ("write:maxfilesize", "write:past-volume", "allowed:hole", "allowed:sequential")
 
 
@@ -162,65 +174,77 @@ def driver_plan(tier: str) -> dict[str, list[tuple[str, ...]]]:
     return drivers
 
 
-def ram_free(device) -> int:
-    """Free bytes on /mnt/Memory; 0 when df's answer cannot be read."""
-    lines = device.sh(f"/bin/df -k {RAM}", check=False).strip().splitlines()
+def free_bytes(device, path: str) -> int:
+    """Free bytes on path's filesystem; 0 when df's answer cannot be read."""
+    lines = device.sh(f"/bin/df -k {path}", check=False).strip().splitlines()
     try:
         return int(lines[-1].split()[3]) * 1024
     except (IndexError, ValueError):
         return 0
 
 
-def driver_home(device, lane: str, size: int, bins: str) -> str | None:
-    """Where a driver runs: /mnt/Memory, where production runs smbd, when it
-    fits; otherwise the data disk on NetBSD 6. On NetBSD 4 large drivers
-    aborted in talloc from the HFS disk and one run there stayed in disk wait
-    (tests/samba/README.md), so one that does not fit is skipped (None)."""
-    if ram_free(device) >= size + RAM_SPARE:
-        return RAM
-    return bins if lane == "6" else None
+def ram_mounted(device) -> bool:
+    return any(f" on {DRIVER_RAM} " in line for line in device.sh("/sbin/mount").splitlines())
+
+
+def mount_driver_ram(device, lane: str) -> None:
+    """Mount the drivers' RAM disk, after unmounting one a crashed run left."""
+    if ram_mounted(device):
+        device.sh(f"/sbin/umount {DRIVER_RAM}")
+    device.sh(f"mkdir -p {DRIVER_RAM} && {DRIVER_RAM_MOUNT[lane[0]]} {DRIVER_RAM}")
+
+
+def unmount_driver_ram(device) -> bool:
+    """Unmount and remove the drivers' RAM disk; False if it is still mounted
+    (its memory stays taken until someone unmounts it)."""
+    if ram_mounted(device):
+        device.sh(f"/sbin/umount {DRIVER_RAM}", check=False)
+    if ram_mounted(device):
+        return False
+    device.sh(f"rmdir {DRIVER_RAM}", check=False)
+    return True
 
 
 def run_drivers(tier: str, env: str, lane: str, binaries: Path, log: Path) -> bool:
-    """Each driver's cases one at a time, with the working directory and TMPDIR
-    on the data disk. Each driver is copied once and removed after its cases."""
+    """Each driver from the drivers' RAM disk, one at a time, its cases one at
+    a time with the working directory and TMPDIR on the data disk."""
     from tests.samba.links_device import Device
     from tests.samba.swap_smbd import disk_of
     from timecapsulesmb.core.config import parse_env_file
 
     device = Device(parse_env_file(ROOT / env))
-    scratch = f"{disk_of(device.root)}/__tc_drivers__"
-    bins, tmp = f"{scratch}/bin", f"{scratch}/tmp"
+    tmp = f"{disk_of(device.root)}/__tc_drivers__"
     failed: list[str] = []
-    skipped: list[str] = []
     with log.open("w") as out:
-        device.sh(f"rm -rf {scratch} && mkdir -p {bins} {tmp}")
+        device.sh(f"rm -rf {tmp} && mkdir -p {tmp}")
         try:
+            mount_driver_ram(device, lane)
             for driver, invocations in driver_plan(tier).items():
                 data = (binaries / f"{driver}.{lane}").read_bytes()
-                home = driver_home(device, lane, len(data), bins)
-                if home is None:
-                    out.write(f"== {driver} SKIPPED: {len(data)} bytes do not fit {RAM}\n")
-                    skipped.append(driver)
+                free = free_bytes(device, DRIVER_RAM)
+                if len(data) > free:
+                    out.write(f"== {driver} FAILED: {len(data)} bytes do not fit {DRIVER_RAM} ({free} free)\n")
+                    failed.append(driver)
                     continue
-                path = f"{home}/{driver}"
+                path = f"{DRIVER_RAM}/{driver}"
                 try:
                     device.put(path, data)
                     device.sh(f"chmod 755 {path}")
                     for arguments in invocations:
                         name = " ".join((driver, *arguments))
-                        text = device.sh(f"cd {tmp} && TMPDIR={tmp} {path} {shlex.join(arguments)} 2>&1; "
-                                         "echo rc=$?", check=False)
-                        out.write(f"== {name} (from {home})\n{text}")
+                        text = device.sh(f"cd {tmp} && TMPDIR={tmp} {DRIVER_ENV[lane[0]]}{path} "
+                                         f"{shlex.join(arguments)} 2>&1; echo rc=$?", check=False)
+                        out.write(f"== {name}\n{text}")
                         if not text.rstrip().endswith("rc=0"):
                             failed.append(name)
                 finally:
                     device.sh(f"rm -f {path}", check=False)
         finally:
-            device.sh(f"rm -rf {scratch}", check=False)
-        out.write(f"{len(failed)} failed: {failed}\n")
-        if skipped:
-            out.write(f"{len(skipped)} skipped (too large for {RAM} on NetBSD 4): {skipped}\n")
+            if not unmount_driver_ram(device):
+                out.write(f"FAILED: {DRIVER_RAM} is still mounted; unmount it by hand\n")
+                failed.append(f"unmount {DRIVER_RAM}")
+            device.sh(f"rm -rf {tmp}", check=False)
+            out.write(f"{len(failed)} failed: {failed}\n")
     return not failed
 
 

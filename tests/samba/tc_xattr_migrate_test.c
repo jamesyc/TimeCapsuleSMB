@@ -17,6 +17,27 @@
 #endif
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #x, errno); fflush(stderr); _exit(90); } } while (0)
 
+/*
+ * The cases that must run off HFS make their scratch under /tmp. On NetBSD 4
+ * /tmp is a 10 MB RAM disk with a few hundred KB free, too little for the
+ * oversized cases, so tests/samba/check.py names another non-HFS directory in
+ * TC_MIGRATE_SCRATCH there: its drivers' RAM disk, a UFS mfs like /tmp. This
+ * swaps a template's "/tmp" for it in place; other paths (the hfs case's, on
+ * TMPDIR) are left alone.
+ */
+static char *scratch_path(char *template, size_t size)
+{
+	const char *base = getenv("TC_MIGRATE_SCRATCH");
+	char rest[PATH_MAX];
+
+	if (base == NULL || *base == '\0' || strncmp(template, "/tmp/", 5) != 0) {
+		return template;
+	}
+	CHECK((size_t)snprintf(rest, sizeof(rest), "%s", template + 4) < sizeof(rest));
+	CHECK((size_t)snprintf(template, size, "%s%s", base, rest) < size);
+	return template;
+}
+
 struct test_xattr {
 	bool exists;
 	char name[128];
@@ -299,10 +320,10 @@ static int child_exit_status(pid_t child)
 
 static void test_guard(void)
 {
-	char root[] = "/tmp/tc-migrate-guard.XXXXXX";
+	char root[PATH_MAX] = "/tmp/tc-migrate-guard.XXXXXX";
 	char log[PATH_MAX];
 	char fifo[PATH_MAX];
-	char capture[] = "/tmp/tc-migrate-guard-output.XXXXXX";
+	char capture[PATH_MAX] = "/tmp/tc-migrate-guard-output.XXXXXX";
 	struct itimerval timer;
 	pid_t child;
 	int capture_fd;
@@ -314,7 +335,7 @@ static void test_guard(void)
 		"--stall-seconds", "2", "inspect-root", root, NULL};
 	char *invalid_log[] = {"migrate", "--log", log, "inspect-root", root, NULL};
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(log, sizeof(log), "%s/log", root);
 	snprintf(fifo, sizeof(fifo), "%s/fifo", root);
 	CHECK(tc_xattr_hfs_migrate_program_main(5, invalid_zero) == 2);
@@ -343,7 +364,7 @@ static void test_guard(void)
 	}
 	CHECK(child_exit_status(child) == 0);
 
-	capture_fd = mkstemp(capture);
+	capture_fd = mkstemp(scratch_path(capture, sizeof(capture)));
 	saved_stdout = dup(STDOUT_FILENO);
 	CHECK(capture_fd >= 0 && saved_stdout >= 0);
 	CHECK(dup2(capture_fd, STDOUT_FILENO) >= 0);
@@ -521,7 +542,7 @@ static void make_resource_tree(char root[PATH_MAX],
 			       char native[PATH_MAX])
 {
 	snprintf(root, PATH_MAX, "/tmp/tc-migrate-test.XXXXXX");
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, PATH_MAX)) != NULL);
 	snprintf(base, PATH_MAX, "%s/base", root);
 	snprintf(sidecar, PATH_MAX, "%s/._base", root);
 	snprintf(native, PATH_MAX, "%s/..namedfork/rsrc", base);
@@ -659,7 +680,7 @@ static void test_cleanup(void)
 static void test_tdb_migration(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[64] = "/tmp/tc-migrate-tdb.XXXXXX";
+	char root[PATH_MAX] = "/tmp/tc-migrate-tdb.XXXXXX";
 	char object[96];
 	char tdb_path[96];
 	char orphan_path[96];
@@ -693,7 +714,7 @@ static void test_tdb_migration(void)
 		NULL,
 	};
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(object, sizeof(object), "%s/object", root);
 	snprintf(tdb_path, sizeof(tdb_path), "%s/xattr.tdb", root);
 	snprintf(orphan_path, sizeof(orphan_path), "%s/orphan.tdb", root);
@@ -869,8 +890,8 @@ static void test_errors(void)
 static void test_resume(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[] = "/tmp/tc-resume.XXXXXX";
-	char object[128], tdb[128], absent[] = "/tmp/tc-absent.XXXXXX";
+	char root[PATH_MAX] = "/tmp/tc-resume.XXXXXX";
+	char object[128], tdb[128], absent[PATH_MAX] = "/tmp/tc-absent.XXXXXX";
 	char absent_object[128], returned[128];
 	struct stat st;
 	/* A detached disk is another device. The unit test has only one, so
@@ -882,8 +903,8 @@ static void test_resume(void)
 	int fd;
 	char *argv[] = {"migrate", "copy", tdb, "netatalk", root, NULL};
 
-	CHECK(mkdtemp(root) != NULL);
-	CHECK(mkdtemp(absent) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
+	CHECK(mkdtemp(scratch_path(absent, sizeof(absent))) != NULL);
 	snprintf(absent_object, sizeof(absent_object), "%s/object", absent);
 	fd = open(absent_object, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0);
 	CHECK(fstat(fd, &st) == 0); returned_id = tc_file_id(&st); close(fd);
@@ -942,7 +963,7 @@ static void test_resume(void)
 static void test_tdb_collection_failures(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[64] = "/tmp/tc-migrate-collect.XXXXXX";
+	char root[PATH_MAX] = "/tmp/tc-migrate-collect.XXXXXX";
 	char malformed_path[96];
 	char allocation_path[96];
 	uint8_t first_key[16] = {1};
@@ -959,7 +980,7 @@ static void test_tdb_collection_failures(void)
 		NULL,
 	};
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(malformed_path, sizeof(malformed_path), "%s/malformed.tdb", root);
 	snprintf(allocation_path, sizeof(allocation_path), "%s/allocation.tdb", root);
 	db = dbwrap_local_open(
@@ -1021,9 +1042,9 @@ static void test_scan(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY};
-	char root[] = "/tmp/tc-scan.XXXXXX", dir[128], object[160];
+	char root[PATH_MAX] = "/tmp/tc-scan.XXXXXX", dir[128], object[160];
 	int fd, i;
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	for (i = 0; i < 150; i++) {
 		snprintf(object, sizeof(object), "%s/band-%d", root, i);
 		fd = open(object, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0); close(fd);
@@ -1047,8 +1068,8 @@ static void test_scan(void)
 static int read_stdout_capture(int (*call)(const char *), const char *argument,
 			       char *buffer, size_t size)
 {
-	char capture[] = "/tmp/tc-migrate-stdout.XXXXXX";
-	int capture_fd = mkstemp(capture);
+	char capture[PATH_MAX] = "/tmp/tc-migrate-stdout.XXXXXX";
+	int capture_fd = mkstemp(scratch_path(capture, sizeof(capture)));
 	int saved = dup(STDOUT_FILENO);
 	int rc;
 	ssize_t got;
@@ -1070,7 +1091,7 @@ static int read_stdout_capture(int (*call)(const char *), const char *argument,
 
 static void test_fingerprint(void)
 {
-	char root[64] = "/tmp/tc-migrate-fingerprint.XXXXXX";
+	char root[PATH_MAX] = "/tmp/tc-migrate-fingerprint.XXXXXX";
 	char path[96];
 	char expected[96];
 	char output[96];
@@ -1079,7 +1100,7 @@ static void test_fingerprint(void)
 	size_t i;
 	int fd;
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(path, sizeof(path), "%s/xattr.tdb", root);
 	fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
 	CHECK(fd != -1);
@@ -1111,11 +1132,11 @@ static void test_boundary(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY};
-	char root[] = "/tmp/tc-boundary.XXXXXX", object[128];
+	char root[PATH_MAX] = "/tmp/tc-boundary.XXXXXX", object[128];
 	struct stat st;
 	int fd;
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(object, sizeof(object), "%s/object", root);
 	fd = open(object, O_CREAT | O_RDWR, 0600);
 	CHECK(fd >= 0);
@@ -1163,7 +1184,7 @@ static void write_orphan_rows(const char *tdb_path,
 
 static void test_orphans(void)
 {
-	char root[64] = "/tmp/tc-migrate-orphans.XXXXXX";
+	char root[PATH_MAX] = "/tmp/tc-migrate-orphans.XXXXXX";
 	char tdb_path[96];
 	char first_slot[128];
 	char second_slot[128];
@@ -1180,7 +1201,7 @@ static void test_orphans(void)
 		NULL,
 	};
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(tdb_path, sizeof(tdb_path), "%s/xattr.tdb", root);
 	snprintf(first_slot, sizeof(first_slot), "%s.orphaned.1", tdb_path);
 	snprintf(second_slot, sizeof(second_slot), "%s.orphaned.2", tdb_path);
@@ -1308,7 +1329,7 @@ static void multi_value(const char *path, const struct file_id *id, const char *
 static void test_multi(void)
 {
     TALLOC_CTX *frame = talloc_stackframe();
-    char root[] = "/tmp/tc-multi.XXXXXX", private_dir[128], old[160], newer[160], object[128], quarantine[192];
+    char root[PATH_MAX] = "/tmp/tc-multi.XXXXXX", private_dir[128], old[160], newer[160], object[128], quarantine[192];
     struct tc_multi multi;
     struct tc_counts counts;
     struct stat st;
@@ -1319,7 +1340,7 @@ static void test_multi(void)
     uint8_t anchor_low[] = {'a',1}, anchor_high[] = {'b',1};
     uint8_t finder[AFP_FinderSize] = {0x41};
     int fd;
-    CHECK(mkdtemp(root) != NULL);
+    CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
     snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root); CHECK(mkdir(private_dir, 0700) == 0);
     snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
     snprintf(newer, sizeof(newer), "%s/new.tdb", private_dir);
@@ -1570,7 +1591,7 @@ static uint8_t coverage_of(struct tc_multi_source *source, const struct file_id 
 static void test_oversized_record(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[] = "/tmp/tc-oversized.XXXXXX", object[128], tdb[128], slot[160], alias[128];
+	char root[PATH_MAX] = "/tmp/tc-oversized.XXXXXX", object[128], tdb[128], slot[160], alias[128];
 	struct tc_oversized_report report = {.ctx = frame};
 	struct tc_migration m = {
 		.mem_ctx = frame, .legacy_metadata = "stream",
@@ -1588,7 +1609,7 @@ static void test_oversized_record(void)
 
 	memset(fits, 'u', sizeof(fits));
 	memset(big, 'v', sizeof(big));
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(object, sizeof(object), "%s/object", root);
 	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", root);
 	snprintf(slot, sizeof(slot), "%s.orphaned.1", tdb);
@@ -1685,7 +1706,7 @@ static void test_oversized_record(void)
 static void test_oversized_appledouble(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[] = "/tmp/tc-oversized-ad.XXXXXX", base[128], sidecar[128];
+	char root[PATH_MAX] = "/tmp/tc-oversized-ad.XXXXXX", base[128], sidecar[128];
 	struct tc_oversized_report report = {.ctx = frame};
 	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY, .oversized = &report};
 	const char *const names[] = {"com.apple.tag", "com.apple.big"};
@@ -1694,7 +1715,7 @@ static void test_oversized_appledouble(void)
 	size_t size;
 	int fd;
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(base, sizeof(base), "%s/base", root);
 	snprintf(sidecar, sizeof(sidecar), "%s/._base", root);
 	fd = open(base, O_CREAT | O_RDWR, 0600);
@@ -1738,7 +1759,7 @@ static void test_oversized_appledouble(void)
 static void test_oversized_multi(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[] = "/tmp/tc-oversized-multi.XXXXXX", private_dir[128], old[160], newer[160];
+	char root[PATH_MAX] = "/tmp/tc-oversized-multi.XXXXXX", private_dir[128], old[160], newer[160];
 	char object[128], object2[128], object3[128], sidecar3[128], quarantine[192], path[160], alias[128];
 	char expected[1024], key_hex[33], path_hex[256], name_hex[128];
 	const char *const names[] = {"com.apple.tag", "com.apple.big"};
@@ -1756,7 +1777,7 @@ static void test_oversized_multi(void)
 	size_t size;
 	int fd, i;
 
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root);
 	CHECK(mkdir(private_dir, 0700) == 0);
 	snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
@@ -1934,13 +1955,13 @@ static void test_oversized_multi(void)
 static void test_long_sidecar_names(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[] = "/tmp/tc-long-names.XXXXXX", name[256], path[PATH_MAX];
+	char root[PATH_MAX] = "/tmp/tc-long-names.XXXXXX", name[256], path[PATH_MAX];
 	char *too_long = malloc(PATH_MAX);
 	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY};
 	size_t used;
 	int fd, root_fd;
 
-	CHECK(too_long != NULL && mkdtemp(root) != NULL);
+	CHECK(too_long != NULL && mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	/* HFS, like Linux, allows a 255-byte name, and "._" makes its sidecar
 	 * name 257 bytes, which open() refuses with ENAMETOOLONG. No such
 	 * sidecar can exist, so the file simply has none (v3.1.1 telemetry:
@@ -1984,7 +2005,7 @@ static void test_long_sidecar_names(void)
 static void test_folder_fork_single(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[] = "/tmp/tc-folder-fork.XXXXXX", folder[128], sidecar[128], native[160], tdb[128];
+	char root[PATH_MAX] = "/tmp/tc-folder-fork.XXXXXX", folder[128], sidecar[128], native[160], tdb[128];
 	struct tc_oversized_report report = {.ctx = frame}, tdb_report = {.ctx = frame};
 	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY, .oversized = &report};
 	struct tc_migration t = {
@@ -1997,7 +2018,7 @@ static void test_folder_fork_single(void)
 	int fd;
 
 	memset(resource, 0xa5, sizeof(resource));
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(folder, sizeof(folder), "%s/pass.txt.rtfd", root);
 	snprintf(sidecar, sizeof(sidecar), "%s/._pass.txt.rtfd", root);
 	snprintf(native, sizeof(native), "%s/..namedfork/rsrc", folder);
@@ -2066,7 +2087,7 @@ static void test_folder_fork_single(void)
 static void test_folder_fork_report(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
-	char root[] = "/tmp/tc-folder-multi.XXXXXX", private_dir[128], old[160], newer[160];
+	char root[PATH_MAX] = "/tmp/tc-folder-multi.XXXXXX", private_dir[128], old[160], newer[160];
 	char folder[128], sidecar[128], expected[512], path_hex[256], name_hex[64];
 	struct timeval dates[2] = {{.tv_sec = 1234567890}, {.tv_sec = 1234567890}};
 	struct tc_multi multi;
@@ -2076,7 +2097,7 @@ static void test_folder_fork_report(void)
 	uint8_t resource[64], value[82 + sizeof(resource)];
 
 	memset(resource, 0x5a, sizeof(resource));
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root);
 	CHECK(mkdir(private_dir, 0700) == 0);
 	snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
@@ -2152,7 +2173,7 @@ static void test_hfs(void)
 		return;
 	}
 	CHECK(snprintf(root, sizeof(root), "%s/tc-migrate-hfs.XXXXXX", tmpdir) < (int)sizeof(root));
-	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
 	real_hfs = true;
 	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", root);
 	snprintf(quarantine, sizeof(quarantine), "%s.orphaned.1", tdb);

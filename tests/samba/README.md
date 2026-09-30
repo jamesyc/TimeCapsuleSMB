@@ -39,14 +39,19 @@ space. The runner refuses other locations, and the cross-exec helper verifies
 that `/Volumes/...` is a distinct mounted filesystem before every upload and
 removes each temporary executable afterward.
 
-On the NetBSD 4 appliance, run the storage-reload driver from `/mnt/Memory`
-with its working directory on the HFS scratch volume. A disk-backed driver
-was observed aborting in talloc before loading its first configuration; the
-identical image passed every case from RAM, matching production Samba's
-placement. If RAM is full, stop and drain the managed runtime before removing
-its disposable RAM smbd image, run the driver, then remove the driver and
-start the installed `rc.local` again. Disable core dumps for these runs so
-Apple's default `/tmp/%n.core` does not exhaust the small root RAM disk.
+On the NetBSD 4 appliance, run the drivers from RAM with their working
+directory on the HFS scratch volume. A disk-backed driver was observed
+aborting in talloc before loading its first configuration; the identical
+image passed every case from RAM, matching production Samba's placement.
+`tests.samba.check`'s driver step does this on both devices: it mounts a
+12 MiB RAM disk of its own at `/mnt/TcTests` (tmpfs on NetBSD 6, mfs on
+NetBSD 4, as `boot.sh` mounts `/mnt/Locks`), copies one driver at a time
+there, and unmounts it afterwards; `/mnt/Memory` has too little room for the
+largest drivers (9.7 MB). On NetBSD 4 it also sets `TC_MIGRATE_SCRATCH` to
+that RAM disk, because `tc_xattr_migrate_test` makes its off-HFS scratch under
+`/tmp`, which there is a nearly full 10 MB RAM disk. Disable core dumps for
+manual runs so Apple's default `/tmp/%n.core` does not exhaust that root RAM
+disk.
 
 The cases cover talloc isolation through the real AIO fork path, preservation of
 worker errors, successful and failed synchronous fallback, worker limits and
@@ -247,7 +252,7 @@ disk (`x:y`, not the private-use character the Mac sends). The caller's handle
 must keep its client name. It is a separate binary because including
 `vfs_catia.c` pulls in most of the VFS layer. At that size, the other link cases
 aborted in talloc when run from the HFS disk and passed from RAM; the cause is
-not known. On NetBSD 4 the catia binary itself needs the RAM procedure above.
+not known. On NetBSD 4 the catia binary itself runs from the drivers' RAM disk above.
 
 `links_device.py` exercises a deployed device from a Mac. It needs device SSH
 credentials in the env file; its Windows and Linux client cases also need
