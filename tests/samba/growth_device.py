@@ -95,6 +95,9 @@ TM_BAND_BYTES = 487854080
 UNCHECKED_GROWTH = 64 * MiB
 CASES = ("write:maxfilesize", "write:past-volume", "eof:past-volume", "copychunk:past-volume", "stream:resource",
          "allowed:hole", "allowed:eof", "allowed:sequential", "mac:sparsebundle")
+# The quick tier (AGENTS.md "Test tiers"): both refusals of a write and a
+# hole that fits; the stream, copy, end-of-file and Mac cases are full only.
+QUICK_CASES = ("write:maxfilesize", "write:past-volume", "allowed:hole")
 
 
 def running_smbd_has_patch(device: Device) -> bool:
@@ -437,10 +440,12 @@ def main() -> int:
     parser.add_argument("--share", help="share name (default: TC_SHARE_NAME, else the only share)")
     parser.add_argument("--case", action="append", choices=CASES,
                         help="run only these cases (repeatable; default: all)")
+    parser.add_argument("--quick", action="store_true",
+                        help="the quick tier (AGENTS.md): " + ", ".join(QUICK_CASES))
     parser.add_argument("--aio", action="store_true",
                         help="run with aio_fork enabled in the running smb.conf (restored afterwards)")
     args = parser.parse_args()
-    wanted = args.case or list(CASES)
+    wanted = args.case or list(QUICK_CASES if args.quick else CASES)
     device = Device(parse_env_file(Path(args.env)), args.share)
     if not running_smbd_has_patch(device):
         print(f"ABORT {RUNNING_SMBD} lacks patch 0065; these requests would make HFS allocate "
@@ -455,7 +460,9 @@ def main() -> int:
         client = Client(device)
         try:
             for case in wanted:
+                start = time.monotonic()
                 RUNNERS[case](results, device, client, total)
+                print(f"== {case} took {time.monotonic() - start:.0f} s", flush=True)
                 if args.aio and case == "write:past-volume":
                     aio_refusal_logged(results, device)
         finally:

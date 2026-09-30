@@ -1577,6 +1577,30 @@ master of 2026-09-25). 0066 lets root skip only the ACL check.
   doctor, `dir_device.py` (101/101 on each) and `growth_device` (23/23 on
   each) passed.
 
+## smbtorture's full list with smbd 1556a125 and 4279108e (2026-09-29)
+
+- Full list, one suite per run (NetBSD 6 smbd 1556a125, NetBSD 4 LE
+  4279108e): no new failures on either device (NetBSD 6 78 passed, 52 known
+  failures, 2 skipped; NetBSD 4 LE 77, 52, 2).
+  `smb2.maximum_allowed.read_only_file` now passes on both (0066). On NetBSD
+  4 LE `smb2.dir` as one run hit the 30-minute limit before
+  `1kfiles_rename`, so `tests/samba/torture.py` now runs `smb2.dir` and
+  `smb2.compound_find` subtest by subtest.
+- Reruns through `tests/samba/torture.py`: on NetBSD 4 LE
+  `smb2.dir.1kfiles_rename` passed, 100 renames with the listing in 491 s
+  (739 s in all). On NetBSD 6 `smb2.dir.large-files` passed (405 s) and the
+  `1kfiles_rename` run started right after it could not connect
+  (NT_STATUS_IO_TIMEOUT after 60 s), as in the full run, where the two ran in
+  one smbtorture process. Run on its own the day before, `1kfiles_rename`
+  passed on NetBSD 6 (882 s). Under investigation; the known-failures entry
+  stays until then.
+- The rest of the full tier on the same binaries (the series cleanup below
+  rebuilt them byte-identical): `growth_device.py --aio` with
+  `write:maxfilesize`, `write:past-volume`, `allowed:hole` and
+  `allowed:sequential` 11/11, `durable_device.py` 29/29 and
+  `links_device.py` 85/85 on both devices; no smbd children or test folders
+  were left behind.
+
 ## Upstream fixes split out of 0018, 0035 and 0055; issue and version references dropped (2026-09-29)
 
 - 0067 (the fruit_pwrite_meta() zero-fill, from 0055), 0068 (the

@@ -1,0 +1,87 @@
+# smbtorture tests that fail on the appliance for known reasons (both devices,
+# 2026-09-28; tests/samba/VALIDATION.md). tests/samba/torture.py reports only
+# failures missing from this list and listed tests that now pass.
+#
+# One test per line: [flaky] [only=6|only=4le] <suite>.<test>  # reason
+# "flaky" tests pass and fail between runs of the same build; either result is
+# fine. "only=" limits an entry to one device.
+
+# Upstream known failures for Samba's own file server (selftest knownfail,
+# samba3.*). The create/dir/getinfo/setinfo ones fail in smbtorture's
+# "complex file" helper, which sets the change time and reads it back; POSIX
+# cannot set a change time.
+smb2.create.gentest
+smb2.create.blob
+smb2.create.open
+smb2.dir.one
+smb2.dir.modify
+smb2.getinfo.complex
+smb2.getinfo.fsinfo
+smb2.setinfo.setinfo
+smb2.streams.rename2
+smb2.rename.simple_nodelete
+smb2.rename.no_share_delete_no_delete_access
+smb2.charset.Testing partial surrogate
+
+# Directory leases are off (smb3 directory leases = no); macOS does not use them.
+smb2.dirlease.v2_request_parent
+smb2.dirlease.v2_request
+smb2.dirlease.oplocks
+smb2.dirlease.leases
+smb2.dirlease.seteof
+smb2.dirlease.setdos
+smb2.dirlease.setbtime
+smb2.dirlease.setmtime
+smb2.dirlease.setctime
+smb2.dirlease.setatime
+smb2.dirlease.rename
+smb2.dirlease.rename_dst_parent
+smb2.dirlease.overwrite
+smb2.dirlease.hardlink
+smb2.dirlease.unlink_same_set_and_close
+smb2.dirlease.unlink_different_set_and_close
+smb2.dirlease.unlink_same_initial_and_close
+smb2.dirlease.unlink_different_initial_and_close
+
+# force user = root: smbd skips access checks for root, so expected denials pass.
+smb2.create.mkdir-visible
+smb2.create.nulldacl
+smb2.delete-on-close-perms.OVERWRITE_IF Existing
+smb2.delete-on-close-perms.CREATE_IF Existing
+smb2.maximum_allowed.maximum_allowed
+smb2.streams.perms
+
+# Name mangling is off (mangled names = no) so Macs can open Aux, CON and PRN.
+flaky smb2.name-mangling.mangle
+smb2.name-mangling.mangled-mask
+
+# No quotas.
+smb2.getinfo.qfs_buffercheck
+smb2.create.quota-fake-file
+
+# HFS: dates are 32-bit seconds from 1904, names are case-insensitive and
+# Unicode-normalized, times have one-second resolution.
+smb2.timestamps.time_t_15032385535
+smb2.timestamps.time_t_10000000000
+smb2.timestamps.time_t_4294967295
+smb2.getinfo.normalized
+smb2.charset.Testing composite character (a umlaut)
+smb2.streams.attributes2
+smb2.timestamps.delayed-write-vs-setbasic
+smb2.timestamps.modern_write_time_update-2
+flaky smb2.timestamps.delayed-write-vs-seteof
+flaky smb2.timestamps.modern_write_time_update-1
+flaky smb2.timestamps.delayed-2write
+
+# fruit/catia return control characters in stream names as Mac private-use
+# characters (U+F001-U+F01F); the test expects the raw bytes.
+smb2.streams.names
+
+# The share has no "hide files" option, which upstream's test setup has.
+smb2.dosmode.dosmode
+
+# NetBSD 6: started right after smb2.dir.large-files (in the same smbtorture
+# process or a new one), this subtest cannot connect: NT_STATUS_IO_TIMEOUT
+# after 60 s. It passes on its own. Under investigation (VALIDATION.md,
+# 2026-09-29); remove this entry once it is explained or fixed.
+flaky only=6 smb2.dir.1kfiles_rename

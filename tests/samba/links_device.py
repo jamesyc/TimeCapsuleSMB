@@ -24,7 +24,7 @@ import uuid
 
 from timecapsulesmb.core.config import DEFAULTS, parse_env_file
 from timecapsulesmb.repair_xattrs import RepairSummary, iter_scan_paths
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_capture_bytes, run_ssh_input
 
 TEST_DIR = "__tc_links_test__"
 # Characters macOS sends as private-use code points and catia maps back on disk.
@@ -81,6 +81,11 @@ class Device:
 
     def sh(self, command: str, *, check: bool = True) -> str:
         return run_ssh(self.connection, command, check=check, timeout=180).stdout
+
+    def sh_bytes(self, command: str) -> bytes:
+        """Raw stdout, for binary files (sh() decodes text)."""
+        return run_ssh_capture_bytes(self.connection, command, timeout=180,
+                                     missing_tool_message="reading binary output needs local sshpass")
 
     def put(self, path: str, data: bytes) -> None:
         run_ssh_input(self.connection, f"cat > {shlex.quote(path)}", input_bytes=data, timeout=180)

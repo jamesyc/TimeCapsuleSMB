@@ -453,3 +453,17 @@ the original back at the end. The device suite otherwise runs with the default
 synchronous writes. SMB2 sends stream writes and zero-length writes
 synchronously either way; with debug logging, the suite checks that smbd logged
 the refused one-byte write completing through aio_fork.
+
+## Test tiers and tooling
+
+AGENTS.md ("Test tiers") defines a quick tier (every iteration, about 25
+minutes) and a full tier (per commit batch, about 2-2.5 hours).
+`python -m tests.samba.check --tier quick|full --out DIR --build` runs one:
+`vm_build.py` builds the three lanes on the VM, `swap_smbd.py` runs the
+built smbd on a device without deploying (quick) or the full tier deploys,
+and each device then runs the regression drivers from RAM, doctor,
+`dir_device.py`, `growth_device.py` (both with `--quick` in the quick
+tier), in the full tier also `durable_device.py` and `links_device.py`, and
+`torture.py`, which runs smbtorture in Docker and reports only failures
+missing from `smbtorture/known_failures.txt`. `locks.py` claims and releases
+the rows of the shared lock file around each phase.

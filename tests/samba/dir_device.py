@@ -740,14 +740,13 @@ def mac_cases(r: Results, device: Device) -> None:
             pass
 
 
-def listing_changes(r: Results, device: Device, record: dict) -> None:
+def listing_changes(r: Results, device: Device, record: dict, count: int = 1200) -> None:
     """A directory that changes while one handle lists it in small responses.
     On NetBSD 4, HFS loses a listing's place whenever a descriptor on the
     directory is closed, and smbd closes one for every create and delete, so
     this left files behind and repeated names until the emulated fdopendir()
     read the whole directory up front."""
     base = f"{device.dir}/changing"
-    count = 1200
 
     def make(n: int) -> None:
         device.sh(f"rm -rf {shlex.quote(base)} && mkdir {shlex.quote(base)} && cd {shlex.quote(base)} && "
@@ -901,7 +900,12 @@ SMB_CASES = ("open-matrix", "listing", "mapped-names", "renamed-open", "deep", "
              "listing-changes", "read-only")
 
 
-def run_case(case: str, r: Results, device: Device, record: dict) -> None:
+# --quick (AGENTS.md "Test tiers"): no Mac case, and 300 files for
+# listing-changes, still more than one 4 KiB getdents() of NetBSD 4 entries.
+QUICK_LISTING_FILES = 300
+
+
+def run_case(case: str, r: Results, device: Device, record: dict, quick: bool = False) -> None:
     if case == "open-matrix":
         open_matrix(r, device, record)
     elif case == "listing":
@@ -917,7 +921,8 @@ def run_case(case: str, r: Results, device: Device, record: dict) -> None:
     elif case == "times":
         times(r, device)
     elif case == "listing-changes":
-        listing_changes(r, device, record.setdefault("listing-changes", {}))
+        listing_changes(r, device, record.setdefault("listing-changes", {}),
+                        QUICK_LISTING_FILES if quick else 1200)
     elif case == "read-only":
         read_only(r, device, record.setdefault("read-only", {}))
     elif case == "mac":
@@ -930,24 +935,28 @@ def main() -> int:
     parser.add_argument("--share")
     parser.add_argument("--case", action="append", choices=SMB_CASES + ("mac",))
     parser.add_argument("--no-mac", action="store_true")
+    parser.add_argument("--quick", action="store_true",
+                        help="the quick tier: no Mac case, a smaller listing-changes directory")
     parser.add_argument("--record")
     parser.add_argument("--compare")
     args = parser.parse_args()
     env = parse_env_file(Path(args.env))
     device = Device(env, args.share)
     device.dir = f"{device.root}/{TEST_DIR}"
-    cases = args.case or list(SMB_CASES) + ([] if args.no_mac else ["mac"])
+    cases = args.case or list(SMB_CASES) + ([] if args.no_mac or args.quick else ["mac"])
     r = Results()
     record: dict = {}
     device.sh(f"rm -rf {shlex.quote(device.dir)} && mkdir -p {shlex.quote(device.dir)}")
     try:
         for case in cases:
             print(f"== {case}", flush=True)
+            start = time.monotonic()
             try:
-                run_case(case, r, device, record)
+                run_case(case, r, device, record, args.quick)
             except Exception as error:  # one broken case must not hide the others
                 r.check(f"{case}: ran without an unexpected error",
                         lambda error=error: (_ for _ in ()).throw(error))
+            print(f"== {case} took {time.monotonic() - start:.0f} s", flush=True)
     finally:
         device.sh(f"rm -rf {shlex.quote(device.dir)}", check=False)
     if args.record:
