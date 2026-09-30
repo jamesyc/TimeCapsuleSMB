@@ -23,7 +23,9 @@ with (root/'calls').open('a') as log:log.write(json.dumps([name,*sys.argv[1:]])+
 if name==os.environ.get('FAIL_TOOL'):sys.exit(1)
 if name=='mount' and os.environ.get('MOUNTED')=='1':print('tmpfs on '+str(root/'Locks')+' type tmpfs (local)')
 if name=='uname':print(os.environ.get('KERNEL','6.0'))
-if name=='sysctl' and sys.argv[1]=='-n':print(os.environ.get('BUFCACHE','5'))
+if name=='sysctl' and sys.argv[1]=='-n':
+    if sys.argv[2]=='vm.bufcache':print(os.environ.get('BUFCACHE','5'))
+    if sys.argv[2]=='vm.bufmem_hiwater':print(os.environ.get('HIWATER','40263680'))
 ''')
         tool.chmod(0o755)
     text = load_boot_asset_text('boot.sh')
@@ -49,10 +51,18 @@ def test_boot_prepares_platform_then_execs_native_manager(boot, kernel, mount, a
     assert result.returncode == 0, result.stderr
     operations = calls()
     assert [mount, '-s', amount, 'tmpfs' if kernel.startswith('6') else 'swap', str(root/'Locks')] in operations
-    assert ['sysctl', '-w', 'vm.bufcache=5'] in operations
+    assert ['sysctl', '-w', 'vm.bufcache=15' if kernel.startswith('6') else 'vm.bufcache=5'] in operations
+    assert (['sysctl', '-w', 'vm.bufmem_lowater=35000000'] in operations) is kernel.startswith('6')
     assert operations[-1] == ['service', 'manager']
     assert (root/'root/tc-netbsd7').resolve() == root/'Memory/samba4'
     assert (root/'Memory/samba4/private').stat().st_mode & 0o777 == 0o700
+
+
+def test_netbsd6_skips_low_water_tuning_on_smaller_cache(boot):
+    _, run, calls = boot
+    assert run(KERNEL='6.0', BUFCACHE='5', HIWATER='30000000').returncode == 0
+    assert ['sysctl', '-w', 'vm.bufcache=15'] in calls()
+    assert not any('vm.bufmem_lowater=' in arg for call in calls() for arg in call)
 
 
 def test_repeated_boot_preserves_active_locks_and_existing_prefixes(boot):

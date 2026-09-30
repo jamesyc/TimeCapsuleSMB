@@ -50,10 +50,33 @@ if ! tc_prepare_locks; then
     exit 1
 fi
 
+tc_release=$(/usr/bin/uname -r) || tc_release=
+tc_target_bufcache=5
+case "$tc_release" in
+    6.*) tc_target_bufcache=15 ;;
+esac
 tc_bufcache=$(/sbin/sysctl -n vm.bufcache 2>/dev/null) || tc_bufcache=
-if [ -n "$tc_bufcache" ] && [ "$tc_bufcache" != 5 ]; then
-    /sbin/sysctl -w vm.bufcache=5 || echo 'boot: could not tune vm.bufcache'
+if [ -n "$tc_bufcache" ] && [ "$tc_bufcache" != "$tc_target_bufcache" ]; then
+    /sbin/sysctl -w "vm.bufcache=$tc_target_bufcache" || echo 'boot: could not tune vm.bufcache'
 fi
+
+# NetBSD 6 can wait indefinitely in getnewbuf (needbuf) when it declines a
+# fresh buffer and every cached buffer is busy. On 256 MB Time Capsules, keep
+# enough cache headroom for Time Machine sparsebundle I/O to make progress.
+case "$tc_release" in
+    6.*)
+        tc_hiwater=$(/sbin/sysctl -n vm.bufmem_hiwater 2>/dev/null) || tc_hiwater=
+        case "$tc_hiwater" in
+            ''|*[!0-9]*) echo 'boot: vm.bufmem_hiwater unavailable; skipping low water tuning' ;;
+            *)
+                if [ "$tc_hiwater" -ge 40000000 ]; then
+                    /sbin/sysctl -w vm.bufmem_lowater=35000000 || \
+                        echo 'boot: could not tune vm.bufmem_lowater'
+                fi
+                ;;
+        esac
+        ;;
+esac
 
 mkdir -p /root || exit 1
 for tc_prefix in /root/tc-netbsd7 /root/tc-netbsd4 /root/tc-netbsd4le /root/tc-netbsd4be; do
