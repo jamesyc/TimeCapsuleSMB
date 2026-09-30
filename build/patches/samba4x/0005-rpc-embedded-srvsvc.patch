@@ -34,7 +34,7 @@ diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd
 +		session_info,
 +		ev_ctx,
 +		msg_ctx,
-+		global_dcesrv_context(), /* rc2 np_open no longer receives this */
++		global_dcesrv_context(), /* np_open() no longer receives this */
 +		npa);
 +	if (NT_STATUS_IS_OK(status)) {
 +		*phandle = handle;
@@ -79,7 +79,7 @@ diff --git a/source3/wscript_build b/source3/wscript_build
  bld.SAMBA3_LIBRARY('smbd_base',
                     source='''
                            smbd/server_reload.c
-@@ -735,7 +753,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
+@@ -736,7 +754,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                            smbd/conn.c
                            rpc_server/srv_pipe_hnd.c
                            rpc_server/rpc_ncacn_np.c
@@ -88,7 +88,7 @@ diff --git a/source3/wscript_build b/source3/wscript_build
                     deps='''
                          talloc
                          tevent
-@@ -767,6 +785,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
+@@ -768,6 +786,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                          fd_handle
                          cli_spoolss
                          samba3-namearray

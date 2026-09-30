@@ -1,0 +1,89 @@
+diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
+--- a/source3/modules/vfs_default.c
++++ b/source3/modules/vfs_default.c
+@@ -2341,6 +2341,12 @@ static struct tevent_req *vfswrap_offload_write_send(
+ 		return tevent_req_post(req, ev);
+ 	}
+ 
++	/* HFS allocates every block up to dst_off: see tc_file_growth.c. */
++	if (tc_file_growth_check(dest_fsp, state->dst_off + to_copy) == -1) {
++		tevent_req_nterror(req, map_nt_error_from_unix(errno));
++		return tevent_req_post(req, ev);
++	}
++
+ 	status = vfswrap_offload_fast_copy(req, fsctl);
+ 	if (NT_STATUS_IS_OK(status)) {
+ 		tevent_req_done(req);
+diff --git a/source3/smbd/fileio.c b/source3/smbd/fileio.c
+--- a/source3/smbd/fileio.c
++++ b/source3/smbd/fileio.c
+@@ -90,6 +90,12 @@ static ssize_t real_write_file(struct smb_request *req,
+ 		return 0;
+ 	}
+ 
++	/* HFS allocates every block up to pos: see tc_file_growth.c. */
++	if (pos != VFS_PWRITE_APPEND_OFFSET &&
++	    tc_file_growth_check(fsp, pos + n) == -1) {
++		return -1;
++	}
++
+ 	fh_set_pos(fsp->fh, pos);
+ 	if (pos &&
+ 	    lp_strict_allocate(SNUM(fsp->conn)) &&
+diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
+--- a/source3/smbd/proto.h
++++ b/source3/smbd/proto.h
+@@ -296,6 +296,10 @@ ssize_t write_file(struct smb_request *req,
+ 			size_t n);
+ NTSTATUS sync_file(connection_struct *conn, files_struct *fsp, bool write_through);
+ 
++/* The following definitions come from smbd/tc_file_growth.c  */
++
++int tc_file_growth_check(struct files_struct *fsp, off_t end);
++
+ /* The following definitions come from smbd/filename.c  */
+ 
+ uint32_t ucf_flags_from_smb_request(struct smb_request *req);
+diff --git a/source3/smbd/smb2_aio.c b/source3/smbd/smb2_aio.c
+--- a/source3/smbd/smb2_aio.c
++++ b/source3/smbd/smb2_aio.c
+@@ -199,6 +199,13 @@ struct tevent_req *pwrite_fsync_send(TALLOC_CTX *mem_ctx,
+ 		return tevent_req_post(req, ev);
+ 	}
+ 
++	/* HFS allocates every block up to offset: see tc_file_growth.c. */
++	if (offset != VFS_PWRITE_APPEND_OFFSET &&
++	    tc_file_growth_check(fsp, offset + n) == -1) {
++		tevent_req_error(req, errno);
++		return tevent_req_post(req, ev);
++	}
++
+ 	subreq = SMB_VFS_PWRITE_SEND(state, ev, fsp, data, n, offset);
+ 	if (tevent_req_nomem(subreq, req)) {
+ 		return tevent_req_post(req, ev);
+diff --git a/source3/smbd/vfs.c b/source3/smbd/vfs.c
+--- a/source3/smbd/vfs.c
++++ b/source3/smbd/vfs.c
+@@ -648,6 +648,11 @@ int vfs_set_filelen(files_struct *fsp, off_t len)
+ 		return -1;
+ 	}
+ 
++	/* HFS allocates every block up to len: see tc_file_growth.c. */
++	if (tc_file_growth_check(fsp, len) == -1) {
++		return -1;
++	}
++
+ 	contend_level2_oplocks_begin(fsp, LEVEL2_CONTEND_SET_FILE_LEN);
+ 
+ 	DEBUG(10,("vfs_set_filelen: ftruncate %s to len %.0f\n",
+diff --git a/source3/wscript_build b/source3/wscript_build
+--- a/source3/wscript_build
++++ b/source3/wscript_build
+@@ -657,6 +657,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
+                           smbd/conn_idle.c
+                           smbd/share_access.c
+                           smbd/fileio.c
++                          smbd/tc_file_growth.c
+                           smbd/smb2_ipc.c
+                           smbd/smb2_nttrans.c
+                           smbd/smb2_pipes.c

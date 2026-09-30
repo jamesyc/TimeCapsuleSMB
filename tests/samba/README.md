@@ -301,3 +301,155 @@ the data case with NOT_SUPPORTED. `--case NAME`
 a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
 and checks that the Mac's reconnect keeps the handle and its data. It works in a
 `__tc_durable_test__` folder and removes it at the end.
+
+### Directory operations: the *at emulation (patch 0002) and directory opens (0063)
+
+Neither Apple kernel has the *at system calls (ENOSYS for openat, fstatat,
+mkdirat, unlinkat, readlinkat, renameat, linkat, symlinkat, mknodat and
+utimensat on NetBSD 4 and NetBSD 6; NetBSD 4 also lacks futimens and
+fdopendir, and NetBSD 6's futimens mishandles UTIME_OMIT), so every call smbd
+makes relative to a directory goes through `lib/replace/tc_at_emulation.c`.
+
+`tc_at_emulation_test` runs that file against a real directory: every call
+relative to a descriptor, absolute and with AT_FDCWD; the real calls' errno for
+each failure; the working directory restored after every call and no descriptor
+leaked over 200 rounds; names resolved from a descriptor's directory after it is
+renamed; renames within a directory, through two descriptors of it, across
+directories and onto existing names; a directory more than PATH_MAX from the
+root; renames and links between directories past PATH_MAX (up, down, sibling,
+cousin, deep to shallow and back, names sharing a prefix but not a component),
+which the emulation makes with a name relative to one of the two directories,
+including out of and into the deepest directory getcwd() can name (4,095
+bytes); past that, and between branches too far apart for a relative name,
+the emulation cannot make the call a real renameat() would, and the case
+accepts either the move or a clean ENAMETOOLONG (never ERANGE, nothing
+moved) rather than pinning the limitation; O_NOFOLLOW (ELOOP, not NetBSD's EFTYPE) and O_DIRECTORY (emulated on
+NetBSD 4, whose kernel ignores it); utimensat/futimens with UTIME_NOW and
+UTIME_OMIT; and fdopendir over a 2,500-entry directory (the caller's descriptor
+number, rewinddir, a moved working directory, a renamed directory, close-on-exec
+and closedir); and listings of a directory that changes while another
+descriptor on it is closed between batches, deleting (nothing skipped),
+creating (nothing repeated), reading again after the end (nothing repeated)
+and rewinding, twice (the new contents). NetBSD 4's HFS drops a listing's
+place on any such close, which smbd makes for every create and delete, so its
+emulated fdopendir() reads the whole directory up front and its rewinddir()
+reads it again. Both kernels' HFS repeat a listing's last entries when it is
+read again after its end; NetBSD 6, whose HFS otherwise keeps a listing's
+place, uses libc's fdopendir() and a readdir() that keeps reporting the end
+until rewinddir(). That wrapper uses NetBSD's DIR, so only the NetBSD 6 device
+runs it; the host runs the same checks against its own readdir(). Host builds compile the emulation into the driver. It needs only
+libreplace and is small enough for `/mnt/Memory`; on NetBSD 4 run it from
+there. On 2026-09-28 a driver run from the HFS disk there stayed in disk wait
+and the device's next reboot hung; that one was not shown to cause the other,
+and running from RAM avoids the question. Apple's HFS
+accepts lutimes() on a symlink but keeps the link's times, so the link-time
+check accepts either result; the target must never change.
+
+`dir_device.py` checks the same paths over SMB against a deployed device:
+
+```sh
+.venv/bin/python -m tests.samba.dir_device --env .env.backup4 --record /tmp/after.json --compare /tmp/before.json
+```
+
+Its open matrix tries every create disposition with and without
+FILE_DIRECTORY_FILE and FILE_NON_DIRECTORY_FILE, for listing, attribute and
+read/write access, on an existing directory: whatever opens must be a directory
+handle (SMB2 READ is INVALID_DEVICE_REQUEST), must list, and must leave nothing
+behind. A file handle on a directory, the state patch 0063 now prevents and
+patch 0004 used to paper over, fails that READ. The other cases list a
+600-entry directory in small responses with RESTART_SCANS, REOPEN and
+RETURN_SINGLE_ENTRY; open directories with catia-mapped names; keep listing a
+directory handle's own directory after the directory is renamed on disk; nest
+40 directories (1,363 bytes), create, list and rename at the bottom, and move a
+file up a level, into a sibling, to the top of the test folder and back down (the old
+vfs_default fallbacks renamed through absolute names and so refused to create a
+directory within about 1,024 absolute bytes; smbd still looks up a few names,
+such as a delete-on-close file's parent, by full path from the share root, and
+NetBSD refuses those past PATH_MAX, so the deepest levels are deleted over SSH);
+delete and rename directories; and set
+last-write times through attribute-only handles. The Mac cases copy a
+40-file tree with ditto and compare it, list a 150-entry directory twice
+and create, fill and detach a sparsebundle (every smbfs create costs about
+3 seconds on the appliance with debug logging, so they are kept small). `--record` and `--compare` save and
+diff the status of every open and error case between two smbd builds.
+
+For a wider comparison, run Samba's own smbtorture folder suites from a Linux
+container against the device before and after a change (smbtorture built from
+the pinned Samba with `--nonshared-binary=smbtorture`), and compare the
+per-test outcomes: many tests fail against any appliance configuration, so only
+a changed outcome matters.
+
+### File growth on HFS (patch 0065)
+
+HFS has no sparse files, so growing a file allocates every block up to its new
+end. smbtorture's `smb2.rw.invalid` writes one byte at MAXFILESIZE - 1 (16 TiB);
+before 0065 that request never finished on either device (2026-09-28), so keep
+`smb2.rw.invalid` out of any smbtorture run against a device whose smbd lacks
+0065. With the patch, a write, SET_INFO end-of-file or server-side copy that
+would grow a file on HFS by more than the volume's available space fails with
+DISK_FULL before anything is allocated. That is the answer `smb2.rw.invalid`
+expects from Windows, so it passes when smbtorture runs without `--target`;
+with `--target=samba3` or `samba4` it expects success (a sparse file) and fails
+on a patched device. Either result is safe; only a hang is a regression.
+
+`tc_file_growth_test` runs the real `source3/smbd/tc_file_growth.c` with the
+file's size and its volume's statvfs answers controlled, so the 16 TiB request
+against a 2 TB volume is decided without any allocation. Its cases cover growth
+that needs no system call (appends, overwrites, shrinks and holes up to
+64 MiB), a cached size behind smbd's own writes, growth that fits, growth past
+the available space (the torture request included), the exact byte boundary in
+`f_frsize` and `f_bsize` units, other filesystems, stream placeholders whose
+descriptor has no volume, and a failed size refresh. `real_volume` asks the
+real `fstatvfs()` about a new file in `$TMPDIR`: on a device's HFS disk, growth
+past the available space is refused; on other systems it is allowed. The check
+never writes, and the case confirms the file did not grow. `real_resource_fork`
+checks, on a device, what an AFP_Resource handle relies on: the descriptor
+patch 0056 opens (`<file>/..namedfork/rsrc`) reports the fork's size, not the
+file's, and an HFS volume, so growth of the fork past the available space is
+refused too.
+
+The `call_` cases run the four callers 0065 patches, cut from the patched
+source by `run.py stage()` (`tc_file_growth_callers.inc`), with the I/O below
+them counted instead of done: synchronous writes (`real_write_file`, which also
+serves every stream write), asynchronous writes (`pwrite_fsync_send`, used with
+aio_fork), SET_INFO end-of-file (`vfs_set_filelen`) and server-side copies
+(`vfswrap_offload_write_send`). A refused request must fail with ENOSPC or
+DISK_FULL without reaching the write, truncate or copy; growth that fits, a
+shrink, a zero-length write and a POSIX append must reach it. A size refresh
+that fails without setting errno must still fail an asynchronous write with an
+error of its own (EIO): tevent ignores an error of 0 and would finish the
+request while it is still in progress, which smbd reports as INVALID_PARAMETER.
+
+`growth_device.py` sends the refused requests to a deployed device over SMB
+(it needs `smbprotocol` on the host):
+
+```sh
+.venv/bin/python -m tests.samba.growth_device --env .env.backup6 [--aio]
+```
+
+It first looks for 0065's refusal message in the smbd the device runs and
+stops if it is missing, because without the patch these requests make HFS
+allocate the whole growth. Each refused request grows a file past the volume's
+total size, which no amount of freed space can make fit, and must fail with
+DISK_FULL within 10 seconds and leave the file's size unchanged: the torture
+sequence (64 KiB, one byte at MAXFILESIZE - 1, then a zero-length write at
+MAXFILESIZE, which succeeds), a one-byte write, SET_INFO end-of-file, a
+one-byte server-side copy, and a one-byte write through a file's AFP_Resource
+stream (the fork keeps its 10 bytes, and can still grow by 100 MiB). A write
+32 MiB past the end, an end of file set to
+96 MiB and back, and 96 MiB of sequential 4 MiB writes must still succeed.
+`mac:sparsebundle` mounts the share and does to a sparse bundle what Time
+Machine does, with the devices' backup band size (487,854,080 bytes): it
+creates an HFS+ image that ends 400 MiB into a band, writes 600 MiB of files,
+grows the image and reads the files back. Writing each image end starts its
+last band hundreds of MiB past the band's beginning, growth beyond the 64 MiB
+0065 leaves unchecked, so the case checks that those band files reached that
+size. Files are opened delete-on-close in a `__tc_growth_test__` folder,
+which is removed at the end.
+
+`--aio` runs the suite with the manager's aio_fork settings (as with
+`VFS_AIO_FORK_ENABLED`) written to the running smb.conf in RAM only, and puts
+the original back at the end. The device suite otherwise runs with the default
+synchronous writes. SMB2 sends stream writes and zero-length writes
+synchronously either way; with debug logging, the suite checks that smbd logged
+the refused one-byte write completing through aio_fork.

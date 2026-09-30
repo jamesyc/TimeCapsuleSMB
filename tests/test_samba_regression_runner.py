@@ -80,8 +80,17 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     bodies = [f"static void {name}(void)\n{{\n    observed += {1 << i};\n}}\n" for i, name in enumerate(names)]
     (smbd / "server.c").write_text("\n".join(bodies[:2]))
     (smbd / "smb2_process.c").write_text("\n".join(bodies[2:]))
+    # Each growth caller region sits between unrelated code; its function has an
+    # indented inner block, so only the column-0 brace may end the cut.
+    regions = []
+    for filename, first, last in run.GROWTH_CALLERS:
+        region = (first + " /* state */\n};\n\n" if first != last else "") + last + (
+            "off_t n)\n{\n\tif (n) {\n\t\treturn tc_file_growth_check(0, n);\n\t}\n\treturn 0;\n}")
+        regions.append(region)
+        (tmp_path / filename).write_text("static int before;\n\n" + region + "\n\nstatic void after(void)\n{\n}\n")
     run.stage(tmp_path)
     run.stage(tmp_path)
+    assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"
     calls = []
 
     class Builder:
@@ -101,6 +110,8 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
             "tc_xattr_migrate_test": ["smbd_base", "dbwrap", "xattr_tdb"],
             # Includes vfs_catia.c, which maps names through STRING_REPLACE.
             "tc_catia_links_test": ["smbd_base", "STRING_REPLACE"],
+            # The *at emulation lives in libreplace; the driver needs nothing else.
+            "tc_at_emulation_test": ["replace"],
         }.get(name, ["smbd_base"])
         assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False

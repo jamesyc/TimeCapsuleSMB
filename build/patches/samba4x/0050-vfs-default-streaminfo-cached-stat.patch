@@ -1,19 +1,19 @@
 diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 --- a/source3/modules/vfs_default.c
 +++ b/source3/modules/vfs_default.c
-@@ -3612,7 +3612,23 @@ static NTSTATUS vfswrap_fstreaminfo(vfs_handle_struct *handle,
+@@ -3429,7 +3429,23 @@ static NTSTATUS vfswrap_fstreaminfo(vfs_handle_struct *handle,
  	}
  	status = vfs_stat_fsp(fsp);
  	if (!NT_STATUS_IS_OK(status)) {
 -		return status;
-+#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++#ifdef TC_SAMBA4X_AT_EMULATION
 +		if (VALID_STAT(fsp->fsp_name->st)) {
 +			/*
 +			 * Time Capsule pathref emulation can fail this stat
 +			 * refresh while stream enumeration already has a valid
 +			 * stat from the open/path walk. Preserve the default
-+			 * stream entry instead of failing delete/share checks.
-+			 * See https://github.com/jamesyc/TimeCapsuleSMB/issues/170.
++			 * stream entry instead of failing delete/share checks
++			 * on a file the open already found.
 +			 */
 +			DBG_DEBUG("vfs_stat_fsp failed for %s with %s; "
 +				  "using cached stat for default stream\n",

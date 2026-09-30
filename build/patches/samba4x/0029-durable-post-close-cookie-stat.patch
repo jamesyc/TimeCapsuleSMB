@@ -75,7 +75,7 @@ diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
 -	if (!NT_STATUS_IS_OK(status)) {
 -		data_blob_free(&new_cookie_blob);
 -		return status;
-+	/* rc2's persistent-handle path skips the post-close cookie refresh above.
++	/* The persistent-handle path skips the post-close cookie refresh above.
 +	 * Close only that path here; ordinary durable handles are already closed. */
 +	if (fsp->op->global->persistent) {
 +		status = fd_close(fsp);

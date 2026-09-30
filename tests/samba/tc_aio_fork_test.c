@@ -576,10 +576,11 @@ static void test_data_page_writes(void)
 }
 
 /* A process that exits with talloc frames still open, as every forked smbd
- * child does, must not report them (Samba patch 0022). pthread builds never
- * run that report at exit(); upstream's no-pthread atexit handler logged
- * "Dangling frame" lines at level 0 for each of them. */
-static void test_exit_frames(void)
+ * child does, reports them only at debug level (Samba patch 0064). pthread
+ * builds never run that report at exit(); upstream's no-pthread atexit
+ * handler logged "Dangling frame" lines at level 0 for each of them. With
+ * debug set, the report is still made: 0064 lowers it, it does not drop it. */
+static void test_exit_frames(bool debug)
 {
 	char out[4096];
 	size_t used = 0;
@@ -594,6 +595,9 @@ static void test_exit_frames(void)
 		alarm(15);
 		CHECK(dup2(fds[1], 2) == 2);
 		close(fds[0]);
+		if (debug) {
+			debuglevel_set(10);
+		}
 		/* Left open on top of main's frame, which is also still open. */
 		CHECK(talloc_stackframe() != NULL);
 		exit(0);
@@ -606,15 +610,15 @@ static void test_exit_frames(void)
 	out[used] = '\0';
 	close(fds[0]);
 	CHECK(waitpid(pid, &status, 0) == pid);
-	if (strstr(out, "Dangling frame") != NULL) {
+	if ((strstr(out, "Dangling frame") != NULL) != debug) {
 		fprintf(stderr, "%s", out);
 	}
 	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-	CHECK(strstr(out, "Dangling frame") == NULL);
+	CHECK((strstr(out, "Dangling frame") != NULL) == debug);
 }
 
-/* Registered before the talloc stack is first used, so it runs after 0022's
- * handler has freed the tracker (atexit handlers run in reverse order). With a
+/* Registered before the talloc stack is first used, so it runs after the
+ * talloc stack's handler has freed the tracker (atexit handlers run in reverse order). With a
  * dangling tracker pointer this would be a use-after-free, which the host
  * run's AddressSanitizer reports. */
 static void late_stackframe(void)
@@ -634,7 +638,7 @@ static bool test_exit_handlers(const char *scenario)
 	if (!strcmp(scenario, "exit_no_frames")) {
 		/* talloc_stackframe_exists() registers the atexit handler
 		 * before any frame exists; upstream's handler then
-		 * dereferenced the NULL tracker (Samba patch 0022). */
+		 * dereferenced the NULL tracker (fixed by Samba patch 0022). */
 		CHECK(!talloc_stackframe_exists());
 		return true;
 	}
@@ -684,7 +688,8 @@ int main(int argc, char **argv)
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
 	else if (!strcmp(argv[1], "full_buffer") || !strcmp(argv[1], "over_buffer")) test_sizes(h, argv[1]);
-	else if (!strcmp(argv[1], "exit_frames")) test_exit_frames();
+	else if (!strcmp(argv[1], "exit_frames")) test_exit_frames(false);
+	else if (!strcmp(argv[1], "exit_frames_debug")) test_exit_frames(true);
 	else if (!strcmp(argv[1], "data_page_writes")) test_data_page_writes();
 	else test_io(h, argv[1]);
 	CHECK(destructors == 0 && talloc_tos() == frame);

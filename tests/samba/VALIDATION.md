@@ -34,6 +34,20 @@ and 0031, 0038 into 0038 and 0054-0057, and 0045 into 0045 and 0058-0060 (see
 | Report an exhausted live-open reconnect as FILE_NOT_AVAILABLE | `exhausted` (2026-09-28) |
 | Leave the talloc stack tracker pointer dangling at exit | `exit_late_frames`, ASan exit 86 (2026-09-28) |
 | Read the NULL tracker in the no-pthread atexit handler (upstream) | `exit_no_frames`, ASan exit 86 (2026-09-28) |
+| Decide HFS growth from smbd's cached size without refreshing it | `stale_size`, `exceeds` (2026-09-28) |
+| Refuse growth past the available space on every filesystem, not only HFS | `not_hfs` (2026-09-28) |
+| Count the available space in `f_bsize` instead of `f_frsize` units | `boundary` (2026-09-28) |
+| Refuse growth equal to the available space | `boundary`, `exceeds` (2026-09-28) |
+| Measure growth from offset 0 instead of the file's current end | `boundary` (2026-09-28) |
+| Allow growth whose current size cannot be read | `fstat_error` (2026-09-28) |
+| Check growth inside the 64 MiB unchecked margin too | `unchecked` (2026-09-28) |
+| Refuse growth when the descriptor's volume cannot be queried | `no_volume`, `not_hfs` (2026-09-28) |
+| Drop the growth check from synchronous writes (`real_write_file`) | `call_write` (2026-09-28) |
+| Drop it from asynchronous writes (`pwrite_fsync_send`) | `call_pwrite_send` (2026-09-28) |
+| Drop it from SET_INFO end-of-file (`vfs_set_filelen`) | `call_set_filelen` (2026-09-28) |
+| Truncate first, then check | `call_set_filelen` (2026-09-28) |
+| Drop it from server-side copies (`vfswrap_offload_write_send`) | `call_offload` (2026-09-28) |
+| Return -1 with errno 0 after a failed size refresh | `fstat_error`, `call_pwrite_send` (2026-09-28) |
 
 The retry tests check eventual success/failure and unlocked waiting without
 asserting the particular retry limit of 34. Timing-sensitive cancellation is
@@ -1232,3 +1246,348 @@ kept. An empty fork on a folder holds nothing and is not written.
   numbers. Each lane built identical stripped migrators from the old and new
   source, and the NetBSD 4 BE one matches the manifest hash, so the committed
   binaries stand.
+
+## *at emulation in libreplace (0002, replaces 0003), directory opens (0063, replaces 0004), talloc stack exit (0022, 0064) (2026-09-28)
+
+Apple's kernels have none of the *at system calls. A probe with the raw
+NetBSD 7 syscall numbers got ENOSYS on both devices for openat, fstatat,
+mkdirat, unlinkat, readlinkat, renameat, linkat, symlinkat, mknodat, mkfifoat,
+utimensat, fchmodat, fchownat and faccessat. futimens works on NetBSD 6 only,
+and there it mishandles UTIME_OMIT: an omitted atime makes it change nothing,
+and an omitted mtime sets the mtime to -1. NetBSD 4 silently ignores the
+O_DIRECTORY and O_CLOEXEC bits. Both report O_NOFOLLOW on a symlink as EFTYPE.
+Apple's HFS accepts lutimes() on a symlink but changes nothing. fchdir() plus
+opendir(".") listed a 3,000-entry HFS directory exactly on both kernels, after
+rewinddir, a chdir("/"), a rename of the directory and a dup2() of its
+descriptor. That refutes the 2026-05-10 comment behind 0003's name-based
+fdopendir, which no committed code had ever tested.
+
+0003 is gone; `vfs_default.c` and `vfs_catia.c` are upstream again. 0002 and
+the overlay `lib/replace/tc_at_emulation.c` emulate every call Samba makes
+(the list above minus mkfifoat, fchmodat, fchownat and faccessat, which it
+never calls, plus futimens) on both lanes. They work from the directory
+descriptor with fchdir(), abort if the working directory cannot be restored,
+rename within a directory by its own names and between directories with a
+name relative to one of them (below), emulate O_DIRECTORY on
+NetBSD 4, and give NetBSD 4 an fdopendir() that opens "." from inside the
+directory and keeps the caller's descriptor number.
+`DISABLE_VFS_OPEN_HOW_RESOLVE_*` build flags replace 0003's vfswrap_connect
+hunk. `build/_samba4x.sh` refuses a binary that still links a libc *at stub.
+0004 is gone; 0063 returns FILE_IS_A_DIRECTORY when a name that was absent at
+lookup is a directory by the time it is opened (upstream bug, on every system
+without O_PATH reopen). 0022 is now only the upstream bug fix (NULL tracker,
+freed tracker left behind); 0064 proposes reporting stackframes still open at
+exit at debug level.
+
+- Diagnostics: a NetBSD 4 LE smbd built from `main` with level-0 logs at
+  0004's flip, at a directory opened as a file in open_file_ntcreate, at
+  0050's cached-stat fallback, where upstream's SMB_ASSERT in vfswrap_openat
+  would fire, and on any fntimes failure logged none of them during
+  smbtorture's smb2.dir, create, rename, delete-on-close-perms and
+  compound_find.
+- `tc_at_emulation_test` (new, 11 cases) passed on the NetBSD 4 LE device
+  (from RAM), the NetBSD 6 device and the Linux host under sanitizers. Its
+  first NetBSD 6 run caught the futimens UTIME_OMIT bug; futimens is now
+  emulated on both lanes.
+- `dir_device.py` (new): `main`'s smbd on NetBSD 4 LE failed renamed-open (a
+  directory handle listed the directory that took its old name: 0003's
+  name-based fdopendir); NetBSD 6, which has a real fdopendir, passed. The new
+  build passed every case on NetBSD 6 and all 85 checks on NetBSD 4 LE,
+  renamed-open included, and doctor passed on both. Directory nesting now reaches 40
+  levels (1,363 bytes) where `main` refused a directory at about 1,000
+  absolute bytes (0003 renamed through absolute names, and smbd creates a
+  directory by renaming a temporary one); smbd still reports the deepest
+  level's delete-on-close as OBJECT_NAME_INVALID, as it looks up the parent by
+  full path past NetBSD's PATH_MAX, but the directory is removed.
+- Renames between directories past PATH_MAX. The first build renamed between
+  two directories through the old name's absolute name, so moving a file from
+  the 40th level to the 39th failed with 0xC0000095 (INTEGER_OVERFLOW):
+  getcwd() said ERANGE past 1,024 bytes, which smbd maps unchanged. A probe on
+  both devices (22 nested 200-byte directories, 4.4 KB) showed getcwd() names
+  a directory up to 4,095 bytes with a 4,096-byte buffer (the kernel caps the
+  length at MAXPATHLEN * 4, as in NetBSD's source; libc's getcwd() is the bare
+  syscall on both SDKs), and ERANGE beyond whatever the buffer; it finds a
+  renamed ancestor's new name; it costs about 90 us near the root and 0.7 ms
+  (NetBSD 6) or 0.9 ms (NetBSD 4) at 4 KB; and relative rename() and link()
+  work at every depth, up, down, across and through ten "../" from past
+  4 KB, with a 1,023-byte name argument accepted and 1,024 refused. The
+  emulation now works from one of the two directories and names the other
+  relative to it, from whichever side gives the shorter name. It still
+  refuses, with ENAMETOOLONG (OBJECT_NAME_INVALID), when that name reaches
+  PATH_MAX or getcwd() cannot name a directory, where a real renameat()
+  would succeed; that is a limitation, and the test accepts either outcome
+  there. The new `cross_directory`
+  case fails on the first build with ERANGE and passes on the host under
+  sanitizers, as root and as a user; all 11 driver cases pass on NetBSD 6
+  and NetBSD 4 LE, and the host regression run (134 runs) passes. Deployed
+  (smbd 7b2e936b on NetBSD 6, 098049cf on NetBSD 4 LE), `dir_device.py` passes
+  all 88 checks on both, including moving a file from the 40th level up a
+  level, into a sibling, to the top of the test folder and back down, and
+  doctor passes on both.
+- smbtorture baseline (`main`, level-10 logging): NetBSD 4 LE 72 passed,
+  52 failed, 2 skipped; NetBSD 6 70/54/2. smb2.rw.invalid (a 1-byte write
+  at about 16 TiB) hung the smbd child on both devices: NetBSD 4 rebooted and
+  NetBSD 6 stopped answering SSH until power cycled. That is the production
+  code; it is excluded from these runs and tracked separately.
+- smbtorture with the new build on NetBSD 6 (same suites): 73 passed,
+  49 failed, 2 skipped. No test went from success to failure.
+  smb2.timestamps.delayed-write-vs-seteof and modern_write_time_update-1 now
+  pass. smb2.dir.1kfiles_rename, which could not connect in the loaded
+  baseline run (and on NetBSD 4 LE listed 1,292 entries for 1,000 files),
+  passed on its own in 882 s. The other smb2.rw differences are only
+  renamed subtests. The NetBSD 4 LE smbtorture run with the new build is
+  still to do.
+- Host regression run (Docker, sanitizers): all 130 runs passed.
+- `make test-parallel`: 2606 passed; one telemetry test failed once under
+  load (a separate load race, tracked separately).
+
+## File growth beyond the available space on HFS, patch 0065 (2026-09-28)
+
+smbtorture's `smb2.rw.invalid` writes one byte at MAXFILESIZE - 1 (16 TiB) on a
+delete-on-close file and accepts success or STATUS_DISK_FULL. Against both
+devices the client got IO_TIMEOUT after 60 s. The NetBSD 4 LE device rebooted
+about a minute later, and after boot diskd and every process on `/Volumes/dk2`
+stayed in D state. On NetBSD 6 the connection's smbd child ran in the kernel
+for over 45 minutes, other smbd children blocked in D state and sshd stopped
+answering. Both needed a power cycle.
+
+HFS has no sparse files. Measured on the NetBSD 6 disk (1.95 TB, 494 GB free),
+in a scratch folder outside the share and removed afterwards:
+
+| Growth | Request returns | Close |
+| --- | ---: | ---: |
+| SET_INFO end-of-file to 1 GiB (unpatched smbd) | at once | 8.9 s |
+| One byte written at 1 GiB (unpatched smbd) | at once | 8.8 s |
+| Either, on a delete-on-close file | at once | at once |
+| `dd` one byte at 64 MiB / 256 MiB / 1 GiB | | 1.5 / 2.1 / 8.8 s (with close) |
+
+HFS allocates every block up to the new end when the file grows (`ls -s`
+showed the full size allocated) and writes the zeros when the file is closed,
+about 120 MB/s, unless the file is deleted. The 16 TiB request can never fit,
+and the incident shows that attempting it takes HFS tens of minutes even on a
+delete-on-close file. Growth that fits is still allowed and still costs about
+8.8 s per GiB at close: a client can keep the disk busy for about an hour by
+growing a file by the whole free space and closing it, as it could by writing
+that much data, only with one request.
+
+0065 (new overlay `source3/smbd/tc_file_growth.c`) answers DISK_FULL, before
+anything is allocated, when a write (synchronous or through aio_fork), SET_INFO
+end-of-file or server-side copy would grow a file on HFS by more than the
+available space `fstatvfs()` reports (what `dfree.sh` reports to clients).
+Growth of up to 64 MiB past the size smbd last saw is not checked; larger
+growth refreshes the size first. Allocation-size requests already allocate
+nothing (`strict allocate = no`), and FSCTL_SET_ZERO_DATA gets ENOSYS on
+NetBSD. Server-side copies had no MAXFILESIZE check at all. Time Machine's
+sparse bundles on the devices use 487,854,080-byte bands (the NetBSD 6
+backup's `Info.plist`), so starting a band past its beginning is checked: one
+fstat and one fstatvfs per band.
+
+Review follow-up (same day): a failed size refresh that left errno 0 made
+`pwrite_fsync_send()` post its request still in progress (tevent ignores an
+error of 0), which smbd would have answered with INVALID_PARAMETER; the check
+now reports EIO then. The other three callers were not affected
+(`map_nt_error_from_unix(0)` is UNSUCCESSFUL). `run.py stage()` now cuts the
+four patched callers from the source tree for `tc_file_growth_test`'s `call_`
+cases, `real_resource_fork` checks the resource fork's descriptor on the
+device, and `growth_device` gained `stream:resource` and `--aio`. The results
+below are for the final build.
+
+- Host regression run (Docker, sanitizers): all 135 invocations passed,
+  including the 15 `tc_file_growth_test` ones. Each mutation in the
+  sensitivity table failed its case and passed again once restored.
+- The suite's safety check (0065's log message in the running smbd, read with
+  the device's `sed`) found nothing in the unpatched smbd on either device and
+  found it in this one.
+- Both devices, with this smbd swapped in (RAM symlink, no reboot; NetBSD 4 LE
+  after a power cycle), then the installed smbd restored and every scratch
+  folder removed:
+  - `tc_file_growth_test` passed all 15 invocations from `/Volumes/dk2`.
+    `real_volume` saw `hfs` (505,473,265,664 bytes available on NetBSD 6,
+    1,984,190,042,112 on NetBSD 4, whose `fstatvfs()` names the filesystem
+    too) and refused growth past it. `real_resource_fork`: a fork's
+    `..namedfork/rsrc` descriptor reported the fork's 10 bytes, not the file's
+    1, and an HFS volume, and growth past the available space through it was
+    refused.
+  - `growth_device` passed 23/23 on each. The torture sequence, a one-byte
+    write, SET_INFO end-of-file, a one-byte server-side copy and a one-byte
+    AFP_Resource write past the volume's size each got DISK_FULL in under
+    0.1 s with the file or fork unchanged, and smbd logged each refusal. The
+    32 MiB hole, the 96 MiB end of file, 96 MiB of 4 MiB writes and 100 MiB of
+    resource-fork growth succeeded. The Time Machine-shaped sparse bundle
+    (HFS+, 465 MiB bands) started band 0x28 400 MiB in (419,430,400 bytes)
+    and, once grown, band 0x51 313 MiB in (327,979,008 bytes); both growths
+    were checked and allowed, and the data read back. (The first version of
+    this case put the image's ends only 9 and 18 MB into their bands, inside
+    the unchecked growth.)
+  - `growth_device --aio` (aio_fork, aio sizes 1 and two helpers written to
+    the RAM smb.conf only, restored afterwards) passed 11/11 on each for the
+    write cases: both refusals, the hole and the sequential writes. smbd logged
+    `pwrite_recv returned -1, err = No space left on device`, so the refusal
+    came through `pwrite_fsync_send()`.
+  - The free space each run consumed matched the debug log's growth.
+- Earlier builds of this change also passed `durable_device --stall 0`
+  (24/24) and `doctor` on both devices.
+- The NetBSD 4 BE build was compiled and checked as big-endian only; no BE
+  device was available.
+- Full pytest suite (parallel): 2606 passed.
+
+Upstream: the same four growth paths exist in Samba 4.25. Upstream compares
+growth with `get_dfree_info()` only under `strict allocate = yes`: in
+`strict_allocate_ftruncate()`, and in `vfs_allocate_file_space()` when
+fallocate fails (with the default `strict allocate = no`, that function returns
+before its check and allocates nothing). Also only under `strict allocate =
+yes`, `vfs_fill_sparse()` grows a file for a write past its end with fallocate
+and, where fallocate is not supported, writes zeros up to the offset, with no
+free-space check. Server-side copies skip the MAXFILESIZE check that writes
+have. An upstream version would put one `get_dfree_info()` check in the four
+places 0065 uses, enabled by a share option for filesystems without sparse
+files (Samba does not advertise FILE_SUPPORTS_SPARSE_FILES); the torture test
+would then expect DISK_FULL there. The copy-chunk range check and a free-space
+check in `vfs_fill_sparse()` are bug fixes on their own.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,235,632 |
+| NetBSD 4 LE | 10,257,884 |
+| NetBSD 4 BE | 10,256,784 |
+
+All three lanes were built clean (`bin/` removed first); the metadata
+migrators are unchanged, byte for byte.
+
+Rebased onto the *at emulation series (0002/0063/0064, 0003 and 0004
+removed): 0065 applied unchanged apart from one hunk offset in vfs_default.c,
+and the later patches moved only by offsets. The host regression run passed
+149 runs under sanitizers (both new drivers included) and the parallel pytest
+suite 2670. All three lanes built clean with both drivers; the migrators match
+the previous build. From RAM with scratch on the data disk, both devices passed
+all 15 `tc_file_growth_test` cases and all 11 `tc_at_emulation_test` cases.
+Deployed (smbd b99c9c6b on NetBSD 6, ca32a44c on NetBSD 4 LE), both passed
+doctor, `growth_device` (23/23), `growth_device --aio` (11/11) and
+`dir_device` (88/88). smbtorture's smb2.rw.invalid, which had hung both
+devices, passed on each in 1 s. The full smbtorture run (the suites of the
+*at emulation entry, now with all of smb2.rw) against `main`: NetBSD 6 70/54/2
+-> 72/52/2 (passed/failed/skipped), NetBSD 4 LE 72/52/2 -> 72/52/2. On both,
+smb2.rw.invalid and smb2.rw.append went from failure to success. On NetBSD 4 LE
+smb2.name-mangling.mangle, smb2.timestamps.delayed-write-vs-seteof and
+modern_write_time_update-1 failed where `main` passed, and delayed-2write
+passed where it failed; rerun four times each on the new build, the first
+three passed once and failed three times, and delayed-2write passed every
+time. They flip on the same build (mangle draws random names; the timestamp
+tests compare sub-second write times on HFS's one-second clock), and `main`
+fails all three on NetBSD 6, so they are not regressions.
+
+| Lane | smbd bytes (rebased) |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,237,080 |
+| NetBSD 4 LE | 10,259,240 |
+| NetBSD 4 BE | 10,258,120 |
+
+## NetBSD 4 listings that change while a descriptor closes (0002) and maximum access for root (0066) (2026-09-28)
+
+smbtorture's smb2.dir.1kfiles_rename listed 1,292 entries for 1,000 files on
+NetBSD 4 LE, on `main` and on the *at emulation build alike. The extra 292
+were files an earlier subtest's cleanup (smb2_deltree, which deletes each
+64 KiB page of a listing before asking for the next) had left behind. Over
+SMB, deleting each 2-4 KiB page of a 2,000-file listing on one handle left 981
+files on NetBSD 4 and none on NetBSD 6, always starting at t0169, where smbd's
+second 4 KiB getdents() began. A local probe on the device (list, unlink each
+batch, open and close another descriptor on the directory) reproduced it
+without Samba: plain unlinks lost nothing, an extra open-and-close per batch
+lost 896 of 2,000, holding the extra descriptor open lost nothing, and
+creating files that sort first made the listing repeat entries without end.
+NetBSD 6 was correct in every variant.
+
+The cause, from the running kernels (ksyms and /dev/kmem, disassembled with
+the lane toolchains): Apple's HFS resumes a listing by the name of its last
+entry only while it holds a directory hint for that listing
+(hfs_vnop_readdir asks hfs_getdirhint() for the hint keyed by the offset's
+entry number and tag; without one, cat_getdirentries() counts entries from
+the start). hfs_vnop_close() calls hfs_reldirhints(cp, busy) for a directory
+still in use, meant to free hints older than 45 seconds; hfs_getdirhint()
+stamps hints with the wall clock (`time`) but hfs_reldirhints() subtracts
+them from microuptime() (`time - boottime`). NetBSD 4 compares the result as
+an unsigned 32-bit number, so every hint looks stale and is freed on any
+close; NetBSD 6 does the same subtraction in signed 64 bits, gets a negative
+age and keeps them. smbd opens and closes the parent directory for every
+create and delete, so on NetBSD 4 a listing lost its place after each one.
+
+rep_fdopendir() on NetBSD 4 now reads the whole directory up front (HFS
+returns at most 64 KiB, about 2,000 entries, per getdents(); the read is made
+again if the directory's size or times changed meanwhile), shrinks the buffer
+to what it read, and serves readdir() from it with libc's __DTF_READALL, as
+NetBSD's own opendir() does for NFS and union mounts; rep_rewinddir() reads it
+again. A 2,000-entry directory reads in 13 ms and a 20,000-entry one in about
+0.1 s, about 32 bytes per entry; the Time Machine band directory on the
+NetBSD 6 device holds 3,026 entries. NetBSD 6 binaries are unchanged by this.
+
+smb2.maximum_allowed.read_only_file failed on both devices: with
+`force user = root`, smbd_calculate_maximum_allowed_access_fsp() returned full
+access for root before removing write access for a read-only share or a
+read-only file, so a MAXIMUM_ALLOWED open of a read-only file asked for write
+access and the read-only check refused it with ACCESS_DENIED (also in Samba
+master of 2026-09-25). 0066 lets root skip only the ACL check.
+
+- `tc_at_emulation_test` `listing_changes` (new): 600 files listed through
+  fdopendir() in batches of 64 while each batch is deleted, and while files
+  that sort first are created, with another descriptor on the directory
+  opened and closed between batches; then rewinddir(). Passes on the Linux
+  host under sanitizers.
+- `dir_device.py` `listing-changes` and `read-only` (new). Against the
+  previous build (smbd b99c9c6b and ca32a44c): on NetBSD 4 LE, deleting each
+  2 KiB page as it arrived left 521 of 1,200 files; creating files during a
+  listing repeated 50 names on both devices; MAXIMUM_ALLOWED on a read-only
+  file was ACCESS_DENIED on both.
+- Host: the regression run passed 150/150 under sanitizers, the pytest suite
+  2,678. All three lanes built clean; the NetBSD 6 migrator is unchanged.
+- Devices, from RAM with scratch on the data disk: `tc_at_emulation_test`
+  12/12 (with `listing_changes` and the 4,095-byte `cross_directory`
+  boundary) and `tc_file_growth_test` 15/15 on both.
+- Deployed (smbd 5f2f7730 on NetBSD 6, 4279108e on NetBSD 4 LE): doctor and
+  `growth_device` (23/23) passed on both. `dir_device.py` passed 100/100 on
+  NetBSD 4 LE: nothing left behind or repeated, the restart shows the new
+  file, MAXIMUM_ALLOWED on the read-only file grants 0x001f01b9 (no write,
+  append or delete-child), a write open is still refused, the maximal-access
+  context still reports 0x001f01ff, and the deep hard links name the same
+  file. NetBSD 6 passed 99/100: creating files during a listing still repeats
+  the last 50 names there (below).
+- Also found: at the end of a directory HFS releases the listing's hint (as
+  Apple's source does), and the offset still counts entries, so a readdir()
+  after the end returns the last entries again when files were created before
+  the listing's position (probed on both kernels without Samba: 20 created,
+  20 repeated). smbd reads again after the end for the client's next
+  request. NetBSD 4's full read keeps returning the end. From the NetBSD 6
+  kernel: hfs_vnop_readdir() calls hfs_reldirhint() when a call returns no
+  entries (the offset comes back unchanged), and NetBSD 7's libc readdir()
+  calls getdents() again on every call after the end; smbd's ReadDirName()
+  has no end state either. NetBSD 6 keeps libc's fdopendir() (its hints
+  survive closes) and gets a rep_readdir() that keeps reporting the end until
+  rep_rewinddir(), with a flag bit in the DIR that libc does not use; libc's
+  rewinddir() rebuilds the stream from the current flags, so the bit is
+  cleared first. NetBSD 6's mid-listing correctness relies on its hints never
+  going stale (the signed comparison above), and a directory keeps at most 32
+  hints, recycling the least recently used, so dozens of listings of one
+  folder at once could still cost one its place.
+- With the NetBSD 6 change: host regression 150/150, pytest 2,678; all three
+  lanes built clean, and the NetBSD 4 LE and BE smbd and migrators came out
+  byte-identical to the previous build (4279108e, a7a52000), so NetBSD 4 was
+  not redeployed. On NetBSD 6 the old smbd (5f2f7730) repeated 50 names while
+  files were created during a listing and 5 more when queried after the end;
+  with smbd 1556a125 `tc_at_emulation_test` passed 12/12 on both devices
+  (`listing_changes` now also reads after the end and rewinds twice), and
+  doctor, `dir_device.py` (101/101 on each) and `growth_device` (23/23 on
+  each) passed.
+
+## Upstream fixes split out of 0018, 0035 and 0055; issue and version references dropped (2026-09-29)
+
+- 0067 (the fruit_pwrite_meta() zero-fill, from 0055), 0068 (the
+  xattr_tdb_setattr() frame leak, from 0018) and 0069 (the
+  streams_xattr_unlinkat() error returns, from 0035) are their own patches
+  in the upstream bug-fix section; all three bugs are still in Samba master
+  (checked 2026-09-29). The GitHub issue links (0023, 0027, 0050), the
+  issue number (0035) and the "rc2"/"Samba 4.25" wording (0005, 0029, 0036,
+  the series and overlay tc_embedded_srvsvc.c) became plain descriptions,
+  keeping every file's line count.
+- The replay's final tree differs from the previous series only in those
+  comment lines, `verify` matched, and a clean build of all three lanes gave
+  byte-identical smbd and migrators (1556a125, 4279108e, a7a52000; 72691cce,
+  aed8ee6e, 41b33052), so nothing was redeployed. pytest 2,729.

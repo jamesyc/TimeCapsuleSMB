@@ -1,0 +1,25 @@
+diff --git a/source3/smbd/open.c b/source3/smbd/open.c
+--- a/source3/smbd/open.c
++++ b/source3/smbd/open.c
+@@ -4323,6 +4323,21 @@ static NTSTATUS open_file_ntcreate(
+ 		return NT_STATUS_ACCESS_DENIED;
+ 	}
+ 
++	if (S_ISDIR(smb_fname->st.st_ex_mode)) {
++		/*
++		 * A directory appeared under this name after the lookup
++		 * found nothing: the O_CREAT|O_EXCL open in fd_open_atomic()
++		 * failed with EEXIST, and its retry without O_CREAT opened
++		 * the directory, which open(2) allows for reading. Return it
++		 * as a directory, as for one that existed at lookup time,
++		 * rather than a file handle on a directory.
++		 */
++		fd_close(fsp);
++		DBG_NOTICE("%s became a directory during the open\n",
++			   smb_fname_str_dbg(smb_fname));
++		return NT_STATUS_FILE_IS_A_DIRECTORY;
++	}
++
+ 	/*
+ 	 * Deal with the race condition where two smbd's detect the
+ 	 * file doesn't exist and do the create at the same time. One

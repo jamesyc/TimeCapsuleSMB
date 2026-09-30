@@ -104,7 +104,7 @@ static NTSTATUS tc_smbd_open_embedded_srvsvc_np(
 	if (ncacn_conn == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
-	/* Rc2 keeps the endpoint on dcesrv_conn rather than ncacn_conn. */
+	/* The endpoint is kept on dcesrv_conn, not on ncacn_conn. */
 	ncacn_conn->p.msg_ctx = msg_ctx;
 	ncacn_conn->p.transport = NCACN_NP;
 

@@ -1,0 +1,26 @@
+diff --git a/source3/smbd/open.c b/source3/smbd/open.c
+--- a/source3/smbd/open.c
++++ b/source3/smbd/open.c
+@@ -3416,8 +3416,13 @@ static NTSTATUS smbd_calculate_maximum_allowed_access_fsp(
+ 	}
+ 
+ 	if (!use_privs && (get_current_uid(fsp->conn) == (uid_t)0)) {
++		/*
++		 * Root is not subject to the ACL, but a read-only share and
++		 * the read-only attribute below still take write access
++		 * away, as the open itself refuses it.
++		 */
+ 		*p_access_mask |= FILE_GENERIC_ALL;
+-		return NT_STATUS_OK;
++		goto share_and_attributes;
+ 	}
+ 
+ 	status = SMB_VFS_FGET_NT_ACL(metadata_fsp(fsp),
+@@ -3477,6 +3482,7 @@ static NTSTATUS smbd_calculate_maximum_allowed_access_fsp(
+ 		}
+ 	}
+ 
++share_and_attributes:
+ 	if (!CAN_WRITE(fsp->conn)) {
+ 		*p_access_mask &= ~(FILE_GENERIC_WRITE | DELETE_ACCESS);
+ 	}

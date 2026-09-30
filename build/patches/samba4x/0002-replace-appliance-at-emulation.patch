@@ -1,0 +1,117 @@
+diff --git a/lib/replace/replace.c b/lib/replace/replace.c
+--- a/lib/replace/replace.c
++++ b/lib/replace/replace.c
+@@ -45,6 +45,13 @@
+ #define mkdir(d,m) _mkdir(d)
+ #endif
+ 
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#include "tc_netbsd4_compat.c"
++#endif
++#ifdef TC_SAMBA4X_AT_EMULATION
++#include "tc_at_emulation.c"
++#endif
++
+ void replace_dummy(void);
+ void replace_dummy(void) {}
+ 
+diff --git a/lib/replace/system/filesys.h b/lib/replace/system/filesys.h
+--- a/lib/replace/system/filesys.h
++++ b/lib/replace/system/filesys.h
+@@ -189,6 +189,96 @@
+ #define O_ACCMODE (O_RDONLY | O_WRONLY | O_RDWR)
+ #endif
+ 
++/*
++ * Time Capsule appliance builds (TC_SAMBA4X_AT_EMULATION): neither Apple
++ * kernel has the *at system calls, NetBSD 6's futimens() mishandles
++ * UTIME_OMIT and NetBSD 4 has none, and NetBSD 4 has no fdopendir(). lib/replace/tc_at_emulation.c emulates them with
++ * fchdir(); the names below send every caller that includes this header
++ * there. The final smbd link must not contain libc's own versions
++ * (build/_samba4x.sh checks).
++ */
++#ifdef TC_SAMBA4X_AT_EMULATION
++#include <dirent.h>
++#include <stdio.h>
++#include <sys/time.h>
++/* NetBSD 4 has none of these; the values are NetBSD 7's. */
++#ifndef AT_FDCWD
++#define AT_FDCWD -100
++#endif
++#ifndef AT_SYMLINK_NOFOLLOW
++#define AT_SYMLINK_NOFOLLOW 0x200
++#endif
++#ifndef AT_REMOVEDIR
++#define AT_REMOVEDIR 0x800
++#endif
++#ifndef O_DIRECTORY
++/*
++ * NetBSD 4 has no O_DIRECTORY and its kernel ignores this bit (probed
++ * 2026-09-28). rep_openat() removes it and checks for a directory itself,
++ * so Samba's O_DIRECTORY opens behave as elsewhere.
++ */
++#define O_DIRECTORY 0x00200000
++#define TC_AT_EMULATE_O_DIRECTORY 1
++#endif
++int rep_openat(int dirfd, const char *path, int flags, ...);
++int rep_fstatat(int dirfd, const char *path, struct stat *st, int flags);
++int rep_mkdirat(int dirfd, const char *path, mode_t mode);
++int rep_unlinkat(int dirfd, const char *path, int flags);
++ssize_t rep_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz);
++int rep_symlinkat(const char *target, int dirfd, const char *path);
++int rep_mknodat(int dirfd, const char *path, mode_t mode, dev_t dev);
++int rep_renameat(int olddirfd, const char *oldpath,
++		 int newdirfd, const char *newpath);
++int rep_linkat(int olddirfd, const char *oldpath,
++	       int newdirfd, const char *newpath, int flags);
++int rep_utimensat(int dirfd, const char *path,
++		  const struct timespec times[2], int flags);
++int rep_futimens(int fd, const struct timespec times[2]);
++#define openat rep_openat
++#define fstatat rep_fstatat
++#define mkdirat rep_mkdirat
++#define unlinkat rep_unlinkat
++#define readlinkat rep_readlinkat
++#define symlinkat rep_symlinkat
++#define mknodat rep_mknodat
++#define renameat rep_renameat
++#define linkat rep_linkat
++#define utimensat rep_utimensat
++/* NetBSD 6's own futimens() mishandles UTIME_OMIT. */
++#define futimens rep_futimens
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++DIR *rep_fdopendir(int fd);
++#define fdopendir rep_fdopendir
++/*
++ * rep_fdopendir() reads the whole directory up front, because NetBSD 4's HFS
++ * loses a listing's place whenever a descriptor on the directory is closed;
++ * rewinddir() then has to read it again (tc_at_emulation.c).
++ */
++void rep_rewinddir(DIR *dir);
++#define rewinddir(dir) rep_rewinddir(dir)
++/* sys_fdopendir() calls fdopendir() only where configure found it. */
++#ifndef HAVE_FDOPENDIR
++#define HAVE_FDOPENDIR 1
++#endif
++#elif defined(__NetBSD__)
++/*
++ * NetBSD 6's HFS repeats a listing's last entries when read again after the
++ * end; readdir() keeps reporting the end until rewinddir()
++ * (tc_at_emulation.c).
++ */
++struct dirent *rep_readdir(DIR *dir);
++#define readdir(dir) rep_readdir(dir)
++void rep_rewinddir(DIR *dir);
++#define rewinddir(dir) rep_rewinddir(dir)
++#endif /* TC_SAMBA4X_NETBSD4_COMPAT */
++#endif /* TC_SAMBA4X_AT_EMULATION */
++
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++/* Other NetBSD 4 libc gaps, in lib/replace/tc_netbsd4_compat.c. */
++void arc4random_buf(void *buf, size_t n);
++ssize_t getline(char **lineptr, size_t *n, FILE *stream);
++#endif
++
+ #ifndef MAXPATHLEN
+ #define MAXPATHLEN 256
+ #endif

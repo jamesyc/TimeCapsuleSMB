@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TARGETS = ("tc_pthreadpool_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
            "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test",
-           "tc_native_links_test", "tc_catia_links_test")
+           "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test", "tc_file_growth_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
 SMBD_TARGET = "smbd/smbd"
 # Compile the production accept/fork call site as well as the extracted helper.
@@ -30,7 +30,7 @@ AIO_CASES = (
     "queue", "cancel_queued", "cancel_active", "queued_fork_failure", "teardown", "orphan_error",
     "dispatch_failure", "allocation_failure", "response_failure",
     "limits", "unlimited", "cleanup", "full_buffer", "over_buffer",
-    "exit_frames", "exit_no_frames", "exit_late_frames", "data_page_writes",
+    "exit_frames", "exit_frames_debug", "exit_no_frames", "exit_late_frames", "data_page_writes",
 )
 DURABLE_CASES = (
     "transition", "exhausted", "already_disconnected", "client_mismatch",
@@ -53,9 +53,33 @@ NATIVE_LINKS_CASES = ("apple_format", "format_limits", "parse_rejects", "convert
                       "convert_refused", "sole_open", "commit_races", "commit_failures", "rollback_races",
                       "metadata", "read_xsym", "write_xsym", "reparse_created", "reparse_refused", "capabilities",
                       "dos_mode", "nofollow_errno")
-CATIA_LINKS_CASES = ("catia_links", "catia_fdopendir")
+CATIA_LINKS_CASES = ("catia_links",)
+AT_EMULATION_CASES = ("calls", "absolute", "errors", "flags", "renamed", "rename", "long_paths",
+                      "cross_directory", "listing_changes", "fds", "times", "fdopendir")
+FILE_GROWTH_CASES = ("unchecked", "stale_size", "fits", "exceeds", "boundary", "not_hfs", "no_volume",
+                     "fstat_error", "real_volume", "real_resource_fork", "call_write", "call_pwrite_send",
+                     "call_set_filelen", "call_offload")
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
+
+
+# Where patch 0065 checks HFS growth before any I/O: (file, first line of the
+# region, head of the function that ends it). Each region is contiguous.
+GROWTH_CALLERS = (
+    ("source3/smbd/fileio.c", "static ssize_t real_write_file(", "static ssize_t real_write_file("),
+    ("source3/smbd/smb2_aio.c", "struct pwrite_fsync_state {", "ssize_t pwrite_fsync_recv("),
+    ("source3/smbd/vfs.c", "int vfs_set_filelen(", "int vfs_set_filelen("),
+    ("source3/modules/vfs_default.c", "struct vfswrap_offload_write_state {",
+     "static struct tevent_req *vfswrap_offload_write_send("),
+)
+
+
+def cut(text: str, first: str, last: str) -> str:
+    """From first up to the end of the function whose head is last (Samba
+    style: the body's braces are the only ones in column 0)."""
+    start = text.index(first)
+    end = text.index("\n}", text.index("\n{", text.index(last, start))) + 2
+    return text[start:end]
 
 
 def stage(source: Path) -> None:
@@ -75,10 +99,13 @@ def stage(source: Path) -> None:
     }.items():
         text = (source / "source3/smbd" / filename).read_text()
         for name in names:
-            start = text.index("static void " + name + "(")
-            end = text.index("\n}", text.index("\n{", start)) + 2
-            callbacks.append(text[start:end])
+            head = "static void " + name + "("
+            callbacks.append(cut(text, head, head))
     (modules / "tc_storage_reload_callbacks.inc").write_text("\n\n".join(callbacks) + "\n")
+    # Likewise the callers tc_file_growth_test drives, so that a hook dropped
+    # from them, or moved after their I/O, fails on the host.
+    callers = [cut((source / filename).read_text(), first, last) for filename, first, last in GROWTH_CALLERS]
+    (modules / "tc_file_growth_callers.inc").write_text("\n\n".join(callers) + "\n")
     script.write_text(original + marker + (HERE / "targets.py").read_text())
 
 
@@ -109,11 +136,15 @@ def cases():
         yield TARGETS[7], (case,)
     for case in CATIA_LINKS_CASES:
         yield TARGETS[8], (case,)
+    for case in AT_EMULATION_CASES:
+        yield TARGETS[9], (case,)
+    for case in FILE_GROWTH_CASES:
+        yield TARGETS[10], (case,)
 
 
 def execution_cases(cross_exec: bool):
     """Upload each large native fixture once on storage-constrained devices."""
-    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6], TARGETS[7])
+    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6], TARGETS[7], TARGETS[10])
     seen: set[str] = set()
     for target, arguments in cases():
         if target in combined_targets:

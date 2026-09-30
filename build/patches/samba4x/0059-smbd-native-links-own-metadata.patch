@@ -1,7 +1,7 @@
 diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
 --- a/source3/modules/vfs_catia.c
 +++ b/source3/modules/vfs_catia.c
-@@ -1048,6 +1048,33 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
+@@ -1016,6 +1016,33 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
  	*_num_streams = 0;
  	*_streams = NULL;
  
@@ -35,7 +35,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	ret = catia_string_replace_allocate(handle->conn,
  					    smb_fname->base_name,
  					    &mapped_name,
-@@ -1081,6 +1108,8 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
+@@ -1049,6 +1076,8 @@ catia_fstreaminfo(struct vfs_handle_struct *handle,
  		return status;
  	}
  
@@ -44,7 +44,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	/*
  	 * Translate stream names just like the base names
  	 */
-@@ -1235,6 +1264,7 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+@@ -1203,6 +1232,7 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
  			       void *value,
  			       size_t size)
  {
@@ -52,7 +52,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	ssize_t result;
  	int ret;
-@@ -1248,9 +1278,23 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
+@@ -1216,9 +1246,23 @@ static ssize_t catia_fgetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
@@ -76,7 +76,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_xattr_name);
  
  	return result;
-@@ -1281,6 +1325,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1249,6 +1293,7 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  			      struct files_struct *fsp,
  			      const char *name)
  {
@@ -84,7 +84,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_name = NULL;
  	int ret;
  
-@@ -1293,8 +1338,17 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
+@@ -1261,8 +1306,17 @@ static int catia_fremovexattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
@@ -102,7 +102,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	TALLOC_FREE(mapped_name);
  
  	return ret;
-@@ -1307,6 +1361,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1275,6 +1329,7 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  			   size_t size,
  			   int flags)
  {
@@ -110,7 +110,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
  	char *mapped_xattr_name = NULL;
  	int ret;
  
-@@ -1319,9 +1374,18 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
+@@ -1287,9 +1342,18 @@ static int catia_fsetxattr(struct vfs_handle_struct *handle,
  		return -1;
  	}
  
@@ -132,7 +132,7 @@ diff --git a/source3/modules/vfs_catia.c b/source3/modules/vfs_catia.c
 diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
 --- a/source3/modules/vfs_default.c
 +++ b/source3/modules/vfs_default.c
-@@ -2966,8 +2966,15 @@ static int vfswrap_fchmod(vfs_handle_struct *handle, files_struct *fsp, mode_t m
+@@ -2827,8 +2827,15 @@ static int vfswrap_fchmod(vfs_handle_struct *handle, files_struct *fsp, mode_t m
  	}
  
  	/*
@@ -149,7 +149,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	result = chmod(fsp->fsp_name->base_name, mode);
  
  	END_PROFILE_X(syscall_fchmod);
-@@ -2997,8 +3004,13 @@ static int vfswrap_fchown(vfs_handle_struct *handle, files_struct *fsp, uid_t ui
+@@ -2858,8 +2865,13 @@ static int vfswrap_fchown(vfs_handle_struct *handle, files_struct *fsp, uid_t ui
  	}
  
  	/*
@@ -164,7 +164,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	result = chown(fsp->fsp_name->base_name, uid, gid);
  	END_PROFILE_X(syscall_fchown);
  	return result;
-@@ -3082,6 +3094,20 @@ static int vfswrap_fntimes(vfs_handle_struct *handle,
+@@ -2943,6 +2955,20 @@ static int vfswrap_fntimes(vfs_handle_struct *handle,
  		times = NULL;
  	}
  
@@ -185,7 +185,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	if (!fsp->fsp_flags.is_pathref) {
  		result = futimens(fsp_get_io_fd(fsp), times);
  		goto out;
-@@ -3548,8 +3574,13 @@ static int vfswrap_fchflags(vfs_handle_struct *handle,
+@@ -3371,8 +3397,13 @@ static int vfswrap_fchflags(vfs_handle_struct *handle,
  	}
  
  	/*
@@ -200,7 +200,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	return chflags(fsp->fsp_name->base_name, flags);
  #else
  	errno = ENOSYS;
-@@ -3794,8 +3825,14 @@ static ssize_t vfswrap_fgetxattr(struct vfs_handle_struct *handle,
+@@ -3617,8 +3648,14 @@ static ssize_t vfswrap_fgetxattr(struct vfs_handle_struct *handle,
  	}
  
  	/*
@@ -216,7 +216,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = getxattr(fsp->fsp_name->base_name, name, value, size);
  out:
  	END_PROFILE_X(syscall_fgetxattr);
-@@ -4134,6 +4171,11 @@ static ssize_t vfswrap_flistxattr(struct vfs_handle_struct *handle, struct files
+@@ -3957,6 +3994,11 @@ static ssize_t vfswrap_flistxattr(struct vfs_handle_struct *handle, struct files
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -228,7 +228,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = listxattr(fsp->fsp_name->base_name, list, size);
  out:
  	END_PROFILE_X(syscall_flistxattr);
-@@ -4164,6 +4206,12 @@ static int vfswrap_fremovexattr(struct vfs_handle_struct *handle, struct files_s
+@@ -3987,6 +4029,12 @@ static int vfswrap_fremovexattr(struct vfs_handle_struct *handle, struct files_s
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -241,7 +241,7 @@ diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
  	res = removexattr(fsp->fsp_name->base_name, name);
  out:
  	END_PROFILE_X(syscall_fremovexattr);
-@@ -4198,6 +4246,12 @@ static int vfswrap_fsetxattr(struct vfs_handle_struct *handle, struct files_stru
+@@ -4021,6 +4069,12 @@ static int vfswrap_fsetxattr(struct vfs_handle_struct *handle, struct files_stru
  	/*
  	 * This is no longer a handle based call.
  	 */
@@ -304,7 +304,7 @@ diff --git a/source3/smbd/close.c b/source3/smbd/close.c
 diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 --- a/source3/smbd/open.c
 +++ b/source3/smbd/open.c
-@@ -5709,6 +5709,15 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
+@@ -5730,6 +5730,15 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
  	} else {
  		pathref = smb_fname;
  	}
@@ -320,7 +320,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  	status = vfs_fstreaminfo(pathref->fsp, talloc_tos(),
  				&num_streams, &stream_info);
  
-@@ -6529,6 +6538,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6550,6 +6559,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  	    && is_named_stream(smb_fname))
  	{
  		uint32_t base_create_disposition;
@@ -328,7 +328,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  		struct smb_filename *smb_fname_base = NULL;
  		uint32_t base_privflags;
  
-@@ -6562,7 +6572,20 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6583,7 +6593,20 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		 * if the basefile exists we want a handle so we can fstat() it.
  		 */
  
@@ -350,7 +350,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  
  		if (!NT_STATUS_IS_OK(status) &&
  		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
-@@ -6574,8 +6597,13 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6595,8 +6618,13 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  			goto fail;
  		}
  
@@ -365,7 +365,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  			 * https://bugzilla.samba.org/show_bug.cgi?id=10229
  			 * We need to check if the requested access mask
  			 * could be used to open the underlying file (if
-@@ -6607,7 +6635,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6628,7 +6656,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  					      | FILE_SHARE_WRITE
  					      | FILE_SHARE_DELETE,
  					      base_create_disposition,
@@ -396,7 +396,7 @@ diff --git a/source3/smbd/smb2_trans2.c b/source3/smbd/smb2_trans2.c
 diff --git a/source3/smbd/vfs.c b/source3/smbd/vfs.c
 --- a/source3/smbd/vfs.c
 +++ b/source3/smbd/vfs.c
-@@ -1041,9 +1041,13 @@ NTSTATUS vfs_fstreaminfo(struct files_struct *fsp,
+@@ -1046,9 +1046,13 @@ NTSTATUS vfs_fstreaminfo(struct files_struct *fsp,
                  return NT_STATUS_OK;
          }
  

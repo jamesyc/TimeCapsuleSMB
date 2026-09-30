@@ -47,8 +47,8 @@ diff --git a/source3/lib/system.c b/source3/lib/system.c
 +	 * tries to map them to SIDs in ACL, create-context, durable-handle, and
 +	 * stream metadata paths. The appliance serves all SMB users through a
 +	 * forced root/wheel identity, so normalize only this HFS sentinel before
-+	 * it escapes the stat conversion boundary. See
-+	 * https://github.com/jamesyc/TimeCapsuleSMB/issues/170.
++	 * it escapes the stat conversion boundary into those paths, where
++	 * no SID maps to it.
 +	 */
 +	if (st->st_ex_uid == (uid_t)-1) {
 +		st->st_ex_uid = 0;

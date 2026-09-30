@@ -141,15 +141,6 @@ diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
  
  	/* Yes, macOS always reads from offset 0 */
  	offset = 0;
-@@ -2856,7 +2910,7 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
- {
- 	struct fio *fio = fruit_get_complete_fio(handle, fsp);
- 	ssize_t nwritten;
--	uint8_t buf[AFP_INFO_SIZE];
-+	uint8_t buf[AFP_INFO_SIZE] = {0};
- 	size_t to_write;
- 	size_t to_copy;
- 	int cmp;
 @@ -2903,6 +2957,14 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
  	if (to_write != AFP_INFO_SIZE) {
  		to_write = AFP_INFO_SIZE;

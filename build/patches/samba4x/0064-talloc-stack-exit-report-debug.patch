@@ -1,0 +1,57 @@
+diff --git a/lib/util/talloc_stack.c b/lib/util/talloc_stack.c
+--- a/lib/util/talloc_stack.c
++++ b/lib/util/talloc_stack.c
+@@ -58,18 +58,26 @@ static pthread_key_t ts_key;
+ static struct talloc_stackframe *global_ts;
+ #endif
+ 
+-static void talloc_stackframe_destructor(void *ptr)
++/*
++ * Report the stackframes still open and free the tracker. A thread that
++ * exits with open frames has a bug. At exit() it is different: the open
++ * frames are those of the code that called exit(), such as smbd exiting from
++ * inside a request, or a forked child's copy of its parent's frames. Builds
++ * with pthread never check those, as key destructors do not run at exit(),
++ * so builds without pthread report them only at debug level and do not
++ * panic.
++ */
++static void talloc_stackframe_free(struct talloc_stackframe *ts, bool at_exit)
+ {
+-	struct talloc_stackframe *ts =
+-		(struct talloc_stackframe *)ptr;
++	int level = at_exit ? DBGLVL_DEBUG : DBGLVL_ERR;
+ 	int i;
+ 
+ 	for (i = 0; i < ts->talloc_stacksize; i++) {
+ 		int idx = ts->talloc_stacksize - (i + 1);
+-		DEBUG(0, ("Dangling frame[%d] %s\n",
+-			  idx, talloc_get_name(ts->talloc_stack[idx])));
++		DEBUG(level, ("Dangling frame[%d] %s\n",
++			      idx, talloc_get_name(ts->talloc_stack[idx])));
+ 	}
+-	if (ts->talloc_stacksize > 0) {
++	if (ts->talloc_stacksize > 0 && !at_exit) {
+ #ifdef DEVELOPER
+ 		smb_panic("Dangling frames.");
+ #endif
+@@ -79,6 +87,11 @@ static void talloc_stackframe_destructor(void *ptr)
+ }
+ 
+ #ifdef HAVE_PTHREAD
++static void talloc_stackframe_destructor(void *ptr)
++{
++	talloc_stackframe_free((struct talloc_stackframe *)ptr, false);
++}
++
+ static void talloc_stackframe_init_once(void)
+ {
+ 	int ret = pthread_key_create(&ts_key, talloc_stackframe_destructor);
+@@ -107,7 +120,7 @@ static void talloc_stackframe_atexit(void)
+ 	 * freed tracker. If it creates a stackframe, it gets a new one.
+ 	 */
+ 	global_ts = NULL;
+-	talloc_stackframe_destructor(ts);
++	talloc_stackframe_free(ts, true);
+ }
+ 
+ static void talloc_stackframe_init(void)

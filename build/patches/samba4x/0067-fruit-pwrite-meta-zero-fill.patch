@@ -1,0 +1,12 @@
+diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
+--- a/source3/modules/vfs_fruit.c
++++ b/source3/modules/vfs_fruit.c
+@@ -2856,7 +2856,7 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+ {
+ 	struct fio *fio = fruit_get_complete_fio(handle, fsp);
+ 	ssize_t nwritten;
+-	uint8_t buf[AFP_INFO_SIZE];
++	uint8_t buf[AFP_INFO_SIZE] = {0};
+ 	size_t to_write;
+ 	size_t to_copy;
+ 	int cmp;

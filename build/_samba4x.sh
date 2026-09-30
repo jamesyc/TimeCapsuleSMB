@@ -341,6 +341,26 @@ validate_samba4x_smbd_map() {
     fi
 }
 
+# Patch 0002 maps every *at call onto lib/replace/tc_at_emulation.c, because
+# neither appliance kernel implements them. A caller that does not include
+# system/filesys.h would link libc's syscall stub instead and fail with ENOSYS
+# only on the device, so refuse to stage a binary that defines one. futimens is
+# emulated too: NetBSD 6's mishandles UTIME_OMIT. (NetBSD 4 libc has none of
+# these stubs; there a missed caller fails to link instead.) A binary that
+# makes no *at calls, like the migrator, links no emulation either.
+verify_at_emulation() {
+    vae_binary=$1
+    vae_symbols="$("$TOOLDIR/bin/$TRIPLE-nm" "$vae_binary")"
+    for vae_name in openat fstatat mkdirat unlinkat readlinkat renameat linkat \
+        symlinkat mknodat mkfifoat utimensat futimens fchmodat fchownat faccessat; do
+        if printf '%s\n' "$vae_symbols" | grep -Eq " [TtWw] _*${vae_name}\$"; then
+            echo "$vae_binary: links libc's $vae_name instead of the emulation"
+            return 1
+        fi
+    done
+    echo "$vae_binary: no libc *at stubs; *at calls go through the emulation"
+}
+
 samba4x_max_stripped_bytes() {
     # Rc2's NetBSD 6 binary adds 35,768 bytes over 4.24.3. Keep every lane
     # below 10 MiB so the upgrade fits the existing 16 MiB RAM disk without
@@ -1011,7 +1031,7 @@ if [ "$SAMBA4X_RUN_REGRESSION_TESTS" = "1" ]; then
     SAMBA4X_BUILD_REGRESSION_TESTS=1
 fi
 # The drivers staged from tests/samba (tests/samba/run.py TARGETS).
-SAMBA4X_REGRESSION_TARGETS=tc_pthreadpool_sync_test,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test
+SAMBA4X_REGRESSION_TARGETS=tc_pthreadpool_sync_test,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test,tc_at_emulation_test,tc_file_growth_test
 # Link flags for the static binaries other than smbd: the shipped metadata
 # migrator and the regression drivers. Unlike smbd's, they write no link map.
 TC_STATIC_LINKFLAGS=
@@ -1028,6 +1048,12 @@ export RANLIB="$TOOLDIR/bin/$TRIPLE-ranlib"
 export STRIP="$TOOLDIR/bin/$TRIPLE-strip"
 export CROSS_EXEC_REMOTE_DIR="$SAMBA4X_CROSS_EXEC_REMOTE_DIR"
 
+# Neither Time Capsule kernel has the *at system calls (ENOSYS on NetBSD 4 and
+# 6), so TC_SAMBA4X_AT_EMULATION has libreplace emulate them with fchdir()
+# (patch 0002, lib/replace/tc_at_emulation.c). Without openat2() Samba must
+# also not ask for the RESOLVE_NO_SYMLINKS/NO_XDEV open constraints; upstream's
+# DISABLE_VFS_OPEN_HOW_RESOLVE_* switches (which its own non-Linux CI build
+# uses) turn them off in vfswrap_connect() instead of on the first ENOSYS.
 # Apple added Darwin-compatible descriptor xattr syscalls to both Time Capsule
 # kernels without adding libc wrappers. Only appliance builds may use that
 # private ABI; ordinary host regression builds retain the ENOSYS stubs.
@@ -1040,9 +1066,9 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     export CXX="$TOOLDIR/bin/$TRIPLE-g++"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp"
     export LD="$TOOLDIR/bin/$TRIPLE-ld"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
+    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
     SAMBA4X_NETBSD4_BASE_LDFLAGS="-Wl,-Bstatic -static -L$SAMBA4X_DEPS/lib -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     SAMBA4X_NETBSD4_FINAL_LDFLAGS="$SAMBA4X_NETBSD4_BASE_LDFLAGS"
@@ -1062,9 +1088,9 @@ else
     export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
     export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
+    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_AT_EMULATION=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS=1 -DDISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1 -DTC_SAMBA4X_APPLIANCE=1"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     TC_STATIC_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     TC_STATIC_LDFLAGS="$TC_STATIC_LINKFLAGS"
@@ -1247,6 +1273,7 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         validate_netbsd4_notes "$built_path"
         # Patch 0046's constructor in talloc, linked into every Samba binary.
         verify_data_faultahead "$built_path" tc_disable_data_faultahead || exit 1
+        verify_at_emulation "$built_path" || exit 1
 
         mkdir -p "$(dirname "$stage_path")"
         cp "$built_path" "$stage_path"

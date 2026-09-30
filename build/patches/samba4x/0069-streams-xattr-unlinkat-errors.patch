@@ -1,0 +1,33 @@
+diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
+--- a/source3/modules/vfs_streams_xattr.c
++++ b/source3/modules/vfs_streams_xattr.c
+@@ -1090,6 +1090,7 @@ static int streams_xattr_unlinkat(vfs_handle_struct *handle,
+ 				     &xattr_name);
+ 	if (ret != 0) {
+ 		errno = ret;
++		ret = -1;
+ 		goto fail;
+ 	}
+ 
+@@ -1104,6 +1105,7 @@ static int streams_xattr_unlinkat(vfs_handle_struct *handle,
+ 					&pathref);
+ 		if (!NT_STATUS_IS_OK(status)) {
+ 			errno = ENOENT;
++			ret = -1;
+ 			goto fail;
+ 		}
+ 		fsp = pathref->fsp;
+@@ -1114,8 +1116,11 @@ static int streams_xattr_unlinkat(vfs_handle_struct *handle,
+ 
+ 	ret = fremovexattr_multi(config, fsp, raw_stream_name);
+ 
+-	if ((ret == -1) && (errno == ENOATTR)) {
+-		errno = ENOENT;
++	/* Missing primary streams map to ENOENT; preserve all other failures. */
++	if (ret == -1) {
++		if (errno == ENOATTR) {
++			errno = ENOENT;
++		}
+ 		goto fail;
+ 	}
+ 

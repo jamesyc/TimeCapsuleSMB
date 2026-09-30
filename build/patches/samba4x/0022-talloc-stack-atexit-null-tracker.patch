@@ -1,0 +1,27 @@
+diff --git a/lib/util/talloc_stack.c b/lib/util/talloc_stack.c
+--- a/lib/util/talloc_stack.c
++++ b/lib/util/talloc_stack.c
+@@ -92,7 +92,22 @@ static void talloc_stackframe_init(void)
+ #else /* ! HAVE_PTHREAD */
+ static void talloc_stackframe_atexit(void)
+ {
+-	talloc_stackframe_destructor(global_ts);
++	struct talloc_stackframe *ts = global_ts;
++
++	/*
++	 * talloc_stackframe_exists() registers this handler before any
++	 * stackframe exists, so there may be no tracker to check.
++	 */
++	if (ts == NULL) {
++		return;
++	}
++
++	/*
++	 * An exit handler that runs after this one must not find the
++	 * freed tracker. If it creates a stackframe, it gets a new one.
++	 */
++	global_ts = NULL;
++	talloc_stackframe_destructor(ts);
+ }
+ 
+ static void talloc_stackframe_init(void)

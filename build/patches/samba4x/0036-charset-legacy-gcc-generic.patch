@@ -6,7 +6,7 @@ diff --git a/lib/util/charset/charset.h b/lib/util/charset/charset.h
  char *strstr_m_nonconst(const char *s, const char *findstr);
  
 +/* The existing NetBSD SDK compilers predate GCC 4.9's C11 _Generic.
-+ * Preserve rc2's const-qualified results and single argument evaluation with
++ * Keep upstream's const-qualified results and single argument evaluation with
 + * equivalent GNU compile-time selection; do not rebuild the SDK toolchains. */
 +#if defined(__GNUC__) && !defined(__clang__) && \
 +    (__GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 9))

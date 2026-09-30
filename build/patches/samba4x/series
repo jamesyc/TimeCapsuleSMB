@@ -9,8 +9,57 @@
 # The patch files are generated: edit them through build/samba4x_replay.py
 # (init, amend, export, verify), never by hand.
 
+# Upstream bug fixes.
+# Each fixes a bug in stock Samba and needs no later patch.
+#
+# open_file_ntcreate() found no file under the name, but a directory appeared
+# before the open: the O_CREAT|O_EXCL open in fd_open_atomic() failed with
+# EEXIST and its retry without O_CREAT opened the directory for reading, which
+# open(2) allows. smbd then held a file handle on a directory (is_directory
+# false; a later QUERY_DIRECTORY failed, and patch 0004 used to flip the flag
+# there). Return NT_STATUS_FILE_IS_A_DIRECTORY instead, so the caller opens it
+# as a directory, as for one found at lookup time. A file replaced by a
+# directory was already refused by the dev/ino check before it.
+0063-smbd-open-file-created-directory.patch|open a name that became a directory as a directory
+# Without pthread, talloc_stack's atexit handler read a NULL tracker when
+# talloc_stackframe_exists() had registered it before any frame existed, and
+# left the pointer to the freed tracker for exit handlers that run after it.
+0022-talloc-stack-atexit-null-tracker.patch|atexit handler without a tracker, and no freed tracker left behind
+# smbd_calculate_maximum_allowed_access_fsp() returned full access for root
+# (a share with "force user = root", as on the appliance) before taking write
+# access away for a read-only share or a read-only file, so opening a
+# read-only file with MAXIMUM_ALLOWED asked for write access and the open
+# refused it with ACCESS_DENIED (smbtorture
+# smb2.maximum_allowed.read_only_file). Root now skips only the ACL check.
+0066-smbd-maximum-access-root-read-only.patch|maximum access for root still honours read-only shares and files
+# fruit_pwrite_meta() copies a short AfpInfo write (17-59 bytes at offset 0)
+# into a 60-byte stack buffer and stores all 60 bytes, so the stream kept
+# uninitialized stack bytes after the caller's data. Zero the buffer first.
+0067-fruit-pwrite-meta-zero-fill.patch|zero-fill short AfpInfo writes
+# xattr_tdb_setattr() returned without freeing its stackframe when it could
+# not lock the row; the caller's frame then freed it out of order ("Freed
+# frame ..., expected ..." at level 0, a panic in DEVELOPER builds).
+0068-xattr-tdb-setattr-lock-failure-frame.patch|free the stackframe when the xattr row cannot be locked
+# streams_xattr_unlinkat() returned the positive error code from
+# streams_xattr_get_name(), returned 0 when it could not open the base file,
+# and reported success when removing the stream's xattr failed for any reason
+# other than ENOATTR. Return -1 with errno set in every failure.
+0069-streams-xattr-unlinkat-errors.patch|report every failed stream unlink
+
+# Upstream proposals.
+# Changes upstream would have to agree to; they need no appliance patch.
+#
+# Without pthread, the atexit handler reported every stackframe still open at
+# exit() at level 0 (and panicked in DEVELOPER builds): about three lines for
+# each exiting smbd connection child, plus smbd -V and -b. Those are the
+# frames of the code that called exit(), not leaks; builds with pthread never
+# check them, since key destructors do not run at exit(). Report them at
+# debug level, without the panic; a thread exiting with open frames still
+# reports at level 0.
+0064-talloc-stack-exit-report-debug.patch|report stackframes open at exit only at debug level
+
 # Build and toolchain.
-# Samba 4.25 marks some generated tools as hostcc but still lets waf inherit
+# Samba marks some generated tools as hostcc but still lets waf inherit
 # target compiler/linker settings. Keep those host tools on the VM compiler.
 0001-waf-hostcc-target-flags.patch|waf hostcc isolation from target flags
 # Apply static link flags only to the static binaries we build: the deployed
@@ -27,33 +76,36 @@
 # follows non-static"); rename popt's copy. The NetBSD 4 headers lack the
 # declaration.
 0016-popt-glob-symbol-rename.patch|bundled popt glob symbol rename
-# Rc2 uses C11 generic selection for const-preserving charset helpers. The
+# Samba uses C11 generic selection for const-preserving charset helpers. The
 # existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.
 0036-charset-legacy-gcc-generic.patch|const-preserving charset helpers on legacy GCC
 
 # NetBSD 4 and old-kernel compatibility.
-# NetBSD 4 libc lacks the *at family, futimens, utimensat, arc4random_buf and
-# getline; replace.c includes shims for them (overlay
-# lib/replace/tc_netbsd4_compat.c), and system/filesys.h gains O_DIRECTORY and
-# AT_* fallback defines.
-0002-replace-netbsd4-compat.patch|NetBSD4 libc compatibility shims
-# Apple's NetBSD 6.0 kernel returns ENOSYS for openat, fstatat, mkdirat,
-# unlinkat and readlinkat although the NetBSD 7 SDK declares them (probed on the
-# device 2026-09-27), and NetBSD 4 has none of them. So on every lane
-# vfs_default's *at calls fchdir() to the directory's descriptor and use the
-# path-based syscalls (overlay source3/modules/tc_vfs_at_compat.c). The
-# fallbacks report NetBSD's EFTYPE for O_NOFOLLOW on a symlink as ELOOP, which
-# Samba expects. NetBSD 4 also has no fdopendir(), so there only, directories
-# are opened by name, and vfs_catia gains an fdopendir hook so that name is the
-# on-disk (SFM-mapped) one.
-0003-vfs-default-path-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
+# Neither Apple kernel has the *at system calls: NetBSD 4 and NetBSD 6 both
+# return ENOSYS for openat, fstatat, mkdirat, unlinkat, readlinkat, renameat,
+# linkat, symlinkat, mknodat and utimensat, although the NetBSD 7 SDK declares
+# them (probed on both devices 2026-09-28). libreplace emulates them for the
+# appliance (overlay lib/replace/tc_at_emulation.c): each call fchdir()s to
+# the directory descriptor, makes the path-based call and changes back, which
+# needs a process without threads. A rename or link between two directories
+# runs in one of them and names the other relative to it ("../" up to their
+# common ancestor, then down), so it works past PATH_MAX (1,024 bytes) as long
+# as getcwd() can name both (4,095 bytes). futimens is emulated with futimes on both:
+# NetBSD 4 has none, and NetBSD 6's ignores the call when atime is UTIME_OMIT
+# and sets the mtime to -1 when mtime is. NetBSD 4 also lacks fdopendir
+# (emulated there by opening "." from inside the directory and reading the
+# whole directory up front, because NetBSD 4's HFS loses a listing's place
+# whenever a descriptor on the directory is closed; rewinddir reads it
+# again). On NetBSD 6, whose HFS keeps a listing's place but repeats its last
+# entries when read again after the end, readdir keeps reporting the end
+# until rewinddir. NetBSD 4 also lacks arc4random_buf and getline (overlay
+# lib/replace/tc_netbsd4_compat.c), and the O_DIRECTORY and AT_* constants. system/filesys.h maps each name onto the emulation, and
+# build/_samba4x.sh refuses a binary that still links libc's *at stubs.
+0002-replace-appliance-at-emulation.patch|*at emulation for the appliance kernels and NetBSD 4 libc gaps
 # Samba's default streaminfo refreshes stat before appending ::$DATA. The
 # pathref fallback can fail that refresh even when the open path already
 # cached valid stat metadata; use the cached stat for macOS delete/share checks.
 0050-vfs-default-streaminfo-cached-stat.patch|keep the default stream when the pathref stat refresh fails
-# NetBSD4 can lose Samba's cached is_directory flag even when stat still says
-# the handle is a directory; recover before rejecting SMB2 QUERY_DIRECTORY.
-0004-smb2-query-directory-stat-fallback.patch|NetBSD4 SMB2 directory stat fallback
 # NetBSD 4 has no posix_spawn (no spawn.h), so its lanes (TC_SAMBA4X_NETBSD4_COMPAT)
 # fork and execve instead. Samba's configure never defines HAVE_POSIX_SPAWN, so
 # gate on the lane, not on that. Apple's NetBSD 6.0 kernel has posix_spawn(2)
@@ -68,8 +120,8 @@
 # would make other code skip its fcntl(FD_CLOEXEC) fallback.
 0007-tdb-wrap-o-cloexec.patch|O_CLOEXEC for tdb_wrap on NetBSD 4
 # NetBSD distinguishes ENOATTR from ENODATA. Missing optional extents must not
-# fail stream cleanup after its primary xattr is gone; retain real unlink errors.
-0035-streams-xattr-enoattr.patch|portable stream extent cleanup and unlink errors
+# fail stream reads, shrinking writes or cleanup after the primary xattr is gone.
+0035-streams-xattr-enoattr.patch|missing stream extents report ENOATTR
 # On every NetBSD lane, read the interfaces from sysctl(NET_RT_IFLIST), decoded
 # by each message's RTM_VERSION, as the native service does (overlay
 # lib/socket/tc_netbsd_iflist.c). libc getifaddrs() misparses Apple's NetBSD 4
@@ -99,15 +151,6 @@
 # (libwbclient's client name) that earlier patches avoided; the NetBSD 4
 # compilers never enabled __thread, only the NetBSD 6 lane did.
 0013-configure-disable-pthread.patch|configure --disable-pthread; __thread defined away
-# Without pthread, talloc_stack frees its frame tracker from an atexit handler
-# that logs every frame still open, so every smbd connection child logged about
-# three "Dangling frame" lines and smbd -V/-b did too. pthread builds never run
-# that report at exit(); free the tracker the same way, quietly, and clear the
-# pointer so a later exit handler starts a new tracker. This also fixes an
-# upstream NULL dereference: talloc_stackframe_exists() (smb2_signing.c)
-# registers the handler before any frame exists, and upstream's handler then
-# reads the NULL tracker at exit.
-0022-talloc-stack-quiet-exit.patch|quiet talloc stack teardown at exit
 
 # Appliance kernel and disk.
 # Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
@@ -128,6 +171,14 @@
 # skips both the owner and the 0700 checks; panics then produce disk-backed
 # cores under logs/cores/smbd.
 0023-stat-hfs-unknown-owner.patch|HFS unknown owner in corepath setup and stat metadata
+# HFS has no sparse files, so growing a file allocates every block up to its
+# new end. smbtorture's smb2.rw.invalid writes one byte just below MAXFILESIZE
+# (16 TiB); on both devices that write never finished, and it hung or rebooted
+# them (2026-09-28). A write, SET_INFO end-of-file or server-side copy that
+# would grow a file on HFS by more than the volume's available space now fails
+# with DISK_FULL, as on Windows, before anything is allocated. Growth of up to
+# 64 MiB past the size smbd last saw needs no extra system call.
+0065-smbd-hfs-growth-disk-full.patch|refuse HFS file growth beyond the available space with DISK_FULL
 # Time Capsule lock databases live on a tiny RAM disk. Add an smb.conf
 # max-dead setting for every local dbwrap TDB (dbwrap_tdb_max_dead:*). Our 0
 # sends volatile lock-database deletes straight to the freelist instead of
@@ -234,8 +285,7 @@
 # it, not EINVAL, to every caller of the library. Stock vfs_xattr_tdb's fgetxattr
 # already maps its errors to ENOATTR; EINVAL escaped through getxattrat (async
 # dosmode) and to the library's other callers, such as the metadata migrator.
-# Since 0038, HFS shares do not use this library. It also frees the stack frame
-# that xattr_tdb_setattr leaked when it could not lock the row.
+# Since 0038, HFS shares do not use this library.
 0018-xattr-tdb-missing-row-empty.patch|xattr_tdb missing rows behave like empty xattrs
 # macOS/iOS Photos writes many assetsd metadata streams. Once xattr_tdb's
 # stream-name list exceeds Samba's initial 1024-byte listxattr buffer, return
@@ -277,9 +327,7 @@
 # b18c5901 until native HFS in 2629eaec, also wrote one), which saves a
 # whole-disk walk on every deploy.
 # Uninstall removes the payload with that database, so ._ files on a disk
-# uninstalled and reinstalled stay unconverted and hidden. The patch also
-# zero-fills fruit_pwrite_meta's AfpInfo buffer, so a 17-59 byte write no
-# longer stores uninitialized stack bytes (an upstream bug).
+# uninstalled and reinstalled stay unconverted and hidden.
 0055-fruit-native-finderinfo.patch|native HFS FinderInfo in fruit
 # Building on 0055's native_hfs switch, fruit serves the AFP_Resource stream
 # from the file's native resource fork, opened as <file>/..namedfork/rsrc like

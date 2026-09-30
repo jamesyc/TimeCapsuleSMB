@@ -14,8 +14,8 @@ diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
 +		 * Returning the positive required length here makes callers
 +		 * treat that value as bytes written into their smaller buffer,
 +		 * which breaks macOS/iOS assetsd metadata once the stream name
-+		 * list exceeds Samba's initial 1024-byte stack buffer. See
-+		 * https://github.com/jamesyc/TimeCapsuleSMB/issues/170.
++		 * list exceeds Samba's initial 1024-byte stack buffer (the
++		 * Photos library writes many assetsd streams on each file).
 +		 */
  		errno = ERANGE;
 -		return len;

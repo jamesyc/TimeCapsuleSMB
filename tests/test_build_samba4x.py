@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from tests.build_wrapper_harness import make_fake_elf_tools
+from tests.samba.run import GROWTH_CALLERS
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -141,6 +142,10 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         }.items():
             self.make_file(src_dir / "source3/smbd" / filename,
                            "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names))
+        # And the growth-check callers tc_file_growth_test compiles.
+        for filename, first, last in GROWTH_CALLERS:
+            head = first + "\n};\n" if first != last else ""
+            self.make_file(src_dir / filename, head + last + "void)\n{\n}\n")
         self.make_executable(
             src_dir / "configure",
             textwrap.dedent(
@@ -209,7 +214,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     for target in ("tc_pthreadpool_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
                                    "tc_streams_xattr_test", "tc_native_metadata_test",
                                    "tc_xattr_migrate_test", "tc_storage_reload_test",
-                                   "tc_native_links_test", "tc_catia_links_test"):
+                                   "tc_native_links_test", "tc_catia_links_test", "tc_at_emulation_test",
+                                   "tc_file_growth_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -873,6 +879,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         self.assertIn("tc_storage_reload_test", built)
                         self.assertIn("tc_native_links_test", built)
                         self.assertIn("tc_catia_links_test", built)
+                        self.assertIn("tc_at_emulation_test", built)
+                        self.assertIn("tc_file_growth_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [
@@ -917,6 +925,44 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 self.assertIn("tc_disable_data_faultahead does not call madvise", log.read_text())
                 self.assertFalse((stage / "sbin/smbd").exists())
                 self.assertFalse((stage / "sbin/smbd.stripped").exists())
+
+    def test_at_emulation_check_gates_staging_of_smbd_and_migrator(self) -> None:
+        # Neither appliance kernel has the *at system calls, so a binary that
+        # links libc's stub for one (a caller that missed system/filesys.h)
+        # would fail only on the device. The default fake nm is a correct link;
+        # a binary without the emulation (the migrator makes no *at calls) passes.
+        for wrapper, lane in (("samba4x.sh", "netbsd7"), ("samba4xoldle.sh", "netbsd4le")):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure.txt")
+                log = Path(env[f"SAMBA4X_{lane.upper()}_LOG"])
+                stage = Path(env[f"SAMBA4X_{lane.upper()}_STAGE"])
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                checked = [line for line in log.read_text().splitlines()
+                           if "no libc *at stubs" in line]
+                self.assertEqual([line.split(":")[0].rsplit("/", 1)[1] for line in checked],
+                                 ["smbd", "tc_xattr_hfs_migrate"])
+
+                for symbols, message in (
+                    # libc's stub, strong or weak, with or without underscores.
+                    ("00013100 T rep_openat\n00015000 T openat\n", "links libc's openat"),
+                    ("00013100 T rep_openat\n00015000 W _utimensat\n", "links libc's utimensat"),
+                    ("00013100 T rep_openat\n00015000 T __renameat\n", "links libc's renameat"),
+                ):
+                    shutil.rmtree(stage, ignore_errors=True)
+                    nm = root / "nm.txt"
+                    nm.write_text(symbols)
+                    env["TEST_NM_SYMBOLS"] = str(nm)
+
+                    result = self.run_wrapper(wrapper, env)
+
+                    self.assertNotEqual(result.returncode, 0, symbols)
+                    self.assertIn(message, log.read_text())
+                    self.assertFalse((stage / "sbin/smbd").exists())
+                    self.assertFalse((stage / "sbin/smbd.stripped").exists())
 
     def test_lane_build_starts_from_an_empty_build_tree(self) -> None:
         # A stale object or waf lock from an earlier (or interrupted) build must

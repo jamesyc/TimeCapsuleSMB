@@ -173,7 +173,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  	if (open_fd) {
  		int ret;
  
-@@ -6404,6 +6418,14 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6425,6 +6439,14 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		case S_IFDIR:
  			break;
  		case S_IFLNK:
@@ -188,7 +188,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  			/*
  			 * We should never get this far with a symlink
  			 * "as such". Report as not existing.
-@@ -6712,6 +6734,19 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6733,6 +6755,19 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		}
  	}
  
@@ -211,7 +211,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 --- a/source3/smbd/proto.h
 +++ b/source3/smbd/proto.h
-@@ -1233,4 +1233,6 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
+@@ -1237,4 +1237,6 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
  					   TALLOC_CTX *mem_ctx,
  					   struct share_mode_lock **lck);
  
@@ -265,7 +265,7 @@ diff --git a/source3/smbd/smb2_trans2.c b/source3/smbd/smb2_trans2.c
 diff --git a/source3/smbd/vfs.c b/source3/smbd/vfs.c
 --- a/source3/smbd/vfs.c
 +++ b/source3/smbd/vfs.c
-@@ -938,6 +938,12 @@ int vfs_stat(struct connection_struct *conn,
+@@ -943,6 +943,12 @@ int vfs_stat(struct connection_struct *conn,
  	if (smb_fname->flags & SMB_FILENAME_POSIX_PATH) {
  		return SMB_VFS_LSTAT(conn, smb_fname);
  	}
@@ -278,7 +278,7 @@ diff --git a/source3/smbd/vfs.c b/source3/smbd/vfs.c
  	return SMB_VFS_STAT(conn, smb_fname);
  }
  
-@@ -979,7 +985,14 @@ NTSTATUS vfs_stat_fsp(files_struct *fsp)
+@@ -984,7 +990,14 @@ NTSTATUS vfs_stat_fsp(files_struct *fsp)
  	}
  
  	if (fsp_get_pathref_fd(fsp) == -1) {
@@ -297,7 +297,7 @@ diff --git a/source3/smbd/vfs.c b/source3/smbd/vfs.c
 diff --git a/source3/wscript_build b/source3/wscript_build
 --- a/source3/wscript_build
 +++ b/source3/wscript_build
-@@ -685,6 +685,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
+@@ -686,6 +686,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                            smbd/filename.c
                            smbd/open.c
                            smbd/close.c

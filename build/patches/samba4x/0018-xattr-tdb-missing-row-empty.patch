@@ -24,11 +24,3 @@ diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
  		}
  		return NT_STATUS_INTERNAL_DB_CORRUPTION;
  	}
-@@ -239,6 +253,7 @@ int xattr_tdb_setattr(struct db_context *db_ctx,
- 
- 	if (rec == NULL) {
- 		DEBUG(0, ("xattr_tdb_lock_attrs failed\n"));
-+		TALLOC_FREE(frame);
- 		errno = EINVAL;
- 		return -1;
- 	}

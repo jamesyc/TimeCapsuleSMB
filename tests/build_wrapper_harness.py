@@ -30,12 +30,22 @@ FAKE_ELF = {
         "  2573: 0007a328     0 NOTYPE  GLOBAL DEFAULT   11 _end\n"
     ),
     "disasm": "   10130:\tebffb52e \tbl\t3d5f0 <madvise>\n",
+    # nm of a Samba link whose *at calls all go through the appliance
+    # emulation (lib/replace/tc_at_emulation.c), as build/_samba4x.sh expects.
+    "nm": (
+        "00012000 T open\n"
+        "00013000 T rep_fstatat\n"
+        "00013100 T rep_openat\n"
+        "00013200 T rep_renameat\n"
+        "00014000 T rename\n"
+    ),
 }
 
 
 def make_fake_elf_tools(tools: Path, triple: str) -> None:
-    """readelf/objdump stubs; TEST_READELF_{LOAD,SECTIONS,SYMBOLS} and
-    TEST_OBJDUMP_DISASM name files that replace the FAKE_ELF defaults."""
+    """readelf/objdump/nm stubs; TEST_READELF_{LOAD,SECTIONS,SYMBOLS},
+    TEST_OBJDUMP_DISASM and TEST_NM_SYMBOLS name files that replace the
+    FAKE_ELF defaults."""
     data = tools / "fake-elf"
     data.mkdir(parents=True, exist_ok=True)
     for name, text in FAKE_ELF.items():
@@ -49,6 +59,11 @@ def make_fake_elf_tools(tools: Path, triple: str) -> None:
                 -S*) cat "${TEST_READELF_SECTIONS:-$d/sections}" ;;
                 -sW) cat "${TEST_READELF_SYMBOLS:-$d/symbols}" ;;
             esac
+            """,
+        "nm": """\
+            #!/bin/sh
+            d="$(dirname "$0")/fake-elf"
+            cat "${TEST_NM_SYMBOLS:-$d/nm}"
             """,
         "objdump": """\
             #!/bin/sh
