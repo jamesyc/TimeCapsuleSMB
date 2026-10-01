@@ -126,6 +126,30 @@ int collect_device_facts(struct device_facts *out) {
 #ifdef TC_NATIVE_TEST
 /* ---- --facts-file: a versioned text form of device_facts (test-only) ---- */
 
+const char *iflist_truncation_name(enum iflist_truncation truncation) {
+    switch (truncation) {
+    case IFLIST_TRUNC_SOCKADDR: return "sockaddr";
+    case IFLIST_TRUNC_LINKS: return "links";
+    case IFLIST_TRUNC_ADDRS: return "addrs";
+    case IFLIST_COMPLETE: break;
+    }
+    return "none";
+}
+
+int iflist_truncation_from_name(const char *name, enum iflist_truncation *out) {
+    static const enum iflist_truncation all[] = {
+        IFLIST_COMPLETE, IFLIST_TRUNC_ADDRS, IFLIST_TRUNC_LINKS, IFLIST_TRUNC_SOCKADDR
+    };
+    size_t i;
+    for (i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+        if (!strcmp(name, iflist_truncation_name(all[i]))) {
+            *out = all[i];
+            return 0;
+        }
+    }
+    return -1;
+}
+
 /* Finds "key=" in a line of space-separated key=value pairs; the value ends
  * at the next space unless it is the last field (then it runs to the end,
  * so values with spaces must be written last). */
@@ -179,7 +203,12 @@ int device_facts_parse_file(struct device_facts *out, FILE *fp) {
             if (field(line + 8, "debug_logging", a, sizeof(a), 0)) out->config.debug_logging = atoi(a);
         } else if (strncmp(line, "iflist: ", 8) == 0) {
             if (field(line + 8, "ok", a, sizeof(a), 0)) out->ifs_ok = atoi(a);
-            if (field(line + 8, "truncated", a, sizeof(a), 0)) out->ifs.truncated = atoi(a);
+            if (field(line + 8, "truncated", a, sizeof(a), 0) &&
+                iflist_truncation_from_name(a, &out->ifs.truncation) != 0) {
+                return -1;
+            }
+            if (field(line + 8, "kernel_links", a, sizeof(a), 0)) out->ifs.kernel_link_count = strtoul(a, NULL, 0);
+            if (field(line + 8, "kernel_addrs", a, sizeof(a), 0)) out->ifs.kernel_addr_count = strtoul(a, NULL, 0);
         } else if (strncmp(line, "link: ", 6) == 0) {
             struct if_link *link;
             if (out->ifs.link_count >= TC_MAX_LINKS) {
@@ -223,6 +252,9 @@ int device_facts_parse_file(struct device_facts *out, FILE *fp) {
     if (!version_seen) {
         return -1;
     }
+    /* Files that list no kernel totals describe a table that held all of it. */
+    if (out->ifs.kernel_link_count < out->ifs.link_count) out->ifs.kernel_link_count = out->ifs.link_count;
+    if (out->ifs.kernel_addr_count < out->ifs.addr_count) out->ifs.kernel_addr_count = out->ifs.addr_count;
     return 0;
 }
 #endif

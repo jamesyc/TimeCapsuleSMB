@@ -10,7 +10,11 @@
 #endif
 #define HEARTBEAT_TOKEN "8a3598c2b142dffda9513a4c41ff4dacb47abce9cd4e85cc0fd3260257c40c5d"
 #define HEARTBEAT_MAX_FIELD 256
-#define HEARTBEAT_MAX_JSON 4096
+/* json_escape refuses a field longer than its buffer in payload.c, so those
+ * buffers bound the payload: about 4 KB of fields at their limits, ~0.4 KB of
+ * v2 fields and TC_MAX_LINKS links of up to ~160 bytes with fully escaped
+ * names, about 9.5 KB in all. An oversized payload sends no heartbeat. */
+#define HEARTBEAT_MAX_JSON 16384
 #ifndef HEARTBEAT_FLASH_CONFIG_PATH
 #define HEARTBEAT_FLASH_CONFIG_PATH "/mnt/Flash/tcapsulesmb.conf"
 #endif

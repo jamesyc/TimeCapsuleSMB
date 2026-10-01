@@ -392,6 +392,25 @@ def test_cold_start_waits_for_critical_facts_then_registers(rig, daemon, missing
         adv.stop()
 
 
+def test_incomplete_interface_table_is_logged_with_its_cause_then_recovers(rig, daemon):
+    """The plan line names an incomplete table's cause and the kernel's
+    totals (doctor shows this line), registers nothing on a cold start, and
+    drops both once a complete snapshot validates."""
+    root, _, binary = rig
+    crowded = NAT_OK.replace("truncated=none", "truncated=links kernel_links=40 kernel_addrs=7")
+    adv = Advertiser(binary, root, crowded, *adisk_args())
+    try:
+        time.sleep(QUIET)
+        assert registered(daemon.transcript) == [] and adv.proc.poll() is None
+        adv.replace_facts(NAT_OK)
+        assert daemon.wait_for(lambda t: len(registered(t)) >= 4) is not None
+    finally:
+        log = adv.stop()
+    assert "registrant: plan incomplete mode=nat reason=iflist-links kernel_links=40 kernel_addrs=7 desired=0" in log
+    validated = [line for line in log.splitlines() if "registrant: plan validated" in line]
+    assert validated and all("reason=" not in line and "kernel_links" not in line for line in validated)
+
+
 @pytest.mark.parametrize("key", ["syNm", "waMA"])
 def test_aborted_identity_read_does_not_rename_or_withdraw(rig, daemon, key):
     root, _, binary = rig

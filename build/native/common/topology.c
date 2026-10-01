@@ -100,9 +100,11 @@ int topology_ownership_coherent(const struct device_facts *facts, const char **r
         *reason = "iflist";
         return 0;
     }
-    if (facts->ifs.truncated) {
-        *reason = "iflist-truncated";
-        return 0;
+    switch (facts->ifs.truncation) {
+    case IFLIST_TRUNC_SOCKADDR: *reason = "iflist-sockaddr"; return 0;
+    case IFLIST_TRUNC_LINKS: *reason = "iflist-links"; return 0;
+    case IFLIST_TRUNC_ADDRS: *reason = "iflist-addrs"; return 0;
+    case IFLIST_COMPLETE: break;
     }
     if (router_mode_from_facts(facts) == ROUTER_MODE_UNKNOWN) {
         *reason = "mode";

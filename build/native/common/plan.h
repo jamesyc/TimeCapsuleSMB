@@ -15,9 +15,13 @@
 enum link_role { LINK_ROLE_LAN, LINK_ROLE_WAN, LINK_ROLE_GUEST, LINK_ROLE_ISOLATED };
 enum router_mode { ROUTER_MODE_UNKNOWN, ROUTER_MODE_BRIDGE, ROUTER_MODE_DHCP, ROUTER_MODE_NAT };
 enum service_bit { SVC_SMB = 1, SVC_AFP = 2, SVC_ADISK = 4 };
-/* One link may own every address the interface table can hold (64). A lower
- * per-link cap would silently drop discovery/telemetry address ownership. */
+/* One link may own every address the interface table can hold (64), so a
+ * link never runs out of slots. A lower per-link cap would turn a link with
+ * many IPv6 addresses (prefix rotation keeps old ones until they expire)
+ * into an incomplete plan; build_links relies on this, and the typedef fails
+ * the build if the two ever diverge. */
 #define TC_MAX_ADDRS_PER_LINK TC_MAX_ADDRS
+typedef char tc_link_holds_the_whole_table[TC_MAX_ADDRS_PER_LINK >= TC_MAX_ADDRS ? 1 : -1];
 
 /* ---- raw facts ---- */
 
@@ -86,7 +90,9 @@ struct device_plan {
     struct acp_ipv4 laIP, waIP, waLL, gnRo;
     int wan_disks_allowed;      /* usbF & 8 as read (0 when unavailable) */
     long long validated_at_ms;  /* monotonic; meaningful when validated */
-    int addrs_truncated;        /* a link could not hold all its addresses */
+    int links_truncated;        /* an address's synthetic link found no free slot */
+    size_t kernel_link_count;   /* the kernel table's size, for incomplete-plan reports */
+    size_t kernel_addr_count;
 };
 
 /* addr.c */

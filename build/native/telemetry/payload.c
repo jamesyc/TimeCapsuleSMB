@@ -175,7 +175,7 @@ static const char *json_bool_or_null(struct acp_bool value, int invert) {
 static int append_v2_fields(char *json, size_t cap, size_t used) {
     struct device_plan plan;
     struct plan_options options;
-    size_t i;
+    size_t i, emitted;
     int n;
     memset(&options, 0, sizeof(options));
     if (device_plan_collect(&plan, NULL, &options) != 0) return -1;
@@ -194,25 +194,37 @@ static int append_v2_fields(char *json, size_t cap, size_t used) {
         n = snprintf(json + used, cap - used, ",\"plan_error\":\"%s\"", plan.status.reason);
         if (n < 0 || (size_t)n >= cap - used) return -1;
         used += (size_t)n;
+        if (!strncmp(plan.status.reason, "iflist-", 7)) {
+            /* The kernel's own totals: how far past the table a device is. */
+            n = snprintf(json + used, cap - used, ",\"iflist_links\":%lu,\"iflist_addrs\":%lu",
+                         (unsigned long)plan.kernel_link_count, (unsigned long)plan.kernel_addr_count);
+            if (n < 0 || (size_t)n >= cap - used) return -1;
+            used += (size_t)n;
+        }
     }
     n = snprintf(json + used, cap - used, ",\"links\":[");
     if (n < 0 || (size_t)n >= cap - used) return -1;
     used += (size_t)n;
-    for (i = 0; i < plan.link_count; i++) {
+    for (i = 0, emitted = 0; i < plan.link_count; i++) {
         const struct link_plan *link = &plan.links[i];
         int v4 = 0, v6 = 0;
         size_t j;
-        char name[IFNAMSIZ * 2];
-        if (json_escape(name, sizeof(name), link->link.name) != 0) return -1;
+        /* Every byte of a name may need a six-byte \u escape. */
+        char name[IFNAMSIZ * 6 + 1];
         for (j = 0; j < link->addr_count; j++) {
             if (!addr_is_service_address(&link->addrs[j])) continue;
             if (link->addrs[j].family == AF_INET) v4 = 1; else v6 = 1;
         }
+        /* The server keeps only links with a role or a service address;
+         * sending the rest (bridge members, extenders) only costs bytes. */
+        if (link->role == LINK_ROLE_ISOLATED && !v4 && !v6) continue;
+        if (json_escape(name, sizeof(name), link->link.name) != 0) return -1;
         n = snprintf(json + used, cap - used, "%s{\"name\":\"%s\",\"role\":\"%s\",\"families\":[%s%s%s]}",
-                     i ? "," : "", name, link_role_name(link->role),
+                     emitted ? "," : "", name, link_role_name(link->role),
                      v4 ? "\"ipv4\"" : "", v4 && v6 ? "," : "", v6 ? "\"ipv6\"" : "");
         if (n < 0 || (size_t)n >= cap - used) return -1;
         used += (size_t)n;
+        emitted++;
     }
     n = snprintf(json + used, cap - used, "]");
     if (n < 0 || (size_t)n >= cap - used) return -1;

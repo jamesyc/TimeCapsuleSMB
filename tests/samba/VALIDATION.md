@@ -1948,3 +1948,91 @@ Validation:
   builds in the entry above, whose change they include.
 - Not run: anything on NetBSD 6 (a Time Machine backup was in progress), a
   deploy, and NetBSD 4 BE.
+
+## Interface table: address-less interfaces never truncate it; split causes (2026-10-01)
+
+Two NetBSD 6 bridges (C86NX2YT on v3.1.1/v3.1.2, C86SN0A5 on v3.1.0) sent
+`plan_error: iflist-truncated` in every heartbeat. Their plans never
+validated, so discovery registered nothing on a cold start, and deploy
+verification failed. Both are on networks with several Apple base stations.
+The firmware's ifconfig knows per-peer WDS interfaces (`wds_remote_mac`,
+`dwds_role`), so extenders likely add interfaces, and our NetBSD 6 device
+already has 10 of the 16 allowed, with addresses on only `lo0` and
+`bridge0`. Which cause hit those devices is not known: one code covered three.
+
+The parser now reads the table twice. The first pass counts the kernel's rows
+and finds every interface that owns one of the stored addresses, including
+owners with no RTM_IFINFO row (the plan gives those a synthetic link). The
+second pass stores every owner and lets interfaces with no address fill only
+the room that is left, in kernel order; dropping one of those is not a
+truncation, because it can never take a role. `TC_MAX_LINKS` is 32. A link
+still holds as many addresses as the table (64): a lower per-link cap would
+fail a link that keeps many IPv6 addresses through prefix rotation. The plan
+roughly doubles in size (below).
+
+Each cause has its own code: `iflist-sockaddr`, then `iflist-links`, then
+`iflist-addrs` (a malformed row makes the other counts unreliable). A sysctl
+or framing failure is still `iflist` and ranks first. A synthetic link that
+finds no plan slot (the parser reserves one for every owner, so this is a bug
+guard) reports `iflist-links`; it used to vanish from a validated plan. The
+old `addrs` reason, for a link holding more addresses than its slots, is gone:
+a link holds the whole table, and a compile-time check keeps it so. The plan
+line carries the kernel's totals for `iflist-*` codes. The heartbeat adds
+`iflist_links` and `iflist_addrs` for those codes, and leaves out isolated
+links with no service address (the server already dropped them).
+
+`HEARTBEAT_MAX_JSON` is 16384. `json_escape` refuses a field longer than its
+buffer in payload.c, so those buffers bound the payload at about 9.5 KB with
+TC_MAX_LINKS escaped link names; a payload that does not fit sends no
+heartbeat. The escaped link name buffer now holds a six-byte escape per byte;
+at 32 bytes a name of control bytes stopped the heartbeat.
+
+Discovery's "plan incomplete" line now names the reason for every incomplete
+plan (`reason=mode`, `reason=laIP`, ...), not only for `iflist-*`, and adds
+the kernel's totals for those. Doctor shows that line. Because the line
+changes with the reason, a plan whose reason alternates (say between `mode`
+and `laIP` while ACPd is slow) logs a line per change where it logged one.
+
+| Deliberately broken behavior | Case that rejects it |
+| --- | --- |
+| Count address-less interfaces toward the limit | `test_iflist_extra_address_less_interfaces_are_dropped_not_truncated` |
+| Reserve no slot for an owner without RTM_IFINFO | `test_iflist_owner_without_ifinfo_reserves_its_plan_slot` |
+| Drop a synthetic link's address silently when no slot is free | `test_topology_synthetic_link_without_a_free_slot_is_incomplete` |
+| Let the last truncation cause win | `test_iflist_malformed_row_outranks_interface_overflow`, `test_iflist_interface_overflow_outranks_address_overflow` |
+| Leave the kernel totals out of the plan | `test_topology_incomplete_table_names_its_cause_and_the_kernel_totals` |
+| Send every link in the heartbeat | `test_heartbeat_reports_only_links_with_a_role_or_service_address` |
+| 4096-byte heartbeat buffer; 32-byte escaped link name | `test_largest_possible_heartbeat_still_fits` |
+| Leave the kernel totals out of the heartbeat | `test_plan_error_is_short_and_omitted_after_recovery` |
+| Leave the cause out of discovery's plan line | `test_incomplete_interface_table_is_logged_with_its_cause_then_recovers` |
+
+These were run against the build with 32 addresses per link; none of them
+depends on the per-link cap. `test_iflist_table_that_fits_is_stored_in_kernel_order_unchanged`
+(added with the revert) checks that a table of up to 32 interfaces is stored
+exactly as the kernel lists it, so devices within the old limit get the
+table, and therefore the plan, they had.
+
+Sizes (macOS arm64 host build): `struct device_plan` 42,120 to 83,992 bytes
+(32 links of 64 address slots), `struct device_facts` 5,840 to 6,240,
+`struct registrant` 8,088 to 10,968 (its entries scale with `TC_MAX_LINKS`;
+the test bound is 16 KiB). Discovery keeps two plans in its loop, on its
+stack; telemetry and `--print-link-plan` one each. Stripped service: NetBSD 6
+368,620 to 370,004 bytes, NetBSD 4 LE 325,180 to 326,708, NetBSD 4 BE 324,588
+to 326,116.
+
+Validation:
+- pytest: 2945 passed. The
+  native suite under ASan/UBSan: 744 passed, with the 32-per-link build.
+- All three service lanes built on the VM without warnings.
+- On devices, with the build that held 32 addresses per link (the committed
+  build differs only in that cap and was not deployed, at the maintainer's
+  request):
+  - NetBSD 6: the plan validated with the 10 interfaces it had before
+    (bridge0 LAN, the rest isolated); discovery registered `_smb` and
+    `_adisk` on bridge0; the heartbeat payload lists `lo0` and `bridge0`.
+  - NetBSD 4 LE: the same with its 10 interfaces (mgi0/mgi1, bridge0 LAN).
+  - Doctor passed on both. Both boot heartbeats reached the server without
+    `plan_error`, and it stored `lo0` and `bridge0` as their links, as before.
+- Not run, at the maintainer's request: the Samba device suites (drivers,
+  dir, growth, durable, links, smbtorture). They exercise smbd, which this
+  change does not touch. NetBSD 4 BE has no LAN device. The truncation paths
+  ran on the host only.

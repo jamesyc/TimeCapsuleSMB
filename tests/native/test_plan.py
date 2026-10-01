@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 from tests.native.build import ROOT, compile_service
-from tests.native.cases import run_case
+from tests.native.cases import compile_case, native_case_source, run_case
 
 FIXTURES = ROOT / "tests/native/fixtures/iflist"
 
@@ -91,7 +91,101 @@ def test_iflist_malformed_inner_sockaddr_marks_the_table_incomplete(flag):
     skipped silently, yielding a 'complete' table missing the LAN address."""
     rows = parse_kv_lines(run_case("iflist_parse", flag))
     assert rows[0] == ("parse=ok", {})
-    assert rows[1][1]["truncated"] == "1"
+    assert rows[1][1]["truncated"] == "sockaddr"
+    # The malformed row is no address; the next, well-formed one still is.
+    assert rows[1][1]["kernel_addrs"] == "1"
+    assert [f["addr"] for kind, f in rows if kind == "addr"] == ["10.9.9.9"]
+
+
+def capacity(mode, n):
+    rows = parse_kv_lines(run_case("iflist_parse", mode, str(n)))
+    assert rows[0] == ("parse=ok", {})
+    summary = rows[1][1]
+    links = [f["name"] for kind, f in rows if kind == "link"]
+    addrs = [f for kind, f in rows if kind == "addr"]
+    return summary, links, addrs
+
+
+@pytest.mark.parametrize("fixture", ["netbsd4le-bridge", "netbsd6-bridge"])
+def test_iflist_device_fixture_is_complete_with_kernel_totals(fixture):
+    manifest = json.loads((FIXTURES / f"{fixture}.json").read_text())
+    rows = parse_kv_lines(run_case("iflist_parse", FIXTURES / f"{fixture}.bin"))
+    # The summary line starts "links=N", which parse_kv_lines reads as its kind.
+    summary = rows[1][1]
+    assert rows[1][0] == f"links={len(manifest['expected']['links'])}"
+    assert summary["truncated"] == "none"
+    assert int(summary["kernel_links"]) == len(manifest["expected"]["links"])
+    assert int(summary["kernel_addrs"]) == int(summary["addrs"]) == len(manifest["expected"]["addrs"])
+
+
+@pytest.mark.parametrize("extra", [0, 30])
+def test_iflist_address_less_interfaces_fill_the_free_slots(extra):
+    """lo0 and bridge0 own addresses; up to 30 more interfaces fit beside them."""
+    summary, links, _ = capacity("--addressless", extra)
+    assert summary["truncated"] == "none"
+    assert summary["kernel_links"] == str(2 + extra) and len(links) == 2 + extra
+    assert "bridge0" in links and "lo0" in links
+
+
+@pytest.mark.parametrize("extra", [14, 30])
+def test_iflist_table_that_fits_is_stored_in_kernel_order_unchanged(extra):
+    """Up to TC_MAX_LINKS interfaces nothing is dropped or reordered, so a
+    device with the old limit's 16 (or the new 32) gets the table it always
+    did: the plan is a pure function of it."""
+    summary, links, addrs = capacity("--addressless", extra)
+    half = extra // 2
+    assert links == ["lo0", *[f"wds{i}" for i in range(half)], "bridge0", *[f"wds{i}" for i in range(half, extra)]]
+    assert summary["truncated"] == "none" and summary["kernel_links"] == str(len(links))
+    assert [(a["owner"], a["addr"]) for a in addrs] == [("3", "10.0.3.1"), ("13", "10.0.13.1")]
+
+
+def test_iflist_extra_address_less_interfaces_are_dropped_not_truncated():
+    """Address-less interfaces (bridge members, and likely one per wireless
+    extender) never take a role: the table keeps every interface that owns an
+    address, fills the rest in kernel order and stays complete. bridge0 comes
+    after 20 of the 40 here."""
+    summary, links, addrs = capacity("--addressless", 40)
+    assert summary["truncated"] == "none"
+    assert summary["kernel_links"] == "42" and len(links) == 32
+    assert links[0] == "lo0" and "bridge0" in links
+    assert [name for name in links if name.startswith("wds")] == [f"wds{i}" for i in range(30)]
+    assert {f["owner"] for f in addrs} == {"3", "13"}
+
+
+@pytest.mark.parametrize("owners,truncated", [(32, "none"), (33, "links")])
+def test_iflist_thirty_two_owning_interfaces_fit_and_the_next_truncates(owners, truncated):
+    summary, links, addrs = capacity("--owners", owners)
+    assert summary["truncated"] == truncated
+    assert summary["kernel_links"] == str(owners) and len(links) == 32
+    assert len(addrs) == owners
+
+
+@pytest.mark.parametrize("orphans,truncated,kept", [(2, "none", 30), (3, "links", 30)])
+def test_iflist_owner_without_ifinfo_reserves_its_plan_slot(orphans, truncated, kept):
+    """An address whose interface has no RTM_IFINFO row becomes a synthetic
+    link in the plan, so it takes a slot ahead of every address-less one."""
+    summary, links, addrs = capacity("--orphans", orphans)
+    assert summary["truncated"] == truncated
+    assert len(links) == kept and not any(name.startswith("wds") for name in links)
+    assert len(addrs) == 30 + orphans
+
+
+@pytest.mark.parametrize("count,truncated", [(64, "none"), (65, "addrs")])
+def test_iflist_sixty_four_addresses_fit_and_the_next_truncates(count, truncated):
+    summary, _, addrs = capacity("--addrs", count)
+    assert summary["truncated"] == truncated
+    assert summary["kernel_addrs"] == str(count) and len(addrs) == 64
+
+
+def test_iflist_malformed_row_outranks_interface_overflow():
+    summary, _, _ = capacity("--owners-bad", 33)
+    assert summary["truncated"] == "sockaddr"
+
+
+def test_iflist_interface_overflow_outranks_address_overflow():
+    summary, _, _ = capacity("--owners-addrs", 33)
+    assert summary["truncated"] == "links"
+    assert summary["kernel_addrs"] == str(33 + 65)
 
 
 def test_iflist_orphan_address_keeps_owner_index():
@@ -102,7 +196,8 @@ def test_iflist_orphan_address_keeps_owner_index():
 
 # ------------------------------------------------------------ facts files ----
 
-def facts_text(*, acp=None, links=(), addrs=(), hostname="airport-time-capsule", config=None, iflist_ok=1):
+def facts_text(*, acp=None, links=(), addrs=(), hostname="airport-time-capsule", config=None, iflist_ok=1,
+               truncated="none", kernel=None):
     """Versioned facts file (native test-input format)."""
     acp = dict(acp or {})
     config = {"advertise_afp": 0, "debug_logging": 0, "netbios": "", "instance": "", **(config or {})}
@@ -117,7 +212,10 @@ def facts_text(*, acp=None, links=(), addrs=(), hostname="airport-time-capsule",
             lines.append(f"acp: key={key} status=ok value={value}")
     lines.append(f"hostname: {hostname}")
     lines.append("config: " + " ".join(f"{k}={v}" for k, v in config.items()))
-    lines.append(f"iflist: ok={iflist_ok} truncated=0")
+    iflist = f"iflist: ok={iflist_ok} truncated={truncated}"
+    if kernel is not None:
+        iflist += f" kernel_links={kernel[0]} kernel_addrs={kernel[1]}"
+    lines.append(iflist)
     for name, index in links:
         lines.append(f"link: name={name} index={index} flags=0xe043")
     for owner, addr, prefix in addrs:
@@ -297,11 +395,30 @@ def test_topology_iflist_failure_is_incoherent(tmp_path):
     assert status(plan)["reason"] == "iflist" and roles(plan) == {}
 
 
-def test_topology_sixteen_links_fit_and_more_truncate(tmp_path):
-    links = [(f"vlan{i}", 20 + i) for i in range(16)]
-    addrs = [(20 + i, f"10.{i}.0.1", 24) for i in range(16)]
+def test_topology_thirty_two_links_fit(tmp_path):
+    links = [(f"vlan{i}", 20 + i) for i in range(32)]
+    addrs = [(20 + i, f"10.{i}.0.1", 24) for i in range(32)]
     plan, = build_plans(tmp_path, facts_text(acp={**MODE["bridge"], "laIP": "10.3.0.1", "usbF": "0x450"}, links=links, addrs=addrs))
-    assert len(roles(plan)) == 16 and roles(plan)["vlan3"] == ("lan", "smb,adisk")
+    assert status(plan)["status"] == "validated"
+    assert len(roles(plan)) == 32 and roles(plan)["vlan3"] == ("lan", "smb,adisk")
+
+
+def test_topology_synthetic_link_without_a_free_slot_is_incomplete(tmp_path):
+    """The parser reserves a slot for every owner. If one is ever missing,
+    the address it would have held must not vanish from a validated plan."""
+    links = [(f"vlan{i}", 20 + i) for i in range(32)]
+    addrs = [(20 + i, f"10.{i}.0.1", 24) for i in range(32)] + [(99, "172.16.0.1", 24)]
+    plan, = build_plans(tmp_path, facts_text(acp={**MODE["bridge"], "laIP": "10.3.0.1", "usbF": "0x450"}, links=links, addrs=addrs))
+    assert status(plan)["status"] == "cold-start" and status(plan)["reason"] == "iflist-links"
+    assert all(role == ("isolated", "none") for role in roles(plan).values())
+
+
+def test_facts_file_rejects_an_unknown_truncation_cause(tmp_path):
+    text = facts_text(acp=MODE["bridge"], links=BRIDGE_LINKS, addrs=BRIDGE_ADDRS).replace("truncated=none", "truncated=1")
+    (tmp_path / "facts0.txt").write_text(text)
+    result = subprocess.run([str(compile_case(native_case_source("plan_build"))), str(tmp_path / "facts0.txt")],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 1 and result.stdout.strip() == "step 0: facts parse error"
 
 
 def test_topology_one_link_may_own_sixty_three_addresses(tmp_path):
@@ -321,6 +438,26 @@ def test_topology_one_link_may_own_sixty_three_addresses(tmp_path):
     assert len([f for kind, f in plan if kind == "addr" and f["link"] == "9"]) == 63
 
 
+def full_with_orphan(acp, truncated="none"):
+    """32 named links plus an address whose index has none: its synthetic
+    link finds no slot in the plan."""
+    links = [(f"vlan{i}", 20 + i) for i in range(32)]
+    addrs = [(20 + i, f"10.{i}.0.1", 24) for i in range(32)] + [(99, "172.16.0.1", 24)]
+    return facts_text(acp=acp, links=links, addrs=addrs, truncated=truncated)
+
+
+def test_full_link_slots_are_retained_like_any_incomplete_table(tmp_path):
+    acp = {**MODE["bridge"], "laIP": "10.3.0.1", "usbF": "0x450"}
+    links = [(f"vlan{i}", 20 + i) for i in range(32)]
+    complete = facts_text(acp=acp, links=links, addrs=[(20 + i, f"10.{i}.0.1", 24) for i in range(32)])
+    first, crowded = build_plans(tmp_path, complete, full_with_orphan(acp))
+    assert status(first)["status"] == "validated"
+    assert status(crowded)["status"] == "incomplete" and status(crowded)["reason"] == "iflist-links"
+    assert roles(crowded)["vlan3"] == ("lan", "smb,adisk")
+    # The retained links keep the last complete observation: no orphan address.
+    assert not any(kind == "addr" and f["addr"] == "172.16.0.1" for kind, f in crowded)
+
+
 def test_identity_quotes_and_backslashes_round_trip_through_the_plan_line(tmp_path):
     """Review 2 R9: an accepted Apple name may contain `"` or `\\`; the plan
     line escapes them so the doctor's shlex-based parser reads them back."""
@@ -338,15 +475,41 @@ def test_identity_quotes_and_backslashes_round_trip_through_the_plan_line(tmp_pa
     assert tokens[0] == f"instance={name}"
 
 
-def test_topology_table_overflow_is_incomplete(tmp_path):
-    """A 65th address exceeds the interface table: the collector keeps 64 and
-    reports the snapshot truncated (a facts file cannot even carry a 65th
-    row), and the plan is incomplete rather than validated with a subset."""
-    addrs = [(9, f"10.{i // 250}.{i % 250}.1", 24) for i in range(64)]
-    text = facts_text(acp={**MODE["bridge"], "laIP": "10.0.0.1", "usbF": "0x450"}, links=[("bridge0", 9)], addrs=addrs)
-    text = text.replace("iflist: ok=1 truncated=0", "iflist: ok=1 truncated=1")
+@pytest.mark.parametrize("cause", ["sockaddr", "links", "addrs"])
+def test_topology_incomplete_table_names_its_cause_and_the_kernel_totals(tmp_path, cause):
+    """Each cause has its own code, and the plan line carries the kernel's
+    totals so a heartbeat or log shows how far past the table a device is."""
+    text = facts_text(acp={**MODE["bridge"], "laIP": "192.168.1.10", "usbF": "0x450"}, links=BRIDGE_LINKS,
+                      addrs=BRIDGE_ADDRS, truncated=cause, kernel=(40, 12))
     plan, = build_plans(tmp_path, text)
-    assert status(plan)["status"] == "cold-start" and status(plan)["reason"] == "iflist-truncated"
+    assert status(plan)["status"] == "cold-start" and status(plan)["reason"] == f"iflist-{cause}"
+    assert status(plan)["kernel_links"] == "40" and status(plan)["kernel_addrs"] == "12"
+    assert all(role == ("isolated", "none") for role in roles(plan).values())
+
+
+@pytest.mark.parametrize("cause", ["sockaddr", "links", "addrs"])
+def test_incomplete_table_keeps_the_validated_plan_and_ages(tmp_path, cause):
+    complete = facts_text(acp={**MODE["bridge"], "laIP": "192.168.1.10", "usbF": "0x450"}, links=BRIDGE_LINKS, addrs=BRIDGE_ADDRS)
+    first, second, third = build_plans(tmp_path, complete, complete.replace("truncated=none", f"truncated={cause}"),
+                                       complete.replace("truncated=none", f"truncated={cause}"))
+    assert status(first)["status"] == "validated" and "kernel_links" not in status(first)
+    for step, age in ((second, "10"), (third, "20")):
+        assert status(step)["status"] == "incomplete" and status(step)["reason"] == f"iflist-{cause}"
+        assert status(step)["stale_seconds"] == age
+        assert roles(step)["bridge0"] == ("lan", "smb,adisk")
+
+
+def test_kernel_read_failure_outranks_the_truncation_cause(tmp_path):
+    plan, = build_plans(tmp_path, facts_text(acp={**MODE["bridge"], "laIP": "192.168.1.10"}, iflist_ok=0, truncated="links"))
+    assert status(plan)["reason"] == "iflist" and "kernel_links" not in status(plan)
+
+
+def test_table_cause_outranks_a_plan_slot_overflow_and_both_outrank_mode(tmp_path):
+    unknown_mode = {"raNA": "ABORT", "raDS": "ABORT", "laIP": "10.3.0.1"}
+    plan, = build_plans(tmp_path, full_with_orphan(unknown_mode))
+    assert status(plan)["reason"] == "iflist-links"
+    plan, = build_plans(tmp_path, full_with_orphan(unknown_mode, truncated="addrs"))
+    assert status(plan)["reason"] == "iflist-addrs"
 
 
 # ------------------------------------------------------------------ policy ----

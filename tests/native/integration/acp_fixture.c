@@ -15,6 +15,18 @@ static void record(const char *key, const char *kind) {
     fclose(file);
 }
 
+/* TC_TEST_ACP_KEY is one key, a comma-separated list, or "*" for all. */
+static int key_selected(const char *keys, const char *key) {
+    size_t len = strlen(key);
+    const char *p = keys;
+    if (!strcmp(keys, "*")) return 1;
+    while ((p = strstr(p, key)) != NULL) {
+        if ((p == keys || p[-1] == ',') && (p[len] == '\0' || p[len] == ',')) return 1;
+        p += len;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *mode = getenv("TC_TEST_ACP_MODE");
     const char *key = getenv("TC_TEST_ACP_KEY");
@@ -22,7 +34,7 @@ int main(int argc, char **argv) {
     int i;
     if (argc != 3 || (strcmp(argv[1], "-q") && strcmp(argv[1], "-A"))) return 91;
     if (!key) key = "syAP";
-    if (!mode || (strcmp(key, "*") && strcmp(key, argv[2]))) mode = "normal";
+    if (!mode || !key_selected(key, argv[2])) mode = "normal";
     if (!strcmp(mode, "ignore_term")) signal(SIGTERM, SIG_IGN);
     record(argv[2], "parent");
     if (!strcmp(mode, "crash")) { kill(getpid(), SIGKILL); return 93; }

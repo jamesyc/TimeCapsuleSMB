@@ -6,7 +6,15 @@
  *   iflist_parse --orphan-addr   NEWADDR whose index has no IFINFO keeps its owner index
  *   iflist_parse --bad-sockaddr  NEWADDR whose inner sockaddr claims more bytes than the message (v3)
  *   iflist_parse --bad-sockaddr6 same, RTM_VERSION 4 layout
- *   iflist_parse --version6      RTM_VERSION 4 (NetBSD 6) synthetic message pair */
+ *   iflist_parse --version6      RTM_VERSION 4 (NetBSD 6) synthetic message pair
+ * Capacity tables (RTM_VERSION 4), N given as the second argument:
+ *   --addressless N   lo0 and bridge0 own addresses; N address-less interfaces,
+ *                     half before bridge0 and half after it
+ *   --owners N        N interfaces that each own one IPv4 address
+ *   --orphans N       30 owning interfaces, N owners without RTM_IFINFO, 5 address-less
+ *   --addrs N         bridge0 owns N addresses
+ *   --owners-bad N    --owners N plus a malformed sockaddr row
+ *   --owners-addrs N  N owning interfaces plus 65 addresses on the first */
 #include "common/plan.h"
 
 static size_t put_u16(unsigned char *p, unsigned v) { uint16_t x = (uint16_t)v; memcpy(p, &x, 2); return 2; }
@@ -15,7 +23,9 @@ static size_t put_u32(unsigned char *p, unsigned v) { uint32_t x = (uint32_t)v; 
 static void dump(const struct if_table *t) {
     size_t i;
     char text[INET6_ADDRSTRLEN];
-    printf("links=%lu addrs=%lu truncated=%d\n", (unsigned long)t->link_count, (unsigned long)t->addr_count, t->truncated);
+    printf("links=%lu addrs=%lu truncated=%s kernel_links=%lu kernel_addrs=%lu\n", (unsigned long)t->link_count,
+           (unsigned long)t->addr_count, iflist_truncation_name(t->truncation), (unsigned long)t->kernel_link_count,
+           (unsigned long)t->kernel_addr_count);
     for (i = 0; i < t->link_count; i++) {
         printf("link name=%s index=%u flags=0x%x\n", t->links[i].name, t->links[i].index, t->links[i].flags);
     }
@@ -82,13 +92,76 @@ static size_t newaddr6(unsigned char *p, unsigned version, size_t header, size_t
     return q;
 }
 
+/* Address text buffers hold any %u, so gcc's -Wformat-truncation (an error on Ubuntu CI) passes. */
+static size_t owner6(unsigned char *p, unsigned index, const char *name, const unsigned char *mac) {
+    char text[32];
+    size_t len = ifinfo(p, 4, 0x14, 160, index, 0xffffe043, name, mac, 1);
+    snprintf(text, sizeof(text), "10.%u.%u.1", index / 250, index % 250);
+    return len + newaddr4(p + len, 4, 24, 8, index, text, 24);
+}
+
+static size_t capacity_table(unsigned char *buf, const char *mode, unsigned n, const unsigned char *mac) {
+    size_t len = 0;
+    unsigned i;
+    char name[IFNAMSIZ], text[32];
+    if (!strcmp(mode, "--addressless")) {
+        len += owner6(buf + len, 3, "lo0", mac);
+        for (i = 0; i < n; i++) {
+            if (i == n / 2) len += owner6(buf + len, 13, "bridge0", mac);
+            snprintf(name, sizeof(name), "wds%u", i);
+            len += ifinfo(buf + len, 4, 0x14, 160, 100 + i, 0xffffe043, name, mac, 1);
+        }
+        if (n == 0) len += owner6(buf + len, 13, "bridge0", mac);
+    } else if (!strcmp(mode, "--owners") || !strcmp(mode, "--owners-bad") || !strcmp(mode, "--owners-addrs")) {
+        for (i = 0; i < n; i++) {
+            snprintf(name, sizeof(name), "vlan%u", i);
+            len += owner6(buf + len, 20 + i, name, mac);
+        }
+        if (!strcmp(mode, "--owners-bad")) {
+            size_t start = len;
+            len += newaddr4(buf + len, 4, 24, 8, 20, "192.0.2.10", 24);
+            buf[start + 24] = 255;
+        }
+        if (!strcmp(mode, "--owners-addrs")) {
+            for (i = 0; i < 65; i++) {
+                snprintf(text, sizeof(text), "172.16.%u.1", i);
+                len += newaddr4(buf + len, 4, 24, 8, 20, text, 24);
+            }
+        }
+    } else if (!strcmp(mode, "--orphans")) {
+        for (i = 0; i < 30; i++) {
+            snprintf(name, sizeof(name), "vlan%u", i);
+            len += owner6(buf + len, 20 + i, name, mac);
+        }
+        for (i = 0; i < n; i++) {
+            snprintf(text, sizeof(text), "172.17.%u.1", i);
+            len += newaddr4(buf + len, 4, 24, 8, 200 + i, text, 24);
+        }
+        for (i = 0; i < 5; i++) {
+            snprintf(name, sizeof(name), "wds%u", i);
+            len += ifinfo(buf + len, 4, 0x14, 160, 100 + i, 0xffffe043, name, mac, 1);
+        }
+    } else if (!strcmp(mode, "--addrs")) {
+        len += ifinfo(buf + len, 4, 0x14, 160, 13, 0xffffe043, "bridge0", mac, 1);
+        for (i = 0; i < n; i++) {
+            snprintf(text, sizeof(text), "10.0.%u.1", i);
+            len += newaddr4(buf + len, 4, 24, 8, 13, text, 24);
+        }
+    }
+    return len;
+}
+
 int main(int argc, char **argv) {
     static unsigned char buf[65536];
     struct if_table table;
     size_t len = 0;
     static const unsigned char mac[6] = {2, 0, 0, 0, 0, 1};
-    if (argc != 2) return 2;
-    if (!strcmp(argv[1], "--sdk-layout")) {
+    if (argc == 3) {
+        len = capacity_table(buf, argv[1], (unsigned)strtoul(argv[2], NULL, 10), mac);
+        if (len == 0) return 2;
+    } else if (argc != 2) {
+        return 2;
+    } else if (!strcmp(argv[1], "--sdk-layout")) {
         /* The SDK's 144-byte if_msghdr followed by the sockaddr_dl, plus the
          * addresses: same parse result as the 152-byte kernel layout. */
         len += ifinfo(buf + len, 3, 0xf, 144, 9, 0xe043, "bridge0", mac, 1);

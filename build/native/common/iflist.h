@@ -15,8 +15,21 @@
  * (the guide assumed one layout; the NetBSD 6 device proved otherwise, see
  * tests/native/fixtures/iflist/netbsd6-bridge.json). */
 
-#define TC_MAX_LINKS 16
+/* An interface that owns no address never takes a role, so only the
+ * interfaces that own one must fit; the rest fill whatever room is left.
+ * Two NetBSD 6 bridges reported iflist-truncated at the old limit of 16
+ * (2026-10-01); which cause hit them is not known. */
+#define TC_MAX_LINKS 32
 #define TC_MAX_ADDRS 64
+
+/* Why a snapshot is incomplete, in rising precedence: a malformed record
+ * makes the counts behind the other two unreliable. */
+enum iflist_truncation {
+    IFLIST_COMPLETE = 0,
+    IFLIST_TRUNC_ADDRS,      /* more addresses than TC_MAX_ADDRS */
+    IFLIST_TRUNC_LINKS,      /* more address-owning interfaces than TC_MAX_LINKS */
+    IFLIST_TRUNC_SOCKADDR    /* an address row's sockaddr runs past its message */
+};
 
 struct if_link {
     char name[IFNAMSIZ];
@@ -39,10 +52,19 @@ struct if_table {
     size_t link_count;
     struct if_addr addrs[TC_MAX_ADDRS];
     size_t addr_count;
-    int truncated;
+    enum iflist_truncation truncation;
+    size_t kernel_link_count;     /* RTM_IFINFO rows in the kernel table */
+    size_t kernel_addr_count;     /* IPv4/IPv6 address rows in the kernel table */
 };
 
 int iflist_parse(const unsigned char *buf, size_t len, struct if_table *out);
+#ifdef TC_NATIVE_TEST
+/* Facts-file spelling (facts.c): "sockaddr", "links", "addrs" or "none";
+ * parsing anything else returns -1. Production code names causes through
+ * the plan's reason codes instead. */
+const char *iflist_truncation_name(enum iflist_truncation truncation);
+int iflist_truncation_from_name(const char *name, enum iflist_truncation *out);
+#endif
 int iflist_collect(struct if_table *out);
 unsigned iflist_prefix_from_mask(const unsigned char *mask, size_t len);
 

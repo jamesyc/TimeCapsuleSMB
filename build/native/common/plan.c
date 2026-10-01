@@ -28,6 +28,9 @@ static void build_links(struct device_plan *plan, const struct device_facts *fac
         struct link_plan *link = (struct link_plan *)device_plan_find_link(plan, addr->owner_index);
         if (link == NULL) {
             if (plan->link_count >= TC_MAX_LINKS) {
+                /* The parser reserves a slot for every owner, so this is a
+                 * bug guard; it must still keep the plan from validating. */
+                plan->links_truncated = 1;
                 continue;
             }
             link = &plan->links[plan->link_count++];
@@ -36,10 +39,9 @@ static void build_links(struct device_plan *plan, const struct device_facts *fac
             link->role = LINK_ROLE_ISOLATED;
             link->synthetic = 1;
         }
+        /* Never false: a link holds as many addresses as the whole table. */
         if (link->addr_count < TC_MAX_ADDRS_PER_LINK) {
             link->addrs[link->addr_count++] = *addr;
-        } else {
-            plan->addrs_truncated = 1;
         }
     }
 }
@@ -90,12 +92,15 @@ int device_plan_build(struct device_plan *out, const struct device_facts *facts,
     }
     build_links(out, facts);
     out->status.cold_start = !have_previous;
+    out->kernel_link_count = facts->ifs.kernel_link_count;
+    out->kernel_addr_count = facts->ifs.kernel_addr_count;
 
     coherent = topology_ownership_coherent(facts, &reason);
-    if (coherent && out->addrs_truncated) {
-        /* B.4: a bind set that cannot be represented is never published. */
+    if (out->links_truncated && (coherent || strncmp(reason, "iflist", 6) != 0)) {
+        /* B.4: a bind set that cannot be represented is never published.
+         * A failure of the kernel table itself, already named, ranks first. */
         coherent = 0;
-        reason = "addrs";
+        reason = "iflist-links";
     }
     out->usbF = acp_u32(&facts->acp[ACP_KEY_usbF]);
     out->wan_disks_allowed = out->usbF.available && (out->usbF.value & 0x8) ? 1 : 0;
@@ -113,7 +118,7 @@ int device_plan_build(struct device_plan *out, const struct device_facts *facts,
         if (have_previous) {
             /* Failed kernel enumeration is not an empty network. Preserve
              * the previous addresses without adding any from partial data. */
-            if (!facts->ifs_ok || facts->ifs.truncated || out->addrs_truncated) {
+            if (!facts->ifs_ok || facts->ifs.truncation != IFLIST_COMPLETE || out->links_truncated) {
                 memcpy(out->links, previous->links, sizeof(out->links));
                 out->link_count = previous->link_count;
             }
@@ -245,6 +250,10 @@ void device_plan_print(FILE *stream, const struct device_plan *plan) {
     fprintf(stream, "plan: status=%s", plan->status.validated ? "validated" : plan->status.cold_start ? "cold-start" : "incomplete");
     if (!plan->status.validated && plan->status.reason[0] != '\0') {
         fprintf(stream, " reason=%s", plan->status.reason);
+    }
+    if (!plan->status.validated && !strncmp(plan->status.reason, "iflist-", 7)) {
+        fprintf(stream, " kernel_links=%lu kernel_addrs=%lu", (unsigned long)plan->kernel_link_count,
+                (unsigned long)plan->kernel_addr_count);
     }
     fprintf(stream, " mode=%s stale_seconds=%lu diskless=%d\n", router_mode_name(plan->mode), plan->status.stale_seconds, plan->options.diskless);
     fprintf(stream, "config: advertise_afp=%d\n", plan->config.advertise_afp);

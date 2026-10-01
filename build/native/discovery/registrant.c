@@ -249,9 +249,18 @@ void registrant_apply_plan(struct registrant *reg, const struct device_plan *pla
      * poll re-derives the same plan most of the time and stays silent. */
     {
         char line[1024];
-        size_t used = (size_t)snprintf(line, sizeof(line), "registrant: plan %s mode=%s desired=%lu",
+        size_t used = (size_t)snprintf(line, sizeof(line), "registrant: plan %s mode=%s",
                                        plan->status.validated ? "validated" : "incomplete",
-                                       router_mode_name(plan->mode), (unsigned long)count);
+                                       router_mode_name(plan->mode));
+        if (!plan->status.validated && plan->status.reason[0] != '\0') {
+            used += (size_t)snprintf(line + used, sizeof(line) - used, " reason=%s", plan->status.reason);
+            if (!strncmp(plan->status.reason, "iflist-", 7)) {
+                used += (size_t)snprintf(line + used, sizeof(line) - used, " kernel_links=%lu kernel_addrs=%lu",
+                                         (unsigned long)plan->kernel_link_count,
+                                         (unsigned long)plan->kernel_addr_count);
+            }
+        }
+        used += (size_t)snprintf(line + used, sizeof(line) - used, " desired=%lu", (unsigned long)count);
         for (i = 0; i < count && used < sizeof(line) - 40; i++) {
             used += (size_t)snprintf(line + used, sizeof(line) - used, " [if=%u %s]", desired[i].ifindex,
                                      reg_service_regtype(desired[i].service));

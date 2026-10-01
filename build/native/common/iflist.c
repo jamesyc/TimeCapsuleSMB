@@ -68,16 +68,10 @@ unsigned iflist_prefix_from_mask(const unsigned char *mask, size_t len) {
     return prefix;
 }
 
-static void parse_ifinfo(const unsigned char *msg, size_t msglen, struct if_table *out) {
-    struct if_link *link;
+static void decode_ifinfo(const unsigned char *msg, size_t msglen, struct if_link *link) {
     unsigned index = read_u16(msg + 12);
     size_t p;
 
-    if (out->link_count >= TC_MAX_LINKS) {
-        out->truncated = 1;
-        return;
-    }
-    link = &out->links[out->link_count];
     memset(link, 0, sizeof(*link));
     link->index = index;
     link->flags = read_u32(msg + 8);
@@ -105,20 +99,20 @@ static void parse_ifinfo(const unsigned char *msg, size_t msglen, struct if_tabl
         link->name[nlen] = '\0';
         break;
     }
-    out->link_count++;
 }
 
-static void parse_newaddr(const unsigned char *msg, size_t msglen, const struct iflist_layout *lay, struct if_table *out) {
+/* Returns 1 with *addr filled for an IPv4/IPv6 address row, 0 for any other
+ * row, and -1 for a malformed one. Reads only; both passes call it. */
+static int decode_newaddr(const unsigned char *msg, size_t msglen, const struct iflist_layout *lay, struct if_addr *addr) {
     unsigned index = read_u16(msg + lay->ifam_index_offset);
     unsigned rta = read_u32(msg + 4);
     size_t p = lay->ifa_header;
-    struct if_addr addr;
     int have_addr = 0;
     int have_mask = 0;
     unsigned prefix = 0;
     int bit;
 
-    memset(&addr, 0, sizeof(addr));
+    memset(addr, 0, sizeof(*addr));
     for (bit = 0; bit < 8 && p + 2 <= msglen; bit++) {
         size_t sa_len, family, consumed;
         if (!(rta & (1u << bit))) {
@@ -134,8 +128,7 @@ static void parse_newaddr(const unsigned char *msg, size_t msglen, const struct 
             /* A sockaddr that runs past its message is a malformed record,
              * not an absent address: the table is incomplete and the plan
              * must not validate on it (review 2, R6). */
-            out->truncated = 1;
-            return;
+            return -1;
         }
         if (bit == TC_RTA_NETMASK_BIT) {
             /* NetBSD writes netmasks with sa_family 0 and a short sa_len
@@ -152,12 +145,12 @@ static void parse_newaddr(const unsigned char *msg, size_t msglen, const struct 
             have_mask = 1;
         } else if (bit == TC_RTA_IFA_BIT) {
             if (family == TC_AF_INET_WIRE && sa_len >= 8) {
-                addr.family = AF_INET;
-                memcpy(&addr.v4, msg + p + 4, 4);
+                addr->family = AF_INET;
+                memcpy(&addr->v4, msg + p + 4, 4);
                 have_addr = 1;
             } else if (family == TC_AF_INET6_WIRE && sa_len >= 24) {
-                addr.family = AF_INET6;
-                memcpy(&addr.v6, msg + p + 8, 16);
+                addr->family = AF_INET6;
+                memcpy(&addr->v6, msg + p + 8, 16);
                 have_addr = 1;
             }
             /* AF_LINK rows (NetBSD 6 emits one per interface) and unknown
@@ -166,61 +159,135 @@ static void parse_newaddr(const unsigned char *msg, size_t msglen, const struct 
         p += consumed;
     }
     if (!have_addr) {
-        return;
+        return 0;
     }
-    if (out->addr_count >= TC_MAX_ADDRS) {
-        out->truncated = 1;
-        return;
-    }
-    addr.owner_index = index;
-    addr.scope = index;
-    addr.prefix = have_mask ? prefix : (addr.family == AF_INET ? 32u : 128u);
-    if (addr.family == AF_INET6 && addr.v6.s6_addr[0] == 0xfe && (addr.v6.s6_addr[1] & 0xc0) == 0x80) {
-        unsigned embedded = ((unsigned)addr.v6.s6_addr[2] << 8) | addr.v6.s6_addr[3];
-        addr.link_local = 1;
+    addr->owner_index = index;
+    addr->scope = index;
+    addr->prefix = have_mask ? prefix : (addr->family == AF_INET ? 32u : 128u);
+    if (addr->family == AF_INET6 && addr->v6.s6_addr[0] == 0xfe && (addr->v6.s6_addr[1] & 0xc0) == 0x80) {
+        unsigned embedded = ((unsigned)addr->v6.s6_addr[2] << 8) | addr->v6.s6_addr[3];
+        addr->link_local = 1;
         if (embedded != 0) {
-            addr.scope = embedded;
+            addr->scope = embedded;
         }
-        addr.v6.s6_addr[2] = 0;
-        addr.v6.s6_addr[3] = 0;
+        addr->v6.s6_addr[2] = 0;
+        addr->v6.s6_addr[3] = 0;
     }
-    out->addrs[out->addr_count++] = addr;
+    return 1;
 }
 
+static void note_truncation(struct if_table *out, enum iflist_truncation cause) {
+    if (cause > out->truncation) {
+        out->truncation = cause;
+    }
+}
+
+/* Steps to the next routing message. Returns 1 with the message and its
+ * layout, 0 at the end, -1 when the framing is broken. Message types the
+ * parser does not use are returned too; callers skip them. */
+static int next_message(const unsigned char *buf, size_t len, size_t *p, const unsigned char **msg,
+                        size_t *msglen, unsigned *type, struct iflist_layout *lay) {
+    if (*p >= len) {
+        return 0;
+    }
+    if (len - *p < 4) {
+        return -1;
+    }
+    *msg = buf + *p;
+    *msglen = read_u16(*msg);
+    *type = (*msg)[3];
+    if (*msglen < 4 || *msglen > len - *p) {
+        return -1;
+    }
+    if (layout_for_version((*msg)[2], lay) != 0) {
+        return -1;
+    }
+    if (*type == lay->ifinfo_type && *msglen < 16) {
+        return -1;
+    }
+    if (*type == TC_RTM_NEWADDR && *msglen < lay->ifa_header) {
+        return -1;
+    }
+    *p += *msglen;
+    return 1;
+}
+
+static int index_listed(const unsigned *indexes, size_t count, unsigned index) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        if (indexes[i] == index) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Two passes. The first checks the framing, counts the kernel's rows and
+ * finds which interfaces own one of the addresses the table will hold (an
+ * owner without an RTM_IFINFO row included: the plan gives it a synthetic
+ * link). The second stores every owner and lets address-less interfaces
+ * fill only the room the owners leave, in kernel order. Dropping one of
+ * those is not a truncation: it can never take a role. */
 int iflist_parse(const unsigned char *buf, size_t len, struct if_table *out) {
-    size_t p = 0;
+    unsigned owners[TC_MAX_ADDRS];
+    size_t owner_count = 0, addressless_room, addressless_kept = 0, stored_addrs = 0;
+    size_t p = 0, msglen;
+    const unsigned char *msg;
+    unsigned type;
+    struct iflist_layout lay;
+    struct if_addr addr;
+    int rc;
 
     memset(out, 0, sizeof(*out));
-    while (p < len) {
-        size_t msglen;
-        unsigned version, type;
-        struct iflist_layout lay;
-
-        if (len - p < 4) {
-            return -1;
-        }
-        msglen = read_u16(buf + p);
-        version = buf[p + 2];
-        type = buf[p + 3];
-        if (msglen < 4 || msglen > len - p) {
-            return -1;
-        }
-        if (layout_for_version(version, &lay) != 0) {
-            return -1;
-        }
+    while ((rc = next_message(buf, len, &p, &msg, &msglen, &type, &lay)) == 1) {
         if (type == lay.ifinfo_type) {
-            if (msglen < 16) {
-                return -1;
-            }
-            parse_ifinfo(buf + p, msglen, out);
+            out->kernel_link_count++;
         } else if (type == TC_RTM_NEWADDR) {
-            if (msglen < lay.ifa_header) {
-                return -1;
+            int decoded = decode_newaddr(msg, msglen, &lay, &addr);
+            if (decoded < 0) {
+                note_truncation(out, IFLIST_TRUNC_SOCKADDR);
+            } else if (decoded > 0) {
+                out->kernel_addr_count++;
+                if (stored_addrs < TC_MAX_ADDRS) {
+                    stored_addrs++;
+                    if (!index_listed(owners, owner_count, addr.owner_index)) {
+                        owners[owner_count++] = addr.owner_index;
+                    }
+                }
             }
-            parse_newaddr(buf + p, msglen, &lay, out);
         }
         /* RTM_OIFINFO, RTM_IFANNOUNCE and anything else: skip by msglen. */
-        p += msglen;
+    }
+    if (rc < 0) {
+        memset(out, 0, sizeof(*out));
+        return -1;
+    }
+    if (out->kernel_addr_count > TC_MAX_ADDRS) {
+        note_truncation(out, IFLIST_TRUNC_ADDRS);
+    }
+    if (owner_count > TC_MAX_LINKS) {
+        note_truncation(out, IFLIST_TRUNC_LINKS);
+    }
+    addressless_room = owner_count < TC_MAX_LINKS ? TC_MAX_LINKS - owner_count : 0;
+
+    p = 0;
+    while (next_message(buf, len, &p, &msg, &msglen, &type, &lay) == 1) {
+        if (type == lay.ifinfo_type) {
+            unsigned index = read_u16(msg + 12);
+            if (index_listed(owners, owner_count, index)) {
+                if (out->link_count < TC_MAX_LINKS) {
+                    decode_ifinfo(msg, msglen, &out->links[out->link_count++]);
+                } else {
+                    note_truncation(out, IFLIST_TRUNC_LINKS);
+                }
+            } else if (addressless_kept < addressless_room && out->link_count < TC_MAX_LINKS) {
+                decode_ifinfo(msg, msglen, &out->links[out->link_count++]);
+                addressless_kept++;
+            }
+        } else if (type == TC_RTM_NEWADDR && out->addr_count < TC_MAX_ADDRS &&
+                   decode_newaddr(msg, msglen, &lay, &addr) > 0) {
+            out->addrs[out->addr_count++] = addr;
+        }
     }
     return 0;
 }

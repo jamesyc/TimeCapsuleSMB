@@ -40,7 +40,7 @@ def rig(tmp_path_factory):
     acp = root / 'acp'
     subprocess.run(['cc', str(Path(__file__).with_name('acp_fixture.c')), '-o', str(acp)], check=True, timeout=30)
     first_exec(acp, '-q', 'syAP')
-    state = {'mode': 'false', 'calls': [], 'payloads': [], 'hold': threading.Event(), 'signature_started': threading.Event()}
+    state = {'mode': 'false', 'calls': [], 'payloads': [], 'raw': [], 'hold': threading.Event(), 'signature_started': threading.Event()}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
         def answer(self, body, status=200):
@@ -54,6 +54,7 @@ def rig(tmp_path_factory):
             raw = self.rfile.read(int(self.headers['Content-Length']))
             payload = json.loads(raw)
             state['payloads'].append(payload)
+            state['raw'].append(raw)
             mode = state['mode']
             if mode == 'http_error': return self.answer(b'{"DEBUG":true}', 500)
             if mode == 'malformed': return self.answer(b'{"DEBUG":true}junk')
@@ -127,7 +128,7 @@ def rig(tmp_path_factory):
 def cycle(rig, tmp_path):
     root, binary, state = rig
     (root / 'config').write_text("TC_DEPLOY_RELEASE_TAG='test-release'\n")
-    state['calls'].clear(); state['payloads'].clear(); state['mode'] = 'false'
+    state['calls'].clear(); state['payloads'].clear(); state['raw'].clear(); state['mode'] = 'false'
     state['hold'].clear(); state['signature_started'].clear()
     env = {**os.environ, 'TC_TEST_MARKER': str(tmp_path / 'marker')}
     # Prevent user curl/proxy configuration from affecting the local test server.
@@ -752,14 +753,57 @@ def test_compact_settings_and_healthy_plan(cycle, rig, nbns, smb_debug, mdns_deb
     ({'TC_TEST_ACP_MODE': 'empty', 'TC_TEST_ACP_KEY': 'usbF'}, 'usbF'),
     ({'TC_TEST_ACP_MODE': 'value', 'TC_TEST_ACP_KEY': 'laIP', 'TC_TEST_ACP_VALUE': 'invalid'}, 'laIP'),
     ({'TC_TEST_IFLIST': 'failed'}, 'iflist'),
-    ({'TC_TEST_IFLIST': 'truncated'}, 'iflist-truncated'),
+    ({'TC_TEST_IFLIST': 'sockaddr'}, 'iflist-sockaddr'),
+    ({'TC_TEST_IFLIST': 'links'}, 'iflist-links'),
+    ({'TC_TEST_IFLIST': 'addrs'}, 'iflist-addrs'),
 ])
 def test_plan_error_is_short_and_omitted_after_recovery(cycle, changes, reason):
     run, state, *_ = cycle
     assert run('false', TC_TEST_PLAN_MODE='nat', **changes).returncode == 0
-    assert state['payloads'][-1]['plan_error'] == reason
+    payload = state['payloads'][-1]
+    assert payload['plan_error'] == reason
+    if reason.startswith('iflist-'):
+        # The kernel's totals say how far past the table this device is.
+        assert (payload['iflist_links'], payload['iflist_addrs']) == (40, 12)
+    else:
+        assert 'iflist_links' not in payload and 'iflist_addrs' not in payload
     assert run('false', TC_TEST_PLAN_MODE='nat').returncode == 0
     assert 'plan_error' not in state['payloads'][-1]
+    assert 'iflist_links' not in state['payloads'][-1]
+
+
+def test_heartbeat_reports_only_links_with_a_role_or_service_address(cycle):
+    """Thirty bridged-extender interfaces own no address: the plan still
+    validates and the heartbeat carries bridge0 alone, not lo0 (loopback is
+    no service address) or the extenders, which the server would discard."""
+    run, state, *_ = cycle
+    assert run('false', TC_TEST_PLAN_MODE='bridge', TC_TEST_IFLIST='extenders').returncode == 0
+    payload = state['payloads'][-1]
+    assert 'plan_error' not in payload
+    assert payload['links'] == [{'name': 'bridge0', 'role': 'isolated', 'families': ['ipv4']}]
+
+
+def test_largest_possible_heartbeat_still_fits(cycle, rig):
+    """Every field the device can make long, at the limit of its escape
+    buffer in payload.c, at once: model and name (255 bytes that escape to
+    510), the release tag likewise, plan_error with ten-digit kernel totals,
+    and TC_MAX_LINKS links whose 15-byte names escape byte for byte. Sizes are
+    the bytes that went over the wire. An oversized payload sends nothing."""
+    run, state, *_ = cycle
+    root, *_ = rig
+    (root / 'config').write_text("TC_DEPLOY_RELEASE_TAG='" + '\\' * 255 + "'\n")
+    result = run('false', TC_TEST_PLAN_MODE='bridge', TC_TEST_IFLIST='worst', TC_TEST_ACP_MODE='value',
+                 TC_TEST_ACP_KEY='syAM,syNm', TC_TEST_ACP_VALUE='"' * 255)
+    assert result.returncode == 0, result.stderr
+    payload, raw = state['payloads'][-1], state['raw'][-1]
+    assert payload['device_model'] == payload['device_name'] == '"' * 255
+    assert payload['deploy_release_tag'] == '\\' * 255
+    assert payload['plan_error'] == 'iflist-links'
+    assert payload['iflist_links'] == payload['iflist_addrs'] == 4294967295
+    assert [link['name'] for link in payload['links']] == ['\x01' * 15] * 32
+    assert all(link['families'] == ['ipv4'] for link in payload['links'])
+    # The old 4096-byte buffer could not have held it; the new one has room.
+    assert 4096 < len(raw) < 16384 // 2
 
 
 def test_unreadable_and_invalid_config_are_not_reported_as_false(cycle, rig):
