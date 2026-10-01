@@ -46,7 +46,6 @@ POWERCYCLE_REQUIRED_MESSAGE = (
 STALE_BACKUP_AFTER_WRITE_MESSAGE = (
     "This flash backup was used for a firmware write. Back up and inspect again before planning another flash action."
 )
-FLASH_RESTORE_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
 FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE = (
     "Firmware restore write validated, but the device did not go down after reboot request."
 )
@@ -774,8 +773,9 @@ def finish_validated_write(
 ) -> None:
     """Record what follows a validated write in the manifest, and reboot if asked.
 
-    A patched bank needs a manual power cycle; a restore reboots over SSH only
-    when requested. Raises RebootFlowError when the reboot request or wait fails.
+    A patched bank needs a manual power cycle; a restore asks ACPd to reboot
+    (over SSH) only when requested. Raises RebootFlowError when the reboot
+    request or wait fails.
     """
     if plan_operation == "patch" or not reboot:
         record_post_write_action(
@@ -797,7 +797,6 @@ def finish_validated_write(
     if not wait:
         request_reboot(
             target.connection,
-            strategy=FLASH_RESTORE_REBOOT_STRATEGY,
             callbacks=callbacks,
             progress_log=progress_log,
             raise_on_request_error=True,
@@ -805,7 +804,6 @@ def finish_validated_write(
         return
     request_reboot_and_wait(
         target.connection,
-        strategy=FLASH_RESTORE_REBOOT_STRATEGY,
         callbacks=callbacks,
         progress_log=progress_log,
         down_timeout_seconds=60,

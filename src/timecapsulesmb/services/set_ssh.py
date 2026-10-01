@@ -8,7 +8,7 @@ import time
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.executor import remote_request_reboot
-from timecapsulesmb.integrations.acp import ACP_PORT
+from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
 from timecapsulesmb.services import runtime as runtime_service
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -298,29 +298,18 @@ def disable_ssh_over_ssh(
     reboot_device: bool = True,
     log: Callable[[str], None] | None = None,
 ) -> None:
-    cmds = [
-        "acp remove dbug",
-        "/usr/sbin/acp remove dbug",
-        "/usr/bin/acp remove dbug",
-    ]
-    last_err: tuple[int, str] | None = None
-    for command in cmds:
-        try:
-            proc = run_ssh(connection, command, check=False, timeout=30)
-        except SshAuthenticationError as exc:
-            raise RuntimeError("SSH authentication failed while trying to disable SSH over SSH.") from exc
-        rc = proc.returncode
-        out = proc.stdout or ""
-        if rc == 0:
-            _emit(log, f"Removed 'dbug' via: {command}")
-            break
-        if _dbug_property_already_absent(out):
-            _emit(log, f"SSH debug flag 'dbug' already absent via: {command}")
-            break
-        last_err = (rc, out)
+    command = f"{DEVICE_ACP_PATH} remove dbug"
+    try:
+        proc = run_ssh(connection, command, check=False, timeout=30)
+    except SshAuthenticationError as exc:
+        raise RuntimeError("SSH authentication failed while trying to disable SSH over SSH.") from exc
+    out = proc.stdout or ""
+    if proc.returncode == 0:
+        _emit(log, f"Removed 'dbug' via: {command}")
+    elif _dbug_property_already_absent(out):
+        _emit(log, f"SSH debug flag 'dbug' already absent via: {command}")
     else:
-        code, out = last_err or (1, "unknown error")
-        raise RuntimeError(f"Failed to remove 'dbug' via on-device acp (rc={code}). Output: {out}")
+        raise RuntimeError(f"Failed to remove 'dbug' via on-device acp (rc={proc.returncode}). Output: {out}")
 
     if reboot_device:
         try:

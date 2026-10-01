@@ -23,7 +23,6 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.services.version_check import VersionCheckResult
-from timecapsulesmb.integrations.acp import ACPConnectionError
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -286,11 +285,10 @@ class CliTestCase(unittest.TestCase):
                 side_effect=fake_configure_acp_probe,
             )
         )
-        self._exit_stack.enter_context(
-            mock.patch(
-                "timecapsulesmb.services.reboot.acp_reboot",
-                side_effect=ACPConnectionError("ACP unavailable in tests"),
-            )
+        # No test may send a real reboot request; tests that check the request
+        # patch it again themselves.
+        self.remote_request_reboot = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.reboot.remote_request_reboot")
         )
         self._version_check = self._exit_stack.enter_context(
             mock.patch(

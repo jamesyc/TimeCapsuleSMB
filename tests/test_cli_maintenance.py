@@ -286,7 +286,8 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn("volume roots:\n    resolved from MaSt at uninstall time", text)
         self.assertIn(f"payload dirs:\n    resolved from MaSt at uninstall time/{MANAGED_PAYLOAD_DIR_NAME}", text)
-        self.assertIn("request: attempt device reboot", text)
+        self.assertIn("request: ACP reboot over SSH (/usr/bin/acp acRB=00000000)", text)
+        self.assertIn("strategy: native_acp", text)
         self.assertIn("follow-up: wait for SSH down, then SSH up", text)
         started = self.telemetry_payload("uninstall_started")
         finished = self.telemetry_payload("uninstall_finished")
@@ -390,7 +391,7 @@ class CliMaintenanceTests(CliTestCase):
             payload["reboot_request"],
             {
                 "mode": "device_reboot",
-                "strategy": "acp_then_ssh",
+                "strategy": "native_acp",
                 "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
             },
         )
@@ -521,7 +522,7 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         verify_mock.assert_called_once()
         text = output.getvalue()
-        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", text)
+        self.assertIn("ACP reboot request timed out; checking whether the device is rebooting...", text)
         self.assertIn("Device is back online.", text)
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(finished["result"], "success")
@@ -667,7 +668,7 @@ class CliMaintenanceTests(CliTestCase):
     def test_fsck_yes_reboots_and_waits_by_default(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n--- reboot ---\n", returncode=255)
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n", returncode=0)
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
@@ -688,11 +689,8 @@ class CliMaintenanceTests(CliTestCase):
         self.assertTrue(shlex.split(remote_cmd)[-1].startswith("\n".join(stop_lines) + "\n"))
         self.assertIn("umount -f /Volumes/dk2", remote_cmd)
         self.assertIn("fsck_hfs -fy /dev/dk2", remote_cmd)
-        self.assertIn("exec </dev/null >/dev/null 2>&1", remote_cmd)
-        self.assertIn("/bin/sync; /bin/sleep 1;", remote_cmd)
-        self.assertIn("/sbin/shutdown -r now", remote_cmd)
-        self.assertIn("/sbin/reboot", remote_cmd)
-        self.assertIn(") & exit 0", remote_cmd)
+        # The host sends the one ACP reboot request after fsck has reported.
+        self.remote_request_reboot.assert_called_once_with(run_ssh_mock.call_args.args[0])
         self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 90})
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 420})
         text = output.getvalue()
@@ -732,16 +730,17 @@ class CliMaintenanceTests(CliTestCase):
             "TC_PASSWORD": "pw",
             "TC_SSH_OPTS": "-o foo",
         }
-        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n--- reboot ---\n", returncode=255)
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n", returncode=0)
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            observe_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.observe_reboot_cycle"))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes", "--no-wait"])
         self.assertEqual(rc, 0)
-        observe_mock.assert_not_called()
+        self.remote_request_reboot.assert_called_once()
+        wait_mock.assert_not_called()
 
     def test_fsck_no_reboot_omits_reboot_and_waits(self) -> None:
         output = io.StringIO()
@@ -755,13 +754,13 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            observe_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.observe_reboot_cycle"))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
-        observe_mock.assert_not_called()
+        self.remote_request_reboot.assert_not_called()
+        wait_mock.assert_not_called()
         self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], maintenance_service.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
-        self.assertNotIn("/sbin/reboot", run_ssh_mock.call_args.args[1])
 
     def test_fsck_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
@@ -897,7 +896,7 @@ class CliMaintenanceTests(CliTestCase):
     def test_fsck_reboot_no_down_emits_failure_stage(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n--- reboot ---\n", returncode=255)
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n", returncode=0)
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
@@ -907,7 +906,8 @@ class CliMaintenanceTests(CliTestCase):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)
         wait_mock.assert_called_once()
-        self.assertIn("fsck requested reboot from the device, but SSH did not go down.", output.getvalue())
+        self.assertIn("Reboot was requested after fsck, but the device did not go down.", output.getvalue())
+        self.remote_request_reboot.assert_called_once()
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["reboot_was_attempted"], True)
@@ -917,7 +917,7 @@ class CliMaintenanceTests(CliTestCase):
     def test_fsck_reboot_timeout_emits_failure_stage(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n--- reboot ---\n", returncode=255)
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n", returncode=0)
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
@@ -949,8 +949,8 @@ class CliMaintenanceTests(CliTestCase):
     def test_fsck_failed_status_still_reboots_and_waits_then_fails(self) -> None:
         rc, text, wait_mock = self._run_fsck_with_remote_output(
             "--- fsck_hfs /dev/dk2 ---\n** The volume could not be repaired.\n"
-            "tcapsule-fsck: fsck_hfs exit status 8\n--- reboot ---\n",
-            255,
+            "tcapsule-fsck: fsck_hfs exit status 8\n",
+            8,
             ["--yes"],
         )
 
@@ -965,25 +965,44 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("fsck_hfs exited with status 8", finished["error"])
 
     def test_fsck_failed_status_fails_without_reboot_or_wait(self) -> None:
-        for argv in (["--yes", "--no-reboot"], ["--yes", "--no-wait"]):
+        for argv, requested in ((["--yes", "--no-reboot"], False), (["--yes", "--no-wait"], True)):
             with self.subTest(argv=argv):
+                self.remote_request_reboot.reset_mock()
                 rc, text, wait_mock = self._run_fsck_with_remote_output(
                     "tcapsule-fsck: fsck_hfs exit status 8\n", 8, argv,
                 )
 
                 self.assertEqual(rc, 1)
                 wait_mock.assert_not_called()
+                self.assertEqual(self.remote_request_reboot.called, requested)
                 self.assertIn("fsck_hfs exited with status 8", text)
                 self.assertEqual(self.telemetry_payload("fsck_finished")["result"], "failure")
 
-    def test_fsck_without_status_line_fails_and_skips_reboot_wait(self) -> None:
-        # A process that would not stop aborts the script before fsck and
-        # before the reboot command, so waiting for SSH to drop would only
-        # time out.
+    def test_fsck_failed_status_survives_a_rejected_no_wait_reboot(self) -> None:
+        self.remote_request_reboot.side_effect = SshError("ssh command failed with rc=1")
+        rc, text, wait_mock = self._run_fsck_with_remote_output(
+            "tcapsule-fsck: fsck_hfs exit status 8\n", 8, ["--yes", "--no-wait"],
+        )
+
+        self.assertEqual(rc, 1)
+        wait_mock.assert_not_called()
+        self.remote_request_reboot.assert_called_once()
+        # Both the reboot failure and the repair failure reach the user.
+        self.assertIn("SSH reboot request failed: ssh command failed with rc=1", text)
+        self.assertIn("fsck_hfs exited with status 8; the disk may still need repair.", text)
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("SSH reboot request failed", finished["error"])
+        self.assertIn("fsck_hfs exited with status 8", finished["error"])
+
+    def test_fsck_without_status_line_fails_and_skips_reboot(self) -> None:
+        # A process that would not stop aborts the script before fsck, so no
+        # status line arrives and the host requests no reboot.
         rc, text, wait_mock = self._run_fsck_with_remote_output("process smbd did not stop\n", 1, ["--yes"])
 
         self.assertEqual(rc, 1)
         wait_mock.assert_not_called()
+        self.remote_request_reboot.assert_not_called()
         self.assertIn("fsck did not run", text)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")
@@ -991,12 +1010,13 @@ class CliMaintenanceTests(CliTestCase):
 
     def test_fsck_on_a_volume_that_stayed_mounted_names_the_unmount(self) -> None:
         # The volume was still mounted after umount, so the script stopped
-        # before fsck_hfs and before its reboot.
+        # before fsck_hfs and the host requests no reboot.
         rc, text, wait_mock = self._run_fsck_with_remote_output(
             "umount: /Volumes/Data: Device busy\ntcapsule-fsck: volume not unmounted\n", 1, ["--yes"])
 
         self.assertEqual(rc, 1)
         wait_mock.assert_not_called()
+        self.remote_request_reboot.assert_not_called()
         self.assertIn("could not be confirmed unmounted", text)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")

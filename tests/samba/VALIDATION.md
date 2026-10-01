@@ -2036,3 +2036,43 @@ Validation:
   dir, growth, durable, links, smbtorture). They exercise smbd, which this
   change does not touch. NetBSD 4 BE has no LAN device. The truncation paths
   ran on the host only.
+
+## Reboots through ACPd, issue #177 (2026-10-01)
+
+Every TimeCapsuleSMB reboot (deploy, uninstall, fsck, flash restore, disable
+SSH) now runs `/usr/bin/acp acRB=00000000` over SSH instead of
+`sync; shutdown -r now || reboot`. Apple's ACPd saves `ACPData.bin` and then
+runs shutdown itself. A direct shutdown made ACPd rewrite that file after
+SIGTERM, inside shutdown's few seconds before SIGKILL, and an interrupted
+write makes ACPd erase Flash on the next boot. The request runs in the
+foreground (ACPd answers before it shuts down); a failed or lost request is
+observed with the existing SSH down/up wait, never retried and never followed
+by an OS reboot. fsck no longer reboots from its remote script: the host sends
+the same request once the script reports a status line. Uninstall no longer
+needs the network ACP password.
+
+Firmware facts (Apple images decrypted with the flash command's own code,
+root filesystems read from the kernel's md image): `/usr/bin/acp` is a hard
+link to `/sbin/ACPd` in NetBSD 4 BE (syAP 106) and LE (syAP 116) firmware
+7.5.2 to 7.8.1 and on the NetBSD 6 device; `/usr/sbin/acp` exists in none, so
+every on-device call now uses `DEVICE_ACP_PATH`. `acRB` exists in all of them.
+
+Validation:
+- pytest: 2940 passed.
+- NetBSD 4 LE (192.168.1.10), with ACPData's header and payload Adler-32
+  checksums and kernel boot time read before and after each step: deploy,
+  fsck (exit 0), uninstall and a second deploy each printed "ACP reboot
+  requested.", went down, came back on a new boot, and left ACPData valid
+  (84 properties, 10,852 bytes). Doctor passed after the first and the last
+  deploy. The deploy reboot ran from deploy's stopped-services state
+  (manager, its diskd, smbd, wcifsfs, wcifsnd stopped).
+- NetBSD 6 (192.168.1.218), the same checks: deploy and fsck (exit 0) each
+  requested the ACP reboot and came back on a new boot with ACPData valid
+  (83 properties before; 85 after, from properties ACPd refreshed itself).
+  Doctor passed on both devices afterwards.
+- Not run: flash restore (it rewrites a firmware bank; the request path is
+  the same `remote_request_reboot` and is covered by the CLI tests) and
+  disable SSH (its `acp remove dbug` step stays out of bounds for agents).
+  NetBSD 4 BE has no LAN device: its firmware ships `/usr/bin/acp` and
+  `acRB`, but no reboot ran on it. The Samba device suites were skipped:
+  this change does not touch smbd.

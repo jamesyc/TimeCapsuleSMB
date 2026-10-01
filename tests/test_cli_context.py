@@ -94,12 +94,12 @@ class CommandContextHelperTests(unittest.TestCase):
             callbacks = context.to_operation_callbacks()
             callbacks.set_stage("reboot")
             callbacks.update_fields(reboot_was_attempted=True)
-            callbacks.add_debug_fields(reboot_request_strategy="ssh")
+            callbacks.add_debug_fields(reboot_request_strategy="native_acp")
             callbacks.log("reboot requested")
 
         self.assertEqual(context.debug_stage, "reboot")
         self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
-        self.assertEqual(context.debug_fields["reboot_request_strategy"], "ssh")
+        self.assertEqual(context.debug_fields["reboot_request_strategy"], "native_acp")
         print_mock.assert_called_once_with("reboot requested")
 
     def test_to_operation_callbacks_updates_context(self) -> None:

@@ -5,14 +5,13 @@ import shlex
 
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
-from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
 from timecapsulesmb.deploy.planner import UninstallPlan, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import observe_reboot_cycle, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
@@ -23,7 +22,7 @@ UNINSTALL_REBOOT_NO_DOWN_MESSAGE = (
 )
 UNINSTALL_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 UNINSTALL_FILES_REMAIN_MESSAGE = "Managed TimeCapsuleSMB files are still present after reboot."
-FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
+FSCK_REBOOT_NO_DOWN_MESSAGE = "Reboot was requested after fsck, but the device did not go down."
 FSCK_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 FSCK_STATUS_PREFIX = "tcapsule-fsck: fsck_hfs exit status "
 FSCK_DID_NOT_RUN_MESSAGE = (
@@ -131,7 +130,7 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
     return "\n".join(lines)
 
 
-def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
+def build_remote_fsck_script(device: str, mountpoint: str) -> str:
     # Never repair a volume the manager could remount or smbd could write:
     # abort unless every managed process has stopped. AFP could write it too,
     # so afpserver stops even without a reboot; file sharing then stays off
@@ -144,8 +143,7 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
     # power, so its status is not the test: the mount table is. A volume still
     # mounted (anywhere) must never be repaired. Stopping here skips the reboot
     # too, like the stop failure above; file sharing stays off until then.
-    # The reboot drops SSH, so the session's exit status is unreliable on that
-    # path; the status line in the output is what reports fsck's result.
+    # The status line in the output is what reports fsck's result.
     lines += [
         f"/sbin/umount -f {shlex.quote(mountpoint)} 2>&1",
         f"mounts=$(/sbin/mount) || {{ echo '{FSCK_NOT_UNMOUNTED_LINE}'; exit 1; }}",
@@ -157,12 +155,8 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
         "fsck_status=$?",
         f'echo "{FSCK_STATUS_PREFIX}$fsck_status"',
     ]
-    # A failed repair still reboots: that is what restarts file sharing.
-    if reboot:
-        lines.extend([
-            "echo '--- reboot ---'",
-            DETACHED_SHUTDOWN_REBOOT_COMMAND,
-        ])
+    # The reboot that restarts file sharing is requested from the host once
+    # this script has reported, through the same ACP request as every flow.
     lines.append('exit "$fsck_status"')
     return "\n".join(lines)
 
@@ -208,25 +202,29 @@ def run_fsck(
     wait: bool,
     callbacks: OperationCallbacks,
 ) -> FsckOutcome:
-    """Run the remote fsck script, log its output, and follow its reboot.
+    """Run the remote fsck script, log its output, then reboot if asked.
 
-    Raises RebootFlowError when the device does not go down or come back.
+    Raises RebootFlowError when the reboot request fails or the device does
+    not go down or come back.
     """
     callbacks.stage("run_fsck")
-    script = build_remote_fsck_script(target.device, target.mountpoint, reboot=reboot)
+    script = build_remote_fsck_script(target.device, target.mountpoint)
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
     output = proc.stdout or ""
     for line in output.splitlines():
         callbacks.message(line)
     status = fsck_exit_status(output)
     callbacks.update(returncode=status if status is not None else proc.returncode)
-    # Without a status line the script stopped before fsck, and therefore
-    # before any reboot: there is nothing to wait for.
+    # Without a status line fsck never ran (or its result was lost), so the
+    # volume may still be mounted: do not reboot. A failed repair still
+    # reboots: that is what restarts file sharing. If the session dropped
+    # after fsck finished, sharing stays off until the user restarts, as with
+    # --no-reboot.
     rebooting = reboot and status is not None
-    if rebooting:
-        callbacks.update(reboot_was_attempted=True)
-        if wait:
-            observe_reboot_cycle(
+    failure = fsck_failure_message(status, output)
+    try:
+        if rebooting and wait:
+            request_reboot_and_wait(
                 connection,
                 callbacks=callbacks,
                 reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
@@ -234,9 +232,17 @@ def run_fsck(
                 down_timeout_seconds=90,
                 up_timeout_seconds=420,
             )
+        elif rebooting:
+            request_reboot(connection, callbacks=callbacks, raise_on_request_error=True)
+    except RebootFlowError as exc:
+        if failure is None:
+            raise
+        # A failed reboot must not hide a failed repair. The reboot error
+        # stays first so its known message prefixes still match.
+        raise RebootFlowError(f"{exc}\n{failure}", exc.reason) from exc
     return FsckOutcome(
         status=status,
-        failure=fsck_failure_message(status, output),
+        failure=failure,
         reboot_requested=rebooting,
         waited=rebooting and wait,
     )
@@ -284,14 +290,12 @@ def reboot_after_uninstall(connection: SshConnection, plan: UninstallPlan, *, ca
     if not plan.wait_after_reboot:
         request_reboot(
             connection,
-            strategy="acp_then_ssh",
             callbacks=callbacks,
             raise_on_request_error=True,
         )
         return False
     request_reboot_and_wait(
         connection,
-        strategy="acp_then_ssh",
         callbacks=callbacks,
         down_timeout_seconds=60,
         up_timeout_seconds=240,

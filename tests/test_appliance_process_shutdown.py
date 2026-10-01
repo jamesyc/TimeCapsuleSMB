@@ -332,7 +332,7 @@ FSCK_OTHER_MOUNTS = [
 ]
 
 
-def _run_fsck_script(tmp_path, *, reboot, stubborn=None, fsck_rc=0,
+def _run_fsck_script(tmp_path, *, stubborn=None, fsck_rc=0,
                      mounts=None, umount_unmounts=True, mount_fails=False):
     """Run the real fsck script against fake ps/kill/umount/mount/fsck tools.
 
@@ -340,7 +340,6 @@ def _run_fsck_script(tmp_path, *, reboot, stubborn=None, fsck_rc=0,
     """
     import shlex
     import sys
-    from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
     from timecapsulesmb.services.maintenance import build_remote_fsck_script
 
     if mounts is None:
@@ -401,10 +400,13 @@ if cmd == 'fsck_hfs':
     sys.exit({fsck_rc})
 """)
     fake = lambda name: shlex.join([sys.executable, str(tool), name])
-    script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2', reboot=reboot)
-    assert (DETACHED_SHUTDOWN_REBOOT_COMMAND in script) is reboot
-    script = script.replace(DETACHED_SHUTDOWN_REBOOT_COMMAND, fake('reboot'))
+    script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2')
+    # The host requests the reboot after the script reports; any reboot tool
+    # the script ran itself would show up in the logged calls.
     for real, name in (
+        ('/usr/bin/acp', 'acp'),
+        ('/sbin/shutdown', 'shutdown'),
+        ('/sbin/reboot', 'reboot'),
         ('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', 'ps-full'),
         ('ps axww -o stat= -o ucomm= -o command=', 'ps-short'),
         ('/usr/bin/pkill', 'pkill'),
@@ -421,41 +423,37 @@ if cmd == 'fsck_hfs':
     return result, calls, set(data['rows']), data['mounts']
 
 
-@pytest.mark.parametrize(('stubborn', 'fsck_rc', 'reboot'), [
-    (None, 0, False),
-    (None, 8, False),
-    (None, 0, True),
-    (None, 8, True),
-    ('30', 0, True),
-    ('41', 0, False),
+@pytest.mark.parametrize(('stubborn', 'fsck_rc'), [
+    (None, 0),
+    (None, 8),
+    ('30', 0),
+    ('41', 0),
 ])
-def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubborn, fsck_rc, reboot):
+def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubborn, fsck_rc):
     # The native manager restarts smbd and can remount the volume, so fsck
     # must stop it (and everything else deploy stops) before unmounting, and
     # must not touch the disk at all if anything is still running. fsck's own
-    # status must survive to the caller, and a failed repair still reboots.
+    # status must survive to the caller, which then requests the reboot.
     from timecapsulesmb.services.maintenance import fsck_exit_status
 
     result, calls, remaining, mounts = _run_fsck_script(
-        tmp_path, reboot=reboot, stubborn=stubborn, fsck_rc=fsck_rc)
+        tmp_path, stubborn=stubborn, fsck_rc=fsck_rc)
 
     if stubborn is None:
         assert result.returncode == fsck_rc, result.stderr
         assert fsck_exit_status(result.stdout) == fsck_rc
         assert remaining == {'90'}  # Apple's mDNSResponder is never ours to stop.
-        expected = ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2'] + (['reboot'] if reboot else [])
-        assert calls == expected
+        assert calls == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2']
         assert mounts == FSCK_OTHER_MOUNTS
     else:
         assert result.returncode == 1
         assert 'did not stop' in result.stderr
         assert stubborn in remaining
-        # No status line, and nothing touched the disk or rebooted.
+        # No status line (so the host will not reboot), and nothing touched the disk.
         assert fsck_exit_status(result.stdout) is None
         assert calls == []
 
 
-@pytest.mark.parametrize('reboot', [False, True])
 @pytest.mark.parametrize(('case', 'mounts', 'umount_unmounts', 'mount_fails'), [
     # umount failed and the volume is still mounted where it was.
     ('busy', None, False, False),
@@ -464,7 +462,7 @@ def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubbor
     # The mount table cannot be read, so unmounting cannot be confirmed.
     ('no-table', None, True, True),
 ])
-def test_fsck_never_repairs_a_volume_that_is_still_mounted(tmp_path, reboot, case, mounts, umount_unmounts, mount_fails):
+def test_fsck_never_repairs_a_volume_that_is_still_mounted(tmp_path, case, mounts, umount_unmounts, mount_fails):
     from timecapsulesmb.services.maintenance import (
         FSCK_NOT_UNMOUNTED_MESSAGE,
         fsck_exit_status,
@@ -472,12 +470,12 @@ def test_fsck_never_repairs_a_volume_that_is_still_mounted(tmp_path, reboot, cas
     )
 
     result, calls, remaining, _ = _run_fsck_script(
-        tmp_path, reboot=reboot, mounts=mounts,
+        tmp_path, mounts=mounts,
         umount_unmounts=umount_unmounts, mount_fails=mount_fails)
 
     assert result.returncode == 1
     assert remaining == {'90'}
-    # fsck never ran, and the script stopped before its reboot as well.
+    # fsck never ran, and without a status line the host does not reboot.
     assert calls == ['umount -f /Volumes/dk2']
     status = fsck_exit_status(result.stdout)
     assert status is None
@@ -487,15 +485,14 @@ def test_fsck_never_repairs_a_volume_that_is_still_mounted(tmp_path, reboot, cas
         assert 'Device busy' in result.stdout
 
 
-@pytest.mark.parametrize('reboot', [False, True])
-def test_fsck_repairs_a_volume_apple_already_unmounted(tmp_path, reboot):
+def test_fsck_repairs_a_volume_apple_already_unmounted(tmp_path):
     # Apple unmounts idle disks to save power: umount then fails with "not
     # currently mounted", which is exactly the state fsck needs.
     from timecapsulesmb.services.maintenance import fsck_exit_status
 
-    result, calls, _, _ = _run_fsck_script(tmp_path, reboot=reboot, mounts=FSCK_OTHER_MOUNTS)
+    result, calls, _, _ = _run_fsck_script(tmp_path, mounts=FSCK_OTHER_MOUNTS)
 
     assert result.returncode == 0, result.stderr
     assert fsck_exit_status(result.stdout) == 0
     assert 'not currently mounted' in result.stdout
-    assert calls == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2'] + (['reboot'] if reboot else [])
+    assert calls == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2']

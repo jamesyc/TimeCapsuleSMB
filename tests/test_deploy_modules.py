@@ -32,7 +32,7 @@ from timecapsulesmb.deploy.commands import (
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
-    DETACHED_SHUTDOWN_REBOOT_COMMAND,
+    ACP_REBOOT_COMMAND,
     FLUSH_REMOTE_FILESYSTEMS_COMMAND,
     FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
     REBOOT_REQUEST_TIMEOUT_SECONDS,
@@ -241,22 +241,21 @@ class DeployModuleTests(unittest.TestCase):
             finish_fields,
         )
 
-    def test_remote_request_reboot_uses_explicit_reboot_timeout(self) -> None:
+    def test_remote_request_reboot_asks_acpd_in_the_foreground(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_request_reboot(connection)
-        run_ssh_mock.assert_called_once_with(
-            connection,
-            DETACHED_SHUTDOWN_REBOOT_COMMAND,
-            check=False,
-            timeout=REBOOT_REQUEST_TIMEOUT_SECONDS,
-        )
-        self.assertIn("exec </dev/null >/dev/null 2>&1", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn("/bin/sync; /bin/sleep 1;", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn("/sbin/shutdown -r now", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn("|| /sbin/reboot", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertNotIn("[ -x /sbin/shutdown ]", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn(") & exit 0", DETACHED_SHUTDOWN_REBOOT_COMMAND)
+        # check stays on: ACPd answers before it shuts down, so a nonzero exit
+        # is a real rejection rather than the session dying mid-reboot.
+        run_ssh_mock.assert_called_once_with(connection, ACP_REBOOT_COMMAND, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
+        self.assertEqual(ACP_REBOOT_COMMAND, "/usr/bin/acp acRB=00000000")
+
+    def test_remote_request_reboot_surfaces_acp_rejection(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=SshError("ssh command failed with rc=1")) as run_ssh_mock:
+            with self.assertRaisesRegex(SshError, "rc=1"):
+                remote_request_reboot(connection)
+        run_ssh_mock.assert_called_once()
 
     def test_flush_remote_filesystem_writes_syncs_and_waits(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -1903,7 +1902,6 @@ describe_managed_smbd_status "" ""
 
         request_reboot_func.assert_called_once_with(
             connection,
-            strategy="ssh_shutdown_then_reboot",
             callbacks=callbacks,
             raise_on_request_error=True,
         )

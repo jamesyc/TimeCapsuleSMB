@@ -10,13 +10,14 @@ import time
 import uuid
 
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 
 
 MAST_DISCOVERY_ATTEMPTS = 10
 MAST_DISCOVERY_DELAY_SECONDS = 3
-MAST_ACP_COMMAND = "/usr/bin/acp MaSt"
-MAST_PROBE_COMMAND = "/usr/bin/acp -A MaSt"
+MAST_ACP_COMMAND = f"{DEVICE_ACP_PATH} MaSt"
+MAST_PROBE_COMMAND = f"{DEVICE_ACP_PATH} -A MaSt"
 MAST_PROBE_TIMEOUT_SECONDS = 30
 MAST_PROBE_OUTPUT_DEBUG_LIMIT = 8192
 DISKD_USE_VOLUME_GUARD_ATTEMPTS = 2
@@ -621,7 +622,7 @@ def render_ensure_volume_root_mounted_script(volume_root: str, _device_path: str
         "use_volume_rcs=; "
         "diskd_attempt=1; "
         f"while [ \"$diskd_attempt\" -le {attempts} ]; do "
-        f"/usr/bin/acp rpc diskd.useVolume path:s:{root} >/dev/null 2>&1; use_volume_rc=$?; "
+        f"{DEVICE_ACP_PATH} rpc diskd.useVolume path:s:{root} >/dev/null 2>&1; use_volume_rc=$?; "
         'use_volume_rcs="$use_volume_rcs${use_volume_rcs:+,}$use_volume_rc"; '
         'if [ "$use_volume_rc" -eq 0 ]; then '
         "wait_attempt=0; "

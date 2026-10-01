@@ -4,6 +4,7 @@ from dataclasses import asdict
 
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_remote_actions
+from timecapsulesmb.deploy.executor import ACP_REBOOT_COMMAND, ACP_REBOOT_STRATEGY
 from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
@@ -14,28 +15,26 @@ from timecapsulesmb.deploy.planner import (
 from timecapsulesmb.device.probe import NETBSD4_LOGIN_PATH, NETBSD4_LOGIN_RC_LOCAL_MARKER
 
 
-DEPLOY_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
-UNINSTALL_REBOOT_STRATEGY = "acp_then_ssh"
 NETBSD4_AUTOSTART_MARKER = NETBSD4_LOGIN_RC_LOCAL_MARKER.decode("ascii")
 
 
-def _append_reboot_request(lines: list[str], reboot_required: bool, *, strategy: str, wait_after_reboot: bool = True) -> None:
+def _append_reboot_request(lines: list[str], reboot_required: bool, *, wait_after_reboot: bool = True) -> None:
     if not reboot_required:
         return
-    lines.append("  request: attempt device reboot")
-    lines.append(f"  strategy: {strategy}")
+    lines.append(f"  request: ACP reboot over SSH ({ACP_REBOOT_COMMAND})")
+    lines.append(f"  strategy: {ACP_REBOOT_STRATEGY}")
     if wait_after_reboot:
         lines.append("  follow-up: wait for SSH down, then SSH up")
     else:
         lines.append("  follow-up: return immediately after reboot request")
 
 
-def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, strategy: str, wait_after_reboot: bool = True) -> None:
+def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, wait_after_reboot: bool = True) -> None:
     if not reboot_required:
         return
     data["reboot_request"] = {
         "mode": "device_reboot",
-        "strategy": strategy,
+        "strategy": ACP_REBOOT_STRATEGY,
         "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"] if wait_after_reboot else ["return_after_reboot_request"],
     }
 
@@ -154,7 +153,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
-    _append_reboot_request(lines, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
+    _append_reboot_request(lines, plan.reboot_required, wait_after_reboot=plan.wait_after_reboot)
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
             lines.append(f"  follow-up: probe {NETBSD4_LOGIN_PATH} for {NETBSD4_AUTOSTART_MARKER}")
@@ -184,7 +183,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
     data["runtime_startup"] = _runtime_startup_json(plan)
-    _add_reboot_request_json(data, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
+    _add_reboot_request_json(data, plan.reboot_required, wait_after_reboot=plan.wait_after_reboot)
     return data
 
 
@@ -240,7 +239,7 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
-    _append_reboot_request(lines, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
+    _append_reboot_request(lines, plan.reboot_required, wait_after_reboot=plan.wait_after_reboot)
     lines.append("")
     lines.append("Post-uninstall checks:")
     if plan.post_uninstall_checks:
@@ -254,5 +253,5 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
 def uninstall_plan_to_jsonable(plan: UninstallPlan) -> dict[str, object]:
     data = asdict(plan)
     data["remote_actions"] = remote_actions_to_jsonable(plan.remote_actions)
-    _add_reboot_request_json(data, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
+    _add_reboot_request_json(data, plan.reboot_required, wait_after_reboot=plan.wait_after_reboot)
     return data

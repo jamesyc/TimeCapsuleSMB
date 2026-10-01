@@ -303,7 +303,7 @@ class AppApiTests(unittest.TestCase):
                 callbacks.update_fields(reboot_was_attempted=True)
             if callbacks.add_debug_fields is not None:
                 callbacks.add_debug_fields(
-                    reboot_request_strategy="ssh_shutdown_then_reboot",
+                    reboot_request_strategy="native_acp",
                     ssh_reboot_attempted=True,
                     ssh_reboot_succeeded=True,
                 )
@@ -349,16 +349,16 @@ class AppApiTests(unittest.TestCase):
 
         callbacks.set_stage("reboot")
         callbacks.update_fields(reboot_was_attempted=True)
-        callbacks.add_debug_fields(reboot_request_strategy="ssh")
-        callbacks.measurement("reboot_request", strategy="ssh_shutdown_then_reboot")
+        callbacks.add_debug_fields(reboot_request_strategy="native_acp")
+        callbacks.measurement("reboot_request", strategy="native_acp")
         callbacks.log("reboot requested")
 
         self.assertEqual(context.current_stage, "reboot")
         self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
-        self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "ssh")
+        self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "native_acp")
         self.assertEqual(
             context.execution_telemetry(result="success")["measurements"]["reboot_request"][0]["strategy"],
-            "ssh_shutdown_then_reboot",
+            "native_acp",
         )
         self.assertEqual(collector.events_of_type("log")[0]["message"], "reboot requested")
 
@@ -4443,7 +4443,6 @@ class AppApiTests(unittest.TestCase):
         wait = mock.Mock(side_effect=[True, True])
         request_reboot_and_wait(
             connection,
-            strategy="ssh_shutdown_then_reboot",
             callbacks=context.to_operation_callbacks(),
             reboot_no_down_message="device did not go down",
             reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
@@ -4457,11 +4456,11 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual([call.kwargs["expected_up"] for call in wait.call_args_list], [False, True])
         self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
         self.assertEqual(context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "ssh_shutdown_then_reboot")
+        self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "native_acp")
         self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_attempted"], True)
         self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_succeeded"], True)
         execution = context.execution_telemetry(result="success")
-        self.assertEqual(execution["measurements"]["reboot_request"][0]["strategy"], "ssh_shutdown_then_reboot")
+        self.assertEqual(execution["measurements"]["reboot_request"][0]["strategy"], "native_acp")
         self.assertEqual(execution["measurements"]["reboot_cycle"][0]["result"], "success")
 
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
@@ -4473,7 +4472,6 @@ class AppApiTests(unittest.TestCase):
         with self.assertRaises(RebootFlowError) as raised:
             request_reboot(
                 connection,
-                strategy="ssh",
                 callbacks=context.to_operation_callbacks(),
                 raise_on_request_error=True,
                 request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
@@ -5261,20 +5259,23 @@ MaSt = (
                 "timecapsulesmb.services.maintenance.run_ssh",
                 return_value=subprocess.CompletedProcess(["ssh"], ssh_returncode, stdout=stdout, stderr=""),
             ))
-            observe = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.observe_reboot_cycle"))
+            reboot = SimpleNamespace(
+                request=stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot")),
+                wait=stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True])),
+            )
             rc = service.run_api_request({"operation": "fsck", "params": params}, collector.sink)
         run_ssh.assert_called_once()
-        return rc, collector, observe
+        return rc, collector, reboot
 
     def test_fsck_clean_status_reboots_waits_and_succeeds(self) -> None:
-        # The reboot drops SSH (rc 255); the status line carries fsck's result.
-        rc, collector, observe = self._run_confirmed_fsck(
-            "--- fsck_hfs /dev/dk2 ---\ntcapsule-fsck: fsck_hfs exit status 0\r\n--- reboot ---\n",
-            ssh_returncode=255,
+        rc, collector, reboot = self._run_confirmed_fsck(
+            "--- fsck_hfs /dev/dk2 ---\ntcapsule-fsck: fsck_hfs exit status 0\r\n",
+            ssh_returncode=0,
         )
 
         self.assertEqual(rc, 0)
-        observe.assert_called_once()
+        reboot.request.assert_called_once()
+        self.assertEqual(reboot.wait.call_count, 2)
         payload = self.assert_single_terminal_event(collector, "result")["payload"]
         self.assertEqual(payload["returncode"], 0)
         self.assertEqual(payload["summary"], "Disk repair completed with fsck.")
@@ -5282,14 +5283,15 @@ MaSt = (
         self.assertTrue(payload["verified"])
 
     def test_fsck_failed_status_still_waits_for_reboot_then_fails(self) -> None:
-        rc, collector, observe = self._run_confirmed_fsck(
-            "--- fsck_hfs /dev/dk2 ---\ntcapsule-fsck: fsck_hfs exit status 8\n--- reboot ---\n",
-            ssh_returncode=255,
+        rc, collector, reboot = self._run_confirmed_fsck(
+            "--- fsck_hfs /dev/dk2 ---\ntcapsule-fsck: fsck_hfs exit status 8\n",
+            ssh_returncode=8,
         )
 
         self.assertEqual(rc, 1)
-        # The reboot is what restarts file sharing, so it is still observed.
-        observe.assert_called_once()
+        # The reboot is what restarts file sharing, so it is still requested and observed.
+        reboot.request.assert_called_once()
+        self.assertEqual(reboot.wait.call_count, 2)
         result = self.assert_single_terminal_event(collector, "result")
         self.assertFalse(result["ok"])
         self.assertEqual(result["payload"]["returncode"], 8)
@@ -5297,63 +5299,66 @@ MaSt = (
         self.assertNotEqual(result["payload"]["summary"], "Disk repair completed with fsck.")
 
     def test_fsck_failed_status_without_wait_is_not_reported_as_success(self) -> None:
-        rc, collector, observe = self._run_confirmed_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 8\n--- reboot ---\n",
-            ssh_returncode=255,
+        rc, collector, reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 8\n",
+            ssh_returncode=8,
             no_wait=True,
         )
 
         self.assertEqual(rc, 1)
-        observe.assert_not_called()
+        reboot.request.assert_called_once()
+        reboot.wait.assert_not_called()
         result = self.assert_single_terminal_event(collector, "result")
         self.assertFalse(result["ok"])
         self.assertEqual(result["payload"]["returncode"], 8)
         self.assertTrue(result["payload"]["reboot_requested"])
 
     def test_fsck_failed_status_without_reboot_fails(self) -> None:
-        rc, collector, observe = self._run_confirmed_fsck(
+        rc, collector, reboot = self._run_confirmed_fsck(
             "tcapsule-fsck: fsck_hfs exit status 8\n",
             ssh_returncode=8,
             no_reboot=True,
         )
 
         self.assertEqual(rc, 1)
-        observe.assert_not_called()
+        reboot.request.assert_not_called()
+        reboot.wait.assert_not_called()
         result = self.assert_single_terminal_event(collector, "result")
         self.assertFalse(result["ok"])
         self.assertFalse(result["payload"]["reboot_requested"])
 
     def test_fsck_that_never_ran_fails_without_waiting_for_a_reboot(self) -> None:
-        # A process that would not stop aborts the script before fsck and
-        # before the reboot command, even when a reboot was requested.
+        # A process that would not stop aborts the script before fsck, so no
+        # status line arrives and no reboot is requested, even when asked for.
         for flags in ({}, {"no_wait": True}):
             with self.subTest(flags=flags):
-                rc, collector, observe = self._run_confirmed_fsck(
+                rc, collector, reboot = self._run_confirmed_fsck(
                     "process smbd did not stop\n",
                     ssh_returncode=1,
                     **flags,
                 )
 
                 self.assertEqual(rc, 1)
-                observe.assert_not_called()
+                reboot.request.assert_not_called()
+                reboot.wait.assert_not_called()
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "remote_error")
                 self.assertIn("fsck did not run", error["message"])
 
     def test_fsck_on_a_volume_that_stayed_mounted_reports_it_without_waiting(self) -> None:
-        # The script refuses to repair a volume still in the mount table and
-        # stops before its reboot, so the error names the unmount, and
-        # nothing waits for SSH to drop.
+        # The script refuses to repair a volume still in the mount table, so
+        # the error names the unmount and no reboot is requested.
         for flags in ({}, {"no_reboot": True}):
             with self.subTest(flags=flags):
-                rc, collector, observe = self._run_confirmed_fsck(
+                rc, collector, reboot = self._run_confirmed_fsck(
                     "umount: /Volumes/Data: Device busy\ntcapsule-fsck: volume not unmounted\n",
                     ssh_returncode=1,
                     **flags,
                 )
 
                 self.assertEqual(rc, 1)
-                observe.assert_not_called()
+                reboot.request.assert_not_called()
+                reboot.wait.assert_not_called()
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "remote_error")
                 self.assertEqual(error["message"], FSCK_NOT_UNMOUNTED_MESSAGE)

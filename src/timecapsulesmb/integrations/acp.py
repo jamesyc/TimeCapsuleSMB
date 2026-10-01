@@ -8,6 +8,9 @@ import zlib
 
 
 ACP_PORT = 5009
+# Apple's on-device ACP client: a hard link to /sbin/ACPd in every NetBSD 4 and
+# NetBSD 6 firmware. No firmware ships /usr/sbin/acp.
+DEVICE_ACP_PATH = "/usr/bin/acp"
 ACP_VERSION = 0x00030001
 # Older TimeCapsule6,106 ACPd replies have been observed using 0x00030000.
 SUPPORTED_ACP_RESPONSE_VERSIONS = frozenset((

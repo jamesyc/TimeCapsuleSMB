@@ -1272,7 +1272,6 @@ def complete_deployment_after_upload(
             callbacks.message(messages.reboot_request_message)
         request_reboot_func(
             connection,
-            strategy="ssh_shutdown_then_reboot",
             callbacks=callbacks,
             raise_on_request_error=True,
         )
@@ -1290,7 +1289,6 @@ def complete_deployment_after_upload(
         callbacks.message(messages.reboot_request_message)
     request_reboot_and_wait_func(
         connection,
-        strategy="ssh_shutdown_then_reboot",
         callbacks=callbacks,
         down_timeout_seconds=60,
         up_timeout_seconds=240,

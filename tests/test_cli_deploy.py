@@ -198,10 +198,11 @@ class CliDeployTests(CliTestCase):
             mocks.remote_request_reboot = stack.enter_context(
                 mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=reboot_side_effect)
             )
-            mocks.acp_reboot = stack.enter_context(
+            # The reboot is a native ACP request over SSH, never network ACP.
+            mocks.network_acp_set = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.services.reboot.acp_reboot",
-                    side_effect=AssertionError("deploy should not request ACP reboot"),
+                    "timecapsulesmb.integrations.acp.set_property_int",
+                    side_effect=AssertionError("deploy must not set ACP properties over the network"),
                 )
             )
             if wait_side_effect is not None:
@@ -289,7 +290,7 @@ class CliDeployTests(CliTestCase):
         self.assertNotIn("generated:nbns.enabled", {upload["source_id"] for upload in payload["uploads"]})
         self.assertNotIn("initialize_data_root", {action["kind"] for action in payload["pre_upload_actions"]})
         self.assertIn("ensure_volume_mounted", {action["kind"] for action in payload["pre_upload_actions"]})
-        self.assertEqual(payload["reboot_request"]["strategy"], "ssh_shutdown_then_reboot")
+        self.assertEqual(payload["reboot_request"]["strategy"], "native_acp")
         self.assertEqual(
             [check["id"] for check in payload["post_deploy_checks"]],
             [
@@ -983,10 +984,10 @@ class CliDeployTests(CliTestCase):
         )
 
         self.assertEqual(result.rc, 1)
-        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", result.text)
+        self.assertIn("ACP reboot request timed out; checking whether the device is rebooting...", result.text)
         self.assertIn(DEPLOY_REBOOT_NO_DOWN_MESSAGE, result.text)
         result.mocks.remote_request_reboot.assert_called_once()
-        result.mocks.acp_reboot.assert_not_called()
+        result.mocks.network_acp_set.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()
 
     def test_deploy_failure_telemetry_includes_current_stage(self) -> None:
@@ -1081,7 +1082,7 @@ class CliDeployTests(CliTestCase):
         payload = json.loads(result.text)
         self.assertTrue(payload["reboot_required"])
         self.assertEqual(payload["startup_mode"], DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE)
-        self.assertEqual(payload["reboot_request"]["strategy"], "ssh_shutdown_then_reboot")
+        self.assertEqual(payload["reboot_request"]["strategy"], "native_acp")
         self.assertEqual(
             payload["runtime_startup"]["post_reboot_probe"],
             {

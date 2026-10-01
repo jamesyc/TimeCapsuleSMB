@@ -14,6 +14,7 @@ from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS, PS_CAPTURE_COMMAND, service_role_lines
+from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
@@ -687,17 +688,17 @@ def extract_airport_identity_from_acp_output(text: str) -> AirportIdentityProbeR
 
 
 def probe_remote_airport_identity_conn(connection: SshConnection) -> AirportIdentityProbeResult:
-    script = r"""
-if [ ! -x /usr/bin/acp ]; then
+    script = rf"""
+if [ ! -x {DEVICE_ACP_PATH} ]; then
   exit 0
 fi
-/usr/bin/acp syAP syAM 2>/dev/null
+{DEVICE_ACP_PATH} syAP syAM 2>/dev/null
 """
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
     if proc.returncode != 0:
         return AirportIdentityProbeResult(model=None, syap=None, detail=f"could not read AirPort identity: rc={proc.returncode}")
     if not proc.stdout:
-        return AirportIdentityProbeResult(model=None, syap=None, detail="AirPort identity unavailable: /usr/bin/acp missing or empty output")
+        return AirportIdentityProbeResult(model=None, syap=None, detail=f"AirPort identity unavailable: {DEVICE_ACP_PATH} missing or empty output")
     return extract_airport_identity_from_acp_output(proc.stdout)
 
 
@@ -784,10 +785,10 @@ def _parse_runtime_naming_probe_output(text: str) -> RuntimeNamingIdentityProbeR
 
 
 def probe_remote_runtime_naming_identity_conn(connection: SshConnection) -> RuntimeNamingIdentityProbeResult:
-    script = r"""
+    script = rf"""
 system_name=
-if [ -x /usr/bin/acp ]; then
-  system_name=$(/usr/bin/acp -q syNm 2>/dev/null | /usr/bin/sed -n '1p')
+if [ -x {DEVICE_ACP_PATH} ]; then
+  system_name=$({DEVICE_ACP_PATH} -q syNm 2>/dev/null | /usr/bin/sed -n '1p')
 fi
 hostname=$(/bin/hostname 2>/dev/null | /usr/bin/sed -n '1p')
 printf 'system_name=%s\n' "$system_name"
@@ -1462,7 +1463,7 @@ def parse_prni_printers(text: str) -> UsbPrinterProbeResult:
 
 def probe_usb_printer_conn(connection: SshConnection, *, timeout_seconds: int = REMOTE_STATE_PROBE_TIMEOUT_SECONDS) -> UsbPrinterProbeResult:
     try:
-        proc = run_ssh(connection, "/usr/bin/acp -A prni 2>/dev/null", check=False, timeout=timeout_seconds)
+        proc = run_ssh(connection, f"{DEVICE_ACP_PATH} -A prni 2>/dev/null", check=False, timeout=timeout_seconds)
     except SshCommandTimeout:
         return UsbPrinterProbeResult(present=False, name=None, error="acp -A prni timed out")
     if proc.returncode != 0:

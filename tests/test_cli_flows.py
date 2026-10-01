@@ -19,10 +19,9 @@ from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
     ProbeStepResult,
 )
-from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
-from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
-from timecapsulesmb.services.reboot import ACP_REBOOT_REQUEST_TIMEOUT_SECONDS, SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import ACP_REBOOT_PROGRESS_MESSAGE
 from timecapsulesmb.services.runtime import wait_for_tcp_port_state
 from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
@@ -43,7 +42,6 @@ class CliFlowTests(unittest.TestCase):
     def request_reboot_and_wait_default(self, command_context: FakeCommandContext, **kwargs) -> None:
         request_reboot_and_wait(
             self.make_connection(),
-            strategy=kwargs.pop("strategy", "acp_then_ssh"),
             callbacks=self.reboot_callbacks(command_context),
             down_timeout_seconds=kwargs.pop("down_timeout_seconds", 60),
             up_timeout_seconds=kwargs.pop("up_timeout_seconds", 240),
@@ -96,298 +94,192 @@ class CliFlowTests(unittest.TestCase):
         tcp_open_mock.assert_called_once_with("10.0.0.2", 5009)
         sleep_mock.assert_not_called()
 
-    def test_observe_reboot_cycle_succeeds_without_requesting_reboot(self) -> None:
+    def test_request_reboot_and_wait_sends_one_acp_request_then_observes_reboot(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
+        messages: list[str] = []
         reboot_mock = mock.Mock()
-        wait_mock = mock.Mock(side_effect=[True, True])
-        with redirect_stdout(output):
-            observe_reboot_cycle(
-                self.make_connection(),
-                callbacks=self.reboot_callbacks(command_context),
-                reboot_no_down_message="did not go down",
-                reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
-                down_timeout_seconds=90,
-                up_timeout_seconds=420,
-                wait_for_ssh_state=wait_mock,
-            )
-
-        reboot_mock.assert_not_called()
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 90})
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 420})
-        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertIn("Device is back online.", output.getvalue())
-
-    def test_request_reboot_and_wait_succeeds_after_acp_reboot_request(self) -> None:
-        command_context = FakeCommandContext()
-        output = io.StringIO()
-        acp_reboot_mock = mock.Mock()
-        ssh_reboot_mock = mock.Mock()
         wait_mock = mock.Mock(side_effect=[True, True])
         with redirect_stdout(output):
             self.request_reboot_and_wait_default(
                 command_context,
-                request_acp_reboot=acp_reboot_mock,
-                request_reboot_func=ssh_reboot_mock,
+                progress_log=messages.append,
+                request_reboot_func=reboot_mock,
                 wait_for_ssh_state=wait_mock,
             )
 
-        acp_reboot_mock.assert_called_once_with("10.0.0.2", "pw", timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
-        ssh_reboot_mock.assert_not_called()
+        reboot_mock.assert_called_once_with(self.make_connection())
+        self.assertEqual(messages, [ACP_REBOOT_PROGRESS_MESSAGE])
+        self.assertEqual(ACP_REBOOT_PROGRESS_MESSAGE, "SSH: /usr/bin/acp acRB=00000000")
         self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
+        self.assertEqual(command_context.stages, ["reboot", "wait_for_reboot_down", "wait_for_reboot_up"])
         self.assertEqual(command_context.finish_fields["reboot_was_attempted"], True)
         self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "acp_then_ssh")
-        self.assertEqual(command_context.debug_fields["acp_reboot_attempted"], True)
-        self.assertEqual(command_context.debug_fields["acp_reboot_succeeded"], True)
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "native_acp")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
         self.assertIsNone(command_context.error)
         self.assertIn("ACP reboot requested.", output.getvalue())
-        self.assertIn("Waiting for the device to go down...", output.getvalue())
+        self.assertIn("Device is back online.", output.getvalue())
 
-    def test_request_reboot_and_wait_can_use_ssh_reboot_request_only(self) -> None:
+    def test_request_reboot_and_wait_observes_without_resending_after_request_timeout(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
-        reboot_mock = mock.Mock()
-        acp_reboot_mock = mock.Mock(side_effect=AssertionError("SSH-only strategy should not use ACP reboot"))
+        reboot_mock = mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: acp"))
         wait_mock = mock.Mock(side_effect=[True, True])
         with redirect_stdout(output):
             self.request_reboot_and_wait_default(
                 command_context,
-                strategy="ssh_shutdown_then_reboot",
-                request_reboot_func=reboot_mock,
-                request_acp_reboot=acp_reboot_mock,
-                wait_for_ssh_state=wait_mock,
-            )
-
-        reboot_mock.assert_called_once()
-        acp_reboot_mock.assert_not_called()
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
-        self.assertEqual(command_context.finish_fields["reboot_was_attempted"], True)
-        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh_shutdown_then_reboot")
-        self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
-        self.assertIn("SSH reboot requested.", output.getvalue())
-        self.assertIn("Waiting for the device to go down...", output.getvalue())
-
-    def test_request_reboot_and_wait_uses_ssh_fallback_when_acp_fails(self) -> None:
-        command_context = FakeCommandContext()
-        output = io.StringIO()
-        reboot_mock = mock.Mock()
-        acp_reboot_mock = mock.Mock(side_effect=ACPConnectionError("ACP timed out"))
-        wait_mock = mock.Mock(side_effect=[True, True])
-        with redirect_stdout(output):
-            self.request_reboot_and_wait_default(
-                command_context,
-                request_acp_reboot=acp_reboot_mock,
                 request_reboot_func=reboot_mock,
                 wait_for_ssh_state=wait_mock,
             )
 
+        # ACPd may already be saving and shutting down: no second request.
         reboot_mock.assert_called_once()
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
-        self.assertEqual(command_context.debug_fields["acp_reboot_succeeded"], False)
-        self.assertEqual(command_context.debug_fields["acp_reboot_error"], "ACP timed out")
-        self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
-        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertIn("ACP reboot request failed; trying SSH reboot request.", output.getvalue())
-        self.assertIn("SSH reboot requested.", output.getvalue())
-
-    def test_request_reboot_and_wait_observes_device_state_after_ssh_fallback_timeout(self) -> None:
-        command_context = FakeCommandContext()
-        output = io.StringIO()
-        wait_mock = mock.Mock(side_effect=[True, True])
-        with redirect_stdout(output):
-            self.request_reboot_and_wait_default(
-                command_context,
-                request_acp_reboot=mock.Mock(side_effect=ACPConnectionError("ACP timed out")),
-                request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
-                wait_for_ssh_state=wait_mock,
-            )
-
         self.assertEqual(wait_mock.call_count, 2)
         self.assertEqual(command_context.debug_fields["ssh_reboot_timed_out"], True)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "Timed out waiting for ssh command to finish: reboot")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "Timed out waiting for ssh command to finish: acp")
         self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", output.getvalue())
+        self.assertIn("ACP reboot request timed out; checking whether the device is rebooting...", output.getvalue())
 
-    def test_request_reboot_and_wait_observes_device_state_after_ssh_fallback_error(self) -> None:
+    def test_request_reboot_and_wait_observes_without_resending_after_request_error(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
+        reboot_mock = mock.Mock(side_effect=SshError("ssh command failed with rc=1"))
         wait_mock = mock.Mock(side_effect=[True, True])
         with redirect_stdout(output):
             self.request_reboot_and_wait_default(
                 command_context,
-                request_acp_reboot=mock.Mock(side_effect=ACPConnectionError("ACP timed out")),
-                request_reboot_func=mock.Mock(side_effect=SshError("ssh failed")),
+                request_reboot_func=reboot_mock,
                 wait_for_ssh_state=wait_mock,
             )
 
+        reboot_mock.assert_called_once()
         self.assertEqual(wait_mock.call_count, 2)
         self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh failed")
-        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
+        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh command failed with rc=1")
+        self.assertIn("ACP reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
 
-    def test_request_ssh_reboot_uses_ssh_only_strategy_and_progress_log(self) -> None:
+    def test_request_reboot_records_success_without_waiting(self) -> None:
         command_context = FakeCommandContext()
-        messages: list[str] = []
         output = io.StringIO()
         reboot_mock = mock.Mock()
         with redirect_stdout(output):
             request_reboot(
                 self.make_connection(),
-                strategy="ssh",
                 callbacks=self.reboot_callbacks(command_context),
-                progress_log=messages.append,
                 request_reboot_func=reboot_mock,
             )
 
         reboot_mock.assert_called_once()
         self.assertEqual(command_context.stages, ["reboot"])
         self.assertEqual(command_context.finish_fields["reboot_was_attempted"], True)
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
-        self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "native_acp")
         self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
-        self.assertEqual(messages, [SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE])
-        self.assertIn("SSH reboot requested.", output.getvalue())
+        self.assertIn("ACP reboot requested.", output.getvalue())
 
-    def test_request_ssh_reboot_records_timeout_without_raising(self) -> None:
+    def test_request_reboot_records_timeout_without_raising(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
         with redirect_stdout(output):
             request_reboot(
                 self.make_connection(),
-                strategy="ssh",
                 callbacks=self.reboot_callbacks(command_context),
-                request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
+                request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: acp")),
             )
 
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
         self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
         self.assertEqual(command_context.debug_fields["ssh_reboot_timed_out"], True)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "Timed out waiting for ssh command to finish: reboot")
-        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", output.getvalue())
+        self.assertIn("ACP reboot request timed out; checking whether the device is rebooting...", output.getvalue())
 
-    def test_request_ssh_reboot_raises_timeout_when_request_error_is_required(self) -> None:
+    def test_request_reboot_raises_timeout_when_request_error_is_required(self) -> None:
         command_context = FakeCommandContext()
-        with self.assertRaisesRegex(RebootFlowError, "SSH reboot request timed out"):
+        with self.assertRaisesRegex(RebootFlowError, "SSH reboot request timed out") as raised:
             request_reboot(
                 self.make_connection(),
-                strategy="ssh",
                 callbacks=self.reboot_callbacks(command_context),
                 raise_on_request_error=True,
-                request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
+                request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: acp")),
             )
 
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
-        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
+        self.assertEqual(raised.exception.reason, "request_timeout")
         self.assertEqual(command_context.debug_fields["ssh_reboot_timed_out"], True)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "Timed out waiting for ssh command to finish: reboot")
 
-    def test_request_ssh_reboot_records_ssh_error_without_raising(self) -> None:
+    def test_request_reboot_raises_acp_rejection_when_request_error_is_required(self) -> None:
         command_context = FakeCommandContext()
-        output = io.StringIO()
-        with redirect_stdout(output):
+        reboot_mock = mock.Mock(side_effect=SshError("ssh command failed with rc=1"))
+        with self.assertRaisesRegex(RebootFlowError, "SSH reboot request failed") as raised:
             request_reboot(
                 self.make_connection(),
-                strategy="ssh",
-                callbacks=self.reboot_callbacks(command_context),
-                request_reboot_func=mock.Mock(side_effect=SshError("ssh failed")),
-            )
-
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
-        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh failed")
-        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
-
-    def test_request_ssh_reboot_raises_ssh_error_when_request_error_is_required(self) -> None:
-        command_context = FakeCommandContext()
-        with self.assertRaisesRegex(RebootFlowError, "SSH reboot request failed"):
-            request_reboot(
-                self.make_connection(),
-                strategy="ssh",
                 callbacks=self.reboot_callbacks(command_context),
                 raise_on_request_error=True,
-                request_reboot_func=mock.Mock(side_effect=SshError("ssh failed")),
+                request_reboot_func=reboot_mock,
             )
 
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
+        reboot_mock.assert_called_once()
+        self.assertEqual(raised.exception.reason, "request_failed")
         self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
-        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh failed")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh command failed with rc=1")
 
-    def test_request_reboot_and_wait_fails_when_device_never_goes_down_after_acp_request(self) -> None:
+    def test_request_reboot_and_wait_fails_when_device_never_goes_down(self) -> None:
         command_context = FakeCommandContext()
+        reboot_mock = mock.Mock()
         wait_mock = mock.Mock(return_value=False)
-        with self.assertRaisesRegex(RebootFlowError, "did not go down") as raised:
-            self.request_reboot_and_wait_default(
-                command_context,
-                request_acp_reboot=mock.Mock(),
-                wait_for_ssh_state=wait_mock,
-            )
-
-        wait_mock.assert_called_once()
-        self.assertEqual(raised.exception.reason, "did_not_go_down")
-        self.assertNotIn("device_came_back_after_reboot", command_context.finish_fields)
-
-    def test_request_reboot_and_wait_fails_after_ssh_fallback_timeout_when_device_never_goes_down(self) -> None:
-        command_context = FakeCommandContext()
-        wait_mock = mock.Mock(return_value=False)
-        with self.assertRaisesRegex(RebootFlowError, "clear reboot failure") as raised:
-            self.request_reboot_and_wait_default(
-                command_context,
-                reboot_no_down_message="clear reboot failure",
-                request_acp_reboot=mock.Mock(side_effect=ACPConnectionError("ACP timed out")),
-                request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
-                wait_for_ssh_state=wait_mock,
-            )
-
-        wait_mock.assert_called_once()
-        self.assertEqual(raised.exception.reason, "did_not_go_down")
-        self.assertNotIn("device_came_back_after_reboot", command_context.finish_fields)
-
-    def test_request_reboot_and_wait_fails_when_device_never_goes_down_after_all_request_errors(self) -> None:
-        command_context = FakeCommandContext()
-        output = io.StringIO()
-        wait_mock = mock.Mock(return_value=False)
-        with redirect_stdout(output):
+        with redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(RebootFlowError, "did not go down") as raised:
                 self.request_reboot_and_wait_default(
                     command_context,
-                    request_acp_reboot=mock.Mock(side_effect=ACPConnectionError("ACP timed out")),
+                    request_reboot_func=reboot_mock,
+                    wait_for_ssh_state=wait_mock,
+                )
+
+        # No OS shutdown fallback and no second ACP request.
+        reboot_mock.assert_called_once()
+        wait_mock.assert_called_once()
+        self.assertEqual(raised.exception.reason, "did_not_go_down")
+        self.assertNotIn("device_came_back_after_reboot", command_context.finish_fields)
+
+    def test_request_reboot_and_wait_fails_when_device_never_goes_down_after_request_error(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        wait_mock = mock.Mock(return_value=False)
+        with redirect_stdout(output):
+            with self.assertRaisesRegex(RebootFlowError, "clear reboot failure") as raised:
+                self.request_reboot_and_wait_default(
+                    command_context,
+                    reboot_no_down_message="clear reboot failure",
                     request_reboot_func=mock.Mock(side_effect=SshError("ssh failed")),
                     wait_for_ssh_state=wait_mock,
                 )
 
         wait_mock.assert_called_once()
         self.assertEqual(raised.exception.reason, "did_not_go_down")
-        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
+        self.assertIn("ACP reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
 
     def test_request_reboot_and_wait_fails_when_ssh_does_not_return(self) -> None:
         command_context = FakeCommandContext()
-        with self.assertRaisesRegex(RebootFlowError, REBOOT_UP_TIMEOUT_MESSAGE) as raised:
-            self.request_reboot_and_wait_default(
-                command_context,
-                request_acp_reboot=mock.Mock(),
-                wait_for_ssh_state=mock.Mock(side_effect=[True, False]),
-            )
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RebootFlowError, REBOOT_UP_TIMEOUT_MESSAGE) as raised:
+                self.request_reboot_and_wait_default(
+                    command_context,
+                    request_reboot_func=mock.Mock(),
+                    wait_for_ssh_state=mock.Mock(side_effect=[True, False]),
+                )
 
         self.assertEqual(raised.exception.reason, "did_not_come_back_up")
+        self.assertNotIn("device_came_back_after_reboot", command_context.finish_fields)
 
     def test_request_reboot_and_wait_uses_caller_timeout_message_when_ssh_does_not_return(self) -> None:
         command_context = FakeCommandContext()
-        with self.assertRaisesRegex(RebootFlowError, "Timed out waiting for SSH after reboot") as raised:
-            self.request_reboot_and_wait_default(
-                command_context,
-                strategy="ssh_shutdown_then_reboot",
-                request_reboot_func=mock.Mock(),
-                wait_for_ssh_state=mock.Mock(side_effect=[True, False]),
-                reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
-            )
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RebootFlowError, "Timed out waiting for SSH after reboot") as raised:
+                self.request_reboot_and_wait_default(
+                    command_context,
+                    request_reboot_func=mock.Mock(),
+                    wait_for_ssh_state=mock.Mock(side_effect=[True, False]),
+                    reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+                )
 
         self.assertEqual(str(raised.exception), DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE)
         self.assertIn("If the device is reachable at a new IP, update TC_HOST or rerun configure.", str(raised.exception))
