@@ -18,7 +18,7 @@ You should get the full Apple "It just works" experience reproduced. After you i
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
-NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices can do a manual `activate` after every reboot**, or you can **use this to flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot**. If you do not flash the boot hook, then Samba will not start automatically on an older Time Capsule!
+NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices can flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot**. If you do not flash the boot hook, then Samba will not start automatically on an older Time Capsule! You can also choose to do a manual `activate` after every reboot to start Samba, if you do not want to flash the firmware.
 
 The current authentication model accepts any user as the username, and the Samba password is the current Time Capsule device password. At boot, the device reads its live AirPort `syPW` value and generates the Samba password file in RAM, so a device-password change is picked up after reboot. Guest access is disabled.
 
@@ -56,7 +56,8 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 8. Click "Install / Update Samba" to deploy to the device.  
    <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />    
     - If deploying to the device fails, try removing the saved device from the app, then go back to step 4 above to "Add Device" again. It sometimes takes more than one deploy to copy all the files over.
-    - There are reports the device may reset during a deploy, see [this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/177) for more information.
+    - **There are reports the device may reset during a deploy, see [this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/177) for more information.**
+    - **Do not be worried if the device resets! YOUR DATA ON THE HARD DRIVE IS SAFE.** Only the Apple configuration settings (WiFi name, password, etc) will be reset. You just need to set it up again and it will work fine.
 9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
    <img width="634" height="429" alt="image" src="https://github.com/user-attachments/assets/e35d8934-975b-4079-8087-8c22984a3165" />
 10. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup.
