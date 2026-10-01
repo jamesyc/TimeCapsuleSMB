@@ -6,6 +6,7 @@ from typing import Iterable
 
 from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
 from timecapsulesmb.core.net import is_link_local_ipv4
+from timecapsulesmb.device.compat import airport_syap_supported
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
     BonjourResolvedService,
@@ -71,6 +72,7 @@ def device_candidate_to_jsonable(candidate: DiscoveredDeviceCandidate) -> dict[s
         "link_local_only": candidate.link_local_only,
         "syap": candidate.syap,
         "model": candidate.model,
+        "supported_model": airport_syap_supported(candidate.syap),
         "service_type": candidate.service_type,
         "fullname": candidate.fullname,
         "selected_record": discovery_record_to_jsonable(candidate.selected_record),

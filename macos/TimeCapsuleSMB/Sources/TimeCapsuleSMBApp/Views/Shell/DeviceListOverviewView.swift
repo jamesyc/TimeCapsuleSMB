@@ -122,8 +122,7 @@ struct DeviceListOverviewView: View {
                     ForEach(unsaved) { device in
                         OverviewDiscoveredDeviceRow(
                             device: device,
-                            statusText: L10n.string("overview.discovery.unsaved"),
-                            actionTitle: L10n.string("overview.discovery.add")
+                            presentation: OverviewDiscoveredDevicePresentation(device: device, isSaved: false)
                         ) {
                             addDiscoveredDevice(device)
                         }
@@ -132,8 +131,7 @@ struct DeviceListOverviewView: View {
                     ForEach(saved) { device in
                         OverviewDiscoveredDeviceRow(
                             device: device,
-                            statusText: L10n.string("overview.discovery.saved"),
-                            actionTitle: nil,
+                            presentation: OverviewDiscoveredDevicePresentation(device: device, isSaved: true),
                             action: nil
                         )
                         Divider()
@@ -146,8 +144,7 @@ struct DeviceListOverviewView: View {
 
 private struct OverviewDiscoveredDeviceRow: View {
     let device: DiscoveredDevice
-    let statusText: String
-    let actionTitle: String?
+    let presentation: OverviewDiscoveredDevicePresentation
     let action: (() -> Void)?
 
     var body: some View {
@@ -167,10 +164,16 @@ private struct OverviewDiscoveredDeviceRow: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(statusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let actionTitle, let action {
+            if presentation.isUnsupported {
+                Label(presentation.statusText, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else {
+                Text(presentation.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let actionTitle = presentation.actionTitle, let action {
                 Button(actionTitle, action: action)
             }
         }

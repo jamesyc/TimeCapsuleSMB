@@ -58,6 +58,32 @@ final class AddDeviceViewSmokeTests: XCTestCase {
         try assertRendersNonBlank(AddDeviceView(store: ready.store), size: CGSize(width: 900, height: 700))
     }
 
+    func testRendersUnsupportedModelRowAndExplanation() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [
+                    testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2", supportedModel: true),
+                    testDiscoveredDevice(
+                        id: "bonjour:express",
+                        name: "Living Room Express",
+                        host: "10.0.0.40",
+                        hostname: "express.local.",
+                        syap: "115",
+                        supportedModel: false,
+                        fullname: "Living Room Express._airport._tcp.local."
+                    )
+                ]))
+            ])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        try assertRendersNonBlank(AddDeviceView(store: fixture.store), size: CGSize(width: 900, height: 700))
+
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first { $0.isUnsupportedModel }))
+        XCTAssertEqual(fixture.store.state, .unsupported)
+        try assertRendersNonBlank(AddDeviceView(store: fixture.store), size: CGSize(width: 900, height: 700))
+    }
+
     func testRendersConfigureTerminalStates() async throws {
         try await renderConfigureState(
             responses: [

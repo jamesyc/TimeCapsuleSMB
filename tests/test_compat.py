@@ -15,12 +15,15 @@ from timecapsulesmb.device.compat import (
     PAYLOAD_FAMILY_NETBSD4BE,
     PAYLOAD_FAMILY_NETBSD4LE,
     PAYLOAD_FAMILY_NETBSD6,
+    airport_syap_supported,
     classify_device_compatibility,
     is_netbsd4_payload_family,
     is_netbsd6_payload_family,
     payload_family_description,
     require_compatibility,
     render_compatibility_message,
+    unsupported_syap_message,
+    unsupported_syaps,
 )
 from timecapsulesmb.device.errors import DeviceError
 
@@ -180,6 +183,79 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(compat.model_candidates, ())
         self.assertEqual(compat.reason_code, "unsupported_os")
         self.assertIn("Unsupported device OS", render_compatibility_message(compat))
+
+    def test_classify_real_device_arch_evbarm_as_supported_on_every_lane(self) -> None:
+        # `uname -m` on real Time Capsules and AirPort Extremes is evbarm.
+        for release, endianness, family in (
+            ("4.0_STABLE", "big", PAYLOAD_FAMILY_NETBSD4BE),
+            ("4.0_STABLE", "little", PAYLOAD_FAMILY_NETBSD4LE),
+            ("6.0", "little", PAYLOAD_FAMILY_NETBSD6),
+        ):
+            with self.subTest(release=release, endianness=endianness):
+                compat = classify_device_compatibility("NetBSD", release, "evbarm", endianness)
+                self.assertTrue(compat.supported)
+                self.assertEqual(compat.payload_family, family)
+
+    def test_classify_airport_express_mips_as_unsupported_arch(self) -> None:
+        # The AirPort Express reports NetBSD 4.0_STABLE on ar7240 (MIPS); its
+        # big-endian /bin/sh used to make it look like a NetBSD 4 BE Time Capsule.
+        for release, endianness in (("4.0_STABLE", "big"), ("4.0_STABLE", "little"), ("6.0", "little")):
+            with self.subTest(release=release, endianness=endianness):
+                compat = classify_device_compatibility(
+                    "NetBSD",
+                    release,
+                    "ar7240",
+                    endianness,
+                    airport_syap="109",
+                )
+                self.assertFalse(compat.supported)
+                self.assertIsNone(compat.payload_family)
+                self.assertEqual(compat.device_generation, "unknown")
+                self.assertEqual(compat.reason_code, "unsupported_arch")
+                self.assertEqual(compat.syap_candidates, ())
+                message = render_compatibility_message(compat)
+                self.assertIn(f"NetBSD {release} on a ar7240 processor", message)
+                self.assertIn("AirPort Express", message)
+
+    def test_classify_non_arm_and_missing_arch_as_unsupported_arch(self) -> None:
+        for arch in ("arm64", "i386", "evbmips", ""):
+            with self.subTest(arch=arch):
+                compat = classify_device_compatibility("NetBSD", "4.0", arch, "little")
+                self.assertFalse(compat.supported)
+                self.assertIsNone(compat.payload_family)
+                self.assertEqual(compat.reason_code, "unsupported_arch")
+        unknown = classify_device_compatibility("NetBSD", "6.0", "  ", "little")
+        self.assertIn("on a unknown processor", render_compatibility_message(unknown))
+
+    def test_classify_other_os_reports_os_before_arch(self) -> None:
+        compat = classify_device_compatibility("Linux", "6.8", "mips")
+        self.assertEqual(compat.reason_code, "unsupported_os")
+
+    def test_airport_syap_supported_accepts_only_known_model_codes(self) -> None:
+        for syap in ("119", "106", "116", " 113 ", "0119"):
+            with self.subTest(syap=syap):
+                self.assertIs(airport_syap_supported(syap), True)
+        for syap in ("999", "115", "1"):
+            with self.subTest(syap=syap):
+                self.assertIs(airport_syap_supported(syap), False)
+        # Values that cannot name a model leave the decision to the SSH probe.
+        for syap in (None, "", "   ", "bad", "0x77", "11a", "-119", "１１９"):
+            with self.subTest(syap=syap):
+                self.assertIsNone(airport_syap_supported(syap))
+
+    def test_unsupported_syaps_lists_distinct_unsupported_codes_for_telemetry(self) -> None:
+        self.assertEqual(
+            unsupported_syaps(["119", "115", None, "", "bad", " 115 ", "0115", "999", "106", "1000"]),
+            ["115", "999", "1000"],
+        )
+        self.assertEqual(unsupported_syaps(["119", "116", None]), [])
+        self.assertEqual(unsupported_syaps([]), [])
+
+    def test_unsupported_syap_message_names_code_and_supported_models(self) -> None:
+        message = unsupported_syap_message(" 115 ")
+        self.assertIn("syAP 115,", message)
+        self.assertIn("AirPort Time Capsule or AirPort Extreme", message)
+        self.assertIn("AirPort Express is not supported", message)
 
     def test_render_supported_netbsd6_message_is_human_readable(self) -> None:
         compat = classify_device_compatibility("NetBSD", "6.0", "earmv4", "little")

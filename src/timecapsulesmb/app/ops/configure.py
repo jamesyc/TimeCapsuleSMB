@@ -248,6 +248,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 configure_id=configure_id,
                 persist_password=bool_param(params, "persist_password"),
                 discovered_airport_syap=target.discovered_airport_syap,
+                selected_record_airport_syap=target.selected_record_airport_syap,
                 enable_ssh=bool_param(params, "enable_ssh", True),
                 ssh_wait_timeout=int_param(params, "ssh_wait_timeout", 180),
                 internal_share_use_disk_root=bool_param(

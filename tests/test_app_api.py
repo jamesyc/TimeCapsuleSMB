@@ -33,6 +33,7 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, ConfigError, parse_env_file
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
@@ -146,6 +147,22 @@ def netbsd4_probed_state() -> ProbedDeviceState:
             airport_syap="116",
         ),
         compatibility=supported_compatibility("netbsd4be_samba4"),
+    )
+
+
+def airport_express_probed_state() -> ProbedDeviceState:
+    # An AirPort Express over SSH: NetBSD 4.0_STABLE on a MIPS ar7240.
+    probe_result = ProbeResult(
+        ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
+        error=None,
+        os_name="NetBSD",
+        os_release="4.0_STABLE",
+        arch="ar7240",
+        elf_endianness="big",
+    )
+    return ProbedDeviceState(
+        probe_result=probe_result,
+        compatibility=compatibility_from_probe_result(probe_result),
     )
 
 
@@ -559,7 +576,16 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "unsupported_device")
         self.assertEqual(error["message"], FLASH_UNSUPPORTED_DEVICE_MESSAGE)
         self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues/160", error["message"])
+        # A NetBSD 6 Time Capsule is a supported device; flash just is not offered for it.
+        self.assert_neutral_unsupported_device_recovery(error)
         backup_mock.assert_not_called()
+
+    def assert_neutral_unsupported_device_recovery(self, error: dict[str, object]) -> None:
+        recovery = error["recovery"]
+        self.assertEqual(recovery["localization_key"], "unsupported_device")
+        self.assertEqual(recovery["message"], "This operation is not supported on the detected AirPort model or OS.")
+        self.assertFalse(any("Forget" in action for action in recovery["actions"]))
+        self.assertNotIn("cannot run TimeCapsuleSMB", recovery["message"])
 
     def test_flash_plan_operation_uses_saved_backup_without_device_config(self) -> None:
         collector = CollectingSink()
@@ -1886,6 +1912,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["discovery_instance_count"], 1)
         self.assertEqual(finished["discovery_resolved_count"], 1)
         self.assertEqual(finished["discovery_device_count"], 1)
+        self.assertNotIn("discovery_unsupported_syaps", finished)
         self.assertEqual(finished["details"]["instance_count"], 1)
         self.assertEqual(finished["details"]["resolved_count"], 1)
         self.assertEqual(finished["details"]["device_count"], 1)
@@ -1930,6 +1957,49 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual([device["name"] for device in payload["devices"]], ["James", "Office"])
         self.assertEqual(payload["devices"][0]["host"], "192.168.1.217")
         self.assertEqual(payload["devices"][0]["selected_record"]["service_type"], "_airport._tcp.local.")
+
+    def test_discover_marks_whether_each_device_model_is_supported(self) -> None:
+        collector = CollectingSink()
+        snapshot = BonjourDiscoverySnapshot(
+            instances=[],
+            resolved=[
+                BonjourResolvedService(
+                    name=name,
+                    hostname=f"{name.lower()}.local.",
+                    service_type="_airport._tcp.local.",
+                    port=5009,
+                    ipv4=(ip,),
+                    properties=properties,
+                    fullname=f"{name}._airport._tcp.local.",
+                )
+                for name, ip, properties in (
+                    ("Capsule", "10.0.0.2", {"syAP": "119"}),
+                    ("Express", "10.0.0.3", {"syAP": "115"}),
+                    ("Unknown", "10.0.0.4", {}),
+                )
+            ],
+        )
+
+        with mock.patch(
+            "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
+            return_value=(snapshot, SimpleNamespace()),
+        ):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        devices = collector.events_of_type("result")[0]["payload"]["devices"]
+        self.assertEqual(
+            {device["name"]: device["supported_model"] for device in devices},
+            {"Capsule": True, "Express": False, "Unknown": None},
+        )
+        # The picker stops on the Express before configure, so discovery telemetry
+        # is where its advertised code is recorded.
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(self._telemetry_client.emit.call_args_list[-1].args[0], "discover_finished")
+        self.assertEqual(finished["discovery_unsupported_syaps"], ["115"])
 
     def test_discover_rejects_invalid_timeout_values(self) -> None:
         for timeout in ("bad", "nan", -1, True):
@@ -3232,6 +3302,68 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertFalse(config_path.exists())
         self.assertEqual(collector.events_of_type("error")[0]["code"], "unsupported_device")
+
+    def test_configure_rejects_unsupported_selected_record_syap_before_probe_or_confirmation(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state") as probe:
+                with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "configure",
+                            "params": {
+                                "config": str(config_path),
+                                "selected_record": {
+                                    "name": "Living Room Express",
+                                    "hostname": "living-room-express.local.",
+                                    "service_type": "_airport._tcp.local.",
+                                    "port": 5009,
+                                    "ipv4": ["10.0.0.40"],
+                                    "ipv6": [],
+                                    "properties": {"syAP": "115"},
+                                    "fullname": "Living Room Express._airport._tcp.local.",
+                                },
+                                "password": "pw",
+                            },
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        self.assertFalse(config_path.exists())
+        probe.assert_not_called()
+        enable_ssh.assert_not_called()
+        self.assertEqual(collector.events_of_type("confirmation_required"), [])
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
+        self.assertIn("syAP 115", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "configure.unsupported_device")
+        self.assertFalse(error["recovery"]["retryable"])
+        self.assertEqual(error["debug"]["discovered_airport_syap"], "115")
+        self.assertEqual(error["debug"]["stage"], "check_device_model")
+
+    def test_configure_rejects_airport_express_found_by_probe(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch(
+                "timecapsulesmb.app.ops.configure.probe_connection_state",
+                return_value=airport_express_probed_state(),
+            ):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {"config": str(config_path), "host": "root@10.0.0.40", "password": "pw"},
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        self.assertFalse(config_path.exists())
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
+        self.assertIn("ar7240 processor", error["message"])
 
     def test_configure_rejects_boolean_ssh_wait_timeout(self) -> None:
         collector = CollectingSink()
@@ -4719,6 +4851,48 @@ MaSt = (
         self.assertEqual(payload["summary_args"], [])
         self.assertEqual(payload["summary"], NETBSD4_ACTIVATION_COMPLETED)
         self.assertEqual(payload["message"], NETBSD4_ACTIVATION_COMPLETED)
+
+    def test_activate_rejects_saved_airport_express_before_touching_runtime(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.40", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=airport_express_probed_state())
+        params = {}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "activate", params, {"host": "root@10.0.0.40", "netbsd4": True})
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.40", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn") as runtime_probe:
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
+                        rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        runtime_probe.assert_not_called()
+        remote_actions.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
+        self.assertIn("ar7240 processor", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "unsupported_device")
+
+    def test_activate_on_netbsd6_reports_unsupported_operation_without_forget_advice(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        params = {}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "activate", params, {"host": "root@10.0.0.2", "netbsd4": True})
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
+                    rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        remote_actions.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
+        self.assertIn("only supported for NetBSD4", error["message"])
+        self.assert_neutral_unsupported_device_recovery(error)
 
     def run_activate_against_install(self, *, config_present: bool, version: DeployedVersionProbeResult):
         collector = CollectingSink()

@@ -536,6 +536,7 @@
 "workflow.error.fsck_target_required" = "规划 fsck 前请选择已挂载的 HFS 卷。";
 "workflow.error.mount_wait_invalid" = "挂载等待时间必须是非负整数。";
 "workflow.error.operation_already_running" = "已有另一个操作正在运行。";
+"workflow.error.unsupported_device" = "此 AirPort 不是 Time Capsule 或 AirPort Extreme。TimeCapsuleSMB 仅支持这些型号；不支持 AirPort Express。";
 "workflow.error.operation_could_not_start" = "操作无法启动。";
 "workflow.error.repair_xattrs_depth_invalid" = "最大深度必须留空或为非负整数。";
 "workflow.error.repair_xattrs_path_required" = "扫描前请选择已挂载的 SMB 共享路径。";
@@ -694,9 +695,9 @@
 "backend.recovery.local_network_permission_denied.action.2" = "在“本地网络”中启用 TimeCapsuleSMB。";
 "backend.recovery.local_network_permission_denied.action.3" = "退出并重新打开 TimeCapsuleSMB，然后重试配置。";
 "backend.recovery.unsupported_device.title" = "不支持的设备";
-"backend.recovery.unsupported_device.message" = "此构建中没有适用于检测到的 AirPort 型号或操作系统的安装文件。";
+"backend.recovery.unsupported_device.message" = "检测到的 AirPort 型号或操作系统不支持此操作。";
 "backend.recovery.unsupported_device.action.1" = "检查检测到的型号和操作系统。";
-"backend.recovery.unsupported_device.action.2" = "仅当你有意传入不支持设备的覆盖选项时，才使用命令行工具。";
+"backend.recovery.unsupported_device.action.2" = "TimeCapsuleSMB 支持 AirPort Time Capsule 和 AirPort Extreme。不支持 AirPort Express。";
 "backend.recovery.ssh_compatibility_failed.title" = "SSH 不兼容";
 "backend.recovery.ssh_compatibility_failed.message" = "本地 SSH 客户端无法与 AirPort SSH 服务器协商算法。";
 "backend.recovery.ssh_compatibility_failed.action.1" = "更新 TimeCapsuleSMB，然后重试。";
@@ -717,9 +718,9 @@
 "backend.recovery.operation_failed.action.1" = "查看调试详情。";
 "backend.recovery.operation_failed.action.2" = "解决报告的原因后重试。";
 "backend.recovery.configure.unsupported_device.title" = "不支持的设备";
-"backend.recovery.configure.unsupported_device.message" = "SSH 探测成功，但检测到的硬件或操作系统无法使用随附的安装文件。";
-"backend.recovery.configure.unsupported_device.action.1" = "查看检测到的型号和操作系统。";
-"backend.recovery.configure.unsupported_device.action.2" = "使用受支持的 Apple AirPort Time Capsule 或 AirPort Extreme。";
+"backend.recovery.configure.unsupported_device.message" = "此 AirPort 型号无法运行 TimeCapsuleSMB。";
+"backend.recovery.configure.unsupported_device.action.1" = "TimeCapsuleSMB 支持 AirPort Time Capsule 和 AirPort Extreme。不支持 AirPort Express。";
+"backend.recovery.configure.unsupported_device.action.2" = "请改为添加你的 Time Capsule 或 AirPort Extreme。";
 "backend.recovery.configure.ssh_compatibility_failed.title" = "SSH 不兼容";
 "backend.recovery.configure.ssh_compatibility_failed.message" = "AirPort SSH 服务器只提供旧式算法，本地 SSH 客户端未能协商这些算法。";
 "backend.recovery.configure.ssh_compatibility_failed.action.1" = "更新 TimeCapsuleSMB，然后重试。";
@@ -733,9 +734,9 @@
 "backend.recovery.deploy.validation_failed.action.1" = "打开“诊断”。";
 "backend.recovery.deploy.validation_failed.action.2" = "重试前，先补齐缺失的文件或修正无效的字段。";
 "backend.recovery.deploy.unsupported_device.title" = "没有受支持的安装文件";
-"backend.recovery.deploy.unsupported_device.message" = "检测到的设备与所有随附安装文件的设备系列都不匹配。";
-"backend.recovery.deploy.unsupported_device.action.1" = "检查设备型号和操作系统。";
-"backend.recovery.deploy.unsupported_device.action.2" = "在有受支持的安装文件之前，不要在应用中运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.unsupported_device.message" = "此 AirPort 型号无法运行 TimeCapsuleSMB。";
+"backend.recovery.deploy.unsupported_device.action.1" = "TimeCapsuleSMB 支持 AirPort Time Capsule 和 AirPort Extreme。不支持 AirPort Express。";
+"backend.recovery.deploy.unsupported_device.action.2" = "忘记此设备，然后添加你的 Time Capsule 或 AirPort Extreme。";
 "backend.recovery.deploy.deploy_no_disk_detected.title" = "未检测到内部磁盘";
 "backend.recovery.deploy.deploy_no_disk_detected.message" = "设备未通过 MaSt 报告任何内部磁盘。";
 "backend.recovery.deploy.deploy_no_disk_detected.action.1" = "检查磁盘是否已连接并正确安装。";
@@ -991,6 +992,7 @@
 "timeline.deploy.title.wait_for_reboot_up" = "设备已断开";
 "timeline.stage.checking_ssh" = "正在检查 SSH";
 "timeline.stage.checking_airport_acp" = "正在检查 AirPort ACP";
+"timeline.stage.checking_device_model" = "正在检查设备型号";
 "timeline.stage.confirming_ssh_enable" = "正在确认启用 SSH";
 "timeline.stage.enabling_ssh" = "正在启用 SSH";
 "timeline.stage.finding_devices" = "正在查找设备";

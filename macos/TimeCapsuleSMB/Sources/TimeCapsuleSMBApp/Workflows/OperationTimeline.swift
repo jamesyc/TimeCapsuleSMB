@@ -206,6 +206,8 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.checking_ssh")
         case ("configure", "confirm_enable_ssh"):
             return L10n.string("timeline.stage.confirming_ssh_enable")
+        case ("configure", "check_device_model"):
+            return L10n.string("timeline.stage.checking_device_model")
         case ("configure", "acp_port_probe"):
             return L10n.string("timeline.stage.checking_airport_acp")
         case ("configure", "acp_enable_ssh"):

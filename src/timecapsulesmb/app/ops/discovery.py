@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import discover_payload
+from timecapsulesmb.device.compat import unsupported_syaps
 from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourDiscoverySnapshot,
@@ -36,5 +37,9 @@ def discover_operation(params: dict[str, object], context: AppOperationContext) 
     )
     if isinstance(counts, dict):
         context.update_fields(discovery_counts=counts)
+    if isinstance(devices, list):
+        unsupported = unsupported_syaps(device.get("syap") for device in devices if isinstance(device, dict))
+        if unsupported:
+            context.update_fields(discovery_unsupported_syaps=unsupported)
     context.add_debug_fields(discovery_diagnostics=diagnostics)
     return OperationResult(True, payload)

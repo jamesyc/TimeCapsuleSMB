@@ -175,6 +175,48 @@ class ConfigureServiceTests(unittest.TestCase):
             compatibility=compatibility_from_probe_result(probe_result),
         )
 
+    def make_airport_express_probe_state(self) -> ProbedDeviceState:
+        # What an AirPort Express answers over SSH (v3.1.2 telemetry: NetBSD 4.0_STABLE (ar7240)).
+        probe_result = ProbeResult(
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
+            error=None,
+            os_name="NetBSD",
+            os_release="4.0_STABLE",
+            arch="ar7240",
+            elf_endianness="big",
+        )
+        return ProbedDeviceState(
+            probe_result=probe_result,
+            compatibility=compatibility_from_probe_result(probe_result),
+        )
+
+    def make_ssh_closed_probe_state(self) -> ProbedDeviceState:
+        return ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.CLOSED,
+                error="SSH is not reachable yet.",
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+
+    def configure_request(self, env_path: Path, probe: mock.Mock, **overrides: object) -> ConfigureFlowRequest:
+        fields: dict[str, object] = {
+            "existing": {},
+            "env_path": env_path,
+            "host": "root@10.0.0.2",
+            "password": "pw",
+            "ssh_opts": "-o foo",
+            "configure_id": "config-id",
+            "persist_password": True,
+            "probe": probe,
+        }
+        fields.update(overrides)
+        return ConfigureFlowRequest(**fields)  # type: ignore[arg-type]
+
     def callbacks(self) -> tuple[OperationCallbacks, list[str], list[str], list[dict[str, object]], list[dict[str, object]]]:
         stages: list[str] = []
         logs: list[str] = []
@@ -647,6 +689,104 @@ class ConfigureServiceTests(unittest.TestCase):
                 )
 
         self.assertEqual(raised.exception.code, "unsupported_device")
+
+    def test_run_configure_flow_rejects_unsupported_selected_record_syap_before_ssh_or_acp(self) -> None:
+        probe = mock.Mock(return_value=self.make_probe_state())
+        callbacks, stages, _logs, debug_fields, _update_fields = self.callbacks()
+        before_enable_ssh = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable_ssh:
+                with self.assertRaises(ConfigureFlowError) as raised:
+                    run_configure_flow(
+                        self.configure_request(env_path, probe, selected_record_airport_syap="115"),
+                        callbacks=callbacks,
+                        hooks=ConfigureFlowHooks(before_enable_ssh=before_enable_ssh),
+                    )
+            self.assertFalse(env_path.exists())
+
+        self.assertEqual(raised.exception.code, "unsupported_device")
+        self.assertIn("syAP 115", str(raised.exception))
+        self.assertIn("AirPort Express is not supported", str(raised.exception))
+        probe.assert_not_called()
+        enable_ssh.assert_not_called()
+        before_enable_ssh.assert_not_called()
+        self.assertEqual(stages, ["check_device_model"])
+        self.assertIn(
+            {"configure_failure_reason": "unsupported_device", "discovered_airport_syap": "115"},
+            debug_fields,
+        )
+
+    def test_run_configure_flow_continues_for_supported_or_unusable_selected_record_syap(self) -> None:
+        for syap in ("119", None, "", "bad"):
+            with self.subTest(syap=syap):
+                probe = mock.Mock(return_value=self.make_probe_state())
+                with tempfile.TemporaryDirectory() as tmp:
+                    result = run_configure_flow(
+                        self.configure_request(
+                            Path(tmp) / ".env",
+                            probe,
+                            selected_record_airport_syap=syap,
+                            write_env=lambda _path, _values: None,
+                        )
+                    )
+                probe.assert_called_once()
+                self.assertEqual(result.identity.syap, "119")
+
+    def test_run_configure_flow_ignores_unsupported_syap_from_record_the_host_did_not_come_from(self) -> None:
+        # The record's syAP is still the identity fallback, but a typed host may be
+        # another device, so only selected_record_airport_syap may reject it.
+        probe = mock.Mock(return_value=self.make_probe_state())
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_configure_flow(
+                self.configure_request(
+                    Path(tmp) / ".env",
+                    probe,
+                    discovered_airport_syap="115",
+                    selected_record_airport_syap=None,
+                    write_env=lambda _path, _values: None,
+                )
+            )
+        probe.assert_called_once()
+        self.assertEqual(result.identity.syap, "119")
+
+    def test_run_configure_flow_rejects_airport_express_found_by_ssh_probe(self) -> None:
+        written: list[Mapping[str, str]] = []
+        callbacks, stages, _logs, debug_fields, _update_fields = self.callbacks()
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with self.assertRaises(ConfigureFlowError) as raised:
+                run_configure_flow(
+                    self.configure_request(
+                        env_path,
+                        mock.Mock(return_value=self.make_airport_express_probe_state()),
+                        write_env=lambda _path, values: written.append(values),
+                    ),
+                    callbacks=callbacks,
+                )
+            self.assertFalse(env_path.exists())
+
+        self.assertEqual(raised.exception.code, "unsupported_device")
+        self.assertIn("ar7240 processor", str(raised.exception))
+        self.assertEqual(written, [])
+        self.assertEqual(stages, ["ssh_probe"])
+        self.assertIn({"configure_failure_reason": "unsupported_device"}, debug_fields)
+
+    def test_run_configure_flow_rejects_airport_express_after_enabling_ssh_without_syap(self) -> None:
+        # No Bonjour syAP (a typed IP): ACP still enables SSH, then the probe stops it.
+        probe = mock.Mock(side_effect=[self.make_ssh_closed_probe_state(), self.make_airport_express_probe_state()])
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable_ssh:
+                with mock.patch("timecapsulesmb.services.configure.wait_for_tcp_port_state", return_value=True):
+                    with self.assertRaises(ConfigureFlowError) as raised:
+                        run_configure_flow(self.configure_request(env_path, probe))
+            self.assertFalse(env_path.exists())
+
+        self.assertEqual(raised.exception.code, "unsupported_device")
+        self.assertIn("ar7240", str(raised.exception))
+        enable_ssh.assert_called_once()
+        self.assertEqual(probe.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -93,10 +93,15 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
+    # Shared by causes that are not an unsupported model, such as flash or Activate
+    # on NetBSD 6, so it must not tell the user to forget a working device.
     "unsupported_device": RecoveryInfo(
         "Unsupported device",
-        "The detected AirPort model or OS does not have a deployable payload in this build.",
-        ("Check the detected model and OS.", "Use the CLI only if you intentionally pass unsupported-device overrides."),
+        "This operation is not supported on the detected AirPort model or OS.",
+        (
+            "Check the detected model and OS.",
+            "TimeCapsuleSMB supports AirPort Time Capsule and AirPort Extreme. AirPort Express is not supported.",
+        ),
         retryable=False,
     ),
     "ssh_compatibility_failed": RecoveryInfo(
@@ -146,8 +151,11 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("configure", "unsupported_device"): RecoveryInfo(
         "Unsupported device",
-        "The SSH probe succeeded, but the detected hardware or OS cannot use a bundled payload.",
-        ("Review the detected model and OS.", "Use a supported Apple AirPort Time Capsule or AirPort Extreme."),
+        "This AirPort model cannot run TimeCapsuleSMB.",
+        (
+            "TimeCapsuleSMB supports AirPort Time Capsule and AirPort Extreme. AirPort Express is not supported.",
+            "Add your Time Capsule or AirPort Extreme instead.",
+        ),
         retryable=False,
     ),
     ("configure", "ssh_compatibility_failed"): RecoveryInfo(
@@ -173,8 +181,11 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("deploy", "unsupported_device"): RecoveryInfo(
         "No supported deploy payload",
-        "The detected device does not match a bundled payload family.",
-        ("Check the device model and OS.", "Do not deploy from the GUI until a supported payload is available."),
+        "This AirPort model cannot run TimeCapsuleSMB.",
+        (
+            "TimeCapsuleSMB supports AirPort Time Capsule and AirPort Extreme. AirPort Express is not supported.",
+            "Forget this device, then add your Time Capsule or AirPort Extreme.",
+        ),
         retryable=False,
     ),
     ("deploy", "deploy_no_disk_detected"): RecoveryInfo(

@@ -196,13 +196,19 @@ private struct DeviceCandidateRow: View {
                     .foregroundStyle(.tertiary)
             }
             Spacer()
-            if !device.discoveryModelText.isEmpty {
+            if device.isUnsupportedModel {
+                Label(L10n.string("add_device.state.unsupported"), systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            } else if !device.discoveryModelText.isEmpty {
                 Text(device.discoveryModelText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+        .opacity(device.isUnsupportedModel ? 0.6 : 1)
         .padding(.vertical, 6)
     }
 }

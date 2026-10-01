@@ -11,6 +11,34 @@ final class ContentViewSmokeTests: XCTestCase {
         }
     }
 
+    func testRendersOverviewWithUnsupportedDiscoveredDevice() async throws {
+        let fixture = try await AppViewFixture(
+            responses: [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [
+                        testDiscoveredDevice(name: "Office Capsule", host: "10.0.0.2", supportedModel: true),
+                        testDiscoveredDevice(
+                            id: "bonjour:express",
+                            name: "Living Room Express",
+                            host: "10.0.0.40",
+                            hostname: "express.local.",
+                            syap: "115",
+                            supportedModel: false,
+                            fullname: "Living Room Express._airport._tcp.local."
+                        )
+                    ]))
+                ])
+            ],
+            discoveryWaitsForReadiness: false
+        )
+        fixture.appStore.deviceDiscovery.refresh(timeout: 0.1)
+        try await waitUntilStoreState { fixture.appStore.deviceDiscovery.state == .ready }
+        XCTAssertEqual(fixture.appStore.deviceDiscovery.unsavedDevices.filter(\.isUnsupportedModel).count, 1)
+        fixture.appStore.navigate(to: .allDevices)
+
+        try assertRendersNonBlank(fixture.contentView)
+    }
+
     func testRendersDeviceDashboardRoute() async throws {
         let fixture = try await AppViewFixture()
         let profile = try await fixture.saveProfile(id: "device-one")

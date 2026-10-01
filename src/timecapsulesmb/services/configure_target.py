@@ -22,6 +22,12 @@ class ConfigureTargetResolution:
     selected_record: BonjourResolvedService | None = None
     discovered_airport_syap: str | None = None
 
+    @property
+    def selected_record_airport_syap(self) -> str | None:
+        # A host typed over a selected record may be another device, so the
+        # record's syAP only describes the target when the host came from it.
+        return self.discovered_airport_syap if self.source == "selected_record" else None
+
 
 def selected_record_properties(selected: Mapping[str, object] | None) -> dict[str, str]:
     if selected is None:

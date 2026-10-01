@@ -67,7 +67,7 @@ from timecapsulesmb.checks.smb import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
     DeviceIpv4Entry,
     DeviceIpv4SubnetsProbeResult,
@@ -78,11 +78,14 @@ from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
     ManagerStartupAgeProbeResult,
+    ProbedDeviceState,
+    ProbeResult,
     ProbeStepResult,
     ReadinessProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
+    SshAccessStatus,
 )
 from timecapsulesmb.device.storage import MAST_PROBE_COMMAND, MaStProbeDiagnostics, MaStVolume
 from timecapsulesmb.discovery.bonjour import (
@@ -3714,6 +3717,34 @@ class CheckTests(unittest.TestCase):
         )
         self.assertTrue(run.fatal)
         self.assertTrue(any(result.status == "FAIL" and "unknown-endian" in result.message for result in run.results))
+
+    def test_run_doctor_checks_fails_airport_express_on_processor(self) -> None:
+        probe_result = ProbeResult(
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
+            error=None,
+            os_name="NetBSD",
+            os_release="4.0_STABLE",
+            arch="ar7240",
+            elf_endianness="big",
+        )
+        probe_state = ProbedDeviceState(
+            probe_result=probe_result,
+            compatibility=compatibility_from_probe_result(probe_result),
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
+            extra_patches={"timecapsulesmb.checks.doctor_steps.probe_connection_state": mock.Mock(return_value=probe_state)},
+        )
+        self.assertTrue(run.fatal)
+        self.assertTrue(any(
+            result.status == "FAIL" and "ar7240 processor" in result.message and "AirPort Express" in result.message
+            for result in run.results
+        ))
 
     def test_ssh_opts_use_proxy_detects_proxycommand_and_proxyjump(self) -> None:
         self.assertTrue(ssh_opts_use_proxy("-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))

@@ -151,6 +151,20 @@ final class BackendPayloadTests: XCTestCase {
         XCTAssertEqual(ConfiguredDeviceState(payload: configure).model, "Time Capsule")
     }
 
+    func testDecodesDiscoveredDeviceSupportedModel() throws {
+        for (value, expected) in [(JSONValue.bool(true), true as Bool?), (.bool(false), false), (.null, nil)] {
+            var object: [String: JSONValue] = ["id": .string("bonjour:x"), "name": .string("X"), "syap": .string("115")]
+            if value != .null {
+                object["supported_model"] = value
+            }
+            let payload = try JSONValue.object(object).decode(DiscoveredDevicePayload.self)
+            XCTAssertEqual(payload.supportedModel, expected)
+            let device = DiscoveredDevice(payload: payload, index: 0)
+            XCTAssertEqual(device.supportedModel, expected)
+            XCTAssertEqual(device.isUnsupportedModel, expected == false)
+        }
+    }
+
     func testDecodesDeployDoctorAndMaintenancePayloads() throws {
         let deployResult = try jsonValue("""
         {

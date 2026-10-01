@@ -536,6 +536,7 @@
 "workflow.error.fsck_target_required" = "Selecteer een gekoppeld HFS-volume voordat u fsck plant.";
 "workflow.error.mount_wait_invalid" = "De wachttijd voor koppelen moet een niet-negatief geheel getal zijn.";
 "workflow.error.operation_already_running" = "Er is al een andere bewerking actief.";
+"workflow.error.unsupported_device" = "Dit AirPort-apparaat is geen Time Capsule of AirPort Extreme. TimeCapsuleSMB ondersteunt alleen die modellen; AirPort Express wordt niet ondersteund.";
 "workflow.error.operation_could_not_start" = "Bewerking kon niet starten.";
 "workflow.error.repair_xattrs_depth_invalid" = "Maximumdiepte moet leeg zijn of een niet-negatief geheel getal zijn.";
 "workflow.error.repair_xattrs_path_required" = "Kies het pad naar een gekoppelde SMB-share voordat u gaat scannen.";
@@ -694,9 +695,9 @@
 "backend.recovery.local_network_permission_denied.action.2" = "Schakel TimeCapsuleSMB in onder Lokaal netwerk.";
 "backend.recovery.local_network_permission_denied.action.3" = "Stop TimeCapsuleSMB en open de app weer; probeer daarna opnieuw te configureren.";
 "backend.recovery.unsupported_device.title" = "Niet-ondersteund apparaat";
-"backend.recovery.unsupported_device.message" = "Deze build bevat geen installatiebestanden voor het gedetecteerde AirPort-model of besturingssysteem.";
+"backend.recovery.unsupported_device.message" = "Deze bewerking wordt niet ondersteund op het gedetecteerde AirPort-model of besturingssysteem.";
 "backend.recovery.unsupported_device.action.1" = "Controleer het gedetecteerde model en besturingssysteem.";
-"backend.recovery.unsupported_device.action.2" = "Gebruik de CLI alleen als u bewust overrides voor niet-ondersteunde apparaten opgeeft.";
+"backend.recovery.unsupported_device.action.2" = "TimeCapsuleSMB ondersteunt AirPort Time Capsule en AirPort Extreme. AirPort Express wordt niet ondersteund.";
 "backend.recovery.ssh_compatibility_failed.title" = "SSH niet compatibel";
 "backend.recovery.ssh_compatibility_failed.message" = "De lokale SSH-client kon niet met de SSH-server van de AirPort onderhandelen over algoritmen.";
 "backend.recovery.ssh_compatibility_failed.action.1" = "Werk TimeCapsuleSMB bij en probeer het opnieuw.";
@@ -717,9 +718,9 @@
 "backend.recovery.operation_failed.action.1" = "Bekijk de debuggegevens.";
 "backend.recovery.operation_failed.action.2" = "Los de gemelde oorzaak op en probeer het opnieuw.";
 "backend.recovery.configure.unsupported_device.title" = "Niet-ondersteund apparaat";
-"backend.recovery.configure.unsupported_device.message" = "De SSH-controle is geslaagd, maar geen van de meegeleverde installatiebestanden is geschikt voor de gedetecteerde hardware of het gedetecteerde besturingssysteem.";
-"backend.recovery.configure.unsupported_device.action.1" = "Bekijk het gedetecteerde model en besturingssysteem.";
-"backend.recovery.configure.unsupported_device.action.2" = "Gebruik een ondersteunde Apple AirPort Time Capsule of AirPort Extreme.";
+"backend.recovery.configure.unsupported_device.message" = "Dit AirPort-model kan TimeCapsuleSMB niet uitvoeren.";
+"backend.recovery.configure.unsupported_device.action.1" = "TimeCapsuleSMB ondersteunt AirPort Time Capsule en AirPort Extreme. AirPort Express wordt niet ondersteund.";
+"backend.recovery.configure.unsupported_device.action.2" = "Voeg in plaats daarvan uw Time Capsule of AirPort Extreme toe.";
 "backend.recovery.configure.ssh_compatibility_failed.title" = "SSH niet compatibel";
 "backend.recovery.configure.ssh_compatibility_failed.message" = "De SSH-server van de AirPort bood alleen verouderde algoritmen aan, die de lokale SSH-client niet heeft geaccepteerd.";
 "backend.recovery.configure.ssh_compatibility_failed.action.1" = "Werk TimeCapsuleSMB bij en probeer het opnieuw.";
@@ -733,9 +734,9 @@
 "backend.recovery.deploy.validation_failed.action.1" = "Open Diagnostiek.";
 "backend.recovery.deploy.validation_failed.action.2" = "Verhelp ontbrekende bestanden of ongeldige velden voordat u het opnieuw probeert.";
 "backend.recovery.deploy.unsupported_device.title" = "Geen ondersteunde installatiebestanden";
-"backend.recovery.deploy.unsupported_device.message" = "Het gedetecteerde apparaat past bij geen van de meegeleverde sets installatiebestanden.";
-"backend.recovery.deploy.unsupported_device.action.1" = "Controleer het apparaatmodel en besturingssysteem.";
-"backend.recovery.deploy.unsupported_device.action.2" = "Voer “Samba installeren / bijwerken” niet uit in de app totdat er ondersteunde installatiebestanden beschikbaar zijn.";
+"backend.recovery.deploy.unsupported_device.message" = "Dit AirPort-model kan TimeCapsuleSMB niet uitvoeren.";
+"backend.recovery.deploy.unsupported_device.action.1" = "TimeCapsuleSMB ondersteunt AirPort Time Capsule en AirPort Extreme. AirPort Express wordt niet ondersteund.";
+"backend.recovery.deploy.unsupported_device.action.2" = "Vergeet dit apparaat en voeg daarna uw Time Capsule of AirPort Extreme toe.";
 "backend.recovery.deploy.deploy_no_disk_detected.title" = "Geen interne schijf gedetecteerd";
 "backend.recovery.deploy.deploy_no_disk_detected.message" = "Het apparaat heeft via MaSt geen interne schijf gemeld.";
 "backend.recovery.deploy.deploy_no_disk_detected.action.1" = "Controleer of de schijf is aangesloten en goed vastzit.";
@@ -991,6 +992,7 @@
 "timeline.deploy.title.wait_for_reboot_up" = "Apparaat is offline";
 "timeline.stage.checking_ssh" = "SSH controleren";
 "timeline.stage.checking_airport_acp" = "AirPort ACP controleren";
+"timeline.stage.checking_device_model" = "Apparaatmodel controleren";
 "timeline.stage.confirming_ssh_enable" = "SSH-activering bevestigen";
 "timeline.stage.enabling_ssh" = "Inschakelen van SSH";
 "timeline.stage.finding_devices" = "Apparaten zoeken";

@@ -1049,6 +1049,116 @@ class CliConfigureTests(CliTestCase):
         self.assertIn("probe_supported=false", error)
         self.assertIn("probe_reason_code=", error)
 
+    def airport_express_record(self) -> BonjourResolvedService:
+        return BonjourResolvedService(
+            name="Living Room Express",
+            hostname="Living-Room-Express.local",
+            ipv4=["192.168.1.40"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "115"},
+        )
+
+    def capsule_record(self) -> BonjourResolvedService:
+        return BonjourResolvedService(
+            name="Office Capsule",
+            hostname="Office-Capsule.local",
+            ipv4=["192.168.1.50"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+
+    def test_configure_lists_unsupported_model_and_asks_again_when_it_is_chosen(self) -> None:
+        result = self.run_configure_cli(
+            discovered_records=[self.airport_express_record(), self.capsule_record()],
+            input_side_effect=["1", "2"],
+            prompt_side_effect=self.configure_prompt_defaults(host="root@192.168.1.50"),
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+        )
+
+        self.assertEqual(result.rc, 0)
+        listing = [line for line in result.text.splitlines() if line.startswith("  1. ") or line.startswith("  2. ")]
+        self.assertIn("not supported (not a Time Capsule or AirPort Extreme)", listing[0])
+        self.assertNotIn("not supported", listing[1])
+        self.assertIn("syAP 115", result.text)
+        self.assertIn("Choose another device, or q to skip discovery.", result.text)
+        self.assertIn("Selected: Office Capsule", result.text)
+        self.assertEqual(result.mocks.input.call_count, 2)
+        self.assertEqual(result.values["TC_HOST"], "root@192.168.1.50")
+        probed_hosts = [call.args[0].host for call in result.mocks.probe_connection_state.call_args_list]
+        self.assertEqual(probed_hosts, ["root@192.168.1.50"])
+        payload = self.telemetry_payload("configure_finished")
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["discovery_unsupported_syaps"], ["115"])
+
+    def test_configure_unsupported_model_choice_can_fall_back_to_manual_entry(self) -> None:
+        result = self.run_configure_cli(
+            discovered_records=[self.airport_express_record()],
+            input_side_effect=["1", "q"],
+            prompt_side_effect=self.configure_prompt_defaults(host="root@10.0.0.2"),
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("syAP 115", result.text)
+        self.assertNotIn("Selected: Living Room Express", result.text)
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self._configure_acp_probe_mock.assert_not_called()
+        self.assertEqual(self.telemetry_payload("configure_finished")["discovery_unsupported_syaps"], ["115"])
+
+    def test_configure_selected_supported_or_unusable_syap_record_reaches_prompts(self) -> None:
+        for syap in ("116", "bad"):
+            with self.subTest(syap=syap):
+                record = BonjourResolvedService(
+                    name="Office Capsule",
+                    hostname="Office-Capsule.local",
+                    ipv4=["192.168.1.40"],
+                    services={"_airport._tcp.local."},
+                    properties={"syAP": syap},
+                )
+                result = self.run_configure_cli(
+                    discovered_records=[record],
+                    input_side_effect=["1"],
+                    prompt_side_effect=self.configure_prompt_defaults(host="root@192.168.1.40"),
+                    probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+                )
+                self.assertEqual(result.rc, 0)
+                result.mocks.prompt.assert_called()
+                result.mocks.probe_connection_state.assert_called()
+                self.assertNotIn("discovery_unsupported_syaps", self.telemetry_payload("configure_finished"))
+
+    def test_configure_rejects_airport_express_found_by_ssh_probe(self) -> None:
+        # A record without syAP (or a typed IP) reaches SSH; the CPU check stops it.
+        record = BonjourResolvedService(
+            name="Living Room Express",
+            hostname="Living-Room-Express.local",
+            ipv4=["192.168.1.40"],
+            services={"_smb._tcp.local."},
+            properties={},
+        )
+        probe_result = ProbeResult(
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
+            error=None,
+            os_name="NetBSD",
+            os_release="4.0_STABLE",
+            arch="ar7240",
+            elf_endianness="big",
+        )
+
+        result = self.run_configure_cli(
+            ensure_install_id=True,
+            discovered_records=[record],
+            input_side_effect=["1"],
+            prompt_side_effect=self.configure_prompt_defaults(host="root@192.168.1.40"),
+            probe_state=self.make_probe_state(probe_result),
+            raises=SystemExit,
+        )
+
+        self.assertIn("ar7240 processor", str(result.exception))
+        result.mocks.write_env_file.assert_not_called()
+        error = self.configure_finished_error()
+        self.assertIn("stage=ssh_probe", error)
+        self.assertIn("probe_reason_code=unsupported_arch", error)
+
     def test_configure_telemetry_records_elf_endianness_probe_detail(self) -> None:
         probe_result = ProbeResult(
             ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
@@ -1667,13 +1777,16 @@ class CliConfigureTests(CliTestCase):
         self.assertNotIn("Airport Utility syAP code", text)
 
     def test_configure_discovered_invalid_syap_uses_probed_syap_after_acp(self) -> None:
+        # A syAP that is not a model code is ignored and the probed one wins. A
+        # well-formed code outside the model table instead names another AirPort
+        # model and stops configure (see the unsupported-syAP tests below).
         seen_defaults = {}
         record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
             services={"_airport._tcp.local.", "_smb._tcp.local."},
-            properties={"syAP": "999"},
+            properties={"syAP": "bad"},
         )
         prompt_values = iter([
             "rootpw",
@@ -2658,7 +2771,8 @@ class ConfigurePromptEncodingTests(unittest.TestCase):
         self.assertIn("could not be read as", output.getvalue())
 
     def test_device_choice_asks_again_after_undecodable_input(self) -> None:
-        records = [SimpleNamespace(name="Capsule", display_host=lambda: "capsule.local", ipv4=["10.0.1.2"], ipv6=[])]
+        # Stands in for BonjourResolvedService, whose properties default to {}.
+        records = [SimpleNamespace(name="Capsule", display_host=lambda: "capsule.local", ipv4=["10.0.1.2"], ipv6=[], properties={})]
         with mock.patch("builtins.input", side_effect=[self.bad_decode(), "1"]):
             with redirect_stdout(io.StringIO()):
                 chosen = configure.choose_device(records)

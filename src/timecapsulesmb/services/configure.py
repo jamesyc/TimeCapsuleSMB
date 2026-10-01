@@ -18,7 +18,12 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
-from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
+from timecapsulesmb.device.compat import (
+    DeviceCompatibility,
+    airport_syap_supported,
+    render_compatibility_message,
+    unsupported_syap_message,
+)
 from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, probe_connection_state
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
@@ -28,6 +33,9 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 
 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
+# The stage configure fails in when the selected Bonjour record's syAP names an
+# unsupported model. The CLI asks for another device before it gets this far.
+CHECK_DEVICE_MODEL_STAGE = "check_device_model"
 
 
 class ConfigureFlowError(Exception):
@@ -60,6 +68,10 @@ class ConfigureFlowRequest:
     configure_id: str
     persist_password: bool
     discovered_airport_syap: str | None = None
+    # The syAP of the Bonjour record the host came from. Unlike
+    # discovered_airport_syap, it is unset when the user typed another host, so
+    # it can reject this device before ACP enables SSH and reboots it.
+    selected_record_airport_syap: str | None = None
     enable_ssh: bool = True
     ssh_wait_timeout: int = 180
     verbose_wait: bool = True
@@ -200,6 +212,17 @@ def run_configure_flow(
 ) -> ConfigureFlowResult:
     callbacks = callbacks or OperationCallbacks()
     hooks = hooks or ConfigureFlowHooks()
+
+    if airport_syap_supported(request.selected_record_airport_syap) is False:
+        callbacks.stage(CHECK_DEVICE_MODEL_STAGE)
+        callbacks.debug(
+            configure_failure_reason="unsupported_device",
+            discovered_airport_syap=request.selected_record_airport_syap,
+        )
+        raise ConfigureFlowError(
+            unsupported_syap_message(request.selected_record_airport_syap or ""),
+            code="unsupported_device",
+        )
 
     values = build_configure_env_values(
         request.existing,

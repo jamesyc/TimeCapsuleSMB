@@ -544,6 +544,7 @@ func testDiscoveredDevice(
     linkLocalOnly: Bool = false,
     syap: String? = "119",
     model: String? = "Time Capsule",
+    supportedModel: Bool? = nil,
     fullname: String = "Office Capsule._airport._tcp.local.",
     selectedRecord: JSONValue? = nil
 ) -> JSONValue {
@@ -562,7 +563,7 @@ func testDiscoveredDevice(
         model: model ?? "",
         fullname: fullname
     )
-    return .object([
+    var payload: [String: JSONValue] = [
         "id": .string(id),
         "name": .string(name),
         "host": .string(host),
@@ -578,7 +579,12 @@ func testDiscoveredDevice(
         "service_type": .string("_airport._tcp.local."),
         "fullname": .string(fullname),
         "selected_record": record
-    ])
+    ]
+    // Older helpers send no supported_model; leave it out unless a test sets it.
+    if let supportedModel {
+        payload["supported_model"] = .bool(supportedModel)
+    }
+    return .object(payload)
 }
 
 /// A result payload carrying only a summary, keyed the way the helper sends it.

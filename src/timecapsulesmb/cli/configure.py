@@ -38,6 +38,7 @@ from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
 from timecapsulesmb.services.configure_target import resolve_configure_target
+from timecapsulesmb.device.compat import airport_syap_supported, unsupported_syap_message, unsupported_syaps
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     probe_connection_state,
@@ -88,13 +89,18 @@ def confirm(prompt_text: str, default_no: bool = False) -> bool:
     return confirm_prompt(prompt_text, default=not default_no, eof_default=False)
 
 
+def record_has_unsupported_model(record: BonjourResolvedService) -> bool:
+    return airport_syap_supported(record.properties.get("syAP")) is False
+
+
 def list_devices(records: Sequence[BonjourResolvedService]) -> None:
     print("Found devices:")
     for i, record in enumerate(records, start=1):
         pref = record.display_host() or "-"
         ipv4 = ",".join(record.ipv4) if record.ipv4 else "-"
         ipv6 = ",".join(record.ipv6) if record.ipv6 else "-"
-        print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4} | IPv6: {ipv6}")
+        support = " | not supported (not a Time Capsule or AirPort Extreme)" if record_has_unsupported_model(record) else ""
+        print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4} | IPv6: {ipv6}{support}")
 
 
 def choose_device(records: Sequence[BonjourResolvedService]) -> Optional[BonjourResolvedService]:
@@ -113,19 +119,29 @@ def choose_device(records: Sequence[BonjourResolvedService]) -> Optional[Bonjour
         if not (1 <= idx <= len(records)):
             print("Out of range.")
             continue
-        return records[idx - 1]
+        record = records[idx - 1]
+        if record_has_unsupported_model(record):
+            # Ask again rather than exit, so the user can pick their Time Capsule.
+            print(unsupported_syap_message(record.properties.get("syAP") or ""))
+            print("Choose another device, or q to skip discovery.")
+            continue
+        return record
 
 
 def discover_default_record(
     existing: dict[str, str],
     *,
     on_diagnostics: Callable[[BonjourMergedDiscoveryDiagnostics], None] | None = None,
+    on_unsupported_syaps: Callable[[list[str]], None] | None = None,
 ) -> Optional[BonjourResolvedService]:
     print("Attempting to discover Time Capsule/Airport Extreme devices on the local network via mDNS...", flush=True)
     snapshot, diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=DEFAULT_BROWSE_TIMEOUT_SEC)
     if on_diagnostics is not None:
         on_diagnostics(diagnostics)
     records = snapshot.resolved
+    unsupported = unsupported_syaps(record.properties.get("syAP") for record in records)
+    if unsupported and on_unsupported_syaps is not None:
+        on_unsupported_syaps(unsupported)
     if not records:
         print("No Time Capsule/Airport Extreme devices discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
@@ -479,6 +495,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     on_diagnostics=lambda diagnostics: command_context.add_debug_fields(
                         bonjour_discovery=diagnostics,
                     ),
+                    on_unsupported_syaps=lambda syaps: command_context.update_fields(
+                        discovery_unsupported_syaps=syaps,
+                    ),
                 )
             except Exception as exc:
                 error_text = exception_summary(exc)
@@ -576,6 +595,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         configure_id=configure_id,
                         persist_password=True,
                         discovered_airport_syap=target.discovered_airport_syap,
+                        selected_record_airport_syap=target.selected_record_airport_syap,
                         enable_ssh=True,
                         verbose_wait=not args.json,
                         internal_share_use_disk_root=args.internal_share_use_disk_root,

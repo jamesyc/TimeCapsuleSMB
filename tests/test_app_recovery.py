@@ -25,6 +25,28 @@ class AppRecoveryTests(unittest.TestCase):
             ],
         )
 
+    def test_unsupported_device_recovery_names_express_only_where_the_model_is_the_cause(self) -> None:
+        # configure and deploy fail on unsupported_device only for an unsupported model.
+        for operation in ("configure", "deploy"):
+            with self.subTest(operation=operation):
+                recovery = recovery_for(operation, "unsupported_device")
+                self.assertEqual(recovery["localization_key"], f"{operation}.unsupported_device")
+                self.assertEqual(recovery["message"], "This AirPort model cannot run TimeCapsuleSMB.")
+                self.assertFalse(recovery["retryable"])
+        self.assertIn("Forget this device", recovery_for("deploy", "unsupported_device")["actions"][1])
+        self.assertEqual(
+            recovery_for("configure", "unsupported_device")["actions"][1],
+            "Add your Time Capsule or AirPort Extreme instead.",
+        )
+        # flash and activate also use the code for operations a supported device
+        # cannot do (NetBSD 6), so they get the neutral entry and no "Forget" advice.
+        for operation in ("flash", "activate"):
+            with self.subTest(operation=operation):
+                recovery = recovery_for(operation, "unsupported_device")
+                self.assertEqual(recovery["localization_key"], "unsupported_device")
+                self.assertEqual(recovery["message"], "This operation is not supported on the detected AirPort model or OS.")
+                self.assertFalse(any("Forget" in action for action in recovery["actions"]))
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "remote_error", stage="wait_for_reboot_up")
 

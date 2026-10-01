@@ -12,7 +12,7 @@ from unittest import mock
 from timecapsulesmb.cli import deploy
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_NO_DOWN_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
-from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.compat import DeviceCompatibility, classify_device_compatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
@@ -1239,6 +1239,21 @@ class CliDeployTests(CliTestCase):
         self.assertIn("Linux", text)
         self.assertIn("No deployable payload is available", text)
 
+
+    def test_deploy_rejects_airport_express_even_with_allow_unsupported(self) -> None:
+        # The real classification of an AirPort Express (NetBSD 4 on MIPS ar7240),
+        # not a hand-built object: ARM payloads cannot run on it, so no override helps.
+        express = classify_device_compatibility("NetBSD", "4.0_STABLE", "ar7240", "big")
+        for argv in (["--dry-run"], ["--dry-run", "--allow-unsupported"]):
+            with self.subTest(argv=argv):
+                result = self.run_deploy_cli(
+                    argv,
+                    values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
+                    compatibility=express,
+                    raises=SystemExit,
+                )
+                self.assertIn("ar7240 processor", str(result.exception))
+                result.mocks.wait_for_mast_volumes_conn.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

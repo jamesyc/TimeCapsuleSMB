@@ -52,6 +52,7 @@ enum WorkflowLocalError: Equatable {
     case flashModeReadOnly
     case flashPlanRequired
     case flashPlanStale
+    case unsupportedDevice
 
     var code: String {
         switch self {
@@ -91,6 +92,8 @@ enum WorkflowLocalError: Equatable {
             return "flash_plan_required"
         case .flashPlanStale:
             return "flash_plan_stale"
+        case .unsupportedDevice:
+            return "unsupported_device"
         }
     }
 

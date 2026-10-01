@@ -83,6 +83,13 @@ class DiscoveryDeviceCandidateTests(unittest.TestCase):
         self.assertEqual(payload["selected_record"]["fullname"], "Office._airport._tcp.local.")
         self.assertEqual(payload["selected_record"]["ipv4"], ["10.0.0.2"])
 
+    def test_json_payload_marks_whether_the_advertised_model_is_supported(self) -> None:
+        for syap, expected in (("119", True), ("106", True), ("115", False), ("", None), ("bad", None)):
+            with self.subTest(syap=syap):
+                record = self.record("Office", "_airport._tcp.local.", ["10.0.0.2"], syap=syap)
+                payload = device_candidate_to_jsonable(device_candidates_from_records([record])[0])
+                self.assertIs(payload["supported_model"], expected)
+
     def test_derives_full_model_identifier_from_syap_when_model_is_missing(self) -> None:
         record = self.record("Office", "_airport._tcp.local.", ["10.0.0.2"], syap="116", model="")
 

@@ -136,6 +136,27 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertEqual(target.host, "root@10.0.0.9")
         self.assertEqual(target.source, "explicit_host")
 
+    def test_selected_record_syap_describes_target_only_when_host_came_from_record(self) -> None:
+        record = BonjourResolvedService(
+            "Express",
+            "express.local.",
+            "_airport._tcp.local.",
+            ipv4=["10.0.0.40"],
+            properties={"syAP": "115"},
+        )
+
+        from_record = resolve_configure_target(explicit_host="", selected_record=record, existing={}, ssh_opts="")
+        typed = resolve_configure_target(explicit_host="root@10.0.0.9", selected_record=record, existing={}, ssh_opts="")
+        saved = resolve_configure_target(explicit_host="", selected_record=None, existing={"TC_HOST": "root@10.0.0.2"}, ssh_opts="")
+
+        self.assertEqual(from_record.source, "selected_record")
+        self.assertEqual(from_record.selected_record_airport_syap, "115")
+        self.assertEqual(typed.source, "explicit_host")
+        self.assertEqual(typed.discovered_airport_syap, "115")
+        self.assertIsNone(typed.selected_record_airport_syap)
+        self.assertEqual(saved.source, "existing_config")
+        self.assertIsNone(saved.selected_record_airport_syap)
+
     def test_jsonable_selected_record_is_parsed_for_resolution(self) -> None:
         record = bonjour_record_from_selected_record({
             "name": "Office",

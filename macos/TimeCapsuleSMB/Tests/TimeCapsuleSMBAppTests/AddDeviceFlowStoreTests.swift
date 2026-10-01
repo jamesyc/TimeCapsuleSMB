@@ -899,6 +899,137 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
+    func testSelectingUnsupportedModelExplainsAndNeverRunsConfigure() async throws {
+        let express = testDiscoveredDevice(
+            id: "bonjour:express",
+            name: "Living Room Express",
+            host: "10.0.0.40",
+            syap: "115",
+            model: "AirPort10,115",
+            supportedModel: false,
+            fullname: "Living Room Express._airport._tcp.local."
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [express]))
+            ])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        // A lone unsupported device is listed but not preselected.
+        XCTAssertNil(fixture.store.selectedDeviceID)
+        let device = try XCTUnwrap(fixture.store.devices.first)
+        XCTAssertTrue(device.isUnsupportedModel)
+
+        fixture.store.password = "typed-before-click"
+        fixture.store.select(device)
+
+        XCTAssertEqual(fixture.store.state, .unsupported)
+        XCTAssertEqual(fixture.store.selectedDeviceID, device.id)
+        XCTAssertEqual(fixture.store.password, "")
+        XCTAssertEqual(fixture.store.error?.code, "unsupported_device")
+        XCTAssertEqual(fixture.store.error?.message, L10n.string("workflow.error.unsupported_device"))
+        XCTAssertNotEqual(fixture.store.error?.message, "workflow.error.unsupported_device")
+
+        fixture.store.password = "pw"
+        XCTAssertFalse(fixture.store.canConfigure)
+        fixture.store.runConfigure()
+        XCTAssertEqual(fixture.store.state, .unsupported)
+        XCTAssertEqual(fixture.runner.calls.count, 1)
+        XCTAssertEqual(fixture.registry.profiles, [])
+    }
+
+    func testUnsupportedModelWinsOverMatchingSavedProfile() async throws {
+        let record = testDeviceRecord(
+            name: "Office Capsule",
+            ipv4: ["10.0.0.2"],
+            syap: "115",
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let unsupported = testDiscoveredDevice(
+            id: "bonjour:office capsule._airport._tcp.local.",
+            name: "Office Capsule",
+            host: "10.0.0.2",
+            syap: "115",
+            supportedModel: false,
+            fullname: "Office Capsule._airport._tcp.local.",
+            selectedRecord: record
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record], devices: [unsupported]))
+            ])
+        ])
+        let existing = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        let device = try XCTUnwrap(fixture.store.devices.first)
+        // Without the model check this selection would route to the saved profile.
+        XCTAssertEqual(fixture.registry.matchingProfile(for: device)?.id, existing.id)
+        fixture.store.select(device)
+
+        XCTAssertEqual(fixture.store.state, .unsupported)
+        XCTAssertNil(fixture.store.savedProfile)
+    }
+
+    func testSelectingSupportedDeviceAfterUnsupportedClearsTheExplanation() async throws {
+        let express = testDiscoveredDevice(
+            id: "bonjour:express",
+            name: "Living Room Express",
+            host: "10.0.0.40",
+            hostname: "express.local.",
+            syap: "115",
+            supportedModel: false,
+            fullname: "Living Room Express._airport._tcp.local."
+        )
+        let capsule = testDiscoveredDevice(
+            id: "bonjour:capsule",
+            name: "Office Capsule",
+            host: "10.0.0.2",
+            supportedModel: true
+        )
+        let unknown = testDiscoveredDevice(
+            id: "bonjour:unknown",
+            name: "Unknown AirPort",
+            host: "10.0.0.5",
+            hostname: "unknown.local.",
+            syap: nil,
+            fullname: "Unknown AirPort._airport._tcp.local."
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [express, capsule, unknown]))
+            ])
+        ])
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        let devices = fixture.store.devices
+        let expressDevice = try XCTUnwrap(devices.first { $0.id == "bonjour:express" })
+        let capsuleDevice = try XCTUnwrap(devices.first { $0.id == "bonjour:capsule" })
+        let unknownDevice = try XCTUnwrap(devices.first { $0.id == "bonjour:unknown" })
+
+        fixture.store.select(expressDevice)
+        XCTAssertEqual(fixture.store.state, .unsupported)
+
+        fixture.store.select(capsuleDevice)
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+        XCTAssertNil(fixture.store.error)
+        fixture.store.password = "pw"
+        XCTAssertTrue(fixture.store.canConfigure)
+
+        // No model verdict (nil) stays selectable; configure decides after SSH.
+        fixture.store.select(unknownDevice)
+        XCTAssertFalse(unknownDevice.isUnsupportedModel)
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+        XCTAssertTrue(fixture.store.canConfigure)
+    }
+
     func testSavedDiscoveryConfigureUsesCurrentRecordAfterIpChanges() async throws {
         let oldRecord = testDeviceRecord(
             name: "Office Capsule",

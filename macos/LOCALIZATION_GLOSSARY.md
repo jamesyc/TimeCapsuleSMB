@@ -198,6 +198,7 @@ A failed operation shows the error line `backend.error.<operation>.<code>` (or `
 - Recovery messages carry no `%` placeholders except the slow-device message's `%@` (the device name).
 - Waking a sleeping disk is not *activating* it: Spanish *saque el disco del reposo*/*despierte el disco* and Italian *risveglia il disco*, never *reactivar*/*riattivare*, which belong to the Activate action.
 - "The device would not keep it mounted for TimeCapsuleSMB" means the device's disk manager refused to hold the volume mounted for the install; it is not a mount failure.
+- `unsupported_device` has two meanings. Configure and deploy use it for an AirPort model that cannot run TimeCapsuleSMB (an AirPort Express); flash and Activate also use it for an operation a supported device cannot do (NetBSD 6). Only the `configure.unsupported_device` and `deploy.unsupported_device` entries may say the model cannot run TimeCapsuleSMB or advise forgetting the device; keep the generic `unsupported_device` entry neutral in every language.
 
 ## Plurals
 

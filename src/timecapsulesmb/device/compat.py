@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from timecapsulesmb.core.config import AIRPORT_DEVICE_IDENTITIES, AIRPORT_SYAP_TO_MODEL
+from timecapsulesmb.core.config import AIRPORT_DEVICE_IDENTITIES, AIRPORT_SYAP_TO_MODEL, VALID_AIRPORT_SYAP_CODES
 from timecapsulesmb.device.errors import DeviceError
 
 
@@ -18,6 +19,12 @@ PAYLOAD_FAMILY_NETBSD6 = "netbsd6_samba4"
 PAYLOAD_FAMILY_NETBSD4LE = "netbsd4le_samba4"
 PAYLOAD_FAMILY_NETBSD4BE = "netbsd4be_samba4"
 NETBSD4_PAYLOAD_FAMILIES = frozenset((PAYLOAD_FAMILY_NETBSD4LE, PAYLOAD_FAMILY_NETBSD4BE))
+# `uname -m` is evbarm on every Time Capsule and AirPort Extreme in telemetry,
+# both NetBSD 4 byte orders and NetBSD 6. earmv4 appeared once in telemetry and in
+# test fixtures; it is ARM, so accepting it is harmless. Our payloads are ARM-only.
+# The AirPort Express runs NetBSD 4 on a MIPS ar7240 and would otherwise pass the
+# release and endianness checks as NetBSD 4 big-endian.
+SUPPORTED_ARCHES = frozenset({"evbarm", "earmv4"})
 
 
 class ProbeFacts(Protocol):
@@ -111,6 +118,38 @@ class DeviceCompatibility:
         return self.model_candidates[0] if len(self.model_candidates) == 1 else None
 
 
+def airport_syap_supported(syap: str | None) -> bool | None:
+    """Whether a Bonjour-advertised syAP names a supported model.
+
+    None means the value cannot tell us: missing or not a decimal model code.
+    Each syAP belongs to one model, so a well-formed code outside our table is
+    another AirPort, such as an AirPort Express.
+    """
+    value = (syap or "").strip()
+    if not value.isascii() or not value.isdigit():
+        return None
+    return str(int(value)) in VALID_AIRPORT_SYAP_CODES
+
+
+def unsupported_syaps(syaps: Iterable[str | None]) -> list[str]:
+    """Distinct advertised syAPs of unsupported models, for discovery telemetry.
+
+    The app and CLI pickers stop on these before configure runs, so discovery
+    is the only place that sees which codes unsupported AirPorts advertise.
+    """
+    return sorted(
+        {str(int(value.strip())) for value in syaps if value is not None and airport_syap_supported(value) is False},
+        key=int,
+    )
+
+
+def unsupported_syap_message(syap: str) -> str:
+    return (
+        f"The selected AirPort reports model code syAP {syap.strip()}, which is not an AirPort Time Capsule "
+        "or AirPort Extreme. TimeCapsuleSMB supports only those models; AirPort Express is not supported."
+    )
+
+
 def require_compatibility(compat: DeviceCompatibility | None, *, fallback_error: str | None = None) -> DeviceCompatibility:
     if compat is None:
         raise DeviceError(fallback_error or "Failed to determine remote device OS compatibility.")
@@ -122,6 +161,12 @@ def render_compatibility_message(compat: DeviceCompatibility) -> str:
         return (
             f"Unsupported device OS: {compat.os_name or 'unknown'} {compat.os_release or 'unknown'}. "
             "This repo currently supports NetBSD 4 and NetBSD 6 AirPort storage devices."
+        )
+    if compat.reason_code == "unsupported_arch":
+        return (
+            f"Detected NetBSD {compat.os_release} on a {compat.arch or 'unknown'} processor. "
+            "TimeCapsuleSMB runs only on AirPort Time Capsule and AirPort Extreme base stations, "
+            "which use ARM processors. This is likely an AirPort Express, which is not supported."
         )
     if compat.reason_code == "unsupported_netbsd6_endianness":
         return (
@@ -169,6 +214,18 @@ def classify_device_compatibility(
             device_generation="unknown",
             supported=False,
             reason_code="unsupported_os",
+        )
+
+    if normalized_arch not in SUPPORTED_ARCHES:
+        return DeviceCompatibility(
+            os_name=normalized_name,
+            os_release=normalized_release,
+            arch=normalized_arch,
+            elf_endianness=normalized_endianness,
+            payload_family=None,
+            device_generation="unknown",
+            supported=False,
+            reason_code="unsupported_arch",
         )
 
     major = normalized_release.split(".", 1)[0]

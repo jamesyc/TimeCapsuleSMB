@@ -210,6 +210,8 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
     let linkLocalOnly: Bool
     let syap: String?
     let model: String?
+    /// nil when the advertised syAP cannot tell; false for another AirPort model.
+    let supportedModel: Bool?
     let serviceType: String
     let fullname: String
     let selectedRecord: JSONValue
@@ -227,6 +229,7 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
         case linkLocalOnly = "link_local_only"
         case syap
         case model
+        case supportedModel = "supported_model"
         case serviceType = "service_type"
         case fullname
         case selectedRecord = "selected_record"
@@ -246,6 +249,7 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
         self.linkLocalOnly = try container.decodeIfPresent(Bool.self, forKey: .linkLocalOnly) ?? false
         self.syap = try container.decodeIfPresent(String.self, forKey: .syap)
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.supportedModel = try container.decodeIfPresent(Bool.self, forKey: .supportedModel)
         self.serviceType = try container.decodeIfPresent(String.self, forKey: .serviceType) ?? ""
         self.fullname = try container.decodeIfPresent(String.self, forKey: .fullname) ?? ""
         self.selectedRecord = try container.decodeIfPresent(JSONValue.self, forKey: .selectedRecord) ?? .null

@@ -536,6 +536,7 @@
 "workflow.error.fsck_target_required" = "Seleziona un volume HFS montato prima di pianificare fsck.";
 "workflow.error.mount_wait_invalid" = "L’attesa di montaggio deve essere un numero intero non negativo.";
 "workflow.error.operation_already_running" = "Un’altra operazione è già in esecuzione.";
+"workflow.error.unsupported_device" = "Questo AirPort non è una Time Capsule né una AirPort Extreme. TimeCapsuleSMB supporta solo questi modelli; AirPort Express non è supportato.";
 "workflow.error.operation_could_not_start" = "Impossibile avviare l’operazione.";
 "workflow.error.repair_xattrs_depth_invalid" = "La profondità massima deve essere vuota o un numero intero non negativo.";
 "workflow.error.repair_xattrs_path_required" = "Scegli un percorso di condivisione SMB montato prima della scansione.";
@@ -694,9 +695,9 @@
 "backend.recovery.local_network_permission_denied.action.2" = "Abilita TimeCapsuleSMB in Rete locale.";
 "backend.recovery.local_network_permission_denied.action.3" = "Esci da TimeCapsuleSMB e riaprilo, poi riprova la configurazione del dispositivo.";
 "backend.recovery.unsupported_device.title" = "Dispositivo non supportato";
-"backend.recovery.unsupported_device.message" = "Per il modello AirPort o il sistema operativo rilevato non ci sono file di installazione in questa build.";
+"backend.recovery.unsupported_device.message" = "Questa operazione non è supportata sul modello AirPort o sul sistema operativo rilevato.";
 "backend.recovery.unsupported_device.action.1" = "Controlla il modello e il sistema operativo rilevati.";
-"backend.recovery.unsupported_device.action.2" = "Usa la riga di comando solo se vuoi scavalcare di proposito il blocco dei dispositivi non supportati.";
+"backend.recovery.unsupported_device.action.2" = "TimeCapsuleSMB supporta AirPort Time Capsule e AirPort Extreme. AirPort Express non è supportato.";
 "backend.recovery.ssh_compatibility_failed.title" = "Errore di compatibilità SSH";
 "backend.recovery.ssh_compatibility_failed.message" = "Il client SSH locale non è riuscito a negoziare gli algoritmi con il server SSH di AirPort.";
 "backend.recovery.ssh_compatibility_failed.action.1" = "Aggiorna TimeCapsuleSMB e riprova.";
@@ -717,9 +718,9 @@
 "backend.recovery.operation_failed.action.1" = "Controlla i dettagli di debug.";
 "backend.recovery.operation_failed.action.2" = "Riprova dopo aver risolto la causa segnalata.";
 "backend.recovery.configure.unsupported_device.title" = "Dispositivo non supportato";
-"backend.recovery.configure.unsupported_device.message" = "La verifica tramite SSH è riuscita, ma l’hardware o il sistema operativo rilevato non può usare nessuno dei file di installazione inclusi.";
-"backend.recovery.configure.unsupported_device.action.1" = "Rivedi il modello e il sistema operativo rilevati.";
-"backend.recovery.configure.unsupported_device.action.2" = "Usa un Apple AirPort Time Capsule o AirPort Extreme supportato.";
+"backend.recovery.configure.unsupported_device.message" = "Questo modello AirPort non può eseguire TimeCapsuleSMB.";
+"backend.recovery.configure.unsupported_device.action.1" = "TimeCapsuleSMB supporta AirPort Time Capsule e AirPort Extreme. AirPort Express non è supportato.";
+"backend.recovery.configure.unsupported_device.action.2" = "Aggiungi invece la tua Time Capsule o AirPort Extreme.";
 "backend.recovery.configure.ssh_compatibility_failed.title" = "Errore di compatibilità SSH";
 "backend.recovery.configure.ssh_compatibility_failed.message" = "Il server SSH di AirPort ha offerto solo algoritmi obsoleti, che il client SSH locale non ha negoziato.";
 "backend.recovery.configure.ssh_compatibility_failed.action.1" = "Aggiorna TimeCapsuleSMB e riprova.";
@@ -733,9 +734,9 @@
 "backend.recovery.deploy.validation_failed.action.1" = "Apri Diagnostica.";
 "backend.recovery.deploy.validation_failed.action.2" = "Correggi i file mancanti o i campi non validi prima di riprovare.";
 "backend.recovery.deploy.unsupported_device.title" = "Nessun file di installazione supportato";
-"backend.recovery.deploy.unsupported_device.message" = "Nessuna delle varianti dei file di installazione inclusi corrisponde al dispositivo rilevato.";
-"backend.recovery.deploy.unsupported_device.action.1" = "Controlla il modello e il sistema operativo del dispositivo.";
-"backend.recovery.deploy.unsupported_device.action.2" = "Non eseguire “Installa/Aggiorna Samba” dall’app finché non sono disponibili file di installazione supportati.";
+"backend.recovery.deploy.unsupported_device.message" = "Questo modello AirPort non può eseguire TimeCapsuleSMB.";
+"backend.recovery.deploy.unsupported_device.action.1" = "TimeCapsuleSMB supporta AirPort Time Capsule e AirPort Extreme. AirPort Express non è supportato.";
+"backend.recovery.deploy.unsupported_device.action.2" = "Dimentica questo dispositivo, poi aggiungi la tua Time Capsule o AirPort Extreme.";
 "backend.recovery.deploy.deploy_no_disk_detected.title" = "Nessun disco interno rilevato";
 "backend.recovery.deploy.deploy_no_disk_detected.message" = "Il dispositivo non ha segnalato alcun disco interno tramite MaSt.";
 "backend.recovery.deploy.deploy_no_disk_detected.action.1" = "Controlla che il disco sia collegato e inserito correttamente.";
@@ -991,6 +992,7 @@
 "timeline.deploy.title.wait_for_reboot_up" = "Dispositivo offline";
 "timeline.stage.checking_ssh" = "Verifica SSH";
 "timeline.stage.checking_airport_acp" = "Verifica AirPort ACP";
+"timeline.stage.checking_device_model" = "Verifica del modello del dispositivo";
 "timeline.stage.confirming_ssh_enable" = "Conferma dell’abilitazione di SSH";
 "timeline.stage.enabling_ssh" = "Abilitazione SSH";
 "timeline.stage.finding_devices" = "Ricerca dispositivi";

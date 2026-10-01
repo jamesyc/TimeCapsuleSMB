@@ -9,6 +9,7 @@ struct DiscoveredDevice: Identifiable, Equatable {
     let networkAddresses: [DeviceNetworkAddress]
     let syap: String?
     let model: String?
+    let supportedModel: Bool?
     let rawRecord: JSONValue
 
     var host: String { connectionTarget }
@@ -24,6 +25,7 @@ struct DiscoveredDevice: Identifiable, Equatable {
         networkAddresses: [DeviceNetworkAddress],
         syap: String?,
         model: String?,
+        supportedModel: Bool? = nil,
         rawRecord: JSONValue
     ) {
         self.id = id
@@ -34,6 +36,7 @@ struct DiscoveredDevice: Identifiable, Equatable {
         self.networkAddresses = networkAddresses
         self.syap = syap
         self.model = model
+        self.supportedModel = supportedModel
         self.rawRecord = rawRecord
     }
 
@@ -58,7 +61,15 @@ struct DiscoveredDevice: Identifiable, Equatable {
         self.networkAddresses = identity.addresses
         self.syap = Self.nonEmpty(payload.syap)
         self.model = Self.nonEmpty(payload.model) ?? Self.recordProperty(payload.selectedRecord, keys: ["model", "am"])
+        self.supportedModel = payload.supportedModel
         self.rawRecord = payload.selectedRecord
+    }
+
+    /// The helper's model table says this AirPort cannot run TimeCapsuleSMB,
+    /// such as an AirPort Express. Unknown (nil) stays selectable; configure
+    /// rejects it after SSH if it turns out to be unsupported.
+    var isUnsupportedModel: Bool {
+        supportedModel == false
     }
 
     var fullname: String? {

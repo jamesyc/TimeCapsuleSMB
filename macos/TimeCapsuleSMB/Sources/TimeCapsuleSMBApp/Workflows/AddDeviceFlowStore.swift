@@ -165,6 +165,7 @@ final class AddDeviceFlowStore: ObservableObject {
         !isRunning
             && !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && currentTarget()?.isEmpty == false
+            && !(entryMode == .discover && selectedDevice?.isUnsupportedModel == true)
     }
 
     func setEntryMode(_ mode: AddDeviceEntryMode) {
@@ -224,6 +225,10 @@ final class AddDeviceFlowStore: ObservableObject {
             failLocally(L10n.string("add_device.error.choose_target"))
             return
         }
+        if target.discoveredDevice?.isUnsupportedModel == true {
+            rejectUnsupportedModel()
+            return
+        }
 
         let existing = target.matchingProfile(in: registry)
         let profileID = existing?.id ?? UUID().uuidString.lowercased()
@@ -246,11 +251,18 @@ final class AddDeviceFlowStore: ObservableObject {
         entryMode = .discover
         selectedDeviceID = device.id
         manualHost = device.connectionTarget
+        if device.isUnsupportedModel {
+            rejectUnsupportedModel()
+            return
+        }
         if let existing = registry.matchingProfile(for: device) {
             savedProfile = existing
             state = .saved
             error = nil
             return
+        }
+        if error?.code == WorkflowLocalError.unsupportedDevice.code {
+            error = nil
         }
         state = .passwordEntry
     }
@@ -301,6 +313,16 @@ final class AddDeviceFlowStore: ObservableObject {
             debugLogging = settings.defaultDeviceSettings.debugLogging
         }
         appliedDefaultDeviceSettings = settings.defaultDeviceSettings
+    }
+
+    /// Stops before the password prompt: configure would only turn on SSH and
+    /// reboot this AirPort to find out that it cannot run TimeCapsuleSMB.
+    private func rejectUnsupportedModel() {
+        savedProfile = nil
+        password = ""
+        currentStage = nil
+        error = BackendErrorViewModel(operation: "add-device", localError: .unsupportedDevice)
+        state = .unsupported
     }
 
     private func currentTarget() -> AddDeviceTarget? {
@@ -426,7 +448,9 @@ final class AddDeviceFlowStore: ObservableObject {
                !discovery.devices.contains(where: { $0.id == selectedDeviceID }) {
                 self.selectedDeviceID = nil
             }
-            if selectedDeviceID == nil, discovery.devices.count == 1 {
+            // An unsupported model is not preselected: its row shows why, and
+            // clicking it explains instead of leaving Save silently disabled.
+            if selectedDeviceID == nil, discovery.devices.count == 1, !discovery.devices[0].isUnsupportedModel {
                 selectedDeviceID = discovery.devices[0].id
                 manualHost = discovery.devices[0].connectionTarget
             }

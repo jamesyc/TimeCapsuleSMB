@@ -95,7 +95,11 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
     )
 
     target = resolve_request_target(config, context, profile="activate", include_probe=True)
-    compatibility = require_supported_payload(target, allow_unsupported=False)
+    try:
+        compatibility = require_supported_payload(target, allow_unsupported=False)
+    except DeviceError as exc:
+        # Same code as deploy, so a saved AirPort Express gets the unsupported-device guidance.
+        raise device_operation_error(context, exc, default_code="unsupported_device") from exc
     if not is_netbsd4_payload_family(compatibility.payload_family):
         raise AppOperationError(
             "activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
