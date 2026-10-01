@@ -48,7 +48,15 @@ from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import RouteSelection, check_smb_port, check_ssh_login
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
-from timecapsulesmb.checks.nbns import NBNS_QUERY_TIMEOUT_CODE, NbnsResponse, build_nbns_query, check_nbns_name_resolution, parse_nbns_response
+from timecapsulesmb.checks.nbns import (
+    NBNS_OFF_SUBNET_CODE,
+    NBNS_QUERY_TIMEOUT_CODE,
+    NbnsResponse,
+    apple_nbns_client_on_subnet,
+    build_nbns_query,
+    check_nbns_name_resolution,
+    parse_nbns_response,
+)
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
     check_authenticated_smb_file_ops_detailed,
@@ -61,7 +69,12 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
+    DEVICE_IFCONFIG_COMMAND,
+    DeviceIpv4Entry,
+    DeviceIpv4SubnetsProbeResult,
     UsbPrinterProbeResult,
+    parse_ifconfig_ipv4_entries,
+    probe_device_ipv4_subnets_conn,
     DeviceHostnameProbeResult,
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
@@ -88,6 +101,10 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 
 DEFAULT_SMB_PORT_CHECK = object()
+# The device the Doctor harness talks to: bridge0 on 10.0.0.0/24.
+SAME_SUBNET_DEVICE_PROBE = DeviceIpv4SubnetsProbeResult(
+    (DeviceIpv4Entry("bridge0", "10.0.0.2", "255.255.255.0", "10.0.0.255"),)
+)
 REAL_SMB_PORT_CHECK = object()
 DEFAULT_ACTIVE_SMB_CONF = """[global]
     netbios name = TimeCapsule
@@ -228,6 +245,8 @@ class CheckTests(unittest.TestCase):
         deployed_config_present: bool = True,
         deployed_version: DeployedVersionProbeResult | None = None,
         runtime_ram_root_present: bool = True,
+        client_source: str | None = None,
+        device_subnets_probe: DeviceIpv4SubnetsProbeResult = SAME_SUBNET_DEVICE_PROBE,
         extra_patches: dict[str, object] | None = None,
     ):
         resolved_values = values or self.valid_doctor_values()
@@ -320,7 +339,13 @@ class CheckTests(unittest.TestCase):
             mocks.select_route_to_address = stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.checks.doctor_steps.select_route_to_address",
-                    return_value=RouteSelection("unknown"),
+                    return_value=RouteSelection("unknown") if client_source is None else RouteSelection("available", source=client_source),
+                )
+            )
+            mocks.probe_device_ipv4_subnets_conn = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.checks.doctor_steps.probe_device_ipv4_subnets_conn",
+                    return_value=device_subnets_probe,
                 )
             )
             # Most Doctor cases supply Bonjour records and do not exercise DNS.
@@ -878,7 +903,9 @@ class CheckTests(unittest.TestCase):
         nbns_result = next(result for result in run.results if "NBNS query" in result.message)
         self.assertEqual(nbns_result.status, "FAIL")
         self.assertIn("timed out against 10.0.0.2:137", nbns_result.message)
-        socket_debug_mock.assert_not_called()
+        # A failed NBNS check records which processes own UDP 137/138.
+        self.assertEqual(debug_fields["remote_service_sockets"], socket_debug_mock.return_value)
+        socket_debug_mock.assert_called_once()
 
     def test_doctor_smb_servers_uses_probed_host_label(self) -> None:
         base_values = {"TC_HOST": "root@10.0.1.99"}
@@ -3198,7 +3225,18 @@ class CheckTests(unittest.TestCase):
         return CheckResult("FAIL", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137",
                            {"code": NBNS_QUERY_TIMEOUT_CODE})
 
-    def _run_doctor_nbns(self, mdns_mock, nbns_mock, *, startup_age: float = 3600.0):
+    def _run_doctor_nbns(
+        self,
+        mdns_mock,
+        nbns_mock,
+        *,
+        startup_age: float = 3600.0,
+        client_source: str | None = "10.0.0.50",
+        device_probe_mock=None,
+        socket_debug_mock=None,
+        debug_fields: dict[str, object] | None = None,
+    ):
+        # This computer defaults to 10.0.0.50, on the harness device's 10.0.0.0/24.
         with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
             run = self.run_doctor_with_mocks(
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -3207,7 +3245,12 @@ class CheckTests(unittest.TestCase):
                 read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
                 skip_bonjour=True,
                 skip_smb=True,
+                client_source=client_source,
+                debug_fields=debug_fields,
                 extra_patches={
+                    "timecapsulesmb.checks.doctor_steps.probe_device_ipv4_subnets_conn": (
+                        device_probe_mock or mock.Mock(return_value=SAME_SUBNET_DEVICE_PROBE)
+                    ),
                     "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock,
                     "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
                     "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
@@ -3215,7 +3258,9 @@ class CheckTests(unittest.TestCase):
                     ),
                     "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
                     "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
-                    "timecapsulesmb.checks.doctor_debug.read_remote_service_socket_diagnostics_conn": mock.Mock(return_value=""),
+                    "timecapsulesmb.checks.doctor_debug.read_remote_service_socket_diagnostics_conn": (
+                        socket_debug_mock or mock.Mock(return_value="")
+                    ),
                 },
             )
         return run, [call.args[0] for call in sleep_mock.call_args_list]
@@ -3317,6 +3362,198 @@ class CheckTests(unittest.TestCase):
 
         self.assertEqual(sleeps, [])
         nbns_mock.assert_called_once()
+
+    # The field case: a Mac on 192.168.24.0/24 querying a device on 192.168.28.0/24.
+    OFF_SUBNET_DEVICE_PROBE = DeviceIpv4SubnetsProbeResult(
+        (DeviceIpv4Entry("bridge0", "192.168.28.229", "255.255.255.0", "192.168.28.255"),)
+    )
+
+    def _nbns_ready_probe(self) -> ReadinessProbeResult:
+        return self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+
+    def test_run_doctor_checks_skips_nbns_timeout_from_off_subnet_client(self) -> None:
+        debug_fields: dict[str, object] = {}
+        device_probe = mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE)
+        socket_debug = mock.Mock(return_value="sockets")
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=self._nbns_query_timeout()),
+            client_source="192.168.24.102",
+            device_probe_mock=device_probe,
+            socket_debug_mock=socket_debug,
+            debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [])
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "SKIP")
+        self.assertEqual(
+            nbns_result.message,
+            "NBNS query for 'TimeCapsule' got no answer; this computer (192.168.24.102) "
+            "is outside the device's subnet 192.168.28.0/24",
+        )
+        self.assertEqual(nbns_result.details["code"], NBNS_OFF_SUBNET_CODE)
+        self.assertEqual(nbns_result.details["device_subnets"], ["192.168.28.0/24"])
+        device_probe.assert_called_once()
+        self.assertEqual(debug_fields["nbns_subnet"], {
+            "client_source": "192.168.24.102",
+            "device_subnets": ["192.168.28.0/24"],
+            "outcome": "off_subnet",
+            "detail": None,
+        })
+        # A skipped check is not a failure, so no socket diagnostics are read.
+        socket_debug.assert_not_called()
+        self.assertNotIn("remote_service_sockets", debug_fields)
+
+    def test_run_doctor_checks_lists_every_device_subnet_when_client_is_off_all_of_them(self) -> None:
+        router = DeviceIpv4SubnetsProbeResult((
+            DeviceIpv4Entry("bcmeth1", "203.0.113.7", "255.255.255.0", "203.0.113.255"),
+            DeviceIpv4Entry("bridge0", "10.0.1.1", "255.255.255.0", "10.0.1.255"),
+        ))
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=self._nbns_query_timeout()),
+            client_source="192.168.24.102",
+            device_probe_mock=mock.Mock(return_value=router),
+        )
+
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "SKIP")
+        self.assertTrue(nbns_result.message.endswith("outside the device's subnets 203.0.113.0/24, 10.0.1.0/24"))
+
+    def test_run_doctor_checks_fails_nbns_timeout_from_same_subnet_client(self) -> None:
+        debug_fields: dict[str, object] = {}
+        device_probe = mock.Mock(return_value=SAME_SUBNET_DEVICE_PROBE)
+        socket_debug = mock.Mock(return_value="sockets")
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=self._nbns_query_timeout()),
+            device_probe_mock=device_probe,
+            socket_debug_mock=socket_debug,
+            debug_fields=debug_fields,
+        )
+
+        self.assertTrue(run.fatal)
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "FAIL")
+        self.assertEqual(nbns_result.details["code"], NBNS_QUERY_TIMEOUT_CODE)
+        device_probe.assert_called_once()
+        self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "on_subnet")
+        self.assertEqual(debug_fields["nbns_subnet"]["client_source"], "10.0.0.50")
+        socket_debug.assert_called_once()
+        self.assertEqual(debug_fields["remote_service_sockets"], "sockets")
+
+    def test_run_doctor_checks_fails_nbns_timeout_when_device_subnets_are_unknown(self) -> None:
+        for probe in (
+            mock.Mock(return_value=DeviceIpv4SubnetsProbeResult(error="ifconfig timed out")),
+            mock.Mock(side_effect=SshError("connection reset")),
+        ):
+            with self.subTest(probe=probe):
+                debug_fields: dict[str, object] = {}
+
+                run, _ = self._run_doctor_nbns(
+                    mock.Mock(return_value=self._nbns_ready_probe()),
+                    mock.Mock(return_value=self._nbns_query_timeout()),
+                    client_source="192.168.24.102",
+                    device_probe_mock=probe,
+                    debug_fields=debug_fields,
+                )
+
+                self.assertTrue(run.fatal)
+                nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+                self.assertEqual(nbns_result.status, "FAIL")
+                self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "unknown")
+                self.assertTrue(debug_fields["nbns_subnet"]["detail"])
+
+    def test_run_doctor_checks_fails_nbns_timeout_without_a_client_source(self) -> None:
+        debug_fields: dict[str, object] = {}
+        device_probe = mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE)
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=self._nbns_query_timeout()),
+            client_source=None,
+            device_probe_mock=device_probe,
+            debug_fields=debug_fields,
+        )
+
+        self.assertTrue(run.fatal)
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "FAIL")
+        device_probe.assert_not_called()
+        self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "unknown")
+
+    def test_run_doctor_checks_does_not_probe_device_subnets_unless_nbns_timed_out(self) -> None:
+        cases = (
+            (CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"), "PASS", False),
+            (CheckResult("FAIL", "NBNS query for 'TimeCapsule' resolved to 10.0.0.9, expected 10.0.0.2"), "FAIL", True),
+        )
+        for query_result, status, sockets_read in cases:
+            with self.subTest(status=status):
+                debug_fields: dict[str, object] = {}
+                device_probe = mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE)
+                socket_debug = mock.Mock(return_value="sockets")
+
+                run, _ = self._run_doctor_nbns(
+                    mock.Mock(return_value=self._nbns_ready_probe()),
+                    mock.Mock(return_value=query_result),
+                    client_source="192.168.24.102",
+                    device_probe_mock=device_probe,
+                    socket_debug_mock=socket_debug,
+                    debug_fields=debug_fields,
+                )
+
+                nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+                self.assertEqual(nbns_result.status, status)
+                device_probe.assert_not_called()
+                self.assertNotIn("nbns_subnet", debug_fields)
+                self.assertEqual(socket_debug.called, sockets_read)
+
+    def test_run_doctor_checks_skips_off_subnet_timeout_after_native_nbns_retries(self) -> None:
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        nbns_mock = mock.Mock(side_effect=[self._nbns_query_timeout()] * 3)
+        device_probe = mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE)
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=not_ready),
+            nbns_mock,
+            client_source="192.168.24.102",
+            device_probe_mock=device_probe,
+        )
+
+        # The query keeps its retries; the device is probed once, after the last.
+        self.assertEqual(nbns_mock.call_count, 3)
+        device_probe.assert_called_once()
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "SKIP")
+        # The device-side readiness failure still fails the run.
+        self.assertTrue(run.fatal)
+        self.assertEqual(
+            [result.message for result in run.results if result.status == "FAIL"],
+            ["discovery native NBNS is not ready"],
+        )
+
+    def test_run_doctor_checks_keeps_off_subnet_skip_out_of_startup_grace(self) -> None:
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=not_ready),
+            mock.Mock(side_effect=[self._nbns_query_timeout()] * 3),
+            startup_age=41.0,
+            client_source="192.168.24.102",
+            device_probe_mock=mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE),
+        )
+
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
+        self.assertIn("discovery native NBNS is not ready", failures[0].details["masked_failures"])
+        self.assertFalse(any("NBNS query" in masked for masked in failures[0].details["masked_failures"]))
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "SKIP")
 
     def test_run_doctor_checks_exhausts_transient_mdns_process_retries(self) -> None:
         mdns_probe = mock.Mock(
@@ -5258,6 +5495,171 @@ class CheckTests(unittest.TestCase):
         result = self._nbns_check_with_reply(b"\x13\x37\x85")
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.message, "NBNS query for 'TimeCapsule' returned an invalid response")
+
+    # Trimmed from `/sbin/ifconfig -a` on the NetBSD 6 and NetBSD 4 LAN devices.
+    IFCONFIG_NETBSD6 = """bcmeth1: flags=ffffe802<BROADCAST,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+	options=80000<LRO4>
+	ether 80:ea:96:e6:58:68
+bcmeth0: flags=ffffe943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+	options=80000<LRO4>
+	extra flag=1<NOINET6>
+lo0: flags=ffff8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33188
+	extra flag=0<>
+	inet 127.0.0.1 netmask 0xff000000 
+	inet6 ::1 prefixlen 128 
+	inet6 fe80::1%lo0 prefixlen 64 scopeid 0x3 
+bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+	extra flag=2<PFQUICKPASS>
+	ether 80:ea:96:e6:58:68
+	inet6 fe80::82ea:96ff:fee6:5868%bridge0 prefixlen 64 scopeid 0x9 
+	inet 192.168.1.218 netmask 0xffffff00 broadcast 192.168.1.255
+	inet 169.254.155.207 netmask 0xffff0000 broadcast 169.254.255.255
+	member: wlan0 flags=3<LEARNING,DISCOVER>
+	member: bcmeth0 flags=3<LEARNING,DISCOVER>
+bridge1: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+	member: vlan0 flags=3<LEARNING,DISCOVER>
+"""
+    IFCONFIG_NETBSD4 = """mgi1: flags=e802<BROADCAST,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+	ether e8:8d:28:58:f1:5c
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
+	inet 127.0.0.1 netmask 0xff000000 
+bridge0: flags=e043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+	inet6 fe80::ea8d:28ff:fe58:f15c%bridge0 prefixlen 64 scopeid 0x9 
+	inet 192.168.1.10 netmask 0xffffff00 broadcast 192.168.1.255
+	inet6 2600:1700:83b7:20f:ea8d:28ff:fe58:f15c prefixlen 64 autoconf 
+	inet 169.254.147.85 netmask 0xffff0000 broadcast 169.254.255.255
+	member: wlan0 flags=3<LEARNING,DISCOVER>
+bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+"""
+
+    def test_parse_ifconfig_keeps_the_routable_lan_address_on_netbsd6(self) -> None:
+        self.assertEqual(
+            parse_ifconfig_ipv4_entries(self.IFCONFIG_NETBSD6),
+            (DeviceIpv4Entry("bridge0", "192.168.1.218", "255.255.255.0", "192.168.1.255"),),
+        )
+
+    def test_parse_ifconfig_keeps_the_routable_lan_address_on_netbsd4(self) -> None:
+        entries = parse_ifconfig_ipv4_entries(self.IFCONFIG_NETBSD4)
+        self.assertEqual(entries, (DeviceIpv4Entry("bridge0", "192.168.1.10", "255.255.255.0", "192.168.1.255"),))
+        self.assertEqual(entries[0].network, "192.168.1.0/24")
+
+    def test_parse_ifconfig_keeps_a_link_local_address_when_it_is_the_only_one(self) -> None:
+        text = (
+            "bridge0: flags=e043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 169.254.147.85 netmask 0xffff0000 broadcast 169.254.255.255\n"
+        )
+        self.assertEqual(
+            parse_ifconfig_ipv4_entries(text),
+            (DeviceIpv4Entry("bridge0", "169.254.147.85", "255.255.0.0", "169.254.255.255"),),
+        )
+
+    def test_parse_ifconfig_skips_interfaces_wcifsnd_does_not_use(self) -> None:
+        text = (
+            "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172\n"
+            "\tinet 127.0.0.1 netmask 0xff000000 broadcast 127.255.255.255\n"
+            "bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 10.0.2.1 netmask 0xffffff00 broadcast 10.0.2.255\n"
+            "ppp0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> metric 0 mtu 1492\n"
+            "\tinet 198.51.100.4 -> 198.51.100.1 netmask 0xffffffff\n"
+        )
+        self.assertEqual(parse_ifconfig_ipv4_entries(text), ())
+
+    def test_parse_ifconfig_keeps_each_alias_as_its_own_entry(self) -> None:
+        text = (
+            "bridge0: flags=e043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255\n"
+            "\tinet alias 10.0.5.1 netmask 0xffffff00 broadcast 10.0.5.255\n"
+        )
+        self.assertEqual(
+            [entry.address for entry in parse_ifconfig_ipv4_entries(text)],
+            ["10.0.1.1", "10.0.5.1"],
+        )
+
+    def test_parse_ifconfig_keeps_router_mode_wan_and_lan_in_interface_order(self) -> None:
+        text = (
+            "bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 203.0.113.7 netmask 0xffffff00 broadcast 203.0.113.255\n"
+            "bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255\n"
+        )
+        self.assertEqual(
+            [(entry.interface, entry.network) for entry in parse_ifconfig_ipv4_entries(text)],
+            [("bcmeth1", "203.0.113.0/24"), ("bridge0", "10.0.1.0/24")],
+        )
+
+    def test_parse_ifconfig_reads_dotted_netmasks_and_derives_a_missing_broadcast(self) -> None:
+        text = (
+            "bridge0: flags=e043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 192.168.28.229 netmask 255.255.252.0\n"
+        )
+        self.assertEqual(
+            parse_ifconfig_ipv4_entries(text),
+            (DeviceIpv4Entry("bridge0", "192.168.28.229", "255.255.252.0", "192.168.31.255"),),
+        )
+
+    def test_parse_ifconfig_ignores_lines_it_cannot_read(self) -> None:
+        text = (
+            "bridge0: flags=e043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 999.1.1.1 netmask 0xffffff00 broadcast 999.1.1.255\n"
+            "\tinet 10.0.0.2 netmask 0xnothex\n"
+            "\tinet 10.0.0.3 netmask 0x00000000\n"
+            "\tinet 0.0.0.0 netmask 0xffffff00\n"
+            "\tinet 10.0.0.4 netmask 0xff00ff00\n"
+            "\tinet 10.0.0.5\n"
+            "\tinet6 fd00::2 prefixlen 64\n"
+            "pass out proto udp from any to any port = domain keep state\n"
+            "\tinet 10.9.9.9 netmask 0xffffff00 broadcast 10.9.9.255\n"
+            "\tinet 10.0.0.6 netmask 0xffffff00 broadcast 10.0.0.255\n"
+        )
+        self.assertEqual(parse_ifconfig_ipv4_entries(text), ())
+
+    def test_apple_nbns_client_on_subnet_follows_wcifsnd_broadcast_match(self) -> None:
+        device = DeviceIpv4Entry("bridge0", "192.168.28.229", "255.255.255.0", "192.168.28.255")
+        wide = DeviceIpv4Entry("bridge0", "192.168.28.229", "255.255.248.0", "192.168.31.255")
+        wan = DeviceIpv4Entry("bcmeth1", "192.168.24.1", "255.255.255.0", "192.168.24.255")
+        cases = (
+            ((device,), "192.168.24.102", False),
+            ((wide,), "192.168.24.102", True),
+            ((device,), "192.168.28.17", True),
+            ((device, wan), "192.168.24.102", True),
+            ((), "192.168.24.102", False),
+        )
+        for entries, client, expected in cases:
+            with self.subTest(entries=entries, client=client):
+                self.assertEqual(apple_nbns_client_on_subnet(entries, client), expected)
+
+    def test_apple_nbns_client_on_subnet_compares_the_stored_broadcast(self) -> None:
+        # wcifsnd compares the interface's own broadcast, not one derived from its mask.
+        odd = DeviceIpv4Entry("bridge0", "10.0.0.2", "255.255.255.0", "10.0.0.0")
+        self.assertFalse(apple_nbns_client_on_subnet((odd,), "10.0.0.50"))
+
+    def test_probe_device_ipv4_subnets_reads_ifconfig(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            return_value=subprocess.CompletedProcess([], 0, self.IFCONFIG_NETBSD6, ""),
+        ) as run_ssh_mock:
+            result = probe_device_ipv4_subnets_conn(connection)
+
+        run_ssh_mock.assert_called_once()
+        self.assertEqual(run_ssh_mock.call_args.args, (connection, DEVICE_IFCONFIG_COMMAND))
+        self.assertEqual(DEVICE_IFCONFIG_COMMAND, "/sbin/ifconfig -a")
+        self.assertIsNone(result.error)
+        self.assertEqual([entry.network for entry in result.entries], ["192.168.1.0/24"])
+
+    def test_probe_device_ipv4_subnets_reports_errors(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        cases = (
+            (mock.Mock(return_value=subprocess.CompletedProcess([], 127, "", "not found")), "ifconfig exited 127"),
+            (mock.Mock(side_effect=SshCommandTimeout("timed out")), "ifconfig timed out"),
+            (mock.Mock(return_value=subprocess.CompletedProcess([], 0, self.IFCONFIG_NETBSD4.split("bridge0")[0], "")),
+             "ifconfig listed no broadcast IPv4 address"),
+        )
+        for run_ssh_mock, error in cases:
+            with self.subTest(error=error):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", run_ssh_mock):
+                    result = probe_device_ipv4_subnets_conn(connection)
+                self.assertEqual(result, DeviceIpv4SubnetsProbeResult(error=error))
 
     def test_run_doctor_checks_checks_nbns_without_flash_preference(self) -> None:
         values = {

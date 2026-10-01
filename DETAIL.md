@@ -1327,7 +1327,7 @@ It checks:
 - active Samba share names
 - SMB reachability
 - `_smb._tcp` browse and resolve
-- NBNS name resolution when a reachable IPv4 SMB address and NetBIOS name are available
+- NBNS name resolution when a reachable IPv4 SMB address and NetBIOS name are available. A query that times out from a computer outside every device subnet is skipped, not failed: Apple's `wcifsnd` answers such a client from UDP `922` instead of `137`, and routers differ in whether that answer arrives. Doctor reads the device's subnets with `/sbin/ifconfig -a` only after a timeout and applies `wcifsnd`'s own match (`(source & mask) | ~mask` equals the interface broadcast). It uses this computer's source address, so a router that translates addresses between the subnets, or `wcifsnd` still holding an address from before a renumber, can make the result differ from what `wcifsnd` saw
 - authenticated `smbclient -L` listing
 - authenticated SMB CRUD operations via `smbclient`
 - that at least one active Samba share is present in the authenticated SMB listing

@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import socket
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Optional
 import ipaddress
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.device.probe import DeviceIpv4Entry
 
 
 NBNS_PORT = 137
 NB_TYPE_NB = 0x0020
 DNS_CLASS_IN = 0x0001
 NBNS_QUERY_TIMEOUT_CODE = "nbns_query_timeout"
+NBNS_OFF_SUBNET_CODE = "nbns_off_subnet"
 
 
 def encode_netbios_name(name: str, suffix: int = 0x20) -> bytes:
@@ -91,6 +94,26 @@ def parse_nbns_response(packet: bytes) -> Optional[NbnsResponse]:
         ))
     except (IndexError, OSError, ValueError, struct.error):
         return None
+
+
+def apple_nbns_client_on_subnet(entries: Iterable[DeviceIpv4Entry], client_ip: str) -> bool:
+    """Return whether Apple's wcifsnd treats `client_ip` as on one of its subnets.
+
+    For each query wcifsnd picks the interface whose stored broadcast equals
+    `(src & mask) | ~mask` (NetBSD 6 `0x486178`). With no match it falls back
+    to a default context whose reply socket is the UDP 922 control socket
+    (`0x4823f4..0x482420`), and `0x484b00` replies from that socket, so a
+    client off every subnet may never see the answer. The probe reads live
+    `ifconfig`, so it can disagree with wcifsnd briefly after a renumber
+    (wcifsnd keeps stale entries), and a router that translates addresses
+    between the subnets shows wcifsnd a different source than this host's.
+    """
+    client = int(ipaddress.IPv4Address(client_ip))
+    for entry in entries:
+        mask = int(ipaddress.IPv4Address(entry.netmask))
+        if (client & mask) | (~mask & 0xFFFFFFFF) == int(ipaddress.IPv4Address(entry.broadcast)):
+            return True
+    return False
 
 
 def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip: str, *, timeout: float = 2.0) -> CheckResult:

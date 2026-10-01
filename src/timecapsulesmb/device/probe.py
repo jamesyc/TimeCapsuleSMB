@@ -1782,6 +1782,111 @@ def runtime_ram_root_present_conn(connection: SshConnection) -> bool:
     return proc.returncode == 0
 
 
+DEVICE_IFCONFIG_COMMAND = "/sbin/ifconfig -a"
+_IFCONFIG_HEADER_RE = re.compile(r"^(\S+): flags=[0-9a-fA-F]+<([^>]*)>")
+_IFCONFIG_INET_RE = re.compile(r"^\s+inet\s+(?:alias\s+)?(\S+)\s+netmask\s+(\S+)(?:\s+broadcast\s+(\S+))?")
+
+
+@dataclass(frozen=True)
+class DeviceIpv4Entry:
+    interface: str
+    address: str
+    netmask: str
+    broadcast: str
+
+    @property
+    def network(self) -> str:
+        return str(ipaddress.IPv4Network(f"{self.address}/{self.netmask}", strict=False))
+
+
+@dataclass(frozen=True)
+class DeviceIpv4SubnetsProbeResult:
+    entries: tuple[DeviceIpv4Entry, ...] = ()
+    error: str | None = None
+
+
+def _parse_ifconfig_netmask(value: str) -> ipaddress.IPv4Address | None:
+    try:
+        if value.lower().startswith("0x"):
+            return ipaddress.IPv4Address(int(value, 16))
+        return ipaddress.IPv4Address(value)
+    except ValueError:
+        return None
+
+
+def _parse_ifconfig_inet(interface: str, line: str) -> DeviceIpv4Entry | None:
+    match = _IFCONFIG_INET_RE.match(line)
+    if match is None:
+        return None
+    try:
+        address = ipaddress.IPv4Address(match.group(1))
+    except ValueError:
+        return None
+    netmask = _parse_ifconfig_netmask(match.group(2))
+    if netmask is None or int(address) == 0 or int(netmask) == 0:
+        return None
+    try:
+        network = ipaddress.IPv4Network(f"{address}/{netmask}", strict=False)
+    except ValueError:
+        return None
+    broadcast = network.broadcast_address
+    if match.group(3) is not None:
+        try:
+            broadcast = ipaddress.IPv4Address(match.group(3))
+        except ValueError:
+            return None
+    return DeviceIpv4Entry(interface, str(address), str(netmask), str(broadcast))
+
+
+def parse_ifconfig_ipv4_entries(text: str) -> tuple[DeviceIpv4Entry, ...]:
+    """Return the IPv4 addresses Apple's wcifsnd answers NBNS queries on.
+
+    Its interface scan (NetBSD 6 `0x4a56ac`) keeps each nonzero AF_INET
+    address on an interface that is UP and BROADCAST and not LOOPBACK, and a
+    169.254/16 address only when that interface has no other IPv4 address.
+    Aliases are separate entries. Apple can also filter by the configured
+    `Interfaces` name; the discovery role runs wcifsnd without that filter.
+    """
+    interfaces: list[list[DeviceIpv4Entry]] = []
+    interface: str | None = None
+    for line in text.splitlines():
+        header = _IFCONFIG_HEADER_RE.match(line)
+        if header is not None:
+            flags = set(header.group(2).split(","))
+            interface = None
+            if {"UP", "BROADCAST"} <= flags and "LOOPBACK" not in flags:
+                interface = header.group(1)
+                interfaces.append([])
+            continue
+        if not line[:1].isspace():
+            interface = None
+            continue
+        if interface is None:
+            continue
+        entry = _parse_ifconfig_inet(interface, line)
+        if entry is not None:
+            interfaces[-1].append(entry)
+
+    entries: list[DeviceIpv4Entry] = []
+    for interface_entries in interfaces:
+        routable = [entry for entry in interface_entries if not ipaddress.IPv4Address(entry.address).is_link_local]
+        entries.extend(routable or interface_entries)
+    return tuple(entries)
+
+
+def probe_device_ipv4_subnets_conn(connection: SshConnection) -> DeviceIpv4SubnetsProbeResult:
+    try:
+        proc = run_ssh(connection, DEVICE_IFCONFIG_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+    except SshCommandTimeout:
+        return DeviceIpv4SubnetsProbeResult(error="ifconfig timed out")
+    if proc.returncode != 0:
+        return DeviceIpv4SubnetsProbeResult(error=f"ifconfig exited {proc.returncode}")
+    entries = parse_ifconfig_ipv4_entries(proc.stdout or "")
+    if not entries:
+        return DeviceIpv4SubnetsProbeResult(error="ifconfig listed no broadcast IPv4 address")
+    return DeviceIpv4SubnetsProbeResult(entries)
+
+
 MANAGER_ELAPSED_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o etime= -o ucomm= -o command="
 
 

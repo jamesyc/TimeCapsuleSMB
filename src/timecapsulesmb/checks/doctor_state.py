@@ -94,6 +94,8 @@ class DirectSmbState:
     observed_addresses: tuple[str, ...] = ()
     testable_addresses: tuple[str, ...] = ()
     reachable_addresses: tuple[str, ...] = ()
+    # (address, this host's source address) for each route the kernel chose.
+    route_sources: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

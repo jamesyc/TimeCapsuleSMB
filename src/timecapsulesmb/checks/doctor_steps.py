@@ -45,7 +45,12 @@ from timecapsulesmb.checks.network import (
     select_route_to_address,
 )
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
-from timecapsulesmb.checks.nbns import NBNS_QUERY_TIMEOUT_CODE, check_nbns_name_resolution
+from timecapsulesmb.checks.nbns import (
+    NBNS_OFF_SUBNET_CODE,
+    NBNS_QUERY_TIMEOUT_CODE,
+    apple_nbns_client_on_subnet,
+    check_nbns_name_resolution,
+)
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
     SmbClientTargetInput,
@@ -73,6 +78,7 @@ from timecapsulesmb.core.net import (
 )
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import (
+    DeviceIpv4SubnetsProbeResult,
     FLASH_RUNTIME_CONFIG,
     ReadinessProbeResult,
     RUNTIME_RAM_ROOT,
@@ -81,6 +87,7 @@ from timecapsulesmb.device.probe import (
     UsbPrinterProbeResult,
     flash_runtime_config_present_conn,
     probe_connection_state,
+    probe_device_ipv4_subnets_conn,
     probe_managed_mdns_conn,
     probe_managed_rsync_conn,
     probe_usb_printer_conn,
@@ -1306,6 +1313,9 @@ def _add_nbns_results(
     reachable_addresses: tuple[str, ...],
     add_result: Callable[[CheckResult], None],
     native_nbns_ready: bool | None = None,
+    route_sources: tuple[tuple[str, str], ...] = (),
+    probe_device_subnets: Callable[[], DeviceIpv4SubnetsProbeResult] | None = None,
+    debug_fields: dict[str, object] | None = None,
 ) -> None:
     try:
         if proxied_ssh:
@@ -1337,6 +1347,14 @@ def _add_nbns_results(
                     result = _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
             else:
                 result = query()
+            if _nbns_query_timed_out(result) and probe_device_subnets is not None:
+                result = _nbns_timeout_subnet_result(
+                    result,
+                    expected_name,
+                    dict(route_sources).get(expected_ip),
+                    probe_device_subnets,
+                    debug_fields,
+                )
             add_result(result)
     except Exception as e:
         add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
@@ -1344,6 +1362,53 @@ def _add_nbns_results(
 
 def _nbns_query_timed_out(result: CheckResult) -> bool:
     return result.status == "FAIL" and result.details.get("code") == NBNS_QUERY_TIMEOUT_CODE
+
+
+def _nbns_timeout_subnet_result(
+    result: CheckResult,
+    netbios_name: str,
+    client_source: str | None,
+    probe_device_subnets: Callable[[], DeviceIpv4SubnetsProbeResult],
+    debug_fields: dict[str, object] | None,
+) -> CheckResult:
+    # Apple's wcifsnd may answer a client off all of its subnets from UDP 922
+    # rather than 137 (see apple_nbns_client_on_subnet), and routers between
+    # subnets differ in whether that answer arrives. A timeout from such a
+    # client says nothing about the device, so it is skipped, not failed.
+    device_subnets: list[str] = []
+    try:
+        client = str(ipaddress.IPv4Address(client_source)) if client_source is not None else None
+    except ValueError:
+        client = None
+    if client is None:
+        outcome, detail = "unknown", "no IPv4 source address for the NBNS target"
+    else:
+        try:
+            probe = probe_device_subnets()
+        except Exception as e:
+            probe = DeviceIpv4SubnetsProbeResult(error=f"{type(e).__name__}: {e}")
+        device_subnets = list(dict.fromkeys(entry.network for entry in probe.entries))
+        if probe.error is not None:
+            outcome, detail = "unknown", probe.error
+        elif apple_nbns_client_on_subnet(probe.entries, client):
+            outcome, detail = "on_subnet", None
+        else:
+            outcome, detail = "off_subnet", None
+    if debug_fields is not None:
+        debug_fields["nbns_subnet"] = {
+            "client_source": client,
+            "device_subnets": device_subnets,
+            "outcome": outcome,
+            "detail": detail,
+        }
+    if outcome != "off_subnet":
+        return result
+    noun = "subnet" if len(device_subnets) == 1 else "subnets"
+    return CheckResult(
+        "SKIP",
+        f"NBNS query for {netbios_name!r} got no answer; this computer ({client}) is outside the device's {noun} {', '.join(device_subnets)}",
+        {"code": NBNS_OFF_SUBNET_CODE, "client_source": client, "device_subnets": device_subnets},
+    )
 
 
 def _ip_literal(value: str) -> str | None:
@@ -2307,6 +2372,7 @@ def _doctor_check_direct_smb_port(
         observed_addresses=tuple(observed_addresses),
         testable_addresses=tuple(testable_addresses),
         reachable_addresses=tuple(reachable_addresses),
+        route_sources=tuple((address, route.source) for address, route in routes.items() if route.source),
     )
 
 
@@ -2343,8 +2409,11 @@ def _doctor_check_nbns(
         reachable_addresses=direct_smb.reachable_addresses,
         add_result=sink.add,
         native_nbns_ready=native_nbns_ready,
+        route_sources=direct_smb.route_sources,
+        probe_device_subnets=lambda: probe_device_ipv4_subnets_conn(target.connection),
+        debug_fields=sink.debug_fields,
     )
-    if any("failed" in result.message for result in sink.new_results_since(result_start)):
+    if any(result.status == "FAIL" for result in sink.new_results_since(result_start)):
         _add_remote_service_socket_debug(target, remote, sink)
 
 
