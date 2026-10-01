@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import importlib.util
+import io
+import json
 import os
+import re
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -993,6 +998,7 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
     monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
     monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: calls.append("runtime"))
     monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: calls.append("external"))
+    monkeypatch.setattr(package_app, "assert_macho_minimum_macos", lambda paths: calls.append("minimum-macos"))
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: calls.append("codesign"))
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: calls.append("app-codesign"))
 
@@ -1007,147 +1013,173 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
 
     architecture_labels.clear()
     package_app.assert_bundle_layout(app, architectures=("arm64",), full_validation=True)
-    assert calls == ["runtime", "external", "codesign", "app-codesign"]
+    assert calls == ["runtime", "external", "minimum-macos", "codesign", "app-codesign"]
 
 
-def test_copy_tools_creates_arch_dispatch_wrappers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_copy_tools_from_sources_creates_arch_dispatch_wrappers(tmp_path: Path) -> None:
     package_app = load_package_app_module()
-    sources = tmp_path / "sources"
-    sources.mkdir()
+    sources: dict[tuple[str, str], Path] = {}
     for tool in ("sshpass", "smbclient"):
         for architecture in ("arm64", "x86_64"):
-            source = sources / f"{tool}-{architecture}"
-            source.write_text(tool, encoding="utf-8")
-            source.chmod(0o755)
-            monkeypatch.setenv(f"TCAPSULE_PACKAGE_{tool.upper()}_{architecture.upper()}", str(source))
-
-    def fake_architectures(path: Path) -> set[str]:
-        if str(path).endswith("-arm64"):
-            return {"arm64"}
-        if str(path).endswith("-x86_64"):
-            return {"x86_64"}
-        return set()
-
-    monkeypatch.setattr(package_app, "macho_architectures", fake_architectures)
-    monkeypatch.setattr(package_app.shutil, "which", lambda name: None)
+            source = tmp_path / "kegs" / architecture / tool
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(f"{tool} {architecture}", encoding="utf-8")
+            sources[(tool, architecture)] = source
 
     resources = tmp_path / "Resources"
-    package_app.copy_tools(resources, ("arm64", "x86_64"))
+    copies = package_app.copy_tools_from_sources(resources, ("arm64", "x86_64"), sources)
 
     tools_bin = resources / "Tools" / "bin"
     assert "arm64) exec" in (tools_bin / "sshpass").read_text(encoding="utf-8")
     assert "x86_64) exec" in (tools_bin / "smbclient").read_text(encoding="utf-8")
-    assert (tools_bin / "arm64" / "sshpass").is_file()
-    assert (tools_bin / "x86_64" / "smbclient").is_file()
+    assert (tools_bin / "x86_64" / "smbclient").read_text(encoding="utf-8") == "smbclient x86_64"
+    # Vendoring needs each copy's bottle file and architecture.
+    assert copies == {tools_bin / architecture / tool: (sources[(tool, architecture)], architecture)
+                      for tool in ("sshpass", "smbclient") for architecture in ("arm64", "x86_64")}
+    assert all(os.access(copy, os.X_OK) for copy in copies)
 
 
-def test_copy_tools_requires_each_architecture_when_requested(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_copy_tools_from_sources_copies_one_architecture_without_wrappers(tmp_path: Path) -> None:
     package_app = load_package_app_module()
-    arm_sshpass = tmp_path / "sshpass-arm64"
-    arm_sshpass.write_text("sshpass", encoding="utf-8")
-    arm_sshpass.chmod(0o755)
-    monkeypatch.setenv("TCAPSULE_PACKAGE_SSHPASS_ARM64", str(arm_sshpass))
-    monkeypatch.setattr(package_app, "macho_architectures", lambda path: {"arm64"} if path == arm_sshpass else set())
-    monkeypatch.setattr(package_app.shutil, "which", lambda name: None)
+    sources = {}
+    for tool in ("sshpass", "smbclient"):
+        sources[(tool, "arm64")] = tmp_path / tool
+        sources[(tool, "arm64")].write_text(tool, encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match=r"sshpass \(x86_64\).*smbclient \(arm64\).*smbclient \(x86_64\)"):
-        package_app.copy_tools(tmp_path / "Resources", ("arm64", "x86_64"))
+    copies = package_app.copy_tools_from_sources(tmp_path / "Resources", ("arm64",), sources)
+
+    tools_bin = tmp_path / "Resources" / "Tools" / "bin"
+    assert copies == {tools_bin / tool: (sources[(tool, "arm64")], "arm64") for tool in ("sshpass", "smbclient")}
+    assert not (tools_bin / "arm64").exists()
 
 
-def test_copy_native_tools_layer_reuses_cached_vendored_layer(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def fake_bottles(package_app, tmp_path: Path, architectures=("arm64",), *, revision: str = "0"):
+    """Unpacked kegs for the pinned tools, as prepare_homebrew_bottles returns them."""
+    records: dict[str, list[dict[str, object]]] = {}
+    kegs: dict[str, dict[str, Path]] = {}
+    blobs: list[Path] = []
+    for architecture in architectures:
+        kegs[architecture] = {}
+        records[architecture] = []
+        for formula, version in package_app.HOMEBREW_BOTTLE_ROOTS.items():
+            keg = tmp_path / "kegs" / architecture / formula / version
+            (keg / "bin").mkdir(parents=True, exist_ok=True)
+            for tool, tool_formula in package_app.HOMEBREW_TOOL_FORMULAE.items():
+                if tool_formula == formula:
+                    (keg / "bin" / tool).write_text(f"{tool} {architecture}", encoding="utf-8")
+            kegs[architecture][formula] = keg
+            blob = tmp_path / "blobs" / f"{architecture}-{formula}.tar.gz"
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            blob.write_text(f"{formula} {revision}", encoding="utf-8")
+            blobs.append(blob)
+            records[architecture].append({"formula": formula, "version": version, "sha256": revision * 64})
+    return package_app.HomebrewBottles(records, kegs, blobs)
+
+
+def test_homebrew_bottles_tool_is_the_formulas_bin_entry(tmp_path: Path) -> None:
     package_app = load_package_app_module()
-    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
-    sources_dir = tmp_path / "sources"
-    sshpass = sources_dir / "sshpass"
-    smbclient = sources_dir / "smbclient"
-    dependency = sources_dir / "libnative.dylib"
-    for path in (sshpass, smbclient, dependency):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(path.name, encoding="utf-8")
-        path.chmod(0o755)
-    sources = {
-        ("sshpass", "arm64"): sshpass,
-        ("smbclient", "arm64"): smbclient,
+    bottles = fake_bottles(package_app, tmp_path, ("arm64", "x86_64"))
+
+    assert package_app.bottle_tool_sources(bottles, ("x86_64",)) == {
+        ("sshpass", "x86_64"): tmp_path / "kegs" / "x86_64" / "sshpass" / "1.10" / "bin" / "sshpass",
+        ("smbclient", "x86_64"): tmp_path / "kegs" / "x86_64" / "samba" / "4.24.6" / "bin" / "smbclient",
     }
-    vendor_calls: list[Path] = []
+    (tmp_path / "kegs" / "arm64" / "samba" / "4.24.6" / "bin" / "smbclient").unlink()
+    with pytest.raises(RuntimeError, match="Bottle of samba has no bin/smbclient"):
+        bottles.tool("smbclient", "arm64")
 
-    def fake_vendor(app: Path) -> set[Path]:
-        vendor_calls.append(app)
+
+def native_layer_fixture(package_app, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    state = SimpleNamespace(bottles=fake_bottles(package_app, tmp_path), vendor_calls=[], prepared=[])
+    dependency = tmp_path / "kegs" / "arm64" / "samba" / "4.24.6" / "lib" / "libnative.dylib"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("original", encoding="utf-8")
+    state.dependency = dependency
+
+    def fake_prepare(architectures, *, use_cache=True):
+        state.prepared.append((architectures, use_cache))
+        return state.bottles
+
+    def fake_vendor(app: Path, *, kegs, tool_sources) -> set[Path]:
+        state.vendor_calls.append((app, kegs, tool_sources))
         frameworks = app / "Contents" / "Frameworks"
         frameworks.mkdir(parents=True, exist_ok=True)
         (frameworks / "libnative.dylib").write_text("vendored", encoding="utf-8")
         return {dependency}
 
-    monkeypatch.setattr(package_app, "resolve_tool_sources", lambda architectures: sources)
+    monkeypatch.setattr(package_app, "prepare_homebrew_bottles", fake_prepare)
     monkeypatch.setattr(package_app, "vendor_macho_dependencies", fake_vendor)
     monkeypatch.setattr(package_app, "ad_hoc_codesign_macho_bundle", lambda app: None)
     monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
     monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: None)
     monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_minimum_macos", lambda paths: None)
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
-
-    first_app = tmp_path / "First.app"
-    second_app = tmp_path / "Second.app"
-    package_app.copy_native_tools_layer(first_app, ("arm64",))
-    capsys.readouterr()
-    package_app.copy_native_tools_layer(second_app, ("arm64",))
-    captured = capsys.readouterr()
-
-    assert len(vendor_calls) == 1
-    assert "Using cached native tool layer." in captured.err
-    assert (second_app / "Contents" / "Resources" / "Tools" / "bin" / "smbclient").is_file()
-    assert (second_app / "Contents" / "Frameworks" / "libnative.dylib").is_file()
+    return state
 
 
-def test_copy_native_tools_layer_rebuilds_when_vendored_input_changes(
+def test_copy_native_tools_layer_bundles_the_bottle_tools_and_reuses_the_layer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     package_app = load_package_app_module()
-    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
-    sources_dir = tmp_path / "sources"
-    sshpass = sources_dir / "sshpass"
-    smbclient = sources_dir / "smbclient"
-    dependency = sources_dir / "libnative.dylib"
-    for path in (sshpass, smbclient, dependency):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("original", encoding="utf-8")
-        path.chmod(0o755)
-    sources = {
-        ("sshpass", "arm64"): sshpass,
-        ("smbclient", "arm64"): smbclient,
-    }
-    vendor_calls: list[Path] = []
-
-    def fake_vendor(app: Path) -> set[Path]:
-        vendor_calls.append(app)
-        frameworks = app / "Contents" / "Frameworks"
-        frameworks.mkdir(parents=True, exist_ok=True)
-        (frameworks / "libnative.dylib").write_text("vendored", encoding="utf-8")
-        return {dependency}
-
-    monkeypatch.setattr(package_app, "resolve_tool_sources", lambda architectures: sources)
-    monkeypatch.setattr(package_app, "vendor_macho_dependencies", fake_vendor)
-    monkeypatch.setattr(package_app, "ad_hoc_codesign_macho_bundle", lambda app: None)
-    monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
-    monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: None)
-    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
-    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+    state = native_layer_fixture(package_app, monkeypatch, tmp_path)
+    # Nothing from the packaging Mac's PATH or Homebrew may be bundled.
+    monkeypatch.setattr(package_app.shutil, "which", lambda name: pytest.fail(f"looked up {name} on PATH"))
 
     package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
     capsys.readouterr()
-    dependency.write_text("changed", encoding="utf-8")
     package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
     captured = capsys.readouterr()
 
-    assert len(vendor_calls) == 2
-    assert "Rebuilding native tool layer: cached input changed:" in captured.err
-    assert str(dependency) in captured.err
+    assert len(state.vendor_calls) == 1
+    _, kegs, tool_sources = state.vendor_calls[0]
+    assert kegs == {"arm64": state.bottles.kegs["arm64"]}
+    assert sorted((source.name, architecture) for source, architecture in tool_sources.values()) == [
+        ("smbclient", "arm64"), ("sshpass", "arm64")]
+    assert "Using cached native tool layer." in captured.err
+    tools = tmp_path / "Second.app" / "Contents" / "Resources" / "Tools" / "bin"
+    assert (tools / "smbclient").read_text(encoding="utf-8") == "smbclient arm64"
+    assert (tmp_path / "Second.app" / "Contents" / "Frameworks" / "libnative.dylib").is_file()
+    assert state.prepared == [(("arm64",), True), (("arm64",), True)]
+
+
+def test_copy_native_tools_layer_rebuilds_for_other_bottles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    state = native_layer_fixture(package_app, monkeypatch, tmp_path)
+
+    package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
+    # Another rebuild of a bottle has another sha256, so another layer.
+    state.bottles.records["arm64"][0]["sha256"] = "1" * 64
+    package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
+
+    assert len(state.vendor_calls) == 2
+
+
+@pytest.mark.parametrize("changed", ["vendored-library", "bottle-file"])
+def test_copy_native_tools_layer_rebuilds_when_an_input_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    changed: str,
+) -> None:
+    package_app = load_package_app_module()
+    state = native_layer_fixture(package_app, monkeypatch, tmp_path)
+
+    package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
+    capsys.readouterr()
+    path = state.dependency if changed == "vendored-library" else state.bottles.blobs[0]
+    path.write_text("changed", encoding="utf-8")
+    package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
+    captured = capsys.readouterr()
+
+    assert len(state.vendor_calls) == 2
+    assert f"Rebuilding native tool layer: cached input changed: {path.resolve()}" in captured.err
 
 
 def test_copy_native_tools_layer_rebuilds_when_cached_output_changes(
@@ -1156,35 +1188,7 @@ def test_copy_native_tools_layer_rebuilds_when_cached_output_changes(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     package_app = load_package_app_module()
-    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
-    sources_dir = tmp_path / "sources"
-    sshpass = sources_dir / "sshpass"
-    smbclient = sources_dir / "smbclient"
-    dependency = sources_dir / "libnative.dylib"
-    for path in (sshpass, smbclient, dependency):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("original", encoding="utf-8")
-        path.chmod(0o755)
-    sources = {
-        ("sshpass", "arm64"): sshpass,
-        ("smbclient", "arm64"): smbclient,
-    }
-    vendor_calls: list[Path] = []
-
-    def fake_vendor(app: Path) -> set[Path]:
-        vendor_calls.append(app)
-        frameworks = app / "Contents" / "Frameworks"
-        frameworks.mkdir(parents=True, exist_ok=True)
-        (frameworks / "libnative.dylib").write_text("vendored", encoding="utf-8")
-        return {dependency}
-
-    monkeypatch.setattr(package_app, "resolve_tool_sources", lambda architectures: sources)
-    monkeypatch.setattr(package_app, "vendor_macho_dependencies", fake_vendor)
-    monkeypatch.setattr(package_app, "ad_hoc_codesign_macho_bundle", lambda app: None)
-    monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
-    monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: None)
-    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
-    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+    state = native_layer_fixture(package_app, monkeypatch, tmp_path)
 
     package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
     capsys.readouterr()
@@ -1193,78 +1197,572 @@ def test_copy_native_tools_layer_rebuilds_when_cached_output_changes(
     package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
     captured = capsys.readouterr()
 
-    assert len(vendor_calls) == 2
+    assert len(state.vendor_calls) == 2
     assert "Rebuilding native tool layer: cached output tree changed:" in captured.err
     assert str(cache_entry / "Contents") in captured.err
 
 
-def test_vendor_macho_dependencies_rewrites_loader_path_to_matching_source_copy(
+def test_copy_native_tools_layer_without_cache_builds_in_place_and_resolves_again(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    state = native_layer_fixture(package_app, monkeypatch, tmp_path)
+    app = tmp_path / "Direct.app"
+
+    package_app.copy_native_tools_layer(app, ("arm64",), use_cache=False)
+
+    assert state.prepared == [(("arm64",), False)]
+    assert [call[0] for call in state.vendor_calls] == [app]
+    assert not (tmp_path / ".build" / "package-app" / "native-tools").exists() or not any(
+        (tmp_path / ".build" / "package-app" / "native-tools").iterdir())
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+class FakeGhcr:
+    """ghcr.io for one test: tag lists, manifest indexes and blobs by formula."""
+
+    def __init__(self) -> None:
+        self.tags: dict[str, list[str]] = {}
+        self.indexes: dict[tuple[str, str], list[dict[str, object]]] = {}
+        self.blobs: dict[str, bytes] = {}
+        self.requests: list[tuple[str, str]] = []
+
+    def add(self, formula: str, reference: str, entries: dict[str, dict[str, object]]) -> None:
+        self.tags.setdefault(formula, []).append(reference)
+        self.indexes[(formula, reference)] = [
+            {"annotations": {"org.opencontainers.image.ref.name": name, **annotations}}
+            for name, annotations in entries.items()
+        ]
+
+    def json(self, formula: str, path: str, *, accept: str | None = None) -> dict:
+        self.requests.append((formula, path))
+        if path == "tags/list":
+            return {"tags": self.tags.get(formula, [])}
+        reference = path.removeprefix("manifests/")
+        assert accept == "application/vnd.oci.image.index.v1+json"
+        return {"manifests": self.indexes[(formula, reference)]}
+
+    def open(self, formula: str, path: str, *, accept: str | None = None):
+        self.requests.append((formula, path))
+        return FakeResponse(self.blobs[path.removeprefix("blobs/sha256:")])
+
+
+class OfflineGhcr:
+    def json(self, *args, **kwargs):
+        raise AssertionError("contacted the registry")
+
+    open = json
+
+
+def bottle_annotations(digest: str, dependencies: list[tuple[str, str]] = ()) -> dict[str, object]:
+    tab = {"runtime_dependencies": [{"full_name": name, "pkg_version": version} for name, version in dependencies]}
+    return {"sh.brew.bottle.digest": digest, "sh.brew.tab": json.dumps(tab)}
+
+
+def test_ghcr_client_requests_a_token_per_repository_then_the_registry(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    seen: list[object] = []
+
+    def fake_urlopen(request, timeout):
+        seen.append(request)
+        if isinstance(request, str):
+            return FakeResponse(json.dumps({"token": "t-" + request.rsplit(":", 2)[-2].rsplit("/", 1)[-1]}).encode())
+        return FakeResponse(b'{"tags": []}')
+
+    client = package_app.GhcrClient(urlopen=fake_urlopen)
+    client.json("openssl@3", "tags/list")
+    client.json("openssl@3", "manifests/3.6.3", accept="application/vnd.oci.image.index.v1+json")
+
+    assert package_app.GhcrClient.repository("openssl@3") == "homebrew/core/openssl/3"
+    assert package_app.GhcrClient.repository("libstdc++") == "homebrew/core/libstdcxx"
+    assert seen[0] == "https://ghcr.io/token?service=ghcr.io&scope=repository:homebrew/core/openssl/3:pull"
+    # One token per repository; every registry call carries it.
+    assert [request.full_url for request in seen[1:]] == [
+        "https://ghcr.io/v2/homebrew/core/openssl/3/tags/list",
+        "https://ghcr.io/v2/homebrew/core/openssl/3/manifests/3.6.3",
+    ]
+    assert seen[1].get_header("Authorization") == "Bearer t-3"
+    assert seen[2].get_header("Accept") == "application/vnd.oci.image.index.v1+json"
+
+
+def test_bottle_rebuilds_lists_only_that_versions_rebuilds_newest_first() -> None:
+    package_app = load_package_app_module()
+
+    assert package_app.bottle_rebuilds(["1.10", "1.10-2", "1.10.1", "1.10-1", "1.1", "11.10"], "1.10") == [
+        (2, "1.10-2"), (1, "1.10-1"), (0, "1.10")]
+    assert package_app.bottle_entry_name("6.3.0", "arm64_sonoma", 0) == "6.3.0.arm64_sonoma"
+    assert package_app.bottle_entry_name("6.3.0", "arm64_sonoma", 1) == "6.3.0.arm64_sonoma.1"
+
+
+def test_resolve_bottle_takes_the_newest_rebuild_that_has_the_platform() -> None:
+    package_app = load_package_app_module()
+    registry = FakeGhcr()
+    # Rebuild 2 dropped Sonoma, as Homebrew does once it stops building for it.
+    registry.add("gnutls", "3.8.13_2", {"3.8.13_2.arm64_sonoma": bottle_annotations("a" * 64)})
+    registry.add("gnutls", "3.8.13_2-1", {"3.8.13_2.arm64_sonoma.1": bottle_annotations("b" * 64),
+                                         "3.8.13_2.sonoma.1": bottle_annotations("c" * 64)})
+    registry.add("gnutls", "3.8.13_2-2", {"3.8.13_2.arm64_sequoia.2": bottle_annotations("d" * 64)})
+
+    record, _ = package_app.resolve_bottle(registry, "gnutls", "3.8.13_2", "arm64_sonoma")
+
+    assert record == {"formula": "gnutls", "version": "3.8.13_2", "reference": "3.8.13_2-1",
+                      "bottle": "3.8.13_2.arm64_sonoma.1", "sha256": "b" * 64}
+
+
+def test_resolve_bottle_falls_back_to_an_all_bottle() -> None:
+    package_app = load_package_app_module()
+    registry = FakeGhcr()
+    registry.add("ca-certificates", "2026-08-13-1", {"2026-08-13.all.1": bottle_annotations("e" * 64)})
+
+    record, _ = package_app.resolve_bottle(registry, "ca-certificates", "2026-08-13", "sonoma")
+
+    assert record["bottle"] == "2026-08-13.all.1"
+
+
+@pytest.mark.parametrize("case", ["no-platform", "no-version", "bad-digest"])
+def test_resolve_bottle_rejects_a_formula_without_a_usable_bottle(case: str) -> None:
+    package_app = load_package_app_module()
+    registry = FakeGhcr()
+    if case == "no-platform":
+        registry.add("readline", "8.3.3", {"8.3.3.arm64_tahoe": bottle_annotations("a" * 64)})
+        expected = r"No arm64_sonoma or all bottle of readline 8.3.3 \(registry tags tried: 8.3.3\)"
+    elif case == "no-version":
+        registry.add("readline", "8.3.6", {"8.3.6.arm64_sonoma": bottle_annotations("a" * 64)})
+        expected = r"\(registry tags tried: none\)"
+    else:
+        registry.add("readline", "8.3.3", {"8.3.3.arm64_sonoma": bottle_annotations("not-a-digest")})
+        expected = "Bottle 8.3.3.arm64_sonoma of readline has no valid digest"
+
+    with pytest.raises(RuntimeError, match=expected):
+        package_app.resolve_bottle(registry, "readline", "8.3.3", "arm64_sonoma")
+
+
+def pinned_registry(tag: str = "arm64_sonoma") -> FakeGhcr:
+    """samba and sshpass at their pins, with samba's recorded dependencies."""
+    registry = FakeGhcr()
+    registry.add("samba", "4.24.6", {f"4.24.6.{tag}": bottle_annotations(
+        "1" * 64, [("gnutls", "3.8.13_2"), ("gmp", "6.3.0")])})
+    registry.add("sshpass", "1.10", {f"1.10.{tag}": bottle_annotations("2" * 64)})
+    registry.add("gnutls", "3.8.13_2", {f"3.8.13_2.{tag}": bottle_annotations("3" * 64, [("gmp", "6.3.0")])})
+    registry.add("gmp", "6.3.0", {f"6.3.0.{tag}": bottle_annotations("4" * 64)})
+    return registry
+
+
+def test_resolve_homebrew_bottles_follows_the_pinned_bottles_records() -> None:
+    package_app = load_package_app_module()
+
+    records = package_app.resolve_homebrew_bottles(pinned_registry("sonoma"), "x86_64")
+
+    assert [(record["formula"], record["version"], record["bottle"]) for record in records] == [
+        ("gmp", "6.3.0", "6.3.0.sonoma"),
+        ("gnutls", "3.8.13_2", "3.8.13_2.sonoma"),
+        ("samba", "4.24.6", "4.24.6.sonoma"),
+        ("sshpass", "1.10", "1.10.sonoma"),
+    ]
+
+
+@pytest.mark.parametrize("case", ["missing-indirect", "conflict", "corrupt-record"])
+def test_resolve_homebrew_bottles_rejects_an_inconsistent_set(case: str) -> None:
+    package_app = load_package_app_module()
+    registry = pinned_registry()
+    if case == "missing-indirect":
+        # gnutls needs nettle, which samba's record does not name.
+        registry.indexes[("gnutls", "3.8.13_2")][0]["annotations"].update(
+            bottle_annotations("3" * 64, [("gmp", "6.3.0"), ("nettle", "4.0")]))
+        expected = "gnutls needs nettle, which no pinned bottle records"
+    elif case == "conflict":
+        registry.indexes[("sshpass", "1.10")][0]["annotations"].update(bottle_annotations("2" * 64, [("gmp", "6.2.1")]))
+        expected = "sshpass needs gmp 6.2.1, but 6.3.0 is already selected"
+    else:
+        registry.indexes[("samba", "4.24.6")][0]["annotations"]["sh.brew.tab"] = "{not json"
+        expected = "Bottle of samba has no readable runtime dependency record"
+
+    with pytest.raises(RuntimeError, match=expected):
+        package_app.resolve_homebrew_bottles(registry, "arm64")
+
+
+def test_cached_bottle_resolution_is_reused_offline_and_redone_without_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    registry = pinned_registry()
+
+    first = package_app.cached_bottle_resolution(registry, "arm64", use_cache=True)
+    assert package_app.cached_bottle_resolution(OfflineGhcr(), "arm64", use_cache=True) == first
+    registry.requests.clear()
+    assert package_app.cached_bottle_resolution(registry, "arm64", use_cache=False) == first
+    assert ("samba", "tags/list") in registry.requests
+
+    # A damaged resolution file is resolved again rather than trusted.
+    cached = next((tmp_path / ".build" / "package-app" / "homebrew-bottles" / "resolved").glob("arm64-*.json"))
+    cached.write_text('[{"sha256": "short"}]', encoding="utf-8")
+    assert package_app.cached_bottle_resolution(registry, "arm64", use_cache=True) == first
+
+
+def bottle_tarball(entries: list[tuple[str, str, object]]) -> bytes:
+    """A gzip tar of (kind, name, data): file content, link target or None."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for kind, name, data in entries:
+            info = tarfile.TarInfo(name)
+            if kind == "dir":
+                info.type, info.mode = tarfile.DIRTYPE, 0o555
+                archive.addfile(info)
+            elif kind == "file":
+                payload = str(data).encode()
+                info.size, info.mode = len(payload), 0o444
+                archive.addfile(info, io.BytesIO(payload))
+            elif kind == "symlink":
+                info.type, info.linkname = tarfile.SYMTYPE, str(data)
+                archive.addfile(info)
+            elif kind == "hardlink":
+                info.type, info.linkname = tarfile.LNKTYPE, str(data)
+                archive.addfile(info)
+            elif kind == "fifo":
+                info.type = tarfile.FIFOTYPE
+                archive.addfile(info)
+    return buffer.getvalue()
+
+
+GOOD_BOTTLE = [
+    ("dir", "talloc", None),
+    ("dir", "talloc/2.5.0", None),
+    ("dir", "talloc/2.5.0/lib", None),
+    ("file", "talloc/2.5.0/lib/libtalloc.2.dylib", "talloc"),
+    ("symlink", "talloc/2.5.0/lib/libtalloc.dylib", "libtalloc.2.dylib"),
+]
+
+
+def bottle_record(content: bytes, formula: str = "talloc", version: str = "2.5.0") -> dict[str, object]:
+    return {"formula": formula, "version": version, "bottle": f"{version}.arm64_sonoma",
+            "sha256": hashlib.sha256(content).hexdigest()}
+
+
+def test_fetch_bottle_downloads_once_and_keeps_it_under_its_sha256(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    content = bottle_tarball(GOOD_BOTTLE)
+    record = bottle_record(content)
+    registry = FakeGhcr()
+    registry.blobs[str(record["sha256"])] = content
+
+    blob = package_app.fetch_bottle(registry, record)
+
+    assert blob.name == f"{record['sha256']}.tar.gz"
+    assert blob.read_bytes() == content
+    assert package_app.fetch_bottle(OfflineGhcr(), record) == blob
+    # A damaged download in the cache is fetched again.
+    blob.write_bytes(b"damaged")
+    assert package_app.fetch_bottle(registry, record).read_bytes() == content
+
+
+def test_fetch_bottle_refuses_a_download_with_the_wrong_sha256(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    record = bottle_record(b"expected")
+    registry = FakeGhcr()
+    registry.blobs[str(record["sha256"])] = b"tampered"
+
+    with pytest.raises(RuntimeError, match=r"has sha256 [0-9a-f]{64}, expected"):
+        package_app.fetch_bottle(registry, record)
+
+    assert list((tmp_path / ".build" / "package-app" / "homebrew-bottles" / "blobs").iterdir()) == []
+
+
+def test_extract_bottle_unpacks_the_keg_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    content = bottle_tarball(GOOD_BOTTLE)
+    blob = tmp_path / "talloc.tar.gz"
+    blob.write_bytes(content)
+    record = bottle_record(content)
+
+    keg = package_app.extract_bottle(blob, record)
+
+    assert keg == tmp_path / ".build" / "package-app" / "homebrew-bottles" / "kegs" / str(record["sha256"]) / "talloc" / "2.5.0"
+    assert (keg / "lib" / "libtalloc.dylib").resolve() == (keg / "lib" / "libtalloc.2.dylib").resolve()
+    # Bottles ship read-only folders; the cache must stay removable.
+    assert os.access(keg / "lib", os.W_OK)
+    blob.unlink()
+    assert package_app.extract_bottle(blob, record) == keg
+
+
+def test_extract_bottle_redoes_an_interrupted_extraction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    content = bottle_tarball(GOOD_BOTTLE)
+    blob = tmp_path / "talloc.tar.gz"
+    blob.write_bytes(content)
+    record = bottle_record(content)
+    partial = tmp_path / ".build" / "package-app" / "homebrew-bottles" / "kegs" / str(record["sha256"]) / "talloc" / "2.5.0"
+    partial.mkdir(parents=True)
+
+    keg = package_app.extract_bottle(blob, record)
+
+    assert (keg / "lib" / "libtalloc.2.dylib").read_text(encoding="utf-8") == "talloc"
+
+
+@pytest.mark.parametrize("entry,expected", [
+    (("file", "/etc/passwd", "x"), "path outside talloc/2.5.0"),
+    (("file", "talloc/2.5.0/../../evil", "x"), "path outside talloc/2.5.0"),
+    (("file", "tevent/0.17.2/lib/x", "x"), "path outside talloc/2.5.0"),
+    (("symlink", "talloc/2.5.0/lib/escape", "../../../outside"), "links talloc/2.5.0/lib/escape outside"),
+    (("symlink", "talloc/2.5.0/lib/absolute", "/usr/lib/libz.dylib"), "links talloc/2.5.0/lib/absolute outside"),
+    (("hardlink", "talloc/2.5.0/lib/hard", "talloc/2.5.0/lib/libtalloc.2.dylib"), "unsupported entry"),
+    (("fifo", "talloc/2.5.0/lib/pipe", None), "unsupported entry"),
+])
+def test_extract_bottle_refuses_entries_outside_its_keg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    entry: tuple[str, str, object],
+    expected: str,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    content = bottle_tarball([*GOOD_BOTTLE, entry])
+    blob = tmp_path / "talloc.tar.gz"
+    blob.write_bytes(content)
+
+    with pytest.raises(RuntimeError, match=re.escape(expected)):
+        package_app.extract_bottle(blob, bottle_record(content))
+
+    kegs = tmp_path / ".build" / "package-app" / "homebrew-bottles" / "kegs"
+    assert [path.name for path in kegs.iterdir()] == []
+    assert not (tmp_path / "evil").exists()
+
+
+def test_extract_bottle_requires_the_records_keg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    content = bottle_tarball([("dir", "talloc", None)])
+    blob = tmp_path / "talloc.tar.gz"
+    blob.write_bytes(content)
+
+    with pytest.raises(RuntimeError, match="does not hold talloc/2.5.0"):
+        package_app.extract_bottle(blob, bottle_record(content))
+
+
+def test_prepare_homebrew_bottles_unpacks_each_architectures_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "HOMEBREW_BOTTLE_ROOTS", {"talloc": "2.5.0"})
+    registry = FakeGhcr()
+    for architecture, tag in (("arm64", "arm64_sonoma"), ("x86_64", "sonoma")):
+        content = bottle_tarball([*GOOD_BOTTLE[:3], ("file", "talloc/2.5.0/lib/libtalloc.2.dylib", architecture)])
+        digest = hashlib.sha256(content).hexdigest()
+        registry.blobs[digest] = content
+        registry.indexes.setdefault(("talloc", "2.5.0"), []).append(
+            {"annotations": {"org.opencontainers.image.ref.name": f"2.5.0.{tag}", **bottle_annotations(digest)}})
+    registry.tags["talloc"] = ["2.5.0"]
+
+    bottles = package_app.prepare_homebrew_bottles(("arm64", "x86_64"), client=registry)
+
+    for architecture in ("arm64", "x86_64"):
+        library = bottles.kegs[architecture]["talloc"] / "lib" / "libtalloc.2.dylib"
+        assert library.read_text(encoding="utf-8") == architecture
+    assert len(bottles.blobs) == 2
+    again = package_app.prepare_homebrew_bottles(("arm64", "x86_64"), client=OfflineGhcr())
+    assert again.kegs == bottles.kegs
+
+
+def test_homebrew_placeholder_path_maps_bottle_references_into_the_kegs(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    kegs = {"samba": tmp_path / "samba" / "4.24.6", "gnutls": tmp_path / "gnutls" / "3.8.13_2"}
+
+    assert package_app.homebrew_placeholder_path(
+        "@@HOMEBREW_CELLAR@@/samba/4.24.6/lib/private/liblibsmb-private-samba.dylib", kegs
+    ) == kegs["samba"] / "lib" / "private" / "liblibsmb-private-samba.dylib"
+    assert package_app.homebrew_placeholder_path(
+        "@@HOMEBREW_PREFIX@@/opt/gnutls/lib/libgnutls.30.dylib", kegs) == kegs["gnutls"] / "lib" / "libgnutls.30.dylib"
+    assert package_app.homebrew_placeholder_path("/usr/lib/libz.1.dylib", kegs) is None
+    for reference, expected in [
+        ("@@HOMEBREW_CELLAR@@/samba/4.25.0/lib/libsmbconf.dylib", "names no pinned keg"),
+        ("@@HOMEBREW_PREFIX@@/opt/nettle/lib/libnettle.dylib", "names no pinned keg"),
+        ("@@HOMEBREW_PREFIX@@/lib/libtalloc.dylib", "Unsupported bottle placeholder"),
+        ("@@HOMEBREW_PERL@@", "Unsupported bottle placeholder"),
+    ]:
+        with pytest.raises(RuntimeError, match=expected):
+            package_app.homebrew_placeholder_path(reference, kegs)
+
+
+def test_vendor_macho_dependencies_resolves_bottle_placeholders_per_architecture(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     package_app = load_package_app_module()
     app = tmp_path / "TimeCapsuleSMB.app"
     tools = app / "Contents" / "Resources" / "Tools" / "bin"
-    arm_tool = tools / "arm64" / "smbclient"
-    x86_tool = tools / "x86_64" / "smbclient"
-    for tool in (arm_tool, x86_tool):
-        tool.parent.mkdir(parents=True, exist_ok=True)
-        tool.write_text("tool", encoding="utf-8")
-        tool.chmod(0o755)
+    kegs: dict[str, dict[str, Path]] = {}
+    tool_sources: dict[Path, tuple[Path, str]] = {}
+    for architecture in ("arm64", "x86_64"):
+        samba = tmp_path / "kegs" / architecture / "samba" / "4.24.6"
+        gnutls = tmp_path / "kegs" / architecture / "gnutls" / "3.8.13_2"
+        for path, text in ((samba / "bin" / "smbclient", "tool"),
+                           (samba / "lib" / "private" / "liblibsmb-private-samba.dylib", "libsmb"),
+                           (gnutls / "lib" / "libgnutls.30.dylib", "gnutls")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{architecture} {text}", encoding="utf-8")
+        kegs[architecture] = {"samba": samba, "gnutls": gnutls}
+        copy = tools / architecture / "smbclient"
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_text(f"{architecture} tool", encoding="utf-8")
+        copy.chmod(0o755)
+        tool_sources[copy] = (samba / "bin" / "smbclient", architecture)
 
-    sources = tmp_path / "sources"
-    arm_i18n = sources / "arm64" / "libicui18n.78.dylib"
-    arm_icuuc = sources / "arm64" / "libicuuc.78.dylib"
-    arm_icudata = sources / "arm64" / "libicudata.78.dylib"
-    x86_i18n = sources / "x86_64" / "libicui18n.78.dylib"
-    x86_icuuc = sources / "x86_64" / "libicuuc.78.dylib"
-    x86_icudata = sources / "x86_64" / "libicudata.78.dylib"
-    for source in (arm_i18n, arm_icuuc, arm_icudata, x86_i18n, x86_icuuc, x86_icudata):
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text(source.parent.name, encoding="utf-8")
+    cellar_lib = "@@HOMEBREW_CELLAR@@/samba/4.24.6/lib"
+    dependencies = {
+        "tool": ["@@HOMEBREW_CELLAR@@/samba/4.24.6/lib/private/liblibsmb-private-samba.dylib", "/usr/lib/libSystem.B.dylib"],
+        # A library lists its own install name; that is not a dependency.
+        "libsmb": ["@@HOMEBREW_PREFIX@@/opt/samba/lib/private/liblibsmb-private-samba.dylib",
+                   "@@HOMEBREW_PREFIX@@/opt/gnutls/lib/libgnutls.30.dylib"],
+        "gnutls": ["@@HOMEBREW_PREFIX@@/opt/gnutls/lib/libgnutls.30.dylib"],
+    }
+    own_names = {"libsmb": dependencies["libsmb"][0], "gnutls": dependencies["gnutls"][0], "tool": None}
+    rpaths = {"tool": [cellar_lib, f"{cellar_lib}/private"], "libsmb": [cellar_lib], "gnutls": []}
 
-    def fake_dependencies(path: Path) -> list[str] | None:
-        resolved = path.resolve()
-        if resolved == arm_tool.resolve():
-            return [str(arm_i18n)]
-        if resolved == x86_tool.resolve():
-            return [str(x86_i18n)]
-        if path.name.startswith("libicui18n"):
-            return ["@loader_path/libicuuc.78.dylib", "@loader_path/libicudata.78.dylib"]
-        if path.name.startswith("libicuuc"):
-            return ["@loader_path/libicudata.78.dylib"]
-        return []
+    def kind(path: Path) -> str:
+        return path.read_text(encoding="utf-8").split(" ", 1)[1]
 
     changes: list[list[str]] = []
-
-    def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        changes.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(package_app, "macho_dependencies", fake_dependencies)
-    monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
+    monkeypatch.setattr(package_app, "macho_dependencies", lambda path: list(dependencies[kind(path)]))
+    monkeypatch.setattr(package_app, "macho_install_name", lambda path: own_names[kind(path)])
+    monkeypatch.setattr(package_app, "macho_rpaths", lambda path: list(rpaths[kind(path)]))
+    monkeypatch.setattr(package_app, "run_quiet",
+                        lambda cmd: changes.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
     monkeypatch.setattr(package_app, "set_macho_id_if_supported", lambda path: None)
 
-    package_app.vendor_macho_dependencies(app)
+    vendored = package_app.vendor_macho_dependencies(app, kegs=kegs, tool_sources=tool_sources)
 
     frameworks = app / "Contents" / "Frameworks"
-    assert (frameworks / "libicuuc.78.dylib").is_file()
-    x86_icuuc_bundle = next(frameworks.glob("libicuuc-*.78.dylib"))
-    x86_icudata_bundle = next(frameworks.glob("libicudata-*.78.dylib"))
-    x86_i18n_bundle = next(frameworks.glob("libicui18n-*.78.dylib"))
+    assert vendored == {kegs[a][f] / sub for a in kegs for f, sub in (
+        ("samba", Path("lib/private/liblibsmb-private-samba.dylib")), ("gnutls", Path("lib/libgnutls.30.dylib")))}
+    arm_libsmb = frameworks / "liblibsmb-private-samba.dylib"
+    x86_libsmb = next(frameworks.glob("liblibsmb-private-samba-*.dylib"))
+    # Each architecture's tool gets its own architecture's libraries.
+    assert arm_libsmb.read_text(encoding="utf-8") == "arm64 libsmb"
+    assert x86_libsmb.read_text(encoding="utf-8") == "x86_64 libsmb"
+    assert next(frameworks.glob("libgnutls-*.30.dylib")).read_text(encoding="utf-8") == "x86_64 gnutls"
+    assert ["install_name_tool", "-change", dependencies["tool"][0],
+            f"@loader_path/../../../../Frameworks/{x86_libsmb.name}", str(tools / "x86_64" / "smbclient")] in changes
+    assert ["install_name_tool", "-change", dependencies["libsmb"][1], "@loader_path/libgnutls.30.dylib",
+            str(arm_libsmb)] in changes
+    # Placeholder rpaths are dropped; the own install name is not rewritten as a dependency.
+    for rpath in rpaths["tool"]:
+        assert ["install_name_tool", "-delete_rpath", rpath, str(tools / "arm64" / "smbclient")] in changes
+    assert not any(cmd[2] == dependencies["libsmb"][0] for cmd in changes if cmd[1] == "-change")
 
-    assert any(
-        cmd[0:3] == ["install_name_tool", "-change", "@loader_path/libicuuc.78.dylib"]
-        and cmd[3] == f"@loader_path/{x86_icuuc_bundle.name}"
-        and cmd[-1] == str(x86_i18n_bundle)
-        for cmd in changes
-    )
-    assert any(
-        cmd[0:3] == ["install_name_tool", "-change", "@loader_path/libicudata.78.dylib"]
-        and cmd[3] == f"@loader_path/{x86_icudata_bundle.name}"
-        and cmd[-1] == str(x86_icuuc_bundle)
-        for cmd in changes
-    )
+
+def test_vendor_macho_dependencies_refuses_a_placeholder_without_bottles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    tool = app / "Contents" / "Resources" / "Tools" / "bin" / "smbclient"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("tool", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setattr(package_app, "macho_dependencies",
+                        lambda path: ["@@HOMEBREW_PREFIX@@/opt/talloc/lib/libtalloc.2.dylib"])
+    monkeypatch.setattr(package_app, "macho_install_name", lambda path: None)
+    monkeypatch.setattr(package_app, "macho_rpaths", lambda path: [])
+
+    with pytest.raises(RuntimeError, match="references @@HOMEBREW_PREFIX@@/opt/talloc/lib/libtalloc.2.dylib but no bottle"):
+        package_app.vendor_macho_dependencies(app)
+
+
+def test_external_dependency_validation_rejects_a_leftover_bottle_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    fixture = external_validation_fixture(package_app, monkeypatch, tmp_path)
+    fixture.dependencies[fixture.tool].append("@@HOMEBREW_PREFIX@@/opt/popt/lib/libpopt.0.dylib")
+
+    with pytest.raises(RuntimeError, match=r"smbclient: @@HOMEBREW_PREFIX@@/opt/popt/lib/libpopt.0.dylib"):
+        package_app.assert_no_external_macho_dependencies(fixture.app)
+
+
+VTOOL_FAT = """{path} (architecture x86_64):
+Load command 9
+      cmd LC_VERSION_MIN_MACOSX
+  cmdsize 16
+  version 10.13
+      sdk 26.4
+{path} (architecture arm64):
+Load command 10
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform MACOS
+    minos 14.8
+      sdk 14.5
+   ntools 1
+     tool LD
+  version 1115.7.3
+"""
+
+VTOOL_THIN = """{path}:
+Load command 10
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform MACOS
+    minos 26.6
+      sdk 26.6
+   ntools 1
+     tool LD
+  version 1230.1
+"""
+
+
+def fake_vtool(package_app, monkeypatch: pytest.MonkeyPatch, outputs: dict[Path, str]) -> None:
+    def fake_run(cmd, **kwargs):
+        if cmd[0] != "vtool":
+            raise AssertionError(cmd)
+        path = Path(cmd[-1])
+        if path not in outputs:
+            return subprocess.CompletedProcess(cmd, 1, "", "file is not mach-o")
+        return subprocess.CompletedProcess(cmd, 0, outputs[path].format(path=path), "")
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+    monkeypatch.setattr(package_app, "macho_architectures", lambda path: {"arm64"})
+
+
+def test_macho_minimum_macos_reads_each_architectures_load_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    fat, thin, text = tmp_path / "python3.13", tmp_path / "smbclient", tmp_path / "README"
+    fake_vtool(package_app, monkeypatch, {fat: VTOOL_FAT, thin: VTOOL_THIN})
+
+    # The linker's own "version" line inside LC_BUILD_VERSION is not a macOS version.
+    assert package_app.macho_minimum_macos(fat) == {"x86_64": "10.13", "arm64": "14.8"}
+    assert package_app.macho_minimum_macos(thin) == {"arm64": "26.6"}
+    assert package_app.macho_minimum_macos(text) == {}
+
+
+def test_assert_macho_minimum_macos_accepts_the_limit_and_rejects_newer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    fat, thin, text = tmp_path / "python3.13", tmp_path / "smbclient", tmp_path / "README"
+    fake_vtool(package_app, monkeypatch, {fat: VTOOL_FAT, thin: VTOOL_THIN})
+
+    package_app.assert_macho_minimum_macos([fat, text])
+    with pytest.raises(RuntimeError, match=r"newer macOS than 14\.8:\n  - .*smbclient \(arm64\): 26\.6$"):
+        package_app.assert_macho_minimum_macos([fat, thin, text])
+    package_app.assert_macho_minimum_macos([thin], maximum="26.6")
 
 
 OTOOL_RPATHS = """{path}:

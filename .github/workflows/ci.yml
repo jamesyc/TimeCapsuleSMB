@@ -98,8 +98,6 @@ jobs:
     runs-on: macos-latest
     needs:
       - swift-test
-    env:
-      HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
     steps:
       - name: Check out repository
@@ -112,26 +110,6 @@ jobs:
           key: package-app-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/Package.swift', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg', 'pyproject.toml', 'requirements.txt', 'src/**', 'bin/**') }}
           restore-keys: |
             package-app-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Install native packaging tools
-        run: |
-          brew install samba
-          brew tap hudochenkov/sshpass
-          brew install sshpass
-
-          smbclient="$(brew --prefix samba)/bin/smbclient"
-          sshpass="$(brew --prefix sshpass)/bin/sshpass"
-
-          test -x "$smbclient"
-          test -x "$sshpass"
-          file "$smbclient" "$sshpass"
-          lipo -archs "$smbclient"
-          lipo -archs "$sshpass"
-
-          {
-            echo "TCAPSULE_PACKAGE_SMBCLIENT=$smbclient"
-            echo "TCAPSULE_PACKAGE_SSHPASS=$sshpass"
-          } >> "$GITHUB_ENV"
 
       - name: Package and validate native app
         run: |

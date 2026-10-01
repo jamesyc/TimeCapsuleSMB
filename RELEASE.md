@@ -55,6 +55,8 @@ swift test --package-path macos/TimeCapsuleSMB
 python3 macos/TimeCapsuleSMB/tools/package_app.py --configuration release --arch native --full-validation
 ```
 
+The app bundles `smbclient` and `sshpass` from Homebrew's macOS 14 (Sonoma) bottles, pinned in `HOMEBREW_BOTTLE_ROOTS` in `package_app.py`. Packaging downloads them and their recorded dependencies from ghcr.io; it does not use the packaging Mac's Homebrew, whose bottles are built for that Mac's macOS. Full validation fails if any bundled binary declares a newer minimum macOS than 14.8. To move a pin, pick a version whose bottles still include both `arm64_sonoma` and `sonoma`.
+
 ## NetBSD Builds
 
 When a change touches `build/`, rebuild the affected NetBSD artifact before release. Do not rebuild the NetBSD toolchains unless that is the explicit task. After a successful root build on the VM, copy the stripped binary back into `bin/`, wait a few seconds for filesystem state to settle, then update `src/timecapsulesmb/assets/artifact-manifest.json`.
