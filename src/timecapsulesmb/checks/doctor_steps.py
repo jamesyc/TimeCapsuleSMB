@@ -1375,6 +1375,10 @@ def _nbns_timeout_subnet_result(
     # rather than 137 (see apple_nbns_client_on_subnet), and routers between
     # subnets differ in whether that answer arrives. A timeout from such a
     # client says nothing about the device, so it is skipped, not failed.
+    # The device's subnets come from live ifconfig and the client is this
+    # host's route source, so the verdict can differ from wcifsnd's when a
+    # router translates addresses between the subnets, or briefly after a
+    # renumber (wcifsnd keeps the old address in its table).
     device_subnets: list[str] = []
     try:
         client = str(ipaddress.IPv4Address(client_source)) if client_source is not None else None

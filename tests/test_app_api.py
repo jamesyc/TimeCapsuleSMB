@@ -3344,6 +3344,31 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(result["payload"]["fatal"])
         self.assertNotIn("pw", json.dumps(collector.events))
 
+    def test_doctor_telemetry_reports_nbns_subnet_outcome_on_a_passing_run(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        nbns_subnet = {
+            "client_source": "192.168.24.102",
+            "device_subnets": ["192.168.28.0/24"],
+            "outcome": "off_subnet",
+            "detail": None,
+        }
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["nbns_subnet"] = nbns_subnet
+            return [], False
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                    with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                        rc = service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["nbns_subnet"], nbns_subnet)
+        self.assertIsNone(finished.get("error"))
+
     def test_doctor_failure_telemetry_includes_shared_debug_context(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})

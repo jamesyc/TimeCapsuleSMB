@@ -4,11 +4,13 @@ import socket
 import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 import ipaddress
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.device.probe import DeviceIpv4Entry
+
+if TYPE_CHECKING:
+    from timecapsulesmb.device.probe import DeviceIpv4Entry
 
 
 NBNS_PORT = 137
@@ -103,10 +105,7 @@ def apple_nbns_client_on_subnet(entries: Iterable[DeviceIpv4Entry], client_ip: s
     `(src & mask) | ~mask` (NetBSD 6 `0x486178`). With no match it falls back
     to a default context whose reply socket is the UDP 922 control socket
     (`0x4823f4..0x482420`), and `0x484b00` replies from that socket, so a
-    client off every subnet may never see the answer. The probe reads live
-    `ifconfig`, so it can disagree with wcifsnd briefly after a renumber
-    (wcifsnd keeps stale entries), and a router that translates addresses
-    between the subnets shows wcifsnd a different source than this host's.
+    client off every subnet may never see the answer.
     """
     client = int(ipaddress.IPv4Address(client_ip))
     for entry in entries:

@@ -69,7 +69,6 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
-    DEVICE_IFCONFIG_COMMAND,
     DeviceIpv4Entry,
     DeviceIpv4SubnetsProbeResult,
     UsbPrinterProbeResult,
@@ -3487,6 +3486,40 @@ class CheckTests(unittest.TestCase):
         device_probe.assert_not_called()
         self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "unknown")
 
+    def test_run_doctor_checks_ignores_a_route_without_a_source_address(self) -> None:
+        debug_fields: dict[str, object] = {}
+        device_probe = mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE)
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep"):
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+                xattr_result=CheckResult("PASS", "xattr ok"),
+                read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+                skip_bonjour=True,
+                skip_smb=True,
+                debug_fields=debug_fields,
+                extra_patches={
+                    "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(
+                        return_value=RouteSelection("available", source=None)
+                    ),
+                    "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mock.Mock(
+                        return_value=self._nbns_ready_probe()
+                    ),
+                    "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(
+                        return_value=self._nbns_query_timeout()
+                    ),
+                    "timecapsulesmb.checks.doctor_steps.probe_device_ipv4_subnets_conn": device_probe,
+                    "timecapsulesmb.checks.doctor_debug.read_remote_service_socket_diagnostics_conn": mock.Mock(return_value=""),
+                },
+            )
+
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "FAIL")
+        device_probe.assert_not_called()
+        self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "unknown")
+        self.assertEqual(debug_fields["smb_connectivity"]["routes"]["10.0.0.2"]["state"], "available")
+
     def test_run_doctor_checks_does_not_probe_device_subnets_unless_nbns_timed_out(self) -> None:
         cases = (
             (CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"), "PASS", False),
@@ -5641,9 +5674,9 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
         ) as run_ssh_mock:
             result = probe_device_ipv4_subnets_conn(connection)
 
+        # /sbin is not on the device's ssh PATH.
         run_ssh_mock.assert_called_once()
-        self.assertEqual(run_ssh_mock.call_args.args, (connection, DEVICE_IFCONFIG_COMMAND))
-        self.assertEqual(DEVICE_IFCONFIG_COMMAND, "/sbin/ifconfig -a")
+        self.assertEqual(run_ssh_mock.call_args.args, (connection, "/sbin/ifconfig -a"))
         self.assertIsNone(result.error)
         self.assertEqual([entry.network for entry in result.entries], ["192.168.1.0/24"])
 

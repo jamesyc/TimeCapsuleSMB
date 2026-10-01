@@ -85,6 +85,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             warn_count=status_counts["WARN"],
             fail_count=status_counts["FAIL"],
             info_count=status_counts["INFO"],
+            # Debug fields reach telemetry only in a fatal run's error, and an
+            # off-subnet NBNS timeout is a SKIP, so its outcome rides on the event.
+            nbns_subnet=doctor_debug.get("nbns_subnet"),
         )
 
         if args.json:
