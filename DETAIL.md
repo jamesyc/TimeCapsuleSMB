@@ -557,8 +557,9 @@ Current behavior:
 
 `rc.local` backgrounds `boot.sh` with stdin/stdout/stderr detached so Apple's
 startup can continue. `boot.sh` performs only platform preparation: RAM
-directories, existing-compatible `/root` prefixes, bufcache tuning, and the
-4 MiB locks filesystem. It preserves existing files and mounts, then executes
+directories, existing-compatible `/root` prefixes, and the 4 MiB locks
+filesystem. It leaves Apple's kernel tunables, including the buffer cache, as
+the firmware set them. It preserves existing files and mounts, then executes
 `/mnt/Flash/service manager`.
 
 NetBSD 6 uses `mount_tmpfs -s 4m`, retaining its plain-directory fallback if

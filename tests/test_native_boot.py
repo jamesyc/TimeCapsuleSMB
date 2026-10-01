@@ -49,7 +49,9 @@ def test_boot_prepares_platform_then_execs_native_manager(boot, kernel, mount, a
     assert result.returncode == 0, result.stderr
     operations = calls()
     assert [mount, '-s', amount, 'tmpfs' if kernel.startswith('6') else 'swap', str(root/'Locks')] in operations
-    assert ['sysctl', '-w', 'vm.bufcache=5'] in operations
+    # Apple's kernel tunables stay as the firmware set them, even when the
+    # buffer cache is not at the NetBSD default.
+    assert not any(call[0] == 'sysctl' for call in operations)
     assert operations[-1] == ['service', 'manager']
     assert (root/'root/tc-netbsd7').resolve() == root/'Memory/samba4'
     assert (root/'Memory/samba4/private').stat().st_mode & 0o777 == 0o700

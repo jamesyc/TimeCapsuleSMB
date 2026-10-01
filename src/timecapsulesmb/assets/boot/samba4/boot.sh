@@ -50,10 +50,9 @@ if ! tc_prepare_locks; then
     exit 1
 fi
 
-tc_bufcache=$(/sbin/sysctl -n vm.bufcache 2>/dev/null) || tc_bufcache=
-if [ -n "$tc_bufcache" ] && [ "$tc_bufcache" != 5 ]; then
-    /sbin/sysctl -w vm.bufcache=5 || echo 'boot: could not tune vm.bufcache'
-fi
+# Keep Apple's buffer cache settings (vm.bufcache 15). A smaller cache leaves
+# NetBSD's getnewbuf() fewer buffers to recycle, and it can then sleep forever
+# in needbuf (kern/60584), which stalled Time Machine backups (PR 353).
 
 mkdir -p /root || exit 1
 for tc_prefix in /root/tc-netbsd7 /root/tc-netbsd4 /root/tc-netbsd4le /root/tc-netbsd4be; do
