@@ -44,7 +44,9 @@ CACHE_KEY_VERSION = 1
 PYTHON_RUNTIME_CACHE_VERSION = 2
 PYTHON_SITE_PACKAGES_CACHE_VERSION = 2
 APP_ICON_CACHE_VERSION = 1
-NATIVE_TOOLS_CACHE_VERSION = 1
+# 2: Homebrew's arm64 samba 4.25.0 links its own libraries through @rpath; cached
+# layers from version 1 left those references pointing into the Cellar.
+NATIVE_TOOLS_CACHE_VERSION = 2
 DEFAULT_NOTARY_PROFILE = "tcapsulesmb-notary"
 DEFAULT_NOTARY_TIMEOUT = "30m"
 CACHE_COMPLETE_MARKER = ".complete"
@@ -1145,6 +1147,57 @@ def macho_dependencies(path: Path) -> list[str] | None:
     return dependencies
 
 
+def macho_install_name(path: Path) -> str | None:
+    """A library's own install name (LC_ID_DYLIB), which otool -L lists among
+    its dependencies."""
+    completed = subprocess.run(["otool", "-D", str(path)], text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, check=False)
+    lines = completed.stdout.splitlines() if completed.returncode == 0 else []
+    return lines[1].strip() if len(lines) > 1 else None
+
+
+def macho_rpaths(path: Path) -> list[str]:
+    """The LC_RPATH entries in load order, which is dyld's search order."""
+    completed = subprocess.run(["otool", "-l", str(path)], text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, check=False)
+    if completed.returncode != 0:
+        return []
+    rpaths: list[str] = []
+    in_rpath = False
+    for line in completed.stdout.splitlines():
+        words = line.split()
+        if words[:2] == ["cmd", "LC_RPATH"]:
+            in_rpath = True
+        elif in_rpath and words[:1] == ["path"] and len(words) >= 2:
+            rpaths.append(words[1])
+            in_rpath = False
+        elif words[:1] == ["cmd"]:
+            in_rpath = False
+    return rpaths
+
+
+def expand_rpath(rpath: str, loader_dir: Path, executable_dir: Path) -> Path:
+    if rpath.startswith("@loader_path"):
+        return loader_dir / rpath.removeprefix("@loader_path").lstrip("/")
+    if rpath.startswith("@executable_path"):
+        return executable_dir / rpath.removeprefix("@executable_path").lstrip("/")
+    return Path(rpath)
+
+
+def rpath_dependency_target(dependency: str, rpaths: list[str], loader_dir: Path, executable_dir: Path) -> Path | None:
+    """The file dyld loads for an @rpath/ reference: the first rpath holding it."""
+    return search_rpaths(dependency, [expand_rpath(rpath, loader_dir, executable_dir) for rpath in rpaths])
+
+
+def search_rpaths(dependency: str, directories: list[Path]) -> Path | None:
+    relative = dependency.removeprefix("@rpath/")
+    for directory in directories:
+        candidate = directory / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def is_system_macho_dependency(dependency: str) -> bool:
     return (
         dependency.startswith("/usr/lib/")
@@ -1368,6 +1421,10 @@ def vendor_macho_dependencies(app: Path) -> set[Path]:
     used_names: set[str] = set()
     queue = macho_vendor_roots(app)
     visited: set[Path] = set()
+    # dyld resolves a library's @rpath/ names through its own rpaths and then
+    # those of every image that loaded it, up to the executable: Homebrew's
+    # libutil-reg finds libgenrand in lib/private only through smbclient's.
+    inherited: dict[Path, list[Path]] = {}
 
     while queue:
         current = queue.pop(0)
@@ -1379,10 +1436,29 @@ def vendor_macho_dependencies(app: Path) -> set[Path]:
         dependencies = macho_dependencies(current)
         if dependencies is None:
             continue
+        # Homebrew's arm64 samba links its own libraries as @rpath/ names with
+        # LC_RPATHs into the Cellar. A copy keeps those rpaths, so search them
+        # from where the copy came from.
+        own_name = macho_install_name(current)
+        rpaths = macho_rpaths(current)
+        origin_dir = bundle_to_source.get(current_resolved, current_resolved).parent
+        search = [expand_rpath(rpath, origin_dir, origin_dir) for rpath in rpaths]
+        search += [directory for directory in inherited.get(current_resolved, []) if directory not in search]
 
         for dependency in dependencies:
             preferred_name: str
-            if is_external_macho_dependency(dependency):
+            if dependency.startswith("@rpath/") and dependency != own_name:
+                target = search_rpaths(dependency, search)
+                if target is None:
+                    raise RuntimeError(
+                        f"Mach-O dependency does not resolve through its rpaths: {dependency} referenced by {current}"
+                        f" (rpaths: {', '.join(map(str, search)) or 'none'})"
+                    )
+                if is_inside(target, app):
+                    continue
+                source = target.resolve()
+                preferred_name = Path(dependency).name
+            elif is_external_macho_dependency(dependency):
                 source_path = Path(dependency)
                 source = source_path.resolve()
                 preferred_name = source_path.name
@@ -1408,6 +1484,9 @@ def vendor_macho_dependencies(app: Path) -> set[Path]:
                 source_to_bundle[source] = bundled
                 bundle_to_source[bundled.resolve()] = source
                 queue.append(bundled)
+            # Every loader's rpaths count, whichever loader is visited first.
+            loaded = inherited.setdefault(bundled.resolve(), [])
+            loaded.extend(directory for directory in search if directory not in loaded)
             run_quiet([
                 "install_name_tool",
                 "-change",
@@ -1415,6 +1494,13 @@ def vendor_macho_dependencies(app: Path) -> set[Path]:
                 loader_path_reference(current, bundled, frameworks_dir),
                 str(current),
             ])
+
+        # Every outside reference now names the bundled copy. An rpath left
+        # pointing outside the app would make dyld load a Homebrew library
+        # when one is installed; with the app's Team ID it refuses that copy.
+        for rpath in dict.fromkeys(rpaths):
+            if not rpath.startswith(("@loader_path", "@executable_path")):
+                run_quiet(["install_name_tool", "-delete_rpath", rpath, str(current)])
 
         set_macho_id_if_supported(current)
     return vendored_sources
@@ -1567,15 +1653,32 @@ def assert_app_bundle_signature_valid(app: Path) -> None:
         )
 
 
-def assert_no_external_macho_dependencies_for_paths(paths: list[Path]) -> None:
+def assert_no_external_macho_dependencies_for_paths(paths: list[Path], app: Path | None = None) -> None:
+    """No bundled Mach-O may load a library from outside the bundle.
+
+    With app, @rpath/ references must resolve inside it, and its bundled tools
+    and Frameworks may keep no rpath outside it (macho_vendor_roots).
+    """
     external: list[str] = []
+    vendored = {path.resolve() for path in macho_vendor_roots(app)} if app else set()
     for path in paths:
         dependencies = macho_dependencies(path)
         if dependencies is None:
             continue
+        rpaths = macho_rpaths(path) if app else []
         for dependency in dependencies:
             if is_external_macho_dependency(dependency):
                 external.append(f"{path}: {dependency}")
+            elif app and dependency.startswith("@rpath/") and dependency != macho_install_name(path):
+                target = rpath_dependency_target(dependency, rpaths, path.parent, app / "Contents" / "MacOS")
+                if target is None or not is_inside(target, app):
+                    external.append(f"{path}: {dependency} -> {target or 'unresolved'}")
+        if path.resolve() in vendored:
+            external.extend(
+                f"{path}: LC_RPATH {rpath}"
+                for rpath in rpaths
+                if not rpath.startswith(("@loader_path", "@executable_path"))
+            )
     if external:
         joined = "\n  - ".join(external)
         raise RuntimeError(f"App bundle contains non-system Mach-O dependency reference(s):\n  - {joined}")
@@ -1586,7 +1689,7 @@ def assert_no_external_macho_dependencies_for_roots(roots: list[Path]) -> None:
 
 
 def assert_no_external_macho_dependencies(app: Path) -> None:
-    assert_no_external_macho_dependencies_for_paths(macho_validation_roots(app))
+    assert_no_external_macho_dependencies_for_paths(macho_validation_roots(app), app)
 
 
 def assert_python_dependencies_are_bundled(app: Path) -> None:
@@ -1895,6 +1998,26 @@ def smoke_test(app: Path) -> None:
         state_dir = Path(tmp)
         smoke_request(helper, "capabilities", state_dir)
         smoke_request(helper, "validate-install", state_dir)
+    smoke_tools(app)
+
+
+# Arguments that make each bundled tool print its version and exit 0.
+TOOL_VERSION_ARGS = {"smbclient": ["--version"], "sshpass": ["-V"]}
+
+
+def smoke_tools(app: Path) -> None:
+    """Launch each bundled tool for this Mac's architecture. dyld rejects a
+    library it cannot load only at launch, and only a signed app enforces the
+    Team ID check (v3.1.2's first build shipped an smbclient that aborted)."""
+    tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
+    for tool in REQUIRED_HOST_TOOLS:
+        completed = subprocess.run([str(tools_bin / tool), *TOOL_VERSION_ARGS[tool]], stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, check=False, timeout=30)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"Bundled {tool} does not run (rc={completed.returncode}):\n"
+                f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+            )
 
 
 def validate_app_zip(zip_path: Path, app_name: str) -> None:

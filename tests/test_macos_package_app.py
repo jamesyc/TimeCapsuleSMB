@@ -1267,6 +1267,326 @@ def test_vendor_macho_dependencies_rewrites_loader_path_to_matching_source_copy(
     )
 
 
+OTOOL_RPATHS = """{path}:
+Load command 12
+          cmd LC_LOAD_DYLIB
+      cmdsize 72
+         name @rpath/libndr.6.dylib (offset 24)
+Load command 13
+          cmd LC_RPATH
+      cmdsize 64
+         path /opt/homebrew/Cellar/samba/4.25.0/lib/private (offset 12)
+Load command 14
+          cmd LC_RPATH
+      cmdsize 56
+         path @loader_path/../lib (offset 12)
+Load command 15
+          cmd LC_FUNCTION_STARTS
+      cmdsize 16
+"""
+
+
+def test_macho_rpaths_lists_rpath_load_commands_in_search_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    binary = tmp_path / "smbclient"
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["otool", "-l", str(binary)]
+        return subprocess.CompletedProcess(cmd, 0, stdout=OTOOL_RPATHS.format(path=binary), stderr="")
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+
+    # A path line of another load command (the LC_LOAD_DYLIB name) is no rpath.
+    assert package_app.macho_rpaths(binary) == ["/opt/homebrew/Cellar/samba/4.25.0/lib/private", "@loader_path/../lib"]
+
+
+def test_macho_rpaths_is_empty_when_otool_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app.subprocess, "run",
+                        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not a Mach-O"))
+
+    assert package_app.macho_rpaths(tmp_path / "README") == []
+
+
+def test_rpath_dependency_target_takes_the_first_rpath_holding_the_library(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    private = tmp_path / "Cellar" / "lib" / "private"
+    lib = tmp_path / "Cellar" / "lib"
+    private.mkdir(parents=True)
+    (lib / "libndr.6.dylib").write_text("public", encoding="utf-8")
+    (private / "libndr.6.dylib").write_text("private", encoding="utf-8")
+    loader_dir = tmp_path / "Cellar" / "bin"
+    loader_dir.mkdir()
+
+    # dyld searches rpaths in load order; @loader_path is the loading binary's directory.
+    assert package_app.rpath_dependency_target(
+        "@rpath/libndr.6.dylib", ["/missing", "@loader_path/../lib", str(private)], loader_dir, loader_dir
+    ) == loader_dir / "../lib" / "libndr.6.dylib"
+    assert package_app.rpath_dependency_target(
+        "@rpath/libndr.6.dylib", [str(private), str(lib)], loader_dir, loader_dir
+    ) == private / "libndr.6.dylib"
+    assert package_app.rpath_dependency_target("@rpath/libndr.6.dylib", ["/missing"], loader_dir, loader_dir) is None
+    assert package_app.rpath_dependency_target("@rpath/libndr.6.dylib", [], loader_dir, loader_dir) is None
+
+
+def rpath_vendor_fixture(package_app, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Homebrew's samba on both Macs: the arm64 4.25.0 bottle links its private
+    libraries through @rpath into the Cellar; the x86_64 4.24.3 bottle uses
+    absolute paths. Both ship a liblibsmb-private-samba.dylib."""
+    app = tmp_path / "TimeCapsuleSMB.app"
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    arm_tool = tools / "arm64" / "smbclient"
+    x86_tool = tools / "x86_64" / "smbclient"
+    for tool in (arm_tool, x86_tool):
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        tool.write_text(tool.parent.name, encoding="utf-8")
+        tool.chmod(0o755)
+
+    cellar = tmp_path / "opt" / "homebrew" / "Cellar" / "samba" / "4.25.0" / "lib"
+    arm_private = cellar / "private"
+    arm_private.mkdir(parents=True)
+    arm_libsmb = arm_private / "liblibsmb-private-samba.dylib"
+    arm_libndr = cellar / "libndr.6.dylib"
+    arm_libsmb.write_text("arm64 libsmb", encoding="utf-8")
+    arm_libndr.write_text("arm64 libndr", encoding="utf-8")
+    x86_libsmb = tmp_path / "usr" / "local" / "Cellar" / "samba" / "4.24.3" / "lib" / "private" / "liblibsmb-private-samba.dylib"
+    x86_libsmb.parent.mkdir(parents=True)
+    x86_libsmb.write_text("x86_64 libsmb", encoding="utf-8")
+    cellar_rpaths = [str(arm_private), str(cellar)]
+
+    dependencies: dict[str, list[str]] = {
+        "arm64 tool": ["@rpath/liblibsmb-private-samba.dylib", "/usr/lib/libSystem.B.dylib"],
+        "x86_64 tool": [str(x86_libsmb)],
+        # otool -L lists a library's own install name first.
+        "arm64 libsmb": ["@rpath/liblibsmb-private-samba.dylib", "@rpath/libndr.6.dylib"],
+        "arm64 libndr": [],
+        "x86_64 libsmb": [],
+    }
+    rpaths: dict[str, list[str]] = {
+        "arm64 tool": cellar_rpaths,
+        "x86_64 tool": [],
+        # A copy keeps the rpaths it was linked with.
+        "arm64 libsmb": cellar_rpaths,
+        "arm64 libndr": [],
+        "x86_64 libsmb": [],
+    }
+    names = {"arm64 tool", "x86_64 tool"}
+
+    def identity(path: Path) -> str:
+        if path.resolve() == arm_tool.resolve():
+            return "arm64 tool"
+        if path.resolve() == x86_tool.resolve():
+            return "x86_64 tool"
+        content = path.read_text(encoding="utf-8")
+        assert content in dependencies, content
+        return content
+
+    changes: list[list[str]] = []
+
+    def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        changes.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(package_app, "macho_dependencies", lambda path: list(dependencies[identity(path)]))
+    monkeypatch.setattr(package_app, "macho_rpaths", lambda path: list(rpaths[identity(path)]))
+    monkeypatch.setattr(package_app, "macho_install_name",
+                        lambda path: None if identity(path) in names else f"@rpath/{path.name}")
+    monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
+    monkeypatch.setattr(package_app, "set_macho_id_if_supported", lambda path: None)
+    return SimpleNamespace(app=app, arm_tool=arm_tool, x86_tool=x86_tool, dependencies=dependencies,
+                           rpaths=rpaths, changes=changes, cellar_rpaths=cellar_rpaths,
+                           sources={arm_libsmb.resolve(), arm_libndr.resolve(), x86_libsmb.resolve()})
+
+
+def test_vendor_macho_dependencies_bundles_rpath_libraries_and_drops_outside_rpaths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    fixture = rpath_vendor_fixture(package_app, monkeypatch, tmp_path)
+
+    vendored = package_app.vendor_macho_dependencies(fixture.app)
+
+    frameworks = fixture.app / "Contents" / "Frameworks"
+    assert vendored == fixture.sources
+    # The arm64 library keeps its name; the x86_64 one of the same name is renamed.
+    assert (frameworks / "liblibsmb-private-samba.dylib").read_text(encoding="utf-8") == "arm64 libsmb"
+    assert (frameworks / "libndr.6.dylib").read_text(encoding="utf-8") == "arm64 libndr"
+    x86_libsmb = next(frameworks.glob("liblibsmb-private-samba-*.dylib"))
+    assert x86_libsmb.read_text(encoding="utf-8") == "x86_64 libsmb"
+
+    def change(old: str, new: str, path: Path) -> list[str]:
+        return ["install_name_tool", "-change", old, new, str(path)]
+
+    assert change("@rpath/liblibsmb-private-samba.dylib",
+                  "@loader_path/../../../../Frameworks/liblibsmb-private-samba.dylib",
+                  fixture.arm_tool) in fixture.changes
+    # A bundled library's own @rpath references resolve from its Cellar origin.
+    assert change("@rpath/libndr.6.dylib", "@loader_path/libndr.6.dylib",
+                  frameworks / "liblibsmb-private-samba.dylib") in fixture.changes
+    assert change(fixture.dependencies["x86_64 tool"][0],
+                  f"@loader_path/../../../../Frameworks/{x86_libsmb.name}", fixture.x86_tool) in fixture.changes
+    # No Cellar rpath survives on the tool or the library copied with it.
+    for path in (fixture.arm_tool, frameworks / "liblibsmb-private-samba.dylib"):
+        for rpath in fixture.cellar_rpaths:
+            assert ["install_name_tool", "-delete_rpath", rpath, str(path)] in fixture.changes
+    # System libraries and a library's own install name are left alone.
+    assert not any("/usr/lib/libSystem.B.dylib" in cmd for cmd in fixture.changes)
+    assert not any("@rpath/liblibsmb-private-samba.dylib" in cmd and cmd[-1].endswith(".dylib")
+                   for cmd in fixture.changes)
+
+
+def test_vendor_macho_dependencies_searches_the_loaders_rpaths_too(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    fixture = rpath_vendor_fixture(package_app, monkeypatch, tmp_path)
+    # Homebrew's libutil-reg: its only rpath is lib, but libgenrand is in
+    # lib/private, which dyld finds through smbclient's rpaths.
+    fixture.rpaths["arm64 libsmb"] = [fixture.cellar_rpaths[1]]
+    private = Path(fixture.cellar_rpaths[0])
+    (private / "libgenrand-private-samba.dylib").write_text("arm64 libgenrand", encoding="utf-8")
+    fixture.dependencies["arm64 libsmb"].append("@rpath/libgenrand-private-samba.dylib")
+    fixture.dependencies["arm64 libgenrand"] = []
+    fixture.rpaths["arm64 libgenrand"] = []
+
+    package_app.vendor_macho_dependencies(fixture.app)
+
+    frameworks = fixture.app / "Contents" / "Frameworks"
+    assert (frameworks / "libgenrand-private-samba.dylib").read_text(encoding="utf-8") == "arm64 libgenrand"
+    assert ["install_name_tool", "-change", "@rpath/libgenrand-private-samba.dylib",
+            "@loader_path/libgenrand-private-samba.dylib",
+            str(frameworks / "liblibsmb-private-samba.dylib")] in fixture.changes
+
+
+def test_vendor_macho_dependencies_keeps_loader_relative_rpaths_and_inside_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    fixture = rpath_vendor_fixture(package_app, monkeypatch, tmp_path)
+    frameworks = fixture.app / "Contents" / "Frameworks"
+    frameworks.mkdir(parents=True)
+    (frameworks / "libinside.dylib").write_text("arm64 libndr", encoding="utf-8")
+    fixture.dependencies["x86_64 tool"] = ["@rpath/libinside.dylib"]
+    fixture.rpaths["x86_64 tool"] = ["@loader_path/../../../../Frameworks"]
+
+    package_app.vendor_macho_dependencies(fixture.app)
+
+    # Already bundled: nothing to copy or rewrite, and the rpath that finds it stays.
+    assert not any(cmd[-1] == str(fixture.x86_tool) for cmd in fixture.changes)
+    assert not list(frameworks.glob("libinside-*.dylib"))
+
+
+def test_vendor_macho_dependencies_rejects_an_rpath_reference_it_cannot_find(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    fixture = rpath_vendor_fixture(package_app, monkeypatch, tmp_path)
+    fixture.dependencies["arm64 tool"] = ["@rpath/libgone.dylib"]
+
+    with pytest.raises(RuntimeError, match=r"@rpath/libgone.dylib referenced by .*smbclient \(rpaths: .*Cellar"):
+        package_app.vendor_macho_dependencies(fixture.app)
+
+
+def external_validation_fixture(package_app, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    app = tmp_path / "TimeCapsuleSMB.app"
+    contents = app / "Contents"
+    executable = contents / "MacOS" / "TimeCapsuleSMB"
+    tool = contents / "Resources" / "Tools" / "bin" / "arm64" / "smbclient"
+    library = contents / "Frameworks" / "liblibsmb-private-samba.dylib"
+    outside = tmp_path / "Cellar" / "lib"
+    outside.mkdir(parents=True)
+    (outside / "libndr.6.dylib").write_text("outside", encoding="utf-8")
+    for path in (executable, tool, library):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+        path.chmod(0o755)
+    (contents / "Frameworks" / "libndr.6.dylib").write_text("inside", encoding="utf-8")
+    dependencies = {
+        # The app executable's own Swift rpaths stay: only bundled tools and
+        # Frameworks are vendored.
+        executable: [],
+        tool: ["@loader_path/../../../../Frameworks/liblibsmb-private-samba.dylib"],
+        library: ["@rpath/liblibsmb-private-samba.dylib", "@rpath/libndr.6.dylib"],
+        contents / "Frameworks" / "libndr.6.dylib": [],
+    }
+    rpaths = {executable: ["/usr/lib/swift", "@loader_path"], tool: [], library: ["@loader_path"],
+              contents / "Frameworks" / "libndr.6.dylib": []}
+    monkeypatch.setattr(package_app, "macho_dependencies", lambda path: dependencies[path])
+    monkeypatch.setattr(package_app, "macho_rpaths", lambda path: rpaths[path])
+    monkeypatch.setattr(package_app, "macho_install_name",
+                        lambda path: "@rpath/liblibsmb-private-samba.dylib" if path == library else None)
+    return SimpleNamespace(app=app, tool=tool, library=library, outside=outside, dependencies=dependencies,
+                           rpaths=rpaths)
+
+
+def test_external_dependency_validation_accepts_rpath_references_resolved_inside_the_app(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    fixture = external_validation_fixture(package_app, monkeypatch, tmp_path)
+
+    package_app.assert_no_external_macho_dependencies(fixture.app)
+
+
+@pytest.mark.parametrize("case", ["outside-rpath-first", "unresolved", "tool-keeps-cellar-rpath"])
+def test_external_dependency_validation_rejects_libraries_loaded_from_outside_the_app(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+) -> None:
+    package_app = load_package_app_module()
+    fixture = external_validation_fixture(package_app, monkeypatch, tmp_path)
+    if case == "outside-rpath-first":
+        # dyld would load the Homebrew copy before the bundled one.
+        fixture.rpaths[fixture.library] = [str(fixture.outside), "@loader_path"]
+        expected = r"@rpath/libndr.6.dylib -> .*Cellar/lib/libndr.6.dylib"
+    elif case == "unresolved":
+        fixture.rpaths[fixture.library] = []
+        expected = r"@rpath/libndr.6.dylib -> unresolved"
+    else:
+        # The v3.1.2 smbclient: a Cellar rpath, even with its libraries bundled.
+        fixture.rpaths[fixture.tool] = ["/opt/homebrew/Cellar/samba/4.25.0/lib"]
+        expected = r"smbclient: LC_RPATH /opt/homebrew/Cellar/samba/4.25.0/lib"
+
+    with pytest.raises(RuntimeError, match=expected):
+        package_app.assert_no_external_macho_dependencies(fixture.app)
+
+
+def write_tool(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_smoke_tools_runs_each_bundled_tool(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    log = tmp_path / "ran"
+    for tool in package_app.REQUIRED_HOST_TOOLS:
+        write_tool(tools / tool, f'echo "{tool} $*" >> "{log}"')
+
+    package_app.smoke_tools(app)
+
+    assert sorted(log.read_text(encoding="utf-8").splitlines()) == ["smbclient --version", "sshpass -V"]
+
+
+def test_smoke_tools_rejects_a_tool_dyld_cannot_launch(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    write_tool(tools / "sshpass", "exit 0")
+    write_tool(tools / "smbclient", 'echo "dyld: Library not loaded: @rpath/liblibsmb-private-samba.dylib" >&2; exit 134')
+
+    with pytest.raises(RuntimeError, match=r"(?s)Bundled smbclient does not run \(rc=134\).*Library not loaded"):
+        package_app.smoke_tools(app)
+
+
 def test_ad_hoc_codesign_macho_bundle_signs_only_macho_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
