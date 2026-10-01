@@ -92,6 +92,9 @@ show_missing = true
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 addopts = "-ra"
+markers = [
+  "real_keep_awake: may start a real caffeinate child instead of the no-op that tests get by default",
+]
 
 [tool.ruff]
 target-version = "py39"

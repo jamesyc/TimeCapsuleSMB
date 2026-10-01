@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -1278,6 +1278,77 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "unknown_param")
         self.assertEqual(error["message"], "unknown parameter for uninstall: volume")
+
+    def run_with_recorded_keep_awake(self, operation: str, handler) -> tuple[int, list[str]]:
+        """Run one operation; the timeline interleaves keep-awake and sink events."""
+        timeline: list[str] = []
+
+        @contextmanager
+        def recording_keep_awake():
+            timeline.append("awake")
+            try:
+                yield
+            finally:
+                timeline.append("released")
+
+        def recording_handler(params, context):
+            timeline.append("handler")
+            return handler(params, context)
+
+        sink = EventSink(lambda event: timeline.append(str(event.to_jsonable()["type"])))
+        with mock.patch.dict(service.OPERATIONS, {operation: recording_handler}):
+            with mock.patch("timecapsulesmb.app.service.keep_system_awake", recording_keep_awake):
+                with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                    with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                        with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                            rc = service.run_api_request({"operation": operation, "params": {}}, sink)
+        return rc, timeline
+
+    def test_long_device_operation_keeps_the_mac_awake_only_while_its_handler_runs(self) -> None:
+        rc, timeline = self.run_with_recorded_keep_awake(
+            "deploy",
+            lambda _params, _context: service.OperationResult(True, {"summary": "ok"}),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(timeline, ["awake", "handler", "released", "result"])
+
+    def test_quick_operation_does_not_keep_the_mac_awake(self) -> None:
+        rc, timeline = self.run_with_recorded_keep_awake(
+            "discover",
+            lambda _params, _context: service.OperationResult(True, {"summary": "ok"}),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(timeline, ["handler", "result"])
+
+    def test_keep_awake_is_released_before_a_confirmation_request_is_reported(self) -> None:
+        def ask_for_confirmation(params, _context):
+            raise service.AppConfirmationRequired(build_confirmation(
+                operation="deploy",
+                params=params,
+                title="Confirm deploy",
+                message="Deploy and reboot?",
+                action_title="Deploy",
+                risk="reboot",
+                summary="Deploy",
+                context={},
+                presentation_id="deploy.reboot",
+            ))
+
+        rc, timeline = self.run_with_recorded_keep_awake("deploy", ask_for_confirmation)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(timeline, ["awake", "handler", "released", "error"])
+
+    def test_keep_awake_is_released_before_an_unexpected_failure_is_reported(self) -> None:
+        def crash(_params, _context):
+            raise RuntimeError("connection reset")
+
+        rc, timeline = self.run_with_recorded_keep_awake("deploy", crash)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(timeline, ["awake", "handler", "released", "error"])
 
     def test_request_param_fixture_matches_the_operation_specs(self) -> None:
         from tests.fixtures import operation_params

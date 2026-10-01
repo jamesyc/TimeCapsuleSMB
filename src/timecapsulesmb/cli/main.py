@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import nullcontext
 from typing import Optional
 
 from . import activate, api, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
+from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS
+from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import DistributionRootError
 from timecapsulesmb.services.version_check import check_client_version, render_version_block_message
 
@@ -45,8 +48,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 1
         except Exception:
             pass
+    # The app's operation registry names the long device commands for both
+    # entry points; `api` is not one, since it keeps awake per operation.
+    keep_awake = keep_system_awake() if args.command in KEEP_AWAKE_OPERATIONS else nullcontext()
     try:
-        return COMMANDS[args.command](args.args)
+        with keep_awake:
+            return COMMANDS[args.command](args.args)
     except DistributionRootError as exc:
         print(str(exc), file=sys.stderr)
         return 1

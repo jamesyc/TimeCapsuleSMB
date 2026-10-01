@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import nullcontext
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import EventSink
-from timecapsulesmb.app.ops import OPERATION_PARAMS, OPERATIONS, TELEMETRY_OPERATIONS, unknown_params
+from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS, OPERATION_PARAMS, OPERATIONS, TELEMETRY_OPERATIONS, unknown_params
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
 from timecapsulesmb.app.requests import parse_api_request
 from timecapsulesmb.app.recovery import recovery_for, ssh_timeout_slow_device_recovery
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.config import ConfigError
+from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.identity import ensure_install_id
@@ -82,7 +84,8 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         )
         return 1
     try:
-        result = handler(params, context)
+        with keep_system_awake() if operation in KEEP_AWAKE_OPERATIONS else nullcontext():
+            result = handler(params, context)
     except AppConfirmationRequired as exc:
         sink.error(
             operation,

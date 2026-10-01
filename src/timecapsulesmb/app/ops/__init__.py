@@ -42,6 +42,9 @@ class OperationSpec:
     params: frozenset[str] = frozenset()
     telemetry: bool = False
     public: bool = True
+    # Holds off macOS idle sleep while the handler runs: a Mac that sleeps
+    # mid-operation drops the SSH session to the device.
+    keep_awake: bool = False
 
 
 # Read by the shared request helpers for every operation: the config path,
@@ -64,7 +67,7 @@ REBOOT_PARAMS = frozenset({"dry_run", "mount_wait", "no_reboot", "no_wait"})
 
 
 OPERATION_SPECS: tuple[OperationSpec, ...] = (
-    OperationSpec("activate", activate_operation, frozenset({"dry_run"}), telemetry=True),
+    OperationSpec("activate", activate_operation, frozenset({"dry_run"}), telemetry=True, keep_awake=True),
     OperationSpec("capabilities", capabilities_operation),
     OperationSpec(
         "configure",
@@ -78,6 +81,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "ssh_wait_timeout",
         }),
         telemetry=True,
+        keep_awake=True,
     ),
     OperationSpec("update-config-settings", update_config_settings_operation, MANAGED_SETTING_PARAMS, public=False),
     OperationSpec(
@@ -86,6 +90,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
         # nbns_enabled is read only to refuse it with its own message.
         MANAGED_SETTING_PARAMS | REBOOT_PARAMS | frozenset({"allow_unsupported", "nbns_enabled", "rsync_enabled"}),
         telemetry=True,
+        keep_awake=True,
     ),
     OperationSpec("discover", discover_operation, frozenset({"timeout"}), telemetry=True),
     OperationSpec(
@@ -94,6 +99,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
         # bonjour_timeout is retired and accepted only to be ignored.
         frozenset({"bonjour_timeout", "skip_bonjour", "skip_smb", "skip_ssh", "startup_grace"}),
         telemetry=True,
+        keep_awake=True,
     ),
     OperationSpec(
         "flash",
@@ -109,8 +115,9 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "wait_after_reboot",
         }),
         telemetry=True,
+        keep_awake=True,
     ),
-    OperationSpec("fsck", fsck_operation, REBOOT_PARAMS | frozenset({"list_volumes", "volume"}), telemetry=True),
+    OperationSpec("fsck", fsck_operation, REBOOT_PARAMS | frozenset({"list_volumes", "volume"}), telemetry=True, keep_awake=True),
     OperationSpec(
         "reachability",
         reachability_operation,
@@ -130,10 +137,11 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "verbose",
         }),
         telemetry=True,
+        keep_awake=True,
     ),
-    OperationSpec("set-ssh", set_ssh_operation, frozenset({"action", "no_wait"}), telemetry=True),
+    OperationSpec("set-ssh", set_ssh_operation, frozenset({"action", "no_wait"}), telemetry=True, keep_awake=True),
     OperationSpec("set-telemetry", set_telemetry_operation, frozenset({"enabled"})),
-    OperationSpec("uninstall", uninstall_operation, REBOOT_PARAMS, telemetry=True),
+    OperationSpec("uninstall", uninstall_operation, REBOOT_PARAMS, telemetry=True, keep_awake=True),
     OperationSpec("validate-install", validate_install_operation),
     OperationSpec("version-check", version_check_operation, frozenset({"url"})),
 )
@@ -142,6 +150,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
 OPERATIONS: dict[str, OperationHandler] = {spec.name: spec.handler for spec in OPERATION_SPECS}
 OPERATION_PARAMS: dict[str, frozenset[str]] = {spec.name: spec.params | COMMON_PARAMS for spec in OPERATION_SPECS}
 TELEMETRY_OPERATIONS = frozenset(spec.name for spec in OPERATION_SPECS if spec.telemetry)
+KEEP_AWAKE_OPERATIONS = frozenset(spec.name for spec in OPERATION_SPECS if spec.keep_awake)
 
 
 def unknown_params(operation: str, params: dict[str, object]) -> list[str]:

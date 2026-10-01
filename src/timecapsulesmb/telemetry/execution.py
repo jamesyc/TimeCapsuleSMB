@@ -14,11 +14,23 @@ SENSITIVE_FIELD_PARTS = ("credentials", "password", "secret", "token")
 
 
 class ExecutionTelemetryRecorder:
-    """Records bounded, structured operation timing telemetry."""
+    """Records bounded, structured operation timing telemetry.
 
-    def __init__(self, *, monotonic: Callable[[], float] | None = None) -> None:
+    Durations use the monotonic clock, which on macOS stops while the Mac
+    sleeps. Each duration also has a wall-clock twin; a large gap between the
+    two is time the host spent asleep.
+    """
+
+    def __init__(
+        self,
+        *,
+        monotonic: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
+    ) -> None:
         self._monotonic = monotonic or time.monotonic
+        self._wall_clock = wall_clock or time.time
         self._started_at = self._monotonic()
+        self._wall_started_at = self._wall_clock()
         self._current_stage: dict[str, object] | None = None
         self._stages: list[dict[str, object]] = []
         self._measurements: dict[str, list[dict[str, object]]] = {}
@@ -31,11 +43,13 @@ class ExecutionTelemetryRecorder:
         if self._current_stage is not None and self._current_stage["name"] == clean_name:
             return
         now = self._monotonic()
-        self._close_current_stage(now, result="success")
+        wall_now = self._wall_clock()
+        self._close_current_stage(now, wall_now, result="success")
         self._current_stage = {
             "name": clean_name,
             "index": len(self._stages) + 1,
             "start": now,
+            "wall_start": wall_now,
         }
 
     def record_measurement(self, kind: str, **fields: object) -> None:
@@ -54,11 +68,13 @@ class ExecutionTelemetryRecorder:
 
     def to_jsonable(self, *, result: str, duration_sec: float | None = None) -> dict[str, object]:
         now = self._monotonic()
-        self._close_current_stage(now, result=result if result != "success" else "success")
+        wall_now = self._wall_clock()
+        self._close_current_stage(now, wall_now, result=result if result != "success" else "success")
         effective_duration_sec = duration_sec if duration_sec is not None else now - self._started_at
         output: dict[str, object] = {
             "version": EXECUTION_TELEMETRY_VERSION,
             "duration_sec": _round_seconds(effective_duration_sec),
+            "wall_duration_sec": _round_seconds(wall_now - self._wall_started_at),
         }
         if self._stages:
             output["stages"] = list(self._stages)
@@ -78,15 +94,17 @@ class ExecutionTelemetryRecorder:
             output["slow_flags"] = list(self._slow_flags)
         return output
 
-    def _close_current_stage(self, now: float, *, result: str) -> None:
+    def _close_current_stage(self, now: float, wall_now: float, *, result: str) -> None:
         if self._current_stage is None:
             return
         start = float(self._current_stage["start"])
+        wall_start = float(self._current_stage["wall_start"])
         self._stages.append({
             "name": self._current_stage["name"],
             "index": self._current_stage["index"],
             "start_offset_sec": _round_seconds(start - self._started_at),
             "duration_sec": _round_seconds(now - start),
+            "wall_duration_sec": _round_seconds(wall_now - wall_start),
             "result": result,
         })
         self._current_stage = None

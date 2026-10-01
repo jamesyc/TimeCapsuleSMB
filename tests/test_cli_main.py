@@ -5,7 +5,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -110,6 +110,56 @@ class CliMainTests(CliTestCase):
         self.assertEqual(rc, 130)
         self.assertEqual(stderr.getvalue(), "\nCancelled.\n")
         command_context.finish.assert_called_once_with(result="cancelled", error="Cancelled by user")
+
+    def run_main_with_recorded_keep_awake(self, argv: list[str]) -> list[str]:
+        timeline: list[str] = []
+
+        @contextmanager
+        def recording_keep_awake():
+            timeline.append("awake")
+            try:
+                yield
+            finally:
+                timeline.append("released")
+
+        def command(_argv):
+            timeline.append("command")
+            return 0
+
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {argv[0]: command}):
+            with mock.patch("timecapsulesmb.cli.main.keep_system_awake", recording_keep_awake):
+                self.assertEqual(main(argv), 0)
+        return timeline
+
+    def test_long_device_command_keeps_the_mac_awake_while_it_runs(self) -> None:
+        self.assertEqual(self.run_main_with_recorded_keep_awake(["deploy", "--yes"]), ["awake", "command", "released"])
+
+    def test_quick_command_does_not_keep_the_mac_awake(self) -> None:
+        self.assertEqual(self.run_main_with_recorded_keep_awake(["discover"]), ["command"])
+
+    def test_api_command_leaves_keeping_awake_to_each_operation(self) -> None:
+        self.assertEqual(self.run_main_with_recorded_keep_awake(["api"]), ["command"])
+
+    def test_cancelled_command_releases_keep_awake_before_reporting(self) -> None:
+        timeline: list[str] = []
+
+        @contextmanager
+        def recording_keep_awake():
+            timeline.append("awake")
+            try:
+                yield
+            finally:
+                timeline.append("released")
+
+        stderr = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"deploy": mock.Mock(side_effect=KeyboardInterrupt)}):
+            with mock.patch("timecapsulesmb.cli.main.keep_system_awake", recording_keep_awake):
+                with redirect_stderr(stderr):
+                    rc = main(["deploy"])
+
+        self.assertEqual(rc, 130)
+        self.assertEqual(timeline, ["awake", "released"])
+        self.assertEqual(stderr.getvalue(), "\nCancelled.\n")
 
     def test_paths_and_validate_install_commands_are_registered(self) -> None:
         self.assertIs(cli_main_module.COMMANDS["paths"], paths.main)

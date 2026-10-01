@@ -18,6 +18,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.telemetry.execution import ExecutionTelemetryRecorder
 from timecapsulesmb.services.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
@@ -220,6 +221,65 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(execution["stage_totals"]["verify_runtime_activation"]["count"], 1)
         self.assertEqual(execution["measurements"]["runtime_verification"][0]["timeout_sec"], 200)
         self.assertNotIn("password", execution["measurements"]["runtime_verification"][0])
+
+    @staticmethod
+    def clocked_recorder(monotonic: list[float], wall: list[float]) -> ExecutionTelemetryRecorder:
+        """A recorder whose clocks return the given readings in order.
+
+        Each list holds one reading per clock read: at construction, at every
+        set_stage() and at to_jsonable(). The recorder reads both clocks once
+        at each of those points, so the two lists are the same length.
+        """
+        return ExecutionTelemetryRecorder(monotonic=iter(monotonic).__next__, wall_clock=iter(wall).__next__)
+
+    def test_execution_wall_durations_match_when_the_host_stays_awake(self) -> None:
+        # Readings: start, upload, reboot, finish.
+        recorder = self.clocked_recorder([100.0, 101.0, 131.0, 141.0], [5000.0, 5001.0, 5031.0, 5041.0])
+        recorder.set_stage("upload")
+        recorder.set_stage("reboot")
+
+        execution = recorder.to_jsonable(result="success")
+
+        self.assertEqual(execution["duration_sec"], 41.0)
+        self.assertEqual(execution["wall_duration_sec"], 41.0)
+        self.assertEqual(
+            [(stage["name"], stage["duration_sec"], stage["wall_duration_sec"]) for stage in execution["stages"]],
+            [("upload", 30.0, 30.0), ("reboot", 10.0, 10.0)],
+        )
+
+    def test_execution_wall_duration_shows_a_sleep_inside_the_stage_it_happened_in(self) -> None:
+        # The Mac sleeps 2500 s during upload: wall time runs on, monotonic time stops.
+        recorder = self.clocked_recorder([100.0, 101.0, 131.0, 141.0], [5000.0, 5001.0, 7531.0, 7541.0])
+        recorder.set_stage("upload")
+        recorder.set_stage("reboot")
+
+        execution = recorder.to_jsonable(result="failure")
+
+        self.assertEqual(execution["duration_sec"], 41.0)
+        self.assertEqual(execution["wall_duration_sec"], 2541.0)
+        upload, reboot = execution["stages"]
+        self.assertEqual((upload["duration_sec"], upload["wall_duration_sec"]), (30.0, 2530.0))
+        self.assertEqual((reboot["duration_sec"], reboot["wall_duration_sec"]), (10.0, 10.0))
+        self.assertEqual(reboot["result"], "failure")
+
+    def test_execution_wall_clock_stepping_back_never_reports_negative_time(self) -> None:
+        recorder = self.clocked_recorder([100.0, 101.0, 111.0], [5000.0, 5001.0, 4000.0])
+        recorder.set_stage("upload")
+
+        execution = recorder.to_jsonable(result="success")
+
+        self.assertEqual(execution["wall_duration_sec"], 0.0)
+        self.assertEqual(execution["stages"][0]["wall_duration_sec"], 0.0)
+        self.assertEqual(execution["stages"][0]["duration_sec"], 10.0)
+
+    def test_execution_duration_override_leaves_wall_duration_measured_from_start(self) -> None:
+        recorder = self.clocked_recorder([100.0, 160.0], [5000.0, 5060.0])
+
+        execution = recorder.to_jsonable(result="success", duration_sec=12.5)
+
+        self.assertEqual(execution["duration_sec"], 12.5)
+        self.assertEqual(execution["wall_duration_sec"], 60.0)
+        self.assertNotIn("stages", execution)
 
     def test_operation_telemetry_renames_reserved_legacy_fields(self) -> None:
         telemetry = mock.Mock()
