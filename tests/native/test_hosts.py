@@ -62,7 +62,8 @@ def test_rename_removes_only_our_exact_line_for_the_old_name(hosts_tool, tmp_pat
     kept = ('127.0.0.1\tlocalhost oldname\n'           # Apple's line naming the old host
             '127.0.0.1 oldname oldname.local\n'        # not our exact form (space, not tab)
             '127.0.0.1\toldname oldname.local extra\n'  # not our exact form (extra word)
-            '# 127.0.0.1\toldname oldname.local\n')     # a comment
+            '# 127.0.0.1\toldname oldname.local\n'      # a comment
+            '\n192.168.1.170 tcsmb-192-168-1-170\n')    # an SSH client's line (transport/ssh.py)
     path = tmp_path/'hosts'
     # Our line from an earlier name, as this manager or the retired shell wrote it.
     path.write_text(APPLE + '\n127.0.0.1\toldname oldname.local\n' + kept)

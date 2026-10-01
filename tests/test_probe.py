@@ -205,6 +205,8 @@ class ProbeTests(unittest.TestCase):
             "127.0.0.1\tnew new.local",
             "127.0.0.1 other other.local",   # not our exact form
             "127.0.0.1\tlocalhost old",       # Apple's line
+            "",
+            "192.168.1.170 tcsmb-192-168-1-170",  # an SSH client's line
         ))
 
         self.assertEqual(result.stale_names, ("old",))

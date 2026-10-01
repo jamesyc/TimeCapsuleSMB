@@ -73,6 +73,48 @@ SSH_CLIENT_LOG_PREFIX = "timecapsulesmb-ssh-"
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
+DEVICE_HOSTS_PATH = "/etc/hosts"
+
+
+def client_hosts_line_command(hosts_path: str = DEVICE_HOSTS_PATH) -> str:
+    """Return the shell prefix that maps this client's address in hosts_path.
+
+    Apple's sshd looks up the client's hostname at every password login:
+    NetBSD's allowed_user() calls get_canonical_hostname(1) for login.conf's
+    host.allow and host.deny, whatever UseDNS says (OpenSSH 4.4 on NetBSD 4,
+    5.9 on NetBSD 6). When the device's DNS server never answers, every login
+    waits 15 seconds or more. The resolver reads /etc/hosts before DNS
+    (hosts: files dns), so each command adds one line for the address sshd
+    saw, named after it so the name maps back to it from the file too, and
+    later logins from that address skip DNS.
+
+    /etc/hosts is on the RAM root and Apple writes it fresh at boot, so the
+    first command after any reboot waits once and adds the line again. Lines
+    are only appended, never rewritten: Apple's lines and the manager's own
+    mapping stay byte for byte, and a line lost to a concurrent rewrite comes
+    back with the next command. Commands that start together before the line
+    exists (doctor runs some in parallel) may each append it; the duplicates
+    are harmless and go at reboot. The leading newline keeps a last line without
+    one intact. Link-local addresses are skipped, since a hosts line cannot
+    carry their scope. The prefix is silent and ends in ";", so the caller's
+    command runs after it with its own stdin, output and exit status.
+    """
+    hosts = shlex.quote(hosts_path)
+    return (
+        "{ _tc=${SSH_CLIENT%% *}\n"
+        "case $_tc in ''|*%*|[Ff][Ee]80:*) ;;\n"
+        f'*) case "\n$(cat {hosts})" in *"\n$_tc tcsmb-"*) ;;\n'
+        f"""*) printf '\\n%s tcsmb-%s\\n' "$_tc" "$(echo "$_tc" | sed 's/[.:]/-/g')" >> {hosts} ;;\n"""
+        "esac ;;\n"
+        "esac; unset _tc; } </dev/null >/dev/null 2>&1; "
+    )
+
+
+CLIENT_HOSTS_LINE_COMMAND = client_hosts_line_command()
+
+
+def _with_client_hosts_line(remote_cmd: str) -> str:
+    return CLIENT_HOSTS_LINE_COMMAND + remote_cmd
 
 
 def _summarize_remote_command(remote_cmd: str) -> str:
@@ -547,7 +589,7 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
                 "ssh",
                 *_connection_ssh_args(connection, client_log=client_log, stdin_null=True),
                 connection.host,
-                remote_cmd,
+                _with_client_hosts_line(remote_cmd),
             ]
             try:
                 rc, stdout = _spawn_with_password(
@@ -617,7 +659,7 @@ def _run_piped_ssh(
                     extra_args=extra_ssh_args,
                 ),
                 connection.host,
-                remote_cmd,
+                _with_client_hosts_line(remote_cmd),
             ]
             try:
                 proc = subprocess.run(

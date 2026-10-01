@@ -124,7 +124,7 @@ class SSHTransportTests(unittest.TestCase):
         self.assertIn("PubkeyAuthentication=no", cmd)
         self.assertIn("PubkeyAcceptedKeyTypes=+ssh-rsa", cmd)
         self.assertIn("NumberOfPasswordPrompts=1", cmd)
-        self.assertEqual(cmd[-2:], ["root@192.168.1.67", "/bin/echo ok"])
+        self.assertEqual(cmd[-2:], ["root@192.168.1.67", ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "/bin/echo ok"])
 
     def test_normalize_ssh_tokens_adds_supported_legacy_airport_macs_when_missing(self) -> None:
         with mock.patch("timecapsulesmb.transport.ssh._local_ssh_macs", return_value=("hmac-sha1", "hmac-md5-96")):
@@ -546,7 +546,7 @@ class SSHTransportTests(unittest.TestCase):
         cmd = spawn_mock.call_args.args[0]
         self.assertIn("-J", cmd)
         self.assertIn("jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123", cmd)
-        self.assertEqual(cmd[-2:], ["root@192.168.1.118", "/bin/echo ok"])
+        self.assertEqual(cmd[-2:], ["root@192.168.1.118", ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "/bin/echo ok"])
 
     def test_run_ssh_respects_explicit_identity_without_restricting_agent(self) -> None:
         with mock.patch(
@@ -1026,6 +1026,41 @@ class SSHTransportTests(unittest.TestCase):
                 )
         self.assertEqual(sum("-E" in call.args[0] for call in run.call_args_list), 1)
 
+    def test_piped_ssh_sends_client_hosts_line_before_the_command(self) -> None:
+        process = subprocess.CompletedProcess(["ssh"], 0, b"done\n", b"")
+        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
+             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process)) as run:
+            proc = ssh_transport.run_ssh_input(
+                ssh_transport.SshConnection("root@device", "pw", ""),
+                "/bin/sh -c 'cat > /tmp/x'",
+                input_bytes=b"payload",
+            )
+        command = run.call_args.args[0]
+        self.assertEqual(command[-2:], ["root@device", ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "/bin/sh -c 'cat > /tmp/x'"])
+        self.assertEqual(run.call_args.kwargs["input"], b"payload")
+        self.assertEqual(proc.stdout, b"done\n")
+
+    def test_piped_ssh_timeout_names_only_the_callers_command(self) -> None:
+        def run(command, **_kwargs):
+            if "-E" not in command:  # local ssh option probes
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+            raise subprocess.TimeoutExpired(command, 5)
+
+        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
+             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
+            with self.assertRaises(ssh_transport.SshCommandTimeout) as exc:
+                ssh_transport.run_ssh_input(ssh_transport.SshConnection("root@device", "pw", ""), "helper --flag", timeout=5)
+        self.assertEqual(str(exc.exception), "Timed out waiting for ssh command to finish: helper --flag")
+
+    def test_run_ssh_failure_reports_the_device_output_not_the_prefix(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
+             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password",
+                        side_effect=self.authenticated_spawn(returncode=1, output="no such file\n")) as spawn:
+            with self.assertRaises(ssh_transport.SshError) as exc:
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "ls /missing", timeout=10)
+        self.assertEqual(spawn.call_args.args[0][-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "ls /missing")
+        self.assertEqual(str(exc.exception), "no such file")
+
 
 class MigrationInputTransportTests(unittest.TestCase):
     # The local ssh capability checks are cached for the process. Unpatched,
@@ -1195,6 +1230,115 @@ class MigrationInputTransportTests(unittest.TestCase):
         with mock.patch.object(ssh_transport, "_run_piped_ssh", return_value=process):
             with self.assertRaisesRegex(ssh_transport.SshError, "corrupt TDB"):
                 ssh_transport.run_ssh_input(ssh_transport.SshConnection("device", "", ""), "helper")
+
+
+class ClientHostsLineTests(unittest.TestCase):
+    """Run the real prefix in /bin/sh against a temporary hosts file."""
+
+    APPLE_HOSTS = (
+        "#\t$NetBSD: hosts,v 1.8 2009/07/03 22:32:55 hubertf Exp $\n"
+        "::1\t\t\tlocalhost localhost.\n"
+        "127.0.0.1\t\tlocalhost localhost.\n"
+        "127.0.0.1\tjamess-airport-time-capsule jamess-airport-time-capsule.local\n"
+    )
+
+    def setUp(self) -> None:
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.hosts = self.dir / "hosts"
+        self.hosts.write_text(self.APPLE_HOSTS)
+
+    def run_prefixed(
+        self,
+        client: str | None,
+        command: str = "echo out; exit 3",
+        *,
+        hosts: Path | None = None,
+        stdin: bytes = b"",
+    ) -> subprocess.CompletedProcess[bytes]:
+        env = {"PATH": "/usr/bin:/bin"}
+        if client is not None:
+            env["SSH_CLIENT"] = client
+        prefix = ssh_transport.client_hosts_line_command(str(hosts or self.hosts))
+        return subprocess.run(["/bin/sh", "-c", prefix + command], input=stdin, capture_output=True, env=env, timeout=10)
+
+    def test_first_command_appends_a_line_named_after_the_address(self) -> None:
+        proc = self.run_prefixed("192.168.1.170 50065 22")
+
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (3, b"out\n", b""))
+        self.assertEqual(self.hosts.read_text(), self.APPLE_HOSTS + "\n192.168.1.170 tcsmb-192-168-1-170\n")
+
+    def test_later_commands_from_the_same_address_change_nothing(self) -> None:
+        self.run_prefixed("192.168.1.170 50065 22")
+        after_first = self.hosts.read_bytes()
+
+        proc = self.run_prefixed("192.168.1.170 50070 22")
+
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(self.hosts.read_bytes(), after_first)
+
+    def test_each_client_appends_its_own_line(self) -> None:
+        # .17 is a prefix of .170: an existing line for one must not satisfy the other.
+        for client in ("192.168.1.170 1 22", "192.168.1.17 2 22", "10.0.1.5 3 22", "192.168.1.170 4 22"):
+            self.run_prefixed(client)
+
+        self.assertEqual(
+            self.hosts.read_text(),
+            self.APPLE_HOSTS
+            + "\n192.168.1.170 tcsmb-192-168-1-170\n"
+            + "\n192.168.1.17 tcsmb-192-168-1-17\n"
+            + "\n10.0.1.5 tcsmb-10-0-1-5\n",
+        )
+
+    def test_global_ipv6_address_gets_a_line(self) -> None:
+        self.run_prefixed("2600:1700:83b7:20f::5 50065 22")
+
+        self.assertEqual(self.hosts.read_text(), self.APPLE_HOSTS + "\n2600:1700:83b7:20f::5 tcsmb-2600-1700-83b7-20f--5\n")
+
+    def test_link_local_or_missing_address_changes_nothing(self) -> None:
+        for client in ("fe80::1%bridge0 50065 22", "fe80::1 50065 22", "FE80::1 50065 22", "", None):
+            with self.subTest(client=client):
+                proc = self.run_prefixed(client)
+                self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (3, b"out\n", b""))
+                self.assertEqual(self.hosts.read_text(), self.APPLE_HOSTS)
+
+    def test_last_line_without_a_newline_is_kept_intact(self) -> None:
+        self.hosts.write_text(self.APPLE_HOSTS.rstrip("\n"))
+
+        self.run_prefixed("192.168.1.170 50065 22")
+
+        self.assertEqual(self.hosts.read_text(), self.APPLE_HOSTS + "192.168.1.170 tcsmb-192-168-1-170\n")
+
+    def test_unwritable_hosts_file_is_silent_and_the_command_still_runs(self) -> None:
+        proc = self.run_prefixed("192.168.1.170 50065 22", "echo out; exit 5", hosts=self.dir / "missing-dir" / "hosts")
+
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (5, b"out\n", b""))
+
+    def test_callers_stdin_and_binary_stdout_pass_through(self) -> None:
+        payload = b"\x00binary\xff\npayload"
+        target = self.dir / "uploaded"
+
+        upload = self.run_prefixed("192.168.1.170 50065 22", f"cat > '{target}'", stdin=payload)
+        echo = self.run_prefixed("192.168.1.170 50065 22", f"cat '{target}'")
+
+        self.assertEqual(upload.returncode, 0)
+        self.assertEqual(target.read_bytes(), payload)
+        self.assertEqual(echo.stdout, payload)
+
+    def test_callers_positional_parameters_are_untouched(self) -> None:
+        proc = self.run_prefixed("192.168.1.170 50065 22", 'set -- a b; echo "$#:$1:${_tc-unset}"')
+
+        self.assertEqual(proc.stdout, b"2:a:unset\n")
+
+    def test_hosts_path_is_quoted_for_the_shell(self) -> None:
+        hosts = self.dir / "dir with space" / "hosts"
+        hosts.parent.mkdir()
+        hosts.write_text(self.APPLE_HOSTS)
+
+        self.run_prefixed("192.168.1.170 50065 22", "true", hosts=hosts)
+
+        self.assertEqual(hosts.read_text(), self.APPLE_HOSTS + "\n192.168.1.170 tcsmb-192-168-1-170\n")
 
 
 if __name__ == "__main__":
