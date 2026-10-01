@@ -98,7 +98,14 @@ class PackageResult:
         self.notarization_archive = notarization_archive
 
 
-def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -106,7 +113,7 @@ def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None =
         input=input_text,
         text=True,
         check=True,
-        stdout=subprocess.PIPE if input_text is not None else None,
+        stdout=subprocess.PIPE if input_text is not None or capture else None,
         stderr=subprocess.PIPE if input_text is not None else None,
     )
 
@@ -148,13 +155,31 @@ def resolve_architectures(values: list[str] | None) -> tuple[str, ...]:
     return tuple(architectures)
 
 
-def swift_build_dir(configuration: str, architecture: str) -> Path:
-    return PACKAGE_ROOT / ".build" / f"{architecture}-apple-macosx" / configuration
+def swift_bin_dir(configuration: str, architecture: str) -> Path:
+    """Where swift build puts this configuration's products, as SwiftPM reports
+    it. The native build system used <arch>-apple-macosx/<configuration>; Swift
+    Build, the default since Swift 6.4, uses out/Products/<Configuration> for
+    every architecture. Assuming the old path packaged leftovers from the last
+    native build: a months-old helper and a resource bundle without plurals."""
+    result = run([
+        "swift",
+        "build",
+        "-c",
+        configuration,
+        "--triple",
+        SWIFT_TRIPLES[architecture],
+        "--show-bin-path",
+    ], cwd=PACKAGE_ROOT, capture=True)
+    lines = (result.stdout or "").strip().splitlines()
+    if not lines:
+        raise RuntimeError(f"swift build --show-bin-path printed nothing for {architecture} {configuration}")
+    return Path(lines[-1].strip())
 
 
 def build_swift_product(configuration: str, architectures: tuple[str, ...], product_name: str) -> tuple[Path, list[Path]]:
     executables: list[Path] = []
     build_dirs: list[Path] = []
+    staging = PACKAGE_ROOT / ".build" / "package-app" / configuration
     for architecture in architectures:
         run([
             "swift",
@@ -166,10 +191,15 @@ def build_swift_product(configuration: str, architectures: tuple[str, ...], prod
             "--product",
             product_name,
         ], cwd=PACKAGE_ROOT)
-        build_dir = swift_build_dir(configuration, architecture)
-        executable = build_dir / product_name
-        if not executable.is_file():
-            raise RuntimeError(f"Swift build did not produce {executable}")
+        build_dir = swift_bin_dir(configuration, architecture)
+        built = build_dir / product_name
+        if not built.is_file():
+            raise RuntimeError(f"Swift build did not produce {built}")
+        # Swift Build writes every architecture to the same directory, so keep
+        # this one before the next architecture's build replaces it.
+        executable = staging / architecture / product_name
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(built, executable)
         executables.append(executable)
         build_dirs.append(build_dir)
 
@@ -192,6 +222,14 @@ def build_swift(configuration: str, architectures: tuple[str, ...]) -> tuple[Pat
 def build_helper(configuration: str, architectures: tuple[str, ...]) -> Path:
     executable, _build_dirs = build_swift_product(configuration, architectures, HELPER_PRODUCT_NAME)
     return executable
+
+
+def resource_bundle_localization(resource_bundle: Path, language: str) -> Path:
+    """A localization inside the Swift resource bundle. Swift Build makes a
+    macOS bundle (Contents/Resources/<language>.lproj); the native build
+    system made a flat one (<language>.lproj). Bundle lookups accept both."""
+    deep = resource_bundle / "Contents" / "Resources" / f"{language}.lproj"
+    return deep if deep.is_dir() else resource_bundle / f"{language}.lproj"
 
 
 def copy_resources(build_dir: Path, resources_dir: Path) -> None:
@@ -1819,10 +1857,11 @@ def assert_bundle_layout(
         assert_tool_architectures(app, architectures)
         if full_validation:
             assert_runtime_macho_architectures(app, architectures)
-    if not (resource_bundle / "en.lproj" / "Localizable.strings").is_file():
+    english = resource_bundle_localization(resource_bundle, "en")
+    if not (english / "Localizable.strings").is_file():
         raise RuntimeError(f"App bundle is missing Swift resource bundle localizations: {resource_bundle}")
     # Count sentences exist only as plural rules; without this file the app shows raw keys.
-    if not (resource_bundle / "en.lproj" / "Localizable.stringsdict").is_file():
+    if not (english / "Localizable.stringsdict").is_file():
         raise RuntimeError(f"App bundle is missing Swift resource bundle plural localizations: {resource_bundle}")
     if not python_packages.is_dir():
         raise RuntimeError(f"App bundle is missing bundled Python packages: {python_packages}")

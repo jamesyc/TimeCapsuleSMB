@@ -125,4 +125,13 @@ while running:
     if mode == "malformed":
         packet[13] ^= 1
     sock.sendto(packet, peer)
+# On a loaded host the stop can arrive before this fake reads an add that
+# discovery already sent. That add reached this child, so record it.
+sock.setblocking(False)
+while True:
+    try:
+        request, _ = sock.recvfrom(512)
+    except BlockingIOError:
+        break
+    record(f"ADD {os.getpid()} " + request.hex())
 record("STOP")

@@ -231,62 +231,154 @@ def test_assert_bundle_layout_requires_plural_localizations(tmp_path: Path) -> N
         package_app.assert_bundle_layout(app)
 
 
-def test_build_swift_creates_universal_binary_with_lipo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def app_with_deep_resource_bundle(package_app, tmp_path: Path) -> Path:
+    """A packaged app whose Swift resource bundle has Swift Build's layout."""
+    app = tmp_path / "TimeCapsuleSMB.app"
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    distribution = app / "Contents" / "Resources" / "Distribution"
+    for directory in (helper.parent, python_packages, tools, distribution / "bin"):
+        directory.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    create_fake_app_executable_and_resources(app)
+    create_fake_certifi_package(python_packages)
+    (distribution / "artifact-manifest.json").write_text('{"artifacts":{}}', encoding="utf-8")
+    bundle = app / "Contents" / "Resources" / package_app.RESOURCE_BUNDLE_NAME
+    deep = bundle / "Contents" / "Resources"
+    deep.mkdir(parents=True)
+    (bundle / "en.lproj").rename(deep / "en.lproj")
+    return app
+
+
+def test_assert_bundle_layout_accepts_the_swift_build_resource_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     package_app = load_package_app_module()
-    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
-    calls: list[list[str]] = []
+    app = app_with_deep_resource_bundle(package_app, tmp_path)
+    # Only the resource bundle is under test; the checks after it are stubbed
+    # as in test_assert_bundle_layout_checks_helper_python_tools_and_artifacts.
+    monkeypatch.setattr(package_app, "artifact_paths", lambda: [])
+    monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
+
+    package_app.assert_bundle_layout(app)
+
+
+def test_assert_bundle_layout_requires_plurals_in_the_swift_build_resource_bundle(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    app = app_with_deep_resource_bundle(package_app, tmp_path)
+    plurals = (app / "Contents" / "Resources" / package_app.RESOURCE_BUNDLE_NAME / "Contents" / "Resources"
+               / "en.lproj" / "Localizable.stringsdict")
+    plurals.unlink()
+
+    with pytest.raises(RuntimeError, match="missing Swift resource bundle plural localizations"):
+        package_app.assert_bundle_layout(app)
+
+
+def fake_swift_build(package_app, root: Path, layout: str, calls: list[list[str]], lipo_inputs: dict[str, str]):
+    """swift build as each build system lays out its products: the native one
+    in <arch>-apple-macosx/release, Swift Build in one out/Products/Release that
+    every architecture's build overwrites."""
+
+    def bin_dir(architecture: str) -> Path:
+        if layout == "native":
+            return root / ".build" / f"{architecture}-apple-macosx" / "release"
+        return root / ".build" / "out" / "Products" / "Release"
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         if cmd[:2] == ["swift", "build"]:
             architecture = cmd[cmd.index("--triple") + 1].split("-", 1)[0]
-            executable = package_app.swift_build_dir("release", architecture) / "TimeCapsuleSMB"
+            if "--show-bin-path" in cmd:
+                assert kwargs.get("capture") is True
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{bin_dir(architecture)}\n")
+            product = cmd[cmd.index("--product") + 1]
+            executable = bin_dir(architecture) / product
             executable.parent.mkdir(parents=True, exist_ok=True)
-            executable.write_text(architecture, encoding="utf-8")
+            executable.write_text(f"{product} {architecture}", encoding="utf-8")
             executable.chmod(0o755)
         if cmd and cmd[0] == "lipo":
+            inputs = cmd[cmd.index("-create") + 1:cmd.index("-output")]
+            lipo_inputs.update({path: Path(path).read_text(encoding="utf-8") for path in inputs})
             output = Path(cmd[cmd.index("-output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text("universal", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(package_app, "run", fake_run)
+    return fake_run
+
+
+@pytest.mark.parametrize("layout", ["native", "swiftbuild"])
+def test_build_swift_lipos_each_architectures_own_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, layout: str
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    calls: list[list[str]] = []
+    lipo_inputs: dict[str, str] = {}
+    monkeypatch.setattr(package_app, "run", fake_swift_build(package_app, tmp_path, layout, calls, lipo_inputs))
 
     executable, resource_build_dir = package_app.build_swift("release", ("arm64", "x86_64"))
 
     assert executable == tmp_path / ".build" / "package-app" / "release" / "TimeCapsuleSMB"
-    assert resource_build_dir == tmp_path / ".build" / "arm64-apple-macosx" / "release"
+    # Each architecture's binary went into lipo, even where the second build
+    # replaced the first in Swift Build's shared directory.
+    assert sorted(lipo_inputs.values()) == ["TimeCapsuleSMB arm64", "TimeCapsuleSMB x86_64"]
+    expected = (tmp_path / ".build" / "arm64-apple-macosx" / "release" if layout == "native"
+                else tmp_path / ".build" / "out" / "Products" / "Release")
+    assert resource_build_dir == expected
     assert ["lipo", "-create"] == calls[-1][:2]
+
+
+def test_build_swift_ignores_a_stale_native_build_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # A native build from before the switch to Swift Build is still on disk;
+    # packaging it shipped a months-old app and a bundle without plurals.
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    stale = tmp_path / ".build" / "arm64-apple-macosx" / "release" / "TimeCapsuleSMB"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale", encoding="utf-8")
+    calls: list[list[str]] = []
+    lipo_inputs: dict[str, str] = {}
+    monkeypatch.setattr(package_app, "run", fake_swift_build(package_app, tmp_path, "swiftbuild", calls, lipo_inputs))
+
+    executable, resource_build_dir = package_app.build_swift("release", ("arm64",))
+
+    assert executable.read_text(encoding="utf-8") == "TimeCapsuleSMB arm64"
+    assert resource_build_dir == tmp_path / ".build" / "out" / "Products" / "Release"
+
+
+def test_build_swift_reports_a_product_swift_build_did_not_write(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "--show-bin-path" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{tmp_path / 'out'}\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "run", fake_run)
+    with pytest.raises(RuntimeError, match="did not produce"):
+        package_app.build_swift("release", ("arm64",))
 
 
 def test_build_helper_creates_universal_helper_with_lipo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     package_app = load_package_app_module()
     monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
     calls: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        if cmd[:2] == ["swift", "build"]:
-            architecture = cmd[cmd.index("--triple") + 1].split("-", 1)[0]
-            product = cmd[cmd.index("--product") + 1]
-            executable = package_app.swift_build_dir("release", architecture) / product
-            executable.parent.mkdir(parents=True, exist_ok=True)
-            executable.write_text(architecture, encoding="utf-8")
-            executable.chmod(0o755)
-        if cmd and cmd[0] == "lipo":
-            output = Path(cmd[cmd.index("-output") + 1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("universal helper", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(package_app, "run", fake_run)
+    lipo_inputs: dict[str, str] = {}
+    monkeypatch.setattr(package_app, "run", fake_swift_build(package_app, tmp_path, "swiftbuild", calls, lipo_inputs))
 
     executable = package_app.build_helper("release", ("arm64", "x86_64"))
 
     assert executable == tmp_path / ".build" / "package-app" / "release" / "tcapsule"
     assert ["swift", "build"] == calls[0][:2]
-    assert "--product" in calls[0]
     assert calls[0][calls[0].index("--product") + 1] == "tcapsule"
+    assert sorted(lipo_inputs.values()) == ["tcapsule arm64", "tcapsule x86_64"]
     assert ["lipo", "-create"] == calls[-1][:2]
 
 

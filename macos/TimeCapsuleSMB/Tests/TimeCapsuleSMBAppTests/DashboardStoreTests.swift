@@ -277,7 +277,11 @@ final class DashboardStoreTests: XCTestCase {
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
 
         session.runInstall(profile: profile)
-        try await waitUntilStoreState { session.deployStore.state == .deployed }
+        // The deploy store reports success before the coordinator releases the
+        // device lane; a checkup started in between is rejected as busy.
+        try await waitUntilStoreState {
+            session.deployStore.state == .deployed && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore)
+        }
         session.runCheckup(profile: profile)
         try await waitUntilStoreState { session.doctorStore.state == .passed }
 

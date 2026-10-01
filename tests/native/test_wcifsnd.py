@@ -5,6 +5,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -124,10 +125,14 @@ class Discovery:
         if self.proc.poll() is None:
             self.proc.terminate()
         try:
-            return self.proc.communicate(timeout=timeout)
+            out, err = self.proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             self.proc.kill()
-            return self.proc.communicate(timeout=timeout)
+            out, err = self.proc.communicate(timeout=timeout)
+        # pytest shows captured stderr only for a failed test; this log
+        # names which deadline or check replaced a child.
+        sys.stderr.write(err or "")
+        return out, err
 
 
 @pytest.fixture
@@ -149,6 +154,22 @@ def adds(discovery):
 
 def children(discovery):
     return [int(line.split()[1]) for line in event_lines(discovery.events) if line.startswith("START ")]
+
+
+def first_added_child(discovery):
+    """The child that received the first add. On a loaded host discovery can
+    discard a slow child at startup or inspection before sending it anything,
+    then retry as it should; that earlier child is not the one under test."""
+    events = add_events(discovery)
+    return events[0][0] if events else None
+
+
+def generation(discovery, pid):
+    """Event lines from pid's START up to the next child's START."""
+    lines = event_lines(discovery.events)
+    start = lines.index(f"START {pid}")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("START ")), len(lines))
+    return lines[start:end]
 
 
 def process_exists(pid):
@@ -323,15 +344,18 @@ def test_failed_child_retries_without_withdrawing_bonjour(rig, dnssd, mode, requ
     discovery = Discovery(rig, mode=mode, shares=True)
     try:
         connections = bonjour_connections(dnssd)
-        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=20)
-        first = children(discovery)[0]
-        assert_reaped(first, discovery.proc.pid)
+        # Without a listener no child receives an add, so the first one is
+        # under test.
+        tried = wait_for(lambda: first_added_child(discovery) if requests else
+                         next(iter(children(discovery)), None), timeout=20)
+        assert tried
+        assert wait_for(lambda: children(discovery)[-1] != tried, timeout=20)
+        assert_reaped(tried, discovery.proc.pid)
         # Apple keeps accepted adds even after client exit. Every uncertain
         # request is sent once, then the native child is discarded before retry.
-        first_events = event_lines(discovery.events)
-        second_start = next(i for i, line in enumerate(first_events) if line.startswith('START ') and int(line.split()[1]) != first)
-        assert sum(line.startswith('ADD ') for line in first_events[:second_start]) == requests
-        assert 'STOP' in first_events[:second_start]
+        lines = generation(discovery, tried)
+        assert sum(line.startswith('ADD ') for line in lines) == requests
+        assert 'STOP' in lines
         assert_bonjour_unchanged(discovery, dnssd, connections)
         discovery.mode.write_text('success')
         assert wait_for(lambda: any(line == 'HUP' for line in event_lines(discovery.events)), timeout=20)
@@ -605,8 +629,7 @@ def test_term_ignoring_child_is_killed_and_reaped_within_bound(rig, dnssd):
     discovery = Discovery(rig, extra_env={"TC_FAKE_WCIFSND_IGNORE_TERM": "1"})
     try:
         assert wait_for(lambda: len(adds(discovery)) == 3)
-        child = int(next(line.split()[1] for line in event_lines(discovery.events)
-                         if line.startswith("START ")))
+        child = first_added_child(discovery)
         started = time.monotonic()
         discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
 
@@ -642,14 +665,14 @@ def test_active_generation_retains_child_without_hup_on_incomplete_facts(rig, dn
     discovery = Discovery(rig)
     try:
         assert wait_for(lambda: len(adds(discovery)) == 3)
-        child = next(line for line in event_lines(discovery.events) if line.startswith("START "))
+        child = first_added_child(discovery)
         incomplete = NAT_OK.replace("key=raNA status=ok value=1", "key=raNA status=abort value=")
         discovery.replace(incomplete)
         time.sleep(0.5)  # consume a collection already scheduled from the prior valid snapshot
         hups = event_lines(discovery.events).count("HUP")
         time.sleep(0.5)
         lines = event_lines(discovery.events)
-        assert [line for line in lines if line.startswith("START ")] == [child]
+        assert children(discovery)[-1] == child
         assert lines.count("HUP") == hups
         assert discovery.proc.poll() is None
     finally:
@@ -663,15 +686,13 @@ def test_loss_of_last_eligible_ipv4_stops_and_reenable_starts_fresh_child(rig, d
                .replace("family=inet addr=169.254.140.130", "family=inet6 addr=2001:db8::12"))
     try:
         assert wait_for(lambda: len(adds(discovery)) == 3)
-        first = next(line for line in event_lines(discovery.events) if line.startswith("START "))
+        first = first_added_child(discovery)
         discovery.replace(no_ipv4)
-        assert wait_for(lambda: "STOP" in event_lines(discovery.events))
+        assert wait_for(lambda: "STOP" in generation(discovery, first))
         assert discovery.proc.poll() is None
         discovery.replace(NAT_OK)
-        assert wait_for(lambda: sum(line.startswith("START ") for line in event_lines(discovery.events)) == 2)
-        starts = [line for line in event_lines(discovery.events) if line.startswith("START ")]
-        assert starts[0] == first and starts[1] != first
         assert wait_for(lambda: len(adds(discovery)) == 6)
+        assert adds_per_child(discovery) == {first: 3, children(discovery)[-1]: 3}
     finally:
         discovery.stop()
 
@@ -712,11 +733,12 @@ def test_recovery_can_be_cancelled_without_respawning(rig, dnssd, phase, action)
     try:
         bonjour_connections(dnssd)
         assert wait_for(lambda: len(adds(discovery)) == 1)
+        tried = first_added_child(discovery)
         if phase == 'backoff':
-            assert wait_for(lambda: 'STOP' in event_lines(discovery.events))
+            assert wait_for(lambda: 'STOP' in generation(discovery, tried))
         if action == 'ipv4-loss':
             discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
-            assert wait_for(lambda: 'STOP' in event_lines(discovery.events))
+            assert wait_for(lambda: 'STOP' in generation(discovery, tried))
             time.sleep(PAST_FIRST_RETRY)  # No new child.
             # Losing IPv4 can also change Bonjour’s eligible interfaces.
             # Recovery must stop without terminating the discovery controller.
@@ -728,8 +750,9 @@ def test_recovery_can_be_cancelled_without_respawning(rig, dnssd, phase, action)
                 os.close(parent_write); parent_write = -1
             assert wait_for(lambda: discovery.proc.poll() is not None)
             assert discovery.proc.returncode == 0
-        assert len(children(discovery)) == 1
-        assert_reaped(children(discovery)[0])
+        assert children(discovery)[-1] == tried
+        assert len(adds(discovery)) == 1
+        assert_reaped(tried)
     finally:
         discovery.stop()
         os.close(parent_read)
@@ -744,11 +767,11 @@ def test_retry_waits_for_valid_facts_without_dropping_bonjour(rig, dnssd):
         assert wait_for(lambda: len(adds(discovery)) == 3)
         discovery.replace(NAT_OK.replace('key=raNA status=ok value=1', 'key=raNA status=abort value='))
         time.sleep(.6)  # Consume the new incomplete snapshot before faulting.
-        old = children(discovery)[0]
+        old = first_added_child(discovery)
         os.kill(old, signal.SIGKILL)
         time.sleep(PAST_FIRST_RETRY)  # The retry deadline expires, but startup is not eligible.
         assert_reaped(old, discovery.proc.pid)
-        assert children(discovery) == [old]
+        assert children(discovery)[-1] == old
         assert_bonjour_unchanged(discovery, dnssd, connections)
         discovery.replace(NAT_OK)
         assert wait_for(lambda: len(adds(discovery)) == 6)
