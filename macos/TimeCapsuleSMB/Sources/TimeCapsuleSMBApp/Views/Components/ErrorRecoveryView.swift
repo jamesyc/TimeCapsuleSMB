@@ -124,6 +124,8 @@ struct ErrorRecoveryView: View {
             return "wrench.and.screwdriver"
         case .openSystemSettings:
             return "gearshape"
+        case .openSSHAccess:
+            return "key"
         case .generic:
             return "arrow.right.circle"
         }

@@ -92,7 +92,7 @@ from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation, run_activation_actions_and_verify
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import request_reboot, request_reboot_and_wait
-from timecapsulesmb.services.runtime import ManagedTargetState
+from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
     wait_for_boot_settle,
@@ -634,21 +634,28 @@ def prepare_deploy_preflight(
 
 
 def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: bool) -> DeviceCompatibility:
+    """The device's compatibility, once SSH logged in and found a payload for it.
+
+    A probe that did not log in raises its own access code (SSH off, device
+    unreachable, password rejected, ...). `unsupported_device` is only for a
+    device we logged in to and identified, such as an AirPort Express.
+    """
     probe_state = target.probe_state
     if probe_state is None:
         raise DeviceError("Failed to determine remote device OS compatibility.")
     compatibility = probe_state.compatibility
     if compatibility is None:
-        raise DeviceError(probe_state.probe_result.error or "Failed to determine remote device OS compatibility.")
+        raise probe_failure_error(probe_state.probe_result, target.connection.host)
     if not compatibility.supported and not allow_unsupported:
-        raise DeviceError(render_compatibility_message(compatibility))
+        raise DeployDeviceError(render_compatibility_message(compatibility), code="unsupported_device")
     if not compatibility.payload_family:
         compatibility_message = render_compatibility_message(compatibility)
         if compatibility_message:
-            raise DeviceError(
-                f"{compatibility_message}\nNo deployable payload is available for this detected device."
+            raise DeployDeviceError(
+                f"{compatibility_message}\nNo deployable payload is available for this detected device.",
+                code="unsupported_device",
             )
-        raise DeviceError("No deployable payload is available for this detected device.")
+        raise DeployDeviceError("No deployable payload is available for this detected device.", code="unsupported_device")
     return compatibility
 
 
@@ -657,7 +664,7 @@ def prepare_deploy_payload_context(
     compatibility: DeviceCompatibility,
 ) -> DeployPayloadContext:
     if not compatibility.payload_family:
-        raise DeviceError("No deployable payload is available for this detected device.")
+        raise DeployDeviceError("No deployable payload is available for this detected device.", code="unsupported_device")
     payload_family = compatibility.payload_family
     is_netbsd4 = is_netbsd4_payload_family(payload_family)
     return DeployPayloadContext(

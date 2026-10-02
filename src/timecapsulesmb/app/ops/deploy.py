@@ -73,16 +73,12 @@ def _device_error_code(exc: DeviceError) -> str:
 def device_operation_error(
     context: AppOperationContext,
     exc: DeviceError,
-    *,
-    default_code: str | None = None,
 ) -> AppOperationError:
     message = str(exc)
     diagnostic_message = message_with_exception_cause(message, exc)
     context.set_error(diagnostic_message)
     cause = exception_cause_detail(exc)
     code = _device_error_code(exc)
-    if code == "remote_error" and default_code is not None:
-        code = default_code
     return AppOperationError(
         message,
         code=code,
@@ -258,7 +254,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except DeployArtifactValidationError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
-        raise device_operation_error(context, exc, default_code="unsupported_device") from exc
+        raise device_operation_error(context, exc) from exc
     payload_context = preflight.payload_context
     payload_family = preflight.payload_family
     is_netbsd4 = preflight.is_netbsd4

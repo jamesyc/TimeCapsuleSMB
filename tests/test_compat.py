@@ -20,12 +20,10 @@ from timecapsulesmb.device.compat import (
     is_netbsd4_payload_family,
     is_netbsd6_payload_family,
     payload_family_description,
-    require_compatibility,
     render_compatibility_message,
     unsupported_syap_message,
     unsupported_syaps,
 )
-from timecapsulesmb.device.errors import DeviceError
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -263,12 +261,6 @@ class CompatibilityTests(unittest.TestCase):
             render_compatibility_message(compat),
             "Detected supported device: NetBSD 6.0 (earmv4, little-endian).",
         )
-
-    def test_require_compatibility_raises_with_fallback_for_missing_probe(self) -> None:
-        with self.assertRaises(DeviceError) as ctx:
-            require_compatibility(None, fallback_error="probe failed")
-        self.assertEqual(str(ctx.exception), "probe failed")
-        self.assertNotIsInstance(ctx.exception, SystemExit)
 
     def test_render_compatibility_message_falls_back_to_reason_detail(self) -> None:
         compat = DeviceCompatibility(

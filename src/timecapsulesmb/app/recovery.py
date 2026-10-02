@@ -111,6 +111,42 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
     ),
+    # The SSH probe's other outcomes (services.runtime.probe_failure_error).
+    # None of them says anything about the model, so none may suggest it is
+    # unsupported or that the device should be forgotten.
+    "ssh_disabled": RecoveryInfo(
+        "SSH is turned off",
+        "The device answers AirPort ACP, but its SSH port is closed. SSH turns off after a reset, "
+        "or when it is disabled in SSH Access.",
+        ("Open SSH Access and choose Enable SSH, then try again.",),
+        retryable=True,
+        action_ids=("open_ssh_access",),
+    ),
+    "device_unreachable": RecoveryInfo(
+        "Device not reachable",
+        "Neither SSH nor AirPort ACP answered at the device's saved address.",
+        (
+            "Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac.",
+            "If the device is restarting, wait a few minutes, then try again.",
+            "The device may have a new IP address. Run Discover and reselect it.",
+        ),
+        retryable=True,
+    ),
+    "ssh_transport_failed": RecoveryInfo(
+        "SSH connection dropped",
+        "The device accepted the SSH connection, then closed it before login. "
+        "This can happen while the device is starting up or busy.",
+        ("Wait a minute, then try again.", "If this keeps happening, restart the device."),
+        retryable=True,
+    ),
+    "device_probe_failed": RecoveryInfo(
+        "Device check failed",
+        "TimeCapsuleSMB logged in over SSH but could not read the device's system information.",
+        ("Try again.", "Run Checkup for details."),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
     "confirmation_required": RecoveryInfo(
         "Confirmation required",
         "This operation changes the device and needs explicit confirmation.",

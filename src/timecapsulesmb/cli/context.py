@@ -9,9 +9,8 @@ from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
 from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.device.compat import require_compatibility as require_device_compatibility
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.probe import probe_connection_state, probe_remote_airport_identity_conn
+from timecapsulesmb.device.probe import probe_remote_airport_identity_conn
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import (
     message_with_exception_cause,
@@ -362,11 +361,12 @@ class CommandContext:
         if self.connection is None:
             raise RuntimeError("CommandContext connection is not set.")
         if self.probe_state is None:
-            self.probe_state = probe_connection_state(self.connection)
-        self.compatibility = require_device_compatibility(
-            self.probe_state.compatibility,
-            fallback_error=self.probe_state.probe_result.error or "Failed to determine remote device OS compatibility.",
-        )
+            self.probe_state = service_runtime.probe_managed_connection_state(self.connection)
+        if self.probe_state.compatibility is None:
+            # Say why SSH did not log in (SSH off, device unreachable, password
+            # rejected) rather than leave it to look like an unsupported device.
+            raise service_runtime.probe_failure_error(self.probe_state.probe_result, self.connection.host)
+        self.compatibility = self.probe_state.compatibility
         self._update_device_identity_from_probe_state(self.probe_state)
         self.update_fields(device_os_version=build_device_os_version(
             self.compatibility.os_name,

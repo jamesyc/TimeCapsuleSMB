@@ -28,7 +28,11 @@ from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, prob
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error, wait_for_tcp_port_state
+from timecapsulesmb.services.runtime import (
+    PROBE_STATUS_ERROR_CODES,
+    ssh_target_link_local_resolution_error,
+    wait_for_tcp_port_state,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -291,13 +295,19 @@ def run_configure_flow(
             )
     elif probe.ssh_status == SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
-        raise ConfigureFlowError(probe.error or "SSH algorithm negotiation failed.", code="ssh_compatibility_failed")
+        raise ConfigureFlowError(
+            probe.error or "SSH algorithm negotiation failed.",
+            code=PROBE_STATUS_ERROR_CODES[probe.ssh_status],
+        )
     elif probe.ssh_status == SshAccessStatus.TRANSPORT_FAILED:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
-        raise ConfigureFlowError(probe.error or "SSH transport failed.", code="ssh_transport_failed")
+        raise ConfigureFlowError(probe.error or "SSH transport failed.", code=PROBE_STATUS_ERROR_CODES[probe.ssh_status])
     elif probe.ssh_status == SshAccessStatus.DEVICE_PROBE_FAILED:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
-        raise ConfigureFlowError(probe.error or "Failed to probe device compatibility.", code="device_probe_failed")
+        raise ConfigureFlowError(
+            probe.error or "Failed to probe device compatibility.",
+            code=PROBE_STATUS_ERROR_CODES[probe.ssh_status],
+        )
     else:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
         raise ConfigureFlowError(probe.error or "SSH did not become reachable.", code="ssh_unreachable")

@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import NonInteractivePromptError
 from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbedDeviceState, ProbeResult, SshAccessStatus
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -120,6 +121,22 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.finish_fields["device_syap"], "119")
         self.assertEqual(context.finish_fields["device_model"], "TimeCapsule8,119")
         self.assertEqual(context.finish_fields["device_os_version"], "NetBSD 6.0 (evbarm)")
+
+    def test_require_compatibility_says_why_ssh_did_not_log_in(self) -> None:
+        context = self.make_context()
+        context.connection = self.make_connection()
+        context.probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(SshAccessStatus.CLOSED, "SSH is not reachable yet.", "", "", "", "unknown"),
+            compatibility=None,
+        )
+
+        with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=None):
+            with self.assertRaises(DeviceError) as raised:
+                context.require_compatibility()
+
+        self.assertEqual(raised.exception.code, "ssh_disabled")
+        self.assertIn("SSH is turned off", str(raised.exception))
+        self.assertIsNone(context.compatibility)
 
 
 if __name__ == "__main__":

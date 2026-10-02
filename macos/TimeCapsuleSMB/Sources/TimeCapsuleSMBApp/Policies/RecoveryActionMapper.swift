@@ -12,6 +12,7 @@ enum RecoveryActionKind: String, Equatable {
     case copyDiagnostics = "copy_diagnostics"
     case diagnostics = "open_diagnostics"
     case openSystemSettings = "open_system_settings"
+    case openSSHAccess = "open_ssh_access"
     case generic
 }
 
@@ -108,6 +109,8 @@ enum RecoveryActionMapper {
             return L10n.string("recovery.action.open_diagnostics")
         case .openSystemSettings:
             return L10n.string("recovery.action.open_system_settings")
+        case .openSSHAccess:
+            return L10n.string("recovery.action.open_ssh_access")
         case .generic:
             return L10n.string("recovery.action.open")
         }

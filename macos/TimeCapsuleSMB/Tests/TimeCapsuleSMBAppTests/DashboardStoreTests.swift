@@ -1041,6 +1041,14 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .activate)
 
         XCTAssertTrue(session.handleRecoveryAction(
+            RecoveryAction(title: "Open SSH Access", kind: .openSSHAccess),
+            error: BackendErrorViewModel(operation: "deploy", code: "ssh_disabled", message: "SSH is turned off."),
+            profile: profile
+        ))
+        XCTAssertEqual(session.selectedTab, .maintenance)
+        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .sshAccess)
+
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Replace Password", kind: .replacePassword),
             error: error,
             profile: profile

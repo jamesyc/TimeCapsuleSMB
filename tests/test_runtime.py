@@ -26,6 +26,11 @@ from timecapsulesmb.core.config import AppConfig, ConfigError, DEFAULTS
 from timecapsulesmb.core.paths import AppPaths
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.services.runtime import resolve_env_connection, ssh_target_link_local_resolution_error
+from timecapsulesmb.device.compat import classify_device_compatibility
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
+from timecapsulesmb.services.deploy import DeployDeviceError, require_supported_payload
+from timecapsulesmb.transport.ssh import SshConnection
 
 from tests.cli_support import app_config, valid_env
 
@@ -318,3 +323,261 @@ class RuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeFailureErrorTests(unittest.TestCase):
+    @staticmethod
+    def failed_probe(status: SshAccessStatus, error: str = "SSH is not reachable yet.") -> ProbeResult:
+        return ProbeResult(ssh_status=status, error=error, os_name="", os_release="", arch="", elf_endianness="unknown")
+
+    def test_closed_ssh_with_acp_answering_means_ssh_is_turned_off(self) -> None:
+        acp_probe = mock.Mock(return_value=None)
+
+        error = service_runtime.probe_failure_error(
+            self.failed_probe(SshAccessStatus.CLOSED), "root@10.0.0.2", tcp_connect_error_func=acp_probe,
+        )
+
+        acp_probe.assert_called_once_with("10.0.0.2", 5009, service_runtime.ACP_PORT_CHECK_TIMEOUT_SECONDS)
+        self.assertIsInstance(error, DeviceError)
+        self.assertEqual(error.code, "ssh_disabled")
+        self.assertIn("SSH is turned off on 10.0.0.2", str(error))
+
+    def test_closed_ssh_with_acp_silent_means_the_device_is_unreachable(self) -> None:
+        error = service_runtime.probe_failure_error(
+            self.failed_probe(SshAccessStatus.CLOSED),
+            "root@10.0.0.2",
+            tcp_connect_error_func=mock.Mock(return_value="[Errno 64] Host is down"),
+        )
+
+        self.assertEqual(error.code, "device_unreachable")
+        self.assertIn("not answering at 10.0.0.2", str(error))
+        self.assertIn("[Errno 64] Host is down", str(error))
+
+    def test_acp_check_targets_ipv6_and_hostname_devices_too(self) -> None:
+        for host, expected in (
+            ("root@fd00::2", "fd00::2"),
+            ("root@[2001:db8::2]", "2001:db8::2"),
+            ("root@Office-TC.local", "Office-TC.local"),
+        ):
+            with self.subTest(host=host):
+                acp_probe = mock.Mock(return_value=None)
+                service_runtime.probe_failure_error(
+                    self.failed_probe(SshAccessStatus.CLOSED), host, tcp_connect_error_func=acp_probe,
+                )
+                self.assertEqual(acp_probe.call_args.args[0], expected)
+
+    def test_login_failures_keep_the_probe_message_and_get_their_own_code(self) -> None:
+        cases = (
+            (SshAccessStatus.AUTH_REJECTED, "auth_failed"),
+            (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "ssh_compatibility_failed"),
+            (SshAccessStatus.TRANSPORT_FAILED, "ssh_transport_failed"),
+            (SshAccessStatus.DEVICE_PROBE_FAILED, "device_probe_failed"),
+        )
+        for status, code in cases:
+            with self.subTest(status=status):
+                acp_probe = mock.Mock(side_effect=AssertionError("only a closed port checks ACP"))
+                error = service_runtime.probe_failure_error(
+                    self.failed_probe(status, "the probe's own text"), "root@10.0.0.2", tcp_connect_error_func=acp_probe,
+                )
+                self.assertEqual((error.code, str(error)), (code, "the probe's own text"))
+
+    def test_no_probe_failure_is_reported_as_an_unsupported_model(self) -> None:
+        codes = {
+            service_runtime.probe_failure_error(
+                self.failed_probe(status), "root@10.0.0.2", tcp_connect_error_func=mock.Mock(return_value=acp_error),
+            ).code
+            for status in SshAccessStatus
+            if status != SshAccessStatus.OPEN_AUTHENTICATED
+            for acp_error in (None, "timed out")
+        }
+        self.assertNotIn("unsupported_device", codes)
+        self.assertEqual(
+            codes,
+            {"ssh_disabled", "device_unreachable", "auth_failed", "ssh_compatibility_failed", "ssh_transport_failed", "device_probe_failed"},
+        )
+
+    def test_connection_compatibility_raises_the_coded_error_when_ssh_did_not_log_in(self) -> None:
+        state = ProbedDeviceState(probe_result=self.failed_probe(SshAccessStatus.CLOSED), compatibility=None)
+        with mock.patch.object(service_runtime, "probe_connection_state", return_value=state):
+            with mock.patch.object(service_runtime, "tcp_connect_error", return_value=None):
+                with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+                    service_runtime.require_connection_compatibility(SshConnection("root@10.0.0.2", "pw", ""))
+
+        self.assertEqual(raised.exception.code, "ssh_disabled")
+
+    def test_connection_compatibility_returns_whatever_a_logged_in_probe_found(self) -> None:
+        compatibility = classify_device_compatibility("NetBSD", "4.0_STABLE", "ar7240", "big")
+        state = ProbedDeviceState(
+            probe_result=ProbeResult(SshAccessStatus.OPEN_AUTHENTICATED, None, "NetBSD", "4.0_STABLE", "ar7240", "big"),
+            compatibility=compatibility,
+        )
+        with mock.patch.object(service_runtime, "probe_connection_state", return_value=state):
+            # Callers decide what an unsupported model means for their operation.
+            self.assertIs(service_runtime.require_connection_compatibility(SshConnection("root@10.0.0.2", "pw", "")), compatibility)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 100.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class ProbeManagedConnectionStateTests(unittest.TestCase):
+    connection = SshConnection("root@10.0.0.2", "pw", "")
+
+    @staticmethod
+    def state(status: SshAccessStatus, error: str | None = None) -> ProbedDeviceState:
+        if status == SshAccessStatus.OPEN_AUTHENTICATED:
+            result = ProbeResult(status, None, "NetBSD", "6.0", "earmv4", "little")
+            return ProbedDeviceState(result, classify_device_compatibility("NetBSD", "6.0", "earmv4", "little"))
+        return ProbedDeviceState(ProbeResult(status, error, "", "", "", "unknown"), compatibility=None)
+
+    def run_probe(self, probe: mock.Mock, tcp_open: mock.Mock, clock: FakeClock, connection: SshConnection | None = None):
+        return service_runtime.probe_managed_connection_state(
+            connection or self.connection,
+            probe=probe,
+            tcp_open_func=tcp_open,
+            sleep_func=clock.sleep,
+            monotonic_func=clock.monotonic,
+        )
+
+    def test_a_probe_that_reached_ssh_is_not_rechecked(self) -> None:
+        for status in (SshAccessStatus.OPEN_AUTHENTICATED, SshAccessStatus.AUTH_REJECTED, SshAccessStatus.TRANSPORT_FAILED):
+            with self.subTest(status=status):
+                first = self.state(status, "error")
+                probe = mock.Mock(return_value=first)
+                tcp_open = mock.Mock()
+                clock = FakeClock()
+
+                state = self.run_probe(probe, tcp_open, clock)
+
+                self.assertIs(state, first)
+                probe.assert_called_once_with(self.connection)
+                tcp_open.assert_not_called()
+                self.assertEqual(clock.sleeps, [])
+
+    def test_a_port_that_opens_on_a_recheck_is_probed_again(self) -> None:
+        logged_in = self.state(SshAccessStatus.OPEN_AUTHENTICATED)
+        probe = mock.Mock(side_effect=[self.state(SshAccessStatus.CLOSED, "SSH is not reachable yet."), logged_in])
+        tcp_open = mock.Mock(side_effect=[False, True])
+        clock = FakeClock()
+
+        state = self.run_probe(probe, tcp_open, clock)
+
+        self.assertIs(state, logged_in)
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(tcp_open.call_args_list, [mock.call("10.0.0.2", 22)] * 2)
+        self.assertEqual(clock.sleeps, [service_runtime.CLOSED_SSH_RECHECK_INTERVAL_SECONDS] * 2)
+
+    def test_a_port_that_stays_closed_keeps_the_first_answer_after_the_window(self) -> None:
+        closed = self.state(SshAccessStatus.CLOSED, "SSH is not reachable yet.")
+        probe = mock.Mock(return_value=closed)
+        tcp_open = mock.Mock(return_value=False)
+        clock = FakeClock()
+
+        state = self.run_probe(probe, tcp_open, clock)
+
+        self.assertIs(state, closed)
+        probe.assert_called_once()
+        self.assertEqual(sum(clock.sleeps), service_runtime.CLOSED_SSH_RECHECK_WINDOW_SECONDS)
+        expected_checks = service_runtime.CLOSED_SSH_RECHECK_WINDOW_SECONDS / service_runtime.CLOSED_SSH_RECHECK_INTERVAL_SECONDS
+        self.assertEqual(tcp_open.call_count, expected_checks)
+
+    def test_slow_connect_timeouts_do_not_stretch_the_window(self) -> None:
+        clock = FakeClock()
+        start = clock.now
+
+        def timing_out(_host: str, _port: int) -> bool:
+            clock.now += 2.0
+            return False
+
+        tcp_open = mock.Mock(side_effect=timing_out)
+        state = self.run_probe(mock.Mock(return_value=self.state(SshAccessStatus.CLOSED)), tcp_open, clock)
+
+        self.assertEqual(state.probe_result.ssh_status, SshAccessStatus.CLOSED)
+        # The last check may start just before the deadline and take one timeout.
+        self.assertLessEqual(clock.now - start, service_runtime.CLOSED_SSH_RECHECK_WINDOW_SECONDS + 2.0)
+        self.assertEqual(tcp_open.call_count, 2)
+
+    def test_recheck_targets_the_ipv6_endpoint(self) -> None:
+        tcp_open = mock.Mock(return_value=True)
+        probe = mock.Mock(side_effect=[self.state(SshAccessStatus.CLOSED), self.state(SshAccessStatus.OPEN_AUTHENTICATED)])
+
+        self.run_probe(probe, tcp_open, FakeClock(), SshConnection("root@[2001:db8::2]", "pw", ""))
+
+        tcp_open.assert_called_once_with("2001:db8::2", 22)
+
+    def test_deploy_target_and_compatibility_checks_recheck_a_closed_port(self) -> None:
+        config = app_config(valid_env())
+        for name in ("resolve_validated_managed_target", "require_connection_compatibility"):
+            with self.subTest(caller=name):
+                probe = mock.Mock(side_effect=[
+                    self.state(SshAccessStatus.CLOSED, "SSH is not reachable yet."),
+                    self.state(SshAccessStatus.OPEN_AUTHENTICATED),
+                ])
+                with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", probe), \
+                        mock.patch("timecapsulesmb.services.runtime.tcp_open", return_value=True), \
+                        mock.patch("timecapsulesmb.services.runtime.CLOSED_SSH_RECHECK_INTERVAL_SECONDS", 0.0):
+                    if name == "resolve_validated_managed_target":
+                        target = service_runtime.resolve_validated_managed_target(
+                            config, command_name="deploy", profile="deploy", include_probe=True,
+                        )
+                        compatibility = target.probe_state.compatibility
+                    else:
+                        compatibility = service_runtime.require_connection_compatibility(self.connection)
+
+                self.assertEqual(probe.call_count, 2)
+                self.assertTrue(compatibility.supported)
+
+
+class RequireSupportedPayloadTests(unittest.TestCase):
+    @staticmethod
+    def target(probe_state: ProbedDeviceState | None) -> service_runtime.ManagedTargetState:
+        return service_runtime.ManagedTargetState(connection=SshConnection("root@10.0.0.2", "pw", ""), probe_state=probe_state)
+
+    @staticmethod
+    def logged_in(os_release: str, arch: str, endianness: str) -> ProbedDeviceState:
+        result = ProbeResult(SshAccessStatus.OPEN_AUTHENTICATED, None, "NetBSD", os_release, arch, endianness)
+        return ProbedDeviceState(probe_result=result, compatibility=classify_device_compatibility("NetBSD", os_release, arch, endianness))
+
+    def test_ssh_failures_raise_their_access_code(self) -> None:
+        state = ProbedDeviceState(
+            probe_result=ProbeResult(SshAccessStatus.AUTH_REJECTED, "denied", "", "", "", "unknown"), compatibility=None,
+        )
+
+        with self.assertRaises(service_runtime.DeviceAccessError) as raised:
+            require_supported_payload(self.target(state), allow_unsupported=False)
+
+        self.assertEqual(raised.exception.code, "auth_failed")
+
+    def test_an_airport_express_is_an_unsupported_device(self) -> None:
+        with self.assertRaises(DeployDeviceError) as raised:
+            require_supported_payload(self.target(self.logged_in("4.0_STABLE", "ar7240", "big")), allow_unsupported=False)
+
+        self.assertEqual(raised.exception.code, "unsupported_device")
+        self.assertIn("AirPort Express", str(raised.exception))
+
+    def test_allow_unsupported_still_needs_a_payload_for_the_device(self) -> None:
+        with self.assertRaises(DeployDeviceError) as raised:
+            require_supported_payload(self.target(self.logged_in("4.0_STABLE", "ar7240", "big")), allow_unsupported=True)
+
+        self.assertEqual(raised.exception.code, "unsupported_device")
+        self.assertIn("No deployable payload", str(raised.exception))
+
+    def test_a_supported_device_returns_its_compatibility(self) -> None:
+        state = self.logged_in("6.0", "earmv4", "little")
+
+        self.assertIs(require_supported_payload(self.target(state), allow_unsupported=False), state.compatibility)
+
+    def test_a_missing_probe_is_an_uncoded_device_error(self) -> None:
+        with self.assertRaises(DeviceError) as raised:
+            require_supported_payload(self.target(None), allow_unsupported=False)
+
+        self.assertFalse(hasattr(raised.exception, "code"))

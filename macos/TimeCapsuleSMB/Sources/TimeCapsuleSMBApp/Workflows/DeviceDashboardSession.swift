@@ -338,6 +338,9 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 return true
             }
             return false
+        case .openSSHAccess:
+            openSSHAccess(profile: profile)
+            return true
         case .diagnostics, .copyDiagnostics, .generic:
             return false
         }

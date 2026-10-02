@@ -9,6 +9,7 @@ from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_target,
 )
+from timecapsulesmb.app.ops.deploy import device_operation_error
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.flash import FlashAnalysisError
@@ -99,7 +100,9 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> Fl
     try:
         compatibility = require_connection_compatibility(target.connection)
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code="unsupported_device") from exc
+        # A probe that did not log in keeps its own code (SSH off, device
+        # unreachable, password rejected); it says nothing about the model.
+        raise device_operation_error(context, exc) from exc
     try:
         return require_netbsd4_flash_target(
             target.connection,

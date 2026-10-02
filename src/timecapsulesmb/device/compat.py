@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from timecapsulesmb.core.config import AIRPORT_DEVICE_IDENTITIES, AIRPORT_SYAP_TO_MODEL, VALID_AIRPORT_SYAP_CODES
-from timecapsulesmb.device.errors import DeviceError
 
 
 def _syaps_for_group(group: str) -> tuple[str, ...]:
@@ -148,12 +147,6 @@ def unsupported_syap_message(syap: str) -> str:
         f"The selected AirPort reports model code syAP {syap.strip()}, which is not an AirPort Time Capsule "
         "or AirPort Extreme. TimeCapsuleSMB supports only those models; AirPort Express is not supported."
     )
-
-
-def require_compatibility(compat: DeviceCompatibility | None, *, fallback_error: str | None = None) -> DeviceCompatibility:
-    if compat is None:
-        raise DeviceError(fallback_error or "Failed to determine remote device OS compatibility.")
-    return compat
 
 
 def render_compatibility_message(compat: DeviceCompatibility) -> str:

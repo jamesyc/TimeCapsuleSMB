@@ -237,6 +237,68 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
     }
 
+    func testSSHTurnedOffRecoveryOffersSSHAccessAndRetry() throws {
+        // As the helper sends it: no suggested operation, one action ID.
+        let recovery = try JSONValue.object([
+            "title": .string("SSH is turned off"),
+            "message": .string(
+                "The device answers AirPort ACP, but its SSH port is closed. SSH turns off after a reset, or when it is disabled in SSH Access."
+            ),
+            "actions": .array([.string("Open SSH Access and choose Enable SSH, then try again.")]),
+            "action_ids": .array([.string("open_ssh_access")]),
+            "retryable": .bool(true),
+            "suggested_operation": .null,
+            "localization_key": .string("ssh_disabled")
+        ]).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "ssh_disabled",
+            message: "SSH is turned off on 10.0.0.2: AirPort ACP answers on port 5009, but SSH port 22 is closed.",
+            recovery: recovery
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(RecoveryActionMapper.actions(for: error), [
+            RecoveryAction(title: "Open SSH Access", kind: .openSSHAccess),
+            RecoveryAction(title: "Retry", kind: .retry),
+            RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics)
+        ])
+        XCTAssertEqual(error.message, "SSH is turned off on this device.")
+        XCTAssertEqual(RecoveryGuidancePresentation(error: error).title, "SSH is turned off")
+
+        L10n.apply(language: .german)
+        XCTAssertEqual(RecoveryActionMapper.actions(for: error).first?.title, "SSH-Zugriff öffnen")
+        XCTAssertEqual(error.message, "SSH ist auf diesem Gerät deaktiviert.")
+    }
+
+    func testUnreachableDeviceErrorIsLocalizedWithoutUnsupportedModelAdvice() throws {
+        let recovery = try JSONValue.object([
+            "title": .string("Device not reachable"),
+            "message": .string("Neither SSH nor AirPort ACP answered at the device's saved address."),
+            "actions": .array([
+                .string("Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac."),
+                .string("If the device is restarting, wait a few minutes, then try again."),
+                .string("The device may have a new IP address. Run Discover and reselect it.")
+            ]),
+            "action_ids": .array([]),
+            "retryable": .bool(true),
+            "suggested_operation": .null,
+            "localization_key": .string("device_unreachable")
+        ]).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "activate",
+            code: "device_unreachable",
+            message: "The device is not answering at 10.0.0.2: neither SSH port 22 nor AirPort ACP port 5009 is reachable (timed out).",
+            recovery: recovery
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(RecoveryActionMapper.actions(for: error).map(\.kind), [.retry, .copyDiagnostics])
+        let guidance = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(guidance.errorMessage, "The device isn't answering on SSH or AirPort ACP.")
+        XCTAssertFalse(guidance.steps.contains { $0.contains("AirPort Express") || $0.contains("Forget") })
+    }
+
     func testHumanRecoveryTextDoesNotCreateActionButtons() throws {
         let recovery = try recoveryValue(
             title: "Disk issue",

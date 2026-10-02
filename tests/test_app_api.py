@@ -32,6 +32,7 @@ from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, ConfigError, parse_env_file
 from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
@@ -178,6 +179,24 @@ def unreachable_probed_state() -> ProbedDeviceState:
         ),
         compatibility=None,
     )
+
+
+def failed_probe_state(status: SshAccessStatus, error: str) -> ProbedDeviceState:
+    return ProbedDeviceState(
+        probe_result=ProbeResult(
+            ssh_status=status,
+            error=error,
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        ),
+        compatibility=None,
+    )
+
+
+AUTH_REJECTED_ERROR = "root@10.0.0.2: Permission denied (publickey,password,keyboard-interactive)."
+KEX_CLOSED_ERROR = "Connecting to the device failed, SSH error: kex_exchange_identification: Connection closed by remote host"
 
 
 def managed_runtime_probe(ready: bool = True) -> ManagedRuntimeProbeResult:
@@ -4932,6 +4951,184 @@ MaSt = (
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "unsupported_device")
         self.assertIn("only supported for NetBSD4", error["message"])
+        self.assert_neutral_unsupported_device_recovery(error)
+
+    def run_deploy_dry_run_against(self, probe_state: ProbedDeviceState, *, acp_error: str | None = None):
+        collector = CollectingSink()
+        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"), probe_state=probe_state)
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=acp_error) as acp_probe:
+                            with mock.patch("timecapsulesmb.services.deploy.run_remote_actions", side_effect=AssertionError("no remote actions")):
+                                rc = service.run_api_request({"operation": "deploy", "params": {"dry_run": True}}, collector.sink)
+        return rc, collector, acp_probe
+
+    def assert_not_unsupported_model_guidance(self, error: dict[str, object]) -> None:
+        recovery = error["recovery"]
+        self.assertTrue(recovery["retryable"])
+        self.assertNotIn("cannot run TimeCapsuleSMB", recovery["message"])
+        self.assertFalse(any("Forget" in action or "AirPort Express" in action for action in recovery["actions"]))
+
+    def test_deploy_reports_ssh_turned_off_when_acp_still_answers(self) -> None:
+        rc, collector, acp_probe = self.run_deploy_dry_run_against(
+            failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."), acp_error=None,
+        )
+
+        self.assertEqual(rc, 1)
+        acp_probe.assert_called_once_with("10.0.0.2", 5009, 2.0)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "ssh_disabled")
+        self.assertIn("SSH is turned off on 10.0.0.2", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "ssh_disabled")
+        self.assertEqual(error["recovery"]["action_ids"], ["open_ssh_access"])
+        self.assert_not_unsupported_model_guidance(error)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual((finished["stage"], finished["error_code"]), ("check_compatibility", "ssh_disabled"))
+
+    def test_deploy_reports_unreachable_device_when_neither_ssh_nor_acp_answers(self) -> None:
+        rc, collector, _acp_probe = self.run_deploy_dry_run_against(
+            failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."), acp_error="[Errno 64] Host is down",
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "device_unreachable")
+        self.assertIn("not answering at 10.0.0.2", error["message"])
+        self.assertIn("Host is down", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "device_unreachable")
+        self.assert_not_unsupported_model_guidance(error)
+
+    def test_deploy_reports_each_ssh_login_failure_with_its_own_code(self) -> None:
+        cases = (
+            (SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR, "auth_failed"),
+            (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "no matching key exchange method found", "ssh_compatibility_failed"),
+            (SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR, "ssh_transport_failed"),
+            (SshAccessStatus.DEVICE_PROBE_FAILED, "Failed to determine remote device OS compatibility.", "device_probe_failed"),
+        )
+        for status, message, code in cases:
+            with self.subTest(code=code):
+                self._telemetry_client.emit.reset_mock()
+                rc, collector, acp_probe = self.run_deploy_dry_run_against(failed_probe_state(status, message))
+
+                self.assertEqual(rc, 1)
+                # Only a closed SSH port needs the ACP check to say why.
+                acp_probe.assert_not_called()
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], code)
+                self.assertEqual(error["message"], message)
+                self.assert_not_unsupported_model_guidance(error)
+
+    def test_deploy_still_rejects_an_airport_express_it_logged_in_to(self) -> None:
+        rc, collector, acp_probe = self.run_deploy_dry_run_against(airport_express_probed_state())
+
+        self.assertEqual(rc, 1)
+        acp_probe.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
+        self.assertIn("ar7240 processor", error["message"])
+        self.assertIn("AirPort Express", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "deploy.unsupported_device")
+        self.assertIn("Forget this device", error["recovery"]["actions"][1])
+
+    def test_deploy_reports_a_device_without_a_payload_as_unsupported(self) -> None:
+        rc, collector, _acp_probe = self.run_deploy_dry_run_against(
+            ProbedDeviceState(probe_result=probed_state().probe_result, compatibility=unsupported_compatibility()),
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
+        self.assertIn("Unsupported device OS", error["message"])
+
+    def test_deploy_reports_an_uncoded_device_error_as_a_retryable_remote_error(self) -> None:
+        collector = CollectingSink()
+        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"), probe_state=probed_state())
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.app.ops.deploy.prepare_deploy_preflight", side_effect=DeviceError("probe output was cut short")):
+                        rc = service.run_api_request({"operation": "deploy", "params": {"dry_run": True}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertTrue(error["recovery"]["retryable"])
+
+    def run_activate_against_probe(self, probe_state: ProbedDeviceState, *, acp_error: str | None = None):
+        collector = CollectingSink()
+        target = SimpleNamespace(connection=SshConnection("root@10.0.0.40", "pw", "-o foo"), probe_state=probe_state)
+        params = {"confirmation_id": self.confirmation_id_for("activate", {}, {"host": "root@10.0.0.40", "netbsd4": True})}
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.40", "TC_PASSWORD": "pw"})
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=acp_error):
+                    with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
+                        rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+        remote_actions.assert_not_called()
+        return rc, collector
+
+    def test_activate_reports_unreachable_device_instead_of_an_unsupported_model(self) -> None:
+        rc, collector = self.run_activate_against_probe(
+            failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."), acp_error="timed out",
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "device_unreachable")
+        self.assertFalse(error["message"].startswith("DeviceError"))
+        self.assert_not_unsupported_model_guidance(error)
+
+    def test_activate_reports_rejected_password_so_the_app_can_ask_for_it(self) -> None:
+        rc, collector = self.run_activate_against_probe(failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR))
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertIn("replace_password", error["recovery"]["action_ids"])
+
+    def run_flash_backup_against_probe(self, probe_state: ProbedDeviceState, *, acp_error: str | None = None):
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2"}, file_values={"TC_HOST": "root@10.0.0.2"})
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", return_value=probe_state):
+                # A closed port is rechecked first; it stays closed here.
+                with mock.patch("timecapsulesmb.services.runtime.tcp_open", return_value=False), \
+                        mock.patch("timecapsulesmb.services.runtime.CLOSED_SSH_RECHECK_WINDOW_SECONDS", 0.0):
+                    with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=acp_error):
+                        with mock.patch("timecapsulesmb.app.ops.flash.backup_flash") as backup_mock:
+                            rc = service.run_api_request(
+                                {"operation": "flash", "params": {"action": "backup", "credentials": {"password": "pw"}}},
+                                collector.sink,
+                            )
+        backup_mock.assert_not_called()
+        return rc, collector
+
+    def test_flash_reports_ssh_failures_with_their_own_codes(self) -> None:
+        cases = (
+            (failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."), None, "ssh_disabled"),
+            (failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."), "timed out", "device_unreachable"),
+            (failed_probe_state(SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR), None, "ssh_transport_failed"),
+            (failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR), None, "auth_failed"),
+        )
+        for probe_state, acp_error, code in cases:
+            with self.subTest(code=code, acp_error=acp_error):
+                rc, collector = self.run_flash_backup_against_probe(probe_state, acp_error=acp_error)
+
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], code)
+                self.assert_not_unsupported_model_guidance(error)
+
+    def test_flash_still_rejects_an_airport_express_it_logged_in_to(self) -> None:
+        rc, collector = self.run_flash_backup_against_probe(airport_express_probed_state())
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
         self.assert_neutral_unsupported_device_recovery(error)
 
     def run_activate_against_install(self, *, config_present: bool, version: DeployedVersionProbeResult):
