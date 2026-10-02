@@ -195,6 +195,61 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
         process.communicate(timeout=HANG_TIMEOUT)
 
 
+@pytest.mark.parametrize('mode,expected', [('false', 0), ('true', 0), ('unsigned', 0),
+                                         ('malformed', 0), ('http_error', 1), ('oversized', 1)])
+def test_report_posts_without_executing_debug(cycle, mode, expected):
+    _, state, marker, binary, env = cycle
+    state['mode'] = mode
+    result = subprocess.run(telemetry_command(binary, '--report', 'bufstall:resolved:5'),
+                            env=env, capture_output=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == expected, result.stderr
+    assert state['calls'] == [('POST', '/v1/router-heartbeats')]
+    assert state['payloads'][0]['reason'] == 'bufstall:resolved:5'
+    assert not marker.exists()
+
+
+def test_report_and_its_cancellation_do_not_touch_a_running_signed_job(cycle, rig, tmp_path):
+    _, state, marker, binary, env = cycle
+    root, _, _ = rig
+    state['mode'] = 'true'
+    finish = tmp_path / 'finish'
+    job = subprocess.Popen(telemetry_command(binary, '--once'),
+                           env={**env, 'TC_TEST_FINISH': str(finish)},
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    report = None
+    try:
+        wait_until(marker.exists)
+        before = marker.read_bytes()
+        debug = (root / 'work/debug').read_bytes()
+        # Even cleanup must not run while another process owns these files.
+        signature = root / 'work/debug.sig'
+        signature.write_bytes(b'owned by the running job')
+        result = subprocess.run(telemetry_command(binary, '--report'), env=env,
+                                capture_output=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 0, result.stderr
+        assert state['calls'] == [('POST', '/v1/router-heartbeats'), ('GET', '/downloads/bin/debug6'),
+                                  ('GET', '/downloads/bin/debug6.sig'), ('POST', '/v1/router-heartbeats')]
+        calls = tmp_path / 'report-acp-calls'
+        report = subprocess.Popen(telemetry_command(binary, '--report'), env={**env,
+            'TC_TEST_ACP_MODE': 'ignore_term', 'TC_TEST_ACP_CALLS': str(calls)},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        wait_until(lambda: calls.exists() and calls.stat().st_size > 0)
+        report.terminate()
+        report.communicate(timeout=HANG_TIMEOUT)
+        assert report.returncode != 0
+        assert_collectors_stopped(calls)
+        assert job.poll() is None and marker.read_bytes() == before
+        assert (root / 'work/debug').read_bytes() == debug
+        assert signature.read_bytes() == b'owned by the running job'
+        assert len(state['calls']) == 4
+    finally:
+        if report and report.poll() is None:
+            report.terminate()
+            report.communicate(timeout=HANG_TIMEOUT)
+        finish.touch()
+        job.communicate(timeout=HANG_TIMEOUT)
+
+
 def test_print_payload_has_no_network(cycle):
     _, state, _, binary, env = cycle
     result = subprocess.run(telemetry_command(binary, '--print-payload', 'manual'), env=env, capture_output=True, text=True, timeout=30)
@@ -203,15 +258,15 @@ def test_print_payload_has_no_network(cycle):
     assert state['calls'] == []
 
 
-@pytest.mark.parametrize('args', [['--once'], ['--daemon']])
+@pytest.mark.parametrize('args,expected', [(['--once'], 0), (['--daemon'], 0), (['--report'], 1)])
 @pytest.mark.parametrize('setting', ['TELEMETRY=false\n', "TELEMETRY='false'\n", 'TELEMETRY="false"\n', '  TELEMETRY = false  \r\n'])
-def test_device_opt_out_exits_without_network_or_debug_files(cycle, rig, args, setting):
+def test_device_opt_out_exits_without_network_or_debug_files(cycle, rig, args, expected, setting):
     _, state, marker, binary, env = cycle
     root, _, _ = rig
     (root / 'config').write_text(setting)
     state['mode'] = 'true'
     result = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, timeout=HANG_TIMEOUT)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == expected, result.stderr
     assert state['calls'] == [] and not marker.exists()
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
 
@@ -629,7 +684,7 @@ def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_co
     assert_collectors_stopped(calls)
 
 
-@pytest.mark.parametrize('args', [['--daemon'], ['--once'], ['--print-payload']])
+@pytest.mark.parametrize('args', [['--daemon'], ['--once'], ['--report'], ['--print-payload']])
 @pytest.mark.parametrize('mode,stop_signal', [('ignore_term', signal.SIGTERM), ('descendant', signal.SIGTERM),
                                              ('closed_hang', signal.SIGINT)])
 def test_stop_during_acp_collection_is_prompt_even_with_long_timeout(cycle, production_collector, acp_calls, args, mode, stop_signal):

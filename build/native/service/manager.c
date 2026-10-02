@@ -5,6 +5,7 @@
 #include "../common/worker.h"
 #include "../samba/staging.h"
 #include "../storage/settle.h"
+#include "bufstall.h"
 #include "inspect.h"
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -22,6 +23,16 @@
 #endif
 #ifndef TC_DISKD_PATH
 #define TC_DISKD_PATH "/sbin/diskd"
+#endif
+/* Cool down after delivery; failed attempts retain the report and retry. */
+#ifndef TC_BUFSTALL_REPORT_MS
+#define TC_BUFSTALL_REPORT_MS 3600000
+#endif
+#ifndef TC_BUFSTALL_REPORT_RETRY_MS
+#define TC_BUFSTALL_REPORT_RETRY_MS 60000
+#endif
+#ifndef TC_BUFSTALL_REPORT_TIMEOUT_MS
+#define TC_BUFSTALL_REPORT_TIMEOUT_MS 180000
 #endif
 enum { BLOCK_SMB = 1, BLOCK_RSYNC = 2, BLOCK_DISCOVERY = 4, BLOCK_TELEMETRY = 8 };
 struct stale_process {
@@ -81,6 +92,17 @@ struct manager {
     char hostname[256];
     int hostname_waiting;
     long long hostname_wait_since;
+    /* Buffer-cache stall recovery (bufstall.h); process-local by design. */
+    struct tc_bufstall bufstall;
+    struct tc_child report_job;
+    long long bufstall_at, report_at;
+    int bufstall_unreadable, bufstall_write_failed, bufstall_wake_failed;
+    /* Ended episodes not yet reported, merged: worst outcome, longest wait. */
+    enum tc_bufstall_outcome report_outcome;
+    long long report_longest;
+    /* The in-flight snapshot is separate from episodes ending during it. */
+    enum tc_bufstall_outcome report_inflight_outcome;
+    long long report_inflight_longest;
 };
 
 static void lower(long long *deadline, long long value) {
@@ -543,6 +565,159 @@ static void pump_audit(struct manager *m, long long now) {
             m->audit_at = now + JOB_RETRY_MS;
     }
 }
+/* Put Apple's low-water mark back when the manager exits. */
+static void bufstall_restore(void) {
+    struct tc_bufstall_sample sample;
+    uint64_t apple;
+    if (tc_bufstall_read(&sample))
+        return;
+    apple = tc_bufstall_default_lowater(sample.hiwater);
+    if (sample.lowater <= apple)
+        return;
+    if (tc_bufstall_set_lowater(apple))
+        timestamped_fprintf(stderr, "manager: could not restore vm.bufmem_lowater to %llu at stop: %s\n",
+                            (unsigned long long)apple, strerror(errno));
+    else
+        timestamped_fprintf(stderr, "manager: restored vm.bufmem_lowater from %llu to %llu at stop\n",
+                            (unsigned long long)sample.lowater, (unsigned long long)apple);
+}
+/* Reports run only after an episode ended, never during a stall, and never
+ * while stopping: a report is the one step here that starts a process. */
+static void pump_bufstall_report(struct manager *m, long long now) {
+    char reason[64];
+    char *argv[] = {TC_SERVICE_BIN, "telemetry", "--report", reason, NULL};
+    if (m->report_job.group && tc_child_poll(&m->report_job, now)) {
+        if (tc_child_ok(&m->report_job) && !m->report_job.stopping) {
+            m->report_at = now + TC_BUFSTALL_REPORT_MS;
+        } else {
+            if (m->report_outcome < m->report_inflight_outcome)
+                m->report_outcome = m->report_inflight_outcome;
+            if (m->report_longest < m->report_inflight_longest)
+                m->report_longest = m->report_inflight_longest;
+            m->report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+        }
+        m->report_inflight_outcome = TC_BUFSTALL_NO_EPISODE;
+        m->report_inflight_longest = 0;
+        tc_child_close(&m->report_job);
+    }
+    if (!m->report_outcome || m->stopping || acp_stop_requested || !m->have_settings || m->report_job.group ||
+        m->bufstall.outcome || now < m->report_at)
+        return;
+    if (!m->settings.config.telemetry) {
+        m->report_outcome = TC_BUFSTALL_NO_EPISODE;
+        m->report_longest = 0;
+        return;
+    }
+    snprintf(reason, sizeof(reason), "bufstall:%s:%lld", tc_bufstall_outcome_name(m->report_outcome),
+             m->report_longest / 1000);
+    /* --report never starts signed jobs, so its whole group may be killed
+     * after its deadline or at stop without interrupting a debug program. */
+    if (!tc_child_exec(&m->report_job, argv, TC_RAM_ROOT "/var/telemetry.log")) {
+        m->report_job.deadline = now + TC_BUFSTALL_REPORT_TIMEOUT_MS;
+        m->report_inflight_outcome = m->report_outcome;
+        m->report_inflight_longest = m->report_longest;
+        m->report_outcome = TC_BUFSTALL_NO_EPISODE;
+        m->report_longest = 0;
+    } else {
+        m->report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+    }
+}
+/* Detection, the raise, the wake and the restore are system calls in this
+ * process: none of them forks, so they work with a full process table. They
+ * also run while stopping, when stuck Samba workers would block the drain. */
+static void pump_bufstall(struct manager *m, long long now) {
+    struct tc_bufstall_sample sample;
+    enum tc_bufstall_action action;
+    uint64_t lowater;
+    long long longest = 0;
+    int failed = 0, error = 0;
+    size_t i;
+    pump_bufstall_report(m, now);
+    if (now - m->bufstall_at < TC_BUFSTALL_SAMPLE_MS && m->bufstall_at)
+        return;
+    m->bufstall_at = now;
+    if (tc_bufstall_read(&sample)) {
+        if (!m->bufstall_unreadable)
+            timestamped_fprintf(stderr, "manager: cannot read buffer-cache state (%s); buffer-stall recovery "
+                                        "waits until it can\n", strerror(errno));
+        m->bufstall_unreadable = 1;
+        return;
+    }
+    if (m->bufstall_unreadable)
+        timestamped_fprintf(stderr, "manager: buffer-cache state readable again\n");
+    m->bufstall_unreadable = 0;
+    action = tc_bufstall_step(&m->bufstall, &sample, now, &lowater);
+    if (action == TC_BUFSTALL_NONE)
+        return;
+    /* Fix first and log after: NetBSD 4's /mnt/Memory is MFS, whose writes
+     * can themselves wait for a buffer. */
+    if (action == TC_BUFSTALL_RAISE || action == TC_BUFSTALL_STUCK || action == TC_BUFSTALL_RESOLVED ||
+        action == TC_BUFSTALL_RESTORE) {
+        failed = tc_bufstall_set_lowater(lowater) != 0;
+        error = errno;
+    }
+    if (action == TC_BUFSTALL_RAISE && failed)
+        tc_bufstall_failed(&m->bufstall, now);
+    if ((action == TC_BUFSTALL_RAISE && !failed) || action == TC_BUFSTALL_WAKE) {
+        if (tc_bufstall_wake()) {
+            if (!m->bufstall_wake_failed)
+                timestamped_fprintf(stderr, "manager: buffer-stall wake could not read %s: %s\n", TC_BUFWAKE_DIR,
+                                    strerror(errno));
+            m->bufstall_wake_failed = 1;
+        } else {
+            m->bufstall_wake_failed = 0;
+        }
+    }
+    for (i = 0; i < m->bufstall.seen_count; i++)
+        if (now - m->bufstall.seen[i].since > longest)
+            longest = now - m->bufstall.seen[i].since;
+    if (failed) {
+        /* A refused restore is retried every sample: log the first. */
+        if (!m->bufstall_write_failed)
+            timestamped_fprintf(stderr, "manager: could not set vm.bufmem_lowater to %llu: %s\n",
+                                (unsigned long long)lowater, strerror(error));
+        m->bufstall_write_failed = 1;
+    } else if (action != TC_BUFSTALL_WAKE && action != TC_BUFSTALL_CAPPED && action != TC_BUFSTALL_ENDED) {
+        m->bufstall_write_failed = 0;
+    }
+    if (action == TC_BUFSTALL_RAISE && !failed)
+        timestamped_fprintf(stderr,
+                            "manager: buffer stall: %lu processes waiting for buffers, longest %lld ms; raised "
+                            "vm.bufmem_lowater from %llu to %llu (bufmem %llu, hiwater %llu)\n",
+                            (unsigned long)sample.count, longest, (unsigned long long)sample.lowater,
+                            (unsigned long long)lowater, (unsigned long long)sample.bufmem,
+                            (unsigned long long)sample.hiwater);
+    else if (action == TC_BUFSTALL_CAPPED)
+        timestamped_fprintf(stderr,
+                            "manager: buffer stall: %lu processes waiting for buffers, longest %lld ms; bufmem %llu "
+                            "is at the high-water mark %llu, so raising vm.bufmem_lowater cannot help; checking "
+                            "again every %d s\n",
+                            (unsigned long)sample.count, longest, (unsigned long long)sample.bufmem,
+                            (unsigned long long)sample.hiwater, TC_BUFSTALL_HOLD_MS / 1000);
+    else if (action == TC_BUFSTALL_STUCK && !failed)
+        timestamped_fprintf(stderr,
+                            "manager: buffer stall: %lu processes still waiting %lld ms into the raise; restored "
+                            "vm.bufmem_lowater to %llu; raising again in %d s\n",
+                            (unsigned long)sample.count, now - m->bufstall.raised_at, (unsigned long long)lowater,
+                            TC_BUFSTALL_HOLD_MS / 1000);
+    else if (action == TC_BUFSTALL_RESTORE && !failed)
+        timestamped_fprintf(stderr, "manager: restored vm.bufmem_lowater from %llu to %llu\n",
+                            (unsigned long long)sample.lowater, (unsigned long long)lowater);
+    if (action == TC_BUFSTALL_RESOLVED || action == TC_BUFSTALL_ENDED) {
+        const char *outcome = tc_bufstall_outcome_name(m->bufstall.ended_outcome);
+        long long seconds = m->bufstall.ended_longest / 1000;
+        if (action == TC_BUFSTALL_RESOLVED && !failed)
+            timestamped_fprintf(stderr, "manager: buffer stall over (%s, longest wait %lld s); restored "
+                                        "vm.bufmem_lowater to %llu\n",
+                                outcome, seconds, (unsigned long long)lowater);
+        else if (action == TC_BUFSTALL_ENDED)
+            timestamped_fprintf(stderr, "manager: buffer stall over (%s, longest wait %lld s)\n", outcome, seconds);
+        if (m->report_outcome < m->bufstall.ended_outcome)
+            m->report_outcome = m->bufstall.ended_outcome;
+        if (m->report_longest < m->bufstall.ended_longest)
+            m->report_longest = m->bufstall.ended_longest;
+    }
+}
 static void pump_stage(struct manager *m, long long now) {
     if (m->stage_job.group && tc_child_poll(&m->stage_job, now)) {
         if (tc_child_ok(&m->stage_job) && !m->stage_job.stopping && m->stage_revision == m->revision &&
@@ -685,10 +860,11 @@ static void stopping(struct manager *m, long long now) {
     tc_child_stop(&m->stage_job, now, 1);
     tc_child_stop(&m->audit_job, now, 1);
     tc_child_stop(&m->mast_job, now, 1);
+    tc_child_stop(&m->report_job, now, 1);
 }
 static int drained(struct manager *m, long long now) {
     struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->stage_job, &m->audit_job,
-                               &m->mast_job};
+                               &m->mast_job, &m->report_job};
     size_t i;
     for (i = 0; i < sizeof(jobs) / sizeof(jobs[0]); i++) {
         if (jobs[i]->group && tc_child_poll(jobs[i], now))
@@ -740,6 +916,7 @@ int tc_manager_main(int argc, char **argv) {
         poll_role(&m->rsync, "rsync", now, 1);
         poll_role(&m->discovery, "discovery", now, 1);
         poll_role(&m->telemetry, "telemetry", now, 0);
+        pump_bufstall(m, now);
         if (m->stopping || acp_stop_requested) {
             if (!m->stopping)
                 m->stopping = 1;
@@ -768,7 +945,8 @@ int tc_manager_main(int argc, char **argv) {
         tc_events_prepare(&m->events, &reads, &maxfd);
         struct tc_child *children[] = {&m->smb.child,       &m->rsync.child,  &m->discovery.child,
                                        &m->telemetry.child, &m->settings_job, &m->storage_job,
-                                       &m->stage_job,       &m->audit_job, &m->mast_job};
+                                       &m->stage_job,       &m->audit_job, &m->mast_job,
+                                       &m->report_job};
         size_t i;
         for (i = 0; i < sizeof(children) / sizeof(children[0]); i++)
             tc_child_prepare(children[i], &reads, &maxfd, &deadline);
@@ -792,6 +970,7 @@ int tc_manager_main(int argc, char **argv) {
         }
     }
     tc_events_close(&m->events);
+    bufstall_restore();
     tc_samba_discard();
     tc_child_close(&m->diskd.child);
     free(m);

@@ -30,6 +30,12 @@ int telemetry_cycle(const char *reason, int lock_fd, int *delivered) {
     /* The server has the heartbeat; later response or debug-job failures
      * must not resend it. */
     *delivered = 1;
+    /* A report owns no debug workspace and must remain safe to kill. Its
+     * success is the POST itself, regardless of the server's debug reply. */
+    if (lock_fd < 0) {
+        free(body);
+        return 0;
+    }
     rc = telemetry_response_parse((const char *)body, len, &response);
     free(body);
     if (rc) { fputs("telemetry: invalid response\n", stderr); return 1; }

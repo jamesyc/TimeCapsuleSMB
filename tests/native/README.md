@@ -18,6 +18,7 @@ The shell runtime tests moved with their behavior:
 | Apple diskd recovery and CIFS/NBNS conflicts | Manager recovery cases; Apple AFP/mDNS exclusion in inspection cases |
 | Local hostname resolution and bounded logs | `test_hosts.py`, `test_log_trim.py`, existing timestamp cases |
 | No boot/hotplug migration or dependence on TDB/checkpoint presence | Manager legacy-metadata case |
+| Buffer-cache stall recovery (kern/60584) | `test_bufstall.py` (decisions, fixture), `test_manager.py` buffer-stall cases |
 | One-time boot preparation | `tests/test_native_boot.py` (retained shell, executed directly) |
 | Legacy release shutdown and telemetry workspace cleanup | `tests/test_appliance_process_shutdown.py`, `tests/test_telemetry_cleanup.py` |
 

@@ -2076,3 +2076,146 @@ Validation:
   NetBSD 4 BE has no LAN device: its firmware ships `/usr/bin/acp` and
   `acRB`, but no reboot ran on it. The Samba device suites were skipped:
   this change does not touch smbd.
+
+## Buffer-cache stall recovery, kern/60584 (2026-10-01)
+
+Telemetry install `3f47e07a` (TimeCapsule6,116, NetBSD 4 LE) went silent after
+4.5-7.5 days of uptime five times between July and October (v2.2.7 to v3.1.1
+runtimes). Each time, SSH sessions failed with `sh: Cannot vfork`, sshd closed
+new connections (`kex_exchange_identification`) and smbd reset them, until a
+power cycle. That is `fork()` failing at `kern.maxproc`. PR 353 found Samba
+workers sleeping in `needbuf` during Time Machine on NetBSD 6: NetBSD
+kern/60584, where `getnewbuf()` sleeps forever once `buf_lotsfree()` refuses a
+fresh buffer and none can be recycled. Both kernels' `vfs_bio.c` (netbsd-4
+1.167.2.1, netbsd-6) have the same `buf_lotsfree()`, sleep without a timeout,
+and wake sleepers on every buffer release (`wakeup(&needbuffer)` on NetBSD 4,
+`cv_signal(&needbuffer_cv)` on NetBSD 6). The manager now raises
+`vm.bufmem_lowater` while processes wait, wakes them, and restores Apple's value
+(build/native/README.md).
+
+Device facts (NetBSD 6 192.168.1.218 and NetBSD 4 LE 192.168.1.10, 256 MB):
+- `kern.maxproc` 84 on both; 35 processes at idle on NetBSD 6, 54 on NetBSD 4
+  (its kernel threads are separate processes).
+- `vm.bufcache` 15: hiwater 40263680 / 40243200, lowater 5032960 / 5030400,
+  exactly `hiwater >> 3`.
+- Raising `vm.bufmem_lowater` to `hiwater - 16` works at `securelevel=1`;
+  `hiwater - 15` gives `EINVAL`; restoring works. NetBSD 4 exports the values
+  as 64-bit quads, NetBSD 6 as 32-bit longs.
+- `sysctl(KERN_PROC2)` from a static binary returns every process's wait
+  message, truncated to 8 bytes. On NetBSD 6, kernel threads (pagedaemon)
+  belong to process 0 and are not listed.
+- Block reads of unmounted `dk0`/`dk1` go through the buffer cache; opening
+  mounted `dk2` gives `EBUSY` on NetBSD 6 (one open per block device) but works
+  on NetBSD 4. Flash block devices are `Device not configured`. Telemetry shows
+  disks whose data partition is `dk0`, so the wake reads `/dev` on the FFS RAM
+  root instead.
+- `sysctlbyname()` linked libc's MIB tree learner and `qsort`: 6.5 KB more in
+  the NetBSD 4 image. One `CTL_QUERY` of the `vm` node replaced it.
+
+Validation:
+- pytest: 2987 passed (native: 762). The unit test covers the decisions (brief waits,
+  raise, wake, restore after quiet, stuck counted from before or after the
+  raise, retry after stuck, capped then raise once the cache shrinks, refused
+  raise, restore of a mark left raised, full table) and the fixture. The
+  manager tests run the real loop: in-process wakes, recovery while every
+  fork fails (`TC_TEST_FORK_FAIL`, test builds only) with no process started,
+  reports only after an episode and merged when they could not start, a hung
+  report killed at stop, a stall during stop, refused writes and unreadable
+  state logged once. gcc 13 `-Werror` builds of the changed files.
+- VM builds of all three service lanes from the final source: NetBSD 6
+  375500 bytes (+5496), NetBSD 4 LE 332632 (+5924), NetBSD 4 BE 332052
+  (+5936); no warnings; fault-ahead check passed.
+- Device driver built from `service/bufstall.c` with
+  `TC_BUFSTALL_EXTRA_WMESG` set to the `sleep` wait (`nanoslee` on NetBSD 4,
+  `nanoslp` on NetBSD 6): on both devices it listed the running `sleep` (and
+  cron, svscan and telemetry, which also sleep there), raised the low-water
+  mark to `hiwater - 16`, got `EINVAL` at `hiwater - 15`, ran the 128-pass
+  wake (40 ms on NetBSD 6, 94 ms on NetBSD 4), and restored `hiwater >> 3`;
+  `sysctl` agreed after each step.
+- NetBSD 6: deploy and doctor passed with the first version and with the
+  in-process version before the last review fixes (pending-report merge,
+  killable report, wake-failure log); neither manager logged a buffer stall.
+  The final build was not deployed.
+- Not run: the NetBSD 4 deploy (skipped at the maintainer's request), a real
+  stall (none has been reproduced; 5 s / 10 s / 60 s and 128 passes are first
+  estimates), and the Samba device suites (smbd is unchanged).
+
+## Buffer-stall report delivery and signed-job isolation (2026-10-01)
+
+The manager now uses `telemetry --report`: the existing payload and POST path,
+without workspace locking, cleanup, debug downloads or signed-job execution.
+A report can run while a signed job owns the workspace, and its timeout or
+shutdown cannot interrupt that job. Exit zero acknowledges a successful POST;
+opt-out, cancellation and failed transport return nonzero. Normal `--once` and
+daemon cycles retain their signed-job behavior.
+
+The manager keeps the in-flight outcome and longest wait separately from new
+pending episodes. Success discards only that snapshot and starts the one-hour
+cooldown. Failure merges it back and retries after 60 seconds; failed spawning
+uses the same delay. The 180-second report deadline remains bounded. Pending
+reports are process-local, and an ambiguous HTTP failure can duplicate a report
+on retry; no persistent delivery state was added.
+
+Validation:
+- Focused manager/telemetry integration tests: 200 passed. Tests exercise a
+  report while a real signed job holds the lock, report cancellation without
+  disturbing that job or its files, signed DEBUG replies without execution,
+  opt-out, HTTP failures, failed starts, timeout retry, delivery cooldown, and
+  new episodes during successful and failed in-flight reports.
+- `make test-parallel`: 3097 passed, including native compile checks. Ruff
+  and `git diff --check` passed.
+- All three service lanes rebuilt on the VM with no compiler warnings or
+  errors; fault-ahead and the NetBSD 6 fork-repair checks passed. Stripped
+  sizes: NetBSD 6 375916 bytes (+416), NetBSD 4 LE 333032 (+400), NetBSD 4 BE
+  332452 (+400). Installed those images and updated their manifest hashes.
+- Ubuntu 24.04 amd64 as a non-root user: host regression drivers passed with
+  ASan/UBSan; the complete service compiled with GCC 13 and `-Werror`.
+- Clean Samba builds with regression drivers passed on all three VM lanes;
+  smbd and migrator hashes match the previously shipped artifacts.
+  Stripped smbd/migrator sizes: 6 10240592/2157304 bytes; 4 LE
+  10260104/2171156; 4 BE 10258992/2170716.
+- Both device deployments and post-reboot runtime verification passed;
+  doctor passed on NetBSD 6 (65 s) and NetBSD 4 LE (69 s). At the maintainer's
+  request, the broad Samba device suites were cancelled. A subsequent request
+  added only the NetBSD 6 quick smbtorture set and a post-test doctor check.
+  All 24 quick suites completed within the 20-minute budget: 73 passed,
+  52 known failures, 2 skipped; no new failures or newly passing known failures.
+  No spinning smbd children remained, and the post-test doctor passed. Total
+  elapsed time was 554 seconds (9 min 14 s). All resource locks were released.
+  Logs are under `plan/report-only-20261001/`.
+- Telemetry server checked over SSH: running-container heartbeat handler,
+  schema, ingest and debug-response code match the server checkout. The
+  existing schema accepts the report reason and stores the heartbeat before
+  returning optional debug instructions; no server change is required.
+  Its focused heartbeat/debug tests passed (41), without live ingest tests.
+
+### Cross-process test clock on macOS Python 3.9
+
+The first CI run exposed four timing assertion failures on macOS Python 3.9:
+the fake children's `time.monotonic()` timestamps have separate process-local
+origins there. Comparing a new child's start with an older child's completion
+therefore produced negative elapsed times. Event timestamps now use
+`time.clock_gettime(time.CLOCK_MONOTONIC)`, the shared system clock already used
+by the native manager. Runtime code and shipped binaries are unchanged.
+
+- Reproduced all four failures locally on macOS Python 3.9.25 with ASan/UBSan.
+- After the fix, all four affected cases passed with ASan/UBSan and three
+  pytest workers on both Python 3.9.25 and Python 3.14.
+- Ruff and `git diff --check` passed. Logs are in
+  `plan/report-only-20261001/ci/clock-py*-{before,after}.log`.
+
+### Buffer-stall log completion synchronization
+
+Ubuntu CI exposed a test ordering race: a low-water write is visible before
+the manager finishes its wake and emits the recovery log. The recovery test
+and sibling restore/stuck tests now wait for the expected log independently
+of the write. They retain the exact message/value checks and existing bounded
+waits; runtime code, recovery ordering and shipped binaries are unchanged.
+
+- Reproduced the original assertion failure by compiling a temporary host
+  fixture with a 500 ms delay after publishing a low-water write.
+- With that delay and ASan/UBSan, all four affected test cases passed.
+- The complete manager module passed with ASan/UBSan and three pytest workers:
+  79 passed in 174.21 s. Ruff and `git diff --check` passed.
+- Reproduction and verification logs are under
+  `plan/report-only-20261001/ci/log-race/`.

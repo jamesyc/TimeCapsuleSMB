@@ -16,7 +16,7 @@ static time_t monotonic_seconds(void) {
 }
 
 int main(int argc, char **argv) {
-    int rc = 0, daemon = 0, cleanup_only = 0;
+    int rc = 0, daemon = 0, cleanup_only = 0, report_only = 0;
     const char *reason = "manual";
     struct telemetry_schedule schedule;
     time_t next_cleanup = 0, retry_after = 0;
@@ -31,8 +31,12 @@ int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--daemon")) daemon = 1;
     else if (argc == 2 && !strcmp(argv[1], "--cleanup")) cleanup_only = 1;
     else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "--once")) reason = argc == 3 ? argv[2] : reason;
+    else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "--report")) {
+        report_only = 1;
+        reason = argc == 3 ? argv[2] : reason;
+    }
     else {
-        fputs("Usage: telemetry --daemon | --once [reason] | --cleanup | --print-payload [reason] | --version\n", stderr);
+        fputs("Usage: telemetry --daemon | --once [reason] | --report [reason] | --cleanup | --print-payload [reason] | --version\n", stderr);
         return 2;
     }
     if (cleanup_only) {
@@ -40,13 +44,20 @@ int main(int argc, char **argv) {
         if (rc == TC_EXIT_BUSY) fputs("telemetry: cleanup deferred; workspace is in use\n", stderr);
         return rc;
     }
-    if (daemon) {
+    if (daemon || report_only) {
         parent_fd = tc_parent_pipe();
         if (parent_fd >= 0 && getpgrp() == getpid())
             acp_set_scope(1, collect_cancelled);
 #if defined(__NetBSD__)
-        setproctitle("role=telemetry --daemon");
+        if (daemon) setproctitle("role=telemetry --daemon");
 #endif
+    }
+    if (report_only) {
+        int delivered;
+        /* Reports neither use nor clean the debug workspace. Exit zero only
+         * after a successful POST so the manager can acknowledge delivery. */
+        if (!telemetry_enabled() || !tc_parent_alive(parent_fd)) return 1;
+        return telemetry_cycle(reason, -1, &delivered);
     }
     do {
         time_t now = monotonic_seconds();

@@ -26,6 +26,13 @@ TIMINGS=dict(
     TC_STORAGE_RETRY_MS=1000,   # device 5 s; automatic retries back off 1x, 3x, then 12x
     JOB_RETRY_MS=1000,          # device 5 s
     TC_STALE_KILL_MS=4000,      # device 10 s
+    # The manager samples once per loop pass, at least every second.
+    TC_BUFSTALL_TRIGGER_MS=1500, # device 5 s
+    TC_BUFSTALL_QUIET_MS=2500,   # device 10 s
+    TC_BUFSTALL_HOLD_MS=6000,    # device 60 s
+    TC_BUFSTALL_REPORT_MS=20000, # device 1 hour after delivery
+    TC_BUFSTALL_REPORT_RETRY_MS=3000, # device 60 s after failure
+    TC_BUFSTALL_REPORT_TIMEOUT_MS=15000, # device 180 s
 )
 
 CHILD = '''
@@ -34,7 +41,9 @@ from pathlib import Path
 role=sys.argv[1] if Path(sys.argv[0]).name=='roles' else Path(sys.argv[0]).name
 log=Path(os.environ['TC_TEST_ROOT'])/'events'
 def event(kind):
-    row=dict(kind=kind,role=role,pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),args=sys.argv[1:])
+    # Events from different children need one clock origin; macOS Python 3.9's
+    # time.monotonic() starts separately in each process.
+    row=dict(kind=kind,role=role,pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),args=sys.argv[1:],at=time.clock_gettime(time.CLOCK_MONOTONIC))
     if role=='smbd' and kind=='start':
         # What smbd's own-name lookups would have found when it started.
         hosts=Path(os.environ['TC_TEST_ROOT'])/'hosts'
@@ -44,11 +53,21 @@ def stopped(sig,frame):
     event('stop')
     sys.exit(0)
 signal.signal(signal.SIGTERM,stopped)
+# Like a Samba worker stuck in the kernel: ignores SIGTERM and its parent's exit.
+stuck=((role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-ignore-term').exists()) or
+       (role=='telemetry' and '--report' in sys.argv and (Path(os.environ['TC_TEST_ROOT'])/'telemetry-hang').exists()))
+if stuck:signal.signal(signal.SIGTERM,signal.SIG_IGN)
 signal.signal(signal.SIGHUP,lambda sig,frame:event('reload'))
 event('start')
+if role=='telemetry' and '--report' in sys.argv and not stuck:
+    root=Path(os.environ['TC_TEST_ROOT'])
+    while (root/'report-hold').exists():time.sleep(.05)
+    status=int((root/'report-exit').read_text()) if (root/'report-exit').exists() else 0
+    event('report-done')
+    sys.exit(status)
 if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
 while True:
-    if role=='diskd':time.sleep(.1);continue
+    if role=='diskd' or stuck:time.sleep(.1);continue
     if select.select([0],[],[],0.1)[0] and not os.read(0,128):
         event('eof');break
 '''
@@ -132,6 +151,7 @@ if not (Path(os.environ['TC_TEST_ROOT'])/'no-listener').exists():
         f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
         f'-DTC_FLASH_CONFIG_PATH="{root}/config"',f'-DTC_VOLUMES_ROOT="{root}"',
         f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_PS_PATH="{root}/ps"',f'-DTC_FSTAT_PATH="{root}/fstat"',
+        f'-DTC_BUFWAKE_DIR="{root}/wake"',
         *(f'-D{name}={value}' for name,value in TIMINGS.items()),
     ])
     return root,binary
@@ -145,8 +165,11 @@ def manager(manager_tools):
     hosts=root/'hosts'
     if hosts.is_dir():hosts.rmdir()
     else:hosts.unlink(missing_ok=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','record-ps','hold-activation'):
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','record-ps','hold-activation',
+                 'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
+                 'report-hold','report-exit'):
         (root/name).unlink(missing_ok=True)
+    (root/'wake').mkdir(exist_ok=True)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
     (root/'dk3').mkdir()
@@ -169,7 +192,8 @@ def manager(manager_tools):
         process=subprocess.Popen([str(binary),'manager'],
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
             env={**os.environ,'TC_TEST_ROOT':str(root),'TC_TEST_MOUNTS':str(root/'mounts'),
-                 'TC_TEST_HOSTNAME':str(root/'hostname')})
+                 'TC_TEST_HOSTNAME':str(root/'hostname'),'TC_TEST_BUFCACHE':str(root/'bufcache'),
+                 'TC_TEST_FORK_FAIL':str(root/'fork-fail')})
         log.close()
         return process
     def events():
@@ -1053,3 +1077,345 @@ def test_internal_export_root_change_reloads_without_restarting(manager, initial
     assert usb in after
     assert [e['pid'] for e in events() if e['role'] == 'smbd' and e['kind'] == 'start'] == [pid]
     assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
+
+
+# Buffer-cache stall recovery (kern/60584): the fixture file stands in for
+# vm.bufmem* and the processes' kernel wait messages (bufstall.c).
+HIWATER=40243200
+APPLE_LOWATER=HIWATER>>3
+RAISED_LOWATER=HIWATER-16
+
+
+def kernel(root,*waits,bufmem=3000000,lowater=APPLE_LOWATER,readonly=False):
+    lines=[f'bufmem {bufmem}',f'lowater {lowater}',f'hiwater {HIWATER}',*(f'wait {pid} {wmesg}' for pid,wmesg in waits)]
+    # Replace atomically: the manager may read the file at any moment.
+    (root/'bufcache.new').write_text('\n'.join(lines+(['readonly'] if readonly else []))+'\n')
+    os.replace(root/'bufcache.new',root/'bufcache')
+
+
+def lowater_writes(root):
+    path=root/'bufcache.writes'
+    return [int(value) for value in path.read_text().split()] if path.exists() else []
+
+
+def wakes(root):
+    path=root/'bufcache.wakes'
+    return [int(value) for value in path.read_text().split()] if path.exists() else []
+
+
+def stderr(root):
+    return (root/'stderr').read_text()
+
+
+def until(root,predicate,timeout=30):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if predicate():return
+        time.sleep(.05)
+    runtime=root/'ram/var/runtime.log'
+    pytest.fail(f'deadline: writes {lowater_writes(root)} wakes {len(wakes(root))}\n{stderr(root)}\n'
+                f'{runtime.read_text() if runtime.exists() else ""}')
+
+
+def reports(events):
+    return [e['args'][2] for e in events() if e['role']=='telemetry' and e['kind']=='start' and '--report' in e['args']]
+
+
+def report_matches(events,outcome):
+    return lambda rows:len(reports(events))==1 and re.fullmatch(rf'bufstall:{outcome}:\d+',reports(events)[0])
+
+
+def test_buffer_stall_raises_wakes_in_process_and_restores_after_the_stall(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'),(4243,'select'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    # Recovery writes and wakes first; the following log is a separate event.
+    until(root,lambda:('buffer stall: 1 processes waiting for buffers' in stderr(root) and
+                      f'raised vm.bufmem_lowater from {APPLE_LOWATER} to {RAISED_LOWATER} (bufmem 3000000, hiwater {HIWATER})'
+                      in stderr(root)))
+    # Woken on every sample while it stays stalled, all 128 passes each time.
+    until(root,lambda:len(wakes(root))>=3)
+    assert set(wakes(root))=={128}
+    # No report while the stall lasts.
+    assert reports(events)==[]
+    kernel(root,(4243,'select'),lowater=RAISED_LOWATER)
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER])
+    until(root,lambda:re.search(rf'buffer stall over \(resolved, longest wait \d+ s\); restored vm.bufmem_lowater to {APPLE_LOWATER}',
+                               stderr(root)))
+    wait(report_matches(events,'resolved'))
+    count=len(wakes(root));time.sleep(1.5)
+    assert len(wakes(root))==count
+    # A second episode within the hour is fixed again but not reported again.
+    kernel(root,(5000,'needbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER,RAISED_LOWATER])
+    kernel(root,lowater=RAISED_LOWATER)
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER]*2)
+    time.sleep(1)
+    assert len(reports(events))==1
+
+
+def test_buffer_stall_recovers_while_every_fork_fails(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root)
+    start();wait(started('smbd'))
+    (root/'fork-fail').touch()
+    starts=lambda:[e for e in events() if e['kind']=='start']
+    before=len(starts())
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    until(root,lambda:len(wakes(root))>=2)
+    kernel(root,lowater=RAISED_LOWATER)
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER])
+    # Detection, raise, wake and restore never started a process.
+    assert len(starts())==before
+    # The report waits for fork to work again, then goes out once.
+    time.sleep(1.5)
+    assert reports(events)==[]
+    (root/'fork-fail').unlink()
+    wait(report_matches(events,'resolved'))
+
+
+def test_unsent_reports_are_merged_into_the_worst_outcome_and_longest_wait(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root)
+    start();wait(started('smbd'))
+    (root/'fork-fail').touch()
+    # A resolved episode, then a capped one, both while reports cannot start.
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    kernel(root,lowater=RAISED_LOWATER)
+    until(root,lambda:'buffer stall over (resolved' in stderr(root))
+    kernel(root,(5000,'getnewbuf'),bufmem=RAISED_LOWATER)
+    until(root,lambda:'cannot help' in stderr(root))
+    kernel(root,bufmem=RAISED_LOWATER)
+    until(root,lambda:'buffer stall over (capped' in stderr(root))
+    longest=max(int(n) for n in re.findall(r'longest wait (\d+) s',stderr(root)))
+    (root/'fork-fail').unlink()
+    wait(report_matches(events,'capped'))
+    assert reports(events)==[f'bufstall:capped:{longest}']
+
+
+def test_hung_report_is_killed_at_stop(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'telemetry-hang').touch()
+    kernel(root)
+    process=start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    kernel(root,lowater=RAISED_LOWATER)
+    wait(report_matches(events,'resolved'))
+    pid=next(e['pid'] for e in events() if e['role']=='telemetry' and '--report' in e['args'])
+    # It ignores SIGTERM and its parent's exit; the manager kills it.
+    process.terminate();process.wait(timeout=30)
+    with pytest.raises(ProcessLookupError):os.kill(pid,0)
+
+
+@pytest.mark.parametrize('status', [0, 1, 75])
+def test_report_completion_preserves_new_episodes_and_retries_failed_snapshot(manager, status):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'report-hold').touch()
+    (root/'report-exit').write_text(str(status))
+    kernel(root)
+    start();wait(started('smbd'))
+    # The older, worse episode stays in flight while a resolved one ends.
+    kernel(root,(4242,'getnewbuf'),bufmem=RAISED_LOWATER)
+    until(root,lambda:'cannot help' in stderr(root))
+    kernel(root)
+    wait(report_matches(events,'capped'))
+    first=reports(events)[0]
+    kernel(root,(5000,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    kernel(root,lowater=RAISED_LOWATER)
+    until(root,lambda:'buffer stall over (resolved' in stderr(root))
+    assert len(reports(events))==1
+    (root/'report-hold').unlink()
+    wait(lambda rows:any(e['kind']=='report-done' for e in rows))
+    (root/'report-exit').unlink()
+    wait(lambda rows:len(reports(events))==2,timeout=35)
+    sent=[e for e in events() if e['kind']=='start' and '--report' in e['args']]
+    done=next(e for e in events() if e['kind']=='report-done')
+    delay=sent[1]['at']-done['at']
+    if status==0:
+        assert reports(events)[1].startswith('bufstall:resolved:')
+        assert delay>=TIMINGS['TC_BUFSTALL_REPORT_MS']/1000
+    else:
+        assert reports(events)[1].startswith('bufstall:capped:')
+        assert int(reports(events)[1].split(':')[-1])>=int(first.split(':')[-1])
+        assert delay>=TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS']/1000
+        assert delay<TIMINGS['TC_BUFSTALL_REPORT_MS']/1000
+
+
+def test_timed_out_report_is_retried_without_another_episode(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'telemetry-hang').touch()
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    kernel(root,lowater=RAISED_LOWATER)
+    wait(report_matches(events,'resolved'))
+    first=next(e for e in events() if e['kind']=='start' and '--report' in e['args'])
+    # Only the first child hangs. The timeout must kill it and retain its report.
+    (root/'telemetry-hang').unlink()
+    wait(lambda rows:len(reports(events))==2,timeout=40)
+    assert reports(events)[0]==reports(events)[1]
+    with pytest.raises(ProcessLookupError):os.kill(first['pid'],0)
+    second=[e for e in events() if e['kind']=='start' and '--report' in e['args']][1]
+    assert second['at']-first['at']>=TIMINGS['TC_BUFSTALL_REPORT_TIMEOUT_MS']/1000
+
+
+def test_failed_wake_is_logged_once(manager):
+    root,start,_,wait,_,_=manager
+    (root/'wake').rmdir()
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    until(root,lambda:f'buffer-stall wake could not read {root}/wake' in stderr(root))
+    time.sleep(2)
+    assert stderr(root).count('buffer-stall wake could not read')==1 and wakes(root)==[]
+
+
+def test_buffer_stall_that_outlasts_the_raise_is_restored_then_raised_again(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER])
+    until(root,lambda:'processes still waiting' in stderr(root) and 'raising again in 6 s' in stderr(root))
+    # Raising again is cheap: it is retried while the stall lasts.
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER,RAISED_LOWATER])
+    assert reports(events)==[]
+    kernel(root,lowater=RAISED_LOWATER)
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER]*2)
+    wait(report_matches(events,'stuck'))
+
+
+def test_post_raise_stall_counts_as_stuck(manager):
+    root,start,_,wait,_,_=manager
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    # The raise freed 4242; 5000 starts waiting afterwards and never stops.
+    kernel(root,(5000,'getnewbuf'),lowater=RAISED_LOWATER)
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER])
+    until(root,lambda:'processes still waiting' in stderr(root))
+
+
+def test_capped_stall_is_rechecked_and_raised_once_the_cache_shrinks(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'),bufmem=RAISED_LOWATER)
+    until(root,lambda:'raising vm.bufmem_lowater cannot help; checking again every 6 s' in stderr(root))
+    time.sleep(1)
+    assert lowater_writes(root)==[] and wakes(root)==[]
+    kernel(root,(4242,'getnewbuf'),bufmem=3000000)
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    assert stderr(root).count('cannot help')==1
+    kernel(root,lowater=RAISED_LOWATER)
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER])
+    wait(report_matches(events,'capped'))
+
+
+def test_capped_stall_that_clears_is_not_reported_with_telemetry_off(manager):
+    root,start,events,wait,_,_=manager
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'),bufmem=RAISED_LOWATER)
+    until(root,lambda:'cannot help' in stderr(root))
+    kernel(root,bufmem=RAISED_LOWATER)
+    until(root,lambda:re.search(r'buffer stall over \(capped, longest wait \d+ s\)\n',stderr(root)))
+    time.sleep(1)
+    assert lowater_writes(root)==[] and reports(events)==[]
+
+
+def test_refused_raise_is_logged_once_and_wakes_nothing(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root,readonly=True)
+    start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'),readonly=True)
+    until(root,lambda:f'could not set vm.bufmem_lowater to {RAISED_LOWATER}' in stderr(root))
+    time.sleep(1)
+    assert stderr(root).count('could not set')==1 and wakes(root)==[]
+    kernel(root,readonly=True)
+    wait(report_matches(events,'failed'))
+
+
+def test_start_restores_a_low_water_mark_left_raised(manager):
+    root,start,_,wait,_,_=manager
+    kernel(root,lowater=RAISED_LOWATER)
+    start();wait(started('smbd'))
+    until(root,lambda:lowater_writes(root)==[APPLE_LOWATER])
+    until(root,lambda:f'restored vm.bufmem_lowater from {RAISED_LOWATER} to {APPLE_LOWATER}\n' in stderr(root))
+
+
+def test_refused_restore_is_retried_until_it_works(manager):
+    root,start,_,wait,_,_=manager
+    kernel(root,lowater=RAISED_LOWATER,readonly=True)
+    start();wait(started('smbd'))
+    until(root,lambda:f'could not set vm.bufmem_lowater to {APPLE_LOWATER}' in stderr(root))
+    time.sleep(1.5)
+    assert stderr(root).count('could not set')==1 and lowater_writes(root)==[]
+    kernel(root,lowater=RAISED_LOWATER)
+    until(root,lambda:lowater_writes(root)==[APPLE_LOWATER])
+
+
+def test_unreadable_state_is_logged_once_until_it_returns(manager):
+    root,start,_,wait,_,_=manager
+    start();wait(started('smbd'))
+    until(root,lambda:'cannot read buffer-cache state' in stderr(root))
+    time.sleep(1.5)
+    assert stderr(root).count('cannot read buffer-cache state')==1
+    kernel(root)
+    until(root,lambda:'buffer-cache state readable again' in stderr(root))
+
+
+def test_stall_while_stopping_is_still_recovered(manager):
+    root,start,_,wait,_,_=manager
+    (root/'smbd-ignore-term').touch()
+    kernel(root)
+    process=start();wait(started('smbd'))
+    # smbd ignores SIGTERM, so the manager drains for the grace period, as
+    # it would for Samba workers stuck in a buffer wait.
+    process.terminate()
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    until(root,lambda:len(wakes(root))>=1)
+    assert process.poll() is None
+    # The grace period ends with SIGKILL; the exit restores Apple's value.
+    process.wait(timeout=30)
+    assert lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER]
+
+
+def test_stopping_during_a_stall_restores_apples_low_water_mark(manager):
+    root,start,_,wait,_,_=manager
+    kernel(root)
+    process=start();wait(started('smbd'))
+    kernel(root,(4242,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    process.terminate();process.wait(timeout=15)
+    assert lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER]
+    assert f'to {APPLE_LOWATER} at stop' in stderr(root)
+
+
+def test_unchanged_kernel_and_no_waits_are_never_written(manager):
+    root,start,_,wait,_,_=manager
+    kernel(root,(4242,'select'),(4243,'nanoslee'))
+    start();wait(started('smbd'))
+    time.sleep(2)
+    assert lowater_writes(root)==[] and wakes(root)==[]
+    assert 'vm.bufmem_lowater' not in stderr(root)

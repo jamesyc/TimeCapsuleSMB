@@ -73,6 +73,51 @@ pipes carry parent lifetime to managed roles. Setup work runs in bounded child
 jobs so slow disks do not block supervision. Singleton ownership uses a lock on
 the existing service executable, without a new PID or status file.
 
+The manager also recovers buffer-cache stalls (NetBSD kern/60584, unfixed in
+Apple's NetBSD 4 and 6 kernels; `service/bufstall.c`). `getnewbuf()` can sleep
+forever when `buf_lotsfree()` refuses a fresh buffer and every cached one is
+busy. The sleepers cannot be killed, and each new connection or job adds one
+until `fork()` reaches `kern.maxproc` (84 on both kernels) and the device stops
+answering SSH and SMB. Nothing on the recovery path forks or starts a process:
+on each loop pass, at most once a second, the manager reads every process's
+wait message with `sysctl(KERN_PROC2)` into a static buffer. When a process
+has waited in `getnewbu`, `needbuf` or `buf_mall` (8-byte truncated names) for
+5 s, the manager sets `vm.bufmem_lowater` to `vm.bufmem_hiwater - 16`, the
+highest value the kernel accepts, and reads `/dev` 128 times itself. FFS reads
+directories with `bread()`, and each buffer release wakes the sleepers (all of
+them on NetBSD 4, one per release on NetBSD 6), which then get fresh buffers.
+It repeats the wake every second while a process stays stalled (40 ms on
+NetBSD 6, 94 ms on NetBSD 4) and logs only after acting, because NetBSD 4's
+`/mnt/Memory` is MFS, whose writes can themselves wait for a buffer. It also
+runs while the manager stops, when stuck Samba workers would block the drain.
+
+Apple's value (`hiwater >> 3`, as `buf_setwm()` sets it) comes back 10 s after
+the last stalled process, so the raise never keeps the pagedaemon from
+draining the cache for long. A process that stays stalled 60 s into a raise
+(whenever it started waiting) means the raise is not helping: Apple's value is
+restored and the raise is tried again 60 s later. A cache already at its
+high-water mark is logged once and rechecked every 60 s. A higher low-water
+mark found at start, or a restore the kernel refused, is restored on the next
+sample. When an episode ends, one `telemetry --report` heartbeat (at most one
+successful report an hour, killed if it outlasts 180 s or the manager stops) reports
+`bufstall:<outcome>:<longest wait in s>`, with outcome `resolved`, `stuck`,
+`capped` or `failed`; episodes that end before a report can start are merged
+into their worst outcome and longest wait. The in-flight report is retained
+until delivery; failed starts, failed POSTs and timeouts retry after 60 s.
+Episodes ending during a report stay pending; a failed report merges back into
+them. These snapshots live only in the manager, so a restart loses pending
+reports. A lost HTTP response can cause a duplicate on retry. A permanent raise (PR 353) was
+rejected: any low-water mark above `vm.bufmem` stops the pagedaemon from
+draining the cache.
+
+Known gaps: a cache at its high-water mark needs a temporary `hiwater` raise,
+which is not done; real kernel-memory exhaustion is not fixed (the wake only
+lets waiters retry, and the manager's own wake could sleep in `buf_malloc` on
+NetBSD 4); on NetBSD 4 the manager's own log writes to MFS could block it;
+NetBSD 6 kernel threads (pagedaemon) waiting in `needbuf` belong to process 0
+and are not seen; a stall that never clears is never reported, and its stuck
+Samba workers still keep the manager from exiting.
+
 Apple's mDNSResponder and afpserver remain alive; the AFP preference controls
 advertising only. Loopback diskd retains filesystem ownership. Discovery alone
 owns its wcifsnd child; the manager removes ACPd's competing wcifsnd and
@@ -98,6 +143,12 @@ A heartbeat that is not delivered (usually DNS not ready yet right after boot)
 retries after 60 seconds, doubling up to 12 hours, and keeps the `boot` reason
 until one is delivered.
 `--once [reason]` performs one cycle; `--print-payload [reason]` only prints.
+`--report [reason]` posts only, without downloading or executing debug jobs.
+It neither locks nor cleans the debug workspace, so a running signed job does
+not block it. Exit zero acknowledges a successful POST; opt-out, cancellation
+and transport failure return nonzero. The bounded HTTP response is discarded,
+including any debug request. Managed reports keep their collectors in their
+own process group so timeout or shutdown can stop the whole report safely.
 `--cleanup` removes stale debug files without collecting or posting telemetry.
 An existing cycle or inherited debug lock causes `--once` and `--cleanup` to
 exit 75. Cleanup errors return 1 and prevent a new cycle from starting.

@@ -44,6 +44,15 @@ static int spawn(struct tc_child *child, tc_child_fn function, void *data, const
     int life[2], output[2] = {-1, -1};
     pid_t pid;
     sigset_t stops, old;
+#ifdef TC_NATIVE_TEST
+    /* Host tests stand in for a full process table: fork() fails with EAGAIN
+     * while the file named by TC_TEST_FORK_FAIL exists. */
+    const char *fork_fail = getenv("TC_TEST_FORK_FAIL");
+    if (fork_fail && !access(fork_fail, F_OK)) {
+        errno = EAGAIN;
+        return -1;
+    }
+#endif
     if (pipe_setup(life, 0))
         return -1;
     if (capacity && pipe_setup(output, 1)) {

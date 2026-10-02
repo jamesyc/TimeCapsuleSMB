@@ -62,6 +62,7 @@ int telemetry_response_parse(const char *json, size_t len, struct telemetry_resp
 int telemetry_verify(const unsigned char *data, size_t len, const unsigned char *signature, size_t sig_len);
 int telemetry_authorized(const struct telemetry_response *response, const char *payload);
 int telemetry_http(const char *url, const char *payload, unsigned char **out, size_t *len, size_t limit);
+/* A negative lock_fd sends a report only, without debug files or execution. */
 int telemetry_cycle(const char *reason, int lock_fd, int *delivered);
 int telemetry_debug_job(const char *reason, int lock_fd);
 int telemetry_nonce(char out[33]);
