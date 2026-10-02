@@ -321,17 +321,24 @@ final class PausingStoreTestRunner: HelperRunning, @unchecked Sendable {
     }
 }
 
-private final class PauseGate: @unchecked Sendable {
+final class PauseGate: @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var isOpen = false
+
+    var waitingCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return continuations.count
+    }
 
     func wait() async {
         let id = UUID()
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 lock.lock()
-                if isOpen {
+                // Cancellation can arrive before the continuation is registered.
+                if isOpen || Task.isCancelled {
                     lock.unlock()
                     continuation.resume()
                     return

@@ -689,7 +689,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
-            ]),
+            ], pauseAfterEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
@@ -706,15 +706,19 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: profile)
 
+        defer { fixture.runner.finishAll() }
         session.runInstall(profile: profile)
         // A failed install also refreshes SSH access status in the background;
-        // let it take its response before the checkup starts.
+        // its result is observable before it releases the device.
         try await waitUntilStoreState {
             session.deployStore.state == .deployFailed
                 && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installFailed
                 && fixture.runner.calls.map(\.operation) == ["deploy", "set-ssh"]
                 && fixture.appStore.sshAccessStore.snapshot(for: profile) != nil
         }
+        XCTAssertTrue(fixture.appStore.operationCoordinator.isDeviceBusy(profile))
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { !fixture.appStore.operationCoordinator.isDeviceBusy(profile) }
         let failed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
 
@@ -725,6 +729,8 @@ final class DashboardStoreTests: XCTestCase {
                 && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installedVerified
         }
         let recovered = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "set-ssh", "doctor"])
+        XCTAssertEqual(fixture.runner.calls.last?.context?.profileID, profile.id)
         XCTAssertEqual(recovered.lastDeployState?.status, .failed)
         XCTAssertEqual(recovered.lastDeployState?.errorMessage, failure)
         XCTAssertEqual(recovered.runtimeState?.source, .doctor)

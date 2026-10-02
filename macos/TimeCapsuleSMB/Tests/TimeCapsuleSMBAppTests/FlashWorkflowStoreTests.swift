@@ -114,7 +114,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
         store.backupAndInspect(password: "pw", profile: profile)
         XCTAssertEqual(store.state, .readingBanks)
-        try await waitUntilStoreState { store.backup != nil && store.state == .planAvailable }
+        try await waitUntilStoreState { store.backup != nil && store.state == .planAvailable && !store.isBusy }
 
         store.planFlash(mode: .patch, profile: profile)
         try await waitUntilStoreState { store.plan != nil && store.canWritePatch }
@@ -126,6 +126,46 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].params["action"], .string("plan"))
         XCTAssertEqual(runner.calls[1].params["backup_dir"], .string("/tmp/flash-backup"))
         XCTAssertEqual(runner.calls[1].params["mode"], .string("patch"))
+    }
+
+    func testEachFlashTransitionWaitsForHelperCompletion() async throws {
+        // Each case has a fresh gate: releasing backup must not unpause plan/write.
+        for pausedStep in 0...2 {
+            let payloads = [flashBackupPayload(), flashPlanPayload(mode: .patch, writeRequested: true), flashWritePayload(mode: .patch)]
+            let runner = PausingStoreTestRunner(responses: payloads.enumerated().map { index, payload in
+                .init(events: [BackendEvent(type: "result", operation: "flash", ok: true, payload: payload)], pauseAfterEvents: index == pausedStep)
+            })
+            defer { runner.finishAll() }
+            let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+            store.refresh(profile: profile)
+            for step in 0...2 {
+                switch step {
+                case 0: store.backupAndInspect(password: "pw", profile: profile)
+                case 1: store.planFlash(mode: .patch, profile: profile)
+                default: store.write(mode: .patch, password: "pw", profile: profile)
+                }
+                try await waitUntilStoreState {
+                    switch step {
+                    case 0: return store.backup != nil
+                    case 1: return store.plan != nil
+                    default: return store.writeResult != nil
+                    }
+                }
+                if step == pausedStep {
+                    XCTAssertTrue(store.isBusy)
+                    XCTAssertFalse(store.canBackup)
+                    XCTAssertFalse(store.canPlan)
+                    XCTAssertFalse(store.canWritePatch)
+                    XCTAssertEqual(runner.calls.count, step + 1)
+                    runner.finishAll()
+                }
+                try await waitUntilStoreState { !store.isBusy }
+            }
+            XCTAssertEqual(runner.calls.map { $0.params["action"] }, [.string("backup"), .string("plan"), .string("write")])
+            XCTAssertTrue(store.backupSnapshotStale)
+            XCTAssertTrue(store.canBackup)
+        }
     }
 
     func testPublishesWhenBackendFinishesAfterBackupResult() async throws {
@@ -176,12 +216,12 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.firmwareVersion = " 7.8.1 "
         store.firmwareTemplatePath = " /tmp/firmware.basebinary "
 
         store.planFlash(mode: .downloadOnly, profile: profile)
-        try await waitUntilStoreState { runner.calls.count == 2 && store.plan != nil }
+        try await waitUntilStoreState { runner.calls.count == 2 && store.plan != nil && !store.isBusy }
 
         XCTAssertEqual(runner.calls[1].params["firmware_version"], .string("7.8.1"))
         XCTAssertEqual(runner.calls[1].params["firmware_template"], .string("/tmp/firmware.basebinary"))
@@ -201,7 +241,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.firmwareVersion = "7.8.1"
         store.planFlash(mode: .patch, profile: profile)
         try await waitUntilStoreState { store.canWritePatch }
@@ -237,7 +277,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.planFlash(mode: .checkApple, profile: profile)
         try await waitUntilStoreState { store.state == .appleCheckComplete }
 
@@ -273,7 +313,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.planFlash(mode: .checkApple, profile: profile)
         try await waitUntilStoreState { store.state == .appleCheckComplete }
 
@@ -307,7 +347,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.planFlash(mode: .checkApple, profile: profile)
         try await waitUntilStoreState { store.state == .appleFirmwareMismatch }
 
@@ -333,7 +373,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.planFlash(mode: .downloadOnly, profile: profile)
         try await waitUntilStoreState { store.state == .appleFirmwareReady }
 
@@ -372,9 +412,9 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.planFlash(mode: .patch, profile: profile)
-        try await waitUntilStoreState { store.plan != nil }
+        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
 
         store.write(mode: .patch, password: "pw", profile: profile)
         try await waitUntilStoreState { store.state == .awaitingStrongConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
@@ -461,14 +501,14 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.planFlash(mode: .patch, profile: profile)
-        try await waitUntilStoreState { store.plan != nil }
+        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
         store.write(mode: .patch, password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backupSnapshotStale }
+        try await waitUntilStoreState { store.backupSnapshotStale && !store.isBusy }
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { !store.backupSnapshotStale && store.state == .planAvailable }
+        try await waitUntilStoreState { !store.backupSnapshotStale && store.state == .planAvailable && !store.isBusy }
 
         XCTAssertTrue(store.canPlan)
         XCTAssertEqual(FlashPresentation(store: store).title(for: .backupAndInspect), "Back Up and Inspect")
@@ -502,11 +542,11 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.refresh(profile: profile)
 
         store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil }
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
         store.planFlash(mode: mode, profile: profile)
-        try await waitUntilStoreState { store.plan != nil }
+        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
         store.write(mode: mode, password: "pw", profile: profile)
-        try await waitUntilStoreState { store.writeResult != nil }
+        try await waitUntilStoreState { store.writeResult != nil && !store.isBusy }
         return store
     }
 

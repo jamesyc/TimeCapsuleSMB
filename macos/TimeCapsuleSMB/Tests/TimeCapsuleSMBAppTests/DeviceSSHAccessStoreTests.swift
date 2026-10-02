@@ -56,10 +56,10 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
 
     func testAutomaticRefreshSkipsRecentSnapshot() async throws {
         var now = Date(timeIntervalSince1970: 100)
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())
-            ]),
+            ], pauseAfterEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
             ])
@@ -68,15 +68,22 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
         let store = DeviceSSHAccessStore(coordinator: coordinator, now: { now })
         let profile = try makeProfile(host: "10.0.0.2")
 
+        defer { runner.finishAll() }
         store.refreshIfNeeded(profile: profile)
         try await waitUntilStoreState { runner.calls.count == 1 && store.snapshot(for: profile) != nil }
+        XCTAssertTrue(coordinator.isDeviceBusy(profile))
+        runner.finishAll()
+        try await waitUntilStoreState { !coordinator.isDeviceBusy(profile) }
         store.refreshIfNeeded(profile: profile)
 
         XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh"])
 
         now = Date(timeIntervalSince1970: 161)
         store.refreshIfNeeded(profile: profile)
-        try await waitUntilStoreState { runner.calls.count == 2 }
+        try await waitUntilStoreState {
+            store.snapshot(for: profile)?.refreshedAt == now && !coordinator.isDeviceBusy(profile)
+        }
+        XCTAssertEqual(store.snapshot(for: profile)?.payload.sshPortReachable, true)
 
         XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh", "set-ssh"])
     }

@@ -419,7 +419,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.planFsck(password: "")
         try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
         store.runFsck(password: "")
-        try await waitUntilStoreState { store.fsckState == .failed }
+        try await waitUntilStoreState { store.fsckState == .failed && !store.isBusy }
         XCTAssertEqual(store.error?.code, "operation_failed")
         // The failed repair keeps its device fields; it must not read as completed.
         XCTAssertEqual(store.error?.message, "fsck_hfs exited with status 8; the disk may still need repair.")
@@ -428,7 +428,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
     func testFsckFallbackVolumeParamTargetChangeBackendErrorAndMalformedPayloads() async throws {
         let targetWithoutName = testFsckTargetPayload(name: nil, device: "/dev/dk3", mountpoint: "/Volumes/External")
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [
                     targetWithoutName,
@@ -446,11 +446,12 @@ final class MaintenanceStoreTests: XCTestCase {
                     message: "No HFS volume selected.",
                     recovery: recoveryValue(title: "Select a volume", actions: ["List volumes again."], suggestedOperation: "fsck")
                 )
-            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""), pauseAfterEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "fsck", ok: true, payload: .object(["schema_version": .string("wrong")]))
             ])
         ])
+        defer { runner.finishAll() }
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
 
         store.refreshFsckTargets(password: "")
@@ -468,7 +469,10 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(store.error?.code, "fsck_plan_stale")
 
         store.planFsck(password: "")
-        try await waitUntilStoreState { store.fsckState == .failed }
+        try await waitUntilStoreState { store.error?.code == "validation_failed" }
+        XCTAssertTrue(store.isBusy)
+        runner.finishAll()
+        try await waitUntilStoreState { store.fsckState == .failed && !store.isBusy }
         XCTAssertEqual(store.error?.code, "validation_failed")
         XCTAssertEqual(store.error?.recovery?.title, "Select a volume")
 
@@ -536,7 +540,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.runRepairXattrs()
         try await waitUntilStoreState { store.repairState == .awaitingConfirmation && store.pendingConfirmation(for: .repairXattrs) != nil && !store.isRunning }
         store.confirmPending(for: .repairXattrs)
-        try await waitUntilStoreState { store.repairState == .repaired }
+        try await waitUntilStoreState { store.repairState == .repaired && !store.isBusy }
         XCTAssertEqual(store.repairResult?.repairableCount, 0)
         XCTAssertEqual(runner.calls[3].params["confirmation_id"], .string("repair-confirm"))
         XCTAssertEqual(runner.calls[3].params["recursive"], .bool(false))
@@ -603,7 +607,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
         store.repairMaxDepth = ""
         store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .scanReady }
+        try await waitUntilStoreState { store.repairState == .scanReady && !store.isBusy }
         XCTAssertFalse(store.canRepairXattrs)
 
         store.scanRepairXattrs()

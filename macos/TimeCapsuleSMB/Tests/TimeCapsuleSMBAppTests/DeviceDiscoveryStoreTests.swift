@@ -162,7 +162,8 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
             ]))])
         ])
 
-        fixture.coordinator.run(operation: "doctor", params: [:], profile: nil)
+        let start = fixture.coordinator.run(operation: "doctor", params: [:], profile: nil)
+        XCTAssertNotNil(start.operation)
         fixture.monitor.startMonitoring()
 
         XCTAssertEqual(fixture.monitor.state, .paused)
@@ -271,7 +272,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
             .init(events: [BackendEvent(type: "result", operation: "validate-install", ok: true, payload: validationPayload())])
         ] + responses)
         fixture.readiness.start()
-        try await waitUntilStoreState { fixture.readiness.state.kind == .ready }
+        try await waitUntilStoreState { fixture.readiness.state.kind == .ready && !fixture.coordinator.appLane.isBusy }
         return fixture
     }
 
