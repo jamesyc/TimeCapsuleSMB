@@ -241,7 +241,7 @@
         "current_version": null,
         "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
         "latest_tag": null,
-        "local_version_code": 30102,
+        "local_version_code": 30200,
         "message": "This version is no longer supported. Please update before continuing.",
         "min_supported_version": null,
         "schema_version": 1,
