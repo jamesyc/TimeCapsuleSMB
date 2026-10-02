@@ -1241,6 +1241,48 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["error"], "unknown parameters for fsck: no_wiat, volumee")
         self.assertEqual(finished["details"], {"unknown_params": ["no_wiat", "volumee"]})
 
+    def test_finished_telemetry_carries_the_error_code_the_app_was_sent(self) -> None:
+        def raising(exc: BaseException):
+            def handler(_params, context):
+                context.stage("run_fsck")
+                raise exc
+            return handler
+
+        cases = (
+            ("operation error", raising(service.AppOperationError("Disk did not mount.", code="deploy_disk_not_mounted")),
+             {"volume": "Data"}, "deploy_disk_not_mounted", "failure"),
+            ("config error", raising(ConfigError("TC_HOST is missing.")), {"volume": "Data"}, "config_error", "failure"),
+            ("transport error", raising(SshError("Connection reset by 10.0.0.2 port 22")), {"volume": "Data"},
+             "remote_error", "failure"),
+            ("cancel", raising(KeyboardInterrupt()), {"volume": "Data"}, "cancelled", "cancelled"),
+            ("system exit", raising(SystemExit("fsck stopped early")), {"volume": "Data"}, "operation_failed", "failure"),
+            ("unexpected error", raising(RuntimeError("boom")), {"volume": "Data"}, "operation_failed", "failure"),
+            ("unknown param", mock.Mock(), {"volumee": "Data"}, "unknown_param", "failure"),
+        )
+        for label, handler, params, code, result in cases:
+            with self.subTest(label):
+                self._telemetry_client.emit.reset_mock()
+                _rc, collector = self.run_with_api_telemetry({"operation": "fsck", "params": params}, {"fsck": handler})
+
+                error = self.assert_single_terminal_event(collector, "error")
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(error["code"], code)
+                self.assertEqual(finished["result"], result)
+                self.assertEqual(finished["error_code"], code)
+
+    def test_finished_telemetry_has_no_error_code_without_an_error_event(self) -> None:
+        for ok in (True, False):
+            with self.subTest(ok=ok):
+                self._telemetry_client.emit.reset_mock()
+                rc, collector = self.run_with_api_telemetry(
+                    {"operation": "fsck", "params": {"volume": "Data"}},
+                    {"fsck": lambda _params, _context, ok=ok: service.OperationResult(ok, {"error": "fsck status 8"})},
+                )
+
+                self.assertEqual(rc, 0 if ok else 1)
+                self.assert_single_terminal_event(collector, "result")
+                self.assertIsNone(self._telemetry_client.emit.call_args_list[-1].kwargs.get("error_code"))
+
     def test_rejected_param_values_never_reach_telemetry(self) -> None:
         handler = mock.Mock()
 

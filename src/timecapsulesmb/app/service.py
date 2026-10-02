@@ -81,6 +81,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             result="failure",
             error=message,
             details={"unknown_params": unknown},
+            error_code="unknown_param",
         )
         return 1
     try:
@@ -116,6 +117,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="failure",
             error=context.diagnostic_error(str(exc)) or str(exc),
+            error_code=exc.code,
         )
         return 1
     except ConfigError as exc:
@@ -131,6 +133,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="failure",
             error=context.diagnostic_error(str(exc)) or str(exc),
+            error_code="config_error",
         )
         return 1
     except TransportError as exc:
@@ -152,6 +155,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="failure",
             error=context.diagnostic_error(str(exc)) or str(exc),
+            error_code="remote_error",
         )
         return 1
     except KeyboardInterrupt:
@@ -167,6 +171,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="cancelled",
             error=context.diagnostic_error("Cancelled by user") or "Cancelled by user",
+            error_code="cancelled",
         )
         return 130
     except SystemExit as exc:
@@ -194,6 +199,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="failure",
             error=context.diagnostic_error(error) or error,
+            error_code="operation_failed",
         )
         return 1
     except Exception as exc:
@@ -210,6 +216,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="failure",
             error=context.diagnostic_error(message) or message,
+            error_code="operation_failed",
         )
         return 1
     payload_error = _payload_error(result.payload) if not result.ok else None
@@ -268,12 +275,16 @@ def _finish_api_telemetry(
     error: object | None = None,
     details: dict[str, object] | None = None,
     risk: str | None = None,
+    error_code: str | None = None,
 ) -> None:
     if session is None:
         return
+    # The code the app was sent, so the server can count failures by cause
+    # instead of by the wording of their messages.
     session.finish(
         result=result,
         error=error,
+        error_code=error_code,
         stage=context.current_stage,
         risk=risk or context.current_risk,
         details=details,
