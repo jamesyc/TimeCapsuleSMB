@@ -26,7 +26,7 @@ from timecapsulesmb.device.compat import (
 )
 from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, probe_connection_state
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
-from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS, enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import (
     PROBE_STATUS_ERROR_CODES,
@@ -77,7 +77,7 @@ class ConfigureFlowRequest:
     # it can reject this device before ACP enables SSH and reboots it.
     selected_record_airport_syap: str | None = None
     enable_ssh: bool = True
-    ssh_wait_timeout: int = 180
+    ssh_wait_timeout: int = ACP_SSH_ENABLE_WAIT_SECONDS
     verbose_wait: bool = True
     internal_share_use_disk_root: bool | None = None
     smb_browse_compatibility: bool | None = None
@@ -133,7 +133,7 @@ def configure_ssh_target(
 def enable_ssh_and_reprobe(
     connection: SshConnection,
     *,
-    timeout_seconds: int = 180,
+    timeout_seconds: int = ACP_SSH_ENABLE_WAIT_SECONDS,
     verbose_wait: bool = True,
     callbacks: OperationCallbacks | None = None,
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,

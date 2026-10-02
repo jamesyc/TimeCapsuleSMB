@@ -57,6 +57,7 @@ from timecapsulesmb.device.storage import (
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError
+from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import (
     FLASH_UNSUPPORTED_DEVICE_MESSAGE,
@@ -2798,7 +2799,7 @@ class AppApiTests(unittest.TestCase):
             "10.0.0.2",
             22,
             expected_state=True,
-            timeout_seconds=180,
+            timeout_seconds=ACP_SSH_ENABLE_WAIT_SECONDS,
             service_name="SSH port",
             log=mock.ANY,
         )
@@ -3004,6 +3005,8 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "ssh_enable_timeout")
         self.assertEqual(error["message"], "Failed to enable SSH via ACP: SSH did not open after enabling via ACP.")
+        self.assertEqual(error["recovery"]["localization_key"], "ssh_enable_timeout")
+        self.assertTrue(error["recovery"]["retryable"])
         self.assertNotIn("secret", json.dumps(collector.events))
 
     def test_set_ssh_rejected_admin_password_uses_auth_failed_code(self) -> None:
@@ -3495,6 +3498,8 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "ssh_enable_timeout")
         self.assertEqual(error["message"], "SSH did not open after enabling via ACP.")
+        self.assertEqual(error["recovery"]["localization_key"], "ssh_enable_timeout")
+        self.assertTrue(error["recovery"]["retryable"])
         self.assertNotIn("secret", json.dumps(collector.events))
 
     def test_doctor_streams_check_events(self) -> None:

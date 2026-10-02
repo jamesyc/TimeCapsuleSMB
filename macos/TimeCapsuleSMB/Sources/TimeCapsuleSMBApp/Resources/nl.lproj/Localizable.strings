@@ -721,6 +721,10 @@
 "backend.recovery.device_probe_failed.message" = "TimeCapsuleSMB is via SSH ingelogd, maar kon de systeeminformatie van het apparaat niet lezen.";
 "backend.recovery.device_probe_failed.action.1" = "Probeer het opnieuw.";
 "backend.recovery.device_probe_failed.action.2" = "Voer de controle uit voor details.";
+"backend.recovery.ssh_enable_timeout.title" = "SSH is nog niet beschikbaar";
+"backend.recovery.ssh_enable_timeout.message" = "Door SSH in te schakelen start het apparaat opnieuw op. Sommige apparaten hebben daar meer tijd voor nodig dan TimeCapsuleSMB wacht.";
+"backend.recovery.ssh_enable_timeout.action.1" = "Wacht een paar minuten en probeer het opnieuw.";
+"backend.recovery.ssh_enable_timeout.action.2" = "Als SSH nog steeds niet beschikbaar is, start het apparaat dan opnieuw op en probeer het opnieuw.";
 "backend.recovery.confirmation_required.title" = "Bevestiging vereist";
 "backend.recovery.confirmation_required.message" = "Deze bewerking wijzigt het apparaat en vereist uitdrukkelijke bevestiging.";
 "backend.recovery.confirmation_required.action.1" = "Bekijk het plan.";

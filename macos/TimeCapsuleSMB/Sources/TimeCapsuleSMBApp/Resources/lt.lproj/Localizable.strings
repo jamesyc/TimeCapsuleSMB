@@ -721,6 +721,10 @@
 "backend.recovery.device_probe_failed.message" = "TimeCapsuleSMB prisijungė per SSH, bet negalėjo nuskaityti įrenginio sistemos informacijos.";
 "backend.recovery.device_probe_failed.action.1" = "Bandykite dar kartą.";
 "backend.recovery.device_probe_failed.action.2" = "Atlikite patikrinimą, kad pamatytumėte išsamią informaciją.";
+"backend.recovery.ssh_enable_timeout.title" = "SSH dar nepasiekiama";
+"backend.recovery.ssh_enable_timeout.message" = "Įjungus SSH įrenginys paleidžiamas iš naujo. Kai kuriems įrenginiams tam reikia daugiau laiko, nei laukia TimeCapsuleSMB.";
+"backend.recovery.ssh_enable_timeout.action.1" = "Palaukite kelias minutes ir bandykite dar kartą.";
+"backend.recovery.ssh_enable_timeout.action.2" = "Jei SSH vis dar nepasiekiama, paleiskite įrenginį iš naujo ir bandykite dar kartą.";
 "backend.recovery.confirmation_required.title" = "Reikalingas patvirtinimas";
 "backend.recovery.confirmation_required.message" = "Ši operacija keičia įrenginį, todėl reikia aiškaus patvirtinimo.";
 "backend.recovery.confirmation_required.action.1" = "Peržiūrėkite planą.";

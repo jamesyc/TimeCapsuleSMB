@@ -10,7 +10,7 @@ from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
 from timecapsulesmb.services import runtime as runtime_service
-from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS, enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.local import tcp_connect_error, tcp_open
 from timecapsulesmb.transport.errors import SshAuthenticationError
@@ -161,10 +161,12 @@ def enable_set_ssh(
 
     callbacks.stage("wait_for_ssh_enabled")
     wait_func = wait_for_tcp_port_state or runtime_service.wait_for_tcp_port_state
+    # The same wait as configure: the request restarts the device first.
     final_reachable = wait_func(
         target_host,
         SSH_PORT,
         expected_state=True,
+        timeout_seconds=ACP_SSH_ENABLE_WAIT_SECONDS,
         log=callbacks.log,
         service_name="SSH port",
     )

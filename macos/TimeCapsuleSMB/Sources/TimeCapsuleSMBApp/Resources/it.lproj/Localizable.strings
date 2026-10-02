@@ -721,6 +721,10 @@
 "backend.recovery.device_probe_failed.message" = "TimeCapsuleSMB ha effettuato l’accesso tramite SSH, ma non è riuscito a leggere le informazioni di sistema del dispositivo.";
 "backend.recovery.device_probe_failed.action.1" = "Riprova.";
 "backend.recovery.device_probe_failed.action.2" = "Esegui un controllo per i dettagli.";
+"backend.recovery.ssh_enable_timeout.title" = "SSH non è ancora disponibile";
+"backend.recovery.ssh_enable_timeout.message" = "Abilitare SSH riavvia il dispositivo. Alcuni dispositivi impiegano a riavviarsi più del tempo che TimeCapsuleSMB attende.";
+"backend.recovery.ssh_enable_timeout.action.1" = "Attendi qualche minuto e riprova.";
+"backend.recovery.ssh_enable_timeout.action.2" = "Se SSH non è ancora disponibile, riavvia il dispositivo e riprova.";
 "backend.recovery.confirmation_required.title" = "Conferma richiesta";
 "backend.recovery.confirmation_required.message" = "Questa operazione modifica il dispositivo e richiede una conferma esplicita.";
 "backend.recovery.confirmation_required.action.1" = "Rivedi il piano.";

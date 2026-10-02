@@ -721,6 +721,10 @@
 "backend.recovery.device_probe_failed.message" = "TimeCapsuleSMB 已通过 SSH 登录，但无法读取设备的系统信息。";
 "backend.recovery.device_probe_failed.action.1" = "重试。";
 "backend.recovery.device_probe_failed.action.2" = "运行检查以查看详情。";
+"backend.recovery.ssh_enable_timeout.title" = "SSH 尚未启动";
+"backend.recovery.ssh_enable_timeout.message" = "启用 SSH 会重启设备。有些设备的重启时间比 TimeCapsuleSMB 的等待时间更长。";
+"backend.recovery.ssh_enable_timeout.action.1" = "等待几分钟后重试。";
+"backend.recovery.ssh_enable_timeout.action.2" = "如果 SSH 仍未启动，请重启设备，然后重试。";
 "backend.recovery.confirmation_required.title" = "需要确认";
 "backend.recovery.confirmation_required.message" = "此操作会更改设备，需要明确确认。";
 "backend.recovery.confirmation_required.action.1" = "查看计划。";

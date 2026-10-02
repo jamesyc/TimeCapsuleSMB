@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.integrations.acp import ACP_PORT
+from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.set_ssh import (
     SSH_PORT,
@@ -84,6 +85,7 @@ class SetSshServiceTests(unittest.TestCase):
             "10.0.0.2",
             SSH_PORT,
             expected_state=True,
+            timeout_seconds=ACP_SSH_ENABLE_WAIT_SECONDS,
             log=mock.ANY,
             service_name="SSH port",
         )

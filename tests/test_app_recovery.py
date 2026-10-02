@@ -47,6 +47,18 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertEqual(recovery["message"], "This operation is not supported on the detected AirPort model or OS.")
                 self.assertFalse(any("Forget" in action for action in recovery["actions"]))
 
+    def test_ssh_enable_timeout_recovery_says_to_wait_and_retry(self) -> None:
+        # configure and set-ssh both report this code once ACP took the request
+        # but SSH stayed closed for the whole wait.
+        for operation in ("configure", "set-ssh"):
+            with self.subTest(operation=operation):
+                recovery = recovery_for(operation, "ssh_enable_timeout")
+                self.assertEqual(recovery["localization_key"], "ssh_enable_timeout")
+                self.assertEqual(recovery["title"], "SSH has not opened yet")
+                self.assertIn("restarts the device", recovery["message"])
+                self.assertTrue(recovery["retryable"])
+                self.assertEqual(recovery["actions"][0], "Wait a few minutes, then try again.")
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "remote_error", stage="wait_for_reboot_up")
 

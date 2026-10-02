@@ -16,6 +16,11 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.local import tcp_connect_error
 
 
+# How long configure and set-ssh wait for SSH after asking ACP to turn it on.
+# The request restarts the device. In v3.1.x telemetry, successful waits had a
+# p99 of 163 s and topped out at the old 180 s limit, and 17 of 57 timeouts
+# found SSH already open when the user retried 1.4-5.8 minutes later.
+ACP_SSH_ENABLE_WAIT_SECONDS = 240
 ACP_PORT_PROBE_ATTEMPTS = 3
 ACP_PORT_PROBE_RETRY_WINDOW_SECONDS = 4.0
 ACP_PORT_PROBE_RETRY_DELAY_SECONDS = ACP_PORT_PROBE_RETRY_WINDOW_SECONDS / (ACP_PORT_PROBE_ATTEMPTS - 1)

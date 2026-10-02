@@ -147,6 +147,14 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
+    # Configure and set-ssh: ACP took the request but SSH did not open within
+    # services.acp_ssh.ACP_SSH_ENABLE_WAIT_SECONDS.
+    "ssh_enable_timeout": RecoveryInfo(
+        "SSH has not opened yet",
+        "Turning on SSH restarts the device. Some devices take longer to restart than TimeCapsuleSMB waits.",
+        ("Wait a few minutes, then try again.", "If SSH still does not open, restart the device, then try again."),
+        retryable=True,
+    ),
     "confirmation_required": RecoveryInfo(
         "Confirmation required",
         "This operation changes the device and needs explicit confirmation.",
