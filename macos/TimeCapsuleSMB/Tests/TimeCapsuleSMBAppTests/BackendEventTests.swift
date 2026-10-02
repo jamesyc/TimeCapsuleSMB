@@ -66,9 +66,9 @@ final class BackendEventTests: XCTestCase {
         )
         let legacySummaryText = BackendEvent(
             type: "result",
-            operation: "repair-xattrs",
+            operation: "doctor",
             ok: true,
-            payload: .object(["summary_text": .string("Found 2 metadata issue(s), 1 repairable.")])
+            payload: .object(["summary_text": .string("Doctor completed.")])
         )
         let blankSummaryFallsBack = BackendEvent(
             type: "result",
@@ -79,7 +79,7 @@ final class BackendEventTests: XCTestCase {
 
         XCTAssertEqual(summary.summary, "Deployment completed on the Time Capsule.")
         XCTAssertEqual(message.summary, "Activation completed without reboot.")
-        XCTAssertEqual(legacySummaryText.summary, "Found 2 metadata issue(s), 1 repairable.")
+        XCTAssertEqual(legacySummaryText.summary, "Doctor completed.")
         XCTAssertEqual(blankSummaryFallsBack.summary, "doctor: Finished")
     }
 
@@ -142,25 +142,6 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(failed.localizedPayloadSummaryText, "fsck_hfs 以状态 8 退出；磁盘可能仍需修复。")
         XCTAssertEqual(BackendErrorViewModel(event: failed).message, "fsck_hfs 以状态 8 退出；磁盘可能仍需修复。")
         XCTAssertEqual(succeeded.localizedPayloadSummaryText, "已使用 fsck 完成磁盘修复。")
-    }
-
-    func testFailedRepairShowsWhyItFailedInsteadOfItsFindingCounts() {
-        let originalLanguage = L10n.currentLanguage
-        defer { L10n.apply(language: originalLanguage) }
-        var payload = testRepairXattrsPayload(findings: 3, repairable: 3)
-        if case .object(var fields) = payload {
-            fields["summary"] = .string("2 metadata issues remain after repair.")
-            fields["summary_key"] = .string("repair_xattrs_unresolved")
-            fields["summary_args"] = .array([.number(2)])
-            fields["failure"] = .string("unresolved")
-            payload = .object(fields)
-        }
-        let event = BackendEvent(type: "result", operation: "repair-xattrs", ok: false, payload: payload)
-
-        L10n.apply(language: .english)
-        XCTAssertEqual(BackendErrorViewModel(event: event).message, "2 metadata issues remain after repair.")
-        L10n.apply(language: .german)
-        XCTAssertEqual(BackendErrorViewModel(event: event).message, "Nach der Reparatur bleiben 2 Metadatenprobleme bestehen.")
     }
 
     func testFailedResultStillTranslatesItsOwnKnownSummary() {
@@ -233,12 +214,6 @@ final class BackendEventTests: XCTestCase {
     func testBackendEventLocalizesResultSummaryArguments() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
-        let repair = BackendEvent(
-            type: "result",
-            operation: "repair-xattrs",
-            ok: true,
-            payload: testRepairXattrsPayload(findings: 2, repairable: 1)
-        )
         let backup = BackendEvent(
             type: "result",
             operation: "flash",
@@ -261,12 +236,10 @@ final class BackendEventTests: XCTestCase {
         )
 
         L10n.apply(language: .english)
-        XCTAssertEqual(repair.localizedPayloadSummaryText, "Found 2 metadata issues, 1 repairable.")
         XCTAssertEqual(backup.localizedPayloadSummaryText, "Flash backup saved to /tmp/flash-backup.")
         XCTAssertEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1.")
 
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertEqual(repair.localizedPayloadSummaryText, "发现 2 个元数据问题，其中 1 个可修复。")
         XCTAssertEqual(backup.localizedPayloadSummaryText, "闪存备份已保存到 /tmp/flash-backup。")
         XCTAssertTrue(someMatch.localizedPayloadSummaryText?.contains("7.8.1") == true)
         XCTAssertNotEqual(someMatch.localizedPayloadSummaryText, "1 of 2 candidate firmware banks matches Apple stock firmware 7.8.1.")
@@ -287,11 +260,11 @@ final class BackendEventTests: XCTestCase {
         for (name, args) in cases {
             let event = BackendEvent(
                 type: "result",
-                operation: "repair-xattrs",
+                operation: "flash",
                 ok: true,
-                payload: testSummaryPayload("Found 2 metadata issues, 1 repairable.", key: "repair_xattrs_found", args: args)
+                payload: testSummaryPayload("1 of 2 candidate firmware banks matches Apple stock firmware.", key: "flash.apple_some_match", args: args)
             )
-            XCTAssertEqual(event.localizedPayloadSummaryText, "Found 2 metadata issues, 1 repairable.", name)
+            XCTAssertEqual(event.localizedPayloadSummaryText, "1 of 2 candidate firmware banks matches Apple stock firmware.", name)
         }
         let unknownKey = BackendEvent(
             type: "result",

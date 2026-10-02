@@ -3049,3 +3049,33 @@ end: dk2 `entries=6427 matched=61 total=61`, dk4 112 entries and `matched=0`
 no CLI progress line. NetBSD 4's `ps` shows no migrator arguments, so there
 deploy's wait for an earlier migration cannot find its log and shows no
 counters; it still sees progress through the migrator's CPU time.
+
+## Mounted-share xattr repair removed (2026-10-05)
+
+Removed `repair-xattrs` from the CLI, app API, macOS maintenance workflow,
+telemetry, translations and current documentation. The April workaround only
+cleared the macOS `arch` flag (and optionally broadened POSIX permissions); it
+never repaired attribute values. Patch 0018 handles missing legacy TDB rows,
+and native HFS operations bypass the TDB entirely through patch 0038 and the
+native FinderInfo adapter. Deploy-only metadata migration and every Doctor
+check remain unchanged. Historical validation entries above are retained.
+
+Removed tests specific to the deleted feature and kept shared behavior tests
+using supported operations. CLI/API tests exercise rejection of the retired
+operation. The #304 device suite now uses Python `os.walk` without following
+links, preserving client traversal coverage without importing the removed tool.
+Code added on main since the first version of this change also used the
+feature: the dashboard session and state synchronizer observed the repair
+store's errors and credential failures, the planned-maintenance cancellation
+test also ran a metadata scan, and the proxy-option config test checked the
+repair profile. Those now cover the remaining workflows only.
+
+Validation:
+- `make lint`, `make test-parallel` (native host checks, then pytest: 3,598
+  passed) and `make test-swift` (677 passed, none skipped).
+- Every catalog passed `plutil -lint` and holds the same 1,061 strings and 15
+  plural keys; no removed key is still referenced and no string became unused.
+- Ruff and `git diff --check` passed.
+- No build inputs, native runtime, deploy code or shipped artifacts changed;
+  no VM build, device access or deployment was needed. `links_device.py` was
+  not run against a device.

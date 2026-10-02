@@ -164,13 +164,12 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 - French and Italian use the typographic apostrophe `’` (`l’appareil`, `dell’app`), never the straight `'`.
 - French uses *Paramètres* for this app's own settings and keeps *Réglages* for Apple's *Réglages Système*.
 - French puts a non-breaking space (U+00A0) before `?`, `!`, `:` and `;`, and inside `« »` guillemets, so a mark never starts or ends a line alone: `Continuer ?`, `app : %@`.
-- Lithuanian *pataisomas* means repairable and *taisomas* means being repaired: "Repairable" is *Pataisoma*, "Repairing" is *Taisoma*. The act of repairing metadata is *taisymas* (`Po taisymo liko…`); *pataisymas* is reserved for the firmware **patch** (`Flash atminties pataisymo planas`), so "after the repair" is never *po pataisymo*.
+- Lithuanian firmware **patch** uses *pataisymas* (`Flash atminties pataisymo planas`).
 - Lithuanian "requested" in status lines is *Paprašyta …* (`Paprašyta įjungti SSH`), not *užklaustas*, which means "queried".
 - Lithuanian flash summaries name the storage as *flash atmintis* (`Flash atminties atsarginė kopija…`, `Įrašyti į flash atmintį nereikėjo.`), never a bare *Flash*.
-- Dutch *reparatie* is repair and *herstel* is restore (`Herstel naar flash`); metadata repair sentences say *na de reparatie*, not *na het herstel*.
+- Dutch *reparatie* is repair and *herstel* is restore (`Herstel naar flash`).
 - Russian "requested; not waiting for X" is *Запрошено …; без ожидания X*. Avoid *X не ожидается*, which reads as "X is not expected". *Доступен* means reachable, so do not use it for "saved" or "available" (`Нет сохраненных хостов для проверки.`).
 - Chinese "Activate" is the action label 启动, as in `启动 SMB`, and names what starts (`NetBSD4 服务启动已完成。`, `正在等待服务完成启动...`), because a bare 启动 reads as the device booting (`设备完成启动`). Do not switch to 激活.
-- "Known-safe repair" means a repair known to be safe, not a known and safe one: German *als sicher bekannte Reparatur*, Dutch *als veilig bekende reparatie*, French *réparation connue comme sûre*, Spanish *reparación conocida como segura*, Italian *riparazione nota come sicura*, Portuguese *reparo conhecido como seguro*, Lithuanian *žinomai saugus taisymo būdas*.
 - Chinese "already enabled/disabled" keeps "already" as 已处于…状态 (`SSH 已处于禁用状态。`), so it cannot be read as the plain result `SSH 已禁用`.
 - Portuguese proposals use `arquivo`, `compartilhamento`, `configuração`, `criptografia`, `salvar`, and `planejar`; avoid mixing these with European `ficheiro`, `partilha`, `definição`, `encriptação`, `guardar`, and `planear` in the same catalog.
 - Preserve meaning and severity in errors, especially “not”, “only”, “before”, “after”, “may”, and “must”. Do not strengthen “may help” into a guarantee.
@@ -218,7 +217,7 @@ A failed operation shows the error line `backend.error.<operation>.<code>` (or `
 
 ## Plurals
 
-A sentence whose wording depends on a count lives in `Localizable.stringsdict`, not `Localizable.strings`, in all ten languages. The current plural keys are the count summaries (`discovered_devices`, `hfs_volumes_found`, `repair_xattrs_found`, `repair_xattrs_no_safe_repairs`, `repair_xattrs_unresolved`, `flash.apple_some_match` and its `_version` variant), `bundle_issue.distribution_artifacts_missing_count.message`, and `activity.multiple_active`. Do not write "(s)", "(-ų)" or "problème(s)"-style forms, and do not pick one grammatical form for every count.
+A sentence whose wording depends on a count lives in `Localizable.stringsdict`, not `Localizable.strings`, in all ten languages. The current plural keys are the count summaries (`discovered_devices`, `hfs_volumes_found`, `flash.apple_some_match` and its `_version` variant), `bundle_issue.distribution_artifacts_missing_count.message`, and `activity.multiple_active`. Do not write "(s)", "(-ų)" or "problème(s)"-style forms, and do not pick one grammatical form for every count.
 
 Foundation picks the form from the locale the app formats with, not the system language, so plural sentences follow the app's language setting (verified on macOS 2026-09-25). Its rules match the table below, including Spanish and Italian `many` for round millions.
 
@@ -249,7 +248,7 @@ The approved English source keeps **Activate** as the action name, including the
 
 Keep the approved English claims “Enable insecure SMB1”, “Default setting”, both existing AFP help descriptions, and “Much slower”. Do not independently soften, expand, or reconcile these claims during translation.
 
-The path label is **Path for xattrs repair**. Keep the technical abbreviation `xattrs` in translations of that label. ATA error messages use **non-negative number of seconds**, not “whole number” or “integer”; the wording change does not alter the integer parsing behavior.
+ATA error messages use **non-negative number of seconds**, not “whole number” or “integer”; the wording change does not alter the integer parsing behavior.
 
 The four old custom NBNS/mDNS advertiser upload strings and six unused install-flow labels were removed. They are not retained for history. Maintenance still supports “No Reboot”, and current NetBSD4 deploy confirmations still describe reboot-then-activate. Do not remove those live messages.
 

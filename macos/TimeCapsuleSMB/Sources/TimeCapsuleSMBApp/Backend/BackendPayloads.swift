@@ -597,58 +597,6 @@ struct FsckResultPayload: Decodable, Equatable {
     }
 }
 
-struct RepairXattrsPayload: Decodable, Equatable {
-    let schemaVersion: Int
-    let returncode: Int?
-    let root: String?
-    let findingCount: Int
-    let repairableCount: Int
-    let counts: [String: Int]
-    let stats: JSONValue?
-    let report: String?
-    let telemetryResult: JSONValue?
-    let error: String?
-    let summary: String
-    var summaryKey: String? = nil
-    var summaryArgs: [JSONValue]? = nil
-    let summaryText: String?
-
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion = "schema_version"
-        case returncode
-        case root
-        case findingCount = "finding_count"
-        case repairableCount = "repairable_count"
-        case counts
-        case stats
-        case report
-        case telemetryResult = "telemetry_result"
-        case error
-        case summary
-        case summaryKey = "summary_key"
-        case summaryArgs = "summary_args"
-        case summaryText = "summary_text"
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        self.returncode = try container.decodeIfPresent(Int.self, forKey: .returncode)
-        self.root = try container.decodeIfPresent(String.self, forKey: .root)
-        self.findingCount = try container.decodeIfPresent(Int.self, forKey: .findingCount) ?? 0
-        self.repairableCount = try container.decodeIfPresent(Int.self, forKey: .repairableCount) ?? 0
-        self.counts = try container.decodeIfPresent([String: Int].self, forKey: .counts) ?? [:]
-        self.stats = try container.decodeIfPresent(JSONValue.self, forKey: .stats)
-        self.report = try container.decodeIfPresent(String.self, forKey: .report)
-        self.telemetryResult = try container.decodeIfPresent(JSONValue.self, forKey: .telemetryResult)
-        self.error = try container.decodeIfPresent(String.self, forKey: .error)
-        self.summary = try container.decode(String.self, forKey: .summary)
-        self.summaryKey = try container.decodeIfPresent(String.self, forKey: .summaryKey)
-        self.summaryArgs = try container.decodeIfPresent([JSONValue].self, forKey: .summaryArgs)
-        self.summaryText = try container.decodeIfPresent(String.self, forKey: .summaryText)
-    }
-}
-
 struct FlashBankPayload: Decodable, Equatable, Identifiable {
     let name: String
     let device: String

@@ -170,7 +170,6 @@ final class BackendSummaryContractTests: XCTestCase {
         case "activate": return { try $0.decode(ActivationResultPayload.self).summaryRef }
         case "uninstall": return { try $0.decode(MaintenanceResultPayload.self).summaryRef }
         case "set-ssh": return { try $0.decode(SSHAccessPayload.self).summaryRef }
-        case "repair-xattrs": return { try $0.decode(RepairXattrsPayload.self).summaryRef }
         case "fsck":
             switch name {
             case "hfs_volumes_found": return { try $0.decode(FsckVolumeListPayload.self).summaryRef }

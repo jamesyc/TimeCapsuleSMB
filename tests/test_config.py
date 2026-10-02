@@ -419,8 +419,6 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(profile=profile):
                 errors = validate_app_config(config, profile=profile)
                 self.assertEqual([(error.kind, error.key) for error in errors], [("invalid_value", "TC_SSH_OPTS")])
-        # repair-xattrs runs against a share mounted on this Mac, never over SSH.
-        self.assertEqual(validate_app_config(config, profile="repair_xattrs"), [])
 
     def test_validate_app_config_uses_profiles(self) -> None:
         values = dict(DEFAULTS)

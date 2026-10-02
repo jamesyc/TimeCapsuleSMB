@@ -23,26 +23,21 @@ OPTION_KEYS = frozenset({
     "debug_logging",
     "dry_run",
     "enable_ssh",
-    "fix_permissions",
     "force",
     "fruit_metadata_netatalk",
     "vfs_aio_fork_enabled",
-    "include_hidden",
-    "include_time_machine",
     "internal_share_use_disk_root",
     "list_volumes",
     "macos_local_network_preflight_duration_ms",
     "macos_local_network_preflight_error",
     "macos_local_network_preflight_result",
     "macos_local_network_preflight_service",
-    "max_depth",
     "mdns_advertise_afp",
     "mode",
     "mount_wait",
     "no_reboot",
     "no_wait",
     "persist_password",
-    "recursive",
     "rsync_enabled",
     "reboot_after_write",
     "smb_browse_compatibility",
@@ -50,7 +45,6 @@ OPTION_KEYS = frozenset({
     "skip_smb",
     "skip_ssh",
     "timeout",
-    "verbose",
     "wait_after_reboot",
     "yes",
 })
@@ -353,22 +347,6 @@ def _details_set_ssh(_params: Mapping[str, object], payload: object | None) -> d
     return details
 
 
-def _details_repair_xattrs(_params: Mapping[str, object], payload: object | None) -> dict[str, object]:
-    details: dict[str, object] = {}
-    if isinstance(payload, Mapping):
-        _copy_payload_keys(payload, details, (
-            "error",
-            "finding_count",
-            "repairable_count",
-            "returncode",
-            "root",
-            "summary_text",
-            "telemetry_result",
-        ))
-        _copy_counts(payload, details)
-    return details
-
-
 def _details_uninstall(_params: Mapping[str, object], payload: object | None) -> dict[str, object]:
     details: dict[str, object] = {}
     if isinstance(payload, Mapping):
@@ -432,7 +410,6 @@ DETAIL_EXTRACTORS: dict[str, DetailExtractor] = {
     "flash": _details_flash,
     "fsck": _details_fsck,
     "reachability": _details_reachability,
-    "repair-xattrs": _details_repair_xattrs,
     "set-ssh": _details_set_ssh,
     "uninstall": _details_uninstall,
     "validate-install": _details_validate_install,

@@ -172,12 +172,6 @@ class SummaryProducerTests(unittest.TestCase):
         "fsck_plan": ("fsck_plan_generated", [], "Dry-run plan generated for fsck."),
         "fsck_completed": ("fsck_completed", [], "Disk repair completed with fsck."),
         "fsck_failed": ("fsck_failed", [8], "fsck_hfs exited with status 8; the disk may still need repair."),
-        "repair_xattrs": ("repair_xattrs_found", [3, 2], "Found 3 metadata issues, 2 repairable."),
-        "repair_xattrs_no_safe_repairs": (
-            "repair_xattrs_no_safe_repairs", [3], "Found 3 metadata issues, but no known-safe repair is available."),
-        "repair_xattrs_approval_required": (
-            "repair_xattrs_approval_required", [], "No changes made; repairs need confirmation."),
-        "repair_xattrs_unresolved": ("repair_xattrs_unresolved", [2], "2 metadata issues remain after repair."),
         "doctor_fatal": ("doctor_found_fatal", [], "Doctor found one or more fatal problems."),
         "flash_backup": ("flash_backup_saved", ["/tmp/flash-backup"], "Flash backup saved to /tmp/flash-backup."),
         "flash_apple_stock_match": ("flash.apple_stock_match", [], "Active firmware bank matches Apple stock firmware."),
@@ -242,32 +236,6 @@ class SummaryProducerTests(unittest.TestCase):
         self.assertEqual(volumes(0), "Found 0 mounted HFS volumes.")
         self.assertEqual(volumes(1), "Found 1 mounted HFS volume.")
         self.assertEqual(volumes(2), "Found 2 mounted HFS volumes.")
-        repairs = {
-            (0, 0): "Found 0 metadata issues, 0 repairable.",
-            (1, 0): "Found 1 metadata issue, 0 repairable.",
-            (2, 1): "Found 2 metadata issues, 1 repairable.",
-        }
-        for (findings, repairable), text in repairs.items():
-            with self.subTest(findings=findings, repairable=repairable):
-                payload = contracts.repair_xattrs_payload({"finding_count": findings, "repairable_count": repairable})
-                self.assertEqual(payload["summary"], text)
-                self.assertEqual(payload["summary_args"], [findings, repairable])
-
-    def test_unrecognized_repair_failures_show_their_error_unkeyed(self) -> None:
-        from timecapsulesmb.app import contracts
-
-        cases = [
-            ({"returncode": 1, "failure": "timeout", "error": "scan timed out"}, "scan timed out"),
-            ({"returncode": 1, "error": "no reason recorded"}, "no reason recorded"),
-            ({"returncode": 1, "failure": "timeout"}, "Metadata repair failed."),
-        ]
-        for raw, text in cases:
-            with self.subTest(raw=raw):
-                payload = contracts.repair_xattrs_payload({"finding_count": 3, "repairable_count": 3, **raw})
-                self.assertEqual(payload["summary"], text)
-                self.assertEqual(payload["summary_text"], text)
-                self.assertNotIn("summary_key", payload)
-                self.assertNotIn("Found", payload["summary"])
 
     def test_some_banks_match_agrees_with_the_matched_count(self) -> None:
         def some_match(matched: list[bool]) -> str:

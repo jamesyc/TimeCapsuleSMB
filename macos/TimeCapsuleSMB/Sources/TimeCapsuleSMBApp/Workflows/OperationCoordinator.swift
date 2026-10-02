@@ -49,7 +49,6 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
     case activate
     case uninstall
     case fsck
-    case repairXattrs = "repair_xattrs"
     case flash
 
     static func lane(for operation: String) -> DeviceWorkflowLane? {
@@ -70,8 +69,6 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
             return .uninstall
         case "fsck":
             return .fsck
-        case "repair-xattrs":
-            return .repairXattrs
         case "flash":
             return .flash
         default:

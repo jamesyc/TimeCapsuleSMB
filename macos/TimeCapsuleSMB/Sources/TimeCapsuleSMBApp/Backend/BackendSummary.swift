@@ -232,7 +232,6 @@ extension MaintenanceResultPayload: BackendSummarized {}
 extension FsckVolumeListPayload: BackendSummarized {}
 extension FsckPlanPayload: BackendSummarized {}
 extension FsckResultPayload: BackendSummarized {}
-extension RepairXattrsPayload: BackendSummarized {}
 extension FlashBackupPayload: BackendSummarized {}
 extension FlashPlanPayload: BackendSummarized {}
 extension FlashWritePayload: BackendSummarized {}

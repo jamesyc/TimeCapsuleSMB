@@ -12,17 +12,12 @@ final class MaintenanceStoreTests: XCTestCase {
             .planning,
             .planReady,
             .planStale,
-            .scanning,
-            .scanReady,
-            .scanStale,
             .awaitingConfirmation,
             .running,
-            .repairing,
             .succeeded,
-            .repaired,
             .failed
         ])
-        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck])
     }
 
     func testNoRebootAndNoWaitAreMutuallyExclusiveAndRequestsAreNormalized() async throws {
@@ -210,29 +205,6 @@ final class MaintenanceStoreTests: XCTestCase {
             store.cancelPendingConfirmation(for: .fsck)
 
             try await waitUntilStoreState { store.fsckState == .planStale && store.pendingConfirmation(for: .fsck) == nil }
-            XCTAssertNil(store.error)
-        }
-
-        do {
-            let runner = StoreTestRunner(responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
-                ]),
-                .init(events: [
-                    confirmationRequired(operation: "repair-xattrs", id: "repair-confirm")
-                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
-            ])
-            let store = MaintenanceStore(backend: BackendClient(runner: runner))
-            store.repairPath = "/Volumes/Data"
-
-            store.scanRepairXattrs()
-            try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
-            store.runRepairXattrs()
-            try await waitUntilStoreState { store.repairState == .awaitingConfirmation && store.pendingConfirmation(for: .repairXattrs) != nil && !store.isRunning }
-            store.repairPath = "/Volumes/Other"
-            store.cancelPendingConfirmation(for: .repairXattrs)
-
-            try await waitUntilStoreState { store.repairState == .scanStale && store.pendingConfirmation(for: .repairXattrs) == nil }
             XCTAssertNil(store.error)
         }
     }
@@ -480,140 +452,6 @@ final class MaintenanceStoreTests: XCTestCase {
         try await waitUntilStoreState { store.fsckState == .failed && store.error?.code == "contract_decode_failed" }
     }
 
-    func testRepairXattrsScanRepairStaleConfirmationAndBackendError() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "stage", operation: "repair-xattrs", stage: "scan_findings", risk: "local_read", cancellable: true),
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
-            ]),
-            .init(events: [
-                confirmationRequired(operation: "repair-xattrs", id: "repair-confirm")
-            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 0))
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "error",
-                    operation: "repair-xattrs",
-                    code: "validation_failed",
-                    message: "repair-xattrs must run on macOS",
-                    recovery: recoveryValue(title: "repair-xattrs cannot run", actions: ["Run this from macOS."], suggestedOperation: "repair-xattrs")
-                )
-            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
-        ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
-        store.repairPath = "/Volumes/Data"
-        store.repairRecursive = false
-        store.repairMaxDepth = "2"
-        store.repairIncludeHidden = true
-        store.repairIncludeTimeMachine = true
-        store.repairFixPermissions = true
-        store.repairVerbose = true
-
-        store.scanRepairXattrs()
-
-        try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
-        XCTAssertEqual(store.currentStage?.stage, "scan_findings")
-        XCTAssertTrue(store.canRepairXattrs)
-        XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["recursive"], .bool(false))
-        XCTAssertEqual(runner.calls[0].params["max_depth"], .number(2))
-        XCTAssertEqual(runner.calls[0].params["include_hidden"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["include_time_machine"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["fix_permissions"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["verbose"], .bool(true))
-
-        store.repairPath = "/Volumes/Other"
-        XCTAssertEqual(store.repairState, .scanStale)
-        store.repairPath = "/Volumes/Data"
-        store.runRepairXattrs()
-        XCTAssertEqual(store.repairState, .scanStale)
-        XCTAssertEqual(store.error?.code, "repair_xattrs_scan_stale")
-        XCTAssertEqual(runner.calls.count, 1)
-
-        store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
-        store.runRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .awaitingConfirmation && store.pendingConfirmation(for: .repairXattrs) != nil && !store.isRunning }
-        store.confirmPending(for: .repairXattrs)
-        try await waitUntilStoreState { store.repairState == .repaired && !store.isBusy }
-        XCTAssertEqual(store.repairResult?.repairableCount, 0)
-        XCTAssertEqual(runner.calls[3].params["confirmation_id"], .string("repair-confirm"))
-        XCTAssertEqual(runner.calls[3].params["recursive"], .bool(false))
-        XCTAssertEqual(runner.calls[3].params["max_depth"], .number(2))
-
-        store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .failed }
-        XCTAssertEqual(store.error?.code, "validation_failed")
-        XCTAssertEqual(store.error?.recovery?.title, "repair-xattrs cannot run")
-    }
-
-    func testRepairXattrsOptionChangesInvalidateScan() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
-            ])
-        ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
-        store.repairPath = "/Volumes/Data"
-
-        store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
-        XCTAssertTrue(store.canRepairXattrs)
-        XCTAssertEqual(runner.calls[0].params["recursive"], .bool(true))
-        XCTAssertNil(runner.calls[0].params["max_depth"])
-
-        store.repairMaxDepth = "3"
-        XCTAssertEqual(store.repairState, .scanStale)
-        XCTAssertFalse(store.canRepairXattrs)
-        store.runRepairXattrs()
-        XCTAssertEqual(store.error?.code, "repair_xattrs_scan_stale")
-        XCTAssertEqual(runner.calls.count, 1)
-
-        store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
-        XCTAssertEqual(runner.calls[1].params["max_depth"], .number(3))
-    }
-
-    func testRepairXattrsMissingPathZeroRepairableAndMalformedPayload() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 0, repairable: 0))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: .object(["schema_version": .string("wrong")]))
-            ])
-        ])
-        let store = MaintenanceStore(backend: BackendClient(runner: runner))
-
-        store.scanRepairXattrs()
-        XCTAssertEqual(store.repairState, .failed)
-        XCTAssertEqual(store.error?.code, "repair_xattrs_path_required")
-        XCTAssertFalse(store.canScanRepairXattrs)
-
-        store.repairPath = "/Volumes/Data"
-        store.repairMaxDepth = "-1"
-        store.scanRepairXattrs()
-        XCTAssertEqual(store.repairState, .failed)
-        XCTAssertEqual(store.error?.code, "repair_xattrs_depth_invalid")
-        XCTAssertEqual(runner.calls, [])
-
-        store.repairMaxDepth = ""
-        store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .scanReady && !store.isBusy }
-        XCTAssertFalse(store.canRepairXattrs)
-
-        store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .failed && store.error?.code == "contract_decode_failed" }
-    }
-
     func testCoordinatorMaintenanceWorkflowsUseSeparateLanes() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -684,11 +522,9 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(store.activateState, .idle)
         XCTAssertEqual(store.uninstallState, .idle)
         XCTAssertEqual(store.fsckState, .idle)
-        XCTAssertEqual(store.repairState, .idle)
         XCTAssertNil(store.activationResult)
         XCTAssertNil(store.uninstallResult)
         XCTAssertNil(store.fsckPlan)
-        XCTAssertNil(store.repairScan)
         XCTAssertNil(store.error)
         XCTAssertNil(store.currentStage)
     }

@@ -5,7 +5,6 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
     case activate
     case uninstall
     case fsck
-    case repairXattrs
 
     var id: String { rawValue }
 
@@ -19,8 +18,6 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
             return L10n.string("maintenance.workflow.uninstall")
         case .fsck:
             return L10n.string("maintenance.workflow.fsck")
-        case .repairXattrs:
-            return L10n.string("maintenance.workflow.repair_xattrs")
         }
     }
 
@@ -34,8 +31,6 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
             return .uninstall
         case .fsck:
             return .fsck
-        case .repairXattrs:
-            return .repairXattrs
         }
     }
 }
@@ -47,14 +42,9 @@ enum MaintenanceOperationState: String, CaseIterable, Equatable {
     case planning
     case planReady
     case planStale
-    case scanning
-    case scanReady
-    case scanStale
     case awaitingConfirmation
     case running
-    case repairing
     case succeeded
-    case repaired
     case failed
 
     var title: String {
@@ -71,22 +61,12 @@ enum MaintenanceOperationState: String, CaseIterable, Equatable {
             return L10n.string("workflow.state.plan_ready")
         case .planStale:
             return L10n.string("workflow.state.plan_stale")
-        case .scanning:
-            return L10n.string("workflow.state.scanning")
-        case .scanReady:
-            return L10n.string("workflow.state.scan_ready")
-        case .scanStale:
-            return L10n.string("workflow.state.scan_stale")
         case .awaitingConfirmation:
             return L10n.string("workflow.state.awaiting_confirmation")
         case .running:
             return L10n.string("workflow.state.running")
-        case .repairing:
-            return L10n.string("workflow.state.repairing")
         case .succeeded:
             return L10n.string("workflow.state.succeeded")
-        case .repaired:
-            return L10n.string("workflow.state.repaired")
         case .failed:
             return L10n.string("workflow.state.failed")
         }

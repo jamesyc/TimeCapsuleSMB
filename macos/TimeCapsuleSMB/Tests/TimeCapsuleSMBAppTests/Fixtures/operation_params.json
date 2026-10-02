@@ -95,16 +95,6 @@
       "ssh_timeout",
       "tcp_timeout"
     ],
-    "repair-xattrs": [
-      "dry_run",
-      "fix_permissions",
-      "include_hidden",
-      "include_time_machine",
-      "max_depth",
-      "path",
-      "recursive",
-      "verbose"
-    ],
     "set-ssh": [
       "action",
       "no_wait"

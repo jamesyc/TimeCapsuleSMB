@@ -5,7 +5,7 @@ import sys
 from contextlib import nullcontext
 from typing import Optional
 
-from . import activate, api, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
+from . import activate, api, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, uninstall, validate_install
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS
 from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import DistributionRootError
@@ -24,7 +24,6 @@ COMMANDS = {
     "fsck": fsck.main,
     "paths": paths.main,
     "set-ssh": set_ssh.main,
-    "repair-xattrs": repair_xattrs.main,
     "uninstall": uninstall.main,
     "validate-install": validate_install.main,
 }

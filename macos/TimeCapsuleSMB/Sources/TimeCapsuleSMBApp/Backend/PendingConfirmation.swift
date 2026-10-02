@@ -90,11 +90,6 @@ private struct ConfirmationPresentation {
                 return nil
             }
             return format(template, deviceName)
-        case "repair_xattrs":
-            guard let path = stringValue(values, "path") else {
-                return nil
-            }
-            return format(template, path)
         case "flash.patch_write":
             guard let host = stringValue(values, "host") else {
                 return nil

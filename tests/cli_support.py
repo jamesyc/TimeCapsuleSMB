@@ -258,7 +258,6 @@ class CliTestCase(unittest.TestCase):
             "timecapsulesmb.cli.flash.TelemetryClient.from_config",
             "timecapsulesmb.cli.fsck.TelemetryClient.from_config",
             "timecapsulesmb.cli.paths.TelemetryClient.from_config",
-            "timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config",
             "timecapsulesmb.cli.set_ssh.TelemetryClient.from_config",
             "timecapsulesmb.cli.uninstall.TelemetryClient.from_config",
             "timecapsulesmb.cli.validate_install.TelemetryClient.from_config",

@@ -82,7 +82,6 @@ If you run into any issues:
 - `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
 - `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
 - `.venv/bin/tcapsule discover` to list all mDNS/Bonjour devices
-- `.venv/bin/tcapsule repair-xattrs` to repair any broken files on the disk from bad xattrs
 - `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 
 Just delete this `TimeCapsuleSMB` folder if you want to remove it from your Mac after you're done setting up the Time Capsule. All the scripts/binaries/etc are stored in the `TimeCapsuleSMB` folder (so if you want to clean up your Mac, then just deleting the folder is fine).

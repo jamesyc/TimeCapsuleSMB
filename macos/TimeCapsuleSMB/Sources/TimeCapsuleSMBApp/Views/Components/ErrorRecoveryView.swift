@@ -114,8 +114,6 @@ struct ErrorRecoveryView: View {
             return "trash"
         case .diskRepair:
             return "externaldrive.badge.exclamationmark"
-        case .metadataRepair:
-            return "tag"
         case .replacePassword:
             return "key"
         case .copyDiagnostics:

@@ -1,14 +1,5 @@
 import Foundation
 
-struct RepairXattrsOptions: Equatable {
-    var recursive: Bool = true
-    var maxDepth: Int?
-    var includeHidden: Bool = false
-    var includeTimeMachine: Bool = false
-    var fixPermissions: Bool = false
-    var verbose: Bool = false
-}
-
 enum OperationParams {
     enum Readiness {
         static func versionCheck(url: String) -> [String: JSONValue] {
@@ -252,24 +243,6 @@ enum OperationParams {
                 "mount_wait": .number(mountWait),
                 "volume": .string(volume)
             ]
-        }
-    }
-
-    enum RepairXattrs {
-        static func params(dryRun: Bool, path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
-            var params: [String: JSONValue] = [
-                "path": .string(path),
-                "dry_run": .bool(dryRun),
-                "recursive": .bool(options.recursive),
-                "include_hidden": .bool(options.includeHidden),
-                "include_time_machine": .bool(options.includeTimeMachine),
-                "fix_permissions": .bool(options.fixPermissions),
-                "verbose": .bool(options.verbose)
-            ]
-            if let maxDepth = options.maxDepth {
-                params["max_depth"] = .number(Double(maxDepth))
-            }
-            return params
         }
     }
 

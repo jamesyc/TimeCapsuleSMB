@@ -23,27 +23,6 @@ final class MaintenanceStore: ObservableObject {
             markPlansStaleForOptionChange()
         }
     }
-    @Published var repairPath = "" {
-        didSet { markRepairScanStaleIfNeeded() }
-    }
-    @Published var repairRecursive = true {
-        didSet { markRepairScanStaleIfNeeded() }
-    }
-    @Published var repairMaxDepth = "" {
-        didSet { markRepairScanStaleIfNeeded() }
-    }
-    @Published var repairIncludeHidden = false {
-        didSet { markRepairScanStaleIfNeeded() }
-    }
-    @Published var repairIncludeTimeMachine = false {
-        didSet { markRepairScanStaleIfNeeded() }
-    }
-    @Published var repairFixPermissions = false {
-        didSet { markRepairScanStaleIfNeeded() }
-    }
-    @Published var repairVerbose = false {
-        didSet { markRepairScanStaleIfNeeded() }
-    }
     var selectedFsckTargetID: FsckTargetViewModel.ID? {
         get { fsckStore.selectedTargetID }
         set {
@@ -55,7 +34,6 @@ final class MaintenanceStore: ObservableObject {
     var activateState: MaintenanceOperationState { activationStore.state }
     var uninstallState: MaintenanceOperationState { uninstallStore.state }
     var fsckState: MaintenanceOperationState { fsckStore.state }
-    var repairState: MaintenanceOperationState { repairXattrsStore.state }
     var sshAccessState: MaintenanceOperationState { sshAccessStore.state }
 
     var activationResult: ActivationResultPayload? { activationStore.result }
@@ -63,8 +41,6 @@ final class MaintenanceStore: ObservableObject {
     var fsckTargets: [FsckTargetViewModel] { fsckStore.targets }
     var fsckPlan: FsckPlanPayload? { fsckStore.plan }
     var fsckResult: FsckResultPayload? { fsckStore.result }
-    var repairScan: RepairXattrsPayload? { repairXattrsStore.scan }
-    var repairResult: RepairXattrsPayload? { repairXattrsStore.result }
     var sshAccessPayload: SSHAccessPayload? { sshAccessStore.payload }
 
     var currentStage: OperationStageState? {
@@ -79,7 +55,6 @@ final class MaintenanceStore: ObservableObject {
     let activationStore: ActivationStore
     let uninstallStore: UninstallStore
     let fsckStore: FsckStore
-    let repairXattrsStore: RepairXattrsStore
     let sshAccessStore: SSHAccessMaintenanceStore
 
     private let coordinator: OperationCoordinator
@@ -122,11 +97,6 @@ final class MaintenanceStore: ObservableObject {
             coordinator: coordinator,
             laneKey: laneKeysByWorkflow[.fsck]
         )
-        self.repairXattrsStore = RepairXattrsStore(
-            backend: backendsByWorkflow[.repairXattrs] ?? coordinator.lane(for: laneKey).backend,
-            coordinator: coordinator,
-            laneKey: laneKeysByWorkflow[.repairXattrs]
-        )
         self.sshAccessStore = SSHAccessMaintenanceStore(
             backend: backendsByWorkflow[.sshAccess] ?? coordinator.lane(for: laneKey).backend,
             coordinator: coordinator,
@@ -167,7 +137,6 @@ final class MaintenanceStore: ObservableObject {
         observe(activationStore)
         observe(uninstallStore)
         observe(fsckStore)
-        observe(repairXattrsStore)
     }
 
     private func observe<Store: ObservableObject>(_ store: Store) where Store.ObjectWillChangePublisher == ObservableObjectPublisher {
@@ -226,8 +195,6 @@ final class MaintenanceStore: ObservableObject {
             uninstallStore.cancelPendingConfirmation()
         case .fsck:
             fsckStore.cancelPendingConfirmation(options: currentOptions)
-        case .repairXattrs:
-            repairXattrsStore.cancelPendingConfirmation(path: trimmedRepairPath, options: currentRepairOptions)
         }
     }
 
@@ -257,14 +224,6 @@ final class MaintenanceStore: ObservableObject {
 
     var canRunFsck: Bool {
         !isBusy && fsckStore.canRun(options: currentOptions)
-    }
-
-    var canRepairXattrs: Bool {
-        !isBusy && repairXattrsStore.canRepair(path: trimmedRepairPath, options: currentRepairOptions)
-    }
-
-    var canScanRepairXattrs: Bool {
-        !isBusy && repairXattrsStore.canScan(path: trimmedRepairPath, options: currentRepairOptions)
     }
 
     var canCheckSSHAccess: Bool {
@@ -321,24 +280,6 @@ final class MaintenanceStore: ObservableObject {
     }
 
     @discardableResult
-    func scanRepairXattrs() -> OperationStartResult {
-        startMaintenanceWorkflow(
-            .repairXattrs,
-            rejectAlreadyRunning: { repairXattrsStore.rejectAlreadyRunning() },
-            start: { repairXattrsStore.scanRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions) }
-        )
-    }
-
-    @discardableResult
-    func runRepairXattrs() -> OperationStartResult {
-        startMaintenanceWorkflow(
-            .repairXattrs,
-            rejectAlreadyRunning: { repairXattrsStore.rejectAlreadyRunning() },
-            start: { repairXattrsStore.runRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions) }
-        )
-    }
-
-    @discardableResult
     func checkSSHAccess(profile: DeviceProfile? = nil) -> OperationStartResult {
         startMaintenanceWorkflow(
             .sshAccess,
@@ -360,7 +301,6 @@ final class MaintenanceStore: ObservableObject {
         activationStore.clear()
         uninstallStore.clear()
         fsckStore.clear()
-        repairXattrsStore.clear()
         sshAccessStore.clear()
     }
 
@@ -382,7 +322,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private var workflowStores: [any MaintenanceWorkflowStore] {
-        [sshAccessStore, activationStore, uninstallStore, fsckStore, repairXattrsStore]
+        [sshAccessStore, activationStore, uninstallStore, fsckStore]
     }
 
     private var activeWorkflowStore: (any MaintenanceWorkflowStore)? {
@@ -403,8 +343,6 @@ final class MaintenanceStore: ObservableObject {
             return uninstallStore
         case .fsck:
             return fsckStore
-        case .repairXattrs:
-            return repairXattrsStore
         }
     }
 
@@ -423,39 +361,8 @@ final class MaintenanceStore: ObservableObject {
         )
     }
 
-    private var trimmedRepairPath: String {
-        repairPath.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var repairMaxDepthValue: Int? {
-        let trimmed = repairMaxDepth.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return nil
-        }
-        return ValueParsers.nonNegativeInteger(trimmed)
-    }
-
-    private var currentRepairOptions: RepairXattrsOptions? {
-        let trimmed = repairMaxDepth.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, repairMaxDepthValue == nil {
-            return nil
-        }
-        return RepairXattrsOptions(
-            recursive: repairRecursive,
-            maxDepth: repairMaxDepthValue,
-            includeHidden: repairIncludeHidden,
-            includeTimeMachine: repairIncludeTimeMachine,
-            fixPermissions: repairFixPermissions,
-            verbose: repairVerbose
-        )
-    }
-
     private func markPlansStaleForOptionChange() {
         fsckStore.markPlanStaleIfNeeded(options: currentOptions)
-    }
-
-    private func markRepairScanStaleIfNeeded() {
-        repairXattrsStore.markScanStaleIfNeeded(path: trimmedRepairPath, options: currentRepairOptions)
     }
 }
 
@@ -475,5 +382,4 @@ private protocol MaintenanceWorkflowStore: ObservableObject {
 extension ActivationStore: MaintenanceWorkflowStore {}
 extension UninstallStore: MaintenanceWorkflowStore {}
 extension FsckStore: MaintenanceWorkflowStore {}
-extension RepairXattrsStore: MaintenanceWorkflowStore {}
 extension SSHAccessMaintenanceStore: MaintenanceWorkflowStore {}

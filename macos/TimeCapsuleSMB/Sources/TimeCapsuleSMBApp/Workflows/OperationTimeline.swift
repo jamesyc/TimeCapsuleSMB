@@ -203,8 +203,6 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.operation.activate")
         case "fsck":
             return L10n.string("timeline.operation.fsck")
-        case "repair-xattrs":
-            return L10n.string("timeline.operation.repair_xattrs")
         case "uninstall":
             return L10n.string("timeline.operation.uninstall")
         case "capabilities", "validate-install":
@@ -279,10 +277,6 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.finding_volumes")
         case ("fsck", "run_fsck"):
             return L10n.string("timeline.stage.repairing_disk")
-        case ("repair-xattrs", "scan_findings"):
-            return L10n.string("timeline.stage.scanning_metadata")
-        case ("repair-xattrs", "repair_findings"):
-            return L10n.string("timeline.stage.repairing_metadata")
         case ("validate-install", "validate_install"):
             return L10n.string("timeline.stage.validating_app_bundle")
         default:

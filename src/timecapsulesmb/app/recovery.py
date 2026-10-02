@@ -406,20 +406,6 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    ("repair-xattrs", "confirmation_required"): RecoveryInfo(
-        "Repair confirmation required",
-        "repair-xattrs needs dry-run mode or explicit confirmation before changing local file metadata.",
-        ("Run a dry run first.", "Confirm repair before retrying."),
-        retryable=True,
-        action_ids=("repair_metadata",),
-    ),
-    ("repair-xattrs", "validation_failed"): RecoveryInfo(
-        "repair-xattrs cannot run",
-        "repair-xattrs must run on macOS against a valid mounted SMB share path.",
-        ("Choose a mounted share path.", "Run this from macOS."),
-        retryable=True,
-        action_ids=("repair_metadata",),
-    ),
 }
 
 
@@ -520,38 +506,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="fsck",
         action_ids=("disk_repair",),
-    ),
-    ("repair-xattrs", "validation_failed", "platform_check"): RecoveryInfo(
-        "repair-xattrs requires macOS",
-        "repair-xattrs can only run on macOS because it uses xattr and chflags on a mounted SMB share.",
-        ("Run the app on macOS.", "Use dry run or repair from a mounted share path."),
-        retryable=False,
-        suggested_operation="repair-xattrs",
-        action_ids=("repair_metadata",),
-    ),
-    ("repair-xattrs", "validation_failed", "validate_params"): RecoveryInfo(
-        "Invalid repair options",
-        "One or more repair-xattrs options were invalid.",
-        ("Review the repair options.", "Retry with valid values."),
-        retryable=True,
-        suggested_operation="repair-xattrs",
-        action_ids=("repair_metadata",),
-    ),
-    ("repair-xattrs", "validation_failed", "resolve_scan_root"): RecoveryInfo(
-        "Path cannot be scanned",
-        "The selected path is not usable for repair-xattrs.",
-        ("Choose a mounted SMB share path.", "Confirm the share is accessible in Finder."),
-        retryable=True,
-        suggested_operation="repair-xattrs",
-        action_ids=("repair_metadata",),
-    ),
-    ("repair-xattrs", "validation_failed", "scan_findings"): RecoveryInfo(
-        "Path cannot be scanned",
-        "repair-xattrs could not read the selected mounted share path.",
-        ("Choose a mounted SMB share path.", "Confirm the share is accessible in Finder."),
-        retryable=True,
-        suggested_operation="repair-xattrs",
-        action_ids=("repair_metadata",),
     ),
 }
 

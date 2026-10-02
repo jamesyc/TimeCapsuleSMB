@@ -30,7 +30,6 @@ final class DeviceDashboardStateSynchronizer {
         observeCredentialInvalidProfileIDs(maintenanceStore.activationStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.uninstallStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.fsckStore.$passwordInvalidProfileID)
-        observeCredentialInvalidProfileIDs(maintenanceStore.repairXattrsStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(maintenanceStore.sshAccessStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(flashStore.$passwordInvalidProfileID)
     }

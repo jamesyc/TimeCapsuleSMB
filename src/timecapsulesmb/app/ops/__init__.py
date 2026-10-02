@@ -16,7 +16,6 @@ from timecapsulesmb.app.ops.flash import flash_operation
 from timecapsulesmb.app.ops.maintenance import (
     activate_operation,
     fsck_operation,
-    repair_xattrs_operation,
     uninstall_operation,
 )
 from timecapsulesmb.app.ops.reachability import reachability_operation
@@ -121,22 +120,6 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
         "reachability",
         reachability_operation,
         frozenset({"host", "hosts", "smb_host", "smb_hosts", "ssh_host", "ssh_timeout", "tcp_timeout"}),
-    ),
-    OperationSpec(
-        "repair-xattrs",
-        repair_xattrs_operation,
-        frozenset({
-            "dry_run",
-            "fix_permissions",
-            "include_hidden",
-            "include_time_machine",
-            "max_depth",
-            "path",
-            "recursive",
-            "verbose",
-        }),
-        telemetry=True,
-        keep_awake=True,
     ),
     OperationSpec("set-ssh", set_ssh_operation, frozenset({"action", "no_wait"}), telemetry=True, keep_awake=True),
     OperationSpec("set-telemetry", set_telemetry_operation, frozenset({"enabled"})),

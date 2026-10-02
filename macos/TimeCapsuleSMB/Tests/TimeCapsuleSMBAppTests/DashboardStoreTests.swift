@@ -1038,13 +1038,6 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .fsck)
 
         XCTAssertTrue(session.handleRecoveryAction(
-            RecoveryAction(title: "Repair File Metadata", kind: .metadataRepair),
-            error: error,
-            profile: profile
-        ))
-        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .repairXattrs)
-
-        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Activate", kind: .startSMB),
             error: error,
             profile: profile

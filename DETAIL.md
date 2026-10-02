@@ -967,7 +967,6 @@ The top-level command dispatcher supports:
 - `flash`
 - `fsck`
 - `paths`
-- `repair-xattrs`
 - `set-ssh`
 - `uninstall`
 - `validate-install`
@@ -977,7 +976,6 @@ Shared command behavior:
 - commands that read the device config accept `--config PATH`, which overrides `TCAPSULE_CONFIG` and the repo-local `.env`
 - commands that can prompt usually accept `--no-input`; in that mode they fail instead of asking for missing input or confirmation
 - commands that can make destructive or rebooting changes use `--yes` to skip confirmation in interactive and non-interactive runs
-- commands with `--json` do not all use the same output shape; most command JSON is a single final object, while `repair-xattrs --json` emits app-event NDJSON
 - for commands where JSON describes a plan, `--json` is intentionally restricted to `--dry-run`
 
 ### `bootstrap`
@@ -1168,30 +1166,6 @@ Arguments:
 
 Use this only when the disk needs repair before deploy or when doctor/troubleshooting points at filesystem problems.
 
-### `repair-xattrs`
-
-`tcapsule repair-xattrs` is a macOS-side mounted-share repair helper. It scans files and directories on a local SMB mount, diagnoses broken extended-attribute metadata, and safely repairs the known case where `xattr -l` fails and the macOS `arch` flag is present by clearing that flag. Other metadata failures are reported without being treated as the same repair case. It is a targeted cleanup tool, not a general metadata migration.
-
-Arguments:
-- `--config PATH`: use a non-default config when auto-detecting the mounted share
-- `--path PATH`: mounted SMB share path or subdirectory to scan; if omitted, the command tries to find the mounted SMB share matching `.env`
-- `--dry-run`: scan and report only; do not prompt or repair
-- `--yes`: repair without prompting
-- `--no-input`: do not prompt; use with `--dry-run` or `--yes`
-- `--recursive`: scan recursively; enabled by default
-- `--no-recursive`: scan only the top-level directory
-- `--max-depth DEPTH`: maximum recursive directory depth; must be non-negative
-- `--include-hidden`: include hidden dot paths that are normally skipped
-- `--include-time-machine`: include Time Machine and bundle-like paths that are normally skipped
-- `--fix-permissions`: additionally apply `ugo+rw` to files or `ugo+rwx` to directories that do not already have all corresponding permission bits
-- `--verbose`: print detailed diagnostics for detected issues
-- `--json`: emit app-event NDJSON; when not using `--dry-run`, this requires `--yes`
-
-Argument restrictions:
-- `--dry-run` and `--yes` are mutually exclusive
-- `--max-depth` must be non-negative
-- the command must run on macOS because it depends on local `xattr` and `chflags`
-
 ### `uninstall`
 
 `tcapsule uninstall` removes managed TimeCapsuleSMB files from the configured device. It stops the manager, removes the payload directories from mounted HFS volumes, removes loader files under `/mnt/Flash` and runtime state, and reboots by default so Apple services and the root filesystem return to their clean state. After a waited reboot it verifies that managed files are gone. It does not restore a firmware bank changed by `flash --patch`; use `flash --restore` for that separate operation.
@@ -1218,7 +1192,7 @@ Arguments:
 Arguments:
 - `--pretty-error`: also write request parsing errors to stderr for local debugging
 
-Known public app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `repair-xattrs`, `set-ssh`, `set-telemetry`, `uninstall`, `validate-install`, and `version-check`. The backend also accepts internal non-public operations such as `update-config-settings`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
+Known public app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `set-ssh`, `set-telemetry`, `uninstall`, `validate-install`, and `version-check`. The backend also accepts internal non-public operations such as `update-config-settings`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
 
 ## Local Test Coverage
 
@@ -1279,7 +1253,7 @@ Workflow details:
 ## Host-Side Architecture
 
 Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `flash`, `activate`, `doctor`, `fsck`, `repair-xattrs`, `uninstall`, and the app-facing `api` helper
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `flash`, `activate`, `doctor`, `fsck`, `uninstall`, and the app-facing `api` helper
 - [src/timecapsulesmb/app/](src/timecapsulesmb/app): structured API request handling, operation contracts, progress/result events, confirmations, recovery guidance, and app-specific operation adapters
 - [src/timecapsulesmb/services/](src/timecapsulesmb/services): reusable configure, deploy, activation, maintenance, storage, reboot, Doctor, and runtime workflows shared by the CLI and app/API entrypoints
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
@@ -1377,54 +1351,6 @@ The normal goal is to use it as a quick health check after:
 
 Current doctor caveats:
 - the xattr persistence check inspects the active runtime config under `/mnt/Memory/samba4`, not the persistent template on disk
-
-## Repair Xattrs Command
-
-[src/timecapsulesmb/cli/repair_xattrs.py](src/timecapsulesmb/cli/repair_xattrs.py) is a macOS-side repair and diagnostic helper for files and directories whose SMB extended-attribute metadata became unreadable.
-
-This was added after observing files on the mounted Samba share where:
-- normal POSIX permissions looked fine
-- TextEdit could open the file but could not save it back in place
-- `xattr -l <file>` failed with `Invalid argument`
-- `ls -lO@ <file>` showed the macOS `arch` file flag
-
-The automatic xattr repair is intentionally narrow. The command scans files and directories, reports broader xattr and file-data failures, and automatically clears the `arch` flag only when `xattr -l` fails and that flag is present:
-
-```bash
-chflags noarch <file>
-```
-
-Typical scan-and-prompt usage:
-
-```bash
-.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name>
-```
-
-When exactly one matching `smbfs` mount is visible locally, `--path` can usually be omitted. The command reads the local `mount` table and matches mounted SMB volumes to the configured `TC_HOST`. If more than one candidate is mounted, pass `--path` explicitly:
-
-```bash
-.venv/bin/tcapsule repair-xattrs
-```
-
-Useful modes:
-
-```bash
-.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name> --dry-run
-.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name> --yes
-.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name>/some-folder --no-recursive
-.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name> --max-depth 2
-```
-
-Default safety behavior:
-- prompts before changing files unless `--yes` is passed
-- verifies file size is unchanged after repair
-- verifies `xattr -l` succeeds after repair
-- skips symlinks
-- skips hidden dot paths unless `--include-hidden` is passed
-- skips Time Machine and bundle-like paths unless `--include-time-machine` is passed
-- when `--fix-permissions` is selected, adds `ugo+rw` to affected files or `ugo+rwx` to affected directories
-
-This command should be treated as a targeted cleanup tool for user files, not as a general metadata migration command. Do not run it over Time Machine backup bundles unless you are deliberately investigating that path.
 
 ## Deploy Details
 
@@ -1528,7 +1454,6 @@ Client telemetry is now emitted by:
 - `tcapsule activate`
 - `tcapsule doctor`
 - `tcapsule fsck`
-- `tcapsule repair-xattrs`
 - `tcapsule uninstall`
 
 Current event model:
@@ -1555,8 +1480,6 @@ Current event model:
 - `doctor_finished`
 - `fsck_started`
 - `fsck_finished`
-- `repair_xattrs_started`
-- `repair_xattrs_finished`
 - `uninstall_started`
 - `uninstall_finished`
 

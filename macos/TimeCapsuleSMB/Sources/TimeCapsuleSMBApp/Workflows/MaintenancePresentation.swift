@@ -8,8 +8,6 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
     case findVolumes
     case planFsck
     case runFsck
-    case scanMetadata
-    case repairMetadata
     case viewDiagnostics
 
     var id: String { rawValue }
@@ -30,10 +28,6 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return L10n.string("maintenance.action.plan_disk_repair")
         case .runFsck:
             return L10n.string("maintenance.action.run_disk_repair")
-        case .scanMetadata:
-            return L10n.string("maintenance.action.scan_metadata")
-        case .repairMetadata:
-            return L10n.string("maintenance.action.repair_metadata")
         case .viewDiagnostics:
             return L10n.string("recovery.action.open_diagnostics")
         }
@@ -55,10 +49,6 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return "externaldrive"
         case .runFsck:
             return "externaldrive.badge.exclamationmark"
-        case .scanMetadata:
-            return "magnifyingglass"
-        case .repairMetadata:
-            return "tag"
         case .viewDiagnostics:
             return "wrench.and.screwdriver"
         }
@@ -66,9 +56,9 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
 
     var isCommitAction: Bool {
         switch self {
-        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .repairMetadata:
+        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck:
             return true
-        case .checkSSHAccess, .findVolumes, .planFsck, .scanMetadata, .viewDiagnostics:
+        case .checkSSHAccess, .findVolumes, .planFsck, .viewDiagnostics:
             return false
         }
     }
@@ -95,8 +85,6 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.uninstall.title")
         case .fsck:
             return L10n.string("maintenance.presentation.fsck.title")
-        case .repairXattrs:
-            return L10n.string("maintenance.presentation.repair_xattrs.title")
         }
     }
 
@@ -110,8 +98,6 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.uninstall.subtitle")
         case .fsck:
             return L10n.string("maintenance.presentation.fsck.subtitle")
-        case .repairXattrs:
-            return L10n.string("maintenance.presentation.repair_xattrs.subtitle")
         }
     }
 
@@ -123,8 +109,6 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.risk.remote_write")
         case .uninstall, .fsck:
             return L10n.string("maintenance.presentation.risk.destructive")
-        case .repairXattrs:
-            return L10n.string("maintenance.presentation.risk.local_destructive")
         }
     }
 }
@@ -171,8 +155,6 @@ enum MaintenanceActionPolicy {
             return [.runUninstall]
         case .fsck:
             return [.findVolumes, .planFsck, .runFsck]
-        case .repairXattrs:
-            return [.scanMetadata, .repairMetadata]
         }
     }
 
@@ -197,11 +179,6 @@ enum MaintenanceActionPolicy {
                 (.findVolumes, store.canFindFsckVolumes),
                 (.planFsck, store.canPlanFsck),
                 (.runFsck, store.canRunFsck)
-            ])
-        case .repairXattrs:
-            return enabled([
-                (.scanMetadata, store.canScanRepairXattrs),
-                (.repairMetadata, store.canRepairXattrs)
             ])
         }
     }
@@ -228,17 +205,11 @@ extension MaintenanceOperationState {
             return L10n.string("maintenance.state.plan_ready")
         case (_, .planStale):
             return L10n.string("maintenance.state.plan_stale")
-        case (.repairXattrs, .scanning):
-            return L10n.string("maintenance.state.scanning")
-        case (.repairXattrs, .scanReady):
-            return L10n.string("maintenance.state.scan_ready")
-        case (.repairXattrs, .scanStale):
-            return L10n.string("maintenance.state.scan_stale")
         case (_, .awaitingConfirmation):
             return L10n.string("maintenance.state.awaiting_confirmation")
-        case (_, .running), (_, .repairing):
+        case (_, .running):
             return L10n.string("maintenance.state.running")
-        case (_, .succeeded), (_, .repaired):
+        case (_, .succeeded):
             return L10n.string("maintenance.state.succeeded")
         case (_, .failed):
             return L10n.string("maintenance.state.failed")
@@ -302,17 +273,6 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                 ],
                 warnings: [L10n.string("maintenance.warning.destructive_fsck")]
             )
-        case .repairXattrs:
-            guard let scan = store.repairScan else { return nil }
-            return MaintenancePlanPresentation(
-                title: L10n.string("maintenance.plan.repair_xattrs"),
-                rows: [
-                    PresentationRow(label: L10n.string("maintenance.plan.row.path"), value: scan.root ?? L10n.string("value.unknown")),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.findings"), value: "\(scan.findingCount)"),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.repairable"), value: "\(scan.repairableCount)")
-                ],
-                warnings: scan.repairableCount > 0 ? [L10n.string("maintenance.warning.local_metadata_repair")] : []
-            )
         }
     }
 
@@ -355,16 +315,6 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                     PresentationRow(label: L10n.string("deploy.result.verified"), value: result.verified == true ? L10n.string("value.yes") : L10n.string("value.no"))
                 ]
             )
-        case .repairXattrs:
-            guard let result = store.repairResult else { return nil }
-            return MaintenanceCompletionPresentation(
-                title: L10n.string("maintenance.completion.repair_xattrs"),
-                rows: [
-                    PresentationRow(label: L10n.string("maintenance.plan.row.findings"), value: "\(result.findingCount)"),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.repairable"), value: "\(result.repairableCount)"),
-                    PresentationRow(label: L10n.string("maintenance.result.returncode"), value: result.returncode.map(String.init) ?? L10n.string("value.unknown"))
-                ]
-            )
         }
     }
 
@@ -383,7 +333,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         store: MaintenanceStore
     ) -> MaintenanceTimelinePresentation? {
         switch state {
-        case .loading, .planning, .scanning, .awaitingConfirmation, .running, .repairing, .succeeded, .repaired, .failed:
+        case .loading, .planning, .awaitingConfirmation, .running, .succeeded, .failed:
             return MaintenanceTimelinePresentation(
                 events: store.timelineEvents(for: workflow),
                 currentStage: store.currentStage(for: workflow),
@@ -437,8 +387,6 @@ extension MaintenanceWorkflow {
             return "uninstall"
         case .fsck:
             return "fsck"
-        case .repairXattrs:
-            return "repair-xattrs"
         }
     }
 }
@@ -454,8 +402,6 @@ extension MaintenanceStore {
             return uninstallState
         case .fsck:
             return fsckState
-        case .repairXattrs:
-            return repairState
         }
     }
 }

@@ -497,11 +497,6 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
         required_values=("TC_PASSWORD",),
         validated_keys=FLASH_VALIDATED_KEYS,
     ),
-    "repair_xattrs": ConfigProfile(
-        required_values=("TC_HOST",),
-        validated_keys=("TC_HOST",),
-        require_env_file=False,
-    ),
 }
 def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]:
     profile_config = CONFIG_PROFILES[profile]

@@ -559,44 +559,31 @@ final class OperationCompletionTests: XCTestCase {
     }
 
     func testPlannedMaintenanceCancellationUsesCurrentOptionsThroughCoordinator() async throws {
-        for workflow in [MaintenanceWorkflow.fsck, .repairXattrs] {
-            let fsck = workflow == .fsck
-            let name = fsck ? "fsck" : "repair-xattrs"
-            var responses: [StoreTestRunner.Response] = []
-            if fsck {
-                responses.append(.init(events: [BackendEvent(type: "result", operation: name, ok: true,
-                    payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))]))
-            }
-            responses.append(.init(events: [BackendEvent(type: "result", operation: name, ok: true,
-                payload: fsck ? testFsckPlanPayload() : testRepairXattrsPayload(findings: 2, repairable: 1))]))
-            responses.append(.init(events: [confirmation(name, id: "cancel")], pauseAfterEvents: true))
-            let fixture = try await makeFixture(responses: [.init(name): responses])
-            defer { fixture.runner.finishAll() }
-            let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
-            let store = session.maintenanceStore
-            if fsck {
-                session.performMaintenanceAction(.findVolumes, profile: fixture.profile, showDiagnostics: {})
-                try await waitUntilStoreState { store.fsckState == .listReady && !store.isBusy }
-                session.performMaintenanceAction(.planFsck, profile: fixture.profile, showDiagnostics: {})
-                try await waitUntilStoreState { store.fsckState == .planReady && !store.isBusy }
-            } else {
-                store.repairPath = "/Volumes/Data"
-                session.performMaintenanceAction(.scanMetadata, profile: fixture.profile, showDiagnostics: {})
-                try await waitUntilStoreState { store.repairState == .scanReady && !store.isBusy }
-            }
-            session.performMaintenanceAction(fsck ? .runFsck : .repairMetadata, profile: fixture.profile, showDiagnostics: {})
-            try await waitUntilStoreState { store.pendingConfirmation(for: workflow) != nil }
-            if fsck { store.noWait = true } else { store.repairPath = "/Volumes/Other" }
-            store.cancelPendingConfirmation(for: workflow)
-            XCTAssertEqual(fsck ? store.fsckStore.state : store.repairXattrsStore.state, .awaitingConfirmation)
-            fixture.runner.finish(.init(name))
-            try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
-            fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
-            try await waitUntilStoreState { !store.isBusy }
-            XCTAssertEqual(fsck ? store.fsckStore.state : store.repairXattrsStore.state, fsck ? .planStale : .scanStale)
-            XCTAssertNil(store.pendingConfirmation(for: workflow))
-            assertDashboardStopped(fixture.profile, app: fixture.app)
-        }
+        let fixture = try await makeFixture(responses: [.init("fsck"): [
+            .init(events: [BackendEvent(type: "result", operation: "fsck", ok: true,
+                payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))]),
+            .init(events: [BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())]),
+            .init(events: [confirmation("fsck", id: "cancel")], pauseAfterEvents: true)
+        ]])
+        defer { fixture.runner.finishAll() }
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        let store = session.maintenanceStore
+        session.performMaintenanceAction(.findVolumes, profile: fixture.profile, showDiagnostics: {})
+        try await waitUntilStoreState { store.fsckState == .listReady && !store.isBusy }
+        session.performMaintenanceAction(.planFsck, profile: fixture.profile, showDiagnostics: {})
+        try await waitUntilStoreState { store.fsckState == .planReady && !store.isBusy }
+        session.performMaintenanceAction(.runFsck, profile: fixture.profile, showDiagnostics: {})
+        try await waitUntilStoreState { store.pendingConfirmation(for: .fsck) != nil }
+        store.noWait = true
+        store.cancelPendingConfirmation(for: .fsck)
+        XCTAssertEqual(store.fsckStore.state, .awaitingConfirmation)
+        fixture.runner.finish(.init("fsck"))
+        try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
+        fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+        try await waitUntilStoreState { !store.isBusy }
+        XCTAssertEqual(store.fsckStore.state, .planStale)
+        XCTAssertNil(store.pendingConfirmation(for: .fsck))
+        assertDashboardStopped(fixture.profile, app: fixture.app)
     }
 
     func testCancelledInstallStopsDashboardEvenWhenTerminalPersistenceFails() async throws {

@@ -86,13 +86,6 @@ def int_param(params: dict[str, object], name: str, default: int) -> int:
     return parsed
 
 
-def optional_int_param(params: dict[str, object], name: str) -> int | None:
-    value = params.get(name)
-    if value in (None, ""):
-        return None
-    return int_param(params, name, 0)
-
-
 def string_param(params: dict[str, object], name: str, default: str = "") -> str:
     value = params.get(name, default)
     return "" if value is None else str(value)

@@ -177,19 +177,6 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         try await waitUntilStoreState { fsckSession.maintenanceStore.fsckState == .listReady }
         fsckSession.selectedTab = .maintenance
         try assertRendersNonBlank(dashboardView(fixture: fsck, profile: fsckProfile, session: fsckSession))
-
-        let repair = try await AppViewFixture(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
-            ])
-        ])
-        let repairProfile = try await repair.saveProfile(id: "repair-device")
-        let repairSession = repair.dashboardSession(for: repairProfile)
-        repairSession.maintenanceStore.repairPath = "/Volumes/Data"
-        repairSession.maintenanceStore.scanRepairXattrs()
-        try await waitUntilStoreState { repairSession.maintenanceStore.repairState == .scanReady }
-        repairSession.selectedTab = .maintenance
-        try assertRendersNonBlank(dashboardView(fixture: repair, profile: repairProfile, session: repairSession))
     }
 
     func testRendersSettingsPasswordReplacementAttention() async throws {

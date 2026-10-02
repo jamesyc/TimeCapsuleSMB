@@ -23,7 +23,6 @@ import urllib.parse
 import uuid
 
 from timecapsulesmb.core.config import DEFAULTS, parse_env_file
-from timecapsulesmb.repair_xattrs import RepairSummary, iter_scan_paths
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_capture_bytes, run_ssh_input
 
 TEST_DIR = "__tc_links_test__"
@@ -440,15 +439,14 @@ def mac_shape_checks(r: Results, device: Device, m: Path) -> None:
     r.check("mac: readlink returns each of them verbatim",
             lambda: all(os.readlink(walk / n) == t for n, t in shapes.items()))
 
-    def repair_walk() -> bool:
-        # The issue saw 20 paths for 9 objects: the walk entered .fcpcache -> . as a directory.
-        summary = RepairSummary()
-        seen = sorted(str(p.relative_to(walk.resolve())) for p, _ in iter_scan_paths(
-            walk, recursive=True, max_depth=None, include_hidden=True, include_time_machine=True,
-            include_directories=True, summary=summary))
-        return seen == ["a.txt", "sub", "sub/f"] and summary.skipped == len(shapes)
+    def python_walk() -> bool:
+        # Issue #304 recursed through .fcpcache -> . instead of reporting a link.
+        seen = sorted(str((Path(root) / name).relative_to(walk))
+                      for root, dirs, files in os.walk(walk, followlinks=False)
+                      for name in dirs + files)
+        return seen == sorted(["a.txt", "sub", "sub/f", *shapes])
 
-    r.check("mac: repair-xattrs visits each object once and skips the links", repair_walk)
+    r.check("mac: Python walk visits each object once without following links", python_walk)
     r.check("mac: find does not descend into a link to .", lambda: sorted(subprocess.run(
         ["find", str(walk)], capture_output=True, text=True, timeout=60).stdout.splitlines()) == sorted(
         [str(walk)] + [str(walk / n) for n in ("a.txt", "sub", "sub/f", *shapes)]))

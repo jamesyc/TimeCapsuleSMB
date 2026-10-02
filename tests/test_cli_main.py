@@ -1,4 +1,4 @@
-"""CLI entry point, shared config loading, paths, validate-install, discover, repair-xattrs and target resolution."""
+"""CLI entry point, shared config loading, paths, validate-install, discover and target resolution."""
 from __future__ import annotations
 
 import io
@@ -10,21 +10,17 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 import timecapsulesmb.cli.main as cli_main_module
-from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.cli import (
     activate,
     discover,
     doctor,
     fsck,
     paths,
-    repair_xattrs,
     set_ssh,
     uninstall,
     validate_install,
 )
 from timecapsulesmb.cli.main import main
-from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
-from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.paths import AppPaths
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
@@ -43,6 +39,16 @@ from tests.cli_support import CliTestCase, FakeCommandContext, REPO_ROOT, SRC_RO
 
 
 class CliMainTests(CliTestCase):
+    def test_retired_repair_xattrs_command_is_rejected(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                main(["repair-xattrs", "--path", "/Volumes/Data"])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("invalid choice: 'repair-xattrs'", stderr.getvalue())
+        self._version_check.assert_not_called()
+
     def test_dispatches_to_command_handler(self) -> None:
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
             rc = main(["doctor", "--skip-smb"])
@@ -306,7 +312,6 @@ class CliMainTests(CliTestCase):
             ("discover", discover, "load_optional_env_config", None),
             ("paths", paths, "load_optional_env_config", None),
             ("validate_install", validate_install, "load_optional_env_config", None),
-            ("repair_xattrs", repair_xattrs, "load_optional_env_config", None),
         ]
         sentinel = RuntimeError("stop after config load")
         with tempfile.TemporaryDirectory() as tmp:
@@ -318,8 +323,6 @@ class CliMainTests(CliTestCase):
                     ]
                     if hasattr(command_module, "ensure_install_id"):
                         patches.append(mock.patch(f"{command_module.__name__}.ensure_install_id"))
-                    if command_module is repair_xattrs:
-                        patches.append(mock.patch("sys.platform", "darwin"))
                     with ExitStack() as stack:
                         load_mock = stack.enter_context(patches[0])
                         for patcher in patches[1:]:
@@ -331,55 +334,6 @@ class CliMainTests(CliTestCase):
                     if extra_kwargs is not None:
                         expected_kwargs.update(extra_kwargs)
                     load_mock.assert_called_once_with(**expected_kwargs)
-
-    def test_repair_xattrs_non_macos_emits_platform_check_telemetry(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.ensure_install_id"):
-            with mock.patch(
-                "timecapsulesmb.cli.repair_xattrs.load_optional_env_config",
-                return_value=self.make_app_config({}, exists=False),
-            ):
-                with mock.patch("sys.platform", "linux"):
-                    with self.assertRaises(SystemExit):
-                        repair_xattrs.main(["--path", "/Volumes/Home"])
-
-        finished = self.telemetry_payload("repair_xattrs_finished")
-        self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["host_platform"], "linux")
-        self.assertIn("stage=platform_check", finished["error"])
-
-    def test_repair_xattrs_json_emits_ndjson_result(self) -> None:
-        output = io.StringIO()
-        result = repair_xattrs_service.RepairRunResult(
-            returncode=0,
-            root=Path("/Volumes/Data"),
-            findings=[mock.Mock()],
-            candidates=[mock.Mock()],
-            summary=repair_xattrs_domain.RepairSummary(scanned=1, repairable=1),
-            report="detected issues",
-        )
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_repair_service", return_value=result):
-                    with redirect_stdout(output):
-                        rc = repair_xattrs.main(["--path", "/Volumes/Data", "--dry-run", "--json"])
-
-        self.assertEqual(rc, 0)
-        events = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(events[0]["type"], "stage")
-        self.assertEqual(events[-1]["type"], "result")
-        self.assertEqual(events[-1]["payload"]["finding_count"], 1)
-        self.assertEqual(events[-1]["payload"]["summary"], "Found 1 metadata issue, 1 repairable.")
-        self.assertEqual(events[-1]["payload"]["summary_text"], "Found 1 metadata issue, 1 repairable.")
-        self.assertEqual(events[-1]["payload"]["stats"]["scanned"], 1)
-        self.assertEqual(events[-1]["payload"]["repairable_count"], 1)
-
-    def test_repair_xattrs_json_repair_requires_yes(self) -> None:
-        stderr = io.StringIO()
-        with redirect_stderr(stderr):
-            with self.assertRaises(SystemExit) as raised:
-                repair_xattrs.main(["--path", "/Volumes/Data", "--json"])
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("--json repair requires --yes", stderr.getvalue())
 
     def test_discover_select_asks_again_after_input_the_terminal_encoding_cannot_decode(self) -> None:
         record = BonjourResolvedService(

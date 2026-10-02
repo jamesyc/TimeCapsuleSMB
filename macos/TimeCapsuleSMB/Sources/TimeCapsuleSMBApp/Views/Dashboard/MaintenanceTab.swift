@@ -25,9 +25,6 @@ struct MaintenanceTab: View {
                     store: store,
                     performAction: { action in
                         session.performMaintenanceAction(action, profile: profile, showDiagnostics: showDiagnostics)
-                    },
-                    chooseRepairPath: {
-                        chooseRepairPath(store: store)
                     }
                 )
 
@@ -60,22 +57,6 @@ struct MaintenanceTab: View {
             return
         }
         _ = session.handleRecoveryAction(action, error: error, profile: profile)
-    }
-
-    private func chooseRepairPath(store: MaintenanceStore) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = L10n.string("maintenance.action.choose")
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else {
-                return
-            }
-            Task { @MainActor in
-                store.repairPath = url.path
-            }
-        }
     }
 
     private func chooseFirmwareTemplate(store: FlashWorkflowStore) {
@@ -135,7 +116,6 @@ private struct MaintenanceDetailView: View {
     let presentation: MaintenanceWorkflowDetailPresentation
     @ObservedObject var store: MaintenanceStore
     let performAction: (MaintenanceUserAction) -> Void
-    let chooseRepairPath: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -162,10 +142,6 @@ private struct MaintenanceDetailView: View {
             Text(presentation.statusMessage)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-
-            if presentation.workflow == .repairXattrs {
-                RepairPathPicker(store: store, chooseRepairPath: chooseRepairPath)
-            }
 
             if presentation.workflow == .fsck {
                 FsckTargetListView(store: store)
@@ -224,22 +200,6 @@ private struct MaintenanceActionButton: View {
             }
             .buttonStyle(.bordered)
             .disabled(!isEnabled)
-        }
-    }
-}
-
-private struct RepairPathPicker: View {
-    @ObservedObject var store: MaintenanceStore
-    let chooseRepairPath: () -> Void
-
-    var body: some View {
-        HStack {
-            TextField(L10n.string("field.repair_xattrs_path"), text: $store.repairPath)
-            Button {
-                chooseRepairPath()
-            } label: {
-                Label(L10n.string("maintenance.action.choose_folder"), systemImage: "folder")
-            }
         }
     }
 }
@@ -317,9 +277,7 @@ private struct MaintenanceAdvancedOptionsView: View {
 
     var body: some View {
         DashboardDisclosureSection(title: L10n.string("maintenance.advanced_options")) {
-            if workflow == .repairXattrs {
-                RepairXattrsAdvancedOptionsView(store: store)
-            } else if workflow == .sshAccess {
+            if workflow == .sshAccess {
                 SSHAccessAdvancedOptionsView(store: store)
             } else {
                 RemoteMaintenanceAdvancedOptionsView(store: store)
@@ -352,32 +310,6 @@ private struct RemoteMaintenanceAdvancedOptionsView: View {
                     .disabled(!RebootExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait))
                 Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
                     .disabled(!RebootExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot))
-            }
-        }
-    }
-}
-
-private struct RepairXattrsAdvancedOptionsView: View {
-    @ObservedObject var store: MaintenanceStore
-
-    var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-            GridRow {
-                Toggle(L10n.string("toggle.repair_xattrs_recursive"), isOn: $store.repairRecursive)
-                Toggle(L10n.string("toggle.repair_xattrs_include_hidden"), isOn: $store.repairIncludeHidden)
-            }
-            GridRow {
-                Toggle(L10n.string("toggle.repair_xattrs_include_time_machine"), isOn: $store.repairIncludeTimeMachine)
-                Toggle(L10n.string("toggle.repair_xattrs_fix_permissions"), isOn: $store.repairFixPermissions)
-            }
-            GridRow {
-                Toggle(L10n.string("toggle.repair_xattrs_verbose"), isOn: $store.repairVerbose)
-                HStack {
-                    Text(L10n.string("field.repair_xattrs_max_depth"))
-                        .foregroundStyle(.secondary)
-                    TextField(L10n.string("field.repair_xattrs_max_depth"), text: $store.repairMaxDepth)
-                        .frame(width: 80)
-                }
             }
         }
     }

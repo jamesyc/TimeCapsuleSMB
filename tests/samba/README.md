@@ -300,7 +300,7 @@ file as an earlier release wrote it, then checks them from a macOS SMB mount:
 listing, readlink, reading through, `ln -s`/`ln -sf`, xattrs on the link, `touch
 -h`, `mv`, `cp -pR`, `rm`/`rm -rf`, and rewriting a legacy link. Issue #304's
 shapes (links to `.`, `..`, nothing, a directory and outside the tree) are listed,
-walked by `repair-xattrs` and `find`, renamed in place, across folders and over a
+walked by Python `os.walk` and `find`, renamed in place, across folders and over a
 file, and removed with `rm -rf`, leaving their targets alone. `--afp` checks
 that links made over SMB and AFP read the same over the other protocol. The SMB2
 cases check the reparse listing, `FSCTL_GET_REPARSE_POINT`, removing a directory

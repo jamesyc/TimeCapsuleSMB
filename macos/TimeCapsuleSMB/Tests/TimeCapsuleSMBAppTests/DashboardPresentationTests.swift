@@ -1031,7 +1031,6 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .activate), [.runActivation])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .uninstall), [.runUninstall])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .fsck), [.findVolumes, .planFsck, .runFsck])
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .repairXattrs), [.scanMetadata, .repairMetadata])
         XCTAssertEqual(MaintenanceUserAction.checkSSHAccess.title, "Check SSH")
         XCTAssertFalse(MaintenanceUserAction.checkSSHAccess.isCommitAction)
         XCTAssertTrue(MaintenanceUserAction.enableSSHAccess.isCommitAction)
@@ -1042,12 +1041,10 @@ final class DashboardPresentationTests: XCTestCase {
     func testMaintenanceStatusMessagesCoverAllStates() {
         for state in MaintenanceOperationState.allCases {
             XCTAssertFalse(state.maintenanceStatusMessage(for: .activate).isEmpty)
-            XCTAssertFalse(state.maintenanceStatusMessage(for: .repairXattrs).isEmpty)
+            XCTAssertFalse(state.maintenanceStatusMessage(for: .fsck).isEmpty)
         }
 
         XCTAssertEqual(MaintenanceOperationState.listReady.maintenanceStatusMessage(for: .fsck), "Choose a volume, then plan disk repair.")
-        XCTAssertEqual(MaintenanceOperationState.scanReady.maintenanceStatusMessage(for: .repairXattrs), "Review the scan before repairing metadata.")
-        XCTAssertEqual(MaintenanceOperationState.scanReady.maintenanceStatusMessage(for: .activate), "Scan Ready")
     }
 
     func testMaintenancePresentationHidesActivationForDevicesThatDoNotNeedIt() throws {
@@ -1056,7 +1053,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .uninstall, .fsck])
         XCTAssertEqual(presentation.cards.first?.isSelected, true)
         XCTAssertEqual(presentation.detail.workflow, .sshAccess)
         XCTAssertEqual(presentation.detail.title, "SSH Access")
@@ -1068,7 +1065,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .activate, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .activate, .uninstall, .fsck])
         XCTAssertEqual(presentation.cards.first?.isSelected, false)
         XCTAssertEqual(presentation.detail.workflow, .activate)
     }
@@ -1093,12 +1090,6 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(presentation.detail.isEnabled(.findVolumes))
         XCTAssertFalse(presentation.detail.isEnabled(.planFsck))
         XCTAssertFalse(presentation.detail.isEnabled(.runFsck))
-
-        store.selectedWorkflow = .repairXattrs
-        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
-        XCTAssertEqual(presentation.detail.actions, [.scanMetadata, .repairMetadata])
-        XCTAssertFalse(presentation.detail.isEnabled(.scanMetadata))
-        XCTAssertFalse(presentation.detail.isEnabled(.repairMetadata))
     }
 
     func testMaintenancePresentationBuildsWorkflowPlansAndCompletions() async throws {
@@ -1111,9 +1102,6 @@ final class DashboardPresentationTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
@@ -1151,17 +1139,6 @@ final class DashboardPresentationTests: XCTestCase {
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.plan?.title, "Disk Repair Plan")
         XCTAssertEqual(presentation.detail.plan?.warnings, ["Disk repair can modify the selected volume."])
-
-        store.repairPath = "/Volumes/Data"
-        store.scanRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
-        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
-        XCTAssertEqual(presentation.detail.workflow, .repairXattrs)
-        XCTAssertEqual(presentation.detail.actions, [.scanMetadata, .repairMetadata])
-        XCTAssertTrue(presentation.detail.isEnabled(.scanMetadata))
-        XCTAssertTrue(presentation.detail.isEnabled(.repairMetadata))
-        XCTAssertEqual(presentation.detail.plan?.title, "Metadata Scan")
-        XCTAssertEqual(presentation.detail.plan?.warnings, ["Metadata repair modifies files under the selected local SMB mount."])
     }
 
     func testMaintenancePresentationKeepsTimelineAfterWorkflowCompletes() async throws {

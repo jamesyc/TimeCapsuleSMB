@@ -217,12 +217,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 let start = maintenanceStore.runFsck(password: password, profile: profile)
                 stateSynchronizer.invalidateCheckupIfStarted(start)
             }
-        case .scanMetadata:
-            selectedTab = .maintenance
-            maintenanceStore.scanRepairXattrs()
-        case .repairMetadata:
-            selectedTab = .maintenance
-            maintenanceStore.runRepairXattrs()
         case .checkSSHAccess:
             maintenanceStore.checkSSHAccess(profile: profile)
         case .enableSSHAccess:
@@ -327,10 +321,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             selectedTab = .maintenance
             maintenanceStore.selectedWorkflow = .fsck
             return true
-        case .metadataRepair:
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .repairXattrs
-            return true
         case .replacePassword:
             showPasswordReplacement()
             return true
@@ -409,7 +399,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             maintenanceStore.activationStore.$error,
             maintenanceStore.uninstallStore.$error,
             maintenanceStore.fsckStore.$error,
-            maintenanceStore.repairXattrsStore.$error,
             maintenanceStore.sshAccessStore.$error
         ] {
             publisher
@@ -490,10 +479,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case "fsck":
             selectedTab = .maintenance
             maintenanceStore.selectedWorkflow = .fsck
-            return true
-        case "repair-xattrs":
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .repairXattrs
             return true
         default:
             return false

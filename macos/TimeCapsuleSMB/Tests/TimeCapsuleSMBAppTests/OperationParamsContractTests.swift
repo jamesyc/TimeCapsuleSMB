@@ -69,11 +69,6 @@ final class OperationParamsContractTests: XCTestCase {
             ("uninstall", OperationParams.Uninstall.params(noReboot: true, noWait: true, mountWait: 30)),
             ("fsck", OperationParams.Fsck.listVolumes(mountWait: 30)),
             ("fsck", OperationParams.Fsck.run(dryRun: false, volume: "dk2", noReboot: false, noWait: true, mountWait: 30)),
-            ("repair-xattrs", OperationParams.RepairXattrs.params(
-                dryRun: true,
-                path: "/Volumes/Data",
-                options: RepairXattrsOptions(maxDepth: 3)
-            )),
             ("flash", OperationParams.Flash.backup()),
             ("flash", OperationParams.Flash.plan(backupDir: "/tmp/b", mode: .checkApple, firmwareVersion: "7.8.1", firmwareTemplate: "/tmp/t")),
             ("flash", OperationParams.Flash.write(backupDir: "/tmp/b", mode: .restore, firmwareVersion: "7.8.1", firmwareTemplate: "/tmp/t")),

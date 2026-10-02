@@ -61,9 +61,6 @@ enum WorkflowLocalError: Equatable {
     case fsckTargetRequired
     case fsckPlanStale
     case fsckPlanNotReady
-    case repairXattrsDepthInvalid
-    case repairXattrsPathRequired
-    case repairXattrsScanStale
     case flashBackupUnavailable
     case flashBackupRequired
     case flashWritesDisabled
@@ -92,12 +89,6 @@ enum WorkflowLocalError: Equatable {
             return "fsck_plan_stale"
         case .fsckPlanNotReady:
             return "fsck_plan_not_ready"
-        case .repairXattrsDepthInvalid:
-            return "repair_xattrs_depth_invalid"
-        case .repairXattrsPathRequired:
-            return "repair_xattrs_path_required"
-        case .repairXattrsScanStale:
-            return "repair_xattrs_scan_stale"
         case .flashBackupUnavailable:
             return "flash_backup_unavailable"
         case .flashBackupRequired:

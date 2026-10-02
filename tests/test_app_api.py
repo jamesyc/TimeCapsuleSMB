@@ -31,7 +31,6 @@ from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation
-from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.cli import main as cli_main
@@ -74,7 +73,6 @@ from timecapsulesmb.services.flash import (
 from timecapsulesmb.services.maintenance import FSCK_NOT_UNMOUNTED_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
-from timecapsulesmb.services.repair_xattrs import RepairRunResult, RepairXattrsRequest
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError, ssh_timeout_slow_device_message
 from timecapsulesmb.transport.ssh import SshConnection
@@ -489,17 +487,6 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(doctor["counts"], {"PASS": 1, "WARN": 1, "FAIL": 1, "INFO": 0})
         self.assertEqual(doctor["summary"], "Doctor found one or more fatal problems.")
         self.assertEqual(doctor["schema_version"], 1)
-
-        repair = contracts.repair_xattrs_payload({
-            "returncode": 0,
-            "root": "/Volumes/Data",
-            "finding_count": 2,
-            "repairable_count": 1,
-            "stats": {"scanned": 3},
-        })
-        self.assertEqual(repair["summary"], "Found 2 metadata issues, 1 repairable.")
-        self.assertEqual(repair["summary_text"], "Found 2 metadata issues, 1 repairable.")
-        self.assertEqual(repair["stats"], {"scanned": 3})
 
     def test_request_id_propagates_to_every_event(self) -> None:
         collector = CollectingSink()
@@ -1234,15 +1221,17 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["recovery"]["title"], "Invalid request")
         self.assertTrue(error["recovery"]["retryable"])
 
-    def test_unknown_operation_emits_error_without_result(self) -> None:
-        collector = CollectingSink()
+    def test_unknown_and_retired_operations_emit_error_without_result(self) -> None:
+        for operation in ("nope", "repair-xattrs"):
+            with self.subTest(operation=operation):
+                collector = CollectingSink()
 
-        rc = service.run_api_request({"operation": "nope", "params": {}}, collector.sink)
+                rc = service.run_api_request({"operation": operation, "params": {}}, collector.sink)
 
-        self.assertEqual(rc, 1)
-        error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "unknown_operation")
-        self.assertEqual(error["recovery"]["title"], "Unknown operation")
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "unknown_operation")
+                self.assertEqual(error["recovery"]["title"], "Unknown operation")
 
     def run_with_api_telemetry(self, request: dict[str, object], handlers: dict[str, object]) -> tuple[int, CollectingSink]:
         collector = CollectingSink()
@@ -6011,206 +6000,6 @@ MaSt = (
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "remote_error")
                 self.assertEqual(error["message"], FSCK_NOT_UNMOUNTED_MESSAGE)
-
-    def test_repair_xattrs_uses_structured_runner(self) -> None:
-        collector = CollectingSink()
-        summary = repair_xattrs_domain.RepairSummary(scanned=1, scanned_files=1, unreadable=1, repairable=1)
-        repair_result = RepairRunResult(
-            returncode=0,
-            root=Path("/Volumes/Data"),
-            findings=[SimpleNamespace(path=Path("/Volumes/Data/broken"))],
-            candidates=[SimpleNamespace(path=Path("/Volumes/Data/broken"))],
-            summary=summary,
-            report="detected issues",
-        )
-
-        with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair", return_value=repair_result) as runner:
-                    rc = service.run_api_request(
-                        {
-                            "operation": "repair-xattrs",
-                            "params": {"path": "/Volumes/Data", "dry_run": True},
-                        },
-                        collector.sink,
-                    )
-
-        self.assertEqual(rc, 0)
-        runner.assert_called_once()
-        request = runner.call_args.args[0]
-        self.assertIsInstance(request, RepairXattrsRequest)
-        self.assertEqual(request.path, Path("/Volumes/Data"))
-        self.assertTrue(request.dry_run)
-        self.assertFalse(request.approve_repairs)
-        payload = collector.events_of_type("result")[0]["payload"]
-        self.assertEqual(payload["finding_count"], 1)
-        self.assertEqual(payload["summary"], "Found 1 metadata issue, 1 repairable.")
-        self.assertEqual(payload["summary_text"], "Found 1 metadata issue, 1 repairable.")
-        self.assertEqual(payload["stats"]["scanned"], 1)
-        self.assertNotIsInstance(payload["summary"], dict)
-
-    def test_repair_xattrs_forwards_service_log_callbacks(self) -> None:
-        collector = CollectingSink()
-        summary = repair_xattrs_domain.RepairSummary(scanned=1)
-        repair_result = RepairRunResult(
-            returncode=0,
-            root=Path("/Volumes/Data"),
-            findings=[],
-            candidates=[],
-            summary=summary,
-            report=None,
-        )
-
-        def fake_runner(_request, _config, *, callbacks, **_kwargs):
-            callbacks.log("scan detail")
-            return repair_result
-
-        with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair", side_effect=fake_runner):
-                    rc = service.run_api_request(
-                        {
-                            "operation": "repair-xattrs",
-                            "params": {"path": "/Volumes/Data", "dry_run": True},
-                        },
-                        collector.sink,
-                    )
-
-        logs = collector.events_of_type("log")
-        self.assertEqual(rc, 0)
-        self.assertIn({"info": "scan detail"}, [{log["level"]: log["message"]} for log in logs])
-
-    def test_repair_xattrs_rejects_invalid_path_before_runner(self) -> None:
-        cases = [
-            ({}, "missing required parameter: path"),
-            ({"path": ""}, "missing required parameter: path"),
-            ({"path": "   "}, "missing required parameter: path"),
-            ({"path": True}, "path must be a path string"),
-        ]
-        for extra_params, message in cases:
-            with self.subTest(extra_params=extra_params):
-                collector = CollectingSink()
-                params = {"dry_run": True}
-                params.update(extra_params)
-                with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config") as load_config:
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
-                            rc = service.run_api_request(
-                                {
-                                    "operation": "repair-xattrs",
-                                    "params": params,
-                                },
-                                collector.sink,
-                            )
-
-                self.assertEqual(rc, 1)
-                error = self.assert_single_terminal_event(collector, "error")
-                self.assertEqual(error["code"], "validation_failed")
-                self.assertEqual(error["message"], message)
-                self.assertEqual(error["recovery"]["title"], "Invalid repair options")
-                load_config.assert_not_called()
-                runner.assert_not_called()
-
-    def test_repair_xattrs_rejects_invalid_max_depth_before_runner(self) -> None:
-        for max_depth in ("bad", -1, True):
-            with self.subTest(max_depth=max_depth):
-                collector = CollectingSink()
-                with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
-                            rc = service.run_api_request(
-                                {
-                                    "operation": "repair-xattrs",
-                                    "params": {
-                                        "path": "/Volumes/Data",
-                                        "dry_run": True,
-                                        "max_depth": max_depth,
-                                    },
-                                },
-                                collector.sink,
-                            )
-
-                self.assertEqual(rc, 1)
-                error = self.assert_single_terminal_event(collector, "error")
-                self.assertEqual(error["code"], "validation_failed")
-                self.assertEqual(error["recovery"]["title"], "Invalid repair options")
-                runner.assert_not_called()
-
-    def test_repair_xattrs_passes_valid_max_depth_as_int(self) -> None:
-        collector = CollectingSink()
-        summary = repair_xattrs_domain.RepairSummary(scanned=1)
-        repair_result = RepairRunResult(
-            returncode=0,
-            root=Path("/Volumes/Data"),
-            findings=[],
-            candidates=[],
-            summary=summary,
-            report=None,
-        )
-
-        with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair", return_value=repair_result) as runner:
-                    rc = service.run_api_request(
-                        {
-                            "operation": "repair-xattrs",
-                            "params": {
-                                "path": "/Volumes/Data",
-                                "dry_run": True,
-                                "max_depth": "2",
-                            },
-                        },
-                        collector.sink,
-                    )
-
-        self.assertEqual(rc, 0)
-        request = runner.call_args.args[0]
-        self.assertEqual(request.max_depth, 2)
-
-    def test_repair_xattrs_requires_confirmation_for_non_dry_run(self) -> None:
-        collector = CollectingSink()
-
-        with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "linux"):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
-                rc = service.run_api_request(
-                    {
-                        "operation": "repair-xattrs",
-                        "params": {"path": "/Volumes/Data", "dry_run": False},
-                    },
-                    collector.sink,
-                )
-
-        self.assertEqual(rc, 1)
-        self.assert_confirmation(collector, "repair_xattrs", {"path": "/Volumes/Data"})
-        self.assertEqual(collector.events_of_type("error")[0]["recovery"]["title"], "Repair confirmation required")
-        runner.assert_not_called()
-
-    def test_repair_xattrs_checks_platform_after_confirmation(self) -> None:
-        collector = CollectingSink()
-        params = {"path": "/Volumes/Data", "dry_run": False}
-        params["confirmation_id"] = self.confirmation_id_for(
-            "repair-xattrs",
-            params,
-            {"path": "/Volumes/Data"},
-        )
-
-        with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "linux"):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config") as load_config:
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
-                    rc = service.run_api_request(
-                        {
-                            "operation": "repair-xattrs",
-                            "params": params,
-                        },
-                        collector.sink,
-                    )
-
-        self.assertEqual(rc, 1)
-        error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "validation_failed")
-        self.assertEqual(error["recovery"]["title"], "repair-xattrs requires macOS")
-        load_config.assert_not_called()
-        runner.assert_not_called()
 
     def test_helper_reads_request_and_writes_ndjson(self) -> None:
         output = io.StringIO()

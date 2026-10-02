@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import (
     activation_plan_payload,
@@ -9,7 +7,6 @@ from timecapsulesmb.app.contracts import (
     fsck_plan_payload,
     fsck_result_payload,
     fsck_volume_list_payload,
-    repair_xattrs_payload,
     uninstall_plan_payload,
     uninstall_result_payload,
 )
@@ -36,11 +33,8 @@ from timecapsulesmb.services.app import (
     bool_param,
     config_path,
     int_param,
-    optional_int_param,
-    required_path_param,
     string_param,
 )
-from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.activation import RUNTIME_NOT_RESTARTED_CODE, activate_runtime, installed_netbsd4_autostart
 from timecapsulesmb.services.maintenance import (
@@ -56,11 +50,9 @@ from timecapsulesmb.services.maintenance import (
     select_fsck_target,
 )
 from timecapsulesmb.services.deploy import require_supported_payload
-from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.runtime import (
     load_env_config,
-    load_optional_env_config,
     probe_failure_error,
     probe_managed_connection_state,
     resolve_env_connection,
@@ -298,64 +290,3 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         verified=outcome.waited,
         error=outcome.failure,
     ))
-
-
-def repair_xattrs_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    operation = "repair-xattrs"
-    context.stage("validate_params")
-    dry_run = bool_param(params, "dry_run")
-    path = required_path_param(params, "path")
-    recursive = bool_param(params, "recursive", True)
-    max_depth = optional_int_param(params, "max_depth")
-    include_hidden = bool_param(params, "include_hidden")
-    include_time_machine = bool_param(params, "include_time_machine")
-    fix_permissions = bool_param(params, "fix_permissions")
-    verbose = bool_param(params, "verbose")
-    if not dry_run:
-        require_confirmation(
-            params,
-            build_confirmation(
-                operation=operation,
-                params=params,
-                title="Confirm xattr repair",
-                message=f"Repair known-safe macOS metadata issues under {path}?",
-                action_title="Repair xattrs",
-                risk="local_write",
-                summary="Repair local mounted-share metadata",
-                context={"path": str(path)},
-                presentation_id="repair_xattrs",
-                presentation_values={"path": str(path)},
-            ),
-        )
-    context.stage("platform_check")
-    if sys.platform != "darwin":
-        raise AppOperationError(
-            "repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.",
-            code="validation_failed",
-        )
-    config = load_optional_env_config(env_path=config_path(params))
-    context.config = config
-    request = repair_xattrs_service.RepairXattrsRequest(
-        path=path,
-        dry_run=dry_run,
-        approve_repairs=not dry_run,
-        recursive=recursive,
-        max_depth=max_depth,
-        include_hidden=include_hidden,
-        include_time_machine=include_time_machine,
-        fix_permissions=fix_permissions,
-        verbose=verbose,
-    )
-    try:
-        result = repair_xattrs_service.run_repair(
-            request,
-            config,
-            callbacks=OperationCallbacks(
-                set_stage=context.stage,
-                update_fields=context.update_fields,
-                log=context.log,
-            ),
-        )
-    except repair_xattrs_service.RepairXattrsServiceError as exc:
-        raise AppOperationError(str(exc) or "repair-xattrs failed", code="validation_failed") from exc
-    return OperationResult(result.returncode == 0, repair_xattrs_payload(result.to_payload_fields()))

@@ -92,7 +92,7 @@ enum DeviceStatusPolicy {
                 return .checking
             case "deploy":
                 return .installing
-            case "activate", "uninstall", "fsck", "repair-xattrs", "flash":
+            case "activate", "uninstall", "fsck", "flash":
                 return .maintaining
             default:
                 break

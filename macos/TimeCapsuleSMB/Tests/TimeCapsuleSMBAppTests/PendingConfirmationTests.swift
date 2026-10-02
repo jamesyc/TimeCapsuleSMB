@@ -386,23 +386,23 @@ final class PendingConfirmationTests: XCTestCase {
     func testPendingConfirmationFormatsLocalizedPresentationValues() throws {
         let event = BackendEvent(
             type: "error",
-            operation: "repair-xattrs",
+            operation: "flash",
             code: "confirmation_required",
             message: "Backend fallback.",
             details: .object([
-                "message": .string("Repair xattrs."),
-                "action_title": .string("Backend repair"),
+                "message": .string("Patch firmware."),
+                "action_title": .string("Backend patch"),
                 "confirmation_id": .string("abc123"),
-                "presentation_id": .string("repair_xattrs"),
-                "presentation_values": .object(["path": .string("/Volumes/Data")])
+                "presentation_id": .string("flash.patch_write"),
+                "presentation_values": .object(["host": .string("capsule.example")])
             ])
         )
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
 
-        XCTAssertEqual(confirmation.title, "Repair Extended Attributes?")
-        XCTAssertEqual(confirmation.message, "Repair known-safe macOS metadata issues under /Volumes/Data?")
-        XCTAssertEqual(confirmation.actionTitle, "Repair xattrs")
+        XCTAssertEqual(confirmation.title, "Patch Firmware Boot Hook?")
+        XCTAssertEqual(confirmation.message, "Patch the primary firmware bank boot hook on capsule.example? Manual power cycle is required after a successful write.")
+        XCTAssertEqual(confirmation.actionTitle, "Write Firmware")
     }
 
     func testPendingConfirmationFallsBackToBackendTextForUnknownPresentationKey() throws {
@@ -429,18 +429,6 @@ final class PendingConfirmationTests: XCTestCase {
 
     func testMaintenanceRunParamsDoNotCarryFrontendConsentFlags() {
         let fsck = OperationParams.Fsck.run(dryRun: false, volume: "Data", noReboot: true, noWait: true, mountWait: 18)
-        let repair = OperationParams.RepairXattrs.params(
-            dryRun: false,
-            path: "/Volumes/Data",
-            options: RepairXattrsOptions(
-                recursive: false,
-                maxDepth: 4,
-                includeHidden: true,
-                includeTimeMachine: true,
-                fixPermissions: true,
-                verbose: true
-            )
-        )
 
         XCTAssertNil(fsck["confirm_fsck"])
         XCTAssertEqual(fsck["dry_run"], .bool(false))
@@ -448,15 +436,5 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(fsck["mount_wait"], .number(18))
         XCTAssertEqual(fsck["no_wait"], .bool(true))
         XCTAssertEqual(fsck["volume"], .string("Data"))
-
-        XCTAssertEqual(repair["path"], .string("/Volumes/Data"))
-        XCTAssertEqual(repair["dry_run"], .bool(false))
-        XCTAssertEqual(repair["recursive"], .bool(false))
-        XCTAssertEqual(repair["max_depth"], .number(4))
-        XCTAssertEqual(repair["include_hidden"], .bool(true))
-        XCTAssertEqual(repair["include_time_machine"], .bool(true))
-        XCTAssertEqual(repair["fix_permissions"], .bool(true))
-        XCTAssertEqual(repair["verbose"], .bool(true))
-        XCTAssertNil(repair["confirm_repair"])
     }
 }

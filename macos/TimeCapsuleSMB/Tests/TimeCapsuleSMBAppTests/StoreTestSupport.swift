@@ -1082,23 +1082,3 @@ func testFsckFailedResultPayload(returncode: Int) -> JSONValue {
         "summary_args": .array([.number(Double(returncode))])
     ])
 }
-
-func testRepairXattrsPayload(findings: Int, repairable: Int) -> JSONValue {
-    .object([
-        "schema_version": .number(1),
-        "returncode": .number(0),
-        "root": .string("/Volumes/Data"),
-        "finding_count": .number(Double(findings)),
-        "repairable_count": .number(Double(repairable)),
-        "counts": .object([
-            "findings": .number(Double(findings)),
-            "repairable": .number(Double(repairable))
-        ]),
-        "stats": .object([:]),
-        "report": .string("report"),
-        "summary": .string("Found \(findings) metadata \(findings == 1 ? "issue" : "issues"), \(repairable) repairable."),
-        "summary_key": .string("repair_xattrs_found"),
-        "summary_args": .array([.number(Double(findings)), .number(Double(repairable))]),
-        "summary_text": .string("Found \(findings) metadata \(findings == 1 ? "issue" : "issues"), \(repairable) repairable.")
-    ])
-}

@@ -67,10 +67,6 @@ final class PluralLocalizationTests: XCTestCase {
             (.portuguese, "backend.summary.discovered_devices", [.int(0)], "0 dispositivos encontrados."),
             (.portuguese, "backend.summary.discovered_devices", [.int(1)], "1 dispositivo encontrado."),
             (.portuguese, "backend.summary.discovered_devices", [.int(2)], "2 dispositivos encontrados."),
-            (.portuguese, "backend.summary.repair_xattrs_found", [.int(0), .int(0)],
-             "Foram encontrados 0 problemas de metadados; 0 são reparáveis."),
-            (.portuguese, "backend.summary.repair_xattrs_found", [.int(1), .int(1)],
-             "Foi encontrado 1 problema de metadados; 1 é reparável."),
             (.russian, "backend.summary.discovered_devices", [.int(1)], "Обнаружено 1 устройство."),
             (.russian, "backend.summary.discovered_devices", [.int(3)], "Обнаружено 3 устройства."),
             (.russian, "backend.summary.discovered_devices", [.int(11)], "Обнаружено 11 устройств."),
@@ -84,18 +80,6 @@ final class PluralLocalizationTests: XCTestCase {
             (.russian, "backend.summary.hfs_volumes_found", [.int(1)], "Найден 1 смонтированный том HFS."),
             (.russian, "backend.summary.hfs_volumes_found", [.int(2)], "Найдено 2 смонтированных тома HFS."),
             (.russian, "backend.summary.hfs_volumes_found", [.int(5)], "Найдено 5 смонтированных томов HFS."),
-            (.english, "backend.summary.repair_xattrs_found", [.int(1), .int(0)], "Found 1 metadata issue, 0 repairable."),
-            (.english, "backend.summary.repair_xattrs_found", [.int(3), .int(1)], "Found 3 metadata issues, 1 repairable."),
-            (.french, "backend.summary.repair_xattrs_found", [.int(1), .int(1)],
-             "1 problème de métadonnées trouvé, dont 1 réparable."),
-            (.french, "backend.summary.repair_xattrs_found", [.int(3), .int(2)],
-             "3 problèmes de métadonnées trouvés, dont 2 réparables."),
-            (.russian, "backend.summary.repair_xattrs_found", [.int(1), .int(1)],
-             "Найдена 1 проблема с метаданными, из них 1 исправимая."),
-            (.russian, "backend.summary.repair_xattrs_found", [.int(22), .int(5)],
-             "Найдено 22 проблемы с метаданными, из них 5 исправимых."),
-            (.lithuanian, "backend.summary.repair_xattrs_found", [.int(2), .int(0)],
-             "Rastos 2 metaduomenų problemos, iš jų 0 pataisomų."),
             (.english, "backend.summary.flash.apple_some_match", [.int(1), .int(2)],
              "1 of 2 candidate firmware banks matches Apple stock firmware."),
             (.english, "backend.summary.flash.apple_some_match_version", [.int(2), .int(3), .string("7.8.1")],
@@ -110,15 +94,6 @@ final class PluralLocalizationTests: XCTestCase {
              "1 iš 21 tikrinamo programinės įrangos banko atitinka Apple originalią programinę įrangą."),
             (.simplifiedChinese, "backend.summary.flash.apple_some_match_version", [.int(1), .int(2), .string("7.8.1")],
              "2 个候选固件区中有 1 个与苹果原厂固件 7.8.1 匹配。"),
-            (.english, "backend.summary.repair_xattrs_no_safe_repairs", [.int(1)],
-             "Found 1 metadata issue, but no known-safe repair is available."),
-            (.russian, "backend.summary.repair_xattrs_no_safe_repairs", [.int(5)],
-             "Найдено 5 проблем с метаданными, но известного безопасного исправления нет."),
-            (.english, "backend.summary.repair_xattrs_unresolved", [.int(1)], "1 metadata issue remains after repair."),
-            (.english, "backend.summary.repair_xattrs_unresolved", [.int(2)], "2 metadata issues remain after repair."),
-            (.german, "backend.summary.repair_xattrs_unresolved", [.int(1)], "Nach der Reparatur bleibt 1 Metadatenproblem bestehen."),
-            (.russian, "backend.summary.repair_xattrs_unresolved", [.int(21)], "После исправления осталась 21 проблема с метаданными."),
-            (.lithuanian, "backend.summary.repair_xattrs_unresolved", [.int(12)], "Po taisymo liko 12 metaduomenų problemų.")
         ]
 
         for (language, key, arguments, expected) in cases {
@@ -173,7 +148,7 @@ final class PluralLocalizationTests: XCTestCase {
     func testEveryPluralKeyRendersTheExpectedFormAtEveryBoundaryCount() throws {
         let cldr = try loadCLDR()
         let english = try pluralEntries(.english)
-        XCTAssertEqual(english.count, 18)
+        XCTAssertEqual(english.count, 15)
         XCTAssertEqual(Set(cldr.categories.keys), Set(Self.languages.map(\.rawValue)))
         for language in Self.languages {
             let entries = try pluralEntries(language)

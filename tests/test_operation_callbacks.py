@@ -30,13 +30,13 @@ class OperationCallbacksTests(unittest.TestCase):
 
         callbacks.stage("scan")
         callbacks.message("scanning")
-        callbacks.debug(source="repair-xattrs", attempt=1)
+        callbacks.debug(source="doctor", attempt=1)
         callbacks.update(scanned_paths=4)
         callbacks.measurement("runtime_verification", timeout_sec=200)
 
         self.assertEqual(stages, ["scan"])
         self.assertEqual(logs, ["scanning"])
-        self.assertEqual(debug_fields, [{"source": "repair-xattrs", "attempt": 1}])
+        self.assertEqual(debug_fields, [{"source": "doctor", "attempt": 1}])
         self.assertEqual(update_fields, [{"scanned_paths": 4}])
         self.assertEqual(measurements, [("runtime_verification", {"timeout_sec": 200})])
 
@@ -45,7 +45,7 @@ class OperationCallbacksTests(unittest.TestCase):
 
         callbacks.stage("scan")
         callbacks.message("scanning")
-        callbacks.debug(source="repair-xattrs")
+        callbacks.debug(source="doctor")
         callbacks.update(scanned_paths=4)
         callbacks.measurement("runtime_verification", timeout_sec=200)
 

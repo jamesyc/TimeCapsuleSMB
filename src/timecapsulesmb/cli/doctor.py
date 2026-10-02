@@ -31,8 +31,6 @@ def print_followup_help() -> None:
     print("    sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder")
     print("- (If you have disk corruption issues, or error 22) then try running:")
     print("    .venv/bin/tcapsule fsck")
-    print("- (If you have xattr issues, or macOS Error -50) then try running:")
-    print("    .venv/bin/tcapsule repair-xattrs")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
