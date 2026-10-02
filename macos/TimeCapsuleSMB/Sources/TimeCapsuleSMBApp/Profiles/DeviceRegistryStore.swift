@@ -43,6 +43,17 @@ final class DeviceRegistryStore: ObservableObject {
     let devicesDirectoryURL: URL
 
     private let repository: DeviceRegistryRepository
+    private var operationUpdateTask: Task<Void, Never>?
+
+    // Enqueue when an event arrives: independent Tasks can reach the repository
+    // out of order despite actor isolation. Share ordering across sessions too.
+    func enqueueOperationUpdate(_ update: @escaping @MainActor () async -> Void) {
+        let previous = operationUpdateTask
+        operationUpdateTask = Task {
+            await previous?.value
+            await update()
+        }
+    }
 
     convenience init() {
         let appSupport = BundleLayout.applicationSupportDirectory() ?? FileManager.default.homeDirectoryForCurrentUser
@@ -484,6 +495,11 @@ private actor DeviceRegistryRepository {
             return nil
         }
         var updatedProfiles = profiles
+        if runtimeState != nil {
+            // Finish an orphaned attempt too, so reload cannot undo this fresh
+            // SSH-backed observation. Dashboard updates are enqueued in order.
+            updatedProfiles[index] = profileWithInterruptedRuntimeState(updatedProfiles[index])
+        }
         updatedProfiles[index].lastCheckup = snapshot
         if let runtimeState {
             updatedProfiles[index].runtimeState = runtimeState
@@ -716,35 +732,25 @@ private actor DeviceRegistryRepository {
         }
         let interruptedAt = now()
         var updated = profile
-        if let deployState = profile.lastDeployState, deployState.status.isInProgress {
-            updated.lastDeployState = DeviceDeployStateSnapshot(
-                operationID: deployState.operationID,
-                startedAt: deployState.startedAt,
-                updatedAt: interruptedAt,
-                finishedAt: interruptedAt,
-                status: .interrupted,
-                stage: deployState.stage,
-                payloadFamily: deployState.payloadFamily,
-                rebootRequested: deployState.rebootRequested,
-                verified: deployState.verified,
-                summary: "",
-                errorCode: "operation_interrupted",
-                errorMessage: nil,
-                recovery: deployState.recovery
-            )
+        if var deployState = profile.lastDeployState, deployState.status.isInProgress {
+            deployState.updatedAt = interruptedAt
+            deployState.finishedAt = interruptedAt
+            deployState.status = .interrupted
+            deployState.summary = ""
+            deployState.summaryRef = nil
+            deployState.errorCode = "operation_interrupted"
+            deployState.errorMessage = nil
+            deployState.diagnosticText = nil
+            updated.lastDeployState = deployState
         }
-        if let runtimeState = profile.runtimeState, runtimeState.state == .installing {
-            updated.runtimeState = DeviceRuntimeStateSnapshot(
-                state: .installInterrupted,
-                source: .appRecovery,
-                stage: runtimeState.stage,
-                payloadFamily: runtimeState.payloadFamily,
-                verified: runtimeState.verified,
-                summary: "",
-                errorCode: "operation_interrupted",
-                errorMessage: nil,
-                recovery: runtimeState.recovery
-            )
+        if var runtimeState = profile.runtimeState, runtimeState.state == .installing {
+            runtimeState.state = .installInterrupted
+            runtimeState.source = .appRecovery
+            runtimeState.summary = ""
+            runtimeState.summaryRef = nil
+            runtimeState.errorCode = "operation_interrupted"
+            runtimeState.errorMessage = nil
+            updated.runtimeState = runtimeState
         } else if let deployState = profile.lastDeployState, deployState.status.isInProgress {
             updated.runtimeState = DeviceRuntimeStateSnapshot(
                 state: .installInterrupted,

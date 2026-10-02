@@ -1,10 +1,17 @@
+import Combine
 import Foundation
 
 @MainActor
 final class MaintenanceWorkflowOperation {
     let name: String
 
-    private let runner: MaintenanceOperationRunner
+    private let coordinator: OperationCoordinator
+    private let lane: OperationLane
+    private var backend: BackendClient { lane.backend }
+    private let operationObserver = BackendOperationObserver()
+    private var cancellables: Set<AnyCancellable> = []
+    private var eventHandler: (BackendEvent, ActiveOperation) -> Void = { _, _ in }
+    private var runningChangedHandler: () -> Void = {}
 
     init(
         name: String,
@@ -13,50 +20,61 @@ final class MaintenanceWorkflowOperation {
         laneKey: OperationLaneKey? = nil
     ) {
         self.name = name
-        self.runner = MaintenanceOperationRunner(
-            backend: backend,
-            coordinator: coordinator,
-            laneKey: laneKey,
-            onEvent: { _, _ in },
-            onRunningChanged: {}
-        )
+        let coordinator = coordinator ?? OperationCoordinator(backend: backend)
+        self.coordinator = coordinator
+        self.lane = coordinator.lane(for: laneKey ?? .app)
+
+        self.backend.didUpdateEvents
+            .sink { [weak self] events in
+                // Consume terminal events before another run can clear this request's history.
+                self?.process(events)
+            }
+            .store(in: &cancellables)
+        self.backend.$isRunning
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.runningChangedHandler()
+            }
+            .store(in: &cancellables)
     }
 
     func bind(
         onEvent: @escaping (BackendEvent, ActiveOperation) -> Void,
         onRunningChanged: @escaping () -> Void
     ) {
-        runner.rebind(onEvent: onEvent, onRunningChanged: onRunningChanged)
+        eventHandler = onEvent
+        runningChangedHandler = onRunningChanged
     }
 
-    var events: [BackendEvent] { runner.events }
-    var isRunning: Bool { runner.isRunning }
-    var isBusy: Bool { runner.isBusy }
-    var canCancel: Bool { runner.canCancel }
-    var pendingConfirmation: PendingConfirmation? { runner.pendingConfirmation }
+    var events: [BackendEvent] { backend.events }
+    var isRunning: Bool { backend.isRunning }
+    var isBusy: Bool { lane.isBusy }
+    var canCancel: Bool { lane.canCancel }
+    var pendingConfirmation: PendingConfirmation? { backend.pendingConfirmation }
 
     func confirmPending() {
-        runner.confirmPending()
+        lane.confirmPending()
     }
 
     func cancelPendingConfirmation() {
-        runner.cancelPendingConfirmation()
+        lane.cancelPendingConfirmation()
     }
 
     func cancel() {
-        runner.cancel()
+        lane.cancel()
     }
 
     func clear() {
-        runner.clear()
+        backend.clear()
+        operationObserver.clear()
     }
 
     func resetForRun() {
-        runner.resetForRun()
+        clear()
     }
 
     func finishObserver() {
-        runner.finishObserver()
+        operationObserver.finish()
     }
 
     @discardableResult
@@ -73,11 +91,27 @@ final class MaintenanceWorkflowOperation {
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         resetRunState()
-        let start = runner.start(operation: name, params: params, profile: profile, password: password)
-        if case .rejected(let message) = start {
+        let start = coordinator.run(
+            operation: name,
+            params: params,
+            context: profile?.runtimeContext,
+            activeDeviceID: profile?.id,
+            password: password,
+            laneKey: lane.key
+        )
+        switch start {
+        case .started(let operation):
+            operationObserver.start(operation)
+        case .rejected(let message):
             rejectRun(message)
         }
         return start
+    }
+
+    private func process(_ events: [BackendEvent]) {
+        operationObserver.process(events) { event, operation in
+            eventHandler(event, operation)
+        }
     }
 
     func localError(_ localError: WorkflowLocalError) -> BackendErrorViewModel {

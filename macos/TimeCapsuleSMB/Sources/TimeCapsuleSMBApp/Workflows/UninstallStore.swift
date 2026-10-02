@@ -41,7 +41,6 @@ final class UninstallStore: ObservableObject {
 
     func cancelPendingConfirmation() {
         operation.cancelPendingConfirmation()
-        state = .idle
     }
 
     func cancel() {

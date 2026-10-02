@@ -80,7 +80,6 @@ final class FsckStore: ObservableObject {
     func cancelPendingConfirmation(options: MaintenanceOptions?) {
         latestOptions = options
         operation.cancelPendingConfirmation()
-        restoreStateAfterCancellation(options: options)
     }
 
     func cancel() {

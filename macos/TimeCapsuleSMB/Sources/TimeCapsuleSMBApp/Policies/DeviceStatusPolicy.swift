@@ -121,7 +121,8 @@ enum DeviceStatusPolicy {
             case .notInstalled:
                 return .readyToInstall
             case .installing:
-                return .installing
+                // Only a live coordinator operation can report work in progress.
+                return .failed
             case .installedVerified:
                 return .healthy
             case .installedUnverified:

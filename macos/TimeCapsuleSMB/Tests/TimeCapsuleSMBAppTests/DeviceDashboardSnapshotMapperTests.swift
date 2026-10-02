@@ -88,8 +88,8 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         )
         XCTAssertEqual(succeeded.deployState.operationID, operation.id.uuidString)
         XCTAssertEqual(succeeded.deployState.startedAt, finishedAt)
-        XCTAssertEqual(failed?.deployState.operationID, operation.id.uuidString)
-        XCTAssertEqual(failed?.deployState.startedAt, finishedAt)
+        XCTAssertEqual(failed.deployState.operationID, operation.id.uuidString)
+        XCTAssertEqual(failed.deployState.startedAt, finishedAt)
 
         profile.lastDeployState?.operationID = operation.id.uuidString
         let sameOperation = DeviceDashboardSnapshotMapper.succeededDeploySnapshots(
@@ -101,6 +101,37 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
             finishedAt: finishedAt
         )
         XCTAssertEqual(sameOperation.deployState.startedAt, prior.startedAt)
+    }
+
+    func testProgressKeepsAttemptDetailsWhileUpdatingItsStage() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+        let observedAt = Date(timeIntervalSince1970: 200)
+        var current = testDeployState(status: .deploying, startedAt: startedAt,
+            finishedAt: nil, summary: "Waiting for confirmation", diagnosticText: "old diagnostic")
+        current.operationID = "current-attempt"
+        current.summaryRef = BackendSummary(key: "deploy.result.default_message", text: current.summary)
+        let runtime = testRuntimeState(state: .installing, summary: "Preparing install")
+
+        for previousRuntime in [nil, runtime] {
+            let next = DeviceDashboardSnapshotMapper.inProgressDeploySnapshots(
+                current: current, runtimeState: previousRuntime, status: .awaitingConfirmation,
+                stage: "confirm_reboot", observedAt: observedAt)
+
+            XCTAssertEqual(next.deployState.operationID, current.operationID)
+            XCTAssertEqual(next.deployState.startedAt, startedAt)
+            XCTAssertEqual(next.deployState.updatedAt, observedAt)
+            XCTAssertEqual(next.deployState.status, .awaitingConfirmation)
+            XCTAssertEqual(next.deployState.stage, "confirm_reboot")
+            XCTAssertEqual(next.deployState.payloadFamily, current.payloadFamily)
+            XCTAssertEqual(next.deployState.summaryRef, current.summaryRef)
+            XCTAssertEqual(next.deployState.summary, current.summary)
+            XCTAssertNil(next.deployState.finishedAt)
+            XCTAssertNil(next.deployState.diagnosticText)
+            XCTAssertEqual(next.runtimeState.state, .installing)
+            XCTAssertEqual(next.runtimeState.stage, "confirm_reboot")
+            XCTAssertEqual(next.runtimeState.summary, previousRuntime?.summary ?? "")
+            XCTAssertEqual(next.runtimeState.payloadFamily, previousRuntime?.payloadFamily ?? current.payloadFamily)
+        }
     }
 
     func testSucceededDeploySnapshotsKeepTheResultSummaryKey() throws {

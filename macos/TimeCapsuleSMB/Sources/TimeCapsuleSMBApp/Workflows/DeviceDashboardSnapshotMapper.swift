@@ -25,9 +25,6 @@ enum DeviceDashboardSnapshotMapper {
         guard !skipSSH, let profile else {
             return nil
         }
-        if profile.runtimeState?.state == .installing {
-            return nil
-        }
 
         let countSummary = L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
         let countSummaryRef = BackendSummary(
@@ -140,23 +137,14 @@ enum DeviceDashboardSnapshotMapper {
         stage: String?,
         observedAt: Date
     ) -> (deployState: DeviceDeployStateSnapshot, runtimeState: DeviceRuntimeStateSnapshot) {
-        (
-            deployState: DeviceDeployStateSnapshot(
-                operationID: current.operationID,
-                startedAt: current.startedAt,
-                updatedAt: observedAt,
-                finishedAt: nil,
-                status: status,
-                stage: stage,
-                payloadFamily: current.payloadFamily,
-                rebootRequested: current.rebootRequested,
-                verified: current.verified,
-                summary: current.summary,
-                summaryRef: current.summaryRef,
-                errorCode: current.errorCode,
-                errorMessage: current.errorMessage,
-                recovery: current.recovery
-            ),
+        var deployState = current
+        deployState.updatedAt = observedAt
+        deployState.finishedAt = nil
+        deployState.status = status
+        deployState.stage = stage
+        deployState.diagnosticText = nil
+        return (
+            deployState: deployState,
             runtimeState: DeviceRuntimeStateSnapshot(
                 state: .installing,
                 source: .deploy,
@@ -179,7 +167,7 @@ enum DeviceDashboardSnapshotMapper {
         payloadFamily: String?,
         error: BackendErrorViewModel?,
         failedAt: Date
-    ) -> (deployState: DeviceDeployStateSnapshot, runtimeState: DeviceRuntimeStateSnapshot)? {
+    ) -> (deployState: DeviceDeployStateSnapshot, runtimeState: DeviceRuntimeStateSnapshot) {
         let current = profile?.lastDeployState?.operationID == operation.id.uuidString
             ? profile?.lastDeployState : nil
         let errorCode = error?.code

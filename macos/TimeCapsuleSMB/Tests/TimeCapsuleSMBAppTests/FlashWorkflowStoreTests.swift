@@ -385,43 +385,56 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testWriteConfirmationCancellationRestoresPlanAvailable() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "error",
-                    operation: "flash",
-                    code: "confirmation_required",
-                    message: "Confirm?",
-                    details: .object([
-                        "confirmation_id": .string("confirm-1"),
-                        "presentation_id": .string("flash.patch_write"),
-                        "presentation_values": .object(["host": .string("10.0.0.2")])
-                    ])
-                )
+        for mode in [FlashPlanMode.patch, .restore] {
+            let runner = PausingStoreTestRunner(responses: [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+                ]),
+                .init(events: [
+                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: mode, writeRequested: true))
+                ]),
+                .init(events: [
+                    BackendEvent(
+                        type: "error",
+                        operation: "flash",
+                        code: "confirmation_required",
+                        message: "Confirm?",
+                        details: .object([
+                            "confirmation_id": .string("confirm-1"),
+                            "presentation_id": .string("flash.patch_write"),
+                            "presentation_values": .object(["host": .string("10.0.0.2")])
+                        ])
+                    )
+                ], pauseAfterEvents: true)
             ])
-        ])
-        let backend = BackendClient(runner: runner)
-        let store = FlashWorkflowStore(backend: backend)
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        store.refresh(profile: profile)
+            defer { runner.finishAll() }
+            let backend = BackendClient(runner: runner)
+            let coordinator = OperationCoordinator(backend: backend)
+            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+            let store = FlashWorkflowStore(coordinator: coordinator, laneKey: .deviceWorkflow(profile.id, .flash))
+            store.refresh(profile: profile)
 
-        store.backupAndInspect(password: "pw", profile: profile)
-        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
-        store.planFlash(mode: .patch, profile: profile)
-        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
+            store.backupAndInspect(password: "pw", profile: profile)
+            try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+            store.planFlash(mode: mode, profile: profile)
+            try await waitUntilStoreState { store.plan != nil && !store.isBusy }
 
-        store.write(mode: .patch, password: "pw", profile: profile)
-        try await waitUntilStoreState { store.state == .awaitingStrongConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
-
-        backend.cancelPendingConfirmation()
-
-        try await waitUntilStoreState { store.state == .planAvailable && backend.pendingConfirmation == nil }
+            store.write(mode: mode, password: "pw", profile: profile)
+            try await waitUntilStoreState { store.state == .awaitingStrongConfirmation }
+            XCTAssertTrue(coordinator.isDeviceBusy(profile))
+            XCTAssertNil(coordinator.readyConfirmation)
+            runner.finishAll()
+            try await waitUntilStoreState { coordinator.readyConfirmation != nil }
+            let pending = try XCTUnwrap(coordinator.readyConfirmation)
+            coordinator.cancel(pending)
+            coordinator.cancel(pending)
+            XCTAssertEqual(store.state, .planAvailable)
+            XCTAssertFalse(coordinator.isDeviceBusy(profile))
+            XCTAssertFalse(store.isBusy)
+            XCTAssertNil(store.currentStage)
+            XCTAssertNil(coordinator.readyConfirmation)
+            XCTAssertEqual(runner.calls.count, 3)
+        }
     }
 
     func testValidatedPatchWriteShowsManualPowerCycleNotice() async throws {

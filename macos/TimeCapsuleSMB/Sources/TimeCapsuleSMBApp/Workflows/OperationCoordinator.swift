@@ -129,7 +129,6 @@ final class OperationLane: ObservableObject {
     let backend: BackendClient
 
     @Published private(set) var activeOperation: ActiveOperation?
-    @Published private(set) var rejectedOperationMessage: String?
 
     var onStateChanged: (() -> Void)?
 
@@ -168,10 +167,7 @@ final class OperationLane: ObservableObject {
         password: String? = nil
     ) -> OperationStartResult {
         guard !isBusy else {
-            let message = L10n.string("operation.error.already_running")
-            rejectedOperationMessage = message
-            onStateChanged?()
-            return .rejected(message)
+            return .rejected(L10n.string("operation.error.already_running"))
         }
 
         let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
@@ -181,7 +177,6 @@ final class OperationLane: ObservableObject {
             profileID: activeDeviceID,
             context: context
         )
-        rejectedOperationMessage = nil
         self.activeOperation = activeOperation
         backend.run(
             operation: operation,
@@ -191,11 +186,6 @@ final class OperationLane: ObservableObject {
         )
         onStateChanged?()
         return .started(activeOperation)
-    }
-
-    func reject(_ message: String) {
-        rejectedOperationMessage = message
-        onStateChanged?()
     }
 
     func confirmPending() {
@@ -219,7 +209,6 @@ final class OperationLane: ObservableObject {
 
     func clear() {
         backend.clear()
-        rejectedOperationMessage = nil
         activeOperation = nil
         onStateChanged?()
     }
@@ -228,10 +217,6 @@ final class OperationLane: ObservableObject {
 @MainActor
 final class OperationCoordinator: ObservableObject {
     @Published private(set) var activeOperations: [OperationLaneKey: ActiveOperation] = [:]
-    @Published private(set) var activeOperation: ActiveOperation?
-    @Published private(set) var activeDeviceID: DeviceProfile.ID?
-    @Published private(set) var rejectedOperationMessages: [OperationLaneKey: String] = [:]
-    @Published private(set) var rejectedOperationMessage: String?
     @Published private(set) var lanesRevision = 0
     @Published private(set) var readyConfirmation: PendingConfirmation?
 
@@ -368,10 +353,7 @@ final class OperationCoordinator: ObservableObject {
         let lane = lane(for: resolvedLaneKey)
         if let resourceKey = resourceKey(for: resolvedLaneKey, activeDeviceID: activeDeviceID),
            conflictingLane(for: resourceKey, excluding: resolvedLaneKey) != nil {
-            let message = L10n.string("operation.error.already_running")
-            lane.reject(message)
-            refreshLaneState()
-            return .rejected(message)
+            return .rejected(L10n.string("operation.error.already_running"))
         }
         let result = lane.run(
             operation: operation,
@@ -475,13 +457,7 @@ final class OperationCoordinator: ObservableObject {
     }
 
     private func refreshLaneState() {
-        let active = lanes.compactMapValues(\.activeOperation)
-        activeOperations = active
-        rejectedOperationMessages = lanes.compactMapValues(\.rejectedOperationMessage)
-        rejectedOperationMessage = primaryRejection(from: rejectedOperationMessages)
-        let primary = primaryLane()
-        activeOperation = primary?.activeOperation
-        activeDeviceID = activeOperation?.profileID
+        activeOperations = lanes.compactMapValues(\.activeOperation)
         // Keep the displayed request stable while other devices finish. A pending
         // confirmation reserves its device even before it can be presented.
         if readyConfirmation.flatMap({ confirmationLane(for: $0) }) == nil {
@@ -552,13 +528,6 @@ final class OperationCoordinator: ObservableObject {
             return .device(profileID)
         }
         return nil
-    }
-
-    private func primaryRejection(from messages: [OperationLaneKey: String]) -> String? {
-        if let primaryKey = primaryLane()?.key, let message = messages[primaryKey] {
-            return message
-        }
-        return messages.values.first
     }
 
     private func syncHelperPath(_ helperPath: String) {

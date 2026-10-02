@@ -102,8 +102,8 @@ final class DoctorStore: ObservableObject {
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
     let backend: BackendClient
-    private let coordinator: OperationCoordinator?
-    private let laneKey: OperationLaneKey?
+    private let coordinator: OperationCoordinator
+    private let laneKey: OperationLaneKey
 
     private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
@@ -112,11 +112,8 @@ final class DoctorStore: ObservableObject {
         self.init(backend: BackendClient())
     }
 
-    init(backend: BackendClient) {
-        self.backend = backend
-        self.coordinator = nil
-        self.laneKey = nil
-        observeBackend(backend)
+    convenience init(backend: BackendClient) {
+        self.init(coordinator: OperationCoordinator(backend: backend), laneKey: .app)
     }
 
     convenience init(coordinator: OperationCoordinator) {
@@ -132,11 +129,10 @@ final class DoctorStore: ObservableObject {
     }
 
     private func observeBackend(_ backend: BackendClient) {
-        backend.$events
+        backend.didUpdateEvents
             .sink { [weak self] events in
-                Task { @MainActor in
-                    self?.process(events)
-                }
+                // Consume terminal events before another run can clear this request's history.
+                self?.process(events)
             }
             .store(in: &cancellables)
         backend.$isRunning
@@ -170,15 +166,17 @@ final class DoctorStore: ObservableObject {
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         backend.clear()
-        let start = run(
+        let start = coordinator.run(
             operation: "doctor",
             params: OperationParams.Doctor.run(
                 skipSSH: skipSSH,
                 skipBonjour: skipBonjour,
                 skipSMB: skipSMB
             ),
-            profile: profile,
-            password: password
+            context: profile?.runtimeContext,
+            activeDeviceID: profile?.id,
+            password: password,
+            laneKey: laneKey
         )
         guard case .started(let operation) = start else {
             if let message = start.rejectionMessage {
@@ -299,35 +297,4 @@ final class DoctorStore: ObservableObject {
         operationObserver.finish()
     }
 
-    private func run(
-        operation: String,
-        params: [String: JSONValue],
-        profile: DeviceProfile?,
-        password: String? = nil
-    ) -> OperationStartResult {
-        if let coordinator {
-            return coordinator.run(
-                operation: operation,
-                params: params,
-                context: profile?.runtimeContext,
-                activeDeviceID: profile?.id,
-                password: password,
-                laneKey: laneKey
-            )
-        } else {
-            guard !isBusy else {
-                return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-            }
-            let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
-            let context = profile?.runtimeContext
-            let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-            backend.run(
-                operation: operation,
-                params: updatedParams,
-                context: context,
-                requestID: activeOperation.id.uuidString
-            )
-            return .started(activeOperation)
-        }
-    }
 }

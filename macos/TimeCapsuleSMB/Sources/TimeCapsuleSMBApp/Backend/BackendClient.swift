@@ -1,9 +1,15 @@
+import Combine
 import Foundation
 
 @MainActor
 final class BackendClient: ObservableObject {
     @Published var helperPath: String
-    @Published var events: [BackendEvent] = []
+    @Published var events: [BackendEvent] = [] {
+        didSet { didUpdateEvents.send(events) }
+    }
+    // Workflow completion must be consumed before a retry clears history, but
+    // after that history is readable by observers of the resulting store state.
+    let didUpdateEvents = PassthroughSubject<[BackendEvent], Never>()
     @Published var isRunning = false
     @Published var lastExitCode: Int32?
     @Published var pendingConfirmation: PendingConfirmation?
@@ -120,6 +126,12 @@ final class BackendClient: ObservableObject {
     }
 
     fileprivate func appendEvent(_ event: BackendEvent) {
+        // Filter before updating cancellation policy or creating a confirmation;
+        // workflow observers cannot undo those backend changes. Legacy events
+        // without a request ID are still accepted.
+        if let requestID = event.requestId, requestID != activeCall?.requestID {
+            return
+        }
         if event.type == "stage" {
             currentStage = event.stage
             currentRisk = event.risk

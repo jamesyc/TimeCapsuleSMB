@@ -176,11 +176,12 @@ final class DashboardStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
-            ]),
+            ], pauseAfterEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
             ])
         ])
+        defer { fixture.runner.finishAll() }
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
@@ -192,6 +193,9 @@ final class DashboardStoreTests: XCTestCase {
 
         session.runInstall(profile: profile)
         try await waitUntilStoreState { session.deployStore.state == .deployed }
+        XCTAssertTrue(fixture.appStore.operationCoordinator.isDeviceBusy(profile))
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { !fixture.appStore.operationCoordinator.isDeviceBusy(profile) }
 
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         let beforeRefresh = InstallWorkflowPresentation(
@@ -586,6 +590,7 @@ final class DashboardStoreTests: XCTestCase {
             session.doctorStore.state == .warning
                 && fixture.registry.profile(id: profile.id)?.lastCheckup?.state == .warning
                 && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installedUnverified
+                && !fixture.appStore.operationCoordinator.isDeviceBusy(profile)
         }
         let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(checked.lastCheckup?.state, .warning)

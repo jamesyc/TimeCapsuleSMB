@@ -3,9 +3,7 @@ import Foundation
 
 @MainActor
 final class MaintenanceStore: ObservableObject {
-    @Published var selectedWorkflow: MaintenanceWorkflow = .activate {
-        didSet { syncFromWorkflowStores() }
-    }
+    @Published var selectedWorkflow: MaintenanceWorkflow = .activate
     @Published var mountWait = "30" {
         didSet { markPlansStaleForOptionChange() }
     }
@@ -46,35 +44,36 @@ final class MaintenanceStore: ObservableObject {
     @Published var repairVerbose = false {
         didSet { markRepairScanStaleIfNeeded() }
     }
-    @Published var selectedFsckTargetID: FsckTargetViewModel.ID? {
-        didSet {
-            guard selectedFsckTargetID != fsckStore.selectedTargetID else {
-                return
-            }
-            fsckStore.selectTarget(id: selectedFsckTargetID, options: currentOptions)
-            syncFromWorkflowStores()
+    var selectedFsckTargetID: FsckTargetViewModel.ID? {
+        get { fsckStore.selectedTargetID }
+        set {
+            guard newValue != fsckStore.selectedTargetID else { return }
+            fsckStore.selectTarget(id: newValue, options: currentOptions)
         }
     }
 
-    @Published private(set) var activateState: MaintenanceOperationState = .idle
-    @Published private(set) var uninstallState: MaintenanceOperationState = .idle
-    @Published private(set) var fsckState: MaintenanceOperationState = .idle
-    @Published private(set) var repairState: MaintenanceOperationState = .idle
-    @Published private(set) var sshAccessState: MaintenanceOperationState = .idle
+    var activateState: MaintenanceOperationState { activationStore.state }
+    var uninstallState: MaintenanceOperationState { uninstallStore.state }
+    var fsckState: MaintenanceOperationState { fsckStore.state }
+    var repairState: MaintenanceOperationState { repairXattrsStore.state }
+    var sshAccessState: MaintenanceOperationState { sshAccessStore.state }
 
-    @Published private(set) var activationResult: ActivationResultPayload?
-    @Published private(set) var uninstallResult: MaintenanceResultPayload?
-    @Published private(set) var fsckTargets: [FsckTargetViewModel] = []
-    @Published private(set) var fsckPlan: FsckPlanPayload?
-    @Published private(set) var fsckResult: FsckResultPayload?
-    @Published private(set) var repairScan: RepairXattrsPayload?
-    @Published private(set) var repairResult: RepairXattrsPayload?
-    @Published private(set) var sshAccessPayload: SSHAccessPayload?
-    @Published private(set) var currentStage: OperationStageState?
-    @Published private(set) var error: BackendErrorViewModel?
-    @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
-    @Published private(set) var currentStagesByWorkflow: [MaintenanceWorkflow: OperationStageState] = [:]
-    @Published private(set) var errorsByWorkflow: [MaintenanceWorkflow: BackendErrorViewModel] = [:]
+    var activationResult: ActivationResultPayload? { activationStore.result }
+    var uninstallResult: MaintenanceResultPayload? { uninstallStore.result }
+    var fsckTargets: [FsckTargetViewModel] { fsckStore.targets }
+    var fsckPlan: FsckPlanPayload? { fsckStore.plan }
+    var fsckResult: FsckResultPayload? { fsckStore.result }
+    var repairScan: RepairXattrsPayload? { repairXattrsStore.scan }
+    var repairResult: RepairXattrsPayload? { repairXattrsStore.result }
+    var sshAccessPayload: SSHAccessPayload? { sshAccessStore.payload }
+
+    var currentStage: OperationStageState? {
+        currentStage(for: selectedWorkflow) ?? workflowStores.lazy.compactMap { $0.currentStage }.first
+    }
+
+    var error: BackendErrorViewModel? {
+        error(for: selectedWorkflow) ?? workflowStores.lazy.compactMap { $0.error }.first
+    }
 
     let backend: BackendClient
     let activationStore: ActivationStore
@@ -83,7 +82,7 @@ final class MaintenanceStore: ObservableObject {
     let repairXattrsStore: RepairXattrsStore
     let sshAccessStore: SSHAccessMaintenanceStore
 
-    private let coordinator: OperationCoordinator?
+    private let coordinator: OperationCoordinator
     private let laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
     private var cancellables: Set<AnyCancellable> = []
 
@@ -91,18 +90,8 @@ final class MaintenanceStore: ObservableObject {
         self.init(backend: BackendClient())
     }
 
-    init(backend: BackendClient) {
-        let backendsByWorkflow = Self.standaloneBackends(primary: backend)
-        self.backend = backend
-        self.coordinator = nil
-        self.laneKeysByWorkflow = [:]
-        self.activationStore = ActivationStore(backend: backendsByWorkflow[.activate] ?? backend)
-        self.uninstallStore = UninstallStore(backend: backendsByWorkflow[.uninstall] ?? backend.makeSibling())
-        self.fsckStore = FsckStore(backend: backendsByWorkflow[.fsck] ?? backend.makeSibling())
-        self.repairXattrsStore = RepairXattrsStore(backend: backendsByWorkflow[.repairXattrs] ?? backend.makeSibling())
-        self.sshAccessStore = SSHAccessMaintenanceStore(backend: backendsByWorkflow[.sshAccess] ?? backend.makeSibling())
-        observeWorkflowStores()
-        syncFromWorkflowStores()
+    convenience init(backend: BackendClient) {
+        self.init(coordinator: OperationCoordinator(backend: backend))
     }
 
     convenience init(coordinator: OperationCoordinator) {
@@ -144,13 +133,6 @@ final class MaintenanceStore: ObservableObject {
             laneKey: laneKeysByWorkflow[.sshAccess]
         )
         observeWorkflowStores()
-        syncFromWorkflowStores()
-    }
-
-    private static func standaloneBackends(primary backend: BackendClient) -> [MaintenanceWorkflow: BackendClient] {
-        Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
-            workflow == .activate ? (workflow, backend) : (workflow, backend.makeSibling())
-        })
     }
 
     private static func coordinatedBackends(
@@ -191,9 +173,7 @@ final class MaintenanceStore: ObservableObject {
     private func observe<Store: ObservableObject>(_ store: Store) where Store.ObjectWillChangePublisher == ObservableObjectPublisher {
         store.objectWillChange
             .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.syncFromWorkflowStores()
-                }
+                self?.objectWillChange.send()
             }
             .store(in: &cancellables)
     }
@@ -208,7 +188,7 @@ final class MaintenanceStore: ObservableObject {
 
     var isBusy: Bool {
         let maintenanceBusy = workflowStores.contains { $0.isBusy }
-        let deviceBusy = deviceProfileID.map { coordinator?.isDeviceBusy($0) ?? false } == true
+        let deviceBusy = deviceProfileID.map { coordinator.isDeviceBusy($0) } == true
         return maintenanceBusy || deviceBusy
     }
 
@@ -221,11 +201,11 @@ final class MaintenanceStore: ObservableObject {
     }
 
     func currentStage(for workflow: MaintenanceWorkflow) -> OperationStageState? {
-        currentStagesByWorkflow[workflow]
+        workflowStore(for: workflow).currentStage
     }
 
     func error(for workflow: MaintenanceWorkflow) -> BackendErrorViewModel? {
-        errorsByWorkflow[workflow]
+        workflowStore(for: workflow).error
     }
 
     func pendingConfirmation(for workflow: MaintenanceWorkflow) -> PendingConfirmation? {
@@ -249,7 +229,6 @@ final class MaintenanceStore: ObservableObject {
         case .repairXattrs:
             repairXattrsStore.cancelPendingConfirmation(path: trimmedRepairPath, options: currentRepairOptions)
         }
-        syncFromWorkflowStores()
     }
 
     var mountWaitValue: Int? {
@@ -383,7 +362,6 @@ final class MaintenanceStore: ObservableObject {
         fsckStore.clear()
         repairXattrsStore.clear()
         sshAccessStore.clear()
-        syncFromWorkflowStores()
     }
 
     func cancel() {
@@ -400,9 +378,7 @@ final class MaintenanceStore: ObservableObject {
         rejectAlreadyRunning: () -> OperationStartResult,
         start: () -> OperationStartResult
     ) -> OperationStartResult {
-        let result = begin(workflow: workflow) ? start() : rejectAlreadyRunning()
-        syncFromWorkflowStores()
-        return result
+        begin(workflow: workflow) ? start() : rejectAlreadyRunning()
     }
 
     private var workflowStores: [any MaintenanceWorkflowStore] {
@@ -476,67 +452,10 @@ final class MaintenanceStore: ObservableObject {
 
     private func markPlansStaleForOptionChange() {
         fsckStore.markPlanStaleIfNeeded(options: currentOptions)
-        syncFromWorkflowStores()
     }
 
     private func markRepairScanStaleIfNeeded() {
         repairXattrsStore.markScanStaleIfNeeded(path: trimmedRepairPath, options: currentRepairOptions)
-        syncFromWorkflowStores()
-    }
-
-    private func syncFromWorkflowStores() {
-        activateState = activationStore.state
-        activationResult = activationStore.result
-
-        uninstallState = uninstallStore.state
-        uninstallResult = uninstallStore.result
-
-        fsckState = fsckStore.state
-        fsckTargets = fsckStore.targets
-        if selectedFsckTargetID != fsckStore.selectedTargetID {
-            selectedFsckTargetID = fsckStore.selectedTargetID
-        }
-        fsckPlan = fsckStore.plan
-        fsckResult = fsckStore.result
-
-        repairState = repairXattrsStore.state
-        repairScan = repairXattrsStore.scan
-        repairResult = repairXattrsStore.result
-
-        sshAccessState = sshAccessStore.state
-        sshAccessPayload = sshAccessStore.payload
-
-        currentStagesByWorkflow = workflowStages
-        errorsByWorkflow = workflowErrors
-        currentStage = currentStagesByWorkflow[selectedWorkflow] ?? currentStagesByWorkflow.values.first
-        error = errorsByWorkflow[selectedWorkflow] ?? errorsByWorkflow.values.first
-        passwordInvalidProfileID = [
-            activationStore.passwordInvalidProfileID,
-            uninstallStore.passwordInvalidProfileID,
-            fsckStore.passwordInvalidProfileID,
-            repairXattrsStore.passwordInvalidProfileID,
-            sshAccessStore.passwordInvalidProfileID
-        ].compactMap { $0 }.first
-    }
-
-    private var workflowStages: [MaintenanceWorkflow: OperationStageState] {
-        var stages: [MaintenanceWorkflow: OperationStageState] = [:]
-        stages[.sshAccess] = sshAccessStore.currentStage
-        stages[.activate] = activationStore.currentStage
-        stages[.uninstall] = uninstallStore.currentStage
-        stages[.fsck] = fsckStore.currentStage
-        stages[.repairXattrs] = repairXattrsStore.currentStage
-        return stages
-    }
-
-    private var workflowErrors: [MaintenanceWorkflow: BackendErrorViewModel] {
-        var errors: [MaintenanceWorkflow: BackendErrorViewModel] = [:]
-        errors[.sshAccess] = sshAccessStore.error
-        errors[.activate] = activationStore.error
-        errors[.uninstall] = uninstallStore.error
-        errors[.fsck] = fsckStore.error
-        errors[.repairXattrs] = repairXattrsStore.error
-        return errors
     }
 }
 
@@ -546,6 +465,8 @@ private protocol MaintenanceWorkflowStore: ObservableObject {
     var isRunning: Bool { get }
     var isBusy: Bool { get }
     var canCancel: Bool { get }
+    var currentStage: OperationStageState? { get }
+    var error: BackendErrorViewModel? { get }
     var pendingConfirmation: PendingConfirmation? { get }
     func confirmPending()
     func cancel()

@@ -443,10 +443,11 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             return runtimeNotInstalledRow()
         case .installing:
             return DashboardHealthRow(
-                id: "runtime-installing-stored",
+                id: "runtime-install-interrupted",
                 title: DashboardHealthDomain.runtime.title,
-                detail: runtimeState.localizedSummary,
-                status: .running
+                detail: L10n.string("install.state.deploy_interrupted"),
+                status: .failed,
+                action: .runCheckup
             )
         case .installedVerified:
             return DashboardHealthRow(

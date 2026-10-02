@@ -486,26 +486,36 @@ final class DeviceRegistryStoreTests: XCTestCase {
             passwordState: .available,
             preferredID: "device-one"
         )
-        await store.updateDeployState(testDeployState(
+        var inProgress = testDeployState(
             status: .deploying,
             startedAt: start,
             updatedAt: start,
             finishedAt: nil,
             stage: "read_mast",
             verified: nil,
-            summary: ""
-        ), for: profile.id)
+            summary: "Old summary",
+            errorMessage: "Old error",
+            diagnosticText: "Old diagnostic"
+        )
+        inProgress.operationID = "interrupted-attempt"
+        inProgress.summaryRef = BackendSummary(key: "deploy.result.default_message", text: inProgress.summary)
+        await store.updateDeployState(inProgress, for: profile.id)
 
         let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url, now: { interruptedAt })
         await reloaded.load()
 
         let deployState = try XCTUnwrap(reloaded.profile(id: profile.id)?.lastDeployState)
         XCTAssertEqual(deployState.status, .interrupted)
+        XCTAssertEqual(deployState.operationID, inProgress.operationID)
         XCTAssertEqual(deployState.startedAt, start)
         XCTAssertEqual(deployState.updatedAt, interruptedAt)
         XCTAssertEqual(deployState.finishedAt, interruptedAt)
         XCTAssertEqual(deployState.stage, "read_mast")
         XCTAssertEqual(deployState.errorCode, "operation_interrupted")
+        XCTAssertEqual(deployState.summary, "")
+        XCTAssertNil(deployState.summaryRef)
+        XCTAssertNil(deployState.errorMessage)
+        XCTAssertNil(deployState.diagnosticText)
         XCTAssertEqual(deployState.localizedSummary, "The Samba installation or update was interrupted before it completed.")
         let runtimeState = try XCTUnwrap(reloaded.profile(id: profile.id)?.runtimeState)
         XCTAssertEqual(runtimeState.state, .installInterrupted)
@@ -543,12 +553,15 @@ final class DeviceRegistryStoreTests: XCTestCase {
             verified: nil,
             summary: ""
         ), for: profile.id)
-        await store.updateRuntimeState(testRuntimeState(
+        var installing = testRuntimeState(
             state: .installing,
             stage: "read_mast",
             verified: nil,
-            summary: ""
-        ), for: profile.id)
+            summary: "Old summary",
+            errorMessage: "Old error"
+        )
+        installing.summaryRef = BackendSummary(key: "deploy.result.default_message", text: installing.summary)
+        await store.updateRuntimeState(installing, for: profile.id)
 
         let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url, now: { interruptedAt })
         await reloaded.load()
@@ -557,6 +570,11 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(reloadedProfile.lastCheckup?.state, .passed)
         XCTAssertEqual(reloadedProfile.lastDeployState?.status, .interrupted)
         XCTAssertEqual(reloadedProfile.runtimeState?.state, .installInterrupted)
+        XCTAssertEqual(reloadedProfile.runtimeState?.source, .appRecovery)
+        XCTAssertEqual(reloadedProfile.runtimeState?.stage, installing.stage)
+        XCTAssertEqual(reloadedProfile.runtimeState?.summary, "")
+        XCTAssertNil(reloadedProfile.runtimeState?.summaryRef)
+        XCTAssertNil(reloadedProfile.runtimeState?.errorMessage)
         XCTAssertEqual(DeviceStatusPolicy.status(
             for: reloadedProfile,
             passwordState: .available,

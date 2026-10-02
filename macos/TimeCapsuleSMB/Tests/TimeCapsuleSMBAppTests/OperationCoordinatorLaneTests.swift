@@ -31,7 +31,6 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         try await waitUntilStoreState {
             runner.calls.count == 2 && coordinator.appLane.backend.isRunning && deviceLane.backend.isRunning
         }
-        XCTAssertNil(coordinator.rejectedOperationMessage)
         XCTAssertEqual(Set(coordinator.activeOperations.keys), [.app, .device("device-one")])
 
         runner.finishAll()
@@ -52,12 +51,13 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         let laneKey = OperationLaneKey.device("device-one")
         let deviceContext = context("device-one")
 
-        XCTAssertStarted(coordinator.run(operation: "doctor", context: deviceContext, activeDeviceID: "device-one", laneKey: laneKey))
+        let first = coordinator.run(operation: "doctor", context: deviceContext, activeDeviceID: "device-one", laneKey: laneKey)
+        XCTAssertStarted(first)
         try await waitUntilStoreState { coordinator.lane(for: laneKey).backend.isRunning && runner.calls.count == 1 }
         let second = coordinator.run(operation: "deploy", context: deviceContext, activeDeviceID: "device-one", laneKey: laneKey)
 
         XCTAssertEqual(second.rejectionMessage, "Another operation is already running.")
-        XCTAssertEqual(coordinator.rejectedOperationMessages[laneKey], "Another operation is already running.")
+        XCTAssertEqual(coordinator.activeOperation(for: laneKey), first.operation)
         XCTAssertEqual(runner.calls.count, 1)
         runner.finishAll()
         try await waitUntilStoreState { !coordinator.lane(for: laneKey).backend.isRunning }
@@ -97,7 +97,8 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         )
 
         XCTAssertEqual(second.rejectionMessage, "Another operation is already running.")
-        XCTAssertEqual(coordinator.rejectedOperationMessages[reachabilityLane], "Another operation is already running.")
+        XCTAssertEqual(coordinator.activeOperation(for: deployLane)?.operation, "deploy")
+        XCTAssertNil(coordinator.activeOperation(for: reachabilityLane))
         XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
         XCTAssertEqual(runner.calls.map(\.operation), ["deploy"])
         XCTAssertTrue(coordinator.lane(for: reachabilityLane).backend.events.isEmpty)
@@ -189,7 +190,8 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         )
 
         XCTAssertEqual(rejected.rejectionMessage, "Another operation is already running.")
-        XCTAssertEqual(coordinator.rejectedOperationMessages[doctorLane], "Another operation is already running.")
+        XCTAssertEqual(coordinator.activeOperation(for: deployLane)?.operation, "deploy")
+        XCTAssertNil(coordinator.activeOperation(for: doctorLane))
         XCTAssertEqual(runner.calls.map(\.operation), ["deploy"])
         XCTAssertTrue(coordinator.lane(for: doctorLane).backend.events.isEmpty)
         XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
@@ -327,7 +329,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         let second = coordinator.run(operation: "capabilities", laneKey: .app)
 
         XCTAssertEqual(second.rejectionMessage, "Another operation is already running.")
-        XCTAssertEqual(coordinator.rejectedOperationMessages[.app], "Another operation is already running.")
+        XCTAssertEqual(coordinator.activeOperation(for: .app)?.operation, "discover")
         XCTAssertEqual(runner.calls.map(\.operation), ["discover"])
         runner.finishAll()
     }

@@ -130,6 +130,34 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(client.pendingConfirmation?.params["dry_run"], .bool(false))
     }
 
+    func testLegacyEventsWithoutRequestIDStillUpdatePolicyAndConfirmation() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy"): [.init(events: [BackendEvent(type: "stage", operation: "deploy", stage: "start")],
+                pauseAfterEvents: true)]
+        ])
+        defer { runner.finishAll() }
+        let client = BackendClient(runner: runner)
+        let requestID = "legacy-request"
+        client.run(operation: "deploy", requestID: requestID)
+        try await waitUntil { client.currentStage == "start" }
+
+        await runner.send(BackendEvent(requestId: nil, type: "stage", operation: "deploy", stage: "upload_payload", cancellable: false),
+                          to: requestID)
+        XCTAssertEqual(client.currentStage, "upload_payload")
+        XCTAssertFalse(client.canCancel)
+        await runner.send(BackendEvent(requestId: nil, type: "error", operation: "deploy", code: "confirmation_required",
+            details: .object(["confirmation_id": .string("legacy-confirm")])), to: requestID)
+        XCTAssertEqual(client.pendingConfirmation?.requestID, requestID)
+        XCTAssertEqual(client.pendingConfirmation?.params["confirmation_id"], .string("legacy-confirm"))
+
+        runner.finish(.init("deploy"))
+        try await waitUntil { !client.isRunning }
+        client.cancelPendingConfirmation()
+        XCTAssertNil(client.pendingConfirmation)
+        XCTAssertEqual(client.events.last?.code, "confirmation_cancelled")
+        XCTAssertEqual(client.events.last?.requestId, requestID)
+    }
+
     func testCancelPendingConfirmationClearsPendingStateAndPublishesCancellationEvent() async throws {
         let runner = RecordingHelperRunner(
             events: [
@@ -258,13 +286,12 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(activeOperation.operation, "doctor")
         XCTAssertEqual(activeOperation.profileID, "device-one")
         XCTAssertEqual(rejectionMessage, "Another operation is already running.")
-        XCTAssertEqual(coordinator.rejectedOperationMessage, "Another operation is already running.")
-        XCTAssertEqual(coordinator.activeOperation, activeOperation)
-        XCTAssertEqual(coordinator.activeDeviceID, "device-one")
+        XCTAssertEqual(coordinator.activeOperation(for: laneKey), activeOperation)
+        XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
 
         try await waitUntil { !deviceLane.backend.isRunning }
-        XCTAssertNil(coordinator.activeOperation)
-        XCTAssertNil(coordinator.activeDeviceID)
+        XCTAssertNil(coordinator.activeOperation(for: laneKey))
+        XCTAssertFalse(coordinator.isDeviceBusy("device-one"))
     }
 
     private func waitUntil(

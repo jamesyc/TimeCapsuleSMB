@@ -27,7 +27,11 @@ final class DeviceDashboardStateSynchronizer {
         observeSnapshots()
         observeCredentialInvalidProfileIDs(doctorStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(deployStore.$passwordInvalidProfileID)
-        observeCredentialInvalidProfileIDs(maintenanceStore.$passwordInvalidProfileID)
+        observeCredentialInvalidProfileIDs(maintenanceStore.activationStore.$passwordInvalidProfileID)
+        observeCredentialInvalidProfileIDs(maintenanceStore.uninstallStore.$passwordInvalidProfileID)
+        observeCredentialInvalidProfileIDs(maintenanceStore.fsckStore.$passwordInvalidProfileID)
+        observeCredentialInvalidProfileIDs(maintenanceStore.repairXattrsStore.$passwordInvalidProfileID)
+        observeCredentialInvalidProfileIDs(maintenanceStore.sshAccessStore.$passwordInvalidProfileID)
         observeCredentialInvalidProfileIDs(flashStore.$passwordInvalidProfileID)
     }
 
@@ -55,30 +59,22 @@ final class DeviceDashboardStateSynchronizer {
     private func observeSnapshots() {
         doctorStore.$state
             .sink { [weak self] state in
-                Task { @MainActor in
-                    self?.updateCheckupSnapshot(state: state)
-                }
+                self?.updateCheckupSnapshot(state: state)
             }
             .store(in: &cancellables)
         deployStore.$state
             .sink { [weak self] state in
-                Task { @MainActor in
-                    self?.updateDeployState(state: state)
-                }
+                self?.updateDeployState(state: state)
             }
             .store(in: &cancellables)
         deployStore.$currentStage
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.updateCurrentDeployStage()
-                }
+            .sink { [weak self] stage in
+                self?.updateCurrentDeployStage(stage: stage)
             }
             .store(in: &cancellables)
-        maintenanceStore.$uninstallState
+        maintenanceStore.uninstallStore.$state
             .sink { [weak self] state in
-                Task { @MainActor in
-                    self?.updateUninstallSnapshot(state: state)
-                }
+                self?.updateUninstallSnapshot(state: state)
             }
             .store(in: &cancellables)
     }
@@ -107,15 +103,18 @@ final class DeviceDashboardStateSynchronizer {
               let summary = doctorStore.summary else {
             return
         }
+        guard appStore.operationCoordinator.activeOperation(for: .deviceWorkflow(profileID, .deploy)) == nil else {
+            return
+        }
         let observedAt = Date()
-        let profile = appStore.deviceRegistry.profile(id: profileID)
-        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
-            profile: profile,
-            skipSSH: doctorStore.skipSSH,
-            state: state,
-            summary: summary
-        )
-        Task {
+        let skipSSH = doctorStore.skipSSH
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: appStore.deviceRegistry.profile(id: profileID),
+                skipSSH: skipSSH,
+                state: state,
+                summary: summary
+            )
             await appStore.deviceRegistry.updateCheckup(
                 DeviceDashboardSnapshotMapper.checkupSnapshot(
                     state: state,
@@ -138,7 +137,7 @@ final class DeviceDashboardStateSynchronizer {
             stage: stage,
             startedAt: startedAt
         )
-        Task {
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             await appStore.deviceRegistry.updateInstallOperationState(
                 deployState: snapshots.deployState,
                 runtimeState: snapshots.runtimeState,
@@ -147,21 +146,21 @@ final class DeviceDashboardStateSynchronizer {
         }
     }
 
-    private func updateCurrentDeployStage() {
+    private func updateCurrentDeployStage(stage: OperationStageState?) {
         guard [.deploying, .awaitingConfirmation].contains(deployStore.state),
               let operation = activeDeployOperation,
               let profileID = operation.profileID else {
             return
         }
         let observedAt = Date()
-        Task {
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             guard let profile = appStore.deviceRegistry.profile(id: profileID),
                   let current = profile.lastDeployState,
                   current.operationID == operation.id.uuidString,
                   current.status.isInProgress else {
                 return
             }
-            let stage = deployStore.currentStage?.stage ?? current.stage
+            let stage = stage?.stage ?? current.stage
             let snapshots = DeviceDashboardSnapshotMapper.inProgressDeploySnapshots(
                 current: current,
                 runtimeState: profile.runtimeState,
@@ -183,7 +182,7 @@ final class DeviceDashboardStateSynchronizer {
             return
         }
         if state == .awaitingConfirmation {
-            persistAwaitingConfirmationDeployState(profileID: profileID)
+            persistAwaitingConfirmationDeployState(operation: operation, profileID: profileID)
             return
         }
         guard [.deployed, .deployFailed].contains(state) else {
@@ -200,22 +199,21 @@ final class DeviceDashboardStateSynchronizer {
     }
 
     private func persistFailedDeployState(operation: ActiveOperation, profileID: DeviceProfile.ID) {
-        Task {
-            let failedAt = Date()
+        let failedAt = Date()
+        let stage = deployStore.currentStage?.stage
+        let error = deployStore.error
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             let profile = appStore.deviceRegistry.profile(id: profileID)
-            let stage = deployStore.currentStage?.stage
             let payloadFamily = profile?.lastDeployState?.payloadFamily
                 ?? profile?.payloadFamily
-            guard let snapshots = DeviceDashboardSnapshotMapper.failedDeploySnapshots(
+            let snapshots = DeviceDashboardSnapshotMapper.failedDeploySnapshots(
                 operation: operation,
                 profile: profile,
                 stage: stage,
                 payloadFamily: payloadFamily,
-                error: deployStore.error,
+                error: error,
                 failedAt: failedAt
-            ) else {
-                return
-            }
+            )
             await appStore.deviceRegistry.updateInstallOperationState(
                 deployState: snapshots.deployState,
                 runtimeState: snapshots.runtimeState,
@@ -225,13 +223,15 @@ final class DeviceDashboardStateSynchronizer {
     }
 
     private func persistSucceededDeployState(operation: ActiveOperation, profileID: DeviceProfile.ID) {
-        guard let profile = appStore.deviceRegistry.profile(id: profileID),
-              let result = deployStore.result else {
+        guard let result = deployStore.result else {
             return
         }
-        Task {
-            let finishedAt = Date()
-            let stage = deployStore.currentStage?.stage ?? profile.lastDeployState?.stage
+        let finishedAt = Date()
+        let currentStage = deployStore.currentStage?.stage
+        let rsyncEnabled = deployStore.runOptions?.rsyncEnabled
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
+            guard let profile = appStore.deviceRegistry.profile(id: profileID) else { return }
+            let stage = currentStage ?? profile.lastDeployState?.stage
             let payloadFamily = profile.payloadFamily
             let snapshots = DeviceDashboardSnapshotMapper.succeededDeploySnapshots(
                 operation: operation,
@@ -244,21 +244,23 @@ final class DeviceDashboardStateSynchronizer {
             await appStore.deviceRegistry.updateInstallOperationState(
                 deployState: snapshots.deployState,
                 runtimeState: snapshots.runtimeState,
-                rsyncEnabled: deployStore.runOptions?.rsyncEnabled,
+                rsyncEnabled: rsyncEnabled,
                 for: profile.id
             )
         }
     }
 
-    private func persistAwaitingConfirmationDeployState(profileID: DeviceProfile.ID) {
-        Task {
+    private func persistAwaitingConfirmationDeployState(operation: ActiveOperation, profileID: DeviceProfile.ID) {
+        let observedAt = Date()
+        let stage = deployStore.currentStage?.stage
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             guard let profile = appStore.deviceRegistry.profile(id: profileID),
                   let current = profile.lastDeployState,
+                  current.operationID == operation.id.uuidString,
                   current.status.isInProgress else {
                 return
             }
-            let observedAt = Date()
-            let stage = deployStore.currentStage?.stage ?? current.stage
+            let stage = stage ?? current.stage
             let snapshots = DeviceDashboardSnapshotMapper.inProgressDeploySnapshots(
                 current: current,
                 runtimeState: profile.runtimeState,
@@ -279,13 +281,15 @@ final class DeviceDashboardStateSynchronizer {
             return
         }
         doctorStore.invalidateResult()
-        Task {
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             await appStore.deviceRegistry.clearCheckup(for: profileID)
         }
     }
 
     private func updateUninstallSnapshot(state: MaintenanceOperationState) {
-        guard [.succeeded, .failed].contains(state) else {
+        // The raw store publishes synchronously. Idle ends cancellation/reset
+        // tracking without interpreting it as a successful uninstall.
+        guard [.idle, .succeeded, .failed].contains(state) else {
             return
         }
         defer {
@@ -295,7 +299,7 @@ final class DeviceDashboardStateSynchronizer {
               let profileID = activeUninstallOperation?.profileID else {
             return
         }
-        Task {
+        appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             await appStore.deviceRegistry.clearInstallState(for: profileID)
         }
     }

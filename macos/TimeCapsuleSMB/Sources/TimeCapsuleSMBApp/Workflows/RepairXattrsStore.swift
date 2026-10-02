@@ -65,7 +65,6 @@ final class RepairXattrsStore: ObservableObject {
         latestPath = path
         latestOptions = options
         operation.cancelPendingConfirmation()
-        restoreStateAfterCancellation(path: path, options: options)
     }
 
     func cancel() {

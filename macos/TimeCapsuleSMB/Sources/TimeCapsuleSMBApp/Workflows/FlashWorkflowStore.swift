@@ -170,8 +170,8 @@ final class FlashWorkflowStore: ObservableObject {
 
     let buildPolicy: FlashBuildPolicy
     let backend: BackendClient
-    private let coordinator: OperationCoordinator?
-    private let laneKey: OperationLaneKey?
+    private let coordinator: OperationCoordinator
+    private let laneKey: OperationLaneKey
     private var eligibility = FlashEligibility(
         state: .writeLocked,
         messageKey: "flash.eligibility.write_ready",
@@ -188,38 +188,24 @@ final class FlashWorkflowStore: ObservableObject {
         self.init(backend: BackendClient(), buildPolicy: buildPolicy)
     }
 
-    init(backend: BackendClient, buildPolicy: FlashBuildPolicy = .writesEnabled) {
-        self.backend = backend
-        self.coordinator = nil
-        self.laneKey = nil
-        self.buildPolicy = buildPolicy
-        observeBackend(backend)
+    convenience init(backend: BackendClient, buildPolicy: FlashBuildPolicy = .writesEnabled) {
+        self.init(coordinator: OperationCoordinator(backend: backend), laneKey: .app, buildPolicy: buildPolicy)
     }
 
-    convenience init(coordinator: OperationCoordinator, laneKey: OperationLaneKey, buildPolicy: FlashBuildPolicy = .writesEnabled) {
+    init(coordinator: OperationCoordinator, laneKey: OperationLaneKey, buildPolicy: FlashBuildPolicy = .writesEnabled) {
         let lane = coordinator.lane(for: laneKey)
-        self.init(backend: lane.backend, coordinator: coordinator, laneKey: laneKey, buildPolicy: buildPolicy)
-    }
-
-    private init(
-        backend: BackendClient,
-        coordinator: OperationCoordinator?,
-        laneKey: OperationLaneKey?,
-        buildPolicy: FlashBuildPolicy
-    ) {
-        self.backend = backend
+        self.backend = lane.backend
         self.coordinator = coordinator
         self.laneKey = laneKey
         self.buildPolicy = buildPolicy
-        observeBackend(backend)
+        observeBackend(lane.backend)
     }
 
     private func observeBackend(_ backend: BackendClient) {
-        backend.$events
+        backend.didUpdateEvents
             .sink { [weak self] events in
-                Task { @MainActor in
-                    self?.process(events)
-                }
+                // Consume terminal events before another run can clear this request's history.
+                self?.process(events)
             }
             .store(in: &cancellables)
         backend.$isRunning
@@ -644,7 +630,14 @@ final class FlashWorkflowStore: ObservableObject {
             return reject(.operationAlreadyRunning)
         }
         resetRunState()
-        let start = run(operation: "flash", params: params, profile: profile, password: password)
+        let start = coordinator.run(
+            operation: "flash",
+            params: params,
+            context: profile?.runtimeContext,
+            activeDeviceID: profile?.id,
+            password: password,
+            laneKey: laneKey
+        )
         switch start {
         case .started(let operation):
             operationObserver.start(operation)
@@ -666,34 +659,4 @@ final class FlashWorkflowStore: ObservableObject {
         activeAction = nil
     }
 
-    private func run(
-        operation: String,
-        params: [String: JSONValue],
-        profile: DeviceProfile?,
-        password: String? = nil
-    ) -> OperationStartResult {
-        if let coordinator {
-            return coordinator.run(
-                operation: operation,
-                params: params,
-                context: profile?.runtimeContext,
-                activeDeviceID: profile?.id,
-                password: password,
-                laneKey: laneKey
-            )
-        }
-        guard !isBusy else {
-            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-        }
-        let context = profile?.runtimeContext
-        let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
-        let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-        backend.run(
-            operation: operation,
-            params: updatedParams,
-            context: context,
-            requestID: activeOperation.id.uuidString
-        )
-        return .started(activeOperation)
-    }
 }

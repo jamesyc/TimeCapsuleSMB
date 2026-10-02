@@ -120,8 +120,8 @@ final class DeployWorkflowStore: ObservableObject {
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
     let backend: BackendClient
-    private let coordinator: OperationCoordinator?
-    private let laneKey: OperationLaneKey?
+    private let coordinator: OperationCoordinator
+    private let laneKey: OperationLaneKey
 
     private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
@@ -130,11 +130,8 @@ final class DeployWorkflowStore: ObservableObject {
         self.init(backend: BackendClient())
     }
 
-    init(backend: BackendClient) {
-        self.backend = backend
-        self.coordinator = nil
-        self.laneKey = nil
-        observeBackend(backend)
+    convenience init(backend: BackendClient) {
+        self.init(coordinator: OperationCoordinator(backend: backend), laneKey: .app)
     }
 
     convenience init(coordinator: OperationCoordinator) {
@@ -150,11 +147,10 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     private func observeBackend(_ backend: BackendClient) {
-        backend.$events
+        backend.didUpdateEvents
             .sink { [weak self] events in
-                Task { @MainActor in
-                    self?.process(events)
-                }
+                // Consume terminal events before another run can clear this request's history.
+                self?.process(events)
             }
             .store(in: &cancellables)
         backend.$isRunning
@@ -205,7 +201,7 @@ final class DeployWorkflowStore: ObservableObject {
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         backend.clear()
-        let start = run(
+        let start = coordinator.run(
             operation: "deploy",
             params: OperationParams.Deploy.params(
                 noWait: options.noWait,
@@ -223,8 +219,10 @@ final class DeployWorkflowStore: ObservableObject {
                 ataStandby: options.ataStandby,
                 mountWait: Double(options.mountWait)
             ),
-            profile: profile,
-            password: password
+            context: profile?.runtimeContext,
+            activeDeviceID: profile?.id,
+            password: password,
+            laneKey: laneKey
         )
         guard case .started(let operation) = start else {
             if let message = start.rejectionMessage {
@@ -371,7 +369,7 @@ final class DeployWorkflowStore: ObservableObject {
             return
         }
         if event.code == "confirmation_cancelled" {
-            applyConfirmationCancelled()
+            applyConfirmationCancelled(event)
             return
         }
         if event.code == "auth_failed" {
@@ -382,11 +380,11 @@ final class DeployWorkflowStore: ObservableObject {
         operationObserver.finish()
     }
 
-    private func applyConfirmationCancelled() {
-        error = nil
+    private func applyConfirmationCancelled(_ event: BackendEvent) {
+        error = BackendErrorViewModel(event: event)
         currentStage = nil
+        state = .deployFailed
         operationObserver.finish()
-        state = .idle
     }
 
     private func applyFailureResult(_ event: BackendEvent) {
@@ -441,35 +439,4 @@ final class DeployWorkflowStore: ObservableObject {
         operationObserver.finish()
     }
 
-    private func run(
-        operation: String,
-        params: [String: JSONValue],
-        profile: DeviceProfile?,
-        password: String? = nil
-    ) -> OperationStartResult {
-        if let coordinator {
-            return coordinator.run(
-                operation: operation,
-                params: params,
-                context: profile?.runtimeContext,
-                activeDeviceID: profile?.id,
-                password: password,
-                laneKey: laneKey
-            )
-        } else {
-            guard !isBusy else {
-                return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-            }
-            let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
-            let context = profile?.runtimeContext
-            let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-            backend.run(
-                operation: operation,
-                params: updatedParams,
-                context: context,
-                requestID: activeOperation.id.uuidString
-            )
-            return .started(activeOperation)
-        }
-    }
 }

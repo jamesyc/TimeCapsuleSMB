@@ -345,6 +345,492 @@ final class OperationCompletionTests: XCTestCase {
         }
     }
 
+    func testCancelledInstallFinishesDashboardAndSurvivesReload() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [.init(events: [confirmation("deploy", id: "cancel")])]
+        ])
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState {
+            fixture.coordinator.readyConfirmation != nil &&
+                fixture.app.deviceRegistry.profile(id: fixture.profile.id)?.lastDeployState?.status == .awaitingConfirmation
+        }
+        let pending = try XCTUnwrap(fixture.coordinator.readyConfirmation)
+        fixture.coordinator.cancel(pending)
+        fixture.coordinator.cancel(pending) // The alert binding also dismisses after Cancel.
+
+        try await waitUntilStoreState {
+            fixture.app.deviceRegistry.profile(id: fixture.profile.id)?.lastDeployState?.status == .failed
+        }
+        XCTAssertEqual(session.deployStore.state, .deployFailed)
+        XCTAssertEqual(session.deployStore.error?.code, "confirmation_cancelled")
+        XCTAssertNil(session.deployStore.currentStage)
+        XCTAssertNil(DeployFailureGuidancePolicy.guidance(for: session.deployStore.error))
+        XCTAssertFalse(fixture.coordinator.isDeviceBusy(fixture.profile))
+        XCTAssertTrue(session.deployStore.canDeploy)
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy"])
+
+        let saved = try XCTUnwrap(fixture.app.deviceRegistry.profile(id: fixture.profile.id))
+        XCTAssertEqual(saved.runtimeState?.state, .installFailed)
+        XCTAssertEqual(saved.lastDeployState?.errorCode, "confirmation_cancelled")
+        XCTAssertNotNil(saved.lastDeployState?.finishedAt)
+        assertDashboardStopped(saved, app: fixture.app)
+        let reloaded = DeviceRegistryStore(applicationSupportURL: fixture.app.deviceRegistry.applicationSupportURL)
+        await reloaded.load()
+        let restored = try XCTUnwrap(reloaded.profile(id: saved.id))
+        XCTAssertEqual(restored.lastDeployState?.status, .failed)
+        XCTAssertEqual(restored.runtimeState?.state, .installFailed)
+        assertDashboardStopped(restored, app: fixture.app)
+    }
+
+    func testCancelledInstallCannotOverwriteImmediateRetryOrCheckupWithBlockedPersistence() async throws {
+        for nextOperation in ["deploy", "doctor"] {
+            let files = BlockingRegistryFileManager()
+            var responses: [OperationKeyedStoreTestRunner.Key: [StoreTestRunner.Response]] = [
+                .init("deploy"): [.init(events: [confirmation("deploy", id: "cancel")])]
+            ]
+            let result = BackendEvent(type: "result", operation: nextOperation, ok: true,
+                                      payload: nextOperation == "deploy" ? testDeployResultPayload() : testDoctorPayload(checks: [
+                                        testDoctorCheck(status: "PASS", message: "Running", domain: "Runtime")
+                                      ]))
+            responses[.init(nextOperation), default: []].append(.init(events: [result]))
+            let fixture = try await makeFixture(responses: responses, fileManager: files)
+            defer { files.release(); fixture.runner.finishAll() }
+            let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+            files.arm(at: fixture.app.deviceRegistry.applicationSupportURL)
+            session.runInstall(profile: fixture.profile)
+            try await waitUntilStoreState { files.isBlocked && fixture.coordinator.readyConfirmation != nil }
+            let oldConfirmation = try XCTUnwrap(fixture.coordinator.readyConfirmation)
+            fixture.coordinator.cancel(oldConfirmation)
+            // No yield: a new start must not erase the old cancellation event.
+            let reopened = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+            if nextOperation == "deploy" { reopened.runInstall(profile: fixture.profile) }
+            else { reopened.runCheckup(profile: fixture.profile) }
+            fixture.coordinator.cancel(oldConfirmation)
+            try await waitUntilStoreState { fixture.runner.calls.count == 2 && !fixture.coordinator.isDeviceBusy(fixture.profile) }
+            files.release()
+            try await waitUntilStoreState {
+                fixture.app.deviceRegistry.profile(id: fixture.profile.id)?.runtimeState?.state == .installedVerified
+            }
+            let saved = try XCTUnwrap(fixture.app.deviceRegistry.profile(id: fixture.profile.id))
+            XCTAssertEqual(saved.lastDeployState?.status, nextOperation == "deploy" ? .succeeded : .failed)
+            XCTAssertEqual(saved.lastCheckup?.state, nextOperation == "doctor" ? .passed : nil)
+            assertDashboardStopped(saved, app: fixture.app)
+        }
+    }
+
+    func testDelayedCheckupCannotOverwriteNewInstall() async throws {
+        let files = BlockingRegistryFileManager()
+        let fixture = try await makeFixture(responses: [
+            .init("doctor"): [.init(events: [BackendEvent(type: "result", operation: "doctor", ok: true,
+                payload: testDoctorPayload(checks: [testDoctorCheck(status: "PASS", message: "Running", domain: "Runtime")]))])],
+            .init("deploy"): [.init(events: [confirmation("deploy", id: "new-install")])]
+        ], fileManager: files)
+        defer { files.release(); fixture.runner.finishAll() }
+        let registry = fixture.app.deviceRegistry
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        files.arm(at: registry.applicationSupportURL)
+        session.runCheckup(profile: fixture.profile)
+        try await waitUntilStoreState { files.isBlocked && !fixture.coordinator.isDeviceBusy(fixture.profile) }
+        let reopened = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        reopened.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
+        files.release()
+        var drained = false
+        registry.enqueueOperationUpdate { drained = true }
+        try await waitUntilStoreState { drained }
+        let saved = try XCTUnwrap(registry.profile(id: fixture.profile.id))
+        XCTAssertEqual(saved.runtimeState?.state, .installing)
+        XCTAssertEqual(saved.lastDeployState?.status, .awaitingConfirmation)
+        XCTAssertNil(saved.lastCheckup)
+        XCTAssertTrue(fixture.coordinator.isDeviceBusy(saved))
+        fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+        try await waitUntilStoreState { registry.profile(id: saved.id)?.lastDeployState?.status == .failed }
+        assertDashboardStopped(try XCTUnwrap(registry.profile(id: saved.id)), app: fixture.app)
+    }
+
+    func testDelayedUninstallCannotEraseAnImmediateInstallFromAnotherSession() async throws {
+        let files = BlockingRegistryFileManager()
+        let fixture = try await makeFixture(responses: [
+            .init("uninstall"): [.init(events: [BackendEvent(type: "result", operation: "uninstall", ok: true,
+                payload: testUninstallResultPayload(waited: true, verified: true))], pauseAfterEvents: true)],
+            .init("deploy"): [.init(events: [BackendEvent(type: "result", operation: "deploy", ok: true,
+                payload: testDeployResultPayload())])]
+        ], fileManager: files)
+        defer { files.release(); fixture.runner.finishAll() }
+        let registry = fixture.app.deviceRegistry
+        await registry.updateInstallOperationState(deployState: testDeployState(status: .succeeded),
+            runtimeState: testRuntimeState(state: .installedVerified), for: fixture.profile.id)
+        let installed = try XCTUnwrap(registry.profile(id: fixture.profile.id))
+        let session = DeviceDashboardSession(profile: installed, appStore: fixture.app)
+        // With no Checkup to invalidate, the first write is the completed
+        // uninstall clearing the saved installation. Hold it until Install ends.
+        files.arm(at: registry.applicationSupportURL)
+        session.performMaintenanceAction(.runUninstall, profile: installed, showDiagnostics: {})
+        try await waitUntilStoreState { files.isBlocked && session.maintenanceStore.uninstallState == .succeeded }
+        XCTAssertTrue(fixture.coordinator.isDeviceBusy(installed))
+        fixture.runner.finish(.init("uninstall"))
+        try await waitUntilStoreState { !fixture.coordinator.isDeviceBusy(installed) }
+
+        let reopened = DeviceDashboardSession(profile: installed, appStore: fixture.app)
+        reopened.runInstall(profile: installed)
+        let operation = try XCTUnwrap(fixture.coordinator.activeOperation(for: .deviceWorkflow(installed.id, .deploy)))
+        try await waitUntilStoreState { reopened.deployStore.state == .deployed && !fixture.coordinator.isDeviceBusy(installed) }
+        files.release()
+        try await drainOperationUpdates(registry)
+
+        let reloaded = DeviceRegistryStore(applicationSupportURL: registry.applicationSupportURL)
+        await reloaded.load()
+        for saved in [try XCTUnwrap(registry.profile(id: installed.id)), try XCTUnwrap(reloaded.profile(id: installed.id))] {
+            XCTAssertEqual(saved.lastDeployState?.operationID, operation.id.uuidString)
+            XCTAssertEqual(saved.lastDeployState?.status, .succeeded)
+            XCTAssertEqual(saved.runtimeState?.state, .installedVerified)
+            assertDashboardStopped(saved, app: fixture.app)
+        }
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["uninstall", "deploy"])
+    }
+
+    func testMaintenanceCancellationWaitsForHelperAndPreservesInstallation() async throws {
+        let cases: [(String, MaintenanceWorkflow, MaintenanceUserAction)] = [
+            ("activate", .activate, .runActivation),
+            ("uninstall", .uninstall, .runUninstall),
+            ("set-ssh", .sshAccess, .enableSSHAccess)
+        ]
+        for (operation, workflow, action) in cases {
+            let fixture = try await makeFixture(responses: [
+                .init(operation): [.init(events: [confirmation(operation, id: "cancel")], pauseAfterEvents: true)]
+            ])
+            defer { fixture.runner.finishAll() }
+            let registry = fixture.app.deviceRegistry
+            let installed = testRuntimeState(state: .installedVerified)
+            let previousDeploy = testDeployState(status: .succeeded)
+            await registry.updateInstallOperationState(deployState: previousDeploy, runtimeState: installed, for: fixture.profile.id)
+            let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+            session.performMaintenanceAction(action, profile: fixture.profile, showDiagnostics: {})
+            try await waitUntilStoreState { session.maintenanceStore.pendingConfirmation(for: workflow) != nil }
+            session.maintenanceStore.cancelPendingConfirmation(for: workflow)
+            XCTAssertNotNil(session.maintenanceStore.pendingConfirmation(for: workflow))
+            XCTAssertTrue(fixture.coordinator.isDeviceBusy(fixture.profile))
+            if workflow == .uninstall { XCTAssertEqual(session.maintenanceStore.uninstallStore.state, .awaitingConfirmation) }
+
+            fixture.runner.finish(.init(operation))
+            try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
+            let pending = try XCTUnwrap(fixture.coordinator.readyConfirmation)
+            fixture.coordinator.cancel(pending)
+            fixture.coordinator.cancel(pending)
+            try await waitUntilStoreState { !session.maintenanceStore.isBusy }
+            let saved = try XCTUnwrap(registry.profile(id: fixture.profile.id))
+            XCTAssertEqual(saved.runtimeState, installed)
+            XCTAssertEqual(saved.lastDeployState, previousDeploy)
+            XCTAssertFalse(fixture.coordinator.isDeviceBusy(saved))
+            assertDashboardStopped(saved, app: fixture.app)
+            XCTAssertEqual(fixture.runner.calls.count, 1)
+        }
+    }
+
+    func testRunningCancellationKeepsDashboardBusyUntilHelperCleanup() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [.init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "check_compatibility", cancellable: true)
+            ], pauseAfterEvents: true)]
+        ])
+        defer { fixture.runner.finishAll() }
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState { session.deployStore.currentStage != nil }
+        let lane = fixture.coordinator.lane(for: .deviceWorkflow(fixture.profile.id, .deploy))
+        let operation = try XCTUnwrap(lane.activeOperation)
+        fixture.coordinator.cancel(profileID: fixture.profile.id)
+        // The helper acknowledges cancellation, then remains paused in cleanup.
+        lane.backend.events.append(.error(operation: "deploy", code: "cancelled", message: "Operation cancelled.",
+                                          requestId: operation.id.uuidString))
+        XCTAssertEqual(session.deployStore.state, .deployFailed)
+        XCTAssertTrue(fixture.coordinator.isDeviceBusy(fixture.profile))
+        XCTAssertFalse(session.deployStore.canDeploy)
+        XCTAssertEqual(fixture.app.dashboardSummary(for: fixture.profile).displayStatus, .installing)
+        fixture.runner.finish(.init("deploy"))
+        try await waitUntilStoreState {
+            !fixture.coordinator.isDeviceBusy(fixture.profile) &&
+                fixture.app.deviceRegistry.profile(id: fixture.profile.id)?.runtimeState?.state == .installFailed
+        }
+        assertDashboardStopped(try XCTUnwrap(fixture.app.deviceRegistry.profile(id: fixture.profile.id)), app: fixture.app)
+        XCTAssertTrue(session.deployStore.canDeploy)
+        XCTAssertEqual(fixture.runner.calls.count, 1)
+    }
+
+    func testPlannedMaintenanceCancellationUsesCurrentOptionsThroughCoordinator() async throws {
+        for workflow in [MaintenanceWorkflow.fsck, .repairXattrs] {
+            let fsck = workflow == .fsck
+            let name = fsck ? "fsck" : "repair-xattrs"
+            var responses: [StoreTestRunner.Response] = []
+            if fsck {
+                responses.append(.init(events: [BackendEvent(type: "result", operation: name, ok: true,
+                    payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))]))
+            }
+            responses.append(.init(events: [BackendEvent(type: "result", operation: name, ok: true,
+                payload: fsck ? testFsckPlanPayload() : testRepairXattrsPayload(findings: 2, repairable: 1))]))
+            responses.append(.init(events: [confirmation(name, id: "cancel")], pauseAfterEvents: true))
+            let fixture = try await makeFixture(responses: [.init(name): responses])
+            defer { fixture.runner.finishAll() }
+            let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+            let store = session.maintenanceStore
+            if fsck {
+                session.performMaintenanceAction(.findVolumes, profile: fixture.profile, showDiagnostics: {})
+                try await waitUntilStoreState { store.fsckState == .listReady && !store.isBusy }
+                session.performMaintenanceAction(.planFsck, profile: fixture.profile, showDiagnostics: {})
+                try await waitUntilStoreState { store.fsckState == .planReady && !store.isBusy }
+            } else {
+                store.repairPath = "/Volumes/Data"
+                session.performMaintenanceAction(.scanMetadata, profile: fixture.profile, showDiagnostics: {})
+                try await waitUntilStoreState { store.repairState == .scanReady && !store.isBusy }
+            }
+            session.performMaintenanceAction(fsck ? .runFsck : .repairMetadata, profile: fixture.profile, showDiagnostics: {})
+            try await waitUntilStoreState { store.pendingConfirmation(for: workflow) != nil }
+            if fsck { store.noWait = true } else { store.repairPath = "/Volumes/Other" }
+            store.cancelPendingConfirmation(for: workflow)
+            XCTAssertEqual(fsck ? store.fsckStore.state : store.repairXattrsStore.state, .awaitingConfirmation)
+            fixture.runner.finish(.init(name))
+            try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
+            fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+            try await waitUntilStoreState { !store.isBusy }
+            XCTAssertEqual(fsck ? store.fsckStore.state : store.repairXattrsStore.state, fsck ? .planStale : .scanStale)
+            XCTAssertNil(store.pendingConfirmation(for: workflow))
+            assertDashboardStopped(fixture.profile, app: fixture.app)
+        }
+    }
+
+    func testCancelledInstallStopsDashboardEvenWhenTerminalPersistenceFails() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [.init(events: [confirmation("deploy", id: "cancel")])]
+        ])
+        let registry = fixture.app.deviceRegistry
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState {
+            fixture.coordinator.readyConfirmation != nil && registry.profile(id: fixture.profile.id)?.lastDeployState?.status == .awaitingConfirmation
+        }
+        // Make atomic replacement fail in this test's disposable registry.
+        try FileManager.default.removeItem(at: registry.registryURL)
+        try FileManager.default.createDirectory(at: registry.registryURL, withIntermediateDirectories: false)
+        fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+        try await waitUntilStoreState { registry.state == .failed }
+        XCTAssertNotNil(registry.error)
+        XCTAssertEqual(session.deployStore.error?.code, "confirmation_cancelled")
+        let saved = try XCTUnwrap(registry.profile(id: fixture.profile.id))
+        XCTAssertEqual(saved.runtimeState?.state, .installing, "A failed write must not pretend to have persisted")
+        assertDashboardStopped(saved, app: fixture.app)
+    }
+
+    func testDeployCompletionPersistsAfterInitialRegistryWriteFails() async throws {
+        for hadPreviousAttempt in [false, true] {
+            for completion in ["success", "failure", "confirmation_cancelled"] {
+                let cancelled = completion == "confirmation_cancelled"
+                let succeeded = completion == "success"
+                let initial = cancelled ? confirmation("deploy", id: "recover")
+                    : BackendEvent(type: "stage", operation: "deploy", stage: "check_compatibility", cancellable: true)
+                let fixture = try await makeFixture(responses: [
+                    .init("deploy"): [.init(events: [initial], pauseAfterEvents: true)],
+                    .init("set-ssh"): [.init(events: [sshResult()])]
+                ])
+                defer { fixture.runner.finishAll() }
+                let registry = fixture.app.deviceRegistry
+                if hadPreviousAttempt {
+                    var previous = testDeployState(status: .succeeded)
+                    previous.operationID = UUID().uuidString
+                    await registry.updateInstallOperationState(deployState: previous,
+                        runtimeState: testRuntimeState(state: .installedVerified), for: fixture.profile.id)
+                }
+                let before = try XCTUnwrap(registry.profile(id: fixture.profile.id))
+                let originalData = try Data(contentsOf: registry.registryURL)
+                // Fail the real atomic write without changing the in-memory registry.
+                // Restore the file only after every initial queued write has drained.
+                try FileManager.default.removeItem(at: registry.registryURL)
+                try FileManager.default.createDirectory(at: registry.registryURL, withIntermediateDirectories: false)
+                let session = DeviceDashboardSession(profile: before, appStore: fixture.app)
+                session.deployStore.rsyncEnabled = true
+                session.runInstall(profile: before)
+                let lane = fixture.coordinator.lane(for: .deviceWorkflow(before.id, .deploy))
+                let operation = try XCTUnwrap(lane.activeOperation)
+                try await waitUntilStoreState {
+                    cancelled ? session.deployStore.state == .awaitingConfirmation : session.deployStore.currentStage != nil
+                }
+                try await drainOperationUpdates(registry)
+                XCTAssertEqual(registry.state, .failed)
+                XCTAssertNotNil(registry.error)
+                XCTAssertEqual(registry.profile(id: before.id)?.lastDeployState, before.lastDeployState)
+                XCTAssertEqual(registry.profile(id: before.id)?.runtimeState, before.runtimeState)
+                try FileManager.default.removeItem(at: registry.registryURL)
+                try originalData.write(to: registry.registryURL, options: .atomic)
+
+                if cancelled {
+                    fixture.runner.finish(.init("deploy"))
+                    try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
+                    fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+                } else {
+                    let terminal = succeeded
+                        ? BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+                        : failure("deploy")
+                    lane.backend.events.append(terminal.withRequestId(operation.id.uuidString))
+                    fixture.runner.finish(.init("deploy"))
+                }
+                try await waitUntilStoreState {
+                    !fixture.coordinator.isDeviceBusy(before)
+                        && (completion != "failure" || fixture.app.sshAccessStore.snapshot(for: before) != nil)
+                }
+                try await drainOperationUpdates(registry)
+                XCTAssertEqual(session.deployStore.state, succeeded ? .deployed : .deployFailed)
+                let expectedError = succeeded ? nil : (cancelled ? "confirmation_cancelled" : "remote_error")
+                XCTAssertEqual(session.deployStore.error?.code, expectedError)
+
+                let reloaded = DeviceRegistryStore(applicationSupportURL: registry.applicationSupportURL)
+                await reloaded.load()
+                for saved in [try XCTUnwrap(registry.profile(id: before.id)), try XCTUnwrap(reloaded.profile(id: before.id))] {
+                    let context = "\(completion), previous attempt: \(hadPreviousAttempt)"
+                    XCTAssertEqual(saved.lastDeployState?.operationID, operation.id.uuidString, context)
+                    XCTAssertEqual(saved.lastDeployState?.status, succeeded ? .succeeded : .failed, context)
+                    XCTAssertNotNil(saved.lastDeployState?.finishedAt, context)
+                    XCTAssertEqual(saved.lastDeployState?.errorCode, expectedError, context)
+                    XCTAssertEqual(saved.runtimeState?.state, succeeded ? .installedVerified : .installFailed, context)
+                    XCTAssertEqual(saved.runtimeState?.errorCode, expectedError, context)
+                    XCTAssertEqual(saved.settings.rsyncEnabled, succeeded, context)
+                    assertDashboardStopped(saved, app: fixture.app)
+                }
+            }
+        }
+    }
+
+    func testOldDeployEventsCannotChangeNewAttemptOrItsPersistedState() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [
+                .init(events: [confirmation("deploy", id: "old")]),
+                .init(events: [BackendEvent(type: "stage", operation: "deploy", stage: "check_compatibility", cancellable: true)],
+                      pauseAfterEvents: true)
+            ]
+        ])
+        defer { fixture.runner.finishAll() }
+        let registry = fixture.app.deviceRegistry
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        let lane = fixture.coordinator.lane(for: .deviceWorkflow(fixture.profile.id, .deploy))
+        session.runInstall(profile: fixture.profile)
+        let oldOperation = try XCTUnwrap(lane.activeOperation)
+        try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
+        fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+        try await drainOperationUpdates(registry)
+        XCTAssertFalse(fixture.coordinator.isDeviceBusy(fixture.profile))
+
+        session.runInstall(profile: fixture.profile)
+        let currentOperation = try XCTUnwrap(lane.activeOperation)
+        XCTAssertNotEqual(currentOperation.id, oldOperation.id)
+        try await waitUntilStoreState { session.deployStore.currentStage?.stage == "check_compatibility" }
+        try await drainOperationUpdates(registry)
+        let before = try XCTUnwrap(registry.profile(id: fixture.profile.id))
+        XCTAssertEqual(before.lastDeployState?.operationID, currentOperation.id.uuidString)
+        XCTAssertEqual(before.lastDeployState?.status, .deploying)
+        XCTAssertTrue(lane.backend.canCancel)
+
+        for event in [
+            BackendEvent(type: "stage", operation: "deploy", stage: "reboot", cancellable: false),
+            confirmation("deploy", id: "stale"),
+            failure("deploy"),
+            BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+        ] {
+            await fixture.runner.send(event.withRequestId(oldOperation.id.uuidString), to: currentOperation.id.uuidString)
+        }
+        try await drainOperationUpdates(registry)
+        XCTAssertEqual(session.deployStore.state, .deploying)
+        XCTAssertEqual(session.deployStore.currentStage?.stage, "check_compatibility")
+        XCTAssertNil(session.deployStore.error)
+        XCTAssertNil(session.deployStore.result)
+        XCTAssertEqual(lane.backend.currentStage, "check_compatibility")
+        XCTAssertTrue(lane.backend.canCancel)
+        XCTAssertNil(lane.backend.pendingConfirmation)
+        XCTAssertNil(fixture.coordinator.readyConfirmation)
+        XCTAssertEqual(registry.profile(id: before.id)?.lastDeployState, before.lastDeployState)
+        XCTAssertEqual(registry.profile(id: before.id)?.runtimeState, before.runtimeState)
+        XCTAssertTrue(fixture.coordinator.isDeviceBusy(before))
+
+        await fixture.runner.send(BackendEvent(type: "result", operation: "deploy", ok: true,
+            payload: testDeployResultPayload()).withRequestId(currentOperation.id.uuidString), to: currentOperation.id.uuidString)
+        fixture.runner.finish(.init("deploy"))
+        try await waitUntilStoreState { !lane.backend.isRunning }
+        XCTAssertFalse(fixture.coordinator.isDeviceBusy(before))
+        XCTAssertNil(lane.backend.pendingConfirmation)
+        try await drainOperationUpdates(registry)
+        XCTAssertEqual(session.deployStore.state, .deployed)
+        let reloaded = DeviceRegistryStore(applicationSupportURL: registry.applicationSupportURL)
+        await reloaded.load()
+        let saved = try XCTUnwrap(reloaded.profile(id: before.id))
+        XCTAssertEqual(saved.lastDeployState?.operationID, currentOperation.id.uuidString)
+        XCTAssertEqual(saved.lastDeployState?.status, .succeeded)
+        XCTAssertEqual(saved.runtimeState?.state, .installedVerified)
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "deploy"])
+    }
+
+    func testCheckupReplacesOrphanedInstallingStateAndSurvivesReload() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("doctor"): [.init(events: [BackendEvent(type: "result", operation: "doctor", ok: true,
+                payload: testDoctorPayload(checks: [testDoctorCheck(status: "PASS", message: "Running", domain: "Runtime")]))])]
+        ])
+        let registry = fixture.app.deviceRegistry
+        await registry.updateInstallOperationState(
+            deployState: testDeployState(status: .awaitingConfirmation, finishedAt: nil),
+            runtimeState: testRuntimeState(state: .installing), for: fixture.profile.id)
+        assertDashboardStopped(try XCTUnwrap(registry.profile(id: fixture.profile.id)), app: fixture.app)
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        session.runCheckup(profile: fixture.profile)
+        try await waitUntilStoreState {
+            !fixture.coordinator.isDeviceBusy(fixture.profile) && registry.profile(id: fixture.profile.id)?.runtimeState?.state == .installedVerified
+        }
+        XCTAssertEqual(registry.profile(id: fixture.profile.id)?.lastDeployState?.status, .interrupted)
+        let reloaded = DeviceRegistryStore(applicationSupportURL: registry.applicationSupportURL)
+        await reloaded.load()
+        let saved = try XCTUnwrap(reloaded.profile(id: fixture.profile.id))
+        XCTAssertEqual(saved.runtimeState?.state, .installedVerified)
+        XCTAssertEqual(saved.lastCheckup?.state, .passed)
+        assertDashboardStopped(saved, app: fixture.app)
+    }
+
+    func testCancelledInstallCannotRecreateDeletedProfileOrChangeSelection() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [.init(events: [confirmation("deploy", id: "cancel")])]
+        ])
+        let registry = fixture.app.deviceRegistry
+        let other = try await registry.saveConfiguredDevice(configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil, passwordState: .available, preferredID: "other")
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState {
+            fixture.coordinator.readyConfirmation != nil && registry.profile(id: fixture.profile.id)?.lastDeployState?.status == .awaitingConfirmation
+        }
+        fixture.app.select(other)
+        try await registry.delete(fixture.profile)
+        fixture.coordinator.cancel(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+        // A queued sentinel waits for the attempted cancellation write to drain.
+        var drained = false
+        registry.enqueueOperationUpdate { drained = true }
+        try await waitUntilStoreState { drained }
+        XCTAssertNil(registry.profile(id: fixture.profile.id))
+        XCTAssertEqual(registry.profile(id: other.id), other)
+        XCTAssertEqual(fixture.app.selectedProfile?.id, other.id)
+        XCTAssertFalse(fixture.coordinator.isDeviceBusy(fixture.profile))
+    }
+
+    private func assertDashboardStopped(_ profile: DeviceProfile, app: AppStore,
+                                        file: StaticString = #filePath, line: UInt = #line) {
+        let overview = DeviceDashboardOverviewPresentation(summary: app.dashboardSummary(for: profile))
+        for section in overview.healthSections where section.domain == .connection || section.domain == .runtime {
+            XCTAssertFalse(section.rows.contains { $0.status == .running }, file: file, line: line)
+        }
+        XCTAssertTrue(overview.isEnabled(.runCheckup), file: file, line: line)
+        XCTAssertTrue(overview.isEnabled(.installUpdate), file: file, line: line)
+    }
+
+    private func drainOperationUpdates(_ registry: DeviceRegistryStore) async throws {
+        var drained = false
+        registry.enqueueOperationUpdate { drained = true }
+        try await waitUntilStoreState { drained }
+    }
+
     private func confirmation(_ operation: String, id: String) -> BackendEvent {
         BackendEvent(type: "error", operation: operation, code: "confirmation_required", message: "Confirm",
                      details: .object(["confirmation_id": .string(id)]))

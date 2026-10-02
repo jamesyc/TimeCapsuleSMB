@@ -341,7 +341,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].params["confirmation_id"], .string("confirm-1"))
     }
 
-    func testCancellingDirectDeployConfirmationReturnsToIdle() async throws {
+    func testCancellingDirectDeployConfirmationFinishesAsFailed() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(
@@ -362,8 +362,9 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.noWait = true
         backend.cancelPendingConfirmation()
 
-        try await waitUntilStoreState { store.state == .idle && backend.pendingConfirmation == nil }
-        XCTAssertNil(store.error)
+        try await waitUntilStoreState { store.state == .deployFailed && backend.pendingConfirmation == nil }
+        XCTAssertEqual(store.error?.code, "confirmation_cancelled")
+        XCTAssertEqual(store.error?.message, "Operation cancelled.")
         XCTAssertNil(store.currentStage)
         XCTAssertNil(store.result)
         XCTAssertTrue(store.canDeploy)

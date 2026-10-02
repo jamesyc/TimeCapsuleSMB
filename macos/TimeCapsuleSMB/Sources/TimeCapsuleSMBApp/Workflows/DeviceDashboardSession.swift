@@ -405,15 +405,23 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 self?.refreshSSHAccessAfterRemoteFailure(error)
             }
             .store(in: &cancellables)
-        maintenanceStore.$error
-            .sink { [weak self] error in
-                self?.refreshSSHAccessAfterRemoteFailure(error)
-            }
-            .store(in: &cancellables)
+        for publisher in [
+            maintenanceStore.activationStore.$error,
+            maintenanceStore.uninstallStore.$error,
+            maintenanceStore.fsckStore.$error,
+            maintenanceStore.repairXattrsStore.$error,
+            maintenanceStore.sshAccessStore.$error
+        ] {
+            publisher
+                .sink { [weak self] error in
+                    self?.refreshSSHAccessAfterRemoteFailure(error)
+                }
+                .store(in: &cancellables)
+        }
     }
 
     private func observeSSHAccessMaintenanceResults() {
-        maintenanceStore.$sshAccessPayload
+        maintenanceStore.sshAccessStore.$payload
             .compactMap { $0 }
             .sink { [weak self] payload in
                 guard let self,

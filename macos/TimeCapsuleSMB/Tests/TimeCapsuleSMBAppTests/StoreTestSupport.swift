@@ -386,6 +386,7 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
     private var storedResponses: [Key: [Response]]
     private var storedCalls: [Call] = []
     private var pauseGates: [Key: PauseGate] = [:]
+    private var eventSinks: [String: @Sendable (BackendEvent) async -> Void] = [:]
 
     init(responses: [Key: [Response]]) {
         self.storedResponses = responses
@@ -405,6 +406,17 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
         gate?.resumeAll()
     }
 
+    // Deliver through the real BackendClient callback without rewriting the
+    // event's identity, so tests can exercise stale and legacy helper output.
+    func send(_ event: BackendEvent, to requestID: String) async {
+        let sink = queue.sync { eventSinks[requestID] }
+        guard let sink else {
+            XCTFail("No active helper callback for request \(requestID)")
+            return
+        }
+        await sink(event)
+    }
+
     func run(
         helperPath: String?,
         operation: String,
@@ -414,6 +426,7 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
         let (response, pauseGate) = queue.sync {
+            eventSinks[requestID] = onEvent
             storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
             let key = Key(operation, profileID: context?.profileID)
             if var responses = storedResponses[key], !responses.isEmpty {
@@ -443,6 +456,7 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
                 result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
             ), pauseGate)
         }
+        defer { queue.sync { eventSinks[requestID] = nil } }
         writeConfigArtifactIfNeeded(operation: operation, context: context, events: response.events)
 
         if response.delayNanoseconds > 0 {
