@@ -21,6 +21,7 @@ from smbprotocol.session import Session
 from smbprotocol.tree import TreeConnect
 
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.services.runtime import wait_for_tcp_port_state
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
 
 CONF = "/mnt/Memory/samba4/etc/smb.conf"
@@ -35,7 +36,7 @@ class Device:
         self.password = settings.get("TC_PASSWORD")
 
     def command(self, text):
-        return run_ssh(self.ssh, text, timeout=30).stdout
+        return run_ssh(self.ssh, text, timeout=30).stdout.replace("\r\n", "\n")
 
     def processes(self):
         rows = []
@@ -78,6 +79,9 @@ class Device:
         raise AssertionError("process state did not converge")
 
     def session(self, client_guid=None):
+        # A restarted smbd appears in ps before it binds its listening socket.
+        assert wait_for_tcp_port_state(self.host, 445, expected_state=True,
+                                       timeout_seconds=30, interval_seconds=1), "SMB listener did not recover"
         # Samba requires signed/encrypted tree connects for its root account,
         # even when optional client signing is disabled in the appliance config.
         connection = Connection(client_guid or uuid.uuid4(), self.host, require_signing=True)

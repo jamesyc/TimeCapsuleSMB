@@ -2238,3 +2238,65 @@ waits; runtime code, recovery ordering and shipped binaries are unchanged.
   79 passed in 174.21 s. Ruff and `git diff --check` passed.
 - Reproduction and verification logs are under
   `plan/report-only-20261001/ci/log-race/`.
+
+### 2026-10-02: v3.2.0 release check, excluding smbtorture
+
+Validated `a636aa7b`, then finished against replayed main `1fdb45c0`. The
+replay changed only the manager test synchronization above and these notes;
+production sources and shipped artifacts were identical. The four updated
+manager cases also passed with ASan/UBSan and three pytest workers.
+
+Synced source inputs with checksummed rsync and rebuilt service, rsync,
+Samba, the migrator and all regression drivers using the existing VM SDKs.
+The three Samba lanes were clean builds. All 12 shipped binaries matched
+the original manifest SHA-256 values exactly; no binary or manifest changed.
+Stripped sizes in bytes:
+
+| Artifact | NetBSD 6 | NetBSD 4 LE | NetBSD 4 BE |
+| --- | ---: | ---: | ---: |
+| smbd | 10240592 | 10260104 | 10258992 |
+| migrator | 2157304 | 2171156 | 2170716 |
+| service | 375916 | 333032 | 332452 |
+| rsync | 1037780 | 898904 | 893012 |
+
+Host checks passed: `make test-parallel` (3097 tests), native ASan/UBSan
+(906 tests), Swift (578 tests), Ruff, and native macOS app packaging with
+full validation. The packaged app reported 3.2.0 / 30200. Ubuntu 24.04
+amd64, as a non-root user, passed the GCC 13 service compile and the full
+Samba host regression plan with ASan/UBSan.
+
+Deployed NetBSD 6, then NetBSD 4 LE. Both completed the full device plan
+without smbtorture, plus deletion/stream and supervision checks:
+
+| Check | Passed on each device |
+| --- | ---: |
+| Native regression drivers | 89 invocations across 12 drivers |
+| Directory operations, including macOS sparsebundle | 106 |
+| File growth, including 600 MiB sparsebundle readback | 23 |
+| Selected growth cases with AIO enabled | 11 |
+| Durable reconnect and timestamps | 29 |
+| Native symlinks and Windows/Linux link formats | 85 |
+| First-attempt deletion and stream roundtrip/shrink | 121 |
+| Supervision, reload and native NBNS recovery | 15 |
+| Final Doctor | 86 |
+
+The first NetBSD 4 Doctor caught a native NBNS registration timeout during
+startup. Discovery replaced its child after Apple's 100-second timeout and
+registered successfully eight seconds later, without intervention. Subsequent
+Doctors passed. Keep this initial failure distinct from the final passes.
+
+The manual supervision helper exposed two test defects: SSH output carried
+CRLF, which its configuration regexes did not accept, and a restarted smbd
+appeared in `ps` before TCP 445 was listening. Normalize command output once
+and use the existing bounded port wait before creating a session. Checks
+using the captured configuration covered LF/CRLF and both listener outcomes;
+the complete supervision sequence then passed on both devices, including
+manager TERM/KILL and repeated native NBNS child loss while Bonjour and an
+SMB handle stayed usable. Apple's daemons retained their PIDs.
+
+Final Doctor skipped only disabled rsync and the absent USB printer.
+Smbtorture was explicitly excluded; BE hardware was not part of this run.
+No test scratch directories or driver RAM mounts remained. NetBSD 6's old
+panic file was unchanged; NetBSD 4 had no panic file. All locks were released.
+Logs, rebuilt outputs, original manifest comparisons and the runnable helper
+check are under `~/tmp/tc-release-v3.2.0-20261001-225042/`.
