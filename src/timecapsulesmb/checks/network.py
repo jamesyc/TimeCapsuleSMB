@@ -5,7 +5,7 @@ import ipaddress
 import socket
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.net import ipv6_scope_index, scoped_ip_literal
@@ -113,6 +113,87 @@ def local_interface_networks(adapters: Iterable[object] | None = None) -> tuple[
             if entry not in networks:
                 networks.append(entry)
     return tuple(networks)
+
+
+IpNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+NetworkLinkVerdict = Literal["shared", "separate", "unknown"]
+_SHARED_IPV4 = ipaddress.ip_network("100.64.0.0/10")
+_UNIQUE_LOCAL_IPV6 = ipaddress.ip_network("fc00::/7")
+
+
+@dataclass(frozen=True)
+class NetworkLinkResult:
+    """Whether this computer is on any network the device is on.
+
+    Bonjour (multicast DNS) and Apple's NBNS only reach clients on the
+    device's own networks, unless a router relays them. `separate` means some
+    address family has networks on both sides and no pair overlaps;
+    `unknown` means no family could be compared.
+    """
+
+    verdict: NetworkLinkVerdict
+    device_networks: tuple[IpNetwork, ...] = ()
+    local_networks: tuple[IpNetwork, ...] = ()
+    source: str = "none"
+    detail: str | None = None
+
+    @property
+    def families(self) -> tuple[str, ...]:
+        device = {network.version for network in self.device_networks}
+        local = {network.version for network in self.local_networks}
+        return tuple(f"ipv{version}" for version in sorted(device & local))
+
+    def compared(self) -> tuple[tuple[IpNetwork, ...], tuple[IpNetwork, ...]]:
+        """Both sides' networks in the families that were compared."""
+        versions = {int(family[-1]) for family in self.families}
+        return (
+            tuple(network for network in self.local_networks if network.version in versions),
+            tuple(network for network in self.device_networks if network.version in versions),
+        )
+
+    def telemetry(self) -> dict[str, object]:
+        return {
+            "verdict": self.verdict,
+            "source": self.source,
+            "families": list(self.families),
+            "device_networks": [reportable_network(network) for network in self.device_networks],
+            # A full-length local prefix is this computer's own address.
+            "local_networks": [reportable_network(network, hide_hosts=True) for network in self.local_networks],
+            "detail": self.detail,
+        }
+
+
+def reportable_network(network: IpNetwork, *, hide_hosts: bool = False) -> str:
+    """A network as telemetry carries it: private, shared and unique local
+    ranges in full, public ones by family and prefix length only."""
+    address = network.network_address
+    private = address in _UNIQUE_LOCAL_IPV6 if address.version == 6 else (address in _SHARED_IPV4 or address.is_private)
+    if private and not (hide_hosts and network.prefixlen == network.max_prefixlen):
+        return str(network)
+    kind = "public" if not private else "host"
+    return f"ipv{address.version}-{kind}/{network.prefixlen}"
+
+
+def network_display(network: IpNetwork) -> str:
+    return str(network.network_address) if network.prefixlen == network.max_prefixlen else str(network)
+
+
+def classify_network_link(
+    device_networks: Iterable[IpNetwork],
+    local_networks: Iterable[IpNetwork],
+    *,
+    source: str,
+    detail: str | None = None,
+) -> NetworkLinkResult:
+    device = tuple(dict.fromkeys(device_networks))
+    local = tuple(dict.fromkeys(local_networks))
+    comparable = {network.version for network in device} & {network.version for network in local}
+    verdict: NetworkLinkVerdict
+    if any(left.version == right.version and left.overlaps(right) for left in device for right in local):
+        verdict = "shared"
+    else:
+        verdict = "separate" if comparable else "unknown"
+    return NetworkLinkResult(verdict, device, local, source, detail)
 
 
 _ROUTE_UNAVAILABLE_ERRNOS = {

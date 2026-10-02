@@ -1,3 +1,22 @@
+# Bonjour off-network skip validation (2026-10-01)
+
+Doctor now requires both attempted Bonjour backends to report absence before
+skipping a missing advertisement off-network. A failed native `dns-sd` result
+that saw a record keeps the zeroconf failure and native diagnostics available.
+The existing successful-fallback selection is unchanged.
+
+- The regression failed before the fix for wrong ports, hosts, addresses,
+  foreign devices and unresolved browse hits, independently over IPv4 and
+  IPv6 (10 failing subtests). All 16 cases pass after the fix, including
+  absent records, unavailable native discovery and valid native fallback.
+- Focused doctor, printer, network, CLI doctor and app API tests: 496 passed,
+  143 subtests passed. Ruff and `git diff --check` passed.
+- Full parallel local pytest suite: 3,079 passed, 33,255 subtests passed in
+  145.36 seconds. The native telemetry cleanup failure observed during the
+  earlier review did not recur; its code is unchanged by this fix.
+- No NetBSD device access, deployment or VM build; this changes host-side
+  doctor logic only.
+
 # Regression sensitivity checks
 
 The implementation was checked by deliberately restoring bugs in a disposable

@@ -17,8 +17,12 @@ from types import SimpleNamespace
 
 from timecapsulesmb.checks.network import (
     LocalInterfaceNetwork,
+    NetworkLinkResult,
     RouteSelection,
+    classify_network_link,
     local_interface_networks,
+    network_display,
+    reportable_network,
     select_route_to_address,
 )
 
@@ -105,6 +109,83 @@ class LocalInterfaceNetworkTests(unittest.TestCase):
     def test_returns_nothing_when_interfaces_cannot_be_read(self) -> None:
         with mock.patch.dict(sys.modules, {"ifaddr": None}):
             self.assertEqual(local_interface_networks(), ())
+
+
+def nets(*values: str) -> tuple:
+    return tuple(ipaddress.ip_network(value) for value in values)
+
+
+class NetworkLinkTests(unittest.TestCase):
+    def classify(self, device: tuple, local: tuple) -> NetworkLinkResult:
+        return classify_network_link(device, local, source="device_ifconfig")
+
+    def test_any_overlap_in_either_family_means_shared(self) -> None:
+        cases = {
+            "same IPv4 LAN": (nets("192.168.1.0/24"), nets("192.168.1.0/24")),
+            "wider local prefix": (nets("192.168.1.0/24"), nets("192.168.0.0/16")),
+            "IPv6 shared while IPv4 differs": (
+                nets("10.0.1.0/24", "2001:db8:1::/64"),
+                nets("192.168.1.0/24", "2001:db8:1::/64"),
+            ),
+            "second local interface on the device's LAN": (
+                nets("192.168.1.0/24"),
+                nets("10.20.0.0/24", "192.168.1.0/24"),
+            ),
+            "device address inside a local network": (nets("192.168.1.5/32"), nets("192.168.1.0/24")),
+        }
+        for name, (device, local) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.classify(device, local).verdict, "shared")
+
+    def test_a_compared_family_without_overlap_means_separate(self) -> None:
+        cases = {
+            "reset router network": (nets("10.0.1.0/24"), nets("192.168.1.0/24")),
+            "IPv6 only on this computer": (nets("10.0.1.0/24"), nets("192.168.1.0/24", "2001:db8:9::/64")),
+            "IPv6-only home network": (nets("2001:db8:1::/64"), nets("2001:db8:2::/64")),
+            "VPN only": (nets("192.168.1.0/24"), nets("100.99.99.10/32", "fd7a:115c:a1e0::/48")),
+        }
+        for name, (device, local) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.classify(device, local).verdict, "separate")
+
+    def test_no_family_on_both_sides_is_unknown(self) -> None:
+        cases = {
+            "IPv6-only computer, IPv4-only device": (nets("192.168.1.0/24"), nets("2001:db8:1::/64")),
+            "nothing known about the device": ((), nets("192.168.1.0/24")),
+            "no local networks": (nets("192.168.1.0/24"), ()),
+        }
+        for name, (device, local) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.classify(device, local).verdict, "unknown")
+
+    def test_families_and_compared_networks_leave_out_one_sided_families(self) -> None:
+        link = self.classify(nets("10.0.1.0/24", "10.0.1.0/24"), nets("192.168.1.0/24", "2001:db8:9::/64"))
+
+        self.assertEqual(link.device_networks, nets("10.0.1.0/24"))
+        self.assertEqual(link.families, ("ipv4",))
+        self.assertEqual(link.compared(), (nets("192.168.1.0/24"), nets("10.0.1.0/24")))
+
+    def test_telemetry_hides_public_prefixes_and_this_computers_address(self) -> None:
+        link = classify_network_link(
+            nets("192.168.1.0/24", "2600:1700:83b7:20f::/64"),
+            nets("10.20.0.0/24", "100.99.99.10/32", "2600:1700:aaaa::/64", "fd7a:115c:a1e0::/48"),
+            source="device_ifconfig",
+        )
+
+        self.assertEqual(link.telemetry(), {
+            "verdict": "separate",
+            "source": "device_ifconfig",
+            "families": ["ipv4", "ipv6"],
+            "device_networks": ["192.168.1.0/24", "ipv6-public/64"],
+            "local_networks": ["10.20.0.0/24", "ipv4-host/32", "ipv6-public/64", "fd7a:115c:a1e0::/48"],
+            "detail": None,
+        })
+
+    def test_reportable_network_keeps_device_addresses_and_display_drops_host_lengths(self) -> None:
+        self.assertEqual(reportable_network(ipaddress.ip_network("192.168.1.5/32")), "192.168.1.5/32")
+        self.assertEqual(reportable_network(ipaddress.ip_network("8.8.8.0/24")), "ipv4-public/24")
+        self.assertEqual(network_display(ipaddress.ip_network("192.168.1.5/32")), "192.168.1.5")
+        self.assertEqual(network_display(ipaddress.ip_network("2001:db8::/64")), "2001:db8::/64")
 
 
 if __name__ == "__main__":

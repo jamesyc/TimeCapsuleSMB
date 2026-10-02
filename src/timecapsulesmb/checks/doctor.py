@@ -11,6 +11,7 @@ from timecapsulesmb.checks.doctor_debug import (
 )
 from timecapsulesmb.checks.doctor_state import DoctorInputs, DoctorOptions, DoctorSink
 from timecapsulesmb.checks.doctor_steps import (
+    DoctorNetworkProbe,
     _add_active_smb_conf_results,
     _add_bonjour_results,
     _doctor_check_usb_printer,
@@ -93,6 +94,7 @@ def run_doctor_checks(
     native_nbns_ready = _doctor_check_managed_mdns(target, remote, sink)
     _doctor_check_managed_rsync(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
+    network = DoctorNetworkProbe(target, remote, sink.debug_fields)
     bonjour_result = _add_bonjour_results(
         inputs.config,
         naming.identity,
@@ -100,6 +102,7 @@ def run_doctor_checks(
         skip_bonjour=inputs.options.skip_bonjour,
         active_share_names=parse_active_share_names(smb_config.text or ""),
         add_result=sink.add,
+        network=network,
     )
     direct_smb = _doctor_check_direct_smb_port(target, remote, bonjour_result.addresses, sink)
     _add_bonjour_debug_fields(
@@ -111,9 +114,9 @@ def run_doctor_checks(
         bonjour_backend_debug=bonjour_result.backend_debug,
     )
     _doctor_add_bonjour_naming_info(bonjour_result, sink)
-    _doctor_check_usb_printer(target, remote, bonjour_result, sink)
+    _doctor_check_usb_printer(target, remote, bonjour_result, sink, network)
     _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
-    _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns_ready)
+    _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns_ready, network)
     _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, direct_smb, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink)

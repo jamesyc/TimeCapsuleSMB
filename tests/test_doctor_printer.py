@@ -1,9 +1,11 @@
 """Doctor's USB printer check (guide G6 as a release gate): Apple's printd
 must keep advertising a plugged-in printer under our runtime."""
+import ipaddress
 from types import SimpleNamespace
 
-from timecapsulesmb.checks.doctor_steps import _add_usb_printer_results
+from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, _add_usb_printer_results
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.network import classify_network_link
 from timecapsulesmb.device.probe import UsbPrinterProbeResult, parse_prni_printers
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService, BonjourServiceInstance
 
@@ -94,3 +96,64 @@ def test_plugged_in_printer_with_no_record_fails_and_lists_what_was_seen():
     assert result.status == "FAIL" and "no printer records seen" in result.message
     (result,) = collect(printer, None, error=CheckResult("FAIL", "Bonjour printer check failed: boom"))
     assert result.status == "FAIL" and "boom" in result.message
+
+
+class FakeNetwork:
+    """Stands in for DoctorNetworkProbe with a fixed link verdict."""
+
+    def __init__(self, device: str, local: str) -> None:
+        self.verdict = classify_network_link(
+            [ipaddress.ip_network(device)], [ipaddress.ip_network(local)], source="device_ifconfig",
+        )
+        self.link_calls = 0
+        self.skipped: list[str] = []
+
+    def link(self):
+        self.link_calls += 1
+        return self.verdict
+
+    def record_skip(self, check: str) -> None:
+        self.skipped.append(check)
+
+
+def collect_with_network(printer, found, network, error=None):
+    results = []
+    _add_usb_printer_results(
+        printer, found, error, host_label="jamess-airport-time-capsule", add_result=results.append, network=network,
+    )
+    return results
+
+
+def test_unadvertised_printer_is_skipped_when_this_computer_is_off_the_device_network():
+    printer = UsbPrinterProbeResult(present=True, name="Brother HL-L2370DN series")
+    network = FakeNetwork("192.168.1.0/24", "10.20.0.0/24")
+    seen = snapshot(resolved=[BonjourResolvedService("Office LaserJet", "laserjet.local", "_ipp._tcp.local.", port=631)])
+
+    (result,) = collect_with_network(printer, seen, network)
+
+    assert result.status == "SKIP"
+    assert result.details["code"] == BONJOUR_OFF_LINK_CODE
+    assert result.message.startswith("USB printer 'Brother HL-L2370DN series' not checked; this computer (10.20.0.0/24)")
+    assert "device's network (192.168.1.0/24)" in result.message
+    assert network.skipped == ["usb_printer"]
+
+
+def test_unadvertised_printer_still_fails_on_the_device_network_or_when_unknown():
+    printer = UsbPrinterProbeResult(present=True, name="Brother HL-L2370DN series")
+    for network in (FakeNetwork("192.168.1.0/24", "192.168.1.0/24"), FakeNetwork("192.168.1.0/24", "2001:db8::/64")):
+        (result,) = collect_with_network(printer, snapshot(), network)
+        assert result.status == "FAIL" and "no printer records seen" in result.message
+        assert network.skipped == []
+
+
+def test_advertised_printer_and_browse_errors_do_not_look_at_the_network():
+    printer = UsbPrinterProbeResult(present=True, name="Brother HL-L2370DN series")
+    network = FakeNetwork("192.168.1.0/24", "10.20.0.0/24")
+    advertised = snapshot(resolved=[BonjourResolvedService("Brother HL-L2370DN series", "x.local", "_ipp._tcp.local.", port=631)])
+
+    (passed,) = collect_with_network(printer, advertised, network)
+    (failed,) = collect_with_network(printer, None, network, error=CheckResult("FAIL", "Bonjour printer check failed: boom"))
+
+    assert passed.status == "PASS"
+    assert failed.status == "FAIL" and "boom" in failed.message
+    assert network.link_calls == 0

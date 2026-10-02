@@ -18,6 +18,7 @@ NB_TYPE_NB = 0x0020
 DNS_CLASS_IN = 0x0001
 NBNS_QUERY_TIMEOUT_CODE = "nbns_query_timeout"
 NBNS_OFF_SUBNET_CODE = "nbns_off_subnet"
+NBNS_NEGATIVE_RESPONSE_CODE = "nbns_negative_response"
 
 
 def encode_netbios_name(name: str, suffix: int = 0x20) -> bytes:
@@ -141,7 +142,11 @@ def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip:
     if response is None:
         return CheckResult("FAIL", f"NBNS query for {netbios_name!r} returned an invalid response")
     if response.rcode:
-        return CheckResult("FAIL", f"NBNS query for {netbios_name!r} returned a negative response (rcode {response.rcode})")
+        return CheckResult(
+            "FAIL",
+            f"NBNS query for {netbios_name!r} returned a negative response (rcode {response.rcode})",
+            {"code": NBNS_NEGATIVE_RESPONSE_CODE, "rcode": response.rcode},
+        )
     if expected_ip not in response.addresses:
         return CheckResult("FAIL", f"NBNS query for {netbios_name!r} resolved to {', '.join(response.addresses)}, expected {expected_ip}")
     others = [address for address in response.addresses if address != expected_ip]

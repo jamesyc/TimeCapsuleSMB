@@ -48,8 +48,10 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         fail_count=status_counts["FAIL"],
         info_count=status_counts["INFO"],
         # Debug fields reach telemetry only in a fatal run's error, and an
-        # off-subnet NBNS timeout is a SKIP, so its outcome rides on the event.
+        # off-subnet NBNS timeout or refusal is a SKIP, so its outcome rides on the event.
         nbns_subnet=debug_fields.get("nbns_subnet"),
+        # Likewise for Bonjour and printer checks skipped off the device's network.
+        bonjour_link=debug_fields.get("bonjour_link"),
     )
     error = build_doctor_error(results, debug_fields) if fatal else None
     if error:

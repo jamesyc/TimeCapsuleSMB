@@ -1786,6 +1786,7 @@ def runtime_ram_root_present_conn(connection: SshConnection) -> bool:
 DEVICE_IFCONFIG_COMMAND = "/sbin/ifconfig -a"
 _IFCONFIG_HEADER_RE = re.compile(r"^(\S+): flags=[0-9a-fA-F]+<([^>]*)>")
 _IFCONFIG_INET_RE = re.compile(r"^\s+inet\s+(?:alias\s+)?(\S+)\s+netmask\s+(\S+)(?:\s+broadcast\s+(\S+))?")
+_IFCONFIG_INET6_RE = re.compile(r"^\s+inet6\s+(?:alias\s+)?(\S+)\s+prefixlen\s+(\d+)")
 
 
 @dataclass(frozen=True)
@@ -1875,17 +1876,75 @@ def parse_ifconfig_ipv4_entries(text: str) -> tuple[DeviceIpv4Entry, ...]:
     return tuple(entries)
 
 
-def probe_device_ipv4_subnets_conn(connection: SshConnection) -> DeviceIpv4SubnetsProbeResult:
+def _parse_ifconfig_network(line: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    entry = _parse_ifconfig_inet("", line)
+    if entry is not None:
+        return ipaddress.IPv4Network(entry.network)
+    match = _IFCONFIG_INET6_RE.match(line)
+    if match is None:
+        return None
+    try:
+        return ipaddress.IPv6Interface(f"{match.group(1).partition('%')[0]}/{match.group(2)}").network
+    except ValueError:
+        return None
+
+
+def parse_ifconfig_networks(text: str) -> tuple[str, ...]:
+    """The networks the device is on, in both address families.
+
+    Every interface that is UP and not LOOPBACK counts, so a router-mode
+    device lists its WAN network too. Link-local networks are left out: every
+    link has one, so they cannot tell two networks apart.
+    """
+    networks: list[str] = []
+    interface_up = False
+    for line in text.splitlines():
+        header = _IFCONFIG_HEADER_RE.match(line)
+        if header is not None:
+            flags = set(header.group(2).split(","))
+            interface_up = "UP" in flags and "LOOPBACK" not in flags
+            continue
+        if not line[:1].isspace():
+            interface_up = False
+            continue
+        if not interface_up:
+            continue
+        network = _parse_ifconfig_network(line)
+        if network is None or network.network_address.is_link_local or network.network_address.is_loopback:
+            continue
+        if str(network) not in networks:
+            networks.append(str(network))
+    return tuple(networks)
+
+
+@dataclass(frozen=True)
+class DeviceNetworksProbeResult:
+    ipv4_entries: tuple[DeviceIpv4Entry, ...] = ()
+    networks: tuple[str, ...] = ()
+    error: str | None = None
+
+    @property
+    def ipv4_subnets(self) -> DeviceIpv4SubnetsProbeResult:
+        if self.error is not None:
+            return DeviceIpv4SubnetsProbeResult(error=self.error)
+        if not self.ipv4_entries:
+            return DeviceIpv4SubnetsProbeResult(error="ifconfig listed no broadcast IPv4 address")
+        return DeviceIpv4SubnetsProbeResult(self.ipv4_entries)
+
+
+def probe_device_networks_conn(connection: SshConnection) -> DeviceNetworksProbeResult:
     try:
         proc = run_ssh(connection, DEVICE_IFCONFIG_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
     except SshCommandTimeout:
-        return DeviceIpv4SubnetsProbeResult(error="ifconfig timed out")
+        return DeviceNetworksProbeResult(error="ifconfig timed out")
     if proc.returncode != 0:
-        return DeviceIpv4SubnetsProbeResult(error=f"ifconfig exited {proc.returncode}")
-    entries = parse_ifconfig_ipv4_entries(proc.stdout or "")
-    if not entries:
-        return DeviceIpv4SubnetsProbeResult(error="ifconfig listed no broadcast IPv4 address")
-    return DeviceIpv4SubnetsProbeResult(entries)
+        return DeviceNetworksProbeResult(error=f"ifconfig exited {proc.returncode}")
+    text = proc.stdout or ""
+    return DeviceNetworksProbeResult(parse_ifconfig_ipv4_entries(text), parse_ifconfig_networks(text))
+
+
+def probe_device_ipv4_subnets_conn(connection: SshConnection) -> DeviceIpv4SubnetsProbeResult:
+    return probe_device_networks_conn(connection).ipv4_subnets
 
 
 MANAGER_ELAPSED_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o etime= -o ucomm= -o command="

@@ -51,6 +51,8 @@ class BonjourExpectedSmbResolution:
     record: BonjourResolvedService | None
     source: Literal["browse", "targeted_resolve"]
     error: CheckResult | None
+    # The expected instance name resolved to another device.
+    foreign: bool = False
 
 
 @dataclass(frozen=True)
@@ -320,7 +322,7 @@ def resolve_expected_smb_record(
         if foreign_record(resolved_record):
             return BonjourExpectedSmbResolution(
                 selection=selection, instance=selection.instance, record=None, source="browse",
-                error=foreign_error(),
+                error=foreign_error(), foreign=True,
             )
         return BonjourExpectedSmbResolution(
             selection=selection,
@@ -341,7 +343,8 @@ def resolve_expected_smb_record(
             "was not discovered and could not be resolved by targeted query"
         ),
     )
-    if foreign_record(resolved_record):
+    foreign = foreign_record(resolved_record)
+    if foreign:
         resolved_record, resolve_error = None, foreign_error()
     return BonjourExpectedSmbResolution(
         selection=selection,
@@ -349,6 +352,7 @@ def resolve_expected_smb_record(
         record=resolved_record,
         source="targeted_resolve",
         error=resolve_error,
+        foreign=foreign,
     )
 
 

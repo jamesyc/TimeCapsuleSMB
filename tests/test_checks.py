@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import sys
 import socket
 import struct
@@ -45,10 +46,12 @@ from timecapsulesmb.checks.doctor_steps import (
     _add_sshpass_result,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
+from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.network import RouteSelection, check_smb_port, check_ssh_login
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, RouteSelection, check_smb_port, check_ssh_login
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import (
+    NBNS_NEGATIVE_RESPONSE_CODE,
     NBNS_OFF_SUBNET_CODE,
     NBNS_QUERY_TIMEOUT_CODE,
     NbnsResponse,
@@ -71,9 +74,12 @@ from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from
 from timecapsulesmb.device.probe import (
     DeviceIpv4Entry,
     DeviceIpv4SubnetsProbeResult,
+    DeviceNetworksProbeResult,
     UsbPrinterProbeResult,
     parse_ifconfig_ipv4_entries,
+    parse_ifconfig_networks,
     probe_device_ipv4_subnets_conn,
+    probe_device_networks_conn,
     DeviceHostnameProbeResult,
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
@@ -107,6 +113,18 @@ DEFAULT_SMB_PORT_CHECK = object()
 SAME_SUBNET_DEVICE_PROBE = DeviceIpv4SubnetsProbeResult(
     (DeviceIpv4Entry("bridge0", "10.0.0.2", "255.255.255.0", "10.0.0.255"),)
 )
+# This computer in the Doctor harness: on the device's network.
+SAME_NETWORK_LOCAL_NETWORKS = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+
+
+def device_networks_probe(ipv4_probe) -> mock.Mock:
+    """A probe_device_networks_conn mock built on an IPv4-subnet probe mock."""
+    def probe(connection):
+        result = ipv4_probe(connection)
+        networks = tuple(dict.fromkeys(entry.network for entry in result.entries))
+        return DeviceNetworksProbeResult(result.entries, networks, result.error)
+
+    return mock.Mock(side_effect=probe)
 REAL_SMB_PORT_CHECK = object()
 DEFAULT_ACTIVE_SMB_CONF = """[global]
     netbios name = TimeCapsule
@@ -249,6 +267,7 @@ class CheckTests(unittest.TestCase):
         runtime_ram_root_present: bool = True,
         client_source: str | None = None,
         device_subnets_probe: DeviceIpv4SubnetsProbeResult = SAME_SUBNET_DEVICE_PROBE,
+        local_networks=SAME_NETWORK_LOCAL_NETWORKS,
         extra_patches: dict[str, object] | None = None,
     ):
         resolved_values = values or self.valid_doctor_values()
@@ -344,11 +363,14 @@ class CheckTests(unittest.TestCase):
                     return_value=RouteSelection("unknown") if client_source is None else RouteSelection("available", source=client_source),
                 )
             )
-            mocks.probe_device_ipv4_subnets_conn = stack.enter_context(
+            mocks.probe_device_networks_conn = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.checks.doctor_steps.probe_device_ipv4_subnets_conn",
-                    return_value=device_subnets_probe,
+                    "timecapsulesmb.checks.doctor_steps.probe_device_networks_conn",
+                    device_networks_probe(mock.Mock(return_value=device_subnets_probe)),
                 )
+            )
+            mocks.local_interface_networks = stack.enter_context(
+                mock.patch("timecapsulesmb.checks.doctor_steps.local_interface_networks", return_value=local_networks)
             )
             # Most Doctor cases supply Bonjour records and do not exercise DNS.
             # Keep those cases independent of the host's .local resolver while
@@ -532,6 +554,11 @@ class CheckTests(unittest.TestCase):
             )
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.native_dns_sd_available", return_value=False))
+        # Doctor compares the device's networks with this computer's; keep tests
+        # independent of the machine running them.
+        self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.checks.doctor_steps.local_interface_networks", return_value=SAME_NETWORK_LOCAL_NETWORKS,
+        ))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=DEFAULT_ACTIVE_SMB_CONF)))
 
     def tearDown(self) -> None:
@@ -1212,6 +1239,188 @@ class CheckTests(unittest.TestCase):
             "Bonjour IPv4: expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
             messages,
         )
+
+    OFF_NETWORK = (LocalInterfaceNetwork("en0", "192.168.50.10", ipaddress.ip_network("192.168.50.0/24")),)
+    OFF_NETWORK_BONJOUR_SKIP = (
+        "Bonjour check skipped; this computer (192.168.50.0/24) is not on the device's network (10.0.0.0/24). "
+        "Bonjour only reaches devices on the same network, so SMB is checked by address instead"
+    )
+
+    def _run_doctor_bonjour_miss(self, *, local_networks, resolved=None, debug_fields=None, target_host="root@10.0.0.2", **kwargs):
+        """Doctor where Bonjour finds nothing for the device unless `resolved` is given."""
+        values = self.valid_doctor_values(
+            TC_HOST=target_host,
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        resolve_error = CheckResult(
+            "FAIL",
+            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+        )
+        extra_patches = {
+            "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                return_value=(BonjourDiscoverySnapshot([], []), None, None)
+            ),
+            "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(
+                return_value=(resolved, None) if resolved is not None else (None, resolve_error)
+            ),
+            "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(return_value=None),
+            **kwargs.pop("extra_patches", {}),
+        }
+        kwargs.setdefault("ssh_login", mock.Mock(status="PASS", message="ssh ok"))
+        return self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            local_networks=local_networks,
+            extra_patches=extra_patches,
+            **kwargs,
+        )
+
+    def test_bonjour_miss_off_the_device_network_is_one_skip(self) -> None:
+        debug_fields: dict[str, object] = {}
+        nbns = mock.Mock(return_value=self._nbns_query_timeout())
+
+        run = self._run_doctor_bonjour_miss(
+            local_networks=self.OFF_NETWORK,
+            debug_fields=debug_fields,
+            client_source="192.168.50.10",
+            extra_patches={"timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns},
+        )
+
+        self.assertFalse(run.fatal)
+        bonjour = [result for result in run.results if result.message.startswith("Bonjour")]
+        self.assertEqual([(result.status, result.message) for result in bonjour], [("SKIP", self.OFF_NETWORK_BONJOUR_SKIP)])
+        self.assertEqual(bonjour[0].details["code"], BONJOUR_OFF_LINK_CODE)
+        self.assertIn(f"advertised Bonjour instance: unavailable ({self.OFF_NETWORK_BONJOUR_SKIP})",
+                      [result.message for result in run.results])
+        self.assertEqual(debug_fields["bonjour_link"], {
+            "verdict": "separate",
+            "source": "device_ifconfig",
+            "families": ["ipv4"],
+            "device_networks": ["10.0.0.0/24"],
+            "local_networks": ["192.168.50.0/24"],
+            "detail": None,
+            "skipped": ["bonjour"],
+        })
+        self.assertNotIn("bonjour_zeroconf", debug_fields)
+        # NBNS's off-subnet check reuses the same ifconfig.
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "SKIP")
+        run.mocks.probe_device_networks_conn.assert_called_once()
+
+    def test_off_network_bonjour_skip_accounts_for_native_results_in_each_family(self) -> None:
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        empty = BonjourDiscoverySnapshot([], [])
+        for family, address, other_address in (("ipv4", "10.0.0.2", "10.0.0.99"), ("ipv6", "fd00::2", "fd00::99")):
+            for scenario in ("wrong_port", "wrong_host", "wrong_address", "foreign", "unresolved", "absent", "unavailable", "valid"):
+                with self.subTest(family=family, scenario=scenario):
+                    record = BonjourResolvedService(
+                        instance.name,
+                        "other.local" if scenario in {"wrong_host", "foreign"} else "home.local",
+                        instance.service_type,
+                        port=1445 if scenario == "wrong_port" else 445,
+                        fullname=instance.fullname,
+                        **{family: [other_address if scenario in {"wrong_address", "foreign"} else address]},
+                    )
+                    snapshot = BonjourDiscoverySnapshot([instance], [] if scenario == "unresolved" else [record])
+                    if scenario == "absent":
+                        snapshot = empty
+                    diagnostics = {
+                        version: NativeDnsSdDiscoveryDiagnostics(
+                            timeout_sec=6.0, elapsed_sec=1.0, status="ok",
+                            service_types=[instance.service_type], ip_version=version,
+                            instance_count=len(snapshot.instances) if version == family else 0,
+                            resolved_count=len(snapshot.resolved) if version == family else 0,
+                            browses=[],
+                        )
+                        for version in ("ipv4", "ipv6")
+                    }
+                    native_discover = mock.Mock(side_effect=[
+                        None if scenario == "unavailable" else
+                        (snapshot if version == family else empty, diagnostics[version])
+                        for version in ("ipv4", "ipv6")
+                    ])
+                    debug_fields: dict[str, object] = {}
+
+                    run = self._run_doctor_bonjour_miss(
+                        local_networks=self.OFF_NETWORK,
+                        target_host=f"root@{address}",
+                        debug_fields=debug_fields,
+                        extra_patches={
+                            "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
+                            "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": native_discover,
+                            "timecapsulesmb.checks.doctor_steps.resolve_native_dns_sd_service_instance": mock.Mock(return_value=(None, None)),
+                            "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                        },
+                    )
+
+                    skipped = scenario in {"absent", "unavailable"}
+                    self.assertEqual(run.fatal, not skipped and scenario != "valid")
+                    self.assertEqual(
+                        any(result.details.get("code") == BONJOUR_OFF_LINK_CODE for result in run.results), skipped,
+                    )
+                    self.assertEqual([call.kwargs["family"] for call in native_discover.call_args_list], ["ipv4", "ipv6"])
+                    if not skipped:
+                        self.assertEqual(debug_fields["bonjour_native_fallback"], list(diagnostics.values()))
+                        self.assertEqual(debug_fields["bonjour_backend"][family], "native_dns_sd" if scenario == "valid" else "zeroconf")
+                        if scenario != "valid":
+                            prefix = f"Bonjour {'IPv4' if family == 'ipv4' else 'IPv6'}: "
+                            self.assertTrue(any(result.status == "FAIL" and result.message.startswith(prefix) for result in run.results))
+
+    def test_bonjour_miss_on_the_device_network_still_fails(self) -> None:
+        debug_fields: dict[str, object] = {}
+
+        run = self._run_doctor_bonjour_miss(local_networks=SAME_NETWORK_LOCAL_NETWORKS, debug_fields=debug_fields)
+
+        self.assertTrue(run.fatal)
+        self.assertIn(
+            "Bonjour IPv4: expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+            [result.message for result in run.results if result.status == "FAIL"],
+        )
+        self.assertEqual(debug_fields["bonjour_link"]["verdict"], "shared")
+        self.assertEqual(debug_fields["bonjour_link"]["skipped"], [])
+
+    def test_bonjour_miss_still_fails_when_the_networks_cannot_be_compared(self) -> None:
+        ipv6_only = (LocalInterfaceNetwork("en0", "2001:db8:9::10", ipaddress.ip_network("2001:db8:9::/64")),)
+        debug_fields: dict[str, object] = {}
+
+        run = self._run_doctor_bonjour_miss(local_networks=ipv6_only, debug_fields=debug_fields)
+
+        self.assertTrue(run.fatal)
+        self.assertFalse(any(result.status == "SKIP" and result.message.startswith("Bonjour") for result in run.results))
+        self.assertEqual(debug_fields["bonjour_link"]["verdict"], "unknown")
+
+    def test_bonjour_record_of_another_device_still_fails_off_the_device_network(self) -> None:
+        # Records that were seen but do not match are a real problem wherever this computer is.
+        other_device = BonjourResolvedService(
+            "Home", "other-home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.99"], fullname="Home._smb._tcp.local.",
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self._run_doctor_bonjour_miss(local_networks=self.OFF_NETWORK, resolved=other_device, debug_fields=debug_fields)
+
+        self.assertTrue(run.fatal)
+        failures = [result.message for result in run.results if result.status == "FAIL"]
+        self.assertTrue(any("belongs to another device" in message for message in failures), failures)
+        self.assertNotIn("bonjour_link", debug_fields)
+
+    def test_bonjour_miss_without_ssh_compares_the_device_address(self) -> None:
+        debug_fields: dict[str, object] = {}
+
+        run = self._run_doctor_bonjour_miss(
+            local_networks=self.OFF_NETWORK, debug_fields=debug_fields, skip_ssh=True, ssh_login=None,
+        )
+
+        skip = next(result for result in run.results if result.message.startswith("Bonjour"))
+        self.assertEqual(skip.status, "SKIP")
+        self.assertIn("is not on the device's network (10.0.0.2)", skip.message)
+        self.assertEqual(debug_fields["bonjour_link"]["source"], "device_address")
+        self.assertEqual(debug_fields["bonjour_link"]["device_networks"], ["10.0.0.2/32"])
+        self.assertEqual(debug_fields["bonjour_link"]["detail"], "SSH checks were not run")
+        run.mocks.probe_device_networks_conn.assert_not_called()
 
     def test_run_doctor_checks_uses_native_dns_sd_fallback_when_zeroconf_misses_expected_smb_on_macos(self) -> None:
         values = self.valid_doctor_values(
@@ -3250,7 +3459,7 @@ class CheckTests(unittest.TestCase):
                 client_source=client_source,
                 debug_fields=debug_fields,
                 extra_patches={
-                    "timecapsulesmb.checks.doctor_steps.probe_device_ipv4_subnets_conn": (
+                    "timecapsulesmb.checks.doctor_steps.probe_device_networks_conn": device_networks_probe(
                         device_probe_mock or mock.Mock(return_value=SAME_SUBNET_DEVICE_PROBE)
                     ),
                     "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock,
@@ -3402,12 +3611,70 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["nbns_subnet"], {
             "client_source": "192.168.24.102",
             "device_subnets": ["192.168.28.0/24"],
+            "result": "timeout",
             "outcome": "off_subnet",
             "detail": None,
         })
         # A skipped check is not a failure, so no socket diagnostics are read.
         socket_debug.assert_not_called()
         self.assertNotIn("remote_service_sockets", debug_fields)
+
+    @staticmethod
+    def _nbns_negative_response() -> CheckResult:
+        return CheckResult("FAIL", "NBNS query for 'TimeCapsule' returned a negative response (rcode 3)",
+                           {"code": NBNS_NEGATIVE_RESPONSE_CODE, "rcode": 3})
+
+    def test_run_doctor_checks_skips_nbns_refusal_from_off_subnet_client(self) -> None:
+        debug_fields: dict[str, object] = {}
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=self._nbns_negative_response()),
+            client_source="192.168.24.102",
+            device_probe_mock=mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE),
+            debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "SKIP")
+        self.assertEqual(
+            nbns_result.message,
+            "NBNS query for 'TimeCapsule' was refused (rcode 3); this computer (192.168.24.102) "
+            "is outside the device's subnet 192.168.28.0/24",
+        )
+        self.assertEqual(nbns_result.details["result"], "negative_response")
+        self.assertEqual(debug_fields["nbns_subnet"]["result"], "negative_response")
+        self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "off_subnet")
+
+    def test_run_doctor_checks_fails_nbns_refusal_from_same_subnet_client(self) -> None:
+        debug_fields: dict[str, object] = {}
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=self._nbns_negative_response()),
+            debug_fields=debug_fields,
+        )
+
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "FAIL")
+        self.assertEqual(nbns_result.message, "NBNS query for 'TimeCapsule' returned a negative response (rcode 3)")
+        self.assertEqual(debug_fields["nbns_subnet"]["result"], "negative_response")
+        self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "on_subnet")
+
+    def test_run_doctor_checks_does_not_retry_an_nbns_refusal_during_startup(self) -> None:
+        # The startup retry waits for a name to be registered; a refusal is an answer.
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        nbns = mock.Mock(return_value=self._nbns_negative_response())
+
+        self._run_doctor_nbns(
+            mock.Mock(return_value=starting),
+            nbns,
+            client_source="192.168.24.102",
+            device_probe_mock=mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE),
+        )
+
+        nbns.assert_called_once()
 
     def test_run_doctor_checks_lists_every_device_subnet_when_client_is_off_all_of_them(self) -> None:
         router = DeviceIpv4SubnetsProbeResult((
@@ -3512,7 +3779,7 @@ class CheckTests(unittest.TestCase):
                     "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(
                         return_value=self._nbns_query_timeout()
                     ),
-                    "timecapsulesmb.checks.doctor_steps.probe_device_ipv4_subnets_conn": device_probe,
+                    "timecapsulesmb.checks.doctor_steps.probe_device_networks_conn": device_networks_probe(device_probe),
                     "timecapsulesmb.checks.doctor_debug.read_remote_service_socket_diagnostics_conn": mock.Mock(return_value=""),
                 },
             )
@@ -5554,6 +5821,7 @@ class CheckTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.message, "NBNS query for 'TimeCapsule' returned a negative response (rcode 3)")
+        self.assertEqual(result.details, {"code": NBNS_NEGATIVE_RESPONSE_CODE, "rcode": 3})
 
     def test_check_nbns_name_resolution_reports_invalid_response(self) -> None:
         result = self._nbns_check_with_reply(b"\x13\x37\x85")
@@ -5696,6 +5964,71 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
         # wcifsnd compares the interface's own broadcast, not one derived from its mask.
         odd = DeviceIpv4Entry("bridge0", "10.0.0.2", "255.255.255.0", "10.0.0.0")
         self.assertFalse(apple_nbns_client_on_subnet((odd,), "10.0.0.50"))
+
+    def test_parse_ifconfig_networks_lists_both_families_on_both_devices(self) -> None:
+        self.assertEqual(parse_ifconfig_networks(self.IFCONFIG_NETBSD6), ("192.168.1.0/24",))
+        self.assertEqual(parse_ifconfig_networks(self.IFCONFIG_NETBSD4), ("192.168.1.0/24", "2600:1700:83b7:20f::/64"))
+
+    def test_parse_ifconfig_networks_keeps_up_interfaces_and_drops_link_local_and_unreadable_lines(self) -> None:
+        text = (
+            "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172\n"
+            "\tinet 127.0.0.1 netmask 0xff000000\n"
+            "\tinet6 ::1 prefixlen 128\n"
+            "bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 203.0.113.7 netmask 0xffffff00 broadcast 203.0.113.255\n"
+            "bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255\n"
+            "\tinet 169.254.147.85 netmask 0xffff0000 broadcast 169.254.255.255\n"
+            "\tinet6 fe80::1%bridge0 prefixlen 64 scopeid 0x9\n"
+            "\tinet6 fd00::2 prefixlen 64\n"
+            "\tinet6 fd00::3 prefixlen 64\n"
+            "\tinet6 nonsense prefixlen 64\n"
+            "\tinet6 2001:db8::1 prefixlen 999\n"
+            "bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 10.0.2.1 netmask 0xffffff00 broadcast 10.0.2.255\n"
+            "\tinet6 2001:db8:2::1 prefixlen 64\n"
+        )
+
+        self.assertEqual(parse_ifconfig_networks(text), ("203.0.113.0/24", "10.0.1.0/24", "fd00::/64"))
+
+    def test_probe_device_networks_reads_ifconfig_once_for_both_uses(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            return_value=subprocess.CompletedProcess([], 0, self.IFCONFIG_NETBSD4, ""),
+        ) as run_ssh_mock:
+            result = probe_device_networks_conn(connection)
+
+        run_ssh_mock.assert_called_once()
+        self.assertEqual(run_ssh_mock.call_args.args, (connection, "/sbin/ifconfig -a"))
+        self.assertEqual(result.networks, ("192.168.1.0/24", "2600:1700:83b7:20f::/64"))
+        self.assertEqual(
+            result.ipv4_subnets,
+            DeviceIpv4SubnetsProbeResult((DeviceIpv4Entry("bridge0", "192.168.1.10", "255.255.255.0", "192.168.1.255"),)),
+        )
+
+    def test_probe_device_networks_reports_errors_and_ipv6_only_devices(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        ipv6_only = (
+            "bridge0: flags=e043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet6 2001:db8:1::5 prefixlen 64\n"
+        )
+        cases = (
+            (mock.Mock(side_effect=SshCommandTimeout("timed out")), DeviceNetworksProbeResult(error="ifconfig timed out")),
+            (mock.Mock(return_value=subprocess.CompletedProcess([], 1, "", "")), DeviceNetworksProbeResult(error="ifconfig exited 1")),
+            (mock.Mock(return_value=subprocess.CompletedProcess([], 0, ipv6_only, "")),
+             DeviceNetworksProbeResult(networks=("2001:db8:1::/64",))),
+        )
+        for run_ssh_mock, expected in cases:
+            with self.subTest(expected=expected):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", run_ssh_mock):
+                    result = probe_device_networks_conn(connection)
+                self.assertEqual(result, expected)
+                # NBNS keeps seeing the same errors as before.
+                self.assertEqual(
+                    result.ipv4_subnets.error,
+                    expected.error or "ifconfig listed no broadcast IPv4 address",
+                )
 
     def test_probe_device_ipv4_subnets_reads_ifconfig(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")

@@ -38,14 +38,19 @@ from timecapsulesmb.checks.doctor_state import (
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import (
+    NetworkLinkResult,
     RouteSelection,
     check_smb_port,
     check_ssh_login,
+    classify_network_link,
     local_interface_addresses,
+    local_interface_networks,
+    network_display,
     select_route_to_address,
 )
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import (
+    NBNS_NEGATIVE_RESPONSE_CODE,
     NBNS_OFF_SUBNET_CODE,
     NBNS_QUERY_TIMEOUT_CODE,
     apple_nbns_client_on_subnet,
@@ -71,6 +76,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.net import (
     endpoint_host,
     ipv6_scope_index,
+    is_link_local_ip,
     is_link_local_ipv4,
     is_link_local_ipv6,
     resolve_host_ips,
@@ -79,6 +85,7 @@ from timecapsulesmb.core.net import (
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import (
     DeviceIpv4SubnetsProbeResult,
+    DeviceNetworksProbeResult,
     FLASH_RUNTIME_CONFIG,
     ReadinessProbeResult,
     RUNTIME_RAM_ROOT,
@@ -87,7 +94,7 @@ from timecapsulesmb.device.probe import (
     UsbPrinterProbeResult,
     flash_runtime_config_present_conn,
     probe_connection_state,
-    probe_device_ipv4_subnets_conn,
+    probe_device_networks_conn,
     probe_managed_mdns_conn,
     probe_managed_rsync_conn,
     probe_usb_printer_conn,
@@ -817,6 +824,10 @@ class _BonjourAttemptOutcome:
     fallback_allowed: bool = False
     identity_mismatch: bool = False
     addresses: tuple[str, ...] = ()
+    # Nothing on the network answered for this device: no record with its
+    # instance name, host or address. Off the device's network that is
+    # expected, while a record that does not match is a real problem.
+    nothing_seen: bool = False
 
 
 def _status_failed(results: Iterable[CheckResult]) -> bool:
@@ -864,6 +875,9 @@ def _evaluate_bonjour_snapshot(
             for result in check_smb_instance(resolution.selection):
                 add(result)
 
+        outcome.nothing_seen = (
+            resolution.record is None and resolution.source == "targeted_resolve" and not resolution.foreign
+        )
         if resolution.error is not None:
             outcome.reason = resolution.error.message
             outcome.debug_needed = True
@@ -939,6 +953,7 @@ def _evaluate_bonjour_snapshot(
         if resolved_record is None:
             outcome.debug_needed = True
             outcome.fallback_allowed = True
+            outcome.nothing_seen = True
             outcome.reason = f"no resolved _smb._tcp service matched target IP {target_ip}"
             add(CheckResult("FAIL", outcome.reason))
         else:
@@ -1127,6 +1142,7 @@ def _add_bonjour_results(
     skip_bonjour: bool,
     active_share_names: list[str] | None = None,
     add_result: Callable[[CheckResult], None],
+    network: DoctorNetworkProbe | None = None,
 ) -> DoctorBonjourResult:
     bonjour_instance: str | None = None
     bonjour_target: BonjourServiceTarget | None = None
@@ -1199,6 +1215,10 @@ def _add_bonjour_results(
                     )
                     if native_debug is not None:
                         native_fallback_diagnostics.append(native_debug)
+                    if native_outcome is not None:
+                        # A failed native result can still have seen the device.
+                        # Keep zeroconf's failure, but do not skip it as absent.
+                        zeroconf_outcome.nothing_seen &= native_outcome.nothing_seen
                     if native_outcome is not None and not _status_failed(native_outcome.results):
                         bonjour_debug_needed = True
                         bonjour_backend_debug[backend_key] = "native_dns_sd"
@@ -1224,6 +1244,29 @@ def _add_bonjour_results(
                     if not any(address == known or same_scoped_ip(address, known) for known in bonjour_addresses):
                         bonjour_addresses.append(address)
 
+            # A family with nothing to look up (no IPv6 target without an
+            # instance name) reports nothing and has no say.
+            checked = [outcome for _, outcome in outcomes if outcome.results]
+            if network is not None and checked and all(outcome.nothing_seen for outcome in checked):
+                link = network.link()
+                if link.verdict == "separate":
+                    network.record_skip("bonjour")
+                    bonjour_reason = _off_link_message(
+                        "Bonjour check skipped",
+                        link,
+                        "Bonjour only reaches devices on the same network, so SMB is checked by address instead",
+                    )
+                    add_result(CheckResult("SKIP", bonjour_reason, {"code": BONJOUR_OFF_LINK_CODE}))
+                    # As if Bonjour were skipped: later steps use TC_HOST's addresses.
+                    return DoctorBonjourResult(
+                        instance=None,
+                        target=None,
+                        service_targets={},
+                        reason=bonjour_reason,
+                        debug_needed=False,
+                        expected_debug=bonjour_expected_debug,
+                        zeroconf_debug=None,
+                    )
             usable_family = any(not _status_failed(outcome.results) and outcome.addresses for _, outcome in outcomes)
             for family, outcome in outcomes:
                 prefix = f"Bonjour {_family_label(family)}: "
@@ -1305,6 +1348,81 @@ def _select_smb_file_ops_share(
     return disk_shares[0]
 
 
+BONJOUR_OFF_LINK_CODE = "bonjour_off_link"
+
+
+class DoctorNetworkProbe:
+    """The device's networks, and whether this computer is on one, read once per run.
+
+    NBNS needs the device's IPv4 subnets. Bonjour and the USB printer check
+    need to know whether this computer shares any network with the device at
+    all, since multicast DNS does not cross routers. One ifconfig serves both.
+    """
+
+    def __init__(self, target: DoctorTarget, remote: RemoteAccess, debug_fields: dict[str, object] | None) -> None:
+        self._target = target
+        self._remote = remote
+        self._debug_fields = debug_fields
+        self._device: DeviceNetworksProbeResult | None = None
+        self._link: NetworkLinkResult | None = None
+        self._skipped: list[str] = []
+
+    def device(self) -> DeviceNetworksProbeResult:
+        if self._device is None:
+            if not self._remote.remote_checks_enabled or self._target.proxied_ssh:
+                self._device = DeviceNetworksProbeResult(error="SSH checks were not run")
+            else:
+                try:
+                    self._device = probe_device_networks_conn(self._target.connection)
+                except Exception as e:
+                    self._device = DeviceNetworksProbeResult(error=f"{type(e).__name__}: {e}")
+        return self._device
+
+    def ipv4_subnets(self) -> DeviceIpv4SubnetsProbeResult:
+        return self.device().ipv4_subnets
+
+    def link(self) -> NetworkLinkResult:
+        if self._link is None:
+            self._link = self._classify()
+            self._record()
+        return self._link
+
+    def record_skip(self, check: str) -> None:
+        self._skipped.append(check)
+        self._record()
+
+    def _record(self) -> None:
+        if self._debug_fields is not None and self._link is not None:
+            self._debug_fields["bonjour_link"] = {**self._link.telemetry(), "skipped": list(self._skipped)}
+
+    def _classify(self) -> NetworkLinkResult:
+        local = [item.network for item in local_interface_networks()]
+        device = self.device()
+        if device.error is None and device.networks:
+            return classify_network_link(
+                (ipaddress.ip_network(network) for network in device.networks), local, source="device_ifconfig",
+            )
+        # Without the device's own list, its address can still show that it
+        # is on another network than this computer.
+        host = self._target.host
+        addresses = [host] if _ip_literal(host) is not None else list(resolve_host_ips(host))
+        networks = [
+            ipaddress.ip_network(address.partition("%")[0])
+            for address in addresses
+            if not is_link_local_ip(address)
+        ]
+        return classify_network_link(networks, local, source="device_address", detail=device.error)
+
+
+def _off_link_message(prefix: str, link: NetworkLinkResult, consequence: str) -> str:
+    local, device = link.compared()
+    noun = "network" if len(device) == 1 else "networks"
+    return (
+        f"{prefix}; this computer ({', '.join(map(network_display, local))}) is not on the device's {noun} "
+        f"({', '.join(map(network_display, device))}). {consequence}"
+    )
+
+
 def _add_nbns_results(
     *,
     proxied_ssh: bool,
@@ -1347,8 +1465,8 @@ def _add_nbns_results(
                     result = _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
             else:
                 result = query()
-            if _nbns_query_timed_out(result) and probe_device_subnets is not None:
-                result = _nbns_timeout_subnet_result(
+            if _nbns_off_subnet_symptom(result) is not None and probe_device_subnets is not None:
+                result = _nbns_off_subnet_result(
                     result,
                     expected_name,
                     dict(route_sources).get(expected_ip),
@@ -1364,7 +1482,19 @@ def _nbns_query_timed_out(result: CheckResult) -> bool:
     return result.status == "FAIL" and result.details.get("code") == NBNS_QUERY_TIMEOUT_CODE
 
 
-def _nbns_timeout_subnet_result(
+def _nbns_off_subnet_symptom(result: CheckResult) -> str | None:
+    """How an NBNS failure looks when the client is off the device's subnets."""
+    if result.status != "FAIL":
+        return None
+    code = result.details.get("code")
+    if code == NBNS_QUERY_TIMEOUT_CODE:
+        return "timeout"
+    if code == NBNS_NEGATIVE_RESPONSE_CODE:
+        return "negative_response"
+    return None
+
+
+def _nbns_off_subnet_result(
     result: CheckResult,
     netbios_name: str,
     client_source: str | None,
@@ -1373,8 +1503,11 @@ def _nbns_timeout_subnet_result(
 ) -> CheckResult:
     # Apple's wcifsnd may answer a client off all of its subnets from UDP 922
     # rather than 137 (see apple_nbns_client_on_subnet), and routers between
-    # subnets differ in whether that answer arrives. A timeout from such a
-    # client says nothing about the device, so it is skipped, not failed.
+    # subnets differ in whether that answer arrives. Its default context for
+    # such a client holds none of the device's names either, so an answer that
+    # does arrive can be negative. Neither says anything about the device, so
+    # both are skipped, not failed.
+    symptom = _nbns_off_subnet_symptom(result)
     # The device's subnets come from live ifconfig and the client is this
     # host's route source, so the verdict can differ from wcifsnd's when a
     # router translates addresses between the subnets, or briefly after a
@@ -1402,16 +1535,18 @@ def _nbns_timeout_subnet_result(
         debug_fields["nbns_subnet"] = {
             "client_source": client,
             "device_subnets": device_subnets,
+            "result": symptom,
             "outcome": outcome,
             "detail": detail,
         }
     if outcome != "off_subnet":
         return result
     noun = "subnet" if len(device_subnets) == 1 else "subnets"
+    answer = "got no answer" if symptom == "timeout" else f"was refused (rcode {result.details.get('rcode')})"
     return CheckResult(
         "SKIP",
-        f"NBNS query for {netbios_name!r} got no answer; this computer ({client}) is outside the device's {noun} {', '.join(device_subnets)}",
-        {"code": NBNS_OFF_SUBNET_CODE, "client_source": client, "device_subnets": device_subnets},
+        f"NBNS query for {netbios_name!r} {answer}; this computer ({client}) is outside the device's {noun} {', '.join(device_subnets)}",
+        {"code": NBNS_OFF_SUBNET_CODE, "client_source": client, "device_subnets": device_subnets, "result": symptom},
     )
 
 
@@ -2128,11 +2263,13 @@ def _add_usb_printer_results(
     *,
     host_label: str | None,
     add_result: Callable[[CheckResult], None],
+    network: DoctorNetworkProbe | None = None,
 ) -> None:
     """Guide G6 as a release gate: with a USB printer plugged in, Apple's printd
     must still advertise it through mDNSResponder under our runtime (we never
     touch printd; v3.0 re-advertised printers itself because it killed the
-    responder). Skipped, not passed, when no printer is attached."""
+    responder). Skipped, not passed, when no printer is attached, or when this
+    computer is not on the device's network and no record names the printer."""
     if printer.error:
         add_result(CheckResult("SKIP", f"USB printer check skipped; could not read the printer list ({printer.error})"))
         return
@@ -2159,6 +2296,13 @@ def _add_usb_printer_results(
                 matches.append(f"{instance.name} ({_bonjour_service_label(instance.service_type)}, unresolved)")
     if matches:
         add_result(CheckResult("PASS", f"USB printer {label} is advertised by Apple's printd: {', '.join(sorted(matches))}"))
+    elif network is not None and (link := network.link()).verdict == "separate":
+        network.record_skip("usb_printer")
+        add_result(CheckResult("SKIP", _off_link_message(
+            f"USB printer {label} not checked",
+            link,
+            "Bonjour only reaches devices on the same network",
+        ), {"code": BONJOUR_OFF_LINK_CODE}))
     else:
         seen = f"; other printer records seen: {', '.join(sorted(others))}" if others else "; no printer records seen"
         add_result(
@@ -2170,7 +2314,13 @@ def _add_usb_printer_results(
         )
 
 
-def _doctor_check_usb_printer(target: DoctorTarget, remote: RemoteAccess, bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
+def _doctor_check_usb_printer(
+    target: DoctorTarget,
+    remote: RemoteAccess,
+    bonjour_result: DoctorBonjourResult,
+    sink: DoctorSink,
+    network: DoctorNetworkProbe | None = None,
+) -> None:
     if not remote.remote_checks_enabled:
         return
     printer = probe_usb_printer_conn(target.connection)
@@ -2181,7 +2331,9 @@ def _doctor_check_usb_printer(target: DoctorTarget, remote: RemoteAccess, bonjou
     host_label = None
     if bonjour_result.target is not None and bonjour_result.target.hostname:
         host_label = _bonjour_host_label(bonjour_result.target.hostname)
-    _add_usb_printer_results(printer, snapshot, discovery_error, host_label=host_label, add_result=sink.add)
+    _add_usb_printer_results(
+        printer, snapshot, discovery_error, host_label=host_label, add_result=sink.add, network=network,
+    )
 
 
 def _doctor_check_managed_rsync(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
@@ -2401,10 +2553,12 @@ def _doctor_check_nbns(
     direct_smb: DirectSmbState,
     sink: DoctorSink,
     native_nbns_ready: bool | None = None,
+    network: DoctorNetworkProbe | None = None,
 ) -> None:
     if not remote.remote_checks_enabled:
         return
 
+    network = network or DoctorNetworkProbe(target, remote, sink.debug_fields)
     result_start = sink.result_count()
     _add_nbns_results(
         proxied_ssh=target.proxied_ssh,
@@ -2414,7 +2568,7 @@ def _doctor_check_nbns(
         add_result=sink.add,
         native_nbns_ready=native_nbns_ready,
         route_sources=direct_smb.route_sources,
-        probe_device_subnets=lambda: probe_device_ipv4_subnets_conn(target.connection),
+        probe_device_subnets=network.ipv4_subnets,
         debug_fields=sink.debug_fields,
     )
     if any(result.status == "FAIL" for result in sink.new_results_since(result_start)):

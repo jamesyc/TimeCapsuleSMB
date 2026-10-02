@@ -77,8 +77,19 @@ class CliDoctorTests(CliTestCase):
         results = [doctor.CheckResult("SKIP", "NBNS query for 'backsy' got no answer; this computer (192.168.24.102) "
                                               "is outside the device's subnet 192.168.28.0/24")]
 
+        bonjour_link = {
+            "verdict": "separate",
+            "source": "device_ifconfig",
+            "families": ["ipv4"],
+            "device_networks": ["192.168.28.0/24"],
+            "local_networks": ["192.168.24.0/24"],
+            "detail": None,
+            "skipped": ["bonjour"],
+        }
+
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["nbns_subnet"] = nbns_subnet
+            kwargs["debug_fields"]["bonjour_link"] = bonjour_link
             return results, False
 
         with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
@@ -89,6 +100,7 @@ class CliDoctorTests(CliTestCase):
         self.assertEqual(rc, 0)
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["nbns_subnet"], nbns_subnet)
+        self.assertEqual(finished["bonjour_link"], bonjour_link)
         self.assertIsNone(finished.get("error"))
 
     def test_doctor_telemetry_omits_nbns_subnet_when_the_device_was_not_probed(self) -> None:
@@ -99,6 +111,7 @@ class CliDoctorTests(CliTestCase):
 
         self.assertEqual(rc, 0)
         self.assertNotIn("nbns_subnet", self._telemetry_client.emit.call_args_list[-1].kwargs)
+        self.assertNotIn("bonjour_link", self._telemetry_client.emit.call_args_list[-1].kwargs)
 
     def test_doctor_failure_telemetry_includes_bounded_mast_probe_debug_fields(self) -> None:
         output = io.StringIO()
