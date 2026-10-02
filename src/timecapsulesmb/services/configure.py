@@ -25,6 +25,7 @@ from timecapsulesmb.device.compat import (
     unsupported_syap_message,
 )
 from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, probe_connection_state
+from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS, enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -76,6 +77,8 @@ class ConfigureFlowRequest:
     # discovered_airport_syap, it is unset when the user typed another host, so
     # it can reject this device before ACP enables SSH and reboots it.
     selected_record_airport_syap: str | None = None
+    # The Bonjour record the host came from, for ACP probe telemetry.
+    selected_record: BonjourResolvedService | None = None
     enable_ssh: bool = True
     ssh_wait_timeout: int = ACP_SSH_ENABLE_WAIT_SECONDS
     verbose_wait: bool = True
@@ -137,6 +140,7 @@ def enable_ssh_and_reprobe(
     verbose_wait: bool = True,
     callbacks: OperationCallbacks | None = None,
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
+    record: BonjourResolvedService | None = None,
 ) -> ProbedDeviceState | None:
     callbacks = callbacks or OperationCallbacks()
     if probe is None:
@@ -153,6 +157,7 @@ def enable_ssh_and_reprobe(
             connection.password,
             reboot_device=True,
             callbacks=callbacks,
+            record=record,
         )
     except ACPAuthError:
         callbacks.debug(
@@ -267,6 +272,7 @@ def run_configure_flow(
                 verbose_wait=request.verbose_wait,
                 callbacks=callbacks,
                 probe=probe_connection,
+                record=request.selected_record,
             )
         except ACPAuthError as exc:
             raise ConfigureFlowError(

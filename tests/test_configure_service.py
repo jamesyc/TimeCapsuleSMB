@@ -15,6 +15,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
+from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACP_PORT, ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.configure import (
@@ -30,7 +31,37 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
 
 
+# Stand-ins for the ACP network diagnostics, which read this computer's
+# interfaces; tests/test_acp_diagnostics.py covers what they contain.
+PROBE_CONTEXT = {"acp_target_addresses": [{"role": "target", "link": "on_link"}], "local_networks": []}
+FAILURE_CONTEXT = {"acp_alt_probe": [{"reachable": False}]}
+PROBE_SUCCEEDED = {"acp_port_probe_succeeded": True, "acp_port_probe_error_kinds": []}
+SELECTED_RECORD = BonjourResolvedService(
+    name="Time Capsule b67fdb",
+    hostname="Time-Capsule-b67fdb.local",
+    service_type="_airport._tcp.local.",
+    port=5009,
+    ipv4=["10.0.1.1"],
+    properties={"raNm": "Apple Network b67fdb", "raNA": "1"},
+    fullname="Time Capsule b67fdb._airport._tcp.local.",
+)
+
+
 class ConfigureServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        context = mock.patch(
+            "timecapsulesmb.services.acp_diagnostics.probe_context_fields",
+            side_effect=lambda *_args, **_kwargs: dict(PROBE_CONTEXT),
+        )
+        failure = mock.patch(
+            "timecapsulesmb.services.acp_diagnostics.failure_fields",
+            side_effect=lambda *_args, **_kwargs: dict(FAILURE_CONTEXT),
+        )
+        self.probe_context = context.start()
+        self.addCleanup(context.stop)
+        self.failure_context = failure.start()
+        self.addCleanup(failure.stop)
+
     def test_build_configure_env_values_handles_advanced_metadata_settings(self) -> None:
         preserved = build_configure_env_values(
             {
@@ -269,7 +300,9 @@ class ConfigureServiceTests(unittest.TestCase):
                 {"configure_acp_enable_succeeded": True},
             ],
         )
-        self.assertEqual(update_fields, [{"ssh_final_reachable": True}])
+        self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": True}])
+        self.probe_context.assert_called_once_with("10.0.0.2", None)
+        self.failure_context.assert_not_called()
         self.assertIn("Attempting to enable SSH", logs[0])
 
     def test_enable_ssh_with_port_preflight_happy_path_runs_enable_without_retry(self) -> None:
@@ -329,16 +362,20 @@ class ConfigureServiceTests(unittest.TestCase):
                     "acp_port_probe_succeeded": False,
                     "acp_port_probe_attempts": 3,
                     "acp_port_probe_errors": [
-                        {"attempt": 1, "error": "Connection refused"},
-                        {"attempt": 2, "error": "Connection refused"},
-                        {"attempt": 3, "error": "Connection refused"},
+                        {"attempt": 1, "error": "Connection refused", "kind": "refused"},
+                        {"attempt": 2, "error": "Connection refused", "kind": "refused"},
+                        {"attempt": 3, "error": "Connection refused", "kind": "refused"},
                     ],
                     "acp_port_probe_last_error": "Connection refused",
                 },
                 {"configure_acp_enable_succeeded": False},
             ],
         )
-        self.assertEqual(update_fields, [])
+        self.assertEqual(update_fields, [
+            {"acp_port_probe_succeeded": False, "acp_port_probe_error_kinds": ["refused", "refused", "refused"]},
+            {**PROBE_CONTEXT, **FAILURE_CONTEXT},
+        ])
+        self.failure_context.assert_called_once_with("10.0.0.2", None)
 
     def test_enable_ssh_with_port_preflight_retries_transient_acp_failures_before_success(self) -> None:
         callbacks, stages, _logs, debug_fields, _update_fields = self.callbacks()
@@ -369,8 +406,8 @@ class ConfigureServiceTests(unittest.TestCase):
                     "acp_port_probe_succeeded": True,
                     "acp_port_probe_attempts": 3,
                     "acp_port_probe_errors": [
-                        {"attempt": 1, "error": "Connection refused"},
-                        {"attempt": 2, "error": "timed out"},
+                        {"attempt": 1, "error": "Connection refused", "kind": "refused"},
+                        {"attempt": 2, "error": "timed out", "kind": "timeout"},
                     ],
                     "acp_port_probe_last_error": "timed out",
                 },
@@ -378,6 +415,90 @@ class ConfigureServiceTests(unittest.TestCase):
                 {"acp_ssh_enable_succeeded": True},
             ],
         )
+
+    def test_port_probe_records_its_context_with_the_selected_record(self) -> None:
+        callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
+        with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
+            enable_ssh_with_port_preflight(
+                "10.0.1.1",
+                "pw",
+                callbacks=callbacks,
+                record=SELECTED_RECORD,
+                tcp_connect_error_func=mock.Mock(side_effect=["timed out", None]),
+                sleep_func=mock.Mock(),
+            )
+
+        enable_ssh.assert_called_once()
+        self.probe_context.assert_called_once_with("10.0.1.1", SELECTED_RECORD)
+        self.failure_context.assert_not_called()
+        self.assertEqual(update_fields, [
+            {"acp_port_probe_succeeded": True, "acp_port_probe_error_kinds": ["timeout"]},
+            PROBE_CONTEXT,
+        ])
+
+    def test_failed_port_probe_adds_the_record_failure_diagnostics(self) -> None:
+        callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
+        with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
+            with self.assertRaises(ACPConnectionError):
+                enable_ssh_with_port_preflight(
+                    "10.0.1.1",
+                    "pw",
+                    callbacks=callbacks,
+                    record=SELECTED_RECORD,
+                    tcp_connect_error_func=mock.Mock(return_value="[Errno 65] No route to host"),
+                    sleep_func=mock.Mock(),
+                )
+
+        enable_ssh.assert_not_called()
+        self.failure_context.assert_called_once_with("10.0.1.1", SELECTED_RECORD)
+        self.assertEqual(update_fields[-1], {**PROBE_CONTEXT, **FAILURE_CONTEXT})
+        self.assertEqual(update_fields[0]["acp_port_probe_error_kinds"], ["no_route"] * 3)
+
+    def test_diagnostics_errors_are_recorded_without_changing_the_outcome(self) -> None:
+        for connect_errors, outcome in ((None, "enabled"), ("Connection refused", "acp_unreachable")):
+            with self.subTest(outcome=outcome):
+                callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
+                self.probe_context.side_effect = RuntimeError("no interfaces")
+                with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
+                    try:
+                        enable_ssh_with_port_preflight(
+                            "10.0.0.2",
+                            "pw",
+                            callbacks=callbacks,
+                            record=SELECTED_RECORD,
+                            tcp_connect_error_func=mock.Mock(return_value=connect_errors),
+                            sleep_func=mock.Mock(),
+                        )
+                        result = "enabled"
+                    except ACPConnectionError:
+                        result = "acp_unreachable"
+
+                self.assertEqual(result, outcome)
+                self.assertEqual(enable_ssh.called, outcome == "enabled")
+                self.assertEqual(update_fields[-1], {"acp_diagnostics_error": "RuntimeError: no interfaces"})
+
+    def test_run_configure_flow_hands_the_selected_record_to_the_acp_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "timecapsulesmb.services.configure.enable_ssh_and_reprobe",
+                side_effect=ACPConnectionError("no ACP"),
+            ) as enable:
+                with self.assertRaises(ACPConnectionError):
+                    run_configure_flow(
+                        ConfigureFlowRequest(
+                            existing={},
+                            env_path=Path(tmp) / ".env",
+                            host="root@10.0.1.1",
+                            password="pw",
+                            ssh_opts="-o foo",
+                            configure_id="config-id",
+                            persist_password=True,
+                            selected_record=SELECTED_RECORD,
+                            probe=mock.Mock(return_value=self.make_ssh_closed_probe_state()),
+                        )
+                    )
+
+        self.assertIs(enable.call_args.kwargs["record"], SELECTED_RECORD)
 
     def test_enable_ssh_with_port_preflight_normalizes_blank_connect_errors(self) -> None:
         callbacks, _stages, _logs, debug_fields, _update_fields = self.callbacks()
@@ -401,9 +522,9 @@ class ConfigureServiceTests(unittest.TestCase):
                 "acp_port_probe_succeeded": False,
                 "acp_port_probe_attempts": 3,
                 "acp_port_probe_errors": [
-                    {"attempt": 1, "error": "connection failed"},
-                    {"attempt": 2, "error": "connection failed"},
-                    {"attempt": 3, "error": "connection failed"},
+                    {"attempt": 1, "error": "connection failed", "kind": "other"},
+                    {"attempt": 2, "error": "connection failed", "kind": "other"},
+                    {"attempt": 3, "error": "connection failed", "kind": "other"},
                 ],
                 "acp_port_probe_last_error": "connection failed",
             },
@@ -428,7 +549,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 "configure_retry_reason": "acp_authentication_failed",
             },
         )
-        self.assertEqual(update_fields, [])
+        self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT])
 
     def test_enable_ssh_and_reprobe_records_generic_acp_failure_and_propagates(self) -> None:
         callbacks, _stages, _logs, debug_fields, update_fields = self.callbacks()
@@ -443,7 +564,7 @@ class ConfigureServiceTests(unittest.TestCase):
         wait.assert_not_called()
         probe.assert_not_called()
         self.assertEqual(debug_fields[-1], {"configure_acp_enable_succeeded": False})
-        self.assertEqual(update_fields, [])
+        self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT])
 
     def test_enable_ssh_and_reprobe_returns_none_when_ssh_does_not_open(self) -> None:
         callbacks, stages, _logs, _debug_fields, update_fields = self.callbacks()
@@ -456,7 +577,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertIsNone(result)
         probe.assert_not_called()
         self.assertEqual(stages, ["acp_port_probe", "acp_enable_ssh", "wait_for_ssh_after_acp"])
-        self.assertEqual(update_fields, [{"ssh_final_reachable": False}])
+        self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": False}])
 
     def test_run_configure_flow_probes_writes_identity_and_reports_context(self) -> None:
         probe_state = self.make_probe_state()

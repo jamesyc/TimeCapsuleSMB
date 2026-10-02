@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import Enum
 import io
+import ipaddress
 import json
 import os
 import subprocess
@@ -20,6 +21,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, RouteSelection
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppEvent, EventSink
@@ -3268,6 +3270,61 @@ class AppApiTests(unittest.TestCase):
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("acp_port_probe_attempts=3", telemetry_error)
         self.assertIn("acp_port_probe_last_error=Connection refused", telemetry_error)
+
+    def test_configure_acp_probe_failure_telemetry_says_where_the_device_is(self) -> None:
+        # A reset AirPort serving its own 10.0.1.0/24 while this Mac is on another LAN.
+        record = {
+            "name": "Time Capsule b67fdb",
+            "hostname": "Time-Capsule-b67fdb.local",
+            "service_type": "_airport._tcp.local.",
+            "port": 5009,
+            "ipv4": ["10.0.1.1", "169.254.155.34"],
+            "ipv6": ["fe80::7273:cbff:feb2:71a2%en0"],
+            "properties": {"syAP": "116", "raNm": "Apple Network b67fdb", "raNA": "1", "prob": "waCF;opNW;pubP;+"},
+            "fullname": "Time Capsule b67fdb._airport._tcp.local.",
+        }
+        mac_lan = (LocalInterfaceNetwork("en0", "192.168.1.170", ipaddress.ip_network("192.168.1.0/24")),)
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            params = {"config": str(Path(tmp) / ".env"), "selected_record": record, "password": "pw"}
+            params["confirmation_id"] = self.confirmation_id_for(
+                "configure",
+                params,
+                {"host": "root@10.0.1.1", "device_name": "Time Capsule b67fdb", "requires_reboot": True},
+            )
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="timed out"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_diagnostics.local_interface_networks", return_value=mac_lan), \
+                    mock.patch(
+                        "timecapsulesmb.services.acp_diagnostics.select_route_to_address",
+                        return_value=RouteSelection("available", source="192.168.1.170"),
+                    ), \
+                    mock.patch(
+                        "timecapsulesmb.services.acp_diagnostics.tcp_connect_error",
+                        side_effect=lambda address, _port, _timeout: None if address.startswith("169.254.") else "timed out",
+                    ), \
+                    mock.patch("timecapsulesmb.services.acp_diagnostics.resolve_service_instance", return_value=None):
+                rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "remote_error")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["stage"], "acp_port_probe")
+        self.assertFalse(finished["acp_port_probe_succeeded"])
+        self.assertEqual(finished["acp_port_probe_error_kinds"], ["timeout"] * 3)
+        target = finished["acp_target_addresses"][0]
+        self.assertEqual(
+            (target["role"], target["address"], target["link"], target["route"]),
+            ("target", "10.0.1.1", "off_link", "gateway"),
+        )
+        self.assertEqual(finished["local_networks"][0]["networks"][0]["network"], "192.168.1.0/24")
+        self.assertTrue(finished["acp_record_flags"]["default_network_name"])
+        self.assertNotIn("Apple Network", json.dumps(finished["acp_record_flags"]))
+        reachable = {entry["address"]: entry["reachable"] for entry in finished["acp_alt_probe"]}
+        self.assertEqual(reachable, {"169.254.155.34": True, "fe80::7273:cbff:feb2:71a2%en0": False})
+        self.assertEqual(finished["acp_fresh_lookup"], {"ipv4": "no_answer", "ipv6": "no_answer"})
+        self.assertNotIn("192.168.1.170", json.dumps(finished, default=str))
 
     def test_configure_aborts_on_denied_macos_local_network_preflight_and_emits_telemetry(self) -> None:
         collector = CollectingSink()

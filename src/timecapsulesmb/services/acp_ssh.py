@@ -5,6 +5,7 @@ import os
 import sys
 import time
 
+from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import (
     ACP_PORT,
     ACPAuthError,
@@ -12,6 +13,7 @@ from timecapsulesmb.integrations.acp import (
     ACPError,
     enable_ssh,
 )
+from timecapsulesmb.services import acp_diagnostics
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.local import tcp_connect_error
 
@@ -61,6 +63,24 @@ def _run_enable_ssh(
     callbacks.debug(acp_ssh_enable_succeeded=True)
 
 
+def _record_port_probe_context(
+    host: str,
+    record: BonjourResolvedService | None,
+    callbacks: OperationCallbacks,
+    *,
+    failed: bool,
+) -> None:
+    # Sent on success too, as the baseline for failures. Diagnostics must never
+    # change the outcome, so their own errors are only recorded.
+    try:
+        fields = acp_diagnostics.probe_context_fields(host, record)
+        if failed:
+            fields.update(acp_diagnostics.failure_fields(host, record))
+    except Exception as exc:
+        fields = {"acp_diagnostics_error": f"{type(exc).__name__}: {exc}"[:200]}
+    callbacks.update(**fields)
+
+
 def enable_ssh_with_port_preflight(
     host: str,
     password: str,
@@ -68,9 +88,15 @@ def enable_ssh_with_port_preflight(
     reboot_device: bool = True,
     timeout: float = 25.0,
     callbacks: OperationCallbacks | None = None,
+    record: BonjourResolvedService | None = None,
     tcp_connect_error_func: Callable[[str, int], str | None] | None = None,
     sleep_func: Callable[[float], None] | None = None,
 ) -> None:
+    """Ask ACP to turn SSH on, once its port answers.
+
+    `record` is the Bonjour record `host` came from, if any; it only adds
+    telemetry about the device's other addresses.
+    """
     callbacks = callbacks or OperationCallbacks()
     tcp_connect_error_func = tcp_connect_error_func or tcp_connect_error
     sleep_func = sleep_func or time.sleep
@@ -89,10 +115,15 @@ def enable_ssh_with_port_preflight(
                 debug_fields["acp_port_probe_errors"] = errors
                 debug_fields["acp_port_probe_last_error"] = errors[-1]["error"]
             callbacks.debug(**debug_fields)
+            callbacks.update(
+                acp_port_probe_succeeded=True,
+                acp_port_probe_error_kinds=[entry["kind"] for entry in errors],
+            )
+            _record_port_probe_context(host, record, callbacks, failed=False)
             break
 
         error_text = str(error).strip() or "connection failed"
-        errors.append({"attempt": attempt, "error": error_text})
+        errors.append({"attempt": attempt, "error": error_text, "kind": acp_diagnostics.connect_error_kind(error_text)})
         if attempt < ACP_PORT_PROBE_ATTEMPTS:
             sleep_func(ACP_PORT_PROBE_RETRY_DELAY_SECONDS)
     else:
@@ -109,6 +140,11 @@ def enable_ssh_with_port_preflight(
                 macos_local_network_privacy_signal="errno65_no_route_to_host",
             )
         callbacks.debug(**debug_fields)
+        callbacks.update(
+            acp_port_probe_succeeded=False,
+            acp_port_probe_error_kinds=[entry["kind"] for entry in errors],
+        )
+        _record_port_probe_context(host, record, callbacks, failed=True)
         raise ACPConnectionError(
             f"Could not connect to ACP on {host}:{ACP_PORT}. "
             "Check the device IP address or hostname."

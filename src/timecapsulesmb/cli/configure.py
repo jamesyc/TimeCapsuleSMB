@@ -596,6 +596,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         persist_password=True,
                         discovered_airport_syap=target.discovered_airport_syap,
                         selected_record_airport_syap=target.selected_record_airport_syap,
+                        selected_record=target.target_record,
                         enable_ssh=True,
                         verbose_wait=not args.json,
                         internal_share_use_disk_root=args.internal_share_use_disk_root,

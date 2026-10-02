@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import ipaddress
 import socket
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -71,6 +72,47 @@ def local_interface_addresses() -> tuple[str, ...]:
             if ip_text not in addresses:
                 addresses.append(ip_text)
     return tuple(addresses)
+
+
+@dataclass(frozen=True)
+class LocalInterfaceNetwork:
+    interface: str
+    address: str
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def local_interface_networks(adapters: Iterable[object] | None = None) -> tuple[LocalInterfaceNetwork, ...]:
+    """The networks this computer's interfaces are on, in both families.
+
+    Loopback and link-local networks are left out: every interface has a
+    link-local network, so they say nothing about which LAN it is on.
+    """
+    if adapters is None:
+        try:
+            import ifaddr
+            adapters = ifaddr.get_adapters()
+        except Exception:
+            return ()
+
+    networks: list[LocalInterfaceNetwork] = []
+    for adapter in adapters:
+        adapter_name = str(getattr(adapter, "name", "") or getattr(adapter, "nice_name", ""))
+        for adapter_ip in getattr(adapter, "ips", []):
+            ip_text = _adapter_ip_text(getattr(adapter_ip, "ip", None))
+            prefix = getattr(adapter_ip, "network_prefix", None)
+            if not ip_text or not isinstance(prefix, int):
+                continue
+            base = ip_text.split("%", 1)[0]
+            try:
+                interface = ipaddress.ip_interface(f"{base}/{prefix}")
+            except ValueError:
+                continue
+            if interface.ip.is_loopback or interface.ip.is_link_local:
+                continue
+            entry = LocalInterfaceNetwork(adapter_name, str(interface.ip), interface.network)
+            if entry not in networks:
+                networks.append(entry)
+    return tuple(networks)
 
 
 _ROUTE_UNAVAILABLE_ERRNOS = {

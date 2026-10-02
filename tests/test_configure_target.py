@@ -156,6 +156,11 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertIsNone(typed.selected_record_airport_syap)
         self.assertEqual(saved.source, "existing_config")
         self.assertIsNone(saved.selected_record_airport_syap)
+        # ACP probe telemetry gets the record only when it describes the target.
+        self.assertIs(from_record.target_record, from_record.selected_record)
+        self.assertIsNotNone(from_record.target_record)
+        self.assertIsNone(typed.target_record)
+        self.assertIsNone(saved.target_record)
 
     def test_jsonable_selected_record_is_parsed_for_resolution(self) -> None:
         record = bonjour_record_from_selected_record({

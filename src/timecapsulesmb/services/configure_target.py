@@ -28,6 +28,11 @@ class ConfigureTargetResolution:
         # record's syAP only describes the target when the host came from it.
         return self.discovered_airport_syap if self.source == "selected_record" else None
 
+    @property
+    def target_record(self) -> BonjourResolvedService | None:
+        # Likewise, the record only describes the target when the host came from it.
+        return self.selected_record if self.source == "selected_record" else None
+
 
 def selected_record_properties(selected: Mapping[str, object] | None) -> dict[str, str]:
     if selected is None:

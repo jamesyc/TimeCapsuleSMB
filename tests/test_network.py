@@ -12,7 +12,19 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.checks.network import RouteSelection, select_route_to_address
+import ipaddress
+from types import SimpleNamespace
+
+from timecapsulesmb.checks.network import (
+    LocalInterfaceNetwork,
+    RouteSelection,
+    local_interface_networks,
+    select_route_to_address,
+)
+
+
+def adapter(name: str, *ips: tuple[object, object]) -> SimpleNamespace:
+    return SimpleNamespace(name=name, ips=[SimpleNamespace(ip=ip, network_prefix=prefix) for ip, prefix in ips])
 
 
 class NetworkCheckTests(unittest.TestCase):
@@ -53,6 +65,46 @@ class NetworkCheckTests(unittest.TestCase):
         self.assertEqual(result.state, "unavailable")
         self.assertIn("scope", result.error or "")
         socket_mock.assert_not_called()
+
+
+class LocalInterfaceNetworkTests(unittest.TestCase):
+    def test_lists_each_interface_network_in_both_families(self) -> None:
+        networks = local_interface_networks([
+            adapter(
+                "en0",
+                ("192.168.1.170", 24),
+                (("2001:db8:1::10", 0, 0), 64),
+                (("2001:db8:1::11", 0, 0), 64),
+            ),
+            adapter("utun4", ("100.99.99.10", 32), (("fd7a:115c:a1e0::5", 0, 0), 48)),
+        ])
+
+        self.assertEqual(networks, (
+            LocalInterfaceNetwork("en0", "192.168.1.170", ipaddress.ip_network("192.168.1.0/24")),
+            LocalInterfaceNetwork("en0", "2001:db8:1::10", ipaddress.ip_network("2001:db8:1::/64")),
+            LocalInterfaceNetwork("en0", "2001:db8:1::11", ipaddress.ip_network("2001:db8:1::/64")),
+            LocalInterfaceNetwork("utun4", "100.99.99.10", ipaddress.ip_network("100.99.99.10/32")),
+            LocalInterfaceNetwork("utun4", "fd7a:115c:a1e0::5", ipaddress.ip_network("fd7a:115c:a1e0::/48")),
+        ))
+
+    def test_leaves_out_loopback_link_local_and_unusable_entries(self) -> None:
+        networks = local_interface_networks([
+            adapter("lo0", ("127.0.0.1", 8), (("::1", 0, 0), 128)),
+            adapter(
+                "en0",
+                (("fe80::1", 0, 4), 64),
+                ("169.254.10.2", 16),
+                ("not-an-ip", 24),
+                ("10.0.0.5", None),
+                ("10.0.0.5", 24),
+            ),
+        ])
+
+        self.assertEqual(networks, (LocalInterfaceNetwork("en0", "10.0.0.5", ipaddress.ip_network("10.0.0.0/24")),))
+
+    def test_returns_nothing_when_interfaces_cannot_be_read(self) -> None:
+        with mock.patch.dict(sys.modules, {"ifaddr": None}):
+            self.assertEqual(local_interface_networks(), ())
 
 
 if __name__ == "__main__":
