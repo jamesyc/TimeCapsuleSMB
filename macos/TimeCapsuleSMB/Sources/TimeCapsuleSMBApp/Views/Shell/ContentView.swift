@@ -168,15 +168,15 @@ public struct ContentView: View {
             Text(deleteErrorMessage ?? "")
         }
         .alert(
-            operationCoordinator.pendingConfirmation?.title ?? "",
+            operationCoordinator.readyConfirmation?.title ?? "",
             isPresented: confirmationPresented,
-            presenting: operationCoordinator.pendingConfirmation
+            presenting: operationCoordinator.readyConfirmation
         ) { confirmation in
             Button(confirmation.actionTitle, role: .destructive) {
-                operationCoordinator.confirmPending()
+                operationCoordinator.confirm(confirmation)
             }
             Button(L10n.string("action.cancel"), role: .cancel) {
-                operationCoordinator.cancelPendingConfirmation()
+                operationCoordinator.cancel(confirmation)
             }
         } message: { confirmation in
             Text(confirmation.message)
@@ -206,11 +206,12 @@ public struct ContentView: View {
     }
 
     private var confirmationPresented: Binding<Bool> {
-        Binding(
-            get: { operationCoordinator.pendingConfirmation != nil },
+        let confirmation = operationCoordinator.readyConfirmation
+        return Binding(
+            get: { confirmation != nil },
             set: { isPresented in
-                if !isPresented {
-                    operationCoordinator.cancelPendingConfirmation()
+                if !isPresented, let confirmation {
+                    operationCoordinator.cancel(confirmation)
                 }
             }
         )

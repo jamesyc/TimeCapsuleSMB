@@ -18,6 +18,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     private let lane: OperationLane
     private let stateSynchronizer: DeviceDashboardStateSynchronizer
     private var cancellables: Set<AnyCancellable> = []
+    private var pendingSSHRefresh: (operation: String, requestID: String, sshRequestID: String?)?
+    private var handledSSHFailures: [String: String] = [:]
 
     var events: [BackendEvent] {
         lane.backend.events
@@ -386,6 +388,13 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func observeRemoteWorkflowFailures() {
+        appStore.operationCoordinator.$lanesRevision
+            .sink { [weak self] _ in
+                // Published changes arrive before the stored value changes. Recheck
+                // actual device ownership on the actor after that mutation finishes.
+                Task { @MainActor [weak self] in self?.runPendingSSHRefresh() }
+            }
+            .store(in: &cancellables)
         deployStore.$error
             .sink { [weak self] error in
                 self?.refreshSSHAccessAfterRemoteFailure(error)
@@ -417,14 +426,41 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func refreshSSHAccessAfterRemoteFailure(_ error: BackendErrorViewModel?) {
-        guard error != nil,
-              let profile = appStore.deviceRegistry.profile(id: id) else {
+        guard let error,
+              !["operation_rejected", "cancelled", "confirmation_cancelled"].contains(error.code),
+              let event = latestTerminalEvent(for: error.operation),
+              let requestID = event.requestId,
+              event.type == "error" || event.ok == false,
+              handledSSHFailures[error.operation] != requestID else { return }
+        handledSSHFailures[error.operation] = requestID
+        pendingSSHRefresh = (error.operation, requestID, latestTerminalEvent(for: "set-ssh")?.requestId)
+        Task { @MainActor [weak self] in self?.runPendingSSHRefresh() }
+    }
+
+    private func latestTerminalEvent(for operation: String) -> BackendEvent? {
+        appStore.operationCoordinator.allLanes
+            .filter { $0.key.deviceProfileID == id }
+            .flatMap { $0.backend.events }
+            .last { $0.operation == operation && ($0.type == "error" || $0.type == "result") }
+    }
+
+    private func runPendingSSHRefresh() {
+        guard let pending = pendingSSHRefresh else { return }
+        guard let profile = appStore.deviceRegistry.profile(id: id) else {
+            pendingSSHRefresh = nil
             return
         }
-        Task { @MainActor in
-            await Task.yield()
-            appStore.sshAccessStore.refresh(profile: profile)
+        // A successful retry or a newer SSH check already answers this failure.
+        for (operation, previousID) in [(pending.operation, Optional(pending.requestID)), ("set-ssh", pending.sshRequestID)] {
+            if let event = latestTerminalEvent(for: operation), event.type == "result", event.ok == true,
+               event.requestId != previousID {
+                pendingSSHRefresh = nil
+                return
+            }
         }
+        guard !appStore.operationCoordinator.isDeviceBusy(id) else { return }
+        pendingSSHRefresh = nil
+        appStore.sshAccessStore.refresh(profile: profile)
     }
 
     private func retry(error: BackendErrorViewModel, profile: DeviceProfile) -> Bool {

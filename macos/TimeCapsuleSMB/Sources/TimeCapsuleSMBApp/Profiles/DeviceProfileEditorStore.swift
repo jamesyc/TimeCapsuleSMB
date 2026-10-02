@@ -254,8 +254,15 @@ final class DeviceProfileEditorStore: ObservableObject {
         observeBackend()
     }
 
+    // A result may start local persistence before helper cleanup ends. Reset
+    // invalidates its UI result without releasing its in-flight ownership.
+    private var generation = UUID()
+    private var persistingProfile = false
+
     var isRunning: Bool {
-        state == .saving || state == .reconfiguring
+        state == .saving || state == .reconfiguring || persistingProfile
+            || localNetworkPreflightTask != nil
+            || lane.key.deviceProfileID.map { coordinator.isDeviceBusy($0) } == true
     }
 
     var canSave: Bool {
@@ -295,6 +302,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     func reset(to profile: DeviceProfile) {
+        generation = UUID()
         let profileDraft = DeviceProfileEditorDraft(profile: profile)
         baselineDraft = profileDraft
         applyDraft(profileDraft)
@@ -309,6 +317,8 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     func save(profile: DeviceProfile) async {
+        guard !isRunning else { return }
+        generation = UUID()
         let validation = validationResult(for: profile)
         guard validation.errors.isEmpty, let settings = validation.settings else {
             self.validationErrors = validation.errors
@@ -359,6 +369,11 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func observeBackend() {
+        coordinator.$lanesRevision
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.objectWillChange.send() }
+            }
+            .store(in: &cancellables)
         lane.backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
@@ -594,7 +609,13 @@ final class DeviceProfileEditorStore: ObservableObject {
             return
         }
         let replacementPassword = pendingReplacementPassword
+        let generation = self.generation
+        persistingProfile = true
         Task { @MainActor in
+            defer {
+                persistingProfile = false
+                objectWillChange.send()
+            }
             do {
                 let saved = try await appStore.saveProfileEdits(
                     profile: profile,
@@ -602,8 +623,10 @@ final class DeviceProfileEditorStore: ObservableObject {
                     replacementPassword: replacementPassword,
                     stagedConfigURL: stagedConfigURL
                 )
+                guard generation == self.generation else { return }
                 finishSave(saved)
             } catch {
+                guard generation == self.generation else { return }
                 if replacementPassword != nil {
                     passwordError = error.localizedDescription
                 }
@@ -629,7 +652,13 @@ final class DeviceProfileEditorStore: ObservableObject {
         }
 
         state = .saving
+        let generation = self.generation
+        persistingProfile = true
         Task { @MainActor in
+            defer {
+                persistingProfile = false
+                objectWillChange.send()
+            }
             do {
                 let saved = try await profilePersistence.commitConfiguredProfile(
                     configuredDevice: configured,
@@ -640,8 +669,10 @@ final class DeviceProfileEditorStore: ObservableObject {
                         settings: editableFields.settings
                     )
                 )
+                guard generation == self.generation else { return }
                 finishSave(saved)
             } catch {
+                guard generation == self.generation else { return }
                 failSave(error)
             }
         }
@@ -711,8 +742,10 @@ final class DeviceProfileEditorStore: ObservableObject {
         localNetworkPreflightTask?.cancel()
         localNetworkPreflightTask = nil
         operationObserver.finish()
-        profilePersistence.discardConfigureDraft(pendingConfigureDraft)
-        profilePersistence.discardStagedProfileConfig(at: pendingStagedConfigURL)
+        if !persistingProfile {
+            profilePersistence.discardConfigureDraft(pendingConfigureDraft)
+            profilePersistence.discardStagedProfileConfig(at: pendingStagedConfigURL)
+        }
         pendingProfile = nil
         pendingEditableFields = nil
         pendingPassword = nil

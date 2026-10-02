@@ -24,6 +24,10 @@ final class DeviceSetupWorkflow: ObservableObject {
     let profilePersistence: DeviceProfilePersistenceService
     private let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
 
+    // Reset invalidates pending UI updates; persistence still owns its draft
+    // until it returns, independently of whether the helper has stopped.
+    private var generation = UUID()
+    private var savingProfile = false
     private var pendingConfigureDraft: ConfigureProfileDraft?
     private var activeLaneKey: OperationLaneKey?
     private var localNetworkPreflightTask: Task<Void, Never>?
@@ -42,7 +46,7 @@ final class DeviceSetupWorkflow: ObservableObject {
     }
 
     var isRunning: Bool {
-        if localNetworkPreflightTask != nil {
+        if localNetworkPreflightTask != nil || savingProfile {
             return true
         }
         switch activeLaneKey {
@@ -71,6 +75,7 @@ final class DeviceSetupWorkflow: ObservableObject {
         settings: DeviceProfileSettings,
         newProfileSettings: DeviceProfileSettings
     ) {
+        guard !isRunning else { return }
         let profileID = existingProfile?.id ?? preferredID
         let laneKey = target.setupLaneKey(existingProfileID: existingProfile?.id)
         let lane = coordinator.lane(for: laneKey)
@@ -220,6 +225,7 @@ final class DeviceSetupWorkflow: ObservableObject {
     }
 
     func reset() {
+        generation = UUID()
         localNetworkPreflightTask?.cancel()
         localNetworkPreflightTask = nil
         if let activeLaneKey {
@@ -231,8 +237,8 @@ final class DeviceSetupWorkflow: ObservableObject {
         savedProfile = nil
         error = nil
         currentStage = nil
-        clearPendingConfigureDraft()
-        activeLaneKey = nil
+        if !savingProfile { clearPendingConfigureDraft() }
+        if !isRunning { activeLaneKey = nil }
         operationObservers = [:]
         pendingNewProfileSettings = nil
         state = .idle
@@ -254,12 +260,16 @@ final class DeviceSetupWorkflow: ObservableObject {
         lane.backend.$isRunning
             .dropFirst()
             .sink { [weak self] _ in
-                self?.objectWillChange.send()
+                Task { @MainActor [weak self] in
+                    self?.releaseFinishedLane()
+                    self?.objectWillChange.send()
+                }
             }
             .store(in: &cancellables)
     }
 
     private func resetRunState() {
+        generation = UUID()
         localNetworkPreflightTask?.cancel()
         localNetworkPreflightTask = nil
         if let activeLaneKey {
@@ -327,14 +337,23 @@ final class DeviceSetupWorkflow: ObservableObject {
             settings: pendingNewProfileSettings
         )
         let savedPassword = pendingPassword
+        let generation = self.generation
+        savingProfile = true
         Task { @MainActor in
+            defer {
+                savingProfile = false
+                releaseFinishedLane()
+                objectWillChange.send()
+            }
             do {
-                savedProfile = try await profilePersistence.commitConfiguredProfile(
+                let saved = try await profilePersistence.commitConfiguredProfile(
                     configuredDevice: configured,
                     draft: configureDraft,
                     password: savedPassword,
                     overrides: overrides
                 )
+                guard generation == self.generation else { return }
+                savedProfile = saved
                 error = nil
                 state = .saved
                 finishActiveOperation()
@@ -342,6 +361,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 pendingNewProfileSettings = nil
                 pendingPassword = ""
             } catch {
+                guard generation == self.generation else { return }
                 failProfileSave(error)
             }
         }
@@ -450,6 +470,15 @@ final class DeviceSetupWorkflow: ObservableObject {
         if let activeLaneKey {
             operationObservers[activeLaneKey]?.finish()
         }
+        // Stop consuming results, but retain the lane until the helper releases it.
+        // isRunning reads live ownership even while an error is already visible.
+        releaseFinishedLane()
+    }
+
+    private func releaseFinishedLane() {
+        guard let key = activeLaneKey, !savingProfile,
+              operationObservers[key]?.activeOperation == nil,
+              !coordinator.lane(for: key).isBusy else { return }
         activeLaneKey = nil
     }
 

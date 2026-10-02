@@ -233,6 +233,7 @@ final class OperationCoordinator: ObservableObject {
     @Published private(set) var rejectedOperationMessages: [OperationLaneKey: String] = [:]
     @Published private(set) var rejectedOperationMessage: String?
     @Published private(set) var lanesRevision = 0
+    @Published private(set) var readyConfirmation: PendingConfirmation?
 
     let appLane: OperationLane
 
@@ -393,6 +394,24 @@ final class OperationCoordinator: ObservableObject {
         refreshLaneState()
     }
 
+    // Actions carry the displayed confirmation, not the current primary lane.
+    // Its UUID also prevents a stale dismissal from cancelling the next prompt.
+    func confirm(_ confirmation: PendingConfirmation) {
+        guard let lane = confirmationLane(for: confirmation), !lane.backend.isRunning else { return }
+        lane.confirmPending()
+        refreshLaneState()
+    }
+
+    func cancel(_ confirmation: PendingConfirmation) {
+        guard let lane = confirmationLane(for: confirmation), !lane.backend.isRunning else { return }
+        lane.cancelPendingConfirmation()
+        refreshLaneState()
+    }
+
+    private func confirmationLane(for confirmation: PendingConfirmation) -> OperationLane? {
+        allLanes.first { $0.backend.pendingConfirmation?.id == confirmation.id }
+    }
+
     func cancel() {
         primaryLane()?.cancel()
     }
@@ -463,6 +482,13 @@ final class OperationCoordinator: ObservableObject {
         let primary = primaryLane()
         activeOperation = primary?.activeOperation
         activeDeviceID = activeOperation?.profileID
+        // Keep the displayed request stable while other devices finish. A pending
+        // confirmation reserves its device even before it can be presented.
+        if readyConfirmation.flatMap({ confirmationLane(for: $0) }) == nil {
+            readyConfirmation = allLanes.first {
+                !$0.backend.isRunning && $0.backend.pendingConfirmation != nil
+            }?.backend.pendingConfirmation
+        }
         lanesRevision += 1
     }
 
