@@ -221,11 +221,12 @@ out:
 }
 
 static void tune_disk(const struct tc_volume *volume, const struct tc_runtime_config *config) {
-    char device[40], idle[24];
-    char *argv[] = {TC_ATACTL_PATH, device, "setidle", idle, NULL};
+    char idle[24];
+    /* Let atactl resolve wdN to the raw disk. /dev/wdN selects the block
+     * device, which cannot be opened while its HFS volume is mounted. */
+    char *argv[] = {TC_ATACTL_PATH, (char *)volume->disk, "setidle", idle, NULL};
     if (!volume->builtin || strncmp(volume->disk, "wd", 2) || !isdigit((unsigned char)volume->disk[2]))
         return;
-    snprintf(device, sizeof(device), "/dev/%s", volume->disk);
     snprintf(idle, sizeof(idle), "%u", config->ata_idle);
     (void)tc_command_run(argv, 20);
     if (*config->ata_standby) {

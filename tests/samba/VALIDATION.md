@@ -2300,3 +2300,38 @@ No test scratch directories or driver RAM mounts remained. NetBSD 6's old
 panic file was unchanged; NetBSD 4 had no panic file. All locks were released.
 Logs, rebuilt outputs, original manifest comparisons and the runnable helper
 check are under `~/tmp/tc-release-v3.2.0-20261001-225042/`.
+
+### 2026-10-03: mounted internal disk ATA timers (issue #360)
+
+The native manager passed `/dev/wd0` to Apple's `atactl`, which resolves to
+the block device and fails with `Device busy` while the HFS volume is mounted.
+Pass the inventory's bare `wdN` name so `atactl` resolves the raw disk instead.
+The same argument serves both idle and standby commands.
+
+The real-manager fixture now makes the fake ATA command fail on the block
+path. Regression cases cover both commands, `wd0` and `wd1`, a 100-second
+timer and explicit zero values. The three focused tests failed before the
+fix and passed afterwards, including with ASan/UBSan. The existing case
+still checks startup, preference changes and skipping healthy rechecks.
+
+`make test-parallel` passed 3,258 tests; its one artifact-check failure ran
+while the rebuilt binaries were being copied, before the manifest update.
+After the update, all six artifact tests passed. Ruff and `git diff --check`
+passed. The Ubuntu 24.04 amd64 GCC 13 native service compile passed with
+`-Werror`; the unrelated Samba host regression was stopped when the user
+narrowed validation to quick, relevant NetBSD 6 checks.
+
+Rebuilt all three service variants from checksummed VM inputs. Data-fault-ahead
+verification passed on every lane, and fork-repair verification passed on
+NetBSD 6. Stripped sizes: NetBSD 6 375,868 bytes; NetBSD 4 LE 333,008 bytes;
+NetBSD 4 BE 332,428 bytes. Updated the three manifest SHA-256 hashes.
+
+Deployed the corrected service on NetBSD 6. Its startup log has no ATA command
+failure. On the mounted internal disk, `/sbin/atactl /dev/wd0 checkpower`
+reproduced `Device busy` (exit 1), while `wd0 checkpower` and `wd0 setidle 300`
+both returned 0. The latter reapplied the configured timer. Timed spindown
+was not measured. Full device suites were cancelled at the user's request;
+the NetBSD 4 deployment already in progress was allowed to finish safely,
+without starting its test suites.
+
+Logs are under `~/tmp/tc-issue360-20261003-044035/`.

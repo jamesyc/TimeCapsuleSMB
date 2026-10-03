@@ -86,8 +86,13 @@ def manager_tools(tmp_path_factory):
     executable('atactl','''
 import os,sys,json
 from pathlib import Path
+# NetBSD resolves bare wdN names to the raw disk. An absolute block-device
+# path fails to open while its HFS volume is mounted (issue #360).
+result=1 if sys.argv[1].startswith('/dev/') else 0
 with (Path(os.environ['TC_TEST_ROOT'])/'events').open('a') as out:
-    out.write(json.dumps(dict(kind='command',role='ata',args=sys.argv[1:]))+'\\n')
+    out.write(json.dumps(dict(kind='command',role='ata',args=sys.argv[1:],result=result))+'\\n')
+if result:print('atactl: '+sys.argv[1]+': Device busy',file=sys.stderr)
+sys.exit(result)
 ''')
     executable('acp','''
 import os,sys,time
@@ -869,7 +874,7 @@ def test_ata_tuning_runs_at_start_and_preference_change_not_healthy_rechecks(man
     root,start,events,wait,inventory,volumes=manager
     volumes[0]['deviceName']='wd0';inventory(volumes)
     process=start();wait(started('smbd'))
-    assert [e['args'] for e in events() if e['role']=='ata']==[['/dev/wd0','setidle','300']]
+    assert [e['args'] for e in events() if e['role']=='ata']==[['wd0','setidle','300']]
     (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
     wait(started('telemetry'))
     assert len([e for e in events() if e['role']=='ata'])==1
@@ -877,7 +882,19 @@ def test_ata_tuning_runs_at_start_and_preference_change_not_healthy_rechecks(man
     process.send_signal(signal.SIGHUP)
     wait(lambda rows:len([e for e in rows if e['role']=='ata'])==3)
     assert [e['args'] for e in events() if e['role']=='ata'][-2:]==[
-        ['/dev/wd0','setidle','900'],['/dev/wd0','setstandby','1800']]
+        ['wd0','setidle','900'],['wd0','setstandby','1800']]
+
+
+@pytest.mark.parametrize('disk,idle,standby', [('wd0',100,100),('wd1',0,0)])
+def test_mounted_ata_disk_timer_commands_succeed(manager,disk,idle,standby):
+    root,start,events,wait,inventory,volumes=manager
+    volumes[0]['deviceName']=disk;inventory(volumes)
+    (root/'config').write_text(f'ATA_IDLE_SECONDS={idle}\nATA_STANDBY={standby}\n')
+    start();wait(started('smbd'))
+    commands=[e for e in events() if e['role']=='ata']
+    assert len(commands)==2 and all(e['result']==0 for e in commands)
+    assert [e['args'] for e in commands]==[
+        [disk,'setidle',str(idle)],[disk,'setstandby',str(standby)]]
 
 
 def test_manager_death_cancels_inventory_job_and_its_acp(manager):
