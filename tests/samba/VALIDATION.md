@@ -1,3 +1,24 @@
+# Runtime log of diskd.useVolume errors (2026-10-03)
+
+The manager's disk claim discarded acp's stderr, so runtime.log only showed
+`command /usr/bin/acp failed ... (exit=22)`; acp exits 22 for every failed
+RPC. The claim now runs acp through `/bin/sh` with stderr captured and stdout
+dropped, and logs `storage: claim ROOT failed: <acp's line>`.
+
+- Native host tests: 783 passed. The storage test's fake acp prints a plist on
+  stdout and acp's failure line on stderr: the log has that line exactly once
+  and no plist; a silent failure logs `acp printed no error`.
+- VM: all three service lanes rebuilt from this tree (NetBSD 6 376,060 bytes,
+  NetBSD 4 LE 333,372, NetBSD 4 BE 332,792); manifest hashes updated; the
+  manifest and deploy tests passed (183).
+- NetBSD 6 deploy: the boot claim of `/Volumes/dk2` succeeded at attempt 1 with
+  no failure line.
+- NetBSD 4 LE deploy, then three collisions with the real diskd binary and a
+  manager restart (rc.local): each claim attempt logged
+  `storage: claim /Volumes/dk2 failed: ### RPC function "diskd.useVolume" failed: -6727`.
+  After a reboot the claim succeeded at attempt 1.
+- Only the claim path changed, so no Samba, doctor or smbtorture runs.
+
 # diskd RPC registry guard and deploy past lost names (2026-10-03)
 
 Field telemetry (v3.1.0 to v3.2.0) showed deploys failing at

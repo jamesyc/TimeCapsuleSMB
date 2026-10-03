@@ -121,9 +121,13 @@ int tc_storage_refresh_needed(const struct tc_storage_snapshot *previous, const 
     return 0;
 }
 static int activate(const struct tc_volume *volume, const struct tc_runtime_config *config) {
-    char argument[288];
+    char argument[288], error[160];
     unsigned attempt;
-    char *argv[] = {TC_ACP_PATH, "rpc", "diskd.useVolume", argument, NULL};
+    /* acp exits 22 for every failed RPC; only its stderr names the cause
+     * (-6727: ACPd lost diskd's RPC names, see boot.sh's diskd guard). The
+     * shell keeps that line and drops the plist acp prints on success. */
+    char *argv[] = {"/bin/sh", "-c", "exec " TC_ACP_PATH " rpc diskd.useVolume \"$1\" 2>&1 >/dev/null", "sh",
+                    argument, NULL};
     if (snprintf(argument, sizeof(argument), "path:s:%s", volume->root) >= (int)sizeof(argument))
         return -1;
     /* Preserve the established product's diskd activation operation. Do not
@@ -133,7 +137,10 @@ static int activate(const struct tc_volume *volume, const struct tc_runtime_conf
         int writable;
         fprintf(stderr, "storage: claim %s attempt=%u/%u\n", volume->root, attempt + 1,
                 config->mount_attempts);
-        if (tc_command_run(argv, 30) == 0) {
+        if (tc_command_capture(argv, error, sizeof(error), 30)) {
+            error[strcspn(error, "\n")] = 0;
+            fprintf(stderr, "storage: claim %s failed: %s\n", volume->root, *error ? error : "acp printed no error");
+        } else {
             for (;;) {
                 long long now = acp_monotonic_ms(), next;
                 if (tc_volume_mounted(volume, &writable) == 1)

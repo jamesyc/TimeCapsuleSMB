@@ -20,7 +20,10 @@ from pathlib import Path
 assert sys.argv[1:3]==['rpc','diskd.useVolume']
 root=sys.argv[3].removeprefix('path:s:')
 with open(os.environ['CLAIMS'],'a') as log:log.write(root+'\\n')
-if os.environ.get('CLAIM_FAIL')=='1':sys.exit(1)
+print('<plist>status</plist>')
+if os.environ.get('CLAIM_FAIL')=='1':
+    print('### RPC function "diskd.useVolume" failed: -6727',file=sys.stderr);sys.exit(22)
+if os.environ.get('CLAIM_FAIL')=='2':sys.exit(1)
 mounts=Path(os.environ['TC_TEST_MOUNTS'])
 rows=[row for row in mounts.read_text().splitlines() if not row.startswith(root+' ')]
 rows.append(root+' '+Path(root).name+' 1')
@@ -50,7 +53,7 @@ def storage(storage_tools):
     config.write_text('DISKD_USE_VOLUME_ATTEMPTS=1\nDISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=0\n')
     disks=[dict(deviceName='sd0',builtin=True,partitions=[dict(deviceName='dk2',name='Data',format='hfs',users=1,uuid='11111111-1111-1111-1111-111111111111')]),
            dict(deviceName='sd1',partitions=[dict(deviceName='dk3',name='USB',format='hfs',users=1,uuid='22222222-2222-2222-2222-222222222222')])]
-    def run(*args,fail=False):
+    def run(*args,fail=0):
         return subprocess.run([str(binary),*args],input=plistlib.dumps(disks),capture_output=True,timeout=10,
                               env={**os.environ,'TC_TEST_MOUNTS':str(mounts),'CLAIMS':str(claims),'CLAIM_FAIL':str(int(fail))})
     return root,config,mounts,claims,disks,run
@@ -90,6 +93,16 @@ def test_activation_failure_never_writes_to_unmounted_directories(storage):
     assert b'available=0 payload= shares=0' in result.stdout
     assert not (root/'dk2/ShareRoot').exists()
     assert not (root/'dk3/.com.apple.timemachine.supported').exists()
+
+
+def test_activation_failure_logs_the_error_acp_printed(storage):
+    root,_,_,_,_,run=storage
+    # acp exits 22 for every failed RPC; only its stderr line names the cause.
+    result=run(fail=1);assert result.returncode==0,result.stderr
+    assert result.stderr.count(f'storage: claim {root}/dk2 failed: ### RPC function "diskd.useVolume" failed: -6727\n'.encode()) == 1, result.stderr
+    assert b'<plist>' not in result.stderr
+    result=run(fail=2);assert result.returncode==0,result.stderr
+    assert f'storage: claim {root}/dk2 failed: acp printed no error\n'.encode() in result.stderr
 
 
 def test_readonly_volume_excluded_and_external_payload_used(storage):
