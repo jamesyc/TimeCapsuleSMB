@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -16,8 +17,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from pathlib import Path
 
 
@@ -55,6 +59,7 @@ DEFAULT_NOTARY_PROFILE = "tcapsulesmb-notary"
 DEFAULT_NOTARY_TIMEOUT = "30m"
 CACHE_COMPLETE_MARKER = ".complete"
 CACHE_MANIFEST_FILE = "manifest.json"
+_MACHO_INSPECTIONS: ContextVar[dict[tuple[str, Path], object] | None] = ContextVar("macho_inspections", default=None)
 PACKAGE_CACHE_IGNORED_NAMES = {"__pycache__", ".DS_Store"}
 PACKAGE_CACHE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
 # Keyed cache entries are never read again once their inputs change, so every
@@ -121,6 +126,46 @@ class PackageResult:
         self.app = app
         self.zip_path = zip_path
         self.notarization_archive = notarization_archive
+
+
+@contextlib.contextmanager
+def timed_step(description: str) -> Iterator[None]:
+    # Flush the start message before quiet subprocesses or Apple's network waits.
+    # Separate lines also let Swift and stapler stream their own output normally.
+    started = time.perf_counter()
+    print(f"[package] {description}...", file=sys.stderr, flush=True)
+    status = "failed"
+    try:
+        yield
+        status = "done"
+    finally:
+        elapsed = time.perf_counter() - started
+        print(f"[package] {description}: {status} ({elapsed:.1f}s)", file=sys.stderr, flush=True)
+
+
+@contextlib.contextmanager
+def macho_inspection_session() -> Iterator[None]:
+    # Only enter this scope after all binary rewrites/signing have finished.
+    # Discard results on exit so another build cannot reuse stale metadata.
+    token = _MACHO_INSPECTIONS.set({})
+    try:
+        yield
+    finally:
+        _MACHO_INSPECTIONS.reset(token)
+
+
+def cached_macho_inspection(inspect):
+    @functools.wraps(inspect)
+    def cached(path: Path):
+        cache = _MACHO_INSPECTIONS.get()
+        if cache is None:
+            return inspect(path)
+        key = (inspect.__name__, path.resolve())
+        if key not in cache:
+            cache[key] = inspect(path)
+        return cache[key]
+
+    return cached
 
 
 def run(
@@ -201,52 +246,47 @@ def swift_bin_dir(configuration: str, architecture: str) -> Path:
     return Path(lines[-1].strip())
 
 
-def build_swift_product(configuration: str, architectures: tuple[str, ...], product_name: str) -> tuple[Path, list[Path]]:
-    executables: list[Path] = []
-    build_dirs: list[Path] = []
+def build_swift(configuration: str, architectures: tuple[str, ...]) -> tuple[Path, Path, Path]:
+    products = (PRODUCT_NAME, HELPER_PRODUCT_NAME)
+    executables: dict[str, list[Path]] = {product: [] for product in products}
     staging = PACKAGE_ROOT / ".build" / "package-app" / configuration
     for architecture in architectures:
-        run([
-            "swift",
-            "build",
-            "-c",
-            configuration,
-            "--triple",
-            SWIFT_TRIPLES[architecture],
-            "--product",
-            product_name,
-        ], cwd=PACKAGE_ROOT)
-        build_dir = swift_bin_dir(configuration, architecture)
-        built = build_dir / product_name
-        if not built.is_file():
-            raise RuntimeError(f"Swift build did not produce {built}")
-        # Swift Build writes every architecture to the same directory, so keep
-        # this one before the next architecture's build replaces it.
-        executable = staging / architecture / product_name
-        executable.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(built, executable)
-        executables.append(executable)
-        build_dirs.append(build_dir)
+        with timed_step(f"Building app and helper ({architecture}, {configuration})"):
+            run([
+                "swift",
+                "build",
+                "-c",
+                configuration,
+                "--triple",
+                SWIFT_TRIPLES[architecture],
+            ], cwd=PACKAGE_ROOT)
+            build_dir = swift_bin_dir(configuration, architecture)
+            # Swift Build shares its product directory across architectures.
+            # Preserve both executables and resources before the next build.
+            architecture_staging = staging / architecture
+            if architecture_staging.exists():
+                shutil.rmtree(architecture_staging)
+            architecture_staging.mkdir(parents=True, exist_ok=True)
+            for product in products:
+                built = build_dir / product
+                if not built.is_file():
+                    raise RuntimeError(f"Swift build did not produce {built}")
+                executable = architecture_staging / product
+                shutil.copy2(built, executable)
+                executables[product].append(executable)
+            copy_resources(build_dir, architecture_staging)
 
-    if len(executables) == 1:
-        return executables[0], build_dirs
-
-    universal_dir = PACKAGE_ROOT / ".build" / "package-app" / configuration
-    universal_dir.mkdir(parents=True, exist_ok=True)
-    universal_executable = universal_dir / product_name
-    run(["lipo", "-create", *[str(path) for path in executables], "-output", str(universal_executable)])
-    universal_executable.chmod(0o755)
-    return universal_executable, build_dirs
-
-
-def build_swift(configuration: str, architectures: tuple[str, ...]) -> tuple[Path, Path]:
-    executable, build_dirs = build_swift_product(configuration, architectures, PRODUCT_NAME)
-    return executable, build_dirs[0]
-
-
-def build_helper(configuration: str, architectures: tuple[str, ...]) -> Path:
-    executable, _build_dirs = build_swift_product(configuration, architectures, HELPER_PRODUCT_NAME)
-    return executable
+    outputs: dict[str, Path] = {}
+    for product, paths in executables.items():
+        if len(paths) == 1:
+            outputs[product] = paths[0]
+        else:
+            output = staging / product
+            with timed_step(f"Combining {product} architectures"):
+                run(["lipo", "-create", *[str(path) for path in paths], "-output", str(output)])
+            output.chmod(0o755)
+            outputs[product] = output
+    return outputs[PRODUCT_NAME], outputs[HELPER_PRODUCT_NAME], staging / architectures[0]
 
 
 def resource_bundle_localization(resource_bundle: Path, language: str) -> Path:
@@ -257,6 +297,7 @@ def resource_bundle_localization(resource_bundle: Path, language: str) -> Path:
     return deep if deep.is_dir() else resource_bundle / f"{language}.lproj"
 
 
+@timed_step("Copying Swift resources")
 def copy_resources(build_dir: Path, resources_dir: Path) -> None:
     for resource_bundle in build_dir.glob("*.bundle"):
         destination = resources_dir / resource_bundle.name
@@ -298,6 +339,7 @@ def app_icon_cache_entry(source: Path) -> Path:
     return evict_stale_cache_entries(package_cache_dir("app-icon") / f"{key}.icns")
 
 
+@timed_step("Preparing app icon")
 def create_app_icon(source: Path, resources_dir: Path, *, use_cache: bool = True) -> None:
     if not source.is_file():
         raise RuntimeError(f"App icon source does not exist: {source}")
@@ -806,6 +848,7 @@ class HomebrewBottles:
         return path
 
 
+@timed_step("Preparing pinned native tool bottles")
 def prepare_homebrew_bottles(architectures: tuple[str, ...], *, use_cache: bool = True,
                              client: GhcrClient | None = None) -> HomebrewBottles:
     client = client or GhcrClient()
@@ -943,6 +986,7 @@ def extract_python_framework(pkg_path: Path, destination: Path) -> Path:
     return destination
 
 
+@timed_step("Preparing bundled Python runtime")
 def copy_python_runtime(args: argparse.Namespace, resources_dir: Path, architectures: tuple[str, ...]) -> Path:
     runtime_dir = resources_dir / "Python" / "Runtime"
     if runtime_dir.exists():
@@ -1177,6 +1221,7 @@ def build_python_packages(python: str, site_packages: Path) -> None:
     remove_appledouble_files(site_packages)
 
 
+@timed_step("Preparing Python site-packages")
 def create_python_packages(
     python: str,
     resources_dir: Path,
@@ -1238,6 +1283,7 @@ def remove_optional_zeroconf_extensions(site_packages: Path) -> None:
         extension.unlink()
 
 
+@timed_step("Copying device payloads")
 def copy_distribution(resources_dir: Path) -> None:
     distribution = resources_dir / "Distribution"
     if distribution.exists():
@@ -1266,6 +1312,7 @@ def assert_distribution_artifacts(distribution: Path) -> None:
         raise RuntimeError(f"Bundled distribution is missing payload artifact(s):\n  - {joined}")
 
 
+@cached_macho_inspection
 def macho_architectures(path: Path) -> set[str]:
     completed = subprocess.run(
         ["lipo", "-archs", str(path)],
@@ -1341,6 +1388,7 @@ def copy_tools_from_sources(
     return copies
 
 
+@cached_macho_inspection
 def macho_dependencies(path: Path) -> list[str] | None:
     completed = subprocess.run(
         ["otool", "-L", str(path)],
@@ -1364,6 +1412,7 @@ def macho_dependencies(path: Path) -> list[str] | None:
     return dependencies
 
 
+@cached_macho_inspection
 def macho_install_name(path: Path) -> str | None:
     """A library's own install name (LC_ID_DYLIB), which otool -L lists among
     its dependencies."""
@@ -1373,6 +1422,7 @@ def macho_install_name(path: Path) -> str | None:
     return lines[1].strip() if len(lines) > 1 else None
 
 
+@cached_macho_inspection
 def macho_rpaths(path: Path) -> list[str]:
     """The LC_RPATH entries in load order, which is dyld's search order."""
     completed = subprocess.run(["otool", "-l", str(path)], text=True, stdout=subprocess.PIPE,
@@ -1547,6 +1597,7 @@ def nested_helper_code_paths(app: Path) -> list[Path]:
     return [helper] if helper.is_file() else []
 
 
+@timed_step("Ad-hoc signing app and helper")
 def ad_hoc_codesign_app_bundle(app: Path) -> None:
     for path in nested_helper_code_paths(app):
         ad_hoc_codesign(path)
@@ -1569,18 +1620,21 @@ def ad_hoc_codesign_site_packages(site_packages: Path) -> None:
     ad_hoc_codesign_macho_roots([site_packages])
 
 
-def finalize_python_bundle(resources_dir: Path) -> None:
+@timed_step("Cleaning and preparing Python bundle for signing")
+def finalize_python_bundle(resources_dir: Path, *, sign: bool = True) -> None:
     framework = resources_dir / "Python" / "Runtime" / PYTHON_FRAMEWORK_NAME
     site_packages = resources_dir / "Python" / "site-packages"
     remove_python_bytecode(framework)
     remove_python_bytecode(site_packages)
     remove_appledouble_files(framework)
     remove_appledouble_files(site_packages)
-    if framework.is_dir():
-        ad_hoc_codesign_python_framework(framework)
-    if site_packages.is_dir():
-        ad_hoc_codesign_site_packages(site_packages)
-    assert_macho_code_signatures_valid_for_roots([framework, site_packages])
+    # Developer ID packaging signs these once with the rest of the final app.
+    # Unsigned builds still need ad-hoc signatures after resource cleanup.
+    if sign:
+        if framework.is_dir():
+            ad_hoc_codesign_python_framework(framework)
+        if site_packages.is_dir():
+            ad_hoc_codesign_site_packages(site_packages)
 
 
 def codesign_order(path: Path, app: Path) -> tuple[int, str]:
@@ -1617,16 +1671,27 @@ def ad_hoc_codesign_macho_bundle(app: Path) -> None:
         ad_hoc_codesign(framework)
 
 
+@timed_step("Signing app and bundled binaries with Developer ID")
 def developer_id_codesign_app_bundle(app: Path, identity: str) -> None:
-    for path in sorted(macho_validation_roots(app), key=lambda candidate: codesign_order(candidate, app)):
-        if macho_architectures(path):
-            developer_id_codesign(path, identity)
+    # Signing a bundle's main executable can seal the enclosing bundle too.
+    # Let the container signing below cover those binaries after all its leaves.
+    container_executables = {
+        (app / "Contents" / "MacOS" / PRODUCT_NAME).resolve(),
+        bundled_python_dylib(app).resolve(),
+    }
+    paths = [
+        path for path in macho_validation_roots(app)
+        if path.resolve() not in container_executables and macho_architectures(path)
+    ]
+    print(f"Signing {len(paths)} binaries with 4 workers.", file=sys.stderr, flush=True)
+    # Only individual files run concurrently. Wait for every leaf before signing
+    # enclosing bundles; an error must prevent either container from being signed.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(functools.partial(developer_id_codesign, identity=identity), paths))
     framework = bundled_python_framework(app)
     if framework.is_dir():
         developer_id_codesign(framework, identity)
     developer_id_codesign(app, identity)
-    assert_macho_code_signatures_valid(app)
-    assert_app_bundle_signature_valid(app)
 
 
 def vendor_macho_dependencies(
@@ -1772,6 +1837,7 @@ def native_tools_cache_is_complete(entry: Path) -> bool:
     return native_tools_cache_miss_reason(entry) is None
 
 
+@timed_step("Checking native tool cache fingerprints")
 def native_tools_cache_miss_reason(entry: Path) -> str | None:
     tools_bin = entry / "Contents" / "Resources" / "Tools" / "bin"
     frameworks = entry / "Contents" / "Frameworks"
@@ -1816,11 +1882,12 @@ def build_native_tools(app: Path, architectures: tuple[str, ...], bottles: Homeb
     )
     remove_appledouble_files(app)
     ad_hoc_codesign_macho_bundle(app)
-    assert_tool_architectures(app, architectures)
-    assert_runtime_macho_architectures(app, architectures)
-    assert_no_external_macho_dependencies(app)
-    assert_macho_minimum_macos(macho_vendor_roots(app))
-    assert_macho_code_signatures_valid(app)
+    with macho_inspection_session():
+        assert_tool_architectures(app, architectures)
+        assert_runtime_macho_architectures(app, architectures)
+        assert_no_external_macho_dependencies(app)
+        assert_macho_minimum_macos(macho_vendor_roots(app))
+        assert_macho_code_signatures_valid(app)
     return sources, dependency_sources
 
 
@@ -1844,6 +1911,7 @@ def prepared_native_tools_layer(architectures: tuple[str, ...], bottles: Homebre
     return entry
 
 
+@timed_step("Preparing and copying native tool layer")
 def copy_native_tools_layer(app: Path, architectures: tuple[str, ...], *, use_cache: bool = True) -> None:
     # Without the cache the bottles are resolved again; downloaded bottle
     # files are still reused, since each is checked against its sha256.
@@ -1882,6 +1950,7 @@ def assert_macho_code_signatures_valid_for_roots(roots: list[Path]) -> None:
     assert_macho_code_signatures_valid_for_paths(macho_files_under(roots))
 
 
+@timed_step("Verifying bundled Mach-O signatures")
 def assert_macho_code_signatures_valid(app: Path) -> None:
     paths = [
         path
@@ -1891,6 +1960,7 @@ def assert_macho_code_signatures_valid(app: Path) -> None:
     assert_macho_code_signatures_valid_for_paths(paths)
 
 
+@timed_step("Verifying app bundle signature")
 def assert_app_bundle_signature_valid(app: Path) -> None:
     completed = subprocess.run(
         ["codesign", "--verify", "--deep", "--strict", "--verbose=4", str(app)],
@@ -1943,6 +2013,7 @@ def version_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
+@cached_macho_inspection
 def macho_minimum_macos(path: Path) -> dict[str, str]:
     """Each architecture's declared minimum macOS: LC_BUILD_VERSION's minos,
     or LC_VERSION_MIN_MACOSX's version in older binaries. Empty for a file
@@ -1971,6 +2042,7 @@ def macho_minimum_macos(path: Path) -> dict[str, str]:
     return versions
 
 
+@timed_step("Checking minimum macOS versions")
 def assert_macho_minimum_macos(paths: list[Path], maximum: str = MAXIMUM_BUNDLED_MINIMUM_MACOS) -> None:
     """No bundled binary may be built for a newer macOS than we support."""
     newer = [
@@ -1988,10 +2060,12 @@ def assert_no_external_macho_dependencies_for_roots(roots: list[Path]) -> None:
     assert_no_external_macho_dependencies_for_paths(macho_files_under(roots))
 
 
+@timed_step("Checking Mach-O dependency paths")
 def assert_no_external_macho_dependencies(app: Path) -> None:
     assert_no_external_macho_dependencies_for_paths(macho_validation_roots(app), app)
 
 
+@timed_step("Checking bundled Python imports")
 def assert_python_dependencies_are_bundled(app: Path) -> None:
     site_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
     python_home = bundled_python_home(app)
@@ -2043,6 +2117,7 @@ def assert_macho_has_architectures(path: Path, architectures: tuple[str, ...], l
         )
 
 
+@timed_step("Checking Python extension architectures")
 def assert_python_extension_architectures(app: Path, architectures: tuple[str, ...]) -> None:
     site_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
     failures: list[str] = []
@@ -2058,6 +2133,7 @@ def assert_python_extension_architectures(app: Path, architectures: tuple[str, .
         raise RuntimeError(f"Bundled Python extension(s) are missing required architecture(s):\n  - {joined}")
 
 
+@timed_step("Checking native tool architectures")
 def assert_tool_architectures(app: Path, architectures: tuple[str, ...]) -> None:
     tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
     failures: list[str] = []
@@ -2134,6 +2210,7 @@ def runtime_architecture_roots(app: Path, architectures: tuple[str, ...]) -> lis
     return roots
 
 
+@timed_step("Checking runtime dependency architectures")
 def assert_runtime_macho_architectures(app: Path, architectures: tuple[str, ...]) -> None:
     failures: list[str] = []
     queue = runtime_architecture_roots(app, architectures)
@@ -2173,6 +2250,7 @@ def assert_runtime_macho_architectures(app: Path, architectures: tuple[str, ...]
         raise RuntimeError(f"Bundled Mach-O runtime architecture validation failed:\n  - {joined}")
 
 
+@timed_step("Checking app resources")
 def validate_app_resources(app: Path) -> None:
     executable = app / "Contents" / "MacOS" / PRODUCT_NAME
     completed = subprocess.run(
@@ -2226,6 +2304,8 @@ def smoke_request(helper: Path, operation: str, state_dir: Path) -> None:
         raise RuntimeError(f"{operation} smoke test failed:\n{completed.stdout}\n{completed.stderr}")
 
 
+@timed_step("Validating app bundle layout")
+@macho_inspection_session()
 def assert_bundle_layout(
     app: Path,
     *,
@@ -2288,11 +2368,14 @@ def assert_bundle_layout(
     if full_validation:
         assert_no_external_macho_dependencies(app)
         assert_macho_minimum_macos(macho_validation_roots(app))
-        assert_macho_code_signatures_valid(app)
-        assert_app_bundle_signature_valid(app)
+    # Verify the final signatures once, including when full metadata validation
+    # is disabled. ZIP extraction still gets its own independent verification.
+    assert_macho_code_signatures_valid(app)
+    assert_app_bundle_signature_valid(app)
     validate_app_resources(app)
 
 
+@timed_step("Running helper and native tool smoke tests")
 def smoke_test(app: Path) -> None:
     helper = app / "Contents" / "Helpers" / "tcapsule"
     with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-smoke-") as tmp:
@@ -2321,6 +2404,7 @@ def smoke_tools(app: Path) -> None:
             )
 
 
+@timed_step("Extracting and validating distributable ZIP")
 def validate_app_zip(zip_path: Path, app_name: str) -> None:
     with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-zip-") as tmp:
         extract_dir = Path(tmp)
@@ -2332,6 +2416,7 @@ def validate_app_zip(zip_path: Path, app_name: str) -> None:
         assert_app_bundle_signature_valid(extracted_app)
 
 
+@timed_step("Creating distributable ZIP")
 def create_app_zip(app: Path, zip_path: Path) -> None:
     assert_no_appledouble_files(app)
     if zip_path.exists():
@@ -2356,6 +2441,7 @@ def notarization_archive_path(output_dir: Path) -> Path:
     return output_dir / f"{APP_NAME}-notary.zip"
 
 
+@timed_step("Creating notarization archive")
 def create_notarization_archive(app: Path, zip_path: Path) -> None:
     if zip_path.exists():
         zip_path.unlink()
@@ -2363,6 +2449,7 @@ def create_notarization_archive(app: Path, zip_path: Path) -> None:
     run(["ditto", "-c", "-k", "--keepParent", str(app), str(zip_path)])
 
 
+@timed_step("Submitting archive and waiting for Apple notarization")
 def notarize_archive(zip_path: Path, profile: str, timeout: str) -> str:
     completed = run_quiet([
         "xcrun",
@@ -2391,11 +2478,13 @@ def notarize_archive(zip_path: Path, profile: str, timeout: str) -> str:
     return submission_id
 
 
+@timed_step("Stapling and validating notarization ticket")
 def staple_notarization_ticket(app: Path) -> None:
     run(["xcrun", "stapler", "staple", str(app)])
     run(["xcrun", "stapler", "validate", str(app)])
 
 
+@timed_step("Checking Gatekeeper acceptance")
 def assert_gatekeeper_accepts_app(app: Path) -> None:
     completed = subprocess.run(
         ["spctl", "-a", "-t", "exec", "-vvv", str(app)],
@@ -2421,6 +2510,7 @@ def notarize_app(app: Path, output_dir: Path, *, profile: str, timeout: str) -> 
     return submission_id
 
 
+@timed_step("Packaging app")
 def package_app(args: argparse.Namespace) -> PackageResult:
     # Cached inputs are copied long after they are looked up, so the lock must
     # cover the whole run, not just eviction.
@@ -2429,9 +2519,10 @@ def package_app(args: argparse.Namespace) -> PackageResult:
 
 
 def build_app_package(args: argparse.Namespace) -> PackageResult:
+    if args.notarize and not args.codesign_identity:
+        raise RuntimeError("--notarize requires --codesign-identity with a Developer ID Application identity.")
     architectures = resolve_architectures(args.arch)
-    executable, resource_build_dir = build_swift(args.configuration, architectures)
-    helper_executable = build_helper(args.configuration, architectures)
+    executable, helper_executable, resource_build_dir = build_swift(args.configuration, architectures)
     output_dir = args.output.resolve()
     app = output_dir / f"{APP_NAME}.app"
     contents = app / "Contents"
@@ -2440,7 +2531,8 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     resources = contents / "Resources"
 
     if app.exists():
-        shutil.rmtree(app)
+        with timed_step("Removing previous app bundle"):
+            shutil.rmtree(app)
     macos.mkdir(parents=True)
     helpers.mkdir()
     resources.mkdir()
@@ -2455,24 +2547,22 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
     copy_helper_executable(helper_executable, helpers / HELPER_PRODUCT_NAME)
     python_executable = copy_python_runtime(args, resources, architectures)
     create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
-    finalize_python_bundle(resources)
+    finalize_python_bundle(resources, sign=not args.codesign_identity)
     copy_distribution(resources)
     copy_native_tools_layer(app, architectures, use_cache=not args.no_cache)
-    remove_appledouble_files(app)
-    assert_no_appledouble_files(app)
-    ad_hoc_codesign_app_bundle(app)
-    assert_app_bundle_signature_valid(app)
+    with timed_step("Cleaning and checking app metadata sidecars"):
+        remove_appledouble_files(app)
+        assert_no_appledouble_files(app)
+    if args.codesign_identity:
+        developer_id_codesign_app_bundle(app, args.codesign_identity)
+    else:
+        ad_hoc_codesign_app_bundle(app)
     assert_bundle_layout(
         app,
         icon_name=icon_name,
         architectures=architectures,
         full_validation=args.full_validation,
     )
-
-    if args.notarize and not args.codesign_identity:
-        raise RuntimeError("--notarize requires --codesign-identity with a Developer ID Application identity.")
-    if args.codesign_identity:
-        developer_id_codesign_app_bundle(app, args.codesign_identity)
 
     if not args.skip_smoke:
         smoke_test(app)

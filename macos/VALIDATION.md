@@ -441,3 +441,92 @@ Verification:
   (`/tmp/tc-ci-swift.log`). Ruff and `git diff --check` passed.
 - No VM/device access or binary changes; no locks held. Remote CI validation of
   this patch is pending.
+
+## 2026-10-03 — macOS packaging timings and progress
+
+- Timed the release/universal/ZIP/full-validation/Developer ID/notarization
+  command with temporary instrumentation and a separate output directory.
+  It succeeded in 349.11 seconds, including successful notarization, stapling,
+  Gatekeeper assessment and verification of the extracted distributable ZIP.
+  Existing `dist` output was preserved. Detailed subprocess and phase timings:
+  `/var/folders/ng/mwbdswb919d7w5j7428_lm9c0000gn/T/tcapsule-package-profile-tjxevsmg/timings.json`.
+- Swift app/helper builds took 67.64 seconds; cached Python copies 1.94 seconds;
+  Python cleanup/ad-hoc signing/verification 11.52 seconds; cached native tool
+  preparation/copying 1.08 seconds; bundle validation 65.87 seconds; Developer
+  ID signing/verification 72.83 seconds; smoke tests 3.26 seconds; notarization
+  archive 9.54 seconds; Apple submission/wait 100.12 seconds; stapling/Gatekeeper
+  2.27 seconds; final ZIP creation/extraction/verification 11.92 seconds.
+- The native cache message preceded about 253 seconds of silent work, ending
+  at notarization acceptance. Across the run, 4,147 Mach-O inspection
+  subprocesses included 2,580 repeated identical commands. There were 322
+  Developer ID signing calls, taking 49.33 seconds before inspection and
+  verification overhead. Secure timestamps and notarization remain enabled.
+- A read-only experiment memoized Mach-O inspection results within one
+  validation pass, without editing the packaging script. Validation of the
+  signed app passed in 39.02 seconds, versus 65.87 seconds in the initial run.
+  Follow-up plan: scope metadata reuse to immutable phases; sign independent
+  binaries with a small worker pool before signing enclosing bundles; combine
+  redundant signature checks around the final signing pass; build both Swift
+  products together per architecture while preserving each architecture's
+  products before Swift Build overwrites the shared output directory. These
+  speed changes were not implemented in this initial investigation.
+- Added flushed start/completion messages with monotonic elapsed seconds for
+  packaging phases, including individual architecture builds, validation
+  substeps, signing, Apple submission/wait, stapling and archive verification.
+  Failure and interruption messages retain the original exception. Messages
+  use separate stderr lines so streamed subprocess output stays readable.
+- `.venv/bin/pytest tests/test_macos_package_app.py -q`: all 119 tests passed
+  in 2.49 seconds, covering timing before work begins, elapsed time, failures,
+  interruption, repeated decorated calls and notarization progress.
+  Ruff and `git diff --check` passed. With the edited script, read-only full
+  validation of the signed app passed in 66.0 seconds and extracted ZIP
+  validation passed in 3.5 seconds, with each phase's timing visible.
+- No VM/device access or binary changes; no locks held. Changes are uncommitted.
+
+## 2026-10-03 — Faster macOS packaging
+
+- Implemented all four planned improvements: Mach-O inspection reuse within
+  immutable validation phases; four workers for independent Developer ID
+  signing jobs; one verification pass after final signing; one Swift build and
+  product-path query per architecture for both executable products.
+- Metadata is process-local and discarded after each validation phase, even
+  on failure. No cached inspection results survive signing or another build.
+  The native tool layer's existing fingerprint checks are preserved.
+- Worker signing excludes the app and Python framework main executables:
+  `codesign` can treat these as their enclosing bundles. Both containers are
+  signed after all leaves complete. The first experimental worker run failed
+  when the main executable was included; the corrected ordering passed the
+  end-to-end run. Signing failures prevent container signing. Secure timestamps,
+  hardened runtime, full dependency/architecture/minimum macOS checks,
+  notarization, stapling, Gatekeeper and extracted ZIP verification remain.
+- Developer ID builds no longer ad-hoc sign and verify Python beforehand.
+  Ad-hoc builds still sign Python after cleanup. Final signature verification
+  now runs for both modes, including without `--full-validation`.
+- Both Swift executables and resources are copied aside immediately after each
+  architecture build, preserving correctness with Swift Build's shared product
+  directory. Staging is cleared to avoid retaining removed resource bundles.
+- The same release/universal/ZIP/full-validation/Developer ID/notarization
+  command passed in 216.85 seconds, versus the initial 349.11 seconds.
+  Apple's upload/processing wait was 75.04 seconds versus 100.12 seconds;
+  excluding that variable wait, packaging fell from 248.99 to 141.81 seconds
+  (43.0%). These are individual runs, not benchmark medians.
+- Phase comparison: Swift 67.64 -> 51.72 seconds; Python finalization
+  11.52 -> 0.06 seconds; signing plus final bundle validation
+  138.70 -> 59.92 seconds. Inspection subprocesses fell from 4,147 to 1,956,
+  Swift invocations from eight to four, and signature verification invocations
+  from 768 to 320. Detailed final timings:
+  `/private/var/folders/ng/mwbdswb919d7w5j7428_lm9c0000gn/T/tcapsule-package-optimized-cxz9ry8y/timings.json`.
+- All 130 packaging tests passed in 1.71 seconds. Coverage includes scope exit
+  and failure, empty inspection results, alias reuse, worker overlap/bounds,
+  signing failures, container main-executable exclusion, both signing modes,
+  architecture-specific staging, stale resources and missing products. Ruff,
+  Python 3.9 import/scoping checks and `git diff --check` passed.
+- The successful full run verified notarization, stapling, Gatekeeper, resource
+  loading, Python imports, native tool execution and the extracted universal
+  app ZIP. The existing `dist` output was preserved.
+- The complete ad-hoc universal packaging path also passed in 37.7 seconds,
+  using the freshly built Swift products without recompiling them. This run
+  omitted `--full-validation` and notarization, and verified cleanup, ad-hoc
+  signatures, final bundle validation, helper/tool smoke tests and ZIP extraction.
+  Output: `/private/var/folders/ng/mwbdswb919d7w5j7428_lm9c0000gn/T/tcapsule-package-adhoc-l3jlbpzr`.
+- No VM/device access or checked-in binary changes; no locks held. No commit.
