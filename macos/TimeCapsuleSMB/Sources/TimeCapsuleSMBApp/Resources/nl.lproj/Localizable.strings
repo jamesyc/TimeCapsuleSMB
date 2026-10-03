@@ -10,7 +10,7 @@
 "add_device.entry.discover" = "Apparaten zoeken";
 "add_device.entry.manual" = "Handmatig adres";
 "add_device.error.choose_target" = "Kies een gevonden apparaat of voer een host in.";
-"add_device.error.invalid_bonjour_timeout" = "De Bonjour-time-out moet een niet-negatief getal zijn.";
+"add_device.error.invalid_bonjour_timeout" = "De time-out voor apparaatdetectie moet minstens 5 seconden zijn.";
 "add_device.error.password_required" = "Apparaatwachtwoord is vereist.";
 "add_device.host_or_ip" = "Hostnaam of IP-adres";
 "add_device.password" = "Apparaatwachtwoord";
@@ -64,7 +64,7 @@
 "app_settings.default_bonjour_timeout" = "Time-out voor apparaatdetectie (seconden)";
 "app_settings.error.ata_idle" = "De ATA-inactiviteitstijd moet een niet-negatief aantal seconden zijn.";
 "app_settings.error.ata_standby" = "De ATA-stand-bytijd moet leeg zijn of een niet-negatief aantal seconden zijn.";
-"app_settings.error.bonjour_timeout" = "De Bonjour-time-out moet een niet-negatief getal zijn.";
+"app_settings.error.bonjour_timeout" = "De time-out voor apparaatdetectie moet minstens 5 seconden zijn.";
 "app_settings.error.corrupt" = "App-instellingen konden niet worden gelezen: %@";
 "app_settings.error.mount_wait" = "De wachttijd voor koppelen moet een niet-negatief geheel getal zijn.";
 "app_settings.error.version_url" = "De URL voor versiecontrole moet leeg zijn of HTTP/HTTPS gebruiken.";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "ATA-inactiviteit";
 
 "settings.standby" = "ATA-stand-by";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "De time-out voor apparaatdetectie moet minstens 5 seconden zijn.";
+"discovery.permission_unknown" = "Toegang tot het lokale netwerk kon niet worden bevestigd. Apparaatdetectie gaat door.";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "Validatie van verzoek mislukt";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "Een of meer parameters van de bewerking ontbraken of waren ongeldig.";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "Controleer de gemarkeerde velden.";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "Probeer het opnieuw met geldige waarden.";
+"backend.recovery.discover.local_network_permission_denied.title" = "Toegang tot lokaal netwerk geblokkeerd";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS blokkeert de toegang van TimeCapsuleSMB tot apparaten in uw lokale netwerk.";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "Open Systeeminstellingen > Privacy en beveiliging > Lokaal netwerk.";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "Schakel TimeCapsuleSMB in onder Lokaal netwerk.";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "Schakel toegang in en probeer apparaatdetectie opnieuw.";
+"backend.error.discover.local_network_permission_denied" = "macOS blokkeert de toegang van TimeCapsuleSMB tot apparaten in uw lokale netwerk.";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "De apparaatidentiteit kon niet worden bevestigd. Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
+"discovery.identity_conflict" = "Meerdere opgeslagen apparaten komen overeen met dit apparaat. Controleer de opgeslagen apparaten en verwijder dubbele vermeldingen met ‘Vergeten’.";
+"discovery.reconnect_existing" = "Opgeslagen apparaat “%@” opnieuw verbinden";
+"backend.error.device_identity_mismatch" = "De apparaatidentiteit kon niet worden bevestigd. Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
+"backend.recovery.device_identity_mismatch.title" = "Apparaatidentiteit kon niet worden bevestigd";
+"backend.recovery.device_identity_mismatch.message" = "De apparaatidentiteit kon niet worden bevestigd. Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
+"backend.recovery.device_identity_mismatch.action.1" = "Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
+
+"discovery.identity_owned" = "Dit apparaat is al opgeslagen als ‘%@’. Controleer de opgeslagen apparaten en verwijder dubbele vermeldingen met ‘Vergeten’.";
+"discovery.open_saved_device" = "Opgeslagen apparaat ‘%@’ openen";
+
+"discovery.reconnect_selected" = "Bij het opslaan wordt het geselecteerde apparaat opnieuw verbonden met ‘%@’ en blijven de opgeslagen instellingen behouden.";

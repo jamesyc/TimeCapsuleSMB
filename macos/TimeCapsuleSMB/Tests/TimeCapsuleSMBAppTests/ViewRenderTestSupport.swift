@@ -50,7 +50,7 @@ struct AppViewFixture {
         passwordState: DevicePasswordState = .available,
         password: String? = "pw"
     ) async throws -> DeviceProfile {
-        let profile = try await registry.saveConfiguredDevice(
+        let profile = try await registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: host),
             discoveredDevice: nil,
             passwordState: passwordState,

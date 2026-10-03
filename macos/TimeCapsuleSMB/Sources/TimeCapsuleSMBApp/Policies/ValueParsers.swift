@@ -1,6 +1,11 @@
 import Foundation
 
 enum ValueParsers {
+    static func discoveryTimeout(_ text: String) -> Double? {
+        guard let value = nonNegativeDouble(text), value >= 5 else { return nil }
+        return value
+    }
+
     static func nonNegativeInteger(_ text: String) -> Int? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value = Int(trimmed), value >= 0 else {

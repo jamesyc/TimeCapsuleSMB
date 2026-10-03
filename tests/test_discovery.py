@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import io
+from zeroconf import ServiceInfo
+from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 import socket
 import sys
 import types
 import unittest
+import threading
+import itertools
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -15,33 +20,48 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.discovery.bonjour import (
+from timecapsulesmb.discovery.models import (
     AIRPORT_SERVICE,
     BonjourDiscoveryError,
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
-    BonjourMergedDiscoveryDiagnostics,
+    BonjourQueryDiagnostics,
     BonjourPtrRecordObservation,
     BonjourResolvedService,
     BonjourServiceEvent,
     BonjourServiceInstance,
-    Collector,
     DNS_RECORD_TYPE_PTR,
     SMB_SERVICE,
+    discovered_record_root_host,
+    discovered_record_has_only_link_local_ips
+)
+from timecapsulesmb.discovery.zeroconf_backend import (
+    Collector,
     PtrRecordObserver,
-    ServiceObservation,
     discover_snapshot_merged_detailed,
     discover_snapshot_detailed,
-    discovered_record_root_host,
     resolved_service_from_info,
     _open_zeroconf,
-    _source_ipv4_for_target,
-    _source_ipv6_for_target,
     _zeroconf_interfaces_for_target,
-    discovered_record_has_only_link_local_ips,
-    resolve_service_instance,
+    resolve_service_instance
 )
 from timecapsulesmb.cli.discover import run_cli  # noqa: E402
+
+
+def queue_instances(collector, keys):
+    from zeroconf import ServiceStateChange
+    for stype, name in sorted(keys):
+        collector._on_service_state_change(zeroconf=collector.zc, service_type=stype,
+                                          name=name, state_change=ServiceStateChange.Added)
+
+
+def drain_collector_batch(collector, timeout_ms=3000, *, deadline=None):
+    # Run the production admission/completion path. One worker makes fake-clock
+    # deadline assertions deterministic while admission still has its real bound.
+    futures = {}
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        collector.submit_pending(executor, futures, timeout_ms, deadline)
+    collector.finish_pending(futures)
 
 
 def make_fake_ip_version() -> types.SimpleNamespace:
@@ -49,6 +69,46 @@ def make_fake_ip_version() -> types.SimpleNamespace:
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_collector_admission_bounds_workers_and_ignores_old_generation(self) -> None:
+        from zeroconf import ServiceStateChange
+        stype = "_airport._tcp.local."
+        names = [f"Device {index}.{stype}" for index in range(5)]
+        gate = threading.Event()
+        entered = threading.Event()
+        lock = threading.Lock()
+        calls = []
+        def lookup(service_type, name, timeout_ms, **_kwargs):
+            with lock:
+                calls.append(name)
+                if len(calls) == 4:
+                    entered.set()
+                initial = len(calls) <= 4
+            if initial:
+                assert gate.wait(3), "test workers were not released"
+            return ServiceInfo(stype, name, server="home.local.", port=5009,
+                               addresses=[bytes([192, 0, 2, 10])])
+        collector = Collector(mock.Mock(get_service_info=lookup), [stype], required_families=("ipv4",))
+        queue_instances(collector, [(stype, name) for name in names])
+        futures = {}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            try:
+                collector.submit_pending(executor, futures, 500, None)
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(len(futures), 4)
+                self.assertNotIn(names[4], calls)
+                for state in (ServiceStateChange.Removed, ServiceStateChange.Added):
+                    collector._on_service_state_change(zeroconf=collector.zc, service_type=stype,
+                        name=names[0], state_change=state)
+            finally:
+                gate.set()
+        collector.finish_pending(futures)
+        self.assertEqual({r.fullname for r in collector.results()}, set(names[1:4]))
+        self.assertEqual(set(collector.pending), {(stype, names[0]), (stype, names[4])})
+        drain_collector_batch(collector, 500)
+        self.assertEqual(calls[4:], [names[4], names[0]])
+        self.assertEqual({r.fullname for r in collector.results()}, set(names))
+        self.assertEqual(set(collector.pending), set())
+
     def test_preferred_connection_host_uses_address_policy_before_hostname(self) -> None:
         record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=["10.0.0.2"])
         self.assertEqual(record.preferred_connection_host(), "10.0.0.2")
@@ -110,24 +170,26 @@ class DiscoveryTests(unittest.TestCase):
     def test_discover_defaults_to_ipv4_only_zeroconf(self) -> None:
         fake_zc = mock.Mock()
         fake_collector = mock.Mock()
+        fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
         fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.sleep"):
                     discover_snapshot_detailed(timeout=0)
 
         fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
         fake_collector.start.assert_called_once()
-        fake_collector.resolve_pending.assert_called_once_with(timeout_ms=3000)
+        fake_collector.stop.assert_called_once()
         fake_zc.close.assert_called_once()
 
     def test_discover_uses_selected_ipv4_interface_for_target(self) -> None:
         fake_zc = mock.Mock()
         fake_collector = mock.Mock()
+        fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
         fake_collector.service_events.return_value = []
@@ -144,19 +206,20 @@ class DiscoveryTests(unittest.TestCase):
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour._source_ipv4_for_target", return_value="10.0.1.42") as source_mock:
-                with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                    with mock.patch("timecapsulesmb.discovery.bonjour.PtrRecordObserver", return_value=fake_ptr_observer):
-                        with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.select_route_to_address", return_value=RouteSelection("available", source="10.0.1.42")) as source_mock:
+                with mock.patch("timecapsulesmb.discovery.zeroconf_backend.Collector", return_value=fake_collector):
+                    with mock.patch("timecapsulesmb.discovery.zeroconf_backend.PtrRecordObserver", return_value=fake_ptr_observer):
+                        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.sleep"):
                             _snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0, target_ip="10.0.1.77")
 
-        source_mock.assert_called_once_with("10.0.1.77")
+        source_mock.assert_called_once_with("10.0.1.77", port=5353)
         fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.V4Only)
         self.assertEqual(diagnostics.zeroconf_interfaces, "10.0.1.42")
 
     def test_discover_can_use_explicit_ipv4_family_and_interfaces(self) -> None:
         fake_zc = mock.Mock()
         fake_collector = mock.Mock()
+        fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
         fake_collector.service_events.return_value = []
@@ -173,9 +236,9 @@ class DiscoveryTests(unittest.TestCase):
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.PtrRecordObserver", return_value=fake_ptr_observer):
-                    with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.zeroconf_backend.PtrRecordObserver", return_value=fake_ptr_observer):
+                    with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.sleep"):
                         _snapshot, diagnostics = discover_snapshot_detailed(
                             SMB_SERVICE,
                             timeout=0,
@@ -190,6 +253,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_discover_can_use_explicit_ipv6_family_and_interfaces(self) -> None:
         fake_zc = mock.Mock()
         fake_collector = mock.Mock()
+        fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
         fake_collector.service_events.return_value = []
@@ -206,9 +270,9 @@ class DiscoveryTests(unittest.TestCase):
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.PtrRecordObserver", return_value=fake_ptr_observer):
-                    with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.zeroconf_backend.PtrRecordObserver", return_value=fake_ptr_observer):
+                    with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.sleep"):
                         _snapshot, diagnostics = discover_snapshot_detailed(
                             SMB_SERVICE,
                             timeout=0,
@@ -223,6 +287,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_discover_falls_back_to_all_interfaces_when_target_interface_is_unknown(self) -> None:
         fake_zc = mock.Mock()
         fake_collector = mock.Mock()
+        fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
         fake_collector.service_events.return_value = []
@@ -239,10 +304,10 @@ class DiscoveryTests(unittest.TestCase):
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour._source_ipv4_for_target", return_value=None):
-                with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                    with mock.patch("timecapsulesmb.discovery.bonjour.PtrRecordObserver", return_value=fake_ptr_observer):
-                        with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.select_route_to_address", return_value=RouteSelection("unknown")):
+                with mock.patch("timecapsulesmb.discovery.zeroconf_backend.Collector", return_value=fake_collector):
+                    with mock.patch("timecapsulesmb.discovery.zeroconf_backend.PtrRecordObserver", return_value=fake_ptr_observer):
+                        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.sleep"):
                             _snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0, target_ip="10.0.1.77")
 
         fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
@@ -302,7 +367,7 @@ class DiscoveryTests(unittest.TestCase):
             )
             return snapshot, diagnostics
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=fake_discover):
+        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.discover_snapshot_detailed", side_effect=fake_discover):
             snapshot, diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0.25)
 
         self.assertEqual({call[2] for call in calls}, {"ipv4", "ipv6"})
@@ -350,7 +415,7 @@ class DiscoveryTests(unittest.TestCase):
             )
             return snapshot, diagnostics
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=fake_discover):
+        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.discover_snapshot_detailed", side_effect=fake_discover):
             snapshot, _diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0)
 
         self.assertEqual(
@@ -388,7 +453,7 @@ class DiscoveryTests(unittest.TestCase):
             )
             return snapshot_v4, diagnostics
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=partial_discover):
+        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.discover_snapshot_detailed", side_effect=partial_discover):
             snapshot, diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0)
 
         self.assertEqual(snapshot.resolved[0].ipv4, ["10.0.0.2"])
@@ -414,59 +479,63 @@ class DiscoveryTests(unittest.TestCase):
                 resolve_error_count=0,
             )
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=empty_with_error):
+        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.discover_snapshot_detailed", side_effect=empty_with_error):
             with self.assertRaises(BonjourDiscoveryError) as exc:
                 discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0)
         self.assertIn("ipv6: RuntimeError: ipv6 browse failed", str(exc.exception))
 
     def test_target_interfaces_default_to_selected_ipv4_only(self) -> None:
-        with mock.patch("timecapsulesmb.discovery.bonjour._source_ipv4_for_target", return_value="192.168.50.9"):
+        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.select_route_to_address", return_value=RouteSelection("available", source="192.168.50.9")):
             interfaces = _zeroconf_interfaces_for_target("192.168.50.77")
 
         self.assertEqual(interfaces, ["192.168.50.9"])
 
     def test_source_ipv4_for_target_uses_udp_route_selection(self) -> None:
-        fake_sock = mock.Mock()
+        fake_sock = mock.MagicMock()
+        fake_sock.__enter__.return_value = fake_sock
         fake_sock.getsockname.return_value = ("10.0.1.42", 5353)
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.socket.socket", return_value=fake_sock) as socket_mock:
-            source_ip = _source_ipv4_for_target("10.0.1.77")
+        with mock.patch("timecapsulesmb.core.net.socket.socket", return_value=fake_sock) as socket_mock:
+            source_ip = select_route_to_address("10.0.1.77", port=5353).source
 
-        socket_mock.assert_called_once()
+        socket_mock.assert_called_once_with(socket.AF_INET, socket.SOCK_DGRAM)
         fake_sock.connect.assert_called_once_with(("10.0.1.77", 5353))
-        fake_sock.close.assert_called_once()
+        fake_sock.__exit__.assert_called_once()
         self.assertEqual(source_ip, "10.0.1.42")
 
     def test_source_ipv4_for_target_returns_none_when_route_selection_fails(self) -> None:
-        fake_sock = mock.Mock()
+        fake_sock = mock.MagicMock()
+        fake_sock.__enter__.return_value = fake_sock
         fake_sock.connect.side_effect = OSError("no route")
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.socket.socket", return_value=fake_sock):
-            self.assertIsNone(_source_ipv4_for_target("10.0.1.77"))
+        with mock.patch("timecapsulesmb.core.net.socket.socket", return_value=fake_sock):
+            self.assertIsNone(select_route_to_address("10.0.1.77", port=5353).source)
 
-        fake_sock.close.assert_called_once()
+        fake_sock.__exit__.assert_called_once()
 
     def test_source_ipv6_for_target_uses_udp_route_selection(self) -> None:
-        fake_sock = mock.Mock()
+        fake_sock = mock.MagicMock()
+        fake_sock.__enter__.return_value = fake_sock
         fake_sock.getsockname.return_value = ("fd00::42", 5353, 0, 0)
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.socket.socket", return_value=fake_sock) as socket_mock:
-            source_ip = _source_ipv6_for_target("fd00::77")
+        with mock.patch("timecapsulesmb.core.net.socket.socket", return_value=fake_sock) as socket_mock:
+            source_ip = select_route_to_address("fd00::77", port=5353).source
 
         socket_mock.assert_called_once_with(socket.AF_INET6, socket.SOCK_DGRAM)
         fake_sock.connect.assert_called_once_with(("fd00::77", 5353, 0, 0))
-        fake_sock.close.assert_called_once()
+        fake_sock.__exit__.assert_called_once()
         self.assertEqual(source_ip, "fd00::42")
 
     def test_source_ipv6_for_target_preserves_link_local_scope(self) -> None:
-        fake_sock = mock.Mock()
+        fake_sock = mock.MagicMock()
+        fake_sock.__enter__.return_value = fake_sock
         fake_sock.getsockname.return_value = ("fe80::42%17", 5353, 0, 17)
 
         with (
-            mock.patch("timecapsulesmb.discovery.bonjour.socket.socket", return_value=fake_sock),
-            mock.patch("timecapsulesmb.discovery.bonjour.socket.if_indextoname", return_value="en0"),
+            mock.patch("timecapsulesmb.core.net.socket.socket", return_value=fake_sock),
+            mock.patch("timecapsulesmb.core.net.socket.if_indextoname", return_value="en0"),
         ):
-            source_ip = _source_ipv6_for_target("fe80::77%17")
+            source_ip = select_route_to_address("fe80::77%17", port=5353).source
 
         fake_sock.connect.assert_called_once_with(("fe80::77", 5353, 0, 17))
         self.assertEqual(source_ip, "fe80::42%en0")
@@ -487,25 +556,21 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("ModuleNotFoundError: No module named 'zeroconf'", str(exc.exception))
 
     def test_discover_retries_pending_resolution_during_browse_window(self) -> None:
-        fake_zc = mock.Mock()
-        fake_collector = mock.Mock()
-        fake_collector.results.return_value = []
-        fake_collector.service_instances.return_value = []
-        fake_ip_version = make_fake_ip_version()
-        fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
-
-        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[0.0, 0.0, 0.6, 0.6]):
-                    with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep") as fake_sleep:
-                        discover_snapshot_detailed(timeout=0.5)
-
-        self.assertIn(mock.call(0.5), fake_sleep.call_args_list)
-        fake_collector.resolve_pending.assert_has_calls([
-            mock.call(timeout_ms=500),
-            mock.call(timeout_ms=3000),
-        ])
-        self.assertEqual(fake_collector.resolve_pending.call_count, 2)
+        from timecapsulesmb.discovery import zeroconf_backend as backend
+        zc = mock.Mock()
+        info = ServiceInfo("_smb._tcp.local.", "Home._smb._tcp.local.", server="home.local.", port=445,
+                           addresses=[bytes([192, 0, 2, 1])])
+        zc.get_service_info.side_effect = [None, info]
+        def start(collector):
+            queue_instances(collector, {("_smb._tcp.local.", info.name)})
+        with mock.patch.object(backend, "_open_zeroconf", return_value=zc):
+            with mock.patch.object(Collector, "start", start):
+                snapshot, diagnostics = backend.discover_snapshot_detailed("_smb", timeout=.08, family="ipv4")
+        self.assertEqual([r.hostname for r in snapshot.resolved], ["home.local"])
+        self.assertEqual(diagnostics.resolve_attempt_count, 2)
+        self.assertEqual(diagnostics.resolve_success_count, 1)
+        self.assertEqual(diagnostics.pending_count, 0)
+        zc.close.assert_called_once()
 
     def test_discover_snapshot_detailed_returns_bounded_discovery_counters(self) -> None:
         fake_zc = mock.Mock()
@@ -522,6 +587,7 @@ class DiscoveryTests(unittest.TestCase):
             0.25,
         )
         fake_collector = mock.Mock()
+        fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = [record]
         fake_collector.service_instances.return_value = [instance]
         fake_collector.service_events.return_value = [event]
@@ -541,11 +607,11 @@ class DiscoveryTests(unittest.TestCase):
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.PtrRecordObserver", return_value=fake_ptr_observer):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.zeroconf_backend.PtrRecordObserver", return_value=fake_ptr_observer):
                     with mock.patch(
-                        "timecapsulesmb.discovery.bonjour.time.monotonic",
-                        side_effect=[10.0, 10.0, 16.125],
+                        "timecapsulesmb.discovery.zeroconf_backend.time.monotonic",
+                        side_effect=itertools.chain([10.0], itertools.repeat(16.125)),
                     ):
                         snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0)
 
@@ -575,26 +641,22 @@ class DiscoveryTests(unittest.TestCase):
         class FakeQuestionType:
             QM = object()
 
-        class FakeInfo:
-            name = "Home._smb._tcp.local."
-            server = "home.local."
-            port = 445
-            properties = {b"path": b"/"}
-            addresses = [bytes([10, 0, 1, 1])]
+        info = ServiceInfo("_smb._tcp.local.", "Home._smb._tcp.local.", server="home.local.", port=445,
+                           properties={b"path": b"/"}, addresses=[bytes([10, 0, 1, 1])])
 
         fake_zc = mock.Mock()
-        fake_zc.get_service_info.return_value = FakeInfo()
+        fake_zc.get_service_info.return_value = info
         fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version, DNSQuestionType=FakeQuestionType)
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            record = resolve_service_instance(instance, timeout_ms=750)
+            record = resolve_service_instance(instance, timeout_ms=750, family="ipv4")
 
         fake_zc.get_service_info.assert_called_once_with(
             "_smb._tcp.local.",
             "Home._smb._tcp.local.",
-            750,
+            500,
             question_type=FakeQuestionType.QM,
         )
         self.assertIsNotNone(record)
@@ -615,30 +677,23 @@ class DiscoveryTests(unittest.TestCase):
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour._source_ipv4_for_target", return_value="10.0.1.42"):
-                record = resolve_service_instance(instance, timeout_ms=750, target_ip="10.0.1.77")
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.select_route_to_address", return_value=RouteSelection("available", source="10.0.1.42")):
+                record = resolve_service_instance(instance, timeout_ms=750, target_ip="10.0.1.77", family="ipv4")
 
         self.assertIsNone(record)
         fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.V4Only)
-        fake_zc.get_service_info.assert_called_once_with(
-            "_smb._tcp.local.",
-            "Home._smb._tcp.local.",
-            750,
-            question_type=FakeQuestionType.QM,
-        )
+        self.assertTrue(fake_zc.get_service_info.call_count >= 1)
+        for call in fake_zc.get_service_info.call_args_list:
+            self.assertEqual(call.args[:2], (instance.service_type, instance.fullname))
+            self.assertTrue(0 < call.args[2] <= 500)
+        fake_zc.close.assert_called_once()
 
     def test_resolved_service_from_info_uses_parsed_addresses_to_include_ipv6(self) -> None:
-        class FakeInfo:
-            name = "Home._smb._tcp.local."
-            server = "home.local."
-            port = 445
-            properties: dict[bytes, bytes] = {}
-            addresses = [bytes([192, 168, 1, 217])]
+        info = ServiceInfo("_smb._tcp.local.", "Home._smb._tcp.local.", server="home.local.", port=445,
+                           properties={}, interface_index=17,
+                           parsed_addresses=["192.168.1.217", "169.254.155.207", "fdbb:5737:6e53:9bf7::5868", "fe80::5868"])
 
-            def parsed_scoped_addresses(self, _version) -> list[str]:
-                return ["192.168.1.217", "169.254.155.207", "fdbb:5737:6e53:9bf7::5868", "fe80::5868%17"]
-
-        record = resolved_service_from_info("_smb._tcp.local.", FakeInfo())
+        record = resolved_service_from_info("_smb._tcp.local.", info)
 
         self.assertEqual(record.ipv4, ["192.168.1.217", "169.254.155.207"])
         self.assertEqual(record.ipv6, ["fdbb:5737:6e53:9bf7::5868", "fe80::5868%17"])
@@ -666,7 +721,7 @@ class DiscoveryTests(unittest.TestCase):
             with self.subTest(index=index, address=address), mock.patch("timecapsulesmb.core.net.socket.if_indextoname", side_effect=OSError("numeric scope")):
                 info = types.SimpleNamespace(
                     name="Home._smb._tcp.local.", server="home.local.", port=445, properties={},
-                    interface_index=index, parsed_addresses=lambda _version: [address],
+                    interface_index=index, parsed_scoped_addresses=lambda: [address],
                 )
                 record = resolved_service_from_info("_smb._tcp.local.", info)
                 self.assertEqual(record.ipv6, [expected])
@@ -680,28 +735,24 @@ class DiscoveryTests(unittest.TestCase):
             return None
 
         zc.get_service_info.side_effect = resolve
-        collector = Collector(zc, ["_smb._tcp.local."], start_time=100.0)
-        collector.pending = {("_smb._tcp.local.", f"{name}._smb._tcp.local.") for name in ("First", "Second", "Third")}
-        with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=lambda: clock[0]):
-            collector.resolve_pending(timeout_ms=500, deadline=100.75)
+        collector = Collector(zc, ["_smb._tcp.local."], start_time=100.0, required_families=("ipv4",))
+        queue_instances(collector, {("_smb._tcp.local.", f"{name}._smb._tcp.local.") for name in ("First", "Second", "Third")})
+        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.monotonic", side_effect=lambda: clock[0]):
+            drain_collector_batch(collector, timeout_ms=500, deadline=100.75)
         self.assertEqual([call.args[2] for call in zc.get_service_info.call_args_list], [500, 250])
         self.assertEqual(len(collector.pending), 3)
         self.assertEqual(clock[0], 100.75)
 
     def test_resolved_service_from_info_splits_airport_packed_txt_value(self) -> None:
-        class FakeInfo:
-            name = "AirPort Time Capsule._airport._tcp.local."
-            server = "AirPort-Time-Capsule.local."
-            port = 5009
-            properties = {
+        info = ServiceInfo("_airport._tcp.local.", "AirPort Time Capsule._airport._tcp.local.", server="AirPort-Time-Capsule.local.", port=5009,
+                           properties={
                 b"waMA": (
                     b"00-23-DF-D9-7B-53,raMA=00-21-E9-B9-70-E3,raSt=3,"
                     b"raNA=0,syAP=106,syVs=7.8.1"
                 ),
-            }
-            addresses = [bytes([192, 168, 1, 72])]
+            }, addresses=[bytes([192, 168, 1, 72])])
 
-        record = resolved_service_from_info("_airport._tcp.local.", FakeInfo())
+        record = resolved_service_from_info("_airport._tcp.local.", info)
 
         self.assertEqual(record.properties["waMA"], "00-23-DF-D9-7B-53")
         self.assertEqual(record.properties["raMA"], "00-21-E9-B9-70-E3")
@@ -711,16 +762,12 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(record.properties["syVs"], "7.8.1")
 
     def test_resolved_service_from_info_expands_sys_packed_txt_without_losing_raw_sys(self) -> None:
-        class FakeInfo:
-            name = "Home._adisk._tcp.local."
-            server = "home.local."
-            port = 9
-            properties = {
+        info = ServiceInfo("_adisk._tcp.local.", "Home._adisk._tcp.local.", server="home.local.", port=9,
+                           properties={
                 b"sys": b"waMA=80:EA:96:E6:58:68,adVF=0x1010",
-            }
-            addresses = [bytes([10, 0, 1, 1])]
+            }, addresses=[bytes([10, 0, 1, 1])])
 
-        record = resolved_service_from_info("_adisk._tcp.local.", FakeInfo())
+        record = resolved_service_from_info("_adisk._tcp.local.", info)
 
         self.assertEqual(record.properties["sys"], "waMA=80:EA:96:E6:58:68,adVF=0x1010")
         self.assertEqual(record.properties["waMA"], "80:EA:96:E6:58:68")
@@ -730,20 +777,18 @@ class DiscoveryTests(unittest.TestCase):
         class FakeStateChange:
             Added = object()
             Updated = object()
+            Removed = object()
 
         class FakeQuestionType:
             QM = object()
 
-        class FakeInfo:
-            name = "Home._smb._tcp.local."
-            server = "home.local."
-            properties: dict[bytes, bytes] = {}
-            addresses = [bytes([10, 0, 1, 1])]
+        info = ServiceInfo("_smb._tcp.local.", "Home._smb._tcp.local.", server="home.local.", port=0,
+                           properties={}, addresses=[bytes([10, 0, 1, 1])])
 
         fake_zeroconf_module = mock.Mock(ServiceStateChange=FakeStateChange, DNSQuestionType=FakeQuestionType)
         fake_zc = mock.Mock()
-        fake_zc.get_service_info.return_value = FakeInfo()
-        collector = Collector(fake_zc, ["_smb._tcp.local."])
+        fake_zc.get_service_info.return_value = info
+        collector = Collector(fake_zc, ["_smb._tcp.local."], required_families=("ipv4",))
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
             collector._on_service_state_change(
@@ -754,7 +799,7 @@ class DiscoveryTests(unittest.TestCase):
             )
 
             fake_zc.get_service_info.assert_not_called()
-            collector.resolve_pending()
+            drain_collector_batch(collector)
 
         fake_zc.get_service_info.assert_called_once_with(
             "_smb._tcp.local.",
@@ -775,7 +820,7 @@ class DiscoveryTests(unittest.TestCase):
         fake_browser = mock.Mock()
         fake_zeroconf_module = mock.Mock(ServiceBrowser=fake_browser, DNSQuestionType=FakeQuestionType)
         fake_zc = mock.Mock()
-        collector = Collector(fake_zc, ["_smb._tcp.local."])
+        collector = Collector(fake_zc, ["_smb._tcp.local."], required_families=("ipv4",))
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
             collector.start()
@@ -799,10 +844,10 @@ class DiscoveryTests(unittest.TestCase):
 
         fake_zeroconf_module = mock.Mock(ServiceStateChange=FakeStateChange)
         fake_zc = mock.Mock()
-        collector = Collector(fake_zc, ["_smb._tcp.local."], start_time=10.0)
+        collector = Collector(fake_zc, ["_smb._tcp.local."], start_time=10.0, required_families=("ipv4",))
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[10.25, 10.5]):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.monotonic", side_effect=[10.25, 10.5]):
                 collector._on_service_state_change(
                     zeroconf=fake_zc,
                     service_type="_smb._tcp.local.",
@@ -821,32 +866,28 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([event.elapsed_sec for event in events], [0.25, 0.5])
         self.assertEqual(events[0].name, "Home")
         self.assertEqual(events[0].fullname, "Home._smb._tcp.local.")
-        self.assertEqual(collector.service_instances()[0].name, "Home")
+        self.assertEqual(collector.service_instances(), [])
 
     def test_collector_keeps_failed_pending_records_for_later_retry(self) -> None:
         class FakeQuestionType:
             QM = object()
 
-        class FakeInfo:
-            def __init__(self, name: str, server: str, address: str) -> None:
-                self.name = name
-                self.server = server
-                self.properties: dict[bytes, bytes] = {}
-                self.addresses = [bytes(int(part) for part in address.split("."))]
+        def make_info(name, server, address):
+            return ServiceInfo("_smb._tcp.local.", name, server=server, port=445, parsed_addresses=[address])
 
         fake_zc = mock.Mock()
         fake_zc.get_service_info.side_effect = [
             OSError("transient resolve failure"),
-            FakeInfo("Kitchen._smb._tcp.local.", "kitchen.local.", "10.0.1.99"),
+            make_info("Kitchen._smb._tcp.local.", "kitchen.local.", "10.0.1.99"),
         ]
-        collector = Collector(fake_zc, ["_smb._tcp.local."])
-        collector.pending = {
+        collector = Collector(fake_zc, ["_smb._tcp.local."], required_families=("ipv4",))
+        queue_instances(collector, {
             ("_smb._tcp.local.", "Home._smb._tcp.local."),
             ("_smb._tcp.local.", "Kitchen._smb._tcp.local."),
-        }
+        })
 
         with mock.patch.dict(sys.modules, {"zeroconf": mock.Mock(DNSQuestionType=FakeQuestionType)}):
-            collector.resolve_pending(timeout_ms=500)
+            drain_collector_batch(collector, timeout_ms=500)
 
         self.assertEqual(fake_zc.get_service_info.call_count, 2)
         fake_zc.get_service_info.assert_has_calls([
@@ -857,7 +898,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].name, "Kitchen")
         self.assertEqual(records[0].ipv4, ["10.0.1.99"])
-        self.assertEqual(collector.pending, {("_smb._tcp.local.", "Home._smb._tcp.local.")})
+        self.assertEqual(set(collector.pending), {("_smb._tcp.local.", "Home._smb._tcp.local.")})
         self.assertEqual(collector.resolve_attempt_count, 2)
         self.assertEqual(collector.resolve_success_count, 1)
         self.assertEqual(collector.resolve_error_count, 1)
@@ -866,35 +907,32 @@ class DiscoveryTests(unittest.TestCase):
         class FakeQuestionType:
             QM = object()
 
-        class FakeInfo:
-            name = "Home._smb._tcp.local."
-            server = "home.local."
-            properties: dict[bytes, bytes] = {}
-            addresses = [bytes([10, 0, 1, 1])]
+        info = ServiceInfo("_smb._tcp.local.", "Home._smb._tcp.local.", server="home.local.", port=0,
+                           properties={}, addresses=[bytes([10, 0, 1, 1])])
 
         fake_zc = mock.Mock()
         fake_zc.get_service_info.return_value = None
-        collector = Collector(fake_zc, ["_smb._tcp.local."])
-        collector.pending = {("_smb._tcp.local.", "Home._smb._tcp.local.")}
+        collector = Collector(fake_zc, ["_smb._tcp.local."], required_families=("ipv4",))
+        queue_instances(collector, {("_smb._tcp.local.", "Home._smb._tcp.local.")})
 
         with mock.patch.dict(sys.modules, {"zeroconf": mock.Mock(DNSQuestionType=FakeQuestionType)}):
-            collector.resolve_pending(timeout_ms=500)
+            drain_collector_batch(collector, timeout_ms=500)
 
         self.assertEqual(collector.results(), [])
-        self.assertEqual(collector.pending, {("_smb._tcp.local.", "Home._smb._tcp.local.")})
+        self.assertEqual(set(collector.pending), {("_smb._tcp.local.", "Home._smb._tcp.local.")})
         self.assertEqual(collector.resolve_attempt_count, 1)
         self.assertEqual(collector.resolve_success_count, 0)
         self.assertEqual(collector.resolve_error_count, 0)
 
-        fake_zc.get_service_info.return_value = FakeInfo()
+        fake_zc.get_service_info.return_value = info
         with mock.patch.dict(sys.modules, {"zeroconf": mock.Mock(DNSQuestionType=FakeQuestionType)}):
-            collector.resolve_pending(timeout_ms=500)
+            drain_collector_batch(collector, timeout_ms=500)
 
         records = collector.results()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].name, "Home")
         self.assertEqual(records[0].ipv4, ["10.0.1.1"])
-        self.assertEqual(collector.pending, set())
+        self.assertEqual(set(collector.pending), set())
         self.assertEqual(collector.resolve_attempt_count, 2)
         self.assertEqual(collector.resolve_success_count, 1)
         self.assertEqual(collector.resolve_error_count, 0)
@@ -921,7 +959,7 @@ class DiscoveryTests(unittest.TestCase):
 
         observer = PtrRecordObserver(["_smb._tcp.local."], start_time=20.0)
 
-        with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", return_value=20.75):
+        with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.monotonic", return_value=20.75):
             observer.async_update_records(
                 None,
                 20.75,
@@ -974,20 +1012,20 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_collector_results_preserve_raw_service_records(self) -> None:
         observations = {
-            ("_airport._tcp.local.", "AirPort Time Capsule", "airport.local"): ServiceObservation(
+            ("_airport._tcp.local.", "AirPort Time Capsule", "airport.local"): BonjourResolvedService(
                 name="AirPort Time Capsule",
                 hostname="airport.local",
                 service_type="_airport._tcp.local.",
                 ipv4=["192.168.1.217"],
                 properties={"syAP": "119"},
             ),
-            ("_smb._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local"): ServiceObservation(
+            ("_smb._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local"): BonjourResolvedService(
                 name="Time Capsule Samba 4",
                 hostname="timecapsulesamba4.local",
                 service_type="_smb._tcp.local.",
                 ipv4=["192.168.1.217"],
             ),
-            ("_device-info._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local"): ServiceObservation(
+            ("_device-info._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local"): BonjourResolvedService(
                 name="Time Capsule Samba 4",
                 hostname="timecapsulesamba4.local",
                 service_type="_device-info._tcp.local.",
@@ -996,6 +1034,7 @@ class DiscoveryTests(unittest.TestCase):
             ),
         }
         fake_collector = mock.Mock()
+        fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = [
             BonjourResolvedService(
                 name=observation.name,
@@ -1012,8 +1051,8 @@ class DiscoveryTests(unittest.TestCase):
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+            with mock.patch("timecapsulesmb.discovery.zeroconf_backend.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.zeroconf_backend.time.sleep"):
                     snapshot, _diagnostics = discover_snapshot_detailed(timeout=0)
                     records = snapshot.resolved
 
@@ -1043,15 +1082,15 @@ class DiscoveryTests(unittest.TestCase):
             ],
         )
         output = io.StringIO()
-        diagnostics = BonjourMergedDiscoveryDiagnostics(
-            service=None,
+        diagnostics = BonjourQueryDiagnostics(
+            provider="zeroconf",
             service_types=[],
             timeout_sec=6.0,
             elapsed_sec=0.0,
             instance_count=len(snapshot.instances),
             resolved_count=len(snapshot.resolved),
         )
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", return_value=(snapshot, diagnostics)):
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_detailed", return_value=(snapshot, diagnostics)):
             with redirect_stdout(output):
                 rc = run_cli([])
         text = output.getvalue()
@@ -1062,7 +1101,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("home.local", text)
 
     def test_run_cli_reports_bonjour_dependency_errors_as_system_exit(self) -> None:
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", side_effect=RuntimeError("zeroconf missing")):
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_detailed", side_effect=RuntimeError("zeroconf missing")):
             with self.assertRaises(SystemExit) as cm:
                 run_cli([])
 

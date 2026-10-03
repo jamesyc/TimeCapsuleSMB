@@ -10,7 +10,7 @@
 "add_device.entry.discover" = "Ieškoti";
 "add_device.entry.manual" = "Rankinis adresas";
 "add_device.error.choose_target" = "Pasirinkite rastą įrenginį arba įveskite kompiuterio pavadinimą.";
-"add_device.error.invalid_bonjour_timeout" = "Bonjour skirtasis laikas turi būti neneigiamas skaičius.";
+"add_device.error.invalid_bonjour_timeout" = "Paieškos skirtasis laikas turi būti bent 5 sekundės.";
 "add_device.error.password_required" = "Būtinas įrenginio slaptažodis.";
 "add_device.host_or_ip" = "Kompiuterio vardas arba IP adresas";
 "add_device.password" = "Įrenginio slaptažodis";
@@ -64,7 +64,7 @@
 "app_settings.default_bonjour_timeout" = "Paieškos skirtojo laiko sekundės";
 "app_settings.error.ata_idle" = "ATA neveiklos laikas turi būti neneigiamas sekundžių skaičius.";
 "app_settings.error.ata_standby" = "ATA budėjimo laikas turi būti tuščias arba neneigiamas sekundžių skaičius.";
-"app_settings.error.bonjour_timeout" = "Bonjour skirtasis laikas turi būti neneigiamas skaičius.";
+"app_settings.error.bonjour_timeout" = "Paieškos skirtasis laikas turi būti bent 5 sekundės.";
 "app_settings.error.corrupt" = "Nepavyko nuskaityti programos nustatymų: %@";
 "app_settings.error.mount_wait" = "Prijungimo laukimo laikas turi būti neneigiamas sveikasis skaičius.";
 "app_settings.error.version_url" = "Versijos tikrinimo URL turi būti tuščias arba HTTP/HTTPS URL.";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "ATA neveikla";
 
 "settings.standby" = "ATA budėjimas";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "Paieškos skirtasis laikas turi būti bent 5 sekundės.";
+"discovery.permission_unknown" = "Nepavyko patvirtinti prieigos prie vietinio tinklo. Paieška bus tęsiama.";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "Užklausos tikrinimas nepavyko";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "Trūko vieno ar daugiau operacijos parametrų arba jie buvo netinkami.";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "Peržiūrėkite pažymėtus laukus.";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "Bandykite dar kartą su tinkamomis reikšmėmis.";
+"backend.recovery.discover.local_network_permission_denied.title" = "Vietinio tinklo prieiga užblokuota";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS neleidžia TimeCapsuleSMB pasiekti įrenginių jūsų vietiniame tinkle.";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "Atidarykite sistemos nustatymus ir eikite į Privacy & Security > Local Network.";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "Skiltyje Local Network įjunkite TimeCapsuleSMB.";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "Įjunkite prieigą ir bandykite ieškoti dar kartą.";
+"backend.error.discover.local_network_permission_denied" = "macOS neleidžia TimeCapsuleSMB pasiekti įrenginių jūsų vietiniame tinkle.";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "Nepavyko patvirtinti įrenginio tapatybės. Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
+"discovery.identity_conflict" = "Šį įrenginį atitinka keli išsaugoti įrenginiai. Peržiūrėkite išsaugotus įrenginius ir pašalinkite pasikartojančius įrašus naudodami „Pamiršti“.";
+"discovery.reconnect_existing" = "Iš naujo prijungti išsaugotą įrenginį „%@“";
+"backend.error.device_identity_mismatch" = "Nepavyko patvirtinti įrenginio tapatybės. Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
+"backend.recovery.device_identity_mismatch.title" = "Nepavyko patvirtinti įrenginio tapatybės";
+"backend.recovery.device_identity_mismatch.message" = "Nepavyko patvirtinti įrenginio tapatybės. Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
+"backend.recovery.device_identity_mismatch.action.1" = "Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
+
+"discovery.identity_owned" = "Šis įrenginys jau išsaugotas kaip „%@“. Peržiūrėkite išsaugotus įrenginius ir pašalinkite pasikartojančius įrašus naudodami „Pamiršti“.";
+"discovery.open_saved_device" = "Atidaryti išsaugotą įrenginį „%@“";
+
+"discovery.reconnect_selected" = "Išsaugojus pasirinktas įrenginys bus iš naujo susietas su „%@“, išlaikant išsaugotus nustatymus.";

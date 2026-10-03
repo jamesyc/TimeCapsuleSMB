@@ -8,11 +8,13 @@ from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig, parse_bool
-from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips, same_scoped_ip, is_link_local_ipv6
+from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, same_scoped_ip, is_link_local_ipv6
+from timecapsulesmb.core.net import resolve_host_ips
 from timecapsulesmb.discovery.bonjour import (
+    BonjourQuery,
     BonjourIPFamily,
     BonjourDiscoverySnapshot,
-    BonjourDiscoveryDiagnostics,
+    BonjourQueryDiagnostics,
     BonjourResolvedService,
     BonjourServiceInstance,
     DEFAULT_BROWSE_TIMEOUT_SEC,
@@ -96,9 +98,11 @@ def discover_smb_services_detailed(
     family: BonjourIPFamily | None = None,
     interfaces: list[str] | None = None,
     deadline: float | None = None,
-) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourDiscoveryDiagnostics | None]:
+    query: BonjourQuery | None = None,
+) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourQueryDiagnostics | None]:
     try:
-        snapshot, diagnostics = discover_snapshot_detailed(
+        browse = query.browse if query is not None else discover_snapshot_detailed
+        snapshot, diagnostics = browse(
             None if include_related else SMB_SERVICE,
             timeout=timeout,
             target_ip=target_ip,
@@ -220,9 +224,11 @@ def resolve_smb_instance(
     family: BonjourIPFamily | None = None,
     interfaces: list[str] | None = None,
     missing_message: str | None = None,
+    query: BonjourQuery | None = None,
 ) -> tuple[BonjourResolvedService | None, CheckResult | None]:
     try:
-        record = resolve_service_instance(
+        resolve = query.resolve if query is not None else resolve_service_instance
+        record = resolve(
             instance,
             timeout_ms=timeout_ms,
             target_ip=target_ip,
@@ -230,7 +236,7 @@ def resolve_smb_instance(
             interfaces=interfaces,
         )
     except Exception as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}", {"query_error": True})
     if record is None:
         return None, CheckResult(
             "FAIL",

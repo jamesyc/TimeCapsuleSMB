@@ -14,6 +14,7 @@ enum DeviceRegistryError: Error, Equatable, LocalizedError {
     case corruptRegistry(String)
     case profileNotFound(DeviceProfile.ID)
     case duplicateProfile(field: String, value: String, conflictingProfileID: DeviceProfile.ID)
+    case identityUnverified
     case io(String)
 
     var errorDescription: String? {
@@ -26,8 +27,31 @@ enum DeviceRegistryError: Error, Equatable, LocalizedError {
             return "Saved device \(id) could not be found."
         case .duplicateProfile(let field, let value, let conflictingProfileID):
             return "Another saved device already uses \(field) \(value): \(conflictingProfileID)."
+        case .identityUnverified:
+            return L10n.string("discovery.identity_unverified")
         case .io(let message):
             return message
+        }
+    }
+}
+
+enum DeviceProfileMatch: Equatable {
+    case none
+    case unique(DeviceProfile)
+    case conflict([DeviceProfile.ID])
+
+    var profile: DeviceProfile? {
+        if case .unique(let profile) = self { return profile }
+        return nil
+    }
+
+    static func resolve(_ identity: DeviceNetworkIdentity, in profiles: [DeviceProfile]) -> DeviceProfileMatch {
+        let hardware = identity.airportMAC.map { mac in profiles.filter { $0.network.airportMAC == mac } } ?? []
+        let matches = hardware.isEmpty ? profiles.filter { $0.network.matches(identity) } : hardware
+        switch matches.count {
+        case 0: return .none
+        case 1: return .unique(matches[0])
+        default: return .conflict(matches.map(\.id).sorted())
         }
     }
 }
@@ -91,38 +115,14 @@ final class DeviceRegistryStore: ObservableObject {
         }
     }
 
-    @discardableResult
-    func saveConfiguredDevice(
-        configuredDevice: ConfiguredDeviceState,
-        discoveredDevice: DiscoveredDevice?,
-        passwordState: DevicePasswordState,
-        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased()
-    ) async throws -> DeviceProfile {
-        state = .saving
-        error = nil
-        do {
-            let result = try await repository.saveConfiguredDevice(
-                configuredDevice: configuredDevice,
-                discoveredDevice: discoveredDevice,
-                passwordState: passwordState,
-                preferredID: preferredID
-            )
-            await refreshProfilesFromRepository()
-            return result.profile
-        } catch {
-            fail(error, clearProfiles: false)
-            throw error
-        }
-    }
-
     func makeConfiguredDeviceProfile(
         configuredDevice: ConfiguredDeviceState,
         discoveredDevice: DiscoveredDevice?,
         passwordState: DevicePasswordState,
         preferredID: DeviceProfile.ID = UUID().uuidString.lowercased(),
         existingProfileID: DeviceProfile.ID? = nil
-    ) async -> DeviceProfile {
-        await repository.makeConfiguredDeviceProfile(
+    ) async throws -> DeviceProfile {
+        try await repository.makeConfiguredDeviceProfile(
             configuredDevice: configuredDevice,
             discoveredDevice: discoveredDevice,
             passwordState: passwordState,
@@ -132,11 +132,11 @@ final class DeviceRegistryStore: ObservableObject {
     }
 
     @discardableResult
-    func saveProfileMergingDuplicates(_ profile: DeviceProfile) async throws -> DeviceProfile {
+    func saveProfile(_ profile: DeviceProfile) async throws -> DeviceProfile {
         state = .saving
         error = nil
         do {
-            let result = try await repository.saveProfileMergingDuplicates(profile)
+            let result = try await repository.saveProfile(profile)
             await refreshProfilesFromRepository()
             return result.profile
         } catch {
@@ -190,10 +190,11 @@ final class DeviceRegistryStore: ObservableObject {
     func updateCheckup(
         _ snapshot: DeviceCheckupSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot?,
+        airportMAC: String? = nil,
         for profileID: DeviceProfile.ID
     ) async {
         await applyBackgroundMutation {
-            try await repository.updateCheckup(snapshot, runtimeState: runtimeState, for: profileID)
+            try await repository.updateCheckup(snapshot, runtimeState: runtimeState, airportMAC: airportMAC, for: profileID)
         }
     }
 
@@ -244,20 +245,42 @@ final class DeviceRegistryStore: ObservableObject {
         return profiles.first { $0.id == id }
     }
 
-    func matchingProfile(host: String, bonjourFullname: String?) -> DeviceProfile? {
-        let identity = DeviceNetworkIdentity(configuredSSHTarget: host, bonjourFullname: bonjourFullname)
-        return profiles.first { $0.network.matches(identity) }
+    func matchingProfile(host: String) -> DeviceProfile? {
+        DeviceProfileMatch.resolve(DeviceNetworkIdentity(configuredSSHTarget: host), in: profiles).profile
+    }
+
+    var conflictingProfile: DeviceProfile? {
+        guard case .duplicateProfile(_, _, let id) = error else { return nil }
+        return profile(id: id)
+    }
+
+    var identityErrorMessage: String? {
+        switch error {
+        case .duplicateProfile:
+            if let profile = conflictingProfile {
+                return L10n.format("discovery.identity_owned", profile.title)
+            }
+            return L10n.string("discovery.identity_conflict")
+        case .identityUnverified:
+            return L10n.string("discovery.identity_unverified")
+        default:
+            return nil
+        }
+    }
+
+    func profileMatch(for device: DiscoveredDevice) -> DeviceProfileMatch {
+        DeviceProfileMatch.resolve(device.observedIdentity, in: profiles)
     }
 
     func matchingProfile(for device: DiscoveredDevice) -> DeviceProfile? {
-        let identity = DeviceNetworkIdentity(
-            configuredSSHTarget: device.connectionTarget,
-            hostname: device.hostname,
-            bonjourName: device.name,
-            bonjourFullname: device.fullname,
-            addresses: device.networkAddresses
-        )
-        return profiles.first { $0.network.matches(identity) }
+        profileMatch(for: device).profile
+    }
+
+    func suggestedProfile(for device: DiscoveredDevice) -> DeviceProfile? {
+        guard case .none = profileMatch(for: device) else { return nil }
+        let identity = device.observedIdentity
+        let suggestions = profiles.filter { $0.network.sharesName(with: identity) }
+        return suggestions.count == 1 ? suggestions[0] : nil
     }
 
     private func applyBackgroundMutation(_ mutate: () async throws -> [DeviceProfile]?) async {
@@ -283,7 +306,7 @@ final class DeviceRegistryStore: ObservableObject {
         if let registryError = error as? DeviceRegistryError {
             self.error = registryError
             switch registryError {
-            case .profileNotFound, .duplicateProfile:
+            case .profileNotFound, .duplicateProfile, .identityUnverified:
                 state = profiles.isEmpty ? .empty : .loaded
                 return
             case .applicationSupportUnavailable, .corruptRegistry, .io:
@@ -371,9 +394,14 @@ private actor DeviceRegistryRepository {
         passwordState: DevicePasswordState,
         preferredID: DeviceProfile.ID,
         existingProfileID: DeviceProfile.ID? = nil
-    ) -> DeviceProfile {
+    ) throws -> DeviceProfile {
         let existing = existingProfileID.flatMap { id in profiles.first { $0.id == id } }
-            ?? matchingProfile(configuredHost: configuredDevice.host, discoveredDevice: discoveredDevice)
+        if let existingProfileID, existing == nil { throw DeviceRegistryError.profileNotFound(existingProfileID) }
+        try validateConfirmedIdentity(configuredDevice.airportMAC, for: existing)
+        if let advertised = discoveredDevice?.airportMAC, let confirmed = configuredDevice.airportMAC,
+           advertised != confirmed {
+            throw DeviceRegistryError.identityUnverified
+        }
         var profile = DeviceProfile.make(
             id: preferredID,
             configuredDevice: configuredDevice,
@@ -383,33 +411,20 @@ private actor DeviceRegistryRepository {
             date: now()
         )
         profile.passwordState = passwordState
+        try validateProfileIdentity(profile)
         return profile
     }
 
-    func saveConfiguredDevice(
-        configuredDevice: ConfiguredDeviceState,
-        discoveredDevice: DiscoveredDevice?,
-        passwordState: DevicePasswordState,
-        preferredID: DeviceProfile.ID
-    ) throws -> DeviceRegistryMutationResult {
-        let profile = makeConfiguredDeviceProfile(
-            configuredDevice: configuredDevice,
-            discoveredDevice: discoveredDevice,
-            passwordState: passwordState,
-            preferredID: preferredID,
-            existingProfileID: nil
-        )
-        return try saveProfileMergingDuplicates(profile)
-    }
-
-    func saveProfileMergingDuplicates(_ profile: DeviceProfile) throws -> DeviceRegistryMutationResult {
+    func saveProfile(_ profile: DeviceProfile) throws -> DeviceRegistryMutationResult {
         let storedProfile = profileWithStorageFields(profile)
         try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(
             at: storedProfile.configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        var updated = profiles.filter { !DeviceProfile.matches($0, storedProfile) && $0.id != storedProfile.id }
+        // Profile construction chooses one verified identity. Never delete every weak match.
+        try validateProfileIdentity(storedProfile)
+        var updated = profiles.filter { $0.id != storedProfile.id }
         updated.append(storedProfile)
         updated = sorted(updated)
         try persist(updated)
@@ -432,9 +447,7 @@ private actor DeviceRegistryRepository {
         guard let index = profiles.firstIndex(where: { $0.id == storedProfile.id }) else {
             throw DeviceRegistryError.profileNotFound(profile.id)
         }
-        if let conflict = duplicateConflict(for: storedProfile, excluding: storedProfile.id) {
-            throw conflict
-        }
+        try validateProfileIdentity(storedProfile)
 
         var updated = storedProfile
         updated.updatedAt = now()
@@ -489,12 +502,18 @@ private actor DeviceRegistryRepository {
     func updateCheckup(
         _ snapshot: DeviceCheckupSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot?,
+        airportMAC: String? = nil,
         for profileID: DeviceProfile.ID
     ) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
+        let confirmed = DeviceNetworkIdentity.normalizedAirportMAC(airportMAC)
         var updatedProfiles = profiles
+        if let confirmed { updatedProfiles[index].network.airportMAC = confirmed }
+        // Checkups learn identity through the same actor-owned validation as saves.
+        // Reject the whole mutation before writing snapshots or persistent state.
+        try validateProfileIdentity(updatedProfiles[index])
         if runtimeState != nil {
             // Finish an orphaned attempt too, so reload cannot undo this fresh
             // SSH-backed observation. Dashboard updates are enqueued in order.
@@ -605,76 +624,29 @@ private actor DeviceRegistryRepository {
         return updatedProfiles
     }
 
-    private func matchingProfile(host: String, bonjourFullname: String?) -> DeviceProfile? {
-        let identity = DeviceNetworkIdentity(configuredSSHTarget: host, bonjourFullname: bonjourFullname)
-        return profiles.first { $0.network.matches(identity) }
+    private func validateConfirmedIdentity(_ confirmed: String?, for existing: DeviceProfile?) throws {
+        if let expected = existing?.network.airportMAC, confirmed != expected {
+            throw DeviceRegistryError.identityUnverified
+        }
     }
 
-    private func matchingProfile(configuredHost: String, discoveredDevice: DiscoveredDevice?) -> DeviceProfile? {
-        let identity = DeviceNetworkIdentity.make(configuredSSHTarget: configuredHost, discoveredDevice: discoveredDevice)
-        return profiles.first { $0.network.matches(identity) }
+    private func validateProfileIdentity(_ profile: DeviceProfile) throws {
+        try validateConfirmedIdentity(profile.network.airportMAC, for: profiles.first { $0.id == profile.id })
+        if let conflict = duplicateConflict(for: profile, excluding: profile.id) { throw conflict }
     }
 
     private func duplicateConflict(for profile: DeviceProfile, excluding profileID: DeviceProfile.ID) -> DeviceRegistryError? {
-        if let normalizedFullname = normalizedBonjourFullname(profile.bonjourFullname),
-           let conflicting = profiles.first(where: {
-               $0.id != profileID && normalizedBonjourFullname($0.bonjourFullname) == normalizedFullname
-           }) {
-            return .duplicateProfile(
-                field: "Bonjour fullname",
-                value: normalizedFullname,
-                conflictingProfileID: conflicting.id
-            )
-        }
-
-        let normalizedHost = profile.normalizedHost
-        if !normalizedHost.isEmpty,
-           let conflicting = profiles.first(where: { $0.id != profileID && $0.normalizedHost == normalizedHost }) {
-            return .duplicateProfile(
-                field: "host",
-                value: DeviceEndpointPolicy.hostComponent(profile.host) ?? normalizedHost,
-                conflictingProfileID: conflicting.id
-            )
-        }
-        let normalizedHostname = profile.network.normalizedHostname
-        if !normalizedHostname.isEmpty,
-           let conflicting = profiles.first(where: {
-               $0.id != profileID && $0.network.normalizedHostname == normalizedHostname
-           }) {
-            return .duplicateProfile(
-                field: "hostname",
-                value: normalizedHostname,
-                conflictingProfileID: conflicting.id
-            )
-        }
-        if let conflict = addressConflict(for: profile, excluding: profileID) {
-            return conflict
-        }
-        return nil
-    }
-
-    private func addressConflict(for profile: DeviceProfile, excluding profileID: DeviceProfile.ID) -> DeviceRegistryError? {
-        let keys = profile.network.matchableAddressKeys
-        guard !keys.isEmpty else {
-            return nil
-        }
         for existing in profiles where existing.id != profileID {
-            let overlap = keys.intersection(existing.network.matchableAddressKeys)
-            guard let key = overlap.first else {
-                continue
+            let left = profile.network, right = existing.network
+            if let mac = left.airportMAC, mac == right.airportMAC {
+                return .duplicateProfile(field: "AirPort MAC", value: mac, conflictingProfileID: existing.id)
             }
-            let value = profile.network.addresses.first { $0.identityKey == key }?.value ?? key
-            return .duplicateProfile(field: "address", value: value, conflictingProfileID: existing.id)
+            if !left.normalizedConfiguredHost.isEmpty && left.normalizedConfiguredHost == right.normalizedConfiguredHost {
+                return .duplicateProfile(field: "host", value: left.configuredHost, conflictingProfileID: existing.id)
+            }
+            // Saved observations are informational. Only configured endpoints are reserved.
         }
         return nil
-    }
-
-    private func normalizedBonjourFullname(_ value: String?) -> String? {
-        guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !normalized.isEmpty else {
-            return nil
-        }
-        return normalized
     }
 
     private func persist(_ profiles: [DeviceProfile]) throws {
@@ -721,6 +693,7 @@ private actor DeviceRegistryRepository {
 
     private func profileWithStorageFields(_ profile: DeviceProfile) -> DeviceProfile {
         var updated = profile
+        updated.network.airportMAC = DeviceNetworkIdentity.normalizedAirportMAC(updated.network.airportMAC)
         updated.configPath = DeviceProfile.configURL(for: profile.id, applicationSupportURL: applicationSupportURL).path
         updated.keychainAccount = profile.id
         return updated

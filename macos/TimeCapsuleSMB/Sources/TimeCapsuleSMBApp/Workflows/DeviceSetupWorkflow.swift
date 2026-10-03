@@ -118,14 +118,14 @@ final class DeviceSetupWorkflow: ObservableObject {
                         return
                     }
                     self.localNetworkPreflightTask = nil
-                    self.continueAfterLocalNetworkPreflight(
-                        result,
+                    self.runConfigureBackend(
                         target: target,
                         password: password,
                         settings: settings,
                         existingProfile: existingProfile,
                         configureDraft: configureDraft,
-                        laneKey: laneKey
+                        laneKey: laneKey,
+                        localNetworkPreflight: result
                     )
                 }
             }
@@ -140,26 +140,6 @@ final class DeviceSetupWorkflow: ObservableObject {
             configureDraft: configureDraft,
             laneKey: laneKey,
             localNetworkPreflight: nil
-        )
-    }
-
-    private func continueAfterLocalNetworkPreflight(
-        _ result: LocalNetworkPreflightResult,
-        target: AddDeviceTarget,
-        password: String,
-        settings: DeviceProfileSettings,
-        existingProfile: DeviceProfile?,
-        configureDraft: ConfigureProfileDraft,
-        laneKey: OperationLaneKey
-    ) {
-        runConfigureBackend(
-            target: target,
-            password: password,
-            settings: settings,
-            existingProfile: existingProfile,
-            configureDraft: configureDraft,
-            laneKey: laneKey,
-            localNetworkPreflight: result
         )
     }
 

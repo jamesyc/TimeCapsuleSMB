@@ -113,6 +113,7 @@ class ConfigureFlowResult:
     probe_state: ProbedDeviceState
     compatibility: DeviceCompatibility | None
     identity: ObservedDeviceIdentity
+    airport_mac: str | None = None
 
 
 def configure_ssh_target(
@@ -327,6 +328,10 @@ def run_configure_flow(
         compatibility,
         discovered_airport_syap=request.discovered_airport_syap,
     )
+    airport_mac = probe.airport_mac if probe.ssh_authenticated else None
+    if (request.selected_record is not None and request.selected_record.airport_mac
+            and airport_mac and request.selected_record.airport_mac != airport_mac):
+        raise ConfigureFlowError("The device identity could not be confirmed. Refresh discovery and reconnect the saved device.", code="device_identity_mismatch")
     if identity.syap is not None:
         values["TC_AIRPORT_SYAP"] = identity.syap
 
@@ -355,6 +360,7 @@ def run_configure_flow(
         probe_state=probed_state,
         compatibility=compatibility,
         identity=identity,
+        airport_mac=airport_mac,
     )
 
 

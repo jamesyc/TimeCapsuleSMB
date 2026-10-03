@@ -53,6 +53,18 @@ public struct ContentView: View {
                     AppReadinessBannerView(store: appReadinessStore) {
                         diagnosticsPresented = true
                     }
+                    if let message = deviceRegistry.identityErrorMessage {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(message).foregroundStyle(.red)
+                            if let profile = deviceRegistry.conflictingProfile {
+                                Button(L10n.format("discovery.open_saved_device", profile.title)) {
+                                    appStore.select(profile)
+                                }
+                            }
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     detail
                     Divider()
                     ActivityCompactView(
@@ -89,9 +101,9 @@ public struct ContentView: View {
                     ToolbarIconButton(
                         title: L10n.string("toolbar.cancel"),
                         systemImage: "xmark.circle",
-                        disabled: cancelButtonDisabled
+                        disabled: !appStore.canCancelSelectedOperation
                     ) {
-                        cancelSelectedOperation()
+                        appStore.cancelSelectedOperation()
                     }
                 }
             }
@@ -222,23 +234,6 @@ public struct ContentView: View {
             return true
         }
         return operationCoordinator.isDeviceBusy(profile)
-    }
-
-    private var cancelButtonDisabled: Bool {
-        if let selectedDeviceID = appStore.selectedDeviceID,
-           operationCoordinator.isDeviceBusy(selectedDeviceID) {
-            return !operationCoordinator.canCancel(profileID: selectedDeviceID)
-        }
-        return !operationCoordinator.canCancel
-    }
-
-    private func cancelSelectedOperation() {
-        if let selectedDeviceID = appStore.selectedDeviceID,
-           operationCoordinator.isDeviceBusy(selectedDeviceID) {
-            operationCoordinator.cancel(profileID: selectedDeviceID)
-            return
-        }
-        operationCoordinator.cancel()
     }
 
     private func configureCloseGuard() {

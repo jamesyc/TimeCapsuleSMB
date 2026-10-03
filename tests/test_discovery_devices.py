@@ -70,6 +70,28 @@ class DiscoveryDeviceCandidateTests(unittest.TestCase):
         self.assertIsNone(device.preferred_ipv4)
         self.assertTrue(device.link_local_only)
 
+    def test_distinct_observations_sharing_hostname_keep_stable_ids(self) -> None:
+        first = self.record("First", "_airport._tcp.local.", ["192.0.2.10"], hostname="SHARED.local.")
+        second = self.record("Second", "_airport._tcp.local.", ["192.0.2.20"], hostname="shared.local")
+        first.interface_index, second.interface_index = 14, 15
+        ordinary_ids = {r.name: device_candidates_from_records([r])[0].id for r in (first, second)}
+        devices = device_candidates_from_records([first, second])
+        self.assertEqual(len(devices), 2)
+        self.assertEqual({d.name: d.id for d in devices}, ordinary_ids)
+        self.assertTrue(all(device_candidate_to_jsonable(d)["airport_mac"] is None for d in devices))
+
+    def test_duplicate_announcements_and_empty_hostnames_do_not_create_hostname_collisions(self) -> None:
+        first = self.record("First", "_airport._tcp.local.", ["192.0.2.10"], hostname="shared.local.")
+        duplicate = self.record("First", "_airport._tcp.local.", ["192.0.2.10"], hostname="SHARED.local")
+        devices = device_candidates_from_records([first, duplicate])
+        self.assertEqual(len(devices), 1)
+        self.assertIsNone(devices[0].airport_mac)
+        second = self.record("Second", "_airport._tcp.local.", ["192.0.2.20"])
+        first.hostname = second.hostname = ""
+        devices = device_candidates_from_records([first, second])
+        self.assertEqual(len(devices), 2)
+        self.assertTrue(all(d.airport_mac is None for d in devices))
+
     def test_json_payload_keeps_raw_selected_record_for_configure(self) -> None:
         record = self.record("Office", "_airport._tcp.local.", ["10.0.0.2"], syap="119", model="TimeCapsule8,119")
         device = device_candidates_from_records([record])[0]
@@ -132,3 +154,61 @@ class DiscoveryDeviceCandidateTests(unittest.TestCase):
             properties={"syAP": syap, "model": model},
             fullname=f"{name}.{service_type}",
         )
+
+
+class ApplianceIdentityTests(unittest.TestCase):
+    def record(self, mac, *, scope=14, address="192.0.2.10", port=5009):
+        return BonjourResolvedService("Office", "office.local", "_airport._tcp.local.", port=port,
+            fullname="Office._airport._tcp.local.", interface_index=scope,
+            ipv4=[address], properties={"waMA": mac} if mac is not None else {})
+
+    def test_mac_normalization_and_invalid_values(self):
+        from timecapsulesmb.discovery.models import normalize_airport_mac
+        for value in (None, "", "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "01:11:22:33:44:55", "00:11:22:33:44", "001122334455", "+2:aa:bb:cc:dd:ee"):
+            with self.subTest(value=value):
+                self.assertIsNone(normalize_airport_mac(value))
+        self.assertEqual(normalize_airport_mac(" 02-AA-bb-CC-dd-EE "), "02:aa:bb:cc:dd:ee")
+
+    def test_same_appliance_on_two_interfaces_is_one_row_with_real_selected_record(self):
+        records = [self.record("02:11:22:33:44:55"), self.record("02-11-22-33-44-55", scope=15, address="192.0.2.20")]
+        devices = device_candidates_from_records(records)
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0].addresses, ("192.0.2.10", "192.0.2.20"))
+        self.assertIn(devices[0].selected_record, records)
+        self.assertEqual(devices[0].host, devices[0].selected_record.preferred_connection_host())
+        self.assertEqual(device_candidates_from_records(reversed(records)), devices)
+
+    def test_hardware_id_survives_dhcp_and_peer_appearance(self):
+        original = self.record("02:11:22:33:44:55")
+        moved = self.record("02:11:22:33:44:55", address="192.0.2.30")
+        peer = self.record("02:11:22:33:44:66", address="192.0.2.40")
+        identifier = device_candidates_from_records([original])[0].id
+        self.assertEqual(device_candidates_from_records([moved])[0].id, identifier)
+        self.assertIn(identifier, [d.id for d in device_candidates_from_records([moved, peer])])
+        self.assertEqual(len(device_candidates_from_records([original, peer])), 2)
+
+    def test_unknown_identity_does_not_join_names_across_interfaces(self):
+        first, second = self.record(None), self.record(None, scope=15, address="192.0.2.20")
+        before = device_candidates_from_records([first])[0].id
+        devices = device_candidates_from_records([first, second])
+        self.assertEqual(len(devices), 2)
+        self.assertIn(before, [d.id for d in devices])
+
+    def test_conflicting_service_observations_survive_appliance_grouping(self):
+        from timecapsulesmb.discovery.models import BonjourDiscoverySnapshot, _merge_snapshots
+        records = [self.record("02:11:22:33:44:55", port=p) for p in (5009, 5010)]
+        snapshot = _merge_snapshots([BonjourDiscoverySnapshot([], records)])
+        self.assertEqual(len(snapshot.resolved), 2)
+        self.assertEqual(len(device_candidates_from_records(snapshot.resolved)), 1)
+
+    def test_snapshot_never_overwrites_conflicting_hardware_or_txt(self):
+        from dataclasses import replace
+        from timecapsulesmb.discovery.models import BonjourDiscoverySnapshot, _merge_snapshots
+        first = self.record("02:11:22:33:44:55")
+        other = self.record("02:11:22:33:44:66", address="192.0.2.20")
+        changed = replace(first, properties={**first.properties, "syAP": "116"})
+        conflicted = replace(first, properties={**first.properties, "syAP": "119"})
+        snapshot = _merge_snapshots([BonjourDiscoverySnapshot([], [changed]), BonjourDiscoverySnapshot([], [other, conflicted])])
+        self.assertEqual(len(snapshot.resolved), 3)
+        self.assertEqual({r.properties.get("syAP") for r in snapshot.resolved}, {None, "116", "119"})
+        self.assertTrue(all(len(r.ipv4) == 1 for r in snapshot.resolved))

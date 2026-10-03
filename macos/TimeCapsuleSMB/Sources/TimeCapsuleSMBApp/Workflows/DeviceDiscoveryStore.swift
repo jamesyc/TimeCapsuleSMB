@@ -5,6 +5,7 @@ enum DeviceDiscoveryState: String, CaseIterable, Equatable {
     case idle
     case waitingForReadiness
     case discovering
+    case checkingLocalNetwork
     case empty
     case ready
     case paused
@@ -17,6 +18,8 @@ enum DeviceDiscoveryState: String, CaseIterable, Equatable {
             return L10n.string("discovery_monitor.state.idle")
         case .waitingForReadiness:
             return L10n.string("discovery_monitor.state.waiting_for_readiness")
+        case .checkingLocalNetwork:
+            return L10n.string("add_device.state.checking_local_network")
         case .discovering:
             return L10n.string("discovery_monitor.state.discovering")
         case .empty:
@@ -46,6 +49,7 @@ final class DeviceDiscoveryStore: ObservableObject {
     @Published private(set) var state: DeviceDiscoveryState = .idle
     @Published private(set) var devices: [DiscoveredDevice] = []
     @Published private(set) var error: BackendErrorViewModel?
+    @Published private(set) var warning: String?
     @Published private(set) var currentStage: OperationStageState?
 
     let coordinator: OperationCoordinator
@@ -53,9 +57,13 @@ final class DeviceDiscoveryStore: ObservableObject {
     let registry: DeviceRegistryStore
     private let lane: OperationLane
 
+    private let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
+    private var preflightTask: Task<Void, Never>?
+    private var generation = UUID()
     private var timeout: Double
     private var isMonitoring = false
     private var pendingRefresh = false
+    private var pendingPreflight: [String: JSONValue]?
     private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
@@ -63,11 +71,13 @@ final class DeviceDiscoveryStore: ObservableObject {
         coordinator: OperationCoordinator,
         readinessStore: AppReadinessStore? = nil,
         registry: DeviceRegistryStore,
-        timeout: Double = AppSettings.default.defaultBonjourTimeoutSeconds
+        timeout: Double = AppSettings.default.defaultBonjourTimeoutSeconds,
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil
     ) {
         self.coordinator = coordinator
         self.readinessStore = readinessStore
         self.registry = registry
+        self.localNetworkPreflightChecker = localNetworkPreflightChecker
         self.timeout = timeout
         self.lane = coordinator.appLane
 
@@ -117,6 +127,7 @@ final class DeviceDiscoveryStore: ObservableObject {
     }
 
     func refresh() {
+        if preflightTask != nil { cancel() }
         guard isMonitoring else {
             isMonitoring = true
             return handleReadinessChange()
@@ -147,9 +158,11 @@ final class DeviceDiscoveryStore: ObservableObject {
         guard let device = currentDiscoveredDevice(for: profile),
               let configuredHost = DeviceEndpointPolicy.hostComponent(profile.host),
               let currentHost = DeviceEndpointPolicy.hostComponent(device.connectionTarget),
-              DeviceEndpointPolicy.addressFamily(for: configuredHost) != nil,
+              let configuredFamily = DeviceEndpointPolicy.addressFamily(for: configuredHost),
               DeviceEndpointPolicy.addressFamily(for: currentHost) != nil,
-              DeviceEndpointPolicy.normalizedHostKey(profile.host) != DeviceEndpointPolicy.normalizedHostKey(device.connectionTarget) else {
+              device.networkAddresses.contains(where: { $0.family == configuredFamily && $0.scope == .regular }),
+              DeviceEndpointPolicy.normalizedHostKey(profile.host) != DeviceEndpointPolicy.normalizedHostKey(device.connectionTarget),
+              !device.networkAddresses.contains(where: { DeviceEndpointPolicy.normalizedHostKey($0.value) == DeviceEndpointPolicy.normalizedHostKey(profile.host) }) else {
             return nil
         }
         return StaleEndpointNotice(
@@ -195,7 +208,21 @@ final class DeviceDiscoveryStore: ObservableObject {
         }
     }
 
-    private func runDiscoverWhenPossible() {
+    func cancel() {
+        generation = UUID()
+        preflightTask?.cancel()
+        preflightTask = nil
+        pendingRefresh = false
+        pendingPreflight = nil
+        if operationObserver.activeOperation != nil {
+            coordinator.cancel(laneKey: .app)
+        }
+        operationObserver.clear()
+        currentStage = nil
+        state = .idle
+    }
+
+    private func runDiscoverWhenPossible(preflight: [String: JSONValue]? = nil) {
         if let readinessStore {
             switch readinessStore.state.kind {
             case .ready, .degraded:
@@ -214,18 +241,42 @@ final class DeviceDiscoveryStore: ObservableObject {
         guard !lane.isBusy else {
             if operationObserver.activeOperation == nil {
                 pendingRefresh = true
+                pendingPreflight = preflight
                 state = .paused
             }
             return
         }
 
+        guard timeout.isFinite, timeout >= 5 else {
+            error = BackendErrorViewModel(operation: "discover", code: "discovery_timeout_too_short", message: L10n.string("add_device.error.invalid_bonjour_timeout"))
+            state = .failed
+            return
+        }
+        if preflight == nil, let checker = localNetworkPreflightChecker {
+            guard preflightTask == nil else { return }
+            let token = UUID()
+            generation = token
+            state = .checkingLocalNetwork
+            warning = nil
+            preflightTask = Task { [weak self] in
+                let result = await checker.check()
+                guard let self, !Task.isCancelled, self.generation == token else { return }
+                self.preflightTask = nil
+                if result.status == .unknown {
+                    self.warning = L10n.string("discovery.permission_unknown")
+                }
+                // Readiness/lane state may have changed while the system prompt was pending.
+                self.runDiscoverWhenPossible(preflight: result.telemetryFields)
+            }
+            return
+        }
         lane.clear()
         operationObserver.clear()
         error = nil
         currentStage = nil
         switch coordinator.run(
             operation: "discover",
-            params: OperationParams.Discovery.discover(timeout: timeout),
+            params: OperationParams.Discovery.discover(timeout: timeout).merging(preflight ?? [:]) { _, new in new },
             context: nil,
             activeDeviceID: nil,
             laneKey: .app
@@ -250,7 +301,9 @@ final class DeviceDiscoveryStore: ObservableObject {
             return
         }
         pendingRefresh = false
-        runDiscoverWhenPossible()
+        let preflight = pendingPreflight
+        pendingPreflight = nil
+        runDiscoverWhenPossible(preflight: preflight)
     }
 
     private func process(_ events: [BackendEvent]) {
@@ -296,6 +349,7 @@ final class DeviceDiscoveryStore: ObservableObject {
                 DiscoveredDevice(payload: device, index: index)
             }
             error = nil
+            if !devices.isEmpty { warning = nil }
             operationObserver.finish()
             state = devices.isEmpty ? .empty : .ready
         } catch {

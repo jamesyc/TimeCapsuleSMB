@@ -21,7 +21,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.checks.network import LocalInterfaceNetwork, RouteSelection
+from timecapsulesmb.checks.network import LocalInterfaceNetwork
+from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppEvent, EventSink
@@ -57,7 +58,7 @@ from timecapsulesmb.device.storage import (
     build_dry_run_payload_home,
 )
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
-from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
+from timecapsulesmb.discovery.bonjour import BonjourFamilyDiscoveryAttempt, BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS
 from timecapsulesmb.services.app import AppOperationError, jsonable
@@ -1946,13 +1947,13 @@ class AppApiTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
+            "timecapsulesmb.app.ops.discovery.discover_snapshot_detailed",
             return_value=(snapshot, SimpleNamespace()),
         ):
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
                 with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                     with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
-                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
+                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 6.0}}, collector.sink)
 
         self.assertEqual(rc, 0)
         result = collector.events_of_type("result")[0]
@@ -1970,7 +1971,7 @@ class AppApiTests(unittest.TestCase):
         finished = self._telemetry_client.emit.call_args_list[1].kwargs
         self.assertEqual(started["operation"], "discover")
         self.assertEqual(started["entrypoint"], "api")
-        self.assertEqual(started["options"], {"timeout": 0.1})
+        self.assertEqual(started["options"], {"timeout": 6.0})
         self.assertEqual(finished["result"], "success")
         self.assertEqual(finished["stage"], "bonjour_discovery")
         self.assertEqual(finished["discovery_instance_count"], 1)
@@ -2007,13 +2008,13 @@ class AppApiTests(unittest.TestCase):
         snapshot = BonjourDiscoverySnapshot(instances=[], resolved=raw_records)
 
         with mock.patch(
-            "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
+            "timecapsulesmb.app.ops.discovery.discover_snapshot_detailed",
             return_value=(snapshot, SimpleNamespace()),
         ):
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
                 with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                     with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
-                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
+                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 6.0}}, collector.sink)
 
         self.assertEqual(rc, 0)
         payload = collector.events_of_type("result")[0]["payload"]
@@ -2045,13 +2046,13 @@ class AppApiTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
+            "timecapsulesmb.app.ops.discovery.discover_snapshot_detailed",
             return_value=(snapshot, SimpleNamespace()),
         ):
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
                 with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                     with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
-                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
+                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 6.0}}, collector.sink)
 
         self.assertEqual(rc, 0)
         devices = collector.events_of_type("result")[0]["payload"]["devices"]
@@ -2069,7 +2070,7 @@ class AppApiTests(unittest.TestCase):
         for timeout in ("bad", "nan", -1, True):
             with self.subTest(timeout=timeout):
                 collector = CollectingSink()
-                with mock.patch("timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed") as discover:
+                with mock.patch("timecapsulesmb.app.ops.discovery.discover_snapshot_detailed") as discover:
                     with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
                         with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                             with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
@@ -2080,7 +2081,7 @@ class AppApiTests(unittest.TestCase):
 
                 self.assertEqual(rc, 1)
                 error = self.assert_single_terminal_event(collector, "error")
-                self.assertEqual(error["code"], "validation_failed")
+                self.assertEqual(error["code"], "discovery_timeout_too_short")
                 self.assertEqual(error["recovery"]["title"], "Request validation failed")
                 discover.assert_not_called()
 
@@ -2089,19 +2090,41 @@ class AppApiTests(unittest.TestCase):
         snapshot = BonjourDiscoverySnapshot(instances=[], resolved=[])
 
         with mock.patch(
-            "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
+            "timecapsulesmb.app.ops.discovery.discover_snapshot_detailed",
             return_value=(snapshot, SimpleNamespace()),
         ) as discover:
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
                 with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                     with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
                         rc = service.run_api_request(
-                            {"operation": "discover", "params": {"timeout": "0.25"}},
+                            {"operation": "discover", "params": {"timeout": "5.5"}},
                             collector.sink,
                         )
 
         self.assertEqual(rc, 0)
-        discover.assert_called_once_with(timeout=0.25)
+        discover.assert_called_once_with(timeout=5.5)
+
+    def test_configure_returns_confirmed_hardware_identity_and_rejects_a_different_record(self) -> None:
+        from dataclasses import replace
+        base = probed_state()
+        state = replace(base, probe_result=replace(base.probe_result, airport_mac="02:aa:bb:cc:dd:ee"))
+        for advertised in ("02-AA-BB-CC-DD-EE", "02:aa:bb:cc:dd:ff"):
+            with self.subTest(advertised=advertised), tempfile.TemporaryDirectory() as tmp:
+                collector = CollectingSink()
+                path = Path(tmp) / ".env"
+                params = {"config": str(path), "password": "pw", "selected_record": {
+                    "name": "Office", "hostname": "office.local", "service_type": "_airport._tcp.local.",
+                    "ipv4": ["10.0.0.2"], "properties": {"waMA": advertised},
+                }}
+                with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=state):
+                    rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
+                if advertised == "02:aa:bb:cc:dd:ff":
+                    self.assertEqual(rc, 1)
+                    self.assertFalse(path.exists())
+                    self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "device_identity_mismatch")
+                else:
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(self.assert_single_terminal_event(collector, "result")["payload"]["airport_mac"], "02:aa:bb:cc:dd:ee")
 
     def test_configure_writes_env_without_persisting_or_leaking_password_by_default(self) -> None:
         collector = CollectingSink()
@@ -3284,6 +3307,10 @@ class AppApiTests(unittest.TestCase):
             "fullname": "Time Capsule b67fdb._airport._tcp.local.",
         }
         mac_lan = (LocalInterfaceNetwork("en0", "192.168.1.170", ipaddress.ip_network("192.168.1.0/24")),)
+        lookup_diagnostics = BonjourQueryDiagnostics(
+            "zeroconf", ["_airport._tcp.local."], 3, 3, 0, 0,
+            attempts=[BonjourFamilyDiscoveryAttempt(f, BonjourDiscoverySnapshot([], [])) for f in ("ipv4", "ipv6")],
+        )
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
             params = {"config": str(Path(tmp) / ".env"), "selected_record": record, "password": "pw"}
@@ -3304,7 +3331,7 @@ class AppApiTests(unittest.TestCase):
                         "timecapsulesmb.services.acp_diagnostics.tcp_connect_error",
                         side_effect=lambda address, _port, _timeout: None if address.startswith("169.254.") else "timed out",
                     ), \
-                    mock.patch("timecapsulesmb.services.acp_diagnostics.resolve_service_instance", return_value=None):
+                    mock.patch("timecapsulesmb.discovery.bonjour.BonjourQuery.resolve_detailed", return_value=(None, lookup_diagnostics)):
                 rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)

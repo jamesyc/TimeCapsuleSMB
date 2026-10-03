@@ -2,6 +2,7 @@ import Foundation
 
 struct DiscoveredDevice: Identifiable, Equatable {
     let id: String
+    let airportMAC: String?
     let name: String
     let connectionTarget: String
     let sshHost: String?
@@ -16,6 +17,12 @@ struct DiscoveredDevice: Identifiable, Equatable {
     var addresses: [String] { networkAddresses.map(\.value) }
     var addressSummary: String { DeviceEndpointPolicy.addressSummary(networkAddresses) }
 
+    // Discovery evidence is for matching only; persistence requires SSH confirmation.
+    var observedIdentity: DeviceNetworkIdentity {
+        DeviceNetworkIdentity(configuredSSHTarget: connectionTarget, hostname: hostname,
+            bonjourName: name, bonjourFullname: fullname, addresses: networkAddresses, airportMAC: airportMAC)
+    }
+
     init(
         id: String,
         name: String,
@@ -26,8 +33,10 @@ struct DiscoveredDevice: Identifiable, Equatable {
         syap: String?,
         model: String?,
         supportedModel: Bool? = nil,
-        rawRecord: JSONValue
+        rawRecord: JSONValue,
+        airportMAC: String? = nil
     ) {
+        self.airportMAC = DeviceNetworkIdentity.normalizedAirportMAC(airportMAC)
         self.id = id
         self.name = name
         self.connectionTarget = connectionTarget
@@ -53,6 +62,7 @@ struct DiscoveredDevice: Identifiable, Equatable {
             addresses: addresses
         )
 
+        self.airportMAC = DeviceNetworkIdentity.normalizedAirportMAC(payload.airportMAC ?? Self.recordProperty(payload.selectedRecord, keys: ["waMA"]))
         self.id = payload.id.isEmpty ? "discovered-\(index)" : payload.id
         self.name = payload.name.isEmpty ? (payload.hostname.isEmpty ? "AirPort Device" : payload.hostname) : payload.name
         self.connectionTarget = backendTarget ?? identity.preferredSetupTarget

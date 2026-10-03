@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
@@ -34,6 +35,7 @@ class DiscoveredDeviceCandidate:
     service_type: str
     fullname: str
     selected_record: BonjourResolvedService
+    airport_mac: str | None = None
 
 
 def device_candidates_from_records(
@@ -45,22 +47,26 @@ def device_candidates_from_records(
     source_records = [record for record in materialized if _record_has_service(record, AIRPORT_SERVICE)]
     if not airport_only and not source_records:
         source_records = materialized
-    candidates = [
-        _candidate_from_record(record, index)
-        for index, record in enumerate(source_records)
-    ]
-    by_key: dict[str, DiscoveredDeviceCandidate] = {}
-    for candidate in candidates:
-        key = _dedupe_key(candidate)
-        existing = by_key.get(key)
-        if existing is None or _candidate_score(candidate) > _candidate_score(existing):
-            by_key[key] = candidate
-    return sorted(by_key.values(), key=lambda candidate: (candidate.name.casefold(), candidate.host.casefold(), candidate.id))
+    groups: dict[str, list[DiscoveredDeviceCandidate]] = {}
+    for record in source_records:
+        candidate = _candidate_from_record(record)
+        groups.setdefault(candidate.id, []).append(candidate)
+    devices = []
+    for candidates in groups.values():
+        # Keep configure's target tied to one real observation. Other addresses
+        # describe the appliance but never invent an interface for that record.
+        candidates.sort(key=lambda c: (_normalize(c.host), c.selected_record.interface_index or 0))
+        selected = max(candidates, key=_candidate_score)
+        ipv4 = tuple(dict.fromkeys(ip for c in candidates for ip in c.ipv4))
+        ipv6 = tuple(dict.fromkeys(ip for c in candidates for ip in c.ipv6))
+        devices.append(replace(selected, ipv4=ipv4, ipv6=ipv6, addresses=ipv4 + ipv6))
+    return sorted(devices, key=lambda c: (c.name.casefold(), c.host.casefold(), c.id))
 
 
 def device_candidate_to_jsonable(candidate: DiscoveredDeviceCandidate) -> dict[str, object]:
     return {
         "id": candidate.id,
+        "airport_mac": candidate.airport_mac,
         "name": candidate.name,
         "host": candidate.host,
         "ssh_host": candidate.ssh_host,
@@ -79,7 +85,7 @@ def device_candidate_to_jsonable(candidate: DiscoveredDeviceCandidate) -> dict[s
     }
 
 
-def _candidate_from_record(record: BonjourResolvedService, index: int) -> DiscoveredDeviceCandidate:
+def _candidate_from_record(record: BonjourResolvedService) -> DiscoveredDeviceCandidate:
     preferred_ipv4 = _first_non_link_local_ipv4(record.ipv4)
     ssh_host = discovered_record_root_host(record)
     host = _host_from_ssh_host(ssh_host) or record.hostname or _first_value(record.ipv6) or ""
@@ -88,7 +94,8 @@ def _candidate_from_record(record: BonjourResolvedService, index: int) -> Discov
     syap = _non_empty(record.properties.get("syAP") or record.properties.get("syap"))
     model = _candidate_model(_non_empty(record.properties.get("model") or record.properties.get("am")), syap)
     return DiscoveredDeviceCandidate(
-        id=_candidate_id(record, host=host, index=index),
+        id=_candidate_id(record, host=host),
+        airport_mac=record.airport_mac,
         name=name,
         host=host,
         ssh_host=ssh_host,
@@ -133,30 +140,15 @@ def _candidate_score(candidate: DiscoveredDeviceCandidate) -> tuple[int, int, in
     )
 
 
-def _candidate_id(record: BonjourResolvedService, *, host: str, index: int) -> str:
-    for prefix, value in (
-        ("bonjour", record.fullname),
-        ("hostname", record.hostname),
-        ("host", host),
-        ("name", record.name),
-    ):
-        normalized = _normalize(value)
-        if normalized:
-            return f"{prefix}:{normalized}"
-    return f"discovered:{index}"
-
-
-def _dedupe_key(candidate: DiscoveredDeviceCandidate) -> str:
-    for prefix, value in (
-        ("bonjour", candidate.fullname),
-        ("hostname", candidate.hostname),
-        ("host", candidate.host),
-        ("name", candidate.name),
-    ):
-        normalized = _normalize(value)
-        if normalized:
-            return f"{prefix}:{normalized}"
-    return candidate.id
+def _candidate_id(record: BonjourResolvedService, *, host: str) -> str:
+    if record.airport_mac:
+        return f"airport:{record.airport_mac}"
+    # Without a hardware hint an ID describes this observation, not an appliance.
+    # It must not change just because another similarly named peer appears.
+    key = (_normalize(record.fullname) or _normalize(record.name),
+           _normalize(record.hostname) or _normalize(host), record.service_type,
+           record.interface_index or 0, record.port)
+    return "observation:" + json.dumps(key, separators=(",", ":"), ensure_ascii=False)
 
 
 def _first_non_link_local_ipv4(values: Iterable[str]) -> str | None:

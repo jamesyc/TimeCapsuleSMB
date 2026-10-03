@@ -10,7 +10,7 @@
 "add_device.entry.discover" = "发现";
 "add_device.entry.manual" = "手动地址";
 "add_device.error.choose_target" = "请选择发现的设备或输入主机地址。";
-"add_device.error.invalid_bonjour_timeout" = "Bonjour 超时时间必须是非负数。";
+"add_device.error.invalid_bonjour_timeout" = "发现超时必须至少为 5 秒。";
 "add_device.error.password_required" = "需要设备密码。";
 "add_device.host_or_ip" = "主机名或 IP 地址";
 "add_device.password" = "设备密码";
@@ -64,7 +64,7 @@
 "app_settings.default_bonjour_timeout" = "发现超时（秒）";
 "app_settings.error.ata_idle" = "ATA 空闲时间必须为非负秒数。";
 "app_settings.error.ata_standby" = "ATA 待机时间必须留空或为非负秒数。";
-"app_settings.error.bonjour_timeout" = "Bonjour 超时时间必须是非负数。";
+"app_settings.error.bonjour_timeout" = "发现超时必须至少为 5 秒。";
 "app_settings.error.corrupt" = "无法读取应用设置：%@";
 "app_settings.error.mount_wait" = "挂载等待时间必须是非负整数。";
 "app_settings.error.version_url" = "版本检查 URL 必须留空，或为 HTTP/HTTPS URL。";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "ATA 空闲";
 
 "settings.standby" = "ATA 待机";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "发现超时必须至少为 5 秒。";
+"discovery.permission_unknown" = "无法确认本地网络访问权限。发现将继续。";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "请求验证失败";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "缺少一个或多个操作参数，或参数无效。";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "检查突出显示的字段。";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "使用有效值重试。";
+"backend.recovery.discover.local_network_permission_denied.title" = "本地网络访问被阻止";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS 正在阻止 TimeCapsuleSMB 访问本地网络上的设备。";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "打开“系统设置”>“隐私与安全性”>“本地网络”。";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "在“本地网络”中启用 TimeCapsuleSMB。";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "启用访问权限，然后重新发现设备。";
+"backend.error.discover.local_network_permission_denied" = "macOS 正在阻止 TimeCapsuleSMB 访问本地网络上的设备。";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "无法确认设备身份。请刷新搜索并重新连接已保存的设备。";
+"discovery.identity_conflict" = "多个已保存的设备与此设备匹配。请检查已保存的设备，并使用“忘记”移除重复条目。";
+"discovery.reconnect_existing" = "重新连接已保存的设备“%@”";
+"backend.error.device_identity_mismatch" = "无法确认设备身份。请刷新搜索并重新连接已保存的设备。";
+"backend.recovery.device_identity_mismatch.title" = "无法确认设备身份";
+"backend.recovery.device_identity_mismatch.message" = "无法确认设备身份。请刷新搜索并重新连接已保存的设备。";
+"backend.recovery.device_identity_mismatch.action.1" = "请刷新搜索并重新连接已保存的设备。";
+
+"discovery.identity_owned" = "此设备已保存为“%@”。请检查已保存的设备，并使用“忘记”移除重复条目。";
+"discovery.open_saved_device" = "打开已保存的设备“%@”";
+
+"discovery.reconnect_selected" = "保存后，所选设备将重新连接到“%@”，并保留其已保存的设置。";

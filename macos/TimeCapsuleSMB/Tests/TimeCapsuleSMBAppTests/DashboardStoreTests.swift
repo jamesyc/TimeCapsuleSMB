@@ -12,7 +12,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testPrimaryActionDerivesFromPasswordAndRuntimeState() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -39,7 +39,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testDashboardSummaryChecksAvailabilityWithoutReadingPasswordSecret() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -58,7 +58,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testLaunchPasswordStateRefreshDoesNotReadPasswordSecrets() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -85,7 +85,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -129,7 +129,7 @@ final class DashboardStoreTests: XCTestCase {
             ).decode(DiscoveredDevicePayload.self),
             index: 0
         )
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: discovered,
             passwordState: .available,
@@ -154,7 +154,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -182,7 +182,7 @@ final class DashboardStoreTests: XCTestCase {
             ])
         ])
         defer { fixture.runner.finishAll() }
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -240,7 +240,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -271,7 +271,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -304,7 +304,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testProfileEditorPasswordSaveUpdatesPasswordStateAndClearsDraft() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -325,7 +325,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testProfileEditorPasswordSaveFailureKeepsDraft() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -345,13 +345,13 @@ final class DashboardStoreTests: XCTestCase {
 
     func testDashboardSessionsAreIsolatedByProfile() async throws {
         let fixture = try await makeFixture(responses: [])
-        let first = try await fixture.registry.saveConfiguredDevice(
+        let first = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try await fixture.registry.saveConfiguredDevice(
+        let second = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -376,7 +376,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testSessionDefaultsComeFromProfileSettingsAndDoNotResetOnSnapshotUpdates() async throws {
         let fixture = try await makeFixture(responses: [])
-        var profile = try await fixture.registry.saveConfiguredDevice(
+        var profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -427,7 +427,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testProfileEditorSaveAppliesSettingsBackToSessionDefaults() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -468,7 +468,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testDeletingProfilePrunesInactiveSession() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -493,7 +493,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ], pauseBeforeEvents: true)
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -528,13 +528,13 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ])
         ])
-        let first = try await fixture.registry.saveConfiguredDevice(
+        let first = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try await fixture.registry.saveConfiguredDevice(
+        let second = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -572,7 +572,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
             ], pauseBeforeEvents: true)
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -652,7 +652,7 @@ final class DashboardStoreTests: XCTestCase {
                 )
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -701,7 +701,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -755,7 +755,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -784,7 +784,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
             ], pauseBeforeEvents: true)
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -829,7 +829,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ], pauseBeforeEvents: true)
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -867,13 +867,13 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ], pauseBeforeEvents: true)
         ])
-        let first = try await fixture.registry.saveConfiguredDevice(
+        let first = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try await fixture.registry.saveConfiguredDevice(
+        let second = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -912,7 +912,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -939,13 +939,13 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
             ], pauseBeforeEvents: true)
         ])
-        let first = try await fixture.registry.saveConfiguredDevice(
+        let first = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try await fixture.registry.saveConfiguredDevice(
+        let second = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -973,7 +973,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testPasswordLookupFailureMarksProfileMissing() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .unknown,
@@ -997,7 +997,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "error", operation: "doctor", code: "auth_failed", message: "Password rejected.")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -1019,7 +1019,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testRecoveryActionsRouteToMaintenanceAndPasswordWorkflows() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -1079,7 +1079,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -1120,7 +1120,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -1144,7 +1144,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testNonActionableRecoveryKindsReturnFalse() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -1177,7 +1177,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -1217,7 +1217,7 @@ final class DashboardStoreTests: XCTestCase {
 
     func testForgetProfileDeletesRegistryConfigDirectoryAndPassword() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,

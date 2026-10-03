@@ -49,7 +49,7 @@ enum AddDeviceTarget: Equatable {
         case .discovered(let device):
             return registry.matchingProfile(for: device)
         case .manual:
-            return registry.matchingProfile(host: targetHost, bonjourFullname: nil)
+            return registry.matchingProfile(host: targetHost)
         }
     }
 

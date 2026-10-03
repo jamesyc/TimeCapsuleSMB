@@ -61,7 +61,8 @@ final class AppStore: ObservableObject {
         self.deviceDiscovery = deviceDiscovery ?? DeviceDiscoveryStore(
             coordinator: operationCoordinator,
             readinessStore: appReadinessStore,
-            registry: deviceRegistry
+            registry: deviceRegistry,
+            localNetworkPreflightChecker: localNetworkPreflightChecker
         )
         self.reachabilityStore = reachabilityStore ?? DeviceReachabilityStore(coordinator: operationCoordinator)
         self.sshAccessStore = sshAccessStore ?? DeviceSSHAccessStore(coordinator: operationCoordinator)
@@ -101,6 +102,23 @@ final class AppStore: ObservableObject {
 
     var backend: BackendClient {
         operationCoordinator.appLane.backend
+    }
+
+    var canCancelSelectedOperation: Bool {
+        if let selectedDeviceID, operationCoordinator.isDeviceBusy(selectedDeviceID) {
+            return operationCoordinator.canCancel(profileID: selectedDeviceID)
+        }
+        return deviceDiscovery.state == .checkingLocalNetwork || operationCoordinator.canCancel
+    }
+
+    func cancelSelectedOperation() {
+        if let selectedDeviceID, operationCoordinator.isDeviceBusy(selectedDeviceID) {
+            operationCoordinator.cancel(profileID: selectedDeviceID)
+        } else if deviceDiscovery.state == .checkingLocalNetwork {
+            deviceDiscovery.cancel()
+        } else {
+            operationCoordinator.cancel()
+        }
     }
 
     func start() async {

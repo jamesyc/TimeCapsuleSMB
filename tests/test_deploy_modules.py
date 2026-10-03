@@ -349,16 +349,32 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIsNone(result.syap)
         self.assertIn("not parseable", result.detail)
 
-    def test_probe_remote_airport_identity_reads_acp_identity_on_device(self) -> None:
-        proc = mock.Mock(stdout="syAP=0x00000071\nsyAM=TimeCapsule6,113\n", returncode=0)
+    def test_probe_remote_airport_identity_reads_optional_mac_in_one_session(self) -> None:
+        import shlex
+        from timecapsulesmb.device import probe
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = probe_remote_airport_identity_conn(connection)
-        self.assertEqual(result.model, "TimeCapsule6,113")
-        self.assertEqual(result.syap, "113")
-        command = run_ssh_mock.call_args.args[1]
-        self.assertIn("/usr/bin/acp syAP syAM", command)
-        self.assertNotIn("ACPData.bin", command)
+        with tempfile.TemporaryDirectory() as tmp:
+            acp = Path(tmp) / "acp"
+            for status, expected in ((0, "02:aa:bb:cc:dd:ee"), (1, None)):
+                with self.subTest(mac_status=status):
+                    # Execute the real remote shell with a stand-in ACP that accepts
+                    # only read-only queries. Failed waMA output must not be trusted.
+                    acp.write_text("#!/bin/sh\ncase \"$1:$2\" in\n"
+                        "-q:syAP) echo 0x00000071;;\n"
+                        "-q:syAM) echo TimeCapsule6,113;;\n"
+                        f"-q:waMA) echo 02-AA-BB-CC-DD-EE; exit {status};;\n"
+                        "*) exit 99;;\nesac\n")
+                    acp.chmod(0o755)
+                    def execute(_connection, command, **kwargs):
+                        return subprocess.run(shlex.split(command), capture_output=True, text=True, **kwargs)
+                    with mock.patch.object(probe, "DEVICE_ACP_PATH", str(acp)), mock.patch.object(
+                        probe, "run_ssh", side_effect=execute
+                    ) as ssh:
+                        result = probe_remote_airport_identity_conn(connection)
+                    self.assertEqual(result.model, "TimeCapsule6,113")
+                    self.assertEqual(result.syap, "113")
+                    self.assertEqual(result.airport_mac, expected)
+                    self.assertEqual(ssh.call_count, 1)
 
     def test_runtime_naming_identity_derives_effective_names(self) -> None:
         result = derive_runtime_naming_identity("A.B.'s AirPort Time Capsule", "Time Capsule.local")

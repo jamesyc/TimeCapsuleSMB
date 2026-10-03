@@ -228,3 +228,216 @@ Validation on this Mac:
   `/tmp/tc-swift-completion-live-4.log`. Reproduction harness is retained locally
   under ignored `plan/swift-operation-completion/`; it is not part of CI.
 - Both device locks were released after validation. `git diff --check` passed.
+
+## 2026-10-03 — Bonjour discovery and verified device identity
+
+### Behavior
+
+- Host callers use `BonjourQuery` or the single `discover_snapshot_detailed`
+  convenience function. Installed `dns-sd` selects native discovery; otherwise
+  separate zeroconf IPv4 and IPv6 transports are merged. Provider selection stays
+  fixed after empty results, errors, permission denial and cancellation. GUI
+  discovery requests `_airport`; CLI and unfiltered API discovery retain all
+  five service types. Public timeouts are finite and at least five seconds;
+  older shorter saved values load as six seconds.
+- Native discovery uses four workers, bounded streamed output, scoped generations,
+  withdrawal handling and owned child cleanup. Resolution shares one three-second
+  grace. Within a scan, silence/errors preserve earlier address evidence, while
+  fresh family answers replace it and explicit withdrawals/negative replies
+  remove it. Both Apple's `No Such Record` output and numeric errors are covered.
+  This practical finite-scan policy adds no persistent DNS cache.
+- Doctor browses once and scopes evidence to the configured endpoint's observed
+  interface. Address-family filtering applies only to SMB endpoint selection;
+  the full scoped snapshot remains available for ADisk, AFP, device-info,
+  duplicate and conflicting-observation checks. A related service's incomplete
+  address lookup cannot manufacture a missing advertisement or hide bad TXT.
+  Supplemental hostname resolution remains available. Missing families can be
+  informational; concrete identity errors remain failures.
+- Diagnostics derive counts/errors from provider evidence and serialize attempts
+  once. Direct and nested service summaries retain optional interface indexes,
+  use the same bounded serializer and do not add hardware MACs to telemetry.
+- Candidates group by optional normalized Apple `waMA`; observations without a
+  usable MAC retain deterministic scoped IDs. One real selected record supplies
+  the connection target. Authenticated SSH probes read syAP, syAM and optional
+  waMA using read-only ACP queries. Failed/malformed MAC output does not discard
+  usable model information. Configure rejects contradictory advertised and
+  authenticated identities before committing configuration.
+- Saved profile UUIDs stay independent of discovery IDs. The registry actor
+  validates construction, save, update and checkup; final-save validation also
+  protects against intervening mutations. Conflicting saves/checkups preserve
+  existing profiles. Names offer explicit reconnect only when exactly one current
+  candidate matches the suggested saved profile, including legacy profiles
+  without a MAC. AirPort Utility's internal matching algorithm is not established;
+  this policy uses Apple's identity fields and authenticated confirmation.
+- Fixture setup calls production construction/save primitives with explicit
+  existing-profile selection. The unused automatic-merging save method is removed.
+  Concurrent saves reject duplicate endpoint/hardware ownership; production
+  persistence coverage verifies the winning credentials/config survive rejection.
+- Permission preflight distinguishes actual results, structured policy denial and
+  inconclusive probes. Cancellation tears down callbacks once; late completion
+  cannot restart cancelled work. Lane/readiness changes are checked before helper
+  launch. All ten catalogs retain localized reconnect and recovery copy.
+- Existing deterministic packaging order and manager-test child-start
+  synchronization fixes are retained. macOS CI installs Python dependencies for
+  the Swift/helper integration tests. No native build inputs, binaries, manifest,
+  environment files or runtime state files are changed by this follow-up.
+
+### Follow-up regression verification
+
+The new doctor and ambiguous-reconnect regressions failed before the production
+fixes (`/tmp/tc-implementation-reconnect-before.log` records the Swift reproduction).
+Doctor cases cover both partial ADisk address families, reversed record order,
+missing services, invalid TXT and wrong targets. Reconnect cases cover both name
+fields, both peer orders and refresh removing the competitor. Existing provider,
+scoping, cancellation, rollback, localization and packaging regressions are retained.
+
+- `make test-parallel`: host native compile checks and all 3,203 Python tests
+  passed in 173.38 seconds. Log: `/tmp/tc-implementation-python-full.log`.
+  Python 3.14 emitted 44 existing `forkpty()` deprecation warnings.
+- `swift test --package-path macos/TimeCapsuleSMB`: all 656 tests passed,
+  including the new reconnect and production persistence conflict regressions.
+  Log: `/tmp/tc-implementation-swift-final.log`.
+- Focused Python checks passed 867 tests and 247 subtests:
+  `/tmp/tc-implementation-python-focused-final.log`. The final CLI diagnostics
+  annotation cleanup passed 119 CLI tests and 19 subtests:
+  `/tmp/tc-implementation-cli-final.log`.
+- Provider-to-Swift fixture freshness, Ruff and `git diff --check` passed.
+- Native release packaging with `--full-validation` passed dependency/signature
+  validation and bundled helper smoke checks. Log:
+  `/tmp/tc-implementation-package.log`; app:
+  `/tmp/tc-implementation-package/TimeCapsuleSMB.app`.
+- Live discovery returned six resolved services, all dual-stack:
+  `/tmp/tc-implementation-live-discovery.json`. Read-only doctor `--skip-smb`
+  passed on NetBSD 6 and NetBSD 4:
+  `/tmp/tc-implementation-live-doctor6.log` and
+  `/tmp/tc-implementation-live-doctor4.log`.
+- Both LAN rows were claimed and re-read before the live checks, then released.
+  No locks are held. No deploy/reboot or VM builds were performed. Work remains
+  uncommitted.
+
+### Earlier evidence and remaining limits
+
+- Previous full checks: 3,201 Python tests and 654 Swift tests passed in
+  `/tmp/tc-fixes-full-python-final.log` and `/tmp/tc-fixes-swift.log`.
+  Previous live discovery and both device doctors passed in
+  `/tmp/tc-fixes-live-discovery.json`, `/tmp/tc-fixes-live-doctor6.log` and
+  `/tmp/tc-fixes-live-doctor4.log`.
+- Earlier release packaging passed `--full-validation`:
+  `/tmp/tc-review-fixes-package.log` and
+  `/tmp/tc-review-fixes-package/TimeCapsuleSMB.app`.
+- Earlier Mac sanitizer/deploy tests passed 906 cases:
+  `/tmp/tc-bonjour-three-mac-sanitizers.log`. Ubuntu 24.04 ARM passed 906
+  sanitizer/deploy tests, 14 artifact checks and 2,226 remaining Python tests
+  with three environment skips: `/tmp/tc-bonjour-ubuntu-arm-native.log` and
+  `/tmp/tc-bonjour-ubuntu-complete.log`. Git 2.49 supplied `rebase --empty=stop`.
+  Ubuntu x86 under Rosetta did not have a clean pass because of descriptor and
+  build-wrapper timeout limitations: `/tmp/tc-bonjour-ubuntu-ci.log` and
+  `/tmp/tc-bonjour-ubuntu-amd-final.log`.
+- Packaged permission allowed/denied flows were manually checked earlier. The
+  first undecided privacy prompt still needs a fresh account/VM; no privacy
+  settings were reset. Ubuntu checks are earlier evidence, not this follow-up's
+  verification.
+
+## 2026-10-03 — Bounded family completion and discovery simplification
+
+- Zeroconf transport selection and requested address types are independent.
+  Browse and targeted resolution explicitly query missing A/AAAA records using
+  the dependency's family resolvers; a cached single-family ServiceInfo no longer
+  ends dual-stack completion. Both transports share absolute deadlines. Browse
+  admission closes before the existing three-second grace; targeted resolution
+  keeps its original total budget. Partial answers survive silence and errors.
+- Pending names rotate in insertion order behind fresh work. Source generations
+  reject withdrawn/replaced services and old SRV targets. Cancellation closes both
+  transports, and late link-local answers retain their observed interface scope.
+  Each transport can use the shared grace independently; no cross-transport
+  coordination or persistent cache is added merely to save that bounded wait.
+- The zeroconf minimum is 0.148.0 in both dependency files. Supported ServiceInfo
+  address parsing replaces the compatibility ladder. UDP route selection is
+  shared from core.net. Doctor's name/IP selection paths use one validation block,
+  retaining every service, identity, ADisk, AFP and conflicting-evidence check.
+- Providers construct one neutral diagnostics envelope directly. The obsolete
+  merged envelope, provider introspection, duplicate command summaries, unused
+  collector/profile helpers, NSS alias and setup preflight forwarder are removed.
+  CLI failure telemetry excludes the confirmed appliance MAC at the shared
+  diagnostic boundary; the local configure/doctor identity payload is preserved.
+- Fixture generation still exercises both wire decoders and asserts their
+  equivalence, then writes each reviewed payload once. Swift keeps all twelve
+  distinct scenarios and the save/reload/edit coverage. Relative to the reviewed
+  dirty tree, production source shrank by 272 lines and the fixture by 1,433 lines.
+
+Verification:
+
+- New completion regressions failed before the fix, covering delayed IPv4/IPv6,
+  bounded partial results and targeted resolution. A real zeroconf cache and
+  response-delivery test verifies that the missing-family DNS query is sent.
+  Added checks cover fair admission, cancellation, stale generations, scope,
+  inconclusive retries and both doctor selection paths in both record orders.
+- `make test-parallel`: host native compile checks and all 3,252 Python tests
+  passed in 172.90 seconds (`/tmp/tc-ponytail-full-final.log`). Python 3.14 emitted
+  the 44 existing forkpty deprecation warnings. Final obsolete-type/helper removal
+  also passed 177 focused tests and 22 subtests (`/tmp/tc-ponytail-orphans.log`).
+- `swift test --package-path macos/TimeCapsuleSMB`: all 656 tests passed
+  (`/tmp/tc-ponytail-swift-final.log`).
+- Python 3.9.6 with zeroconf 0.148.0: 286 focused discovery, doctor, CLI and
+  diagnostics tests passed (`/tmp/tc-ponytail-py39-verified.log`).
+- Ruff, fixture freshness and `git diff --check` passed. Native release packaging
+  uses `--full-validation`; output is `/tmp/tc-ponytail-package/TimeCapsuleSMB.app`
+  and the final log is `/tmp/tc-ponytail-package-verified.log`.
+- Live discovery returned six resolved, dual-stack services
+  (`/tmp/tc-ponytail-live-discovery.json`). Read-only doctor `--skip-smb` passed on
+  NetBSD 6 and NetBSD 4 (`/tmp/tc-ponytail-live-doctor6.log` and
+  `/tmp/tc-ponytail-live-doctor4.log`). Both LAN rows were claimed and re-read,
+  then released. No deploy/reboot, native payload changes or VM builds occurred.
+  No locks are held. Changes remain uncommitted.
+
+## 2026-10-03 — Remove unused Bonjour bookkeeping
+
+- Removed the unused `BonjourQuery._name` assignments and the native provider's
+  unconsumed resolve-attempt counter. Provider selection and emitted diagnostics
+  remain unchanged; the zeroconf counter is still used and retained.
+- The first full run exposed a manager-test startup race: the NBNS audit checked
+  Samba's start count after waiting only for discovery. The audit and two sibling
+  tests now establish both child starts before checking that supervision preserves
+  them. Assertions and runtime code are unchanged.
+- An injected 12-second delay in the fake Samba child's startup log reproduced
+  the original assertion failure. That delay also exceeded the existing 15-second
+  total startup wait in one corrected case under load. With an eight-second
+  injected delay, all four affected cases passed in 57.81 seconds; no test timeout
+  was increased. Logs: `/tmp/tc-bonjour-cleanup-race-before.log` and
+  `/tmp/tc-bonjour-cleanup-race-after.log`.
+- Final `make test-parallel`: native host compile checks and all 3,252 Python tests
+  passed in 188.31 seconds, with 44 Python 3.14 forkpty deprecation warnings.
+  Log: `/tmp/tc-bonjour-cleanup-tests-final.log`. The initial failure is retained in
+  `/tmp/tc-bonjour-cleanup-tests.log`.
+- `swift test --package-path macos/TimeCapsuleSMB`: all 656 tests passed.
+  Log: `/tmp/tc-bonjour-cleanup-swift.log`. Ruff and `git diff --check` passed.
+- No VM or device access, deployment, or binary changes. No locks held; changes
+  remain uncommitted.
+
+## 2026-10-03 — macOS Bonjour CI failures
+
+- CI run `37113981609` failed only in the macOS Python 3.9 and 3.12 Bonjour
+  integration tests (11 and three failures respectively). Ubuntu, macOS Python
+  3.14, Swift, native sanitizers, Samba regressions and packaging passed.
+- Reproduced the missing IPv6 answer on local Python 3.9.6. The native fixture
+  passed `time.monotonic()` epochs between processes, but that Python/macOS
+  combination gives each process a separate clock origin. Both sides now use
+  `clock_gettime(CLOCK_MONOTONIC)`. A regression with an offset parent clock
+  failed before the fix and passes afterward.
+- Remove/re-add ordering now uses a signal and observed browse events instead
+  of short sleeps. The partial-answer retry test uses the existing two-second
+  fixture browse window and covers delayed process launch, avoiding a 100 ms
+  admission window shorter than CI process startup.
+- Broader verification exposed duplicate link-local IPv6 addresses spelled with
+  an interface number and its equivalent name. Snapshot merging now reuses
+  `same_scoped_ip`; regressions verify equivalent scopes merge and distinct scopes
+  remain separate. The equivalent-scope case failed before the fix.
+- Python 3.9.6: all 2,351 tests in the CI non-native phase passed in 240.39 seconds
+  (`/tmp/tc-ci-py39-full.log`). The 113 focused provider/completion tests also
+  passed (`/tmp/tc-ci-py39-focused.log`).
+- Python 3.14: `make test-parallel` passed native compile checks and all 3,257
+  tests in 228.91 seconds, with 44 forkpty deprecation warnings
+  (`/tmp/tc-ci-local-full.log`). All 656 Swift tests passed
+  (`/tmp/tc-ci-swift.log`). Ruff and `git diff --check` passed.
+- No VM/device access or binary changes; no locks held. Remote CI validation of
+  this patch is pending.

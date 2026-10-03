@@ -19,7 +19,7 @@ from timecapsulesmb.core.config import DEFAULTS, ENV_PATH, render_env_text
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
-    BonjourMergedDiscoveryDiagnostics,
+    BonjourQueryDiagnostics,
     BonjourResolvedService,
 )
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
@@ -193,23 +193,23 @@ class CliConfigureTests(CliTestCase):
                 mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=dict(existing_values or {}))
             )
             if discovery_side_effect is not None:
-                mocks.discover_snapshot_merged_detailed = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.configure.discover_snapshot_merged_detailed", side_effect=discovery_side_effect)
+                mocks.discover_snapshot_detailed = stack.enter_context(
+                    mock.patch("timecapsulesmb.cli.configure.discover_snapshot_detailed", side_effect=discovery_side_effect)
                 )
             else:
                 discovery_records = list(discovered_records or [])
                 discovery_snapshot = BonjourDiscoverySnapshot(instances=[], resolved=discovery_records)
-                discovery_diagnostics = BonjourMergedDiscoveryDiagnostics(
-                    service="_airport",
+                discovery_diagnostics = BonjourQueryDiagnostics(
+                    provider="zeroconf",
                     service_types=["_airport._tcp.local."],
                     timeout_sec=6.0,
                     elapsed_sec=0.0,
                     instance_count=0,
                     resolved_count=len(discovery_records),
                 )
-                mocks.discover_snapshot_merged_detailed = stack.enter_context(
+                mocks.discover_snapshot_detailed = stack.enter_context(
                     mock.patch(
-                        "timecapsulesmb.cli.configure.discover_snapshot_merged_detailed",
+                        "timecapsulesmb.cli.configure.discover_snapshot_detailed",
                         return_value=(discovery_snapshot, discovery_diagnostics),
                     )
                 )
@@ -609,7 +609,7 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(result.values["TC_PASSWORD"], "pw")
-        result.mocks.discover_snapshot_merged_detailed.assert_not_called()
+        result.mocks.discover_snapshot_detailed.assert_not_called()
 
     def test_configure_no_input_requires_password_before_probe_or_write(self) -> None:
         result = self.run_configure_cli(
@@ -849,15 +849,15 @@ class CliConfigureTests(CliTestCase):
             env_path.write_text("TC_HOST=root@10.0.0.2\n")
             with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={"TC_HOST": "root@10.0.0.2"}):
                 empty_snapshot = BonjourDiscoverySnapshot(instances=[], resolved=[])
-                empty_diagnostics = BonjourMergedDiscoveryDiagnostics(
-                    service="_airport",
+                empty_diagnostics = BonjourQueryDiagnostics(
+                    provider="zeroconf",
                     service_types=["_airport._tcp.local."],
                     timeout_sec=6.0,
                     elapsed_sec=0.0,
                     instance_count=0,
                     resolved_count=0,
                 )
-                with mock.patch("timecapsulesmb.cli.configure.discover_snapshot_merged_detailed", return_value=(empty_snapshot, empty_diagnostics)):
+                with mock.patch("timecapsulesmb.cli.configure.discover_snapshot_detailed", return_value=(empty_snapshot, empty_diagnostics)):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=KeyboardInterrupt):
                         with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_config"):
                             with self.assertRaises(KeyboardInterrupt):
@@ -934,7 +934,7 @@ class CliConfigureTests(CliTestCase):
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
                 with mock.patch(
-                    "timecapsulesmb.cli.configure.discover_snapshot_merged_detailed",
+                    "timecapsulesmb.cli.configure.discover_snapshot_detailed",
                     side_effect=KeyboardInterrupt,
                 ):
                     with self.assertRaises(KeyboardInterrupt):

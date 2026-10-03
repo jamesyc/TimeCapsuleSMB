@@ -720,7 +720,9 @@ def test_discovery_receives_exact_applied_names_devices_and_uuids_as_argv(manage
 def test_native_cifs_reappearance_keeps_discovery_and_samba(manager, apple_roles):
     root,start,events,wait,_,_=manager
     process=start()
-    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    # Each child logs its start independently; establish both before testing reappearance.
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows)
+                and any(e['role']=='smbd' and e['kind']=='start' for e in rows))
     before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
     stopped=len([e for e in values if e['role']=='discovery' and e['kind']=='stop'])
     apple=[subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(30)'],
@@ -744,7 +746,9 @@ def test_native_cifs_reappearance_keeps_discovery_and_samba(manager, apple_roles
 def test_native_nbns_audit_distinguishes_foreign_and_owned_children(manager, owned):
     root,start,events,wait,_,_=manager
     process=start()
-    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    # Discovery's start does not order Samba's child log; establish the audit baseline.
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows)
+                and started('smbd')(rows))
     controller=[e for e in values if e['role']=='discovery' and e['kind']=='start'][-1]
     before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
     stopped=len([e for e in values if e['role']=='discovery' and e['kind']=='stop'])
@@ -781,7 +785,8 @@ def test_native_nbns_audit_distinguishes_foreign_and_owned_children(manager, own
 def test_term_resistant_foreign_wcifsnd_does_not_reset_discovery(manager):
     root,start,events,wait,_,_=manager
     process=start()
-    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows)
+                and started('smbd')(rows))
     starts=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
     stops=len([e for e in values if e['role']=='discovery' and e['kind']=='stop'])
     native=subprocess.Popen([sys.executable,'-c',
@@ -821,7 +826,8 @@ def test_healthy_rechecks_do_not_restat_or_restage_disk_software(manager):
 def test_controller_death_cleans_orphaned_native_nbns_before_replacement(manager):
     root,start,events,wait,_,_=manager
     process=start()
-    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows)
+                and started('smbd')(rows))
     controller=next(e for e in reversed(values) if e['role']=='discovery' and e['kind']=='start')
     before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
     orphan=subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(30)'],

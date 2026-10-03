@@ -75,6 +75,7 @@ final class AddDeviceFlowStore: ObservableObject {
     @Published var password = ""
     @Published var debugLogging = false
     @Published private(set) var state: AddDeviceFlowState = .idle
+    @Published private(set) var reconnectProfileID: DeviceProfile.ID?
     @Published var selectedDeviceID: DiscoveredDevice.ID?
     @Published private(set) var savedProfile: DeviceProfile?
     @Published private(set) var error: BackendErrorViewModel?
@@ -130,11 +131,11 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     var isRunning: Bool {
-        discovery.state == .discovering || setupWorkflow.isRunning
+        discovery.state == .discovering || discovery.state == .checkingLocalNetwork || setupWorkflow.isRunning
     }
 
     var canCancel: Bool {
-        setupWorkflow.canCancel || discovery.state == .discovering
+        setupWorkflow.canCancel || discovery.state == .discovering || discovery.state == .checkingLocalNetwork
     }
 
     var selectedDevice: DiscoveredDevice? {
@@ -142,6 +143,24 @@ final class AddDeviceFlowStore: ObservableObject {
             return nil
         }
         return discovery.devices.first { $0.id == selectedDeviceID }
+    }
+
+    var suggestedProfile: DeviceProfile? {
+        guard let device = selectedDevice, reconnectProfileID == nil,
+              let suggestion = registry.suggestedProfile(for: device) else { return nil }
+        // A name shared by several current appliances cannot suggest one profile.
+        let peers = devices.filter { suggestion.network.sharesName(with: $0.observedIdentity) }
+        return peers.count == 1 ? suggestion : nil
+    }
+
+    var reconnectMessage: String? {
+        guard savedProfile == nil, let profile = registry.profile(id: reconnectProfileID) else { return nil }
+        return L10n.format("discovery.reconnect_selected", profile.title)
+    }
+
+    func reconnectSuggestedProfile() {
+        guard let profile = suggestedProfile else { return }
+        reconnectProfileID = profile.id
     }
 
     var hostFieldText: String {
@@ -158,7 +177,7 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     var bonjourTimeoutValue: Double? {
-        ValueParsers.nonNegativeDouble(bonjourTimeout)
+        ValueParsers.discoveryTimeout(bonjourTimeout)
     }
 
     var canConfigure: Bool {
@@ -175,6 +194,7 @@ final class AddDeviceFlowStore: ObservableObject {
         switch mode {
         case .discover:
             entryMode = .discover
+            reconnectProfileID = nil
             selectedDeviceID = nil
             manualHost = ""
             savedProfile = nil
@@ -189,6 +209,7 @@ final class AddDeviceFlowStore: ObservableObject {
     func startManualEntry() {
         entryMode = .manual
         state = .manualEntry
+        reconnectProfileID = nil
         selectedDeviceID = nil
         savedProfile = nil
         error = nil
@@ -205,6 +226,7 @@ final class AddDeviceFlowStore: ObservableObject {
             return
         }
         entryMode = .discover
+        reconnectProfileID = nil
         selectedDeviceID = nil
         manualHost = ""
         savedProfile = nil
@@ -230,7 +252,11 @@ final class AddDeviceFlowStore: ObservableObject {
             return
         }
 
-        let existing = target.matchingProfile(in: registry)
+        if let device = target.discoveredDevice, case .conflict = registry.profileMatch(for: device) {
+            failLocally(L10n.string("discovery.identity_conflict"))
+            return
+        }
+        let existing = registry.profile(id: reconnectProfileID) ?? target.matchingProfile(in: registry)
         let profileID = existing?.id ?? UUID().uuidString.lowercased()
         let configureSettings = existing?.settings ?? defaultDeviceSettings
         error = nil
@@ -249,6 +275,7 @@ final class AddDeviceFlowStore: ObservableObject {
 
     func select(_ device: DiscoveredDevice) {
         entryMode = .discover
+        reconnectProfileID = nil
         selectedDeviceID = device.id
         manualHost = device.connectionTarget
         if device.isUnsupportedModel {
@@ -268,7 +295,9 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     func reset() {
+        if discovery.state == .checkingLocalNetwork { discovery.cancel() }
         setupWorkflow.reset()
+        reconnectProfileID = nil
         selectedDeviceID = nil
         entryMode = .discover
         manualHost = ""
@@ -282,15 +311,15 @@ final class AddDeviceFlowStore: ObservableObject {
     func cancel() {
         if setupWorkflow.canCancel {
             setupWorkflow.cancel()
-        } else if discovery.state == .discovering {
-            coordinator.cancel(laneKey: .app)
+        } else if discovery.state == .discovering || discovery.state == .checkingLocalNetwork {
+            discovery.cancel()
         }
     }
 
     func handleRecoveryAction(_ action: RecoveryAction) {
         switch action.kind {
         case .retry:
-            runConfigure()
+            if error?.operation == "discover" { runDiscover() } else { runConfigure() }
         case .openSystemSettings:
             if let url = LocalNetworkRecovery.settingsURL {
                 urlOpener.open(url)
@@ -419,7 +448,9 @@ final class AddDeviceFlowStore: ObservableObject {
 
     private var isSetupState: Bool {
         switch state {
-        case .checkingLocalNetwork, .configuring, .awaitingConfirmation, .savingProfile, .saved, .authFailed, .unsupported, .failed:
+        case .checkingLocalNetwork:
+            return setupWorkflow.state == .checkingLocalNetwork
+        case .configuring, .awaitingConfirmation, .savingProfile, .saved, .authFailed, .unsupported, .failed:
             return true
         default:
             return false
@@ -433,11 +464,16 @@ final class AddDeviceFlowStore: ObservableObject {
         switch discovery.state {
         case .idle, .waitingForReadiness, .paused, .readinessBlocked:
             state = discovery.devices.isEmpty ? .idle : .discoveryReady
+        case .checkingLocalNetwork:
+            state = .checkingLocalNetwork
+            currentStage = nil
+            error = nil
         case .discovering:
             state = .discovering
             currentStage = discovery.currentStage
             error = nil
         case .empty:
+            reconnectProfileID = nil
             selectedDeviceID = nil
             manualHost = ""
             state = .discoveryEmpty
@@ -446,6 +482,7 @@ final class AddDeviceFlowStore: ObservableObject {
         case .ready:
             if let selectedDeviceID,
                !discovery.devices.contains(where: { $0.id == selectedDeviceID }) {
+                self.reconnectProfileID = nil
                 self.selectedDeviceID = nil
             }
             // An unsupported model is not preselected: its row shows why, and
@@ -469,7 +506,7 @@ final class AddDeviceFlowStore: ObservableObject {
         case .idle:
             if state == .awaitingConfirmation {
                 state = .passwordEntry
-            } else if state == .checkingLocalNetwork {
+            } else if state == .checkingLocalNetwork && discovery.state != .checkingLocalNetwork {
                 state = .passwordEntry
             }
         case .checkingLocalNetwork:

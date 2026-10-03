@@ -90,6 +90,16 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Set up Python for helper integration tests
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install helper integration dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e ".[dev]"
+
       - name: Run Swift tests
         run: swift test --package-path macos/TimeCapsuleSMB
 

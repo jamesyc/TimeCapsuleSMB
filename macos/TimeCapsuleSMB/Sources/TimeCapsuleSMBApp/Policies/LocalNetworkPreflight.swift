@@ -30,9 +30,36 @@ protocol LocalNetworkPreflightChecking: AnyObject {
     func check() async -> LocalNetworkPreflightResult
 }
 
-private final class LocalNetworkPreflightResumeState: @unchecked Sendable {
+final class LocalNetworkPreflightResumeState: @unchecked Sendable {
     private let lock = NSLock()
     private var didResume = false
+    private var didCancel = false
+    private var cancellation: (@Sendable () -> Void)?
+
+    func installCancellation(_ action: @escaping @Sendable () -> Void) {
+        lock.lock()
+        guard !didResume else {
+            lock.unlock()
+            return
+        }
+        let cancelled = didCancel
+        if !cancelled { cancellation = action }
+        lock.unlock()
+        if cancelled { action() }
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !didResume else {
+            lock.unlock()
+            return
+        }
+        didCancel = true
+        let action = cancellation
+        cancellation = nil
+        lock.unlock()
+        action?()
+    }
 
     func claim() -> Bool {
         lock.lock()
@@ -41,6 +68,8 @@ private final class LocalNetworkPreflightResumeState: @unchecked Sendable {
             return false
         }
         didResume = true
+        // The cancellation action captures finish, which owns this state and the browser.
+        cancellation = nil
         return true
     }
 }
@@ -48,26 +77,32 @@ private final class LocalNetworkPreflightResumeState: @unchecked Sendable {
 final class BonjourLocalNetworkPreflightChecker: LocalNetworkPreflightChecking, @unchecked Sendable {
     private let serviceType: String
     private let timeoutNanoseconds: UInt64
+    private let makeResumeState: @Sendable () -> LocalNetworkPreflightResumeState
 
-    init(serviceType: String = "_airport._tcp", timeoutNanoseconds: UInt64 = 1_500_000_000) {
+    init(serviceType: String = "_airport._tcp", timeoutNanoseconds: UInt64 = 1_500_000_000,
+         makeResumeState: @escaping @Sendable () -> LocalNetworkPreflightResumeState = { LocalNetworkPreflightResumeState() }) {
         self.serviceType = serviceType
         self.timeoutNanoseconds = timeoutNanoseconds
+        self.makeResumeState = makeResumeState
     }
 
     func check() async -> LocalNetworkPreflightResult {
         let startedAt = Date()
         let serviceType = serviceType
         let timeoutNanoseconds = timeoutNanoseconds
-        return await withCheckedContinuation { continuation in
+        let resumeState = makeResumeState()
+        return await withTaskCancellationHandler {
+        await withCheckedContinuation { continuation in
             let queue = DispatchQueue(label: "TimeCapsuleSMB.LocalNetworkPreflight")
             let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: .tcp)
-            let resumeState = LocalNetworkPreflightResumeState()
 
             let finish: @Sendable (LocalNetworkPreflightStatus, String?) -> Void = { status, detail in
                 queue.async {
                     guard resumeState.claim() else {
                         return
                     }
+                    browser.stateUpdateHandler = nil
+                    browser.browseResultsChangedHandler = nil
                     browser.cancel()
                     continuation.resume(returning: LocalNetworkPreflightResult(
                         status: status,
@@ -79,22 +114,8 @@ final class BonjourLocalNetworkPreflightChecker: LocalNetworkPreflightChecking, 
             }
 
             browser.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    finish(.allowed, nil)
-                case .waiting(let error):
-                    if Self.isLocalNetworkPolicyDenied(error) {
-                        finish(.denied, String(describing: error))
-                    }
-                case .failed(let error):
-                    finish(
-                        Self.isLocalNetworkPolicyDenied(error) ? .denied : .unknown,
-                        String(describing: error)
-                    )
-                case .cancelled, .setup:
-                    break
-                @unknown default:
-                    break
+                if let status = Self.outcome(for: state) {
+                    finish(status, String(describing: state))
                 }
             }
             browser.browseResultsChangedHandler = { results, _ in
@@ -102,10 +123,20 @@ final class BonjourLocalNetworkPreflightChecker: LocalNetworkPreflightChecking, 
                     finish(.allowed, nil)
                 }
             }
+            if Task.isCancelled {
+                finish(.unknown, "cancelled")
+                return
+            }
             browser.start(queue: queue)
+            // Cancellation can finish immediately; install it only after all browser
+            // handlers are set so setup cannot restore a handler after cleanup.
+            resumeState.installCancellation { finish(.unknown, "cancelled") }
             queue.asyncAfter(deadline: .now() + .nanoseconds(Int(timeoutNanoseconds))) {
                 finish(.unknown, "timeout")
             }
+        }
+        } onCancel: {
+            resumeState.cancel()
         }
     }
 
@@ -113,14 +144,23 @@ final class BonjourLocalNetworkPreflightChecker: LocalNetworkPreflightChecking, 
         max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
     }
 
-    private static func isLocalNetworkPolicyDenied(_ error: NWError) -> Bool {
-        let text = String(describing: error).lowercased()
-        return text.contains("policy")
-            || text.contains("denied")
-            || text.contains("privacy")
-            || text.contains("permission")
-            || text.contains("-65570")
+    static func outcome(for state: NWBrowser.State) -> LocalNetworkPreflightStatus? {
+        switch state {
+        case .waiting(let error):
+            return isLocalNetworkPolicyDenied(error) ? .denied : nil
+        case .failed(let error):
+            return isLocalNetworkPolicyDenied(error) ? .denied : .unknown
+        // Ready can precede the user's decision. Only actual results prove access.
+        default:
+            return nil
+        }
     }
+
+    static func isLocalNetworkPolicyDenied(_ error: NWError) -> Bool {
+        if case .dns(let code) = error { return code == -65570 }
+        return false
+    }
+
 }
 
 enum LocalNetworkRecovery {

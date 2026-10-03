@@ -48,7 +48,8 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.network import LocalInterfaceNetwork, RouteSelection, check_smb_port, check_ssh_login
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login
+from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
@@ -94,16 +95,12 @@ from timecapsulesmb.device.probe import (
     SshAccessStatus,
 )
 from timecapsulesmb.device.storage import MAST_PROBE_COMMAND, MaStProbeDiagnostics, MaStVolume
+from timecapsulesmb.discovery.models import _merge_snapshots
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
     BonjourResolvedService,
     BonjourServiceInstance,
-)
-from timecapsulesmb.discovery.native_dns_sd import (
-    NativeDnsSdBrowseResult,
-    NativeDnsSdDiscoveryDiagnostics,
-    NativeDnsSdResolveResult,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
@@ -162,7 +159,8 @@ class CheckTests(unittest.TestCase):
                 instance.name, "timecapsulesamba4.local", instance.service_type, port=445, ipv6=[ipv6],
             )]),
         ]
-        return mock.Mock(side_effect=[(snapshot, None, None) for snapshot in snapshots])
+        from timecapsulesmb.discovery.models import _merge_snapshots
+        return mock.Mock(return_value=(_merge_snapshots(snapshots), None, None))
 
     def doctor_config(self, values: dict[str, str], *, exists: bool = True) -> AppConfig:
         return AppConfig.from_values(
@@ -553,7 +551,13 @@ class CheckTests(unittest.TestCase):
                 ),
             )
         )
-        self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.native_dns_sd_available", return_value=False))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.discovery.bonjour.command_exists", return_value=False))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ips", return_value=()))
+        self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.checks.doctor_steps.resolve_smb_instance",
+            side_effect=lambda instance, missing_message=None, **kwargs: (None, CheckResult(
+                "FAIL", missing_message or f"discovered _smb._tcp instance {instance.name!r} but could not resolve service target")),
+        ))
         # Doctor compares the device's networks with this computer's; keep tests
         # independent of the machine running them.
         self._exit_stack.enter_context(mock.patch(
@@ -851,7 +855,7 @@ class CheckTests(unittest.TestCase):
             smb_port=REAL_SMB_PORT_CHECK,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
-                    side_effect=[(snapshot, None, None) for snapshot in snapshots]
+                    return_value=(_merge_snapshots(snapshots), None, None)
                 ),
                 "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
                 "timecapsulesmb.checks.doctor_steps.check_smb_port": port_mock,
@@ -894,7 +898,7 @@ class CheckTests(unittest.TestCase):
             smb_port=REAL_SMB_PORT_CHECK,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
-                    side_effect=[(snapshot, None, None) for snapshot in snapshots]
+                    return_value=(_merge_snapshots(snapshots), None, None)
                 ),
                 "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
                 "timecapsulesmb.checks.doctor_steps.check_smb_port": mock.Mock(side_effect=port_results.__getitem__),
@@ -977,91 +981,141 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(identity.host_label, "home")
         self.assertIsNone(identity.target_ip)
 
-    def test_run_doctor_checks_adds_bonjour_debug_on_instance_mismatch(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_NET_IFACE": "bridge0",
-            "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "Home",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_MDNS_INSTANCE_NAME": "Home",
-            "TC_MDNS_HOST_LABEL": "home",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
+    def selected_snapshot(self, *, name="Home", host="home.local", ipv4=("10.0.0.2",), ipv6=("fd00::2",), port=445):
+        records = [
+            BonjourResolvedService(name, host, "_smb._tcp.local.", port=port, ipv4=ipv4, ipv6=ipv6, fullname=f"{name}._smb._tcp.local."),
+            BonjourResolvedService(name, host, "_airport._tcp.local.", port=5009, ipv4=ipv4, ipv6=ipv6, properties={"syAP": "119"}, fullname=f"{name}._airport._tcp.local."),
+            BonjourResolvedService(name, host, "_adisk._tcp.local.", port=9, ipv4=ipv4, ipv6=ipv6,
+                properties={"sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010", "dk2": "adVF=0x83,adVN=Data,adVU=12345678-1234-1234-1234-123456789012"}, fullname=f"{name}._adisk._tcp.local."),
+        ]
+        return BonjourDiscoverySnapshot([BonjourServiceInstance(r.service_type, r.name, r.fullname) for r in records], records)
+
+    def run_selected_bonjour(self, snapshot, *, values=None, resolver=None, provider="dns-sd", discovery_error=None, local_networks=None, extra=None):
+        from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics
+        debug = {}
+        diagnostics = BonjourQueryDiagnostics(provider, [r.service_type for r in snapshot.resolved], 6, 6,
+                                             len(snapshot.instances), len(snapshot.resolved))
+        browse = mock.Mock(return_value=(snapshot, discovery_error, diagnostics))
+        patches = {
+            "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": browse,
+            "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+            "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=provider == "dns-sd"),
         }
-        diagnostics = BonjourDiscoveryDiagnostics(
-            service="_smb",
-            service_types=["_smb._tcp.local."],
-            timeout_sec=6.0,
-            elapsed_sec=6.0,
-            ip_version="V4Only",
-            instance_count=0,
-            resolved_count=0,
-            pending_count=0,
-            service_added_count=0,
-            service_updated_count=0,
-            resolve_attempt_count=0,
-            resolve_success_count=0,
-            resolve_error_count=0,
+        if resolver is not None:
+            patches["timecapsulesmb.checks.doctor_steps.resolve_smb_instance"] = resolver
+        patches.update(extra or {})
+        kwargs = {"local_networks": local_networks} if local_networks is not None else {}
+        run = self.run_doctor_with_mocks(
+            values or self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home"),
+            smb_port=CheckResult("PASS", "445 ok"), ssh_login=CheckResult("PASS", "ssh ok"),
+            skip_smb=True, debug_fields=debug, extra_patches=patches, **kwargs,
         )
-        debug_fields: dict[str, object] = {}
-        native_diagnostics = {"status": "ok"}
+        return run, debug, browse, diagnostics
 
-        with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
-            with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
-                with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
-                    with mock.patch(
-                        "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed",
-                        return_value=(BonjourDiscoverySnapshot([], []), None, diagnostics),
-                    ):
-                        with mock.patch("timecapsulesmb.checks.doctor_debug.browse_native_dns_sd", return_value=native_diagnostics) as native_mock:
-                            results, fatal = run_doctor_checks(
-                                self.doctor_config(values),
-                                repo_root=REPO_ROOT,
-                                skip_ssh=True,
-                                skip_smb=True,
-                                debug_fields=debug_fields,
-                            )
+    def test_doctor_validates_each_family_port_independently_of_record_order(self):
+        from timecapsulesmb.discovery.models import _merge_snapshots
+        for bad_family in ("ipv4", "ipv6"):
+            for reverse in (False, True):
+                with self.subTest(bad_family=bad_family, reverse=reverse):
+                    v4 = self.selected_snapshot(ipv6=(), port=1445 if bad_family == "ipv4" else 445)
+                    v6 = self.selected_snapshot(ipv4=(), port=1445 if bad_family == "ipv6" else 445)
+                    snapshot = _merge_snapshots([v4, v6])
+                    if reverse:
+                        snapshot.resolved.reverse()
+                    run, _debug, browse, _ = self.run_selected_bonjour(snapshot)
+                    self.assertTrue(run.fatal)
+                    browse.assert_called_once()
+                    self.assertTrue(any(r.status == "FAIL" and f"Bonjour {bad_family.replace('ip', 'IP')}: _smb._tcp port is 1445" in r.message for r in run.results))
 
-        self.assertTrue(fatal)
-        self.assertTrue(any(result.status == "FAIL" and "no resolved _smb._tcp service matched target IP 10.0.0.2" in result.message for result in results))
-        self.assertEqual(debug_fields["bonjour_expected"], {"instance_name": None, "host_label": None, "target_ip": "10.0.0.2"})
-        self.assertEqual(debug_fields["bonjour_zeroconf"], [diagnostics, diagnostics])
-        self.assertIs(debug_fields["bonjour_native_dns_sd"], native_diagnostics)
-        native_mock.assert_called_once_with()
+    def test_doctor_retains_conflicting_same_family_ports_and_txt(self):
+        from copy import deepcopy
+        for service, change in (("_smb", "port"), ("_adisk", "txt")):
+            for reverse in (False, True):
+                with self.subTest(service=service, reverse=reverse):
+                    snapshot = self.selected_snapshot()
+                    conflicting = deepcopy(next(r for r in snapshot.resolved if r.service_type.startswith(service)))
+                    if change == "port":
+                        conflicting.port = 1445
+                    else:
+                        conflicting.properties["dk2"] = "adVF=0x83,adVN=Wrong,adVU=another-volume"
+                    snapshot.resolved.append(conflicting)
+                    if reverse:
+                        snapshot.resolved.reverse()
+                    run, *_ = self.run_selected_bonjour(snapshot)
+                    self.assertTrue(run.fatal)
+                    self.assertTrue(any(r.status == "FAIL" and "conflicting target, port or TXT" in r.message for r in run.results))
 
-    def test_run_doctor_checks_does_not_run_native_dns_sd_when_bonjour_matches(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_NET_IFACE": "bridge0",
-            "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "Home",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-        }
-        debug_fields: dict[str, object] = {}
+    def test_doctor_ignores_same_name_peer_on_another_observed_link(self):
+        snapshot = self.selected_snapshot()
+        for record in snapshot.resolved:
+            record.interface_index = 14
+        for instance in snapshot.instances:
+            instance.interface_index = 14
+        peer = self.selected_snapshot(ipv4=("10.0.1.9",), ipv6=("fd01::9",), port=1445)
+        for record in peer.resolved:
+            record.interface_index = 18
+        for instance in peer.instances:
+            instance.interface_index = 18
+        snapshot.resolved = peer.resolved + snapshot.resolved
+        snapshot.instances = peer.instances + snapshot.instances
+        run, *_ = self.run_selected_bonjour(snapshot)
+        self.assertFalse(run.fatal)
+        self.assertFalse(any("1445" in r.message for r in run.results))
 
-        with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
-            with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
-                with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
-                    with mock.patch("timecapsulesmb.checks.doctor_debug.browse_native_dns_sd", side_effect=AssertionError("native dns-sd should not run")):
-                        results, fatal = run_doctor_checks(
-                            self.doctor_config(values),
-                            repo_root=REPO_ROOT,
-                            skip_ssh=True,
-                            skip_smb=True,
-                            debug_fields=debug_fields,
-                        )
+    def test_doctor_accepts_separate_valid_family_observations(self):
+        from timecapsulesmb.discovery.models import _merge_snapshots
+        snapshot = _merge_snapshots([self.selected_snapshot(ipv6=()), self.selected_snapshot(ipv4=())])
+        run, _debug, browse, _ = self.run_selected_bonjour(snapshot)
+        self.assertFalse(run.fatal)
+        browse.assert_called_once()
+        for family in ("IPv4", "IPv6"):
+            self.assertTrue(any(r.status == "PASS" and f"Bonjour {family}: resolved _smb" in r.message for r in run.results))
 
-        self.assertFalse(fatal)
-        self.assertNotIn("bonjour_native_fallback", debug_fields)
-        self.assertEqual(debug_fields["smb_connectivity"]["reachable_addresses"], ["10.0.0.2"])
-        self.assertTrue(any(result.status == "PASS" and "discovered _smb._tcp" in result.message for result in results))
+    def test_doctor_validates_adisk_independently_of_its_address_family(self):
+        for family in ("ipv4", "ipv6"):
+            for reverse in (False, True):
+                for problem in (None, "missing", "txt", "target"):
+                    with self.subTest(family=family, reverse=reverse, problem=problem):
+                        snapshot = self.selected_snapshot()
+                        adisk = next(r for r in snapshot.resolved if r.service_type.startswith("_adisk."))
+                        setattr(adisk, "ipv6" if family == "ipv4" else "ipv4", [])
+                        if problem == "missing":
+                            snapshot.resolved.remove(adisk)
+                            snapshot.instances = [i for i in snapshot.instances if not i.service_type.startswith("_adisk.")]
+                        elif problem == "txt":
+                            adisk.properties["dk2"] = "adVF=0x83,adVN=Wrong,adVU=another-volume"
+                        elif problem == "target":
+                            adisk.hostname = "wrong.local"
+                        if reverse:
+                            snapshot.resolved.reverse()
+                        run, *_ = self.run_selected_bonjour(snapshot)
+                        self.assertEqual(run.fatal, problem is not None)
+                        # Both family checks must validate the advertisement, even
+                        # when only the other family's address lookup completed.
+                        other_family = "IPv6" if family == "ipv4" else "IPv4"
+                        results = [r for r in run.results if r.message.startswith(f"Bonjour {other_family}:")]
+                        if problem is None:
+                            self.assertTrue(any(r.status == "PASS" and "discovered _adisk" in r.message for r in results))
+                            self.assertFalse(any(r.status == "FAIL" for r in results))
+                        else:
+                            self.assertTrue(any(r.status == "FAIL" and "_adisk" in r.message for r in results))
+
+    def test_run_doctor_checks_adds_bonjour_debug_on_instance_mismatch(self):
+        snapshot = self.selected_snapshot(name="Kitchen", host="kitchen.local", ipv4=("10.0.0.99",), ipv6=())
+        run, debug, browse, diagnostics = self.run_selected_bonjour(snapshot)
+        self.assertTrue(run.fatal)
+        self.assertEqual(debug["bonjour_expected"]["instance_name"], "Home")
+        self.assertIs(debug["bonjour_discovery"], diagnostics)
+        self.assertTrue(any("expected device instance 'Home'" in r.message for r in run.results))
+        browse.assert_called_once()
+
+    def test_run_doctor_checks_does_not_run_secondary_browse_when_bonjour_matches(self):
+        run, debug, browse, _diagnostics = self.run_selected_bonjour(self.selected_snapshot())
+        self.assertFalse(run.fatal)
+        browse.assert_called_once()
+        self.assertNotIn("bonjour_discovery", debug)
+        self.assertTrue(any(r.status == "PASS" and "Bonjour IPv4:" in r.message for r in run.results))
+        self.assertTrue(any(r.status == "PASS" and "Bonjour IPv6:" in r.message for r in run.results))
 
     def test_run_doctor_checks_resolves_expected_smb_when_browse_misses_instance(self) -> None:
         values = self.valid_doctor_values(
@@ -1131,9 +1185,6 @@ class CheckTests(unittest.TestCase):
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": resolve_mock,
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
-                "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(
-                    side_effect=AssertionError("native dns-sd should not decide Bonjour success")
-                ),
             },
         )
 
@@ -1150,7 +1201,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("targeted query", first_resolve.kwargs["missing_message"])
         messages = [result.message for result in run.results]
         self.assertIn(
-            "Bonjour IPv4: Python zeroconf browse did not observe expected _smb._tcp instance 'Home'; targeted resolve succeeded",
+            "Bonjour IPv4: Bonjour browse did not observe expected _smb._tcp instance 'Home'; targeted resolve succeeded",
             messages,
         )
         self.assertIn("Bonjour IPv4: resolved expected _smb._tcp instance 'Home' by targeted query", messages)
@@ -1186,10 +1237,9 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(wrong_smb, None)),
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(
-                    side_effect=AssertionError("native dns-sd fallback should not run for concrete zeroconf IP mismatches")
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(
+                    return_value=False
                 ),
-                "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(return_value=None),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
             },
         )
@@ -1228,7 +1278,6 @@ class CheckTests(unittest.TestCase):
                     return_value=(BonjourDiscoverySnapshot([], []), None, None)
                 ),
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
-                "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(return_value=None),
             },
         )
 
@@ -1265,7 +1314,6 @@ class CheckTests(unittest.TestCase):
             "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(
                 return_value=(resolved, None) if resolved is not None else (None, resolve_error)
             ),
-            "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(return_value=None),
             **kwargs.pop("extra_patches", {}),
         }
         kwargs.setdefault("ssh_login", mock.Mock(status="PASS", message="ssh ok"))
@@ -1305,70 +1353,38 @@ class CheckTests(unittest.TestCase):
             "detail": None,
             "skipped": ["bonjour"],
         })
-        self.assertNotIn("bonjour_zeroconf", debug_fields)
+        self.assertNotIn("bonjour_discovery", debug_fields)
         # NBNS's off-subnet check reuses the same ifconfig.
         nbns_result = next(result for result in run.results if "NBNS query" in result.message)
         self.assertEqual(nbns_result.status, "SKIP")
         run.mocks.probe_device_networks_conn.assert_called_once()
 
-    def test_off_network_bonjour_skip_accounts_for_native_results_in_each_family(self) -> None:
-        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        empty = BonjourDiscoverySnapshot([], [])
-        for family, address, other_address in (("ipv4", "10.0.0.2", "10.0.0.99"), ("ipv6", "fd00::2", "fd00::99")):
-            for scenario in ("wrong_port", "wrong_host", "wrong_address", "foreign", "unresolved", "absent", "unavailable", "valid"):
+    def test_off_network_bonjour_skip_accounts_for_selected_results_in_each_family(self):
+        for family in ("ipv4", "ipv6"):
+            for scenario in ("wrong_port", "wrong_host", "wrong_address", "foreign", "unresolved", "absent", "query_error", "targeted_query_error", "valid"):
                 with self.subTest(family=family, scenario=scenario):
-                    record = BonjourResolvedService(
-                        instance.name,
-                        "other.local" if scenario in {"wrong_host", "foreign"} else "home.local",
-                        instance.service_type,
-                        port=1445 if scenario == "wrong_port" else 445,
-                        fullname=instance.fullname,
-                        **{family: [other_address if scenario in {"wrong_address", "foreign"} else address]},
-                    )
-                    snapshot = BonjourDiscoverySnapshot([instance], [] if scenario == "unresolved" else [record])
-                    if scenario == "absent":
-                        snapshot = empty
-                    diagnostics = {
-                        version: NativeDnsSdDiscoveryDiagnostics(
-                            timeout_sec=6.0, elapsed_sec=1.0, status="ok",
-                            service_types=[instance.service_type], ip_version=version,
-                            instance_count=len(snapshot.instances) if version == family else 0,
-                            resolved_count=len(snapshot.resolved) if version == family else 0,
-                            browses=[],
-                        )
-                        for version in ("ipv4", "ipv6")
-                    }
-                    native_discover = mock.Mock(side_effect=[
-                        None if scenario == "unavailable" else
-                        (snapshot if version == family else empty, diagnostics[version])
-                        for version in ("ipv4", "ipv6")
-                    ])
-                    debug_fields: dict[str, object] = {}
-
-                    run = self._run_doctor_bonjour_miss(
-                        local_networks=self.OFF_NETWORK,
-                        target_host=f"root@{address}",
-                        debug_fields=debug_fields,
-                        extra_patches={
-                            "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
-                            "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": native_discover,
-                            "timecapsulesmb.checks.doctor_steps.resolve_native_dns_sd_service_instance": mock.Mock(return_value=(None, None)),
-                            "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
-                        },
-                    )
-
-                    skipped = scenario in {"absent", "unavailable"}
-                    self.assertEqual(run.fatal, not skipped and scenario != "valid")
-                    self.assertEqual(
-                        any(result.details.get("code") == BONJOUR_OFF_LINK_CODE for result in run.results), skipped,
-                    )
-                    self.assertEqual([call.kwargs["family"] for call in native_discover.call_args_list], ["ipv4", "ipv6"])
-                    if not skipped:
-                        self.assertEqual(debug_fields["bonjour_native_fallback"], list(diagnostics.values()))
-                        self.assertEqual(debug_fields["bonjour_backend"][family], "native_dns_sd" if scenario == "valid" else "zeroconf")
-                        if scenario != "valid":
-                            prefix = f"Bonjour {'IPv4' if family == 'ipv4' else 'IPv6'}: "
-                            self.assertTrue(any(result.status == "FAIL" and result.message.startswith(prefix) for result in run.results))
+                    address = "10.0.0.2" if family == "ipv4" else "fd00::2"
+                    values = self.valid_doctor_values(TC_HOST="root@" + address, TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home")
+                    ip = "10.0.0.99" if family == "ipv4" else "fd00::99"
+                    snapshot = self.selected_snapshot(
+                        host="foreign.local" if scenario in {"wrong_host", "foreign"} else "home.local",
+                        ipv4=((ip if scenario in {"wrong_address", "foreign"} else address),) if family == "ipv4" else (),
+                        ipv6=((ip if scenario in {"wrong_address", "foreign"} else address),) if family == "ipv6" else (),
+                        port=1445 if scenario == "wrong_port" else 445)
+                    if scenario in {"unresolved", "absent", "query_error", "targeted_query_error"}:
+                        snapshot.resolved = []
+                    if scenario in {"absent", "query_error", "targeted_query_error"}:
+                        snapshot.instances = []
+                    error = CheckResult("FAIL", "Bonjour query failed") if scenario == "query_error" else None
+                    run, _debug, browse, _diagnostics = self.run_selected_bonjour(snapshot, values=values,
+                        local_networks=self.OFF_NETWORK, discovery_error=error,
+                        extra={"timecapsulesmb.discovery.bonjour.BonjourQuery.resolve": mock.Mock(side_effect=RuntimeError("targeted query failed")),
+                               "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": resolve_smb_instance}
+                              if scenario == "targeted_query_error" else None)
+                    skipped = scenario == "absent"
+                    self.assertEqual(run.fatal, scenario != "valid" and not skipped)
+                    self.assertEqual(any(r.details.get("code") == BONJOUR_OFF_LINK_CODE for r in run.results), skipped)
+                    browse.assert_called_once()
 
     def test_bonjour_miss_on_the_device_network_still_fails(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -1422,390 +1438,52 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["bonjour_link"]["detail"], "SSH checks were not run")
         run.mocks.probe_device_networks_conn.assert_not_called()
 
-    def test_run_doctor_checks_uses_native_dns_sd_fallback_when_zeroconf_misses_expected_smb_on_macos(self) -> None:
-        values = self.valid_doctor_values(
-            TC_HOST="root@10.0.0.2",
-            TC_MDNS_INSTANCE_NAME="Home",
-            TC_MDNS_HOST_LABEL="home",
-            TC_NETBIOS_NAME="Home",
-        )
-        resolve_error = CheckResult(
-            "FAIL",
-            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
-        )
-        native_smb_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        native_airport_instance = BonjourServiceInstance("_airport._tcp.local.", "Home", "Home._airport._tcp.local.")
-        native_adisk_instance = BonjourServiceInstance("_adisk._tcp.local.", "Home", "Home._adisk._tcp.local.")
-        native_smb_record = BonjourResolvedService(
-            "Home",
-            "home.local",
-            "_smb._tcp.local.",
-            port=445,
-            ipv4=["10.0.0.2"],
-            fullname="Home._smb._tcp.local.",
-        )
-        native_airport_record = BonjourResolvedService(
-            "Home",
-            "home.local",
-            "_airport._tcp.local.",
-            port=5009,
-            ipv4=["10.0.0.2"],
-            fullname="Home._airport._tcp.local.",
-        )
-        native_adisk_record = BonjourResolvedService(
-            "Home",
-            "home.local",
-            "_adisk._tcp.local.",
-            port=9,
-            properties={
-                "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
-                "adVF": "0x1010",
-                "dk2": "adVF=0x83,adVN=Data,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
-            },
-            fullname="Home._adisk._tcp.local.",
-        )
-        native_debug = NativeDnsSdDiscoveryDiagnostics(
-            timeout_sec=6.0,
-            elapsed_sec=1.0,
-            status="ok",
-            service_types=["_smb._tcp.local.", "_airport._tcp.local.", "_adisk._tcp.local."],
-            ip_version="V4Only",
-            instance_count=3,
-            resolved_count=3,
-            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
-        )
-        zeroconf_debug = BonjourDiscoveryDiagnostics(
-            service=None,
-            service_types=["_airport._tcp.local.", "_smb._tcp.local."],
-            timeout_sec=6.0,
-            elapsed_sec=6.0,
-            ip_version="V4Only",
-            instance_count=0,
-            resolved_count=0,
-            pending_count=0,
-            service_added_count=0,
-            service_updated_count=0,
-            resolve_attempt_count=0,
-            resolve_success_count=0,
-            resolve_error_count=0,
-        )
-        debug_fields: dict[str, object] = {}
-
-        run = self.run_doctor_with_mocks(
-            values,
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            skip_smb=True,
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([], []), None, zeroconf_debug)
-                ),
-                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
-                    return_value=(
-                        BonjourDiscoverySnapshot(
-                            [native_smb_instance, native_airport_instance, native_adisk_instance],
-                            [native_smb_record, native_airport_record, native_adisk_record],
-                        ),
-                        native_debug,
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
-            },
-        )
-
+    def test_run_doctor_checks_uses_selected_native_records_without_fallback(self):
+        run, _debug, browse, _diagnostics = self.run_selected_bonjour(self.selected_snapshot())
         self.assertFalse(run.fatal)
-        messages = [result.message for result in run.results]
-        self.assertIn(
-            "Bonjour IPv4: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
-            messages,
-        )
+        browse.assert_called_once()
+        messages = [r.message for r in run.results]
         self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Home'", messages)
-        self.assertIn("Bonjour IPv4: Bonjour services for 'Home' advertise consistent host target home.local", messages)
         self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
         self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
-        self.assertNotIn("Bonjour IPv4: no discovered _smb._tcp instance matched expected device instance 'Home'", messages)
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd", "ipv6": "native_dns_sd"})
-        self.assertEqual(debug_fields["bonjour_native_fallback"], [native_debug, native_debug])
-        self.assertIn("bonjour_zeroconf", debug_fields)
+        self.assertFalse(any("fallback" in m for m in messages))
 
-    def test_run_doctor_checks_uses_native_dns_sd_targeted_resolve_when_native_browse_misses_expected_smb(self) -> None:
-        values = self.valid_doctor_values(
-            TC_HOST="root@10.0.0.2",
-            TC_MDNS_INSTANCE_NAME="Home",
-            TC_MDNS_HOST_LABEL="home",
-            TC_NETBIOS_NAME="Home",
-        )
-        resolve_error = CheckResult(
-            "FAIL",
-            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
-        )
-        native_record = BonjourResolvedService(
-            "Home",
-            "home.local",
-            "_smb._tcp.local.",
-            port=445,
-            ipv4=["10.0.0.2"],
-            fullname="Home._smb._tcp.local.",
-        )
-        native_debug = NativeDnsSdDiscoveryDiagnostics(
-            timeout_sec=6.0,
-            elapsed_sec=1.0,
-            status="ok",
-            service_types=["_smb._tcp.local."],
-            ip_version="V4Only",
-            instance_count=0,
-            resolved_count=0,
-            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
-        )
-        native_resolve = NativeDnsSdResolveResult(
-            service_type="_smb._tcp",
-            name="Home",
-            fullname="Home._smb._tcp.local.",
-            hostname="home.local",
-            port=445,
-        )
-        debug_fields: dict[str, object] = {}
-
-        run = self.run_doctor_with_mocks(
-            values,
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            skip_smb=True,
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
-                ),
-                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([], []), native_debug)
-                ),
-                "timecapsulesmb.checks.doctor_steps.resolve_native_dns_sd_service_instance": mock.Mock(
-                    return_value=(native_record, native_resolve)
-                ),
-                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
-            },
-        )
-
+    def test_run_doctor_checks_uses_neutral_targeted_resolve_when_browse_misses_expected_smb(self):
+        snapshot = self.selected_snapshot()
+        smb = snapshot.resolved.pop(0)
+        snapshot.instances = [i for i in snapshot.instances if i.service_type != smb.service_type]
+        resolver = mock.Mock(return_value=(smb, None))
+        run, _debug, browse, _diagnostics = self.run_selected_bonjour(snapshot, resolver=resolver)
         self.assertFalse(run.fatal)
-        messages = [result.message for result in run.results]
-        self.assertIn(
-            "Bonjour IPv4: native macOS dns-sd browse did not observe expected _smb._tcp instance 'Home'; targeted resolve succeeded",
-            messages,
-        )
-        self.assertIn("Bonjour IPv4: native macOS dns-sd resolved expected _smb._tcp instance 'Home' by targeted query", messages)
-        self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
-        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd", "ipv6": "native_dns_sd"})
-        self.assertEqual(debug_fields["bonjour_native_fallback"], [native_debug, native_debug])
-        self.assertEqual(native_debug.resolves, [native_resolve, native_resolve])
+        browse.assert_called_once()
+        self.assertEqual({c.kwargs["family"] for c in resolver.call_args_list}, {"ipv4", "ipv6"})
+        self.assertTrue(any("targeted resolve succeeded" in r.message for r in run.results))
 
-    def test_run_doctor_checks_uses_native_dns_sd_fallback_for_ip_only_bonjour_when_runtime_name_probe_fails(self) -> None:
-        native_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        native_record = BonjourResolvedService(
-            "Home",
-            "home.local",
-            "_smb._tcp.local.",
-            port=445,
-            ipv4=["10.0.0.2"],
-            fullname="Home._smb._tcp.local.",
-        )
-        native_debug = NativeDnsSdDiscoveryDiagnostics(
-            timeout_sec=6.0,
-            elapsed_sec=1.0,
-            status="ok",
-            service_types=["_smb._tcp.local."],
-            ip_version="V4Only",
-            instance_count=1,
-            resolved_count=1,
-            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
-        )
-        debug_fields: dict[str, object] = {}
-
-        run = self.run_doctor_with_mocks(
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            skip_smb=True,
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn": mock.Mock(side_effect=RuntimeError("probe failed")),
-                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
-                ),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([native_instance], [native_record]), native_debug)
-                ),
-                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
-            },
-        )
-
+    def test_run_doctor_checks_uses_selected_records_for_ip_only_bonjour(self):
+        run, _debug, browse, _diagnostics = self.run_selected_bonjour(
+            self.selected_snapshot(), extra={"timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn": mock.Mock(return_value=None)})
         self.assertFalse(run.fatal)
-        messages = [result.message for result in run.results]
-        self.assertIn("runtime naming identity probe skipped: probe failed", messages)
-        self.assertIn(
-            "Bonjour IPv4: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
-            messages,
-        )
-        self.assertIn("Bonjour IPv4: discovered _smb._tcp service matching target IP 10.0.0.2", messages)
-        self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
-        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd", "ipv6": "zeroconf"})
-        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
+        self.assertTrue(any("matching target IP 10.0.0.2" in r.message for r in run.results))
+        browse.assert_called_once()
 
-    def test_run_doctor_checks_can_use_native_dns_sd_for_one_bonjour_family_while_zeroconf_passes_another(self) -> None:
-        values = self.valid_doctor_values(
-            TC_HOST="root@10.0.0.2",
-            TC_MDNS_INSTANCE_NAME="Home",
-            TC_MDNS_HOST_LABEL="home",
-            TC_NETBIOS_NAME="Home",
-        )
-        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        snapshot_v4 = BonjourDiscoverySnapshot(
-            [instance],
-            [
-                BonjourResolvedService(
-                    "Home",
-                    "home.local",
-                    "_smb._tcp.local.",
-                    port=445,
-                    ipv4=["10.0.0.2"],
-                    fullname="Home._smb._tcp.local.",
-                )
-            ],
-        )
-        native_v6_record = BonjourResolvedService(
-            "Home",
-            "home.local",
-            "_smb._tcp.local.",
-            port=445,
-            ipv6=["fd00::2"],
-            fullname="Home._smb._tcp.local.",
-        )
-        native_v6_debug = NativeDnsSdDiscoveryDiagnostics(
-            timeout_sec=6.0,
-            elapsed_sec=1.0,
-            status="ok",
-            service_types=["_smb._tcp.local."],
-            ip_version="V6Only",
-            instance_count=1,
-            resolved_count=1,
-            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
-        )
-        resolve_error = CheckResult(
-            "FAIL",
-            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
-        )
-        discover_mock = mock.Mock(
-            side_effect=[
-                (snapshot_v4, None, None),
-                (BonjourDiscoverySnapshot([], []), None, None),
-            ]
-        )
-        native_discover_mock = mock.Mock(return_value=(BonjourDiscoverySnapshot([instance], [native_v6_record]), native_v6_debug))
-        debug_fields: dict[str, object] = {}
+    def test_run_doctor_checks_one_selected_provider_supplies_both_families(self):
+        for provider in ("dns-sd", "zeroconf"):
+            with self.subTest(provider=provider):
+                run, _debug, browse, _diagnostics = self.run_selected_bonjour(self.selected_snapshot(), provider=provider)
+                self.assertFalse(run.fatal)
+                browse.assert_called_once()
+                addresses = {r.message for r in run.results if "resolved Bonjour host" in r.message}
+                self.assertTrue(any("10.0.0.2" in m for m in addresses))
+                self.assertTrue(any("fd00::2" in m for m in addresses))
 
-        run = self.run_doctor_with_mocks(
-            values,
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            skip_smb=True,
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": discover_mock,
-                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": native_discover_mock,
-                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
-            },
-        )
-
-        self.assertFalse(run.fatal)
-        self.assertEqual(discover_mock.call_count, 2)
-        native_discover_mock.assert_called_once()
-        self.assertEqual(native_discover_mock.call_args.kwargs["family"], "ipv6")
-        self.assertIsNone(native_discover_mock.call_args.kwargs["target_ip"])
-        messages = [result.message for result in run.results]
-        self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Home'", messages)
-        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
-        self.assertIn(
-            "Bonjour IPv6: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
-            messages,
-        )
-        self.assertIn("Bonjour IPv6: discovered _smb._tcp instance 'Home'", messages)
-        self.assertIn("Bonjour IPv6: resolved Bonjour host home.local to fd00::2", messages)
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "zeroconf", "ipv6": "native_dns_sd"})
-        self.assertIs(debug_fields["bonjour_native_fallback"], native_v6_debug)
-
-    def test_run_doctor_checks_keeps_zeroconf_failure_when_native_dns_sd_fallback_resolves_wrong_ip(self) -> None:
-        values = self.valid_doctor_values(
-            TC_HOST="root@10.0.0.2",
-            TC_MDNS_INSTANCE_NAME="Home",
-            TC_MDNS_HOST_LABEL="home",
-            TC_NETBIOS_NAME="Home",
-        )
-        resolve_error = CheckResult(
-            "FAIL",
-            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
-        )
-        native_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        native_record = BonjourResolvedService(
-            "Home",
-            "home.local",
-            "_smb._tcp.local.",
-            port=445,
-            ipv4=["10.0.0.99"],
-            fullname="Home._smb._tcp.local.",
-        )
-        native_debug = NativeDnsSdDiscoveryDiagnostics(
-            timeout_sec=6.0,
-            elapsed_sec=1.0,
-            status="ok",
-            service_types=["_smb._tcp.local."],
-            ip_version="V4Only",
-            instance_count=1,
-            resolved_count=1,
-            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
-        )
-        debug_fields: dict[str, object] = {}
-
-        run = self.run_doctor_with_mocks(
-            values,
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            skip_smb=True,
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
-                ),
-                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([native_instance], [native_record]), native_debug)
-                ),
-                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
-                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
-            },
-        )
-
-        self.assertTrue(run.fatal)
-        messages = [result.message for result in run.results]
-        self.assertIn("Bonjour IPv4: no discovered _smb._tcp instance matched expected device instance 'Home'", messages)
-        self.assertIn(
-            "Bonjour IPv4: expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
-            messages,
-        )
-        self.assertNotIn(
-            "Bonjour IPv4: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
-            messages,
-        )
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "zeroconf", "ipv6": "native_dns_sd"})
-        self.assertEqual(debug_fields["bonjour_native_fallback"], [native_debug, native_debug])
+    def test_run_doctor_checks_keeps_wrong_ip_failure_under_either_provider(self):
+        for provider in ("dns-sd", "zeroconf"):
+            with self.subTest(provider=provider):
+                run, debug, browse, diagnostics = self.run_selected_bonjour(self.selected_snapshot(ipv4=("10.0.0.99",)), provider=provider)
+                self.assertTrue(run.fatal)
+                self.assertTrue(any(r.status == "FAIL" and "10.0.0.99" in r.message and "expected 10.0.0.2" in r.message for r in run.results))
+                self.assertIs(debug["bonjour_discovery"], diagnostics)
+                browse.assert_called_once()
 
     def test_run_doctor_checks_uses_ip_only_bonjour_fallback_when_runtime_name_probe_fails(self) -> None:
         run = self.run_doctor_with_mocks(
@@ -1880,55 +1558,13 @@ class CheckTests(unittest.TestCase):
             )
         )
 
-    def test_run_doctor_checks_keeps_original_result_when_native_dns_sd_diagnostic_fails(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_NET_IFACE": "bridge0",
-            "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "Home",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_MDNS_INSTANCE_NAME": "Home",
-            "TC_MDNS_HOST_LABEL": "home",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-        }
-        diagnostics = BonjourDiscoveryDiagnostics(
-            service="_smb",
-            service_types=["_smb._tcp.local."],
-            timeout_sec=6.0,
-            elapsed_sec=6.0,
-            ip_version="V4Only",
-            instance_count=0,
-            resolved_count=0,
-            pending_count=0,
-            service_added_count=0,
-            service_updated_count=0,
-            resolve_attempt_count=0,
-            resolve_success_count=0,
-            resolve_error_count=0,
-        )
-        debug_fields: dict[str, object] = {}
-
-        with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
-            with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
-                with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
-                    with mock.patch(
-                        "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed",
-                        return_value=(BonjourDiscoverySnapshot([], []), None, diagnostics),
-                    ):
-                        with mock.patch("timecapsulesmb.checks.doctor_debug.browse_native_dns_sd", side_effect=RuntimeError("dns-sd broke")):
-                            results, fatal = run_doctor_checks(
-                                self.doctor_config(values),
-                                repo_root=REPO_ROOT,
-                                skip_ssh=True,
-                                skip_smb=True,
-                                debug_fields=debug_fields,
-                            )
-
-        self.assertTrue(fatal)
-        self.assertTrue(any(result.status == "FAIL" and "no resolved _smb._tcp service matched target IP 10.0.0.2" in result.message for result in results))
-        self.assertEqual(debug_fields["bonjour_native_dns_sd_error"], "RuntimeError: dns-sd broke")
+    def test_run_doctor_checks_keeps_query_failure_with_incomplete_diagnostics(self):
+        failure = CheckResult("FAIL", "Bonjour check failed: query failed")
+        run, debug, browse, diagnostics = self.run_selected_bonjour(BonjourDiscoverySnapshot([], []), discovery_error=failure)
+        self.assertTrue(run.fatal)
+        self.assertTrue(any("query failed" in r.message for r in run.results))
+        self.assertIs(debug["bonjour_discovery"], diagnostics)
+        browse.assert_called_once()
 
     def test_run_doctor_checks_marks_missing_env_as_fatal(self) -> None:
         values = {
@@ -4527,7 +4163,7 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=False),
             },
         )
 
@@ -4580,7 +4216,7 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=False),
             },
         )
 
@@ -4631,7 +4267,7 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=False),
             },
         )
 
@@ -4662,7 +4298,7 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=False),
             },
         )
 
@@ -4810,7 +4446,7 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
-                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+                "timecapsulesmb.discovery.bonjour.command_exists": mock.Mock(return_value=False),
             },
         )
 
@@ -6374,94 +6010,14 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             ip_address="fd00::2",
         )
 
-    def test_run_doctor_checks_bonjour_runs_family_specific_discovery(self) -> None:
-        instances = [
-            BonjourServiceInstance(
-                service_type="_smb._tcp.local.",
-                name="Time Capsule Samba 4",
-                fullname="Time Capsule Samba 4._smb._tcp.local.",
-            )
-        ]
-        snapshot_v4 = BonjourDiscoverySnapshot(
-            instances=instances,
-            resolved=[
-                BonjourResolvedService(
-                    name="Time Capsule Samba 4",
-                    hostname="timecapsulesamba4.local",
-                    service_type="_smb._tcp.local.",
-                    port=445,
-                    ipv4=["10.0.0.2"],
-                )
-            ],
-        )
-        snapshot_v6 = BonjourDiscoverySnapshot(
-            instances=instances,
-            resolved=[
-                BonjourResolvedService(
-                    name="Time Capsule Samba 4",
-                    hostname="timecapsulesamba4.local",
-                    service_type="_smb._tcp.local.",
-                    port=445,
-                    ipv6=["fd00::2"],
-                )
-            ],
-        )
-        diagnostics = BonjourDiscoveryDiagnostics(
-            service="_smb",
-            service_types=["_smb._tcp.local."],
-            timeout_sec=6.0,
-            elapsed_sec=6.0,
-            ip_version="V4Only",
-            instance_count=1,
-            resolved_count=1,
-            pending_count=0,
-            service_added_count=1,
-            service_updated_count=0,
-            resolve_attempt_count=1,
-            resolve_success_count=1,
-            resolve_error_count=0,
-            instances=snapshot_v4.instances,
-            resolved=snapshot_v4.resolved,
-        )
-        discover_mock = mock.Mock(
-            side_effect=[
-                (snapshot_v4, None, diagnostics),
-                (snapshot_v6, None, diagnostics),
-            ]
-        )
-        host_ip_mock = mock.Mock(
-            side_effect=lambda hostname, *, expected_ip, record_ips: CheckResult(
-                "PASS",
-                f"resolved Bonjour host {hostname} to {expected_ip or record_ips[0]} from service record",
-            )
-        )
-
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            xattr_result=CheckResult("PASS", "xattr ok"),
-            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
-            skip_smb=True,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": discover_mock,
-                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": host_ip_mock,
-            },
-        )
-
+    def test_run_doctor_checks_browses_once_and_evaluates_both_families(self):
+        run, _debug, browse, _diagnostics = self.run_selected_bonjour(self.selected_snapshot())
         self.assertFalse(run.fatal)
-        self.assertEqual(discover_mock.call_count, 2)
-        self.assertEqual(discover_mock.call_args_list[0].kwargs["family"], "ipv4")
-        self.assertEqual(discover_mock.call_args_list[0].kwargs["target_ip"], "10.0.0.2")
-        self.assertIsNone(discover_mock.call_args_list[0].kwargs["interfaces"])
-        self.assertEqual(discover_mock.call_args_list[1].kwargs["family"], "ipv6")
-        self.assertIsNone(discover_mock.call_args_list[1].kwargs["target_ip"])
-        self.assertIsNone(discover_mock.call_args_list[1].kwargs["interfaces"])
-        self.assertEqual(host_ip_mock.call_args_list[0].kwargs["expected_ip"], "10.0.0.2")
-        self.assertIsNone(host_ip_mock.call_args_list[1].kwargs["expected_ip"])
-        pass_messages = [result.message for result in run.results if result.status == "PASS"]
-        self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Time Capsule Samba 4'", pass_messages)
-        self.assertIn("Bonjour IPv4: resolved Bonjour host timecapsulesamba4.local to 10.0.0.2 from service record", pass_messages)
-        self.assertIn("Bonjour IPv6: discovered _smb._tcp instance 'Time Capsule Samba 4'", pass_messages)
-        self.assertIn("Bonjour IPv6: resolved Bonjour host timecapsulesamba4.local to fd00::2 from service record", pass_messages)
+        browse.assert_called_once()
+        self.assertEqual(browse.call_args.kwargs["target_ip"], "10.0.0.2")
+        self.assertTrue(browse.call_args.kwargs["include_related"])
+        self.assertTrue(any("Bonjour IPv4: resolved Bonjour host home.local" in r.message for r in run.results))
+        self.assertTrue(any("Bonjour IPv6: resolved Bonjour host home.local" in r.message for r in run.results))
 
     def test_run_doctor_checks_warns_when_nbns_query_fails(self) -> None:
         values = {

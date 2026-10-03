@@ -23,18 +23,13 @@ from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Union
 
-from timecapsulesmb.checks.network import (
-    LocalInterfaceNetwork,
-    RouteSelection,
-    local_interface_networks,
-    select_route_to_address,
-)
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, local_interface_networks
+from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.discovery.bonjour import (
-    SPLIT_FAMILIES,
     BonjourResolvedService,
     BonjourServiceInstance,
-    resolve_service_instance,
+    BonjourQuery,
 )
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.transport.local import tcp_connect_error
@@ -266,35 +261,30 @@ def probe_context_fields(
 def fresh_lookup(
     record: BonjourResolvedService,
     *,
-    resolve_instance: Callable[..., BonjourResolvedService | None] | None = None,
+    query: BonjourQuery | None = None,
 ) -> dict[str, object]:
     """Resolve the record's Bonjour name again and compare its addresses."""
-    resolve_instance = resolve_instance or resolve_service_instance
-    instance = BonjourServiceInstance(record.service_type, record.name, record.fullname)
-    with ThreadPoolExecutor(max_workers=len(SPLIT_FAMILIES)) as pool:
-        futures = {
-            family: pool.submit(resolve_instance, instance, FRESH_LOOKUP_TIMEOUT_MS, family=family)
-            for family in SPLIT_FAMILIES
-        }
+    instance = BonjourServiceInstance(record.service_type, record.name, record.fullname, record.interface_index)
+    resolved, diagnostics = (query or BonjourQuery()).resolve_detailed(instance, FRESH_LOOKUP_TIMEOUT_MS)
     result: dict[str, object] = {}
     now: list[str] = []
-    for family, future in futures.items():
-        try:
-            resolved = future.result()
-        except Exception as exc:
+    verified_families: set[int] = set()
+    for family, version in (("ipv4", 4), ("ipv6", 6)):
+        addresses, error = diagnostics.family_result(resolved, family)
+        if error:
             result[family] = "error"
-            result[f"{family}_error"] = (str(exc) or exc.__class__.__name__)[:200]
+            result[f"{family}_error"] = error[:200]
             continue
-        if resolved is None:
+        if not addresses:
             result[family] = "no_answer"
             continue
         result[family] = "answered"
-        for address in [*resolved.ipv4, *resolved.ipv6]:
+        verified_families.add(version)
+        for address in addresses:
             if not any(_same_address(address, known) for known in now):
                 now.append(address)
-    if any(result.get(family) == "answered" for family in SPLIT_FAMILIES):
-        # Zones are left out: the same interface can be named or numbered.
-        before = {str(ip) for ip in map(_parse_address, [*record.ipv4, *record.ipv6]) if ip is not None}
+    if verified_families:
+        before = {str(ip) for ip in map(_parse_address, [*record.ipv4, *record.ipv6]) if ip is not None and ip.version in verified_families}
         after = {str(ip) for ip in map(_parse_address, now) if ip is not None}
         result["addresses_changed"] = before != after
         result["added"] = [address_summary(address) for address in sorted(after - before)]

@@ -28,6 +28,8 @@ COMMAND_VALUE_BLACKLIST = {
     "TC_AIRPORT_SYAP",
 }
 COMMAND_FIELD_BLACKLIST = {
+    # Confirmed appliance identity belongs in the local profile, not telemetry.
+    "airport_mac",
     # These are already first-class operation fields.
     "configure_id",
     "device_model",

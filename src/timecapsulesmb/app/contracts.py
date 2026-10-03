@@ -164,6 +164,7 @@ def configure_payload(
     device_syap: str | None,
     device_model: str | None,
     compatibility: object | None,
+    airport_mac: str | None = None,
 ) -> dict[str, object]:
     return _with_schema({
         "config_path": config_path,
@@ -172,6 +173,7 @@ def configure_payload(
         "ssh_authenticated": ssh_authenticated,
         "device_syap": device_syap,
         "device_model": device_model,
+        "airport_mac": airport_mac,
         "compatibility": jsonable(compatibility),
         "device": _device_payload(host=host, syap=device_syap, model=device_model),
         **Summary("configuration_saved", "Configuration saved and SSH authentication verified.").fields(),
@@ -604,11 +606,13 @@ def doctor_payload(
     fatal: bool,
     results: list[CheckResult],
     error: str | None = None,
+    airport_mac: str | None = None,
 ) -> dict[str, object]:
     result_payload = [jsonable(result) for result in results]
     counts = doctor_status_counts(results)
     payload: dict[str, object] = {
         "fatal": fatal,
+        "airport_mac": airport_mac,
         "results": result_payload,
         "counts": counts,
         **(Summary("doctor_found_fatal", "Doctor found one or more fatal problems.") if fatal

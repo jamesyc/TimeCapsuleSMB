@@ -7,6 +7,7 @@ struct ConfiguredDeviceState: Equatable {
     let sshAuthenticated: Bool
     let syap: String?
     let model: String?
+    let airportMAC: String?
     let compatibility: DeviceCompatibilityPayload?
 
     init(payload: ConfigurePayload) {
@@ -16,6 +17,7 @@ struct ConfiguredDeviceState: Equatable {
         self.sshAuthenticated = payload.sshAuthenticated
         self.syap = payload.deviceSyap ?? payload.device?.syap
         self.model = payload.deviceModel ?? payload.device?.model
+        self.airportMAC = DeviceNetworkIdentity.normalizedAirportMAC(payload.airportMAC)
         self.compatibility = payload.compatibility
     }
 }

@@ -215,6 +215,9 @@ struct AppSettings: Codable, Equatable {
             forKey: .defaultBonjourTimeoutSeconds,
             defaultValue: defaults.defaultBonjourTimeoutSeconds
         )
+        if defaultBonjourTimeoutSeconds < 5 {
+            defaultBonjourTimeoutSeconds = defaults.defaultBonjourTimeoutSeconds
+        }
         defaultDeviceSettings = try container.decodeIfPresent(DeviceProfileSettings.self, forKey: .defaultDeviceSettings)
             ?? defaults.defaultDeviceSettings
         telemetryEnabled = try container.decodeIfPresent(Bool.self, forKey: .telemetryEnabled) ?? defaults.telemetryEnabled
@@ -444,7 +447,7 @@ struct AppSettingsDraft: Equatable {
     }
 
     func validatedSettings() throws -> AppSettings {
-        guard let bonjourTimeout = ValueParsers.nonNegativeDouble(defaultBonjourTimeoutSeconds) else {
+        guard let bonjourTimeout = ValueParsers.discoveryTimeout(defaultBonjourTimeoutSeconds) else {
             throw AppSettingsValidationError.invalidBonjourTimeout
         }
         guard let mountWait = ValueParsers.nonNegativeInteger(mountWaitSeconds) else {

@@ -38,6 +38,7 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         on_result=on_result,
         debug_fields=debug_fields,
     )
+    airport_mac = debug_fields.pop("airport_mac", None)
     context.add_debug_fields(**debug_fields)
     status_counts = doctor_status_counts(results)
     context.update_fields(
@@ -58,6 +59,6 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         context.set_error(error)
     return OperationResult(
         not fatal,
-        doctor_payload(fatal=fatal, results=results, error=error),
+        doctor_payload(fatal=fatal, results=results, error=error, airport_mac=airport_mac),
         diagnostic_error=context.build_error() if fatal else None,
     )

@@ -10,7 +10,7 @@
 "add_device.entry.discover" = "Entdecken";
 "add_device.entry.manual" = "Manuelle Adresse";
 "add_device.error.choose_target" = "Wählen Sie ein erkanntes Gerät oder geben Sie einen Host ein.";
-"add_device.error.invalid_bonjour_timeout" = "Das Bonjour-Zeitlimit muss eine nicht negative Zahl sein.";
+"add_device.error.invalid_bonjour_timeout" = "Das Zeitlimit für die Gerätesuche muss mindestens 5 Sekunden betragen.";
 "add_device.error.password_required" = "Gerätepasswort ist erforderlich.";
 "add_device.host_or_ip" = "Hostname oder IP-Adresse";
 "add_device.password" = "Gerätepasswort";
@@ -64,7 +64,7 @@
 "app_settings.default_bonjour_timeout" = "Zeitlimit für die Gerätesuche (Sekunden)";
 "app_settings.error.ata_idle" = "Die ATA-Leerlaufzeit muss eine nicht negative Zahl von Sekunden sein.";
 "app_settings.error.ata_standby" = "Die ATA-Standby-Zeit muss leer oder eine nicht negative Zahl von Sekunden sein.";
-"app_settings.error.bonjour_timeout" = "Das Bonjour-Zeitlimit muss eine nicht negative Zahl sein.";
+"app_settings.error.bonjour_timeout" = "Das Zeitlimit für die Gerätesuche muss mindestens 5 Sekunden betragen.";
 "app_settings.error.corrupt" = "App-Einstellungen konnten nicht gelesen werden: %@";
 "app_settings.error.mount_wait" = "Die Wartezeit beim Einbinden muss eine nicht negative ganze Zahl sein.";
 "app_settings.error.version_url" = "Die URL zur Versionsprüfung muss leer oder eine HTTP-/HTTPS-URL sein.";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "ATA-Leerlauf";
 
 "settings.standby" = "ATA-Standby";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "Das Zeitlimit für die Gerätesuche muss mindestens 5 Sekunden betragen.";
+"discovery.permission_unknown" = "Der Zugriff auf das lokale Netzwerk konnte nicht bestätigt werden. Die Gerätesuche wird fortgesetzt.";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "Validierung der Anfrage fehlgeschlagen";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "Ein oder mehrere Parameter des Vorgangs fehlten oder waren ungültig.";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "Überprüfen Sie die hervorgehobenen Felder.";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "Versuchen Sie es mit gültigen Werten erneut.";
+"backend.recovery.discover.local_network_permission_denied.title" = "Zugriff auf das lokale Netzwerk blockiert";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS verhindert, dass TimeCapsuleSMB auf Geräte in Ihrem lokalen Netzwerk zugreift.";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "Öffnen Sie Systemeinstellungen > Datenschutz & Sicherheit > Lokales Netzwerk.";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "Aktivieren Sie TimeCapsuleSMB unter „Lokales Netzwerk“.";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "Aktivieren Sie den Zugriff und wiederholen Sie die Gerätesuche.";
+"backend.error.discover.local_network_permission_denied" = "macOS verhindert, dass TimeCapsuleSMB auf Geräte in Ihrem lokalen Netzwerk zugreift.";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "Die Geräteidentität konnte nicht bestätigt werden. Aktualisieren Sie die Suche und verbinden Sie das gespeicherte Gerät erneut.";
+"discovery.identity_conflict" = "Mehrere gespeicherte Geräte stimmen mit diesem Gerät überein. Die gespeicherten Geräte überprüfen und doppelte Einträge mit „Vergessen“ entfernen.";
+"discovery.reconnect_existing" = "Gespeichertes Gerät „%@“ erneut verbinden";
+"backend.error.device_identity_mismatch" = "Die Geräteidentität konnte nicht bestätigt werden. Aktualisieren Sie die Suche und verbinden Sie das gespeicherte Gerät erneut.";
+"backend.recovery.device_identity_mismatch.title" = "Geräteidentität konnte nicht bestätigt werden";
+"backend.recovery.device_identity_mismatch.message" = "Die Geräteidentität konnte nicht bestätigt werden. Aktualisieren Sie die Suche und verbinden Sie das gespeicherte Gerät erneut.";
+"backend.recovery.device_identity_mismatch.action.1" = "Aktualisieren Sie die Suche und verbinden Sie das gespeicherte Gerät erneut.";
+
+"discovery.identity_owned" = "Dieses Gerät ist bereits als „%@“ gespeichert. Die gespeicherten Geräte überprüfen und doppelte Einträge mit „Vergessen“ entfernen.";
+"discovery.open_saved_device" = "Gespeichertes Gerät „%@“ öffnen";
+
+"discovery.reconnect_selected" = "Beim Sichern wird das ausgewählte Gerät erneut mit „%@“ verbunden. Die gespeicherten Einstellungen bleiben erhalten.";

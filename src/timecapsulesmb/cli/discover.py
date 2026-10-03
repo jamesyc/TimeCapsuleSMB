@@ -6,10 +6,10 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import add_config_argument, print_json, read_terminal_line
 from timecapsulesmb.discovery.bonjour import (
-    DEFAULT_BROWSE_TIMEOUT_SEC,
+    DEFAULT_BROWSE_TIMEOUT_SEC, validate_discovery_timeout,
     BonjourResolvedService,
     BonjourServiceInstance,
-    discover_snapshot_merged_detailed,
+    discover_snapshot_detailed,
     discovery_record_to_jsonable,
     service_instance_to_jsonable,
 )
@@ -76,7 +76,7 @@ def print_table(records: list[BonjourResolvedService]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discover Apple AirPort storage devices via mDNS/Bonjour")
     add_config_argument(parser)
-    parser.add_argument("--timeout", type=float, default=DEFAULT_BROWSE_TIMEOUT_SEC, help="Browse time in seconds (default: 6)")
+    parser.add_argument("--timeout", type=validate_discovery_timeout, default=DEFAULT_BROWSE_TIMEOUT_SEC, help="Browse time in seconds (default: 6)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--select", action="store_true", help="Interactively select one and print selection")
     return parser
@@ -86,7 +86,7 @@ def _run_discover(args: argparse.Namespace, command_context: CommandContext | No
     try:
         if command_context is not None:
             command_context.set_stage("bonjour_discovery")
-        snapshot, diagnostics = discover_snapshot_merged_detailed(timeout=args.timeout)
+        snapshot, diagnostics = discover_snapshot_detailed(timeout=args.timeout)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     records = snapshot.resolved

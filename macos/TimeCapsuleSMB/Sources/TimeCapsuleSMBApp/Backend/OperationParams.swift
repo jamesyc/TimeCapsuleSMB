@@ -27,7 +27,7 @@ enum OperationParams {
 
     enum Discovery {
         static func discover(timeout: Double) -> [String: JSONValue] {
-            ["timeout": .number(timeout)]
+            ["timeout": .number(timeout), "service": .string("_airport")]
         }
     }
 

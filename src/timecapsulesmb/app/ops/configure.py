@@ -312,6 +312,8 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             raise AppOperationError(str(exc), code="ssh_compatibility_failed") from exc
         if exc.code == "ssh_enable_timeout":
             raise AppOperationError(str(exc), code="ssh_enable_timeout") from exc
+        if exc.code == "device_identity_mismatch":
+            raise AppOperationError(str(exc), code=exc.code) from exc
         if exc.code == "unsupported_device":
             raise AppOperationError(str(exc), code="unsupported_device") from exc
         raise AppOperationError(str(exc), code="remote_error") from exc
@@ -343,4 +345,5 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         device_syap=result.identity.syap,
         device_model=result.identity.model,
         compatibility=jsonable(result.compatibility) if result.compatibility is not None else None,
+        airport_mac=result.airport_mac,
     ))

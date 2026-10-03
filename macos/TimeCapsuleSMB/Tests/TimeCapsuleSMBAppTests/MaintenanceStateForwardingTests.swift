@@ -139,7 +139,7 @@ final class MaintenanceStateForwardingTests: XCTestCase {
         let directory = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: directory.url)
         await registry.load()
-        let profile = try await registry.saveConfiguredDevice(
+        let profile = try await registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(), discoveredDevice: nil,
             passwordState: .available, preferredID: "device-one"
         )

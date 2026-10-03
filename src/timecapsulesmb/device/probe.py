@@ -28,6 +28,7 @@ from timecapsulesmb.core.config import (
     MAX_DNS_LABEL_BYTES,
     MAX_NETBIOS_NAME_BYTES,
 )
+from timecapsulesmb.discovery.models import normalize_airport_mac
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -308,6 +309,7 @@ class ProbeResult:
     airport_model: str | None = None
     airport_syap: str | None = None
     elf_endianness_detail: str | None = None
+    airport_mac: str | None = None
 
     @property
     def ssh_port_reachable(self) -> bool:
@@ -428,6 +430,7 @@ class AirportIdentityProbeResult:
     model: str | None
     syap: str | None
     detail: str
+    airport_mac: str | None = None
 
 
 @dataclass(frozen=True)
@@ -503,6 +506,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         airport_model=airport_identity.model,
         airport_syap=airport_identity.syap,
         elf_endianness_detail=elf_endianness_probe.detail,
+        airport_mac=airport_identity.airport_mac,
     )
 
 
@@ -692,14 +696,23 @@ def probe_remote_airport_identity_conn(connection: SshConnection) -> AirportIden
 if [ ! -x {DEVICE_ACP_PATH} ]; then
   exit 0
 fi
-{DEVICE_ACP_PATH} syAP syAM 2>/dev/null
+{DEVICE_ACP_PATH} -q syAP 2>/dev/null
+{DEVICE_ACP_PATH} -q syAM 2>/dev/null
+# waMA is optional. Keep model output even if this property is unavailable.
+if airport_mac=$({DEVICE_ACP_PATH} -q waMA 2>/dev/null); then
+  printf '\n%s\n' "$airport_mac"
+fi
+exit 0
 """
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
     if proc.returncode != 0:
         return AirportIdentityProbeResult(model=None, syap=None, detail=f"could not read AirPort identity: rc={proc.returncode}")
     if not proc.stdout:
         return AirportIdentityProbeResult(model=None, syap=None, detail=f"AirPort identity unavailable: {DEVICE_ACP_PATH} missing or empty output")
-    return extract_airport_identity_from_acp_output(proc.stdout)
+    identity = extract_airport_identity_from_acp_output(proc.stdout)
+    mac = next((value for line in proc.stdout.splitlines()
+                if (value := normalize_airport_mac(re.sub(r"^waMA\s*=\s*", "", line.strip())))), None)
+    return replace(identity, airport_mac=mac)
 
 
 def _truncate_utf8(value: str, max_bytes: int) -> str:

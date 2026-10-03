@@ -1601,11 +1601,16 @@ def test_homebrew_placeholder_path_maps_bottle_references_into_the_kegs(tmp_path
             package_app.homebrew_placeholder_path(reference, kegs)
 
 
+@pytest.mark.parametrize("reverse_roots", [False, True])
 def test_vendor_macho_dependencies_resolves_bottle_placeholders_per_architecture(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    reverse_roots: bool,
 ) -> None:
     package_app = load_package_app_module()
+    if reverse_roots:
+        roots = package_app.macho_vendor_roots
+        monkeypatch.setattr(package_app, "macho_vendor_roots", lambda app: list(reversed(roots(app))))
     app = tmp_path / "TimeCapsuleSMB.app"
     tools = app / "Contents" / "Resources" / "Tools" / "bin"
     kegs: dict[str, dict[str, Path]] = {}

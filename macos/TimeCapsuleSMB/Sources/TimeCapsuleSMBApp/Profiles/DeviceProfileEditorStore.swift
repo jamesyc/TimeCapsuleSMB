@@ -387,7 +387,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         var errors: [DeviceProfileEditorValidationError] = []
         if draft.trimmedHost.isEmpty {
             errors.append(.hostRequired)
-        } else if let duplicate = appStore.deviceRegistry.matchingProfile(host: draft.trimmedHost, bonjourFullname: nil),
+        } else if let duplicate = appStore.deviceRegistry.matchingProfile(host: draft.trimmedHost),
                   duplicate.id != profile.id {
             errors.append(.duplicateHost)
         }

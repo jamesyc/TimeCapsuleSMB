@@ -51,7 +51,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(profile.addressSummary, "IPv6 fd00::2")
     }
 
-    func testDuplicateMatchingUsesBonjourHostHostnameAndAddressIdentityButNotWeakMetadata() {
+    func testMatchingUsesEndpointEvidenceAndKeepsNamesAsHints() {
         let first = makeProfile(
             id: "one",
             host: "  TCAPSULE.LOCAL.  ",
@@ -73,13 +73,15 @@ final class DeviceProfileTests: XCTestCase {
         let sameLinkLocalAddress = makeProfile(id: "eight", host: "10.0.0.13", addresses: ["169.254.44.9"])
         let weakMetadataOnly = makeProfile(id: "four", host: "10.0.0.12", syap: "119", model: "Time Capsule")
 
-        XCTAssertTrue(DeviceProfile.matches(first, sameFullname))
-        XCTAssertTrue(DeviceProfile.matches(first, sameHost))
-        XCTAssertTrue(DeviceProfile.matches(first, sameHostWithRootUser))
-        XCTAssertTrue(DeviceProfile.matches(first, sameHostname))
-        XCTAssertTrue(DeviceProfile.matches(first, sameAddress))
-        XCTAssertFalse(DeviceProfile.matches(first, sameLinkLocalAddress))
-        XCTAssertFalse(DeviceProfile.matches(first, weakMetadataOnly))
+        XCTAssertFalse(first.network.matches(sameFullname.network))
+        XCTAssertTrue(first.network.sharesName(with: sameFullname.network))
+        XCTAssertTrue(first.network.matches(sameHost.network))
+        XCTAssertTrue(first.network.matches(sameHostWithRootUser.network))
+        XCTAssertFalse(first.network.matches(sameHostname.network))
+        XCTAssertTrue(first.network.sharesName(with: sameHostname.network))
+        XCTAssertFalse(first.network.matches(sameAddress.network))
+        XCTAssertFalse(first.network.matches(sameLinkLocalAddress.network))
+        XCTAssertFalse(first.network.matches(weakMetadataOnly.network))
     }
 
     func testRuntimeContextUsesProfileConfigPath() {

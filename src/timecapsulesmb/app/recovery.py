@@ -65,6 +65,13 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Review the highlighted fields.", "Retry with valid values."),
         retryable=True,
     ),
+    "device_identity_mismatch": RecoveryInfo(
+        "Device identity could not be confirmed",
+        "The device identity could not be confirmed. Refresh discovery and reconnect the saved device.",
+        ("Refresh discovery and reconnect the saved device.",),
+        retryable=True,
+        suggested_operation="configure",
+    ),
     "config_error": RecoveryInfo(
         "Configuration error",
         "The current .env configuration could not be read or used.",
@@ -532,6 +539,14 @@ _OPERATION_CODE_RECOVERY = {
     (operation, code): replace(info, localization_key=f"{operation}.{code}")
     for (operation, code), info in _OPERATION_CODE_RECOVERY.items()
 }
+_OPERATION_CODE_RECOVERY[("discover", "discovery_timeout_too_short")] = replace(
+    _DEFAULTS["validation_failed"], localization_key="discover.discovery_timeout_too_short",
+)
+_OPERATION_CODE_RECOVERY[("discover", "local_network_permission_denied")] = replace(
+    _DEFAULTS["local_network_permission_denied"],
+    actions=_DEFAULTS["local_network_permission_denied"].actions[:2] + ("Enable access, then retry discovery.",),
+    suggested_operation="discover", localization_key="discover.local_network_permission_denied",
+)
 _STAGE_RECOVERY = {
     (operation, code, stage): replace(info, localization_key=f"{operation}.{code}.{stage}")
     for (operation, code, stage), info in _STAGE_RECOVERY.items()

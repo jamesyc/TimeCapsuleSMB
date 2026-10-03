@@ -47,8 +47,8 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     AIRPORT_SERVICE,
     DEFAULT_BROWSE_TIMEOUT_SEC,
-    BonjourMergedDiscoveryDiagnostics,
-    discover_snapshot_merged_detailed,
+    BonjourQueryDiagnostics,
+    discover_snapshot_detailed,
     discovered_record_has_only_link_local_ips,
     discovered_record_root_host,
 )
@@ -131,11 +131,11 @@ def choose_device(records: Sequence[BonjourResolvedService]) -> Optional[Bonjour
 def discover_default_record(
     existing: dict[str, str],
     *,
-    on_diagnostics: Callable[[BonjourMergedDiscoveryDiagnostics], None] | None = None,
+    on_diagnostics: Callable[[BonjourQueryDiagnostics], None] | None = None,
     on_unsupported_syaps: Callable[[list[str]], None] | None = None,
 ) -> Optional[BonjourResolvedService]:
     print("Attempting to discover Time Capsule/Airport Extreme devices on the local network via mDNS...", flush=True)
-    snapshot, diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=DEFAULT_BROWSE_TIMEOUT_SEC)
+    snapshot, diagnostics = discover_snapshot_detailed(AIRPORT_SERVICE, timeout=DEFAULT_BROWSE_TIMEOUT_SEC)
     if on_diagnostics is not None:
         on_diagnostics(diagnostics)
     records = snapshot.resolved

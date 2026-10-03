@@ -6,7 +6,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
     func testStateInventoryIsExplicit() {
         XCTAssertEqual(
             DeviceDiscoveryState.allCases,
-            [.idle, .waitingForReadiness, .discovering, .empty, .ready, .paused, .readinessBlocked, .failed]
+            [.idle, .waitingForReadiness, .discovering, .checkingLocalNetwork, .empty, .ready, .paused, .readinessBlocked, .failed]
         )
     }
 
@@ -63,7 +63,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
                 testDeviceRecord()
             ]))])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -82,20 +82,20 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         let oldRecord = testDeviceRecord(
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.2"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let newRecord = testDeviceRecord(
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.80"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
                 newRecord
             ]))])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "device-one"
@@ -118,21 +118,21 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
             hostname: "ipv6-capsule.local.",
             ipv4: [],
             ipv6: ["fd00::2"],
-            fullname: "IPv6 Capsule._airport._tcp.local."
+            fullname: "IPv6 Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let newRecord = testDeviceRecord(
             hostname: "ipv6-capsule.local.",
             ipv4: [],
             ipv6: ["fd00::80"],
-            fullname: "IPv6 Capsule._airport._tcp.local."
+            fullname: "IPv6 Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
                 newRecord
             ]))])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "root@fd00::2"),
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "root@fd00::2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "device-one"
@@ -236,6 +236,164 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls, [])
     }
 
+    func testDiscoveryPreflightForwardsMetadataAndAirportScope() async throws {
+        let checker = FixedLocalNetworkPreflightChecker(status: .allowed)
+        let fixture = try await makeReadyFixture(responses: [.init(events: [
+            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [testDeviceRecord()]))
+        ])], checker: checker)
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { fixture.monitor.state == .ready }
+        let call = try XCTUnwrap(fixture.runner.calls.last)
+        XCTAssertEqual(call.params["service"], .string("_airport"))
+        XCTAssertEqual(call.params["macos_local_network_preflight_result"], .string("allowed"))
+        XCTAssertEqual(checker.checkCount, 1)
+        XCTAssertNil(fixture.monitor.warning)
+    }
+
+    func testUnknownPreflightContinuesAndQuietNetworkRetainsWarning() async throws {
+        let checker = FixedLocalNetworkPreflightChecker(status: .unknown, detail: "timeout")
+        let fixture = try await makeReadyFixture(responses: [.init(events: [
+            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+        ])], checker: checker)
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { fixture.monitor.state == .empty }
+        XCTAssertEqual(fixture.monitor.warning, L10n.string("discovery.permission_unknown"))
+        XCTAssertEqual(fixture.runner.calls.last?.params["macos_local_network_preflight_result"], .string("unknown"))
+    }
+
+    func testKnownDeniedPreflightUsesNormalBackendErrorAndRecovery() async throws {
+        let checker = FixedLocalNetworkPreflightChecker(status: .denied)
+        let fixture = try await makeReadyFixture(responses: [.init(events: [
+            BackendEvent.error(operation: "discover", code: "local_network_permission_denied", message: "denied")
+        ])], checker: checker)
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { fixture.monitor.state == .failed }
+        XCTAssertEqual(fixture.monitor.error?.code, "local_network_permission_denied")
+        XCTAssertEqual(fixture.runner.calls.last?.params["macos_local_network_preflight_result"], .string("denied"))
+        XCTAssertEqual(checker.checkCount, 1)
+    }
+
+    func testCancelledPreflightCannotLaunchLateDiscovery() async throws {
+        let checker = GatedDiscoveryPermissionChecker()
+        let fixture = try await makeReadyFixture(responses: [], checker: checker)
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { checker.isWaiting }
+        XCTAssertEqual(fixture.monitor.state, .checkingLocalNetwork)
+        fixture.monitor.cancel()
+        checker.finish(.allowed)
+        await Task.yield()
+        XCTAssertEqual(fixture.monitor.state, .idle)
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["capabilities", "validate-install"])
+    }
+
+    func testToolbarCancelDuringDiscoveryPermissionProbeRestoresAddDeviceControls() async throws {
+        let checker = GatedDiscoveryPermissionChecker()
+        let fixture = try await makeReadyFixture(responses: [], checker: checker)
+        let passwordStore = InMemoryPasswordStore()
+        let app = AppStore(appReadinessStore: fixture.readiness, deviceRegistry: fixture.registry,
+                           operationCoordinator: fixture.coordinator, passwordStore: passwordStore,
+                           deviceDiscovery: fixture.monitor)
+        let flow = AddDeviceFlowStore(coordinator: fixture.coordinator, registry: fixture.registry,
+                                      passwordStore: passwordStore, discovery: fixture.monitor)
+        flow.runDiscover()
+        try await waitUntilStoreState { checker.isWaiting && flow.state == .checkingLocalNetwork }
+        defer { checker.finish(.allowed) }
+        XCTAssertTrue(flow.isRunning)
+        XCTAssertTrue(flow.canCancel)
+        for route in [AppRoute.allDevices, .addDevice] {
+            app.navigate(to: route)
+            XCTAssertTrue(app.canCancelSelectedOperation)
+        }
+        app.cancelSelectedOperation()
+        checker.finish(.allowed)
+        try await waitUntilStoreState { flow.state == .idle }
+        XCTAssertFalse(flow.isRunning)
+        XCTAssertFalse(flow.canCancel)
+        XCTAssertFalse(app.canCancelSelectedOperation)
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["capabilities", "validate-install"])
+    }
+
+    func testConfigurePreflightOwnsItsUIWhileDiscoveryRefreshesAndAfterCancellation() async throws {
+        let checker = GatedDiscoveryPermissionChecker()
+        let fixture = try await makeReadyFixture(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+                payload: testDiscoverPayload(records: [testDeviceRecord()]))]),
+            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+                payload: testDiscoverPayload(records: []))])
+        ])
+        let flow = AddDeviceFlowStore(coordinator: fixture.coordinator, registry: fixture.registry,
+            passwordStore: InMemoryPasswordStore(), discovery: fixture.monitor, localNetworkPreflightChecker: checker)
+        flow.runDiscover()
+        try await waitUntilStoreState { flow.state == .discoveryReady && !fixture.coordinator.appLane.isBusy }
+        flow.password = "password"
+        flow.runConfigure()
+        try await waitUntilStoreState { checker.isWaiting && flow.state == .checkingLocalNetwork }
+        defer { checker.finish(.allowed) }
+        fixture.monitor.refresh()
+        try await waitUntilStoreState { fixture.monitor.state == .empty && !fixture.coordinator.appLane.isBusy }
+        XCTAssertEqual(flow.state, .checkingLocalNetwork)
+        XCTAssertNil(flow.error)
+        XCTAssertTrue(flow.canCancel)
+        flow.cancel()
+        checker.finish(.allowed)
+        try await waitUntilStoreState { flow.state == .passwordEntry }
+        XCTAssertFalse(fixture.runner.calls.contains { $0.operation == "configure" })
+        XCTAssertFalse(flow.isRunning)
+    }
+
+    func testPreflightCompletionRechecksBusyLaneAndReusesResultWhenItResumes() async throws {
+        let checker = GatedDiscoveryPermissionChecker()
+        let fixture = try await makeReadyFixture(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: []))], pauseAfterEvents: true),
+            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))])
+        ], checker: checker)
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { checker.isWaiting }
+        fixture.coordinator.run(operation: "doctor", params: [:], profile: nil)
+        try await waitUntilStoreState { fixture.coordinator.appLane.isBusy }
+        checker.finish(.allowed)
+        try await waitUntilStoreState { fixture.monitor.state == .paused }
+        XCTAssertFalse(fixture.runner.calls.contains { $0.operation == "discover" })
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { fixture.monitor.state == .empty }
+        XCTAssertEqual(checker.checkCount, 1)
+        XCTAssertEqual(fixture.runner.calls.last?.params["macos_local_network_preflight_result"], .string("allowed"))
+    }
+
+    func testSavedAddressStillAdvertisedDoesNotBecomeStaleWhenPreferenceChanges() async throws {
+        let record = testDeviceRecord(hostname: "office.local.", ipv4: ["10.0.0.80", "10.0.0.2"], fullname: "Office._airport._tcp.local.")
+        let fixture = try await makeReadyFixture(responses: [.init(events: [
+            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
+        ])])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "device-one")
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { fixture.monitor.state == .ready }
+        XCTAssertEqual(fixture.monitor.currentDiscoveredDevice(for: profile)?.connectionTarget, "10.0.0.80")
+        XCTAssertNil(fixture.monitor.staleEndpointNotice(for: profile))
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.host, "10.0.0.2")
+    }
+
+    func testMissingAddressFamilyDoesNotDeclareSavedEndpointStale() async throws {
+        let fullname = "Office._airport._tcp.local."
+        let current = testDeviceRecord(hostname: "office.local.", ipv4: ["10.0.0.80"], ipv6: [], fullname: fullname, airportMAC: "02:aa:bb:cc:dd:ee")
+        let previous = testDeviceRecord(hostname: "office.local.", ipv4: [], ipv6: ["fd00::2"], fullname: fullname, airportMAC: "02:aa:bb:cc:dd:ee")
+        let fixture = try await makeReadyFixture(responses: [.init(events: [
+            BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [current]))
+        ])])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "fd00::2", airportMAC: "02:aa:bb:cc:dd:ee"),
+            discoveredDevice: try DiscoveredDevice(record: previous.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "device-one")
+        fixture.monitor.startMonitoring()
+        try await waitUntilStoreState { fixture.monitor.state == .ready }
+        XCTAssertNotNil(fixture.monitor.currentDiscoveredDevice(for: profile))
+        XCTAssertNil(fixture.monitor.staleEndpointNotice(for: profile))
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.host, "fd00::2")
+    }
+
     private struct Fixture {
         let runner: PausingStoreTestRunner
         let coordinator: OperationCoordinator
@@ -244,7 +402,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         let monitor: DeviceDiscoveryStore
     }
 
-    private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> Fixture {
+    private func makeFixture(responses: [StoreTestRunner.Response], checker: LocalNetworkPreflightChecking? = nil) async throws -> Fixture {
         let temp = try TemporaryDirectory()
         let runner = PausingStoreTestRunner(responses: responses)
         let backend = BackendClient(runner: runner)
@@ -256,7 +414,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         )
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let monitor = DeviceDiscoveryStore(coordinator: coordinator, readinessStore: readiness, registry: registry)
+        let monitor = DeviceDiscoveryStore(coordinator: coordinator, readinessStore: readiness, registry: registry, localNetworkPreflightChecker: checker)
         return Fixture(
             runner: runner,
             coordinator: coordinator,
@@ -266,11 +424,11 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         )
     }
 
-    private func makeReadyFixture(responses: [StoreTestRunner.Response]) async throws -> Fixture {
+    private func makeReadyFixture(responses: [StoreTestRunner.Response], checker: LocalNetworkPreflightChecking? = nil) async throws -> Fixture {
         let fixture = try await makeFixture(responses: [
             .init(events: [BackendEvent(type: "result", operation: "capabilities", ok: true, payload: capabilitiesPayload())]),
             .init(events: [BackendEvent(type: "result", operation: "validate-install", ok: true, payload: validationPayload())])
-        ] + responses)
+        ] + responses, checker: checker)
         fixture.readiness.start()
         try await waitUntilStoreState { fixture.readiness.state.kind == .ready && !fixture.coordinator.appLane.isBusy }
         return fixture
@@ -326,5 +484,26 @@ private struct DiscoveryMonitorTestRuntimeResolver: AppRuntimeResolving {
 
     func runtimeIssues(for resolution: HelperResolution) -> [BundleRuntimeIssue] {
         issues
+    }
+}
+
+private final class GatedDiscoveryPermissionChecker: LocalNetworkPreflightChecking, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var checkCount: Int { lock.lock(); defer { lock.unlock() }; return count }
+    private var continuation: CheckedContinuation<LocalNetworkPreflightResult, Never>?
+    var isWaiting: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return continuation != nil
+    }
+    func check() async -> LocalNetworkPreflightResult {
+        await withCheckedContinuation { next in
+            lock.lock(); count += 1; continuation = next; lock.unlock()
+        }
+    }
+    func finish(_ status: LocalNetworkPreflightStatus) {
+        lock.lock(); let next = continuation; continuation = nil; lock.unlock()
+        next?.resume(returning: LocalNetworkPreflightResult(status: status, detail: nil,
+                      durationMilliseconds: 7, serviceType: "_airport._tcp"))
     }
 }

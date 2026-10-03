@@ -19,9 +19,7 @@ class DoctorBonjourResult:
     reason: str
     debug_needed: bool
     expected_debug: dict[str, str | None] | None
-    zeroconf_debug: object | None
-    native_fallback_debug: object | None = None
-    backend_debug: dict[str, str] | None = None
+    discovery_debug: object | None
     addresses: tuple[str, ...] = ()
 
 

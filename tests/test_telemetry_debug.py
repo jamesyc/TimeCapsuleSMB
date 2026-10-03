@@ -23,12 +23,13 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourServiceEvent,
     BonjourServiceInstance,
     BonjourResolvedService,
+    BonjourQueryDiagnostics,
+    BonjourFamilyDiscoveryAttempt,
 )
 from timecapsulesmb.discovery.native_dns_sd import (
     NativeDnsSdAddressResult,
     NativeDnsSdBrowseResult,
     NativeDnsSdDiscoveryDiagnostics,
-    NativeDnsSdDiagnostics,
     NativeDnsSdResolveResult,
     NativeDnsSdServiceEvent,
 )
@@ -40,6 +41,21 @@ from timecapsulesmb.telemetry.debug import (
 
 
 class TelemetryDebugTests(unittest.TestCase):
+    def test_query_diagnostics_serialize_attempts_once_without_mutating_provider_evidence(self) -> None:
+        record = BonjourResolvedService("Home", "home.local", ipv4=["10.0.0.2"])
+        attempts = [BonjourFamilyDiscoveryAttempt("ipv4", snapshot=BonjourDiscoverySnapshot([], [record])),
+                    BonjourFamilyDiscoveryAttempt("ipv6", error="IPv6 unavailable")]
+        evidence = [debug_summary(attempt) for attempt in attempts]
+        query = BonjourQueryDiagnostics(provider="zeroconf", service_types=["_smb._tcp.local."], timeout_sec=6,
+            elapsed_sec=6.1, instance_count=1, resolved_count=1, attempts=attempts, errors={"ipv6": "IPv6 unavailable"})
+        summary = debug_summary(query)
+        self.assertEqual(summary["errors"], {"ipv6": "IPv6 unavailable"})
+        self.assertEqual(summary["attempts"][0]["snapshot"]["resolved"][0]["ipv4"], ["10.0.0.2"])
+        self.assertEqual(summary["attempts"][1]["error"], "IPv6 unavailable")
+        self.assertIsNone(summary["details"])
+        self.assertEqual([debug_summary(attempt) for attempt in attempts], evidence)
+        self.assertEqual(len(summary["attempts"]), 2)
+
     def test_debug_summary_for_discovered_record_keeps_relevant_bonjour_fields(self) -> None:
         record = BonjourResolvedService(
             name="James's AirPort Time Capsule",
@@ -56,12 +72,34 @@ class TelemetryDebugTests(unittest.TestCase):
                 "service_type": "_airport._tcp.local.",
                 "name": "James's AirPort Time Capsule",
                 "hostname": "Jamess-AirPort-Time-Capsule.local",
+                "port": 0,
                 "ipv4": ["192.168.1.217"],
                 "ipv6": ["fe80::1"],
                 "syAP": "119",
                 "model": "TimeCapsule8,119",
             },
         )
+
+    def test_bonjour_interface_evidence_survives_direct_and_nested_summaries(self) -> None:
+        instances = [BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.", index)
+                     for index in (14, 18, None)]
+        records = [BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445,
+                   fullname=instance.fullname, interface_index=instance.interface_index,
+                   properties={"waMA": "02:aa:bb:cc:dd:ee"}) for instance in instances]
+        snapshot = BonjourDiscoverySnapshot(instances, records)
+        attempt = BonjourFamilyDiscoveryAttempt("ipv4", snapshot=snapshot)
+        query = BonjourQueryDiagnostics("zeroconf", ["_smb._tcp.local."], 6, 6, 3, 3, attempts=[attempt])
+        for summary in (debug_summary(snapshot), debug_summary(query)["attempts"][0]["snapshot"]):
+            self.assertEqual([r.get("interface_index") for r in summary["resolved"]], [14, 18, None])
+            self.assertEqual([i.get("interface_index") for i in summary["instances"]], [14, 18, None])
+            self.assertNotIn("interface_index", summary["resolved"][2])
+            self.assertNotIn("interface_index", summary["instances"][2])
+            for index, record in enumerate(records):
+                self.assertEqual(summary["resolved"][index], debug_summary(record))
+                self.assertNotIn("waMA", summary["resolved"][index])
+        self.assertEqual([debug_summary(i).get("interface_index") for i in instances], [14, 18, None])
+        records[0].name = "x" * 300
+        self.assertEqual(len(debug_summary(records[0])["name"]), 203)
 
     def test_debug_summary_for_bonjour_snapshot_is_compact_but_keeps_many_candidates(self) -> None:
         instances = [
@@ -183,10 +221,11 @@ class TelemetryDebugTests(unittest.TestCase):
             )
             for idx in range(55)
         ]
-        diagnostics = NativeDnsSdDiagnostics(
+        diagnostics = NativeDnsSdDiscoveryDiagnostics(
             timeout_sec=6.0,
             elapsed_sec=6.1,
-            status="ok",
+            status="ok", service_types=["_smb._tcp.local."], ip_version="IPv4+IPv6",
+            instance_count=55, resolved_count=0,
             browses=[
                 NativeDnsSdBrowseResult(
                     service_type="_smb._tcp",

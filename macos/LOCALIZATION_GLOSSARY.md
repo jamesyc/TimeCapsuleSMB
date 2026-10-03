@@ -236,3 +236,9 @@ Keep the approved English claims “Enable insecure SMB1”, “Default setting�
 The path label is **Path for xattrs repair**. Keep the technical abbreviation `xattrs` in translations of that label. ATA error messages use **non-negative number of seconds**, not “whole number” or “integer”; the wording change does not alter the integer parsing behavior.
 
 The four old custom NBNS/mDNS advertiser upload strings and six unused install-flow labels were removed. They are not retained for history. Maintenance still supports “No Reboot”, and current NetBSD4 deploy confirmations still describe reboot-then-activate. Do not remove those live messages.
+
+## Saved device identity
+
+“Reconnect saved device” associates the currently discovered appliance with an existing saved profile after identity verification. It preserves that profile’s settings, configuration path and credentials account. Use the existing terms for a saved device and reconnecting; avoid wording that implies restoring firmware or creating another saved device. “Device identity” identifies the appliance; a model name, Bonjour display name or IP address alone does not establish it. Keep the literal Apple property `waMA` and the abbreviation `MAC` unchanged in technical contexts.
+
+Identity conflicts refer to the existing toolbar action **Forget** (use its exact localized label). Forget removes a local saved profile and its local credentials/configuration; it does not reset or uninstall the appliance. Conflict guidance asks the user to review duplicate saved entries before using that action. **Open saved device** navigates to an existing profile without changing its identity or credentials.

@@ -20,21 +20,21 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.2"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let currentRecord = testDeviceRecord(
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.80"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await AppViewFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ])
         ], discoveryWaitsForReadiness: false)
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "device-one"

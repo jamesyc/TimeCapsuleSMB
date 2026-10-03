@@ -443,8 +443,8 @@ class ProbeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="NetBSD\n6.0\nearmv4\n")
             if "bs=1 skip=5" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="little\n")
-            if "/usr/bin/acp syAP syAM" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="syAP=0x00000077\nsyAM=TimeCapsule8,119\n")
+            if "/usr/bin/acp -q syAP" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="syAP=0x00000077\nsyAM=TimeCapsule8,119\nwaMA = 02-AA-BB-CC-DD-EE\n")
             self.fail(f"unexpected remote command: {remote_cmd}")
 
         with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
@@ -455,11 +455,26 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result.os_name, "NetBSD")
         self.assertEqual(result.elf_endianness, "little")
         self.assertEqual(result.airport_model, "TimeCapsule8,119")
+        self.assertEqual(result.airport_mac, "02:aa:bb:cc:dd:ee")
         self.assertEqual(run_ssh_mock.call_count, 3)
         for call in run_ssh_mock.call_args_list:
             args, _kwargs = call
             self.assertEqual(args[0], connection)
             self.assertEqual(len(args), 2)
+
+    def test_identity_probe_keeps_missing_or_invalid_mac_optional(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        for output, expected in (("02-AA-BB-CC-DD-EE\n", "02:aa:bb:cc:dd:ee"),
+                                 ("waMA = 02:aa:bb:cc:dd:ee\n", "02:aa:bb:cc:dd:ee"),
+                                 ("", None), ("unavailable\n", None),
+                                 ("waMA = 00:00:00:00:00:00\n", None)):
+            with self.subTest(output=output), mock.patch.object(probe, "run_ssh", return_value=subprocess.CompletedProcess(
+                [], 0, "syAP=0x00000077\nsyAM=TimeCapsule8,119\n" + output)) as query:
+                result = probe.probe_remote_airport_identity_conn(connection)
+                self.assertEqual(result.airport_mac, expected)
+                self.assertEqual(result.syap, "119")
+                self.assertEqual(result.model, "TimeCapsule8,119")
+                self.assertEqual(query.call_count, 1)
 
     def test_probe_device_conn_reports_closed_ssh_port_without_remote_probe(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")

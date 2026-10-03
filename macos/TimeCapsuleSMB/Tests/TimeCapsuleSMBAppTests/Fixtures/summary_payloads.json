@@ -263,6 +263,7 @@
       "ok": true,
       "operation": "configure",
       "payload": {
+        "airport_mac": null,
         "compatibility": null,
         "config_path": "/tmp/.env",
         "configure_id": "c",
@@ -1010,6 +1011,7 @@
       "ok": true,
       "operation": "doctor",
       "payload": {
+        "airport_mac": null,
         "counts": {
           "FAIL": 0,
           "INFO": 0,
@@ -1034,6 +1036,7 @@
       "ok": false,
       "operation": "doctor",
       "payload": {
+        "airport_mac": null,
         "counts": {
           "FAIL": 1,
           "INFO": 0,

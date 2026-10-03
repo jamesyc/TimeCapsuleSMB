@@ -82,6 +82,9 @@ struct DeviceListOverviewView: View {
                 .help(L10n.string("overview.discovery.refresh"))
             }
 
+            if let warning = deviceDiscovery.warning {
+                Text(warning).foregroundStyle(.orange)
+            }
             discoveryContent
         }
     }
@@ -92,6 +95,8 @@ struct DeviceListOverviewView: View {
         case .idle, .waitingForReadiness:
             Text(L10n.string("overview.discovery.waiting"))
                 .foregroundStyle(.secondary)
+        case .checkingLocalNetwork:
+            ProgressView(L10n.string("add_device.progress.local_network.message"))
         case .discovering:
             ProgressView(L10n.string("overview.discovery.discovering"))
         case .paused:
@@ -104,6 +109,9 @@ struct DeviceListOverviewView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(deviceDiscovery.error?.message ?? L10n.string("overview.discovery.failed"))
                     .foregroundStyle(.red)
+                if deviceDiscovery.error?.code == "local_network_permission_denied", let url = LocalNetworkRecovery.settingsURL {
+                    Link(L10n.string("recovery.action.open_system_settings"), destination: url)
+                }
                 Button(L10n.string("overview.discovery.refresh")) {
                     deviceDiscovery.refresh()
                 }

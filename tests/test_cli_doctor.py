@@ -50,7 +50,7 @@ class CliDoctorTests(CliTestCase):
         results = [doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched configured instance 'Home'")]
 
         def fake_run_doctor_checks(*_args, **kwargs):
-            kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "ip_version": "V4Only"}
+            kwargs["debug_fields"]["bonjour_discovery"] = {"instance_count": 0, "ip_version": "V4Only"}
             kwargs["debug_fields"]["remote_rc_local_log_tail"] = "rc line 1\nrc line 2"
             kwargs["debug_fields"]["remote_discovery_log_tail"] = "mdns line"
             return results, True
@@ -61,9 +61,23 @@ class CliDoctorTests(CliTestCase):
                     rc = doctor.main([])
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
-        self.assertIn("bonjour_zeroconf={instance_count:0,ip_version:V4Only}", telemetry_error)
+        self.assertIn("bonjour_discovery={instance_count:0,ip_version:V4Only}", telemetry_error)
         self.assertIn("remote_rc_local_log_tail=rc line 1\nrc line 2", telemetry_error)
         self.assertIn("remote_discovery_log_tail=mdns line", telemetry_error)
+
+    def test_doctor_failure_telemetry_excludes_confirmed_hardware_identity(self) -> None:
+        def checks(*_args, **kwargs):
+            kwargs["debug_fields"].update(airport_mac="02:aa:bb:cc:dd:ee", bonjour_link={"verdict": "shared"})
+            return [doctor.CheckResult("FAIL", "example failure")], True
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=checks), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.main([]), 1)
+        error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertNotIn("airport_mac", error)
+        self.assertNotIn("02:aa:bb:cc:dd:ee", error)
+        self.assertIn("bonjour_link={verdict:shared}", error)
 
     def test_doctor_telemetry_reports_nbns_subnet_outcome_on_a_passing_run(self) -> None:
         # Debug fields ship only inside a fatal run's error, so an off-subnet
@@ -144,141 +158,74 @@ class CliDoctorTests(CliTestCase):
         self.assertIn("<truncated", telemetry_error)
         self.assertNotIn(raw_stdout, telemetry_error)
 
-    def test_doctor_failure_telemetry_reports_empty_zeroconf_without_dns_sd_diagnosis(self) -> None:
-        output = io.StringIO()
+    def test_doctor_failure_telemetry_reports_empty_neutral_query(self) -> None:
         results = [doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched expected device instance 'Home'")]
 
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["bonjour_expected"] = {
-                "instance_name": "Home",
-                "host_label": "home",
-                "target_ip": "10.0.0.2",
+                "instance_name": "Home", "host_label": "home", "target_ip": "10.0.0.2",
             }
-            kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "service_event_count": 0, "ptr_record_count": 0}
-            kwargs["debug_fields"]["bonjour_native_dns_sd"] = {
-                "status": "ok",
-                "timeout_sec": 6.0,
-                "elapsed_sec": 6.125,
-                "browses": [
-                    {
-                        "service_type": "_smb._tcp",
-                        "events": [
-                            {"service_type": "_smb._tcp", "action": "Add", "name": "Home"},
-                        ],
-                    }
-                ],
+            kwargs["debug_fields"]["bonjour_discovery"] = {
+                "provider": "dns-sd", "timeout_sec": 6.0, "elapsed_sec": 6.125,
+                "instance_count": 0, "resolved_count": 0, "pending_count": 0,
             }
             return results, True
 
-        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
-            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
-                with redirect_stdout(output):
-                    rc = doctor.main([])
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks), \
+             redirect_stdout(io.StringIO()):
+            rc = doctor.main([])
         self.assertEqual(rc, 1)
-        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
-        self.assertIn("Discovery context:", telemetry_error)
-        self.assertIn(
-            "INFO expected Bonjour identity: instance_name='Home' host_label='home' target_ip='10.0.0.2'",
-            telemetry_error,
-        )
-        self.assertIn(
-            "INFO Python zeroconf discovered 0 Bonjour instances during doctor; "
-            "Bonjour registration path needs investigation",
-            telemetry_error,
-        )
-        self.assertIn(
-            "INFO Python zeroconf diagnostics: instance_count=0 service_event_count=0 ptr_record_count=0",
-            telemetry_error,
-        )
-        self.assertIn("INFO native dns-sd diagnostics: status=ok timeout_sec=6.0 elapsed_sec=6.125", telemetry_error)
-        self.assertIn("INFO native dns-sd observed _smb._tcp instances: 'Home'", telemetry_error)
-        self.assertIn("INFO native dns-sd observed expected _smb._tcp instance: yes", telemetry_error)
-        self.assertNotIn("INFO native dns-sd discovered expected _smb._tcp instance", telemetry_error)
-        self.assertNotIn("likely doctor false negative", telemetry_error)
-
-    def test_doctor_error_reports_native_dns_sd_as_telemetry_only(self) -> None:
-        results = [
-            doctor.CheckResult(
-                "FAIL",
-                "no discovered _smb._tcp instance matched expected device instance 'Home'",
-            )
-        ]
-        error = doctor.build_doctor_error(
-            results,
-            {
-                "bonjour_expected": {"instance_name": "Home"},
-                "bonjour_zeroconf": {"instance_count": 0},
-                "bonjour_native_dns_sd": {
-                    "status": "ok",
-                    "browses": [
-                        {
-                            "service_type": "_smb._tcp",
-                            "events": [
-                                {"service_type": "_smb._tcp", "action": "Add", "name": "Kitchen"},
-                            ],
-                        }
-                    ],
-                },
-            },
-        )
-        self.assertIsNotNone(error)
-        assert error is not None
+        error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("Discovery context:", error)
-        self.assertIn("INFO expected Bonjour identity: instance_name='Home'", error)
-        self.assertIn("INFO Python zeroconf discovered 0 Bonjour instances during doctor", error)
-        self.assertIn("INFO native dns-sd diagnostics: status=ok", error)
-        self.assertIn("INFO native dns-sd observed _smb._tcp instances: 'Kitchen'", error)
-        self.assertIn("INFO native dns-sd observed expected _smb._tcp instance: no", error)
-        self.assertNotIn("INFO native dns-sd discovered expected _smb._tcp instance", error)
-        self.assertNotIn("likely doctor false negative", error)
+        self.assertIn("INFO expected Bonjour identity: instance_name='Home' host_label='home' target_ip='10.0.0.2'", error)
+        self.assertIn("INFO Bonjour discovered 0 instance(s), but no matching _smb._tcp instance", error)
+        self.assertIn("INFO Bonjour diagnostics: provider=dns-sd timeout_sec=6.0 elapsed_sec=6.125 instance_count=0 resolved_count=0 pending_count=0", error)
+        self.assertIn("bonjour_discovery={provider:dns-sd", error)
+
+    def test_doctor_error_uses_common_counts_for_either_provider(self) -> None:
+        results = [doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched expected device instance 'Home'")]
+        for provider in ("dns-sd", "zeroconf"):
+            with self.subTest(provider=provider):
+                error = doctor.build_doctor_error(results, {
+                    "bonjour_expected": {"instance_name": "Home"},
+                    "bonjour_discovery": {
+                        "provider": provider, "instance_count": 1, "resolved_count": 1,
+                        # Transport details are opaque to the Doctor formatter.
+                        "details": {"unexpected_future_format": True},
+                    },
+                })
+                self.assertIsNotNone(error)
+                self.assertIn("INFO expected Bonjour identity: instance_name='Home'", error)
+                self.assertIn("INFO Bonjour discovered 1 instance(s), but no matching _smb._tcp instance", error)
+                self.assertIn(f"INFO Bonjour diagnostics: provider={provider} instance_count=1 resolved_count=1", error)
+                self.assertNotIn("unexpected_future_format", error)
+                self.assertNotIn("likely doctor false negative", error)
 
     def test_doctor_error_preserves_expected_instance_from_failure_message_for_telemetry(self) -> None:
-        results = [
-            doctor.CheckResult(
-                "FAIL",
-                "no discovered _smb._tcp instance matched expected device instance 'Home'",
-            )
-        ]
-        error = doctor.build_doctor_error(
-            results,
-            {
-                "bonjour_zeroconf": {"instance_count": 0},
-                "bonjour_native_dns_sd": {
-                    "status": "ok",
-                    "browses": [
-                        {
-                            "service_type": "_smb._tcp",
-                            "events": [
-                                {"service_type": "_smb._tcp", "action": "Add", "name": "Home"},
-                            ],
-                        }
-                    ],
-                },
-            },
-        )
+        error = doctor.build_doctor_error([
+            doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched expected device instance 'Home'"),
+        ], {"bonjour_discovery": {"provider": "dns-sd", "instance_count": 0}})
         self.assertIsNotNone(error)
-        assert error is not None
         self.assertIn("INFO expected Bonjour identity: instance_name='Home'", error)
-        self.assertIn("INFO native dns-sd observed expected _smb._tcp instance: yes", error)
+        self.assertIn("INFO Bonjour discovered 0 instance(s)", error)
         self.assertNotIn("likely doctor false negative", error)
 
-    def test_doctor_error_reports_native_dns_sd_diagnostic_errors_as_telemetry(self) -> None:
-        results = [
-            doctor.CheckResult(
-                "FAIL",
-                "no discovered _smb._tcp instance matched expected device instance 'Home'",
-            )
-        ]
-        error = doctor.build_doctor_error(
-            results,
-            {
-                "bonjour_zeroconf": {"instance_count": 0},
-                "bonjour_native_dns_sd_error": "RuntimeError: dns-sd broke",
-            },
-        )
-        self.assertIsNotNone(error)
-        assert error is not None
-        self.assertIn("INFO native dns-sd diagnostic error: RuntimeError: dns-sd broke", error)
+    def test_doctor_failure_telemetry_preserves_query_error_details(self) -> None:
+        results = [doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched expected device instance 'Home'")]
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["bonjour_discovery"] = {
+                "provider": "dns-sd", "instance_count": 0,
+                "details": {"error": "Bonjour query error -65537"},
+            }
+            return results, True
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.main([]), 1)
+        error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("INFO Bonjour diagnostics: provider=dns-sd instance_count=0", error)
+        self.assertIn("details:{error:Bonjour query error -65537}", error)
         self.assertNotIn("likely doctor false negative", error)
 
     def test_doctor_error_reports_unicast_smb_when_bonjour_is_empty(self) -> None:
@@ -291,7 +238,7 @@ class CliDoctorTests(CliTestCase):
         error = doctor.build_doctor_error(
             results,
             {
-                "bonjour_zeroconf": {"instance_count": 0},
+                "bonjour_discovery": {"instance_count": 0},
                 "authenticated_smb_listing_attempts": [
                     {
                         "server": "home.local",
@@ -321,7 +268,7 @@ class CliDoctorTests(CliTestCase):
         error = doctor.build_doctor_error(
             results,
             {
-                "bonjour_zeroconf": {"instance_count": 0},
+                "bonjour_discovery": {"instance_count": 0},
                 "authenticated_smb_listing_attempts": [
                     {"outcome": "pass", "expected_share_found": True},
                 ],

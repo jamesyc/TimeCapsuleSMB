@@ -72,7 +72,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testUndoingDraftChangeReturnsEditorToCleanState() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -96,7 +96,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testCleanEditorSyncsToUpdatedProfileBaseline() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -115,7 +115,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testUnchangedHostSaveSynchronizesProfileSettingsAndConfigWithoutDeviceConfigure() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -164,7 +164,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testEquivalentHostEditDoesNotRunBackendConfigure() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -187,7 +187,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testPasswordOnlySaveUpdatesKeychainAndClearsDraft() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -216,7 +216,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testPasswordSaveFailureKeepsDraftAndDoesNotMarkAvailable() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -237,7 +237,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testResetClearsPendingProfileAndPasswordChanges() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -260,7 +260,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testBlankDisplayNameIsAllowedAndFallsBackThroughTitlePolicy() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2", model: "TimeCapsule8,119"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -281,13 +281,13 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testInvalidHostDuplicateHostAndInvalidMountWaitSaveNothing() async throws {
         let fixture = try await makeFixture(responses: [])
-        let first = try await fixture.registry.saveConfiguredDevice(
+        let first = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        _ = try await fixture.registry.saveConfiguredDevice(
+        _ = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -317,7 +317,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
     func testChangedHostRequiresSavedPassword() async throws {
         let fixture = try await makeFixture(responses: [])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -345,7 +345,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
                 )
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -379,7 +379,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
                 )
             ])
         ])
-        var profile = try await fixture.registry.saveConfiguredDevice(
+        var profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -481,7 +481,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             ],
             localNetworkPreflightChecker: checker
         )
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -506,7 +506,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
                 BackendEvent(type: "error", operation: "configure", code: "auth_failed", message: "bad password")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
         ])
-        let authProfile = try await auth.registry.saveConfiguredDevice(
+        let authProfile = try await auth.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -530,7 +530,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
                 BackendEvent(type: "error", operation: "configure", code: "unsupported_device", message: "unsupported")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
         ])
-        let unsupportedProfile = try await unsupported.registry.saveConfiguredDevice(
+        let unsupportedProfile = try await unsupported.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -551,24 +551,24 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.2"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let currentRecord = testDeviceRecord(
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.80"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80"))
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80", airportMAC: "02:aa:bb:cc:dd:ee"))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "device-one"
@@ -592,24 +592,24 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.2"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let currentRecord = testDeviceRecord(
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.80"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80"))
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80", airportMAC: "02:aa:bb:cc:dd:ee"))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "device-one"
@@ -645,25 +645,25 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             hostname: "ipv6-capsule.local.",
             ipv4: [],
             ipv6: ["fd00::2"],
-            fullname: "IPv6 Capsule._airport._tcp.local."
+            fullname: "IPv6 Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let currentRecord = testDeviceRecord(
             name: "IPv6 Capsule",
             hostname: "ipv6-capsule.local.",
             ipv4: [],
             ipv6: ["fd00::80"],
-            fullname: "IPv6 Capsule._airport._tcp.local."
+            fullname: "IPv6 Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@fd00::80"))
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@fd00::80", airportMAC: "02:aa:bb:cc:dd:ee"))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "root@fd00::2"),
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "root@fd00::2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "device-one"
@@ -690,21 +690,21 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.2"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let currentRecord = testDeviceRecord(
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.80"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ])
         ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "device-one"

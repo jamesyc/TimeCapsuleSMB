@@ -4,14 +4,16 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import discover_payload
 from timecapsulesmb.device.compat import unsupported_syaps
 from timecapsulesmb.discovery.bonjour import (
-    DEFAULT_BROWSE_TIMEOUT_SEC,
-    BonjourDiscoverySnapshot,
-    discover_snapshot_merged_detailed,
+    DEFAULT_BROWSE_TIMEOUT_SEC, DiscoveryTimeoutError, validate_discovery_timeout,
+    SERVICE_TYPES,
+    BonjourDiscoverySnapshot, BonjourPermissionDenied,
+    discover_snapshot_detailed,
     discovery_record_to_jsonable,
     service_instance_to_jsonable,
 )
 from timecapsulesmb.discovery.devices import device_candidate_to_jsonable, device_candidates_from_records
-from timecapsulesmb.services.app import OperationResult, float_param
+from timecapsulesmb.services.app import OperationResult, AppOperationError
+from timecapsulesmb.app.ops.configure import add_local_network_preflight_debug_fields, local_network_preflight_denied
 
 def snapshot_payload(snapshot: BonjourDiscoverySnapshot) -> dict[str, object]:
     devices = device_candidates_from_records(snapshot.resolved)
@@ -23,9 +25,22 @@ def snapshot_payload(snapshot: BonjourDiscoverySnapshot) -> dict[str, object]:
 
 
 def discover_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    timeout = float_param(params, "timeout", DEFAULT_BROWSE_TIMEOUT_SEC)
+    try:
+        timeout = validate_discovery_timeout(params.get("timeout", DEFAULT_BROWSE_TIMEOUT_SEC))
+    except DiscoveryTimeoutError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc
+    service = params.get("service")
+    if service is not None and (not isinstance(service, str) or not any(t == service or t.startswith(service + ".") for t in SERVICE_TYPES)):
+        raise AppOperationError("Unknown Bonjour service filter", code="validation_failed")
+    add_local_network_preflight_debug_fields(params, context)
+    if local_network_preflight_denied(params):
+        context.stage("local_network_preflight")
+        raise AppOperationError("macOS is blocking TimeCapsuleSMB from accessing devices on your local network.", code="local_network_permission_denied")
     context.stage("bonjour_discovery")
-    snapshot, diagnostics = discover_snapshot_merged_detailed(timeout=timeout)
+    try:
+        snapshot, diagnostics = discover_snapshot_detailed(**({"service": service} if service is not None else {}), timeout=timeout)
+    except BonjourPermissionDenied as exc:
+        raise AppOperationError(str(exc), code="local_network_permission_denied") from exc
     payload = discover_payload(snapshot_payload(snapshot))
     counts = payload.get("counts")
     devices = payload.get("devices")

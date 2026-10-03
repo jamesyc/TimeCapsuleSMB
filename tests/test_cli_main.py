@@ -28,7 +28,7 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.paths import AppPaths
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
-    BonjourMergedDiscoveryDiagnostics,
+    BonjourQueryDiagnostics,
     BonjourServiceInstance,
     BonjourResolvedService,
 )
@@ -396,7 +396,7 @@ class CliMainTests(CliTestCase):
         )
         output = io.StringIO()
         bad = UnicodeDecodeError("utf-8", b"\xd0a", 0, 1, "invalid continuation byte")
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", return_value=(snapshot, None)):
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_detailed", return_value=(snapshot, None)):
             with mock.patch("builtins.input", side_effect=[bad, "1"]) as input_mock:
                 with redirect_stdout(output):
                     rc = discover.run_cli(["--select"])
@@ -421,8 +421,8 @@ class CliMainTests(CliTestCase):
             ],
             resolved=[record],
         )
-        diagnostics = BonjourMergedDiscoveryDiagnostics(
-            service=None,
+        diagnostics = BonjourQueryDiagnostics(
+            provider="zeroconf",
             service_types=[],
             timeout_sec=6.0,
             elapsed_sec=0.0,
@@ -430,7 +430,7 @@ class CliMainTests(CliTestCase):
             resolved_count=len(snapshot.resolved),
         )
         with mock.patch("timecapsulesmb.cli.discover.ensure_install_id"):
-            with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", return_value=(snapshot, diagnostics)):
+            with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_detailed", return_value=(snapshot, diagnostics)):
                 with redirect_stdout(output):
                     rc = discover.main(["--json"])
         self.assertEqual(rc, 0)

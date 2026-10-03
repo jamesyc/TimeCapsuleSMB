@@ -55,6 +55,7 @@ def bonjour_record_from_selected_record(selected: Mapping[str, object] | None) -
         ipv6=tuple(str(ip) for ip in selected.get("ipv6", ()) if ip),
         properties=selected_record_properties(selected),
         fullname=str(selected.get("fullname") or ""),
+        interface_index=selected.get("interface_index") if type(selected.get("interface_index")) is int else None,
     )
 
 

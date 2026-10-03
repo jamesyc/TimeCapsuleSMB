@@ -12,7 +12,6 @@ from timecapsulesmb.device.probe import (
     read_runtime_ram_diagnostics_conn,
 )
 from timecapsulesmb.device.storage import mast_probe_debug_summary, probe_mast_diagnostics_conn
-from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 
 
 _MAST_PROBE_DISK_FAILURE_MESSAGES = frozenset(
@@ -40,33 +39,16 @@ def _doctor_results_need_mast_probe(results: Iterable[CheckResult]) -> bool:
 
 
 def _add_bonjour_debug_fields(
-    debug_fields: dict[str, object] | None,
-    *,
-    bonjour_debug_needed: bool,
+    debug_fields: dict[str, object] | None, *, bonjour_debug_needed: bool,
     bonjour_expected_debug: dict[str, str | None] | None,
-    bonjour_zeroconf_debug: object | None,
-    bonjour_native_fallback_debug: object | None = None,
-    bonjour_backend_debug: dict[str, str] | None = None,
+    bonjour_discovery_debug: object | None,
 ) -> None:
     if not bonjour_debug_needed or debug_fields is None:
         return
     if bonjour_expected_debug is not None:
         debug_fields["bonjour_expected"] = bonjour_expected_debug
-    if bonjour_zeroconf_debug is not None:
-        debug_fields["bonjour_zeroconf"] = bonjour_zeroconf_debug
-    if bonjour_native_fallback_debug is not None:
-        debug_fields["bonjour_native_fallback"] = bonjour_native_fallback_debug
-    if bonjour_backend_debug:
-        debug_fields["bonjour_backend"] = bonjour_backend_debug
-    if bonjour_native_fallback_debug is not None:
-        return
-    try:
-        native_dns_sd = browse_native_dns_sd()
-    except Exception as e:
-        debug_fields["bonjour_native_dns_sd_error"] = f"{type(e).__name__}: {e}"
-    else:
-        if native_dns_sd is not None:
-            debug_fields["bonjour_native_dns_sd"] = native_dns_sd
+    if bonjour_discovery_debug is not None:
+        debug_fields["bonjour_discovery"] = bonjour_discovery_debug
 
 
 def _add_remote_service_socket_debug(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:

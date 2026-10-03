@@ -118,6 +118,17 @@ struct AddDeviceView: View {
                 }
             }
 
+            if let message = store.reconnectMessage {
+                Text(message)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let profile = store.suggestedProfile {
+                Button(L10n.format("discovery.reconnect_existing", profile.title)) {
+                    store.reconnectSuggestedProfile()
+                }
+                .disabled(store.isRunning)
+            }
             HStack {
                 Button {
                     store.runConfigure()
@@ -139,6 +150,9 @@ struct AddDeviceView: View {
                     .foregroundStyle(.green)
             }
 
+            if let warning = store.discovery.warning {
+                Text(warning).foregroundStyle(.orange)
+            }
             if let error = store.error {
                 ErrorRecoveryView(error: error) { action in
                     store.handleRecoveryAction(action)

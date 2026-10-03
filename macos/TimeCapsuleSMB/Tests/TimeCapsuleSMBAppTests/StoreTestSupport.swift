@@ -2,6 +2,29 @@ import Foundation
 import XCTest
 @testable import TimeCapsuleSMBApp
 
+// Fixture setup uses the same construction and persistence primitives as the app.
+// Existing profiles are chosen explicitly by the caller; this helper owns no matching policy.
+@MainActor
+extension DeviceRegistryStore {
+    @discardableResult
+    func storeTestProfile(
+        configuredDevice: ConfiguredDeviceState,
+        discoveredDevice: DiscoveredDevice?,
+        passwordState: DevicePasswordState,
+        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased(),
+        existingProfileID: DeviceProfile.ID? = nil
+    ) async throws -> DeviceProfile {
+        let profile = try await makeConfiguredDeviceProfile(
+            configuredDevice: configuredDevice,
+            discoveredDevice: discoveredDevice,
+            passwordState: passwordState,
+            preferredID: preferredID,
+            existingProfileID: existingProfileID
+        )
+        return try await saveProfile(profile)
+    }
+}
+
 final class InMemoryPasswordStore: PasswordStore {
     enum Failure: Error {
         case read
@@ -534,9 +557,12 @@ func testDeviceRecord(
     model: String = "Time Capsule",
     fullname: String = "Office Capsule._airport._tcp.local.",
     serviceType: String = "_airport._tcp.local.",
-    services: [String] = ["_airport._tcp.local."]
+    services: [String] = ["_airport._tcp.local."],
+    airportMAC: String? = nil
 ) -> JSONValue {
-    .object([
+    var properties: [String: JSONValue] = ["syAP": .string(syap), "model": .string(model)]
+    if let airportMAC { properties["waMA"] = .string(airportMAC) }
+    return .object([
         "name": .string(name),
         "hostname": .string(hostname),
         "service_type": .string(serviceType),
@@ -544,10 +570,7 @@ func testDeviceRecord(
         "ipv4": .array(ipv4.map(JSONValue.string)),
         "ipv6": .array(ipv6.map(JSONValue.string)),
         "services": .array(services.map(JSONValue.string)),
-        "properties": .object([
-            "syAP": .string(syap),
-            "model": .string(model)
-        ]),
+        "properties": .object(properties),
         "fullname": .string(fullname)
     ])
 }
@@ -710,7 +733,8 @@ extension DiscoveredDevice {
             networkAddresses: identity.addresses,
             syap: Self.testNonEmpty(record.properties["syAP"] ?? record.properties["syap"]),
             model: Self.testNonEmpty(record.properties["model"] ?? record.properties["am"]),
-            rawRecord: record.jsonValue
+            rawRecord: record.jsonValue,
+            airportMAC: record.properties["waMA"]
         )
     }
 
@@ -734,7 +758,8 @@ func testConfigurePayload(
     syap: String = "119",
     model: String = "Time Capsule",
     payloadFamily: String = "netbsd6_samba4",
-    deviceGeneration: String = "tc_gen4"
+    deviceGeneration: String = "tc_gen4",
+    airportMAC: String? = nil
 ) -> JSONValue {
     .object([
         "schema_version": .number(1),
@@ -744,6 +769,7 @@ func testConfigurePayload(
         "ssh_authenticated": .bool(true),
         "device_syap": .string(syap),
         "device_model": .string(model),
+        "airport_mac": airportMAC.map(JSONValue.string) ?? .null,
         "compatibility": .object([
             "os_name": .string("NetBSD"),
             "os_release": .string("6.0"),
@@ -772,7 +798,8 @@ func testConfiguredDevice(
     syap: String = "119",
     model: String = "Time Capsule",
     payloadFamily: String = "netbsd6_samba4",
-    deviceGeneration: String = "tc_gen4"
+    deviceGeneration: String = "tc_gen4",
+    airportMAC: String? = nil
 ) throws -> ConfiguredDeviceState {
     ConfiguredDeviceState(payload: try testConfigurePayload(
         host: host,
@@ -780,7 +807,8 @@ func testConfiguredDevice(
         syap: syap,
         model: model,
         payloadFamily: payloadFamily,
-        deviceGeneration: deviceGeneration
+        deviceGeneration: deviceGeneration,
+        airportMAC: airportMAC
     ).decode(ConfigurePayload.self))
 }
 

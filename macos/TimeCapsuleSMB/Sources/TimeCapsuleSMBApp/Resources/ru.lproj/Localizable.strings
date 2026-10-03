@@ -10,7 +10,7 @@
 "add_device.entry.discover" = "Найти устройства";
 "add_device.entry.manual" = "Ручной адрес";
 "add_device.error.choose_target" = "Выберите обнаруженное устройство или введите хост.";
-"add_device.error.invalid_bonjour_timeout" = "Время ожидания Bonjour должно быть неотрицательным числом.";
+"add_device.error.invalid_bonjour_timeout" = "Время ожидания обнаружения должно составлять не менее 5 секунд.";
 "add_device.error.password_required" = "Требуется пароль устройства.";
 "add_device.host_or_ip" = "Имя хоста или IP-адрес";
 "add_device.password" = "Пароль устройства";
@@ -64,7 +64,7 @@
 "app_settings.default_bonjour_timeout" = "Время ожидания обнаружения (секунды)";
 "app_settings.error.ata_idle" = "Время простоя ATA должно быть неотрицательным числом секунд.";
 "app_settings.error.ata_standby" = "Время ожидания ATA должно быть пустым или неотрицательным числом секунд.";
-"app_settings.error.bonjour_timeout" = "Время ожидания Bonjour должно быть неотрицательным числом.";
+"app_settings.error.bonjour_timeout" = "Время ожидания обнаружения должно составлять не менее 5 секунд.";
 "app_settings.error.corrupt" = "Не удалось прочитать настройки приложения: %@";
 "app_settings.error.mount_wait" = "Ожидание монтирования должно быть неотрицательным целым числом.";
 "app_settings.error.version_url" = "URL проверки версии должен быть пустым или использовать HTTP/HTTPS.";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "Простой ATA";
 
 "settings.standby" = "Ожидание ATA";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "Время ожидания обнаружения должно составлять не менее 5 секунд.";
+"discovery.permission_unknown" = "Не удалось подтвердить доступ к локальной сети. Обнаружение продолжится.";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "Ошибка проверки запроса";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "Один или несколько параметров операции отсутствуют или недопустимы.";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "Проверьте выделенные поля.";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "Повторите попытку с допустимыми значениями.";
+"backend.recovery.discover.local_network_permission_denied.title" = "Доступ к локальной сети заблокирован";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS блокирует доступ TimeCapsuleSMB к устройствам в вашей локальной сети.";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "Откройте «Системные настройки» > «Конфиденциальность и безопасность» > «Локальная сеть».";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "Включите TimeCapsuleSMB в разделе «Локальная сеть».";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "Разрешите доступ и повторите обнаружение.";
+"backend.error.discover.local_network_permission_denied" = "macOS блокирует доступ TimeCapsuleSMB к устройствам в вашей локальной сети.";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохранённое устройство.";
+"discovery.identity_conflict" = "Этому устройству соответствуют несколько сохранённых устройств. Проверьте сохранённые устройства и удалите дубликаты с помощью команды «Забыть».";
+"discovery.reconnect_existing" = "Повторно подключить сохранённое устройство «%@»";
+"backend.error.device_identity_mismatch" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохранённое устройство.";
+"backend.recovery.device_identity_mismatch.title" = "Не удалось подтвердить идентичность устройства";
+"backend.recovery.device_identity_mismatch.message" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохранённое устройство.";
+"backend.recovery.device_identity_mismatch.action.1" = "Обновите поиск и повторно подключите сохранённое устройство.";
+
+"discovery.identity_owned" = "Это устройство уже сохранено как «%@». Проверьте сохранённые устройства и удалите дубликаты с помощью команды «Забыть».";
+"discovery.open_saved_device" = "Открыть сохранённое устройство «%@»";
+
+"discovery.reconnect_selected" = "При сохранении выбранное устройство будет повторно подключено к «%@» с сохранением его настроек.";

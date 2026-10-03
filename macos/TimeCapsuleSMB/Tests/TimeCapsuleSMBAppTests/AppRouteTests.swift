@@ -6,7 +6,7 @@ import XCTest
 final class AppRouteTests: XCTestCase {
     func testNavigationHelpersSetSingleRoute() async throws {
         let fixture = try await makeFixture()
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -44,7 +44,7 @@ final class AppRouteTests: XCTestCase {
         let fixture = try await makeFixture()
         fixture.appStore.showAllDevices()
 
-        _ = try await fixture.registry.saveConfiguredDevice(
+        _ = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -61,13 +61,13 @@ final class AppRouteTests: XCTestCase {
         XCTAssertEqual(empty.appStore.route, .allDevices)
 
         let fixture = try await makeFixture()
-        _ = try await fixture.registry.saveConfiguredDevice(
+        _ = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        _ = try await fixture.registry.saveConfiguredDevice(
+        _ = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -83,13 +83,13 @@ final class AppRouteTests: XCTestCase {
 
     func testDeletingSelectedProfileRoutesToFirstRemainingProfileOrAllDevices() async throws {
         let fixture = try await makeFixture()
-        let first = try await fixture.registry.saveConfiguredDevice(
+        let first = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try await fixture.registry.saveConfiguredDevice(
+        let second = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -110,13 +110,13 @@ final class AppRouteTests: XCTestCase {
 
     func testSelectedProfileRouteSynchronizesWhenRegistryDeletesProfile() async throws {
         let fixture = try await makeFixture()
-        let first = try await fixture.registry.saveConfiguredDevice(
+        let first = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try await fixture.registry.saveConfiguredDevice(
+        let second = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -132,7 +132,7 @@ final class AppRouteTests: XCTestCase {
 
     func testDiagnosticsSelectedProfileFollowsDeviceRouteOnly() async throws {
         let fixture = try await makeFixture()
-        let profile = try await fixture.registry.saveConfiguredDevice(
+        let profile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -148,13 +148,13 @@ final class AppRouteTests: XCTestCase {
 
     func testDiagnosticsGlobalUsesMostRecentSavedDeploymentFailure() async throws {
         let fixture = try await makeFixture()
-        let recentFailure = try await fixture.registry.saveConfiguredDevice(
+        let recentFailure = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "recent-failure"
         )
-        let recentlyUpdatedProfile = try await fixture.registry.saveConfiguredDevice(
+        let recentlyUpdatedProfile = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,

@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import Darwin
 @testable import TimeCapsuleSMBApp
 
 final class HelperRunnerTests: XCTestCase {
@@ -217,6 +218,45 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(events.last?.type, "error")
         XCTAssertEqual(events.last?.code, "cancelled")
         XCTAssertEqual(events.last?.message, L10n.string("helper.error.cancelled"))
+    }
+
+    func testRunnerCancelsActualPythonHelperAndReapsItsNativeChildren() async throws {
+        let temp = try TemporaryDirectory()
+        var repo = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repo.deleteLastPathComponent() }
+        let python = repo.appendingPathComponent(".venv/bin/python")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            throw XCTSkip("The cross-language integration needs the checkout's development venv")
+        }
+        func quote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let helper = try makeHelper(in: temp.url, body:
+            "export PYTHONPATH=" + quote(repo.appendingPathComponent("src").path + ":" + repo.path) + "\n" +
+            "export TCAPSULE_STATE_DIR=" + quote(temp.url.appendingPathComponent("state").path) + "\n" +
+            "exec " + quote(python.path) + " -u -m tests.fixtures.bonjour_cancel_helper " + quote(temp.url.path))
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+        let task = Task {
+            await runner.run(helperPath: helper.path, operation: "discover", params: ["timeout": .number(6), "service": .string("_airport")], requestID: "cancel-live") {
+                await recorder.append($0)
+            }
+        }
+        for _ in 0..<200 {
+            if await recorder.events.contains(where: { $0.message == "native children ready" }) { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let ready = await recorder.events.contains { $0.message == "native children ready" }
+        XCTAssertTrue(ready)
+        task.cancel()
+        let result = await task.value
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 130)
+        XCTAssertEqual(events.filter { $0.type == "result" || $0.type == "error" }.count, 1)
+        XCTAssertEqual(events.last(where: { $0.type == "error" })?.code, "cancelled")
+        let pids = result.stderr.split(separator: "\n").compactMap { line -> Int32? in
+            line.hasPrefix("CHILD ") ? Int32(line.dropFirst(6)) : nil
+        }
+        XCTAssertGreaterThanOrEqual(pids.count, 9)
+        for pid in pids { XCTAssertEqual(kill(pid, 0), -1, "Leaked native child \(pid)") }
     }
 
     func testRunnerLetsHelperEmitTerminalEventBeforeCancelledFallback() async throws {

@@ -62,48 +62,22 @@ def _expected_bonjour_instance_from_results(results: list[CheckResult]) -> str |
     return None
 
 
-def _native_dns_sd_smb_names(native_dns_sd: object) -> list[str]:
-    names: list[str] = []
-    for browse in _as_sequence(_mapping_value(native_dns_sd, "browses")):
-        browse_type = str(_mapping_value(browse, "service_type") or "")
-        for event in _as_sequence(_mapping_value(browse, "events")):
-            event_type = str(_mapping_value(event, "service_type") or browse_type)
-            if not event_type.rstrip(".").startswith("_smb._tcp"):
-                continue
-            if str(_mapping_value(event, "action") or "").lower() != "add":
-                continue
-            name = _mapping_value(event, "name")
-            if isinstance(name, str) and name and name not in names:
-                names.append(name)
-    return names
-
-
 def build_discovery_context(results: list[CheckResult], debug_fields: Mapping[str, object]) -> list[str]:
     if not _bonjour_failure_uses_instance_match(results):
         return []
-
     lines: list[str] = []
-    expected_summary, expected_instance = _bonjour_expected_summary(results, debug_fields)
+    expected_summary, _expected_instance = _bonjour_expected_summary(results, debug_fields)
     if expected_summary:
         lines.append(f"INFO expected Bonjour identity: {expected_summary}")
-    zeroconf = _mapping_value(debug_fields, "bonjour_zeroconf")
-    zeroconf_instance_count = _as_int(_mapping_value(zeroconf, "instance_count"))
-    if zeroconf_instance_count == 0:
-        lines.append(
-            "INFO Python zeroconf discovered 0 Bonjour instances during doctor; "
-            "Bonjour registration path needs investigation"
-        )
-    elif zeroconf_instance_count is not None:
-        lines.append(
-            f"INFO Python zeroconf discovered {zeroconf_instance_count} Bonjour instance(s), "
-            "but no matching _smb._tcp instance"
-        )
+    discovery = _mapping_value(debug_fields, "bonjour_discovery")
+    count = _as_int(_mapping_value(discovery, "instance_count"))
+    if count is not None:
+        lines.append(f"INFO Bonjour discovered {count} instance(s), but no matching _smb._tcp instance")
     if _authenticated_smb_listing_passed(debug_fields):
         lines.append("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records")
-    zeroconf_summary = _zeroconf_debug_summary(zeroconf)
-    if zeroconf_summary:
-        lines.append(f"INFO Python zeroconf diagnostics: {zeroconf_summary}")
-    lines.extend(_native_dns_sd_context_from_debug(debug_fields, expected_instance=expected_instance))
+    summary = _debug_summary_fields(discovery, ("provider", "timeout_sec", "elapsed_sec", "instance_count", "resolved_count", "pending_count"))
+    if summary:
+        lines.append(f"INFO Bonjour diagnostics: {summary}")
     return lines
 
 
@@ -154,53 +128,6 @@ def _bonjour_expected_summary(
     if isinstance(target_ip, str) and target_ip:
         parts.append(f"target_ip={target_ip!r}")
     return " ".join(parts), instance if isinstance(instance, str) and instance else None
-
-
-def _zeroconf_debug_summary(zeroconf: object) -> str:
-    return _debug_summary_fields(
-        zeroconf,
-        (
-            "ip_version",
-            "zeroconf_interfaces",
-            "instance_count",
-            "resolved_count",
-            "service_event_count",
-            "ptr_record_count",
-            "resolve_attempt_count",
-            "resolve_success_count",
-            "resolve_error_count",
-        ),
-    )
-
-
-def _native_dns_sd_context_from_debug(
-    debug_fields: Mapping[str, object],
-    *,
-    expected_instance: str | None,
-) -> list[str]:
-    lines: list[str] = []
-    native_error = _mapping_value(debug_fields, "bonjour_native_dns_sd_error")
-    if isinstance(native_error, str) and native_error:
-        lines.append(f"INFO native dns-sd diagnostic error: {native_error}")
-
-    native_dns_sd = _mapping_value(debug_fields, "bonjour_native_dns_sd")
-    native_label = "native dns-sd"
-    if native_dns_sd is None:
-        native_dns_sd = _mapping_value(debug_fields, "bonjour_native_fallback")
-        native_label = "native dns-sd fallback"
-    summary = _debug_summary_fields(native_dns_sd, ("status", "timeout_sec", "elapsed_sec"))
-    if summary:
-        lines.append(f"INFO {native_label} diagnostics: {summary}")
-        names = _native_dns_sd_smb_names(native_dns_sd)
-        if names:
-            names_text = ", ".join(repr(name) for name in names)
-            lines.append(f"INFO {native_label} observed _smb._tcp instances: {names_text}")
-        else:
-            lines.append(f"INFO {native_label} observed 0 _smb._tcp Add events")
-        if expected_instance is not None:
-            matched = "yes" if expected_instance in names else "no"
-            lines.append(f"INFO {native_label} observed expected _smb._tcp instance: {matched}")
-    return lines
 
 
 def _last_regex_group(pattern: str, text: str) -> str | None:

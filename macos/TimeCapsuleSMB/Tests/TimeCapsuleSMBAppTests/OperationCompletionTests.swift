@@ -795,7 +795,7 @@ final class OperationCompletionTests: XCTestCase {
             .init("deploy"): [.init(events: [confirmation("deploy", id: "cancel")])]
         ])
         let registry = fixture.app.deviceRegistry
-        let other = try await registry.saveConfiguredDevice(configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+        let other = try await registry.storeTestProfile(configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil, passwordState: .available, preferredID: "other")
         let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
         session.runInstall(profile: fixture.profile)
@@ -848,7 +848,7 @@ final class OperationCompletionTests: XCTestCase {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url, fileManager: fileManager)
         await registry.load()
-        let profile = try await registry.saveConfiguredDevice(configuredDevice: testConfiguredDevice(), discoveredDevice: nil,
+        let profile = try await registry.storeTestProfile(configuredDevice: testConfiguredDevice(), discoveredDevice: nil,
                                                               passwordState: .available, preferredID: "device-one")
         let passwords = InMemoryPasswordStore()
         try passwords.save("pw", for: profile.keychainAccount)

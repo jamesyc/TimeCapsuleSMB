@@ -8,7 +8,7 @@
 "add_device.entry.discover" = "Discover";
 "add_device.entry.manual" = "Manual Address";
 "add_device.error.choose_target" = "Choose a discovered device or enter a host.";
-"add_device.error.invalid_bonjour_timeout" = "Bonjour timeout must be a non-negative number.";
+"add_device.error.invalid_bonjour_timeout" = "Discovery timeout must be at least 5 seconds.";
 "add_device.error.password_required" = "Device password is required.";
 "add_device.host_or_ip" = "Hostname or IP address";
 "add_device.password" = "Device password";
@@ -62,7 +62,7 @@
 "app_settings.default_bonjour_timeout" = "Discovery timeout (seconds)";
 "app_settings.error.ata_idle" = "ATA idle time must be a non-negative number of seconds.";
 "app_settings.error.ata_standby" = "ATA standby time must be blank or a non-negative number of seconds.";
-"app_settings.error.bonjour_timeout" = "Bonjour timeout must be a non-negative number.";
+"app_settings.error.bonjour_timeout" = "Discovery timeout must be at least 5 seconds.";
 "app_settings.error.corrupt" = "App settings could not be read: %@";
 "app_settings.error.mount_wait" = "Mount wait time must be a non-negative integer.";
 "app_settings.error.version_url" = "Version check URL must be blank or an HTTP/HTTPS URL.";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "ATA idle";
 
 "settings.standby" = "ATA standby";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "Discovery timeout must be at least 5 seconds.";
+"discovery.permission_unknown" = "Local Network access could not be confirmed. Discovery will continue.";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "Request validation failed";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "One or more operation parameters were missing or invalid.";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "Review the highlighted fields.";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "Retry with valid values.";
+"backend.recovery.discover.local_network_permission_denied.title" = "Local Network access blocked";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "Open System Settings > Privacy & Security > Local Network.";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "Enable TimeCapsuleSMB in Local Network.";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "Enable access, then retry discovery.";
+"backend.error.discover.local_network_permission_denied" = "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "The device identity could not be confirmed. Refresh discovery and reconnect the saved device.";
+"discovery.identity_conflict" = "Several saved devices match this device. Review the saved devices and use “Forget” to remove any duplicate entry.";
+"discovery.reconnect_existing" = "Reconnect saved device “%@”";
+"backend.error.device_identity_mismatch" = "The device identity could not be confirmed. Refresh discovery and reconnect the saved device.";
+"backend.recovery.device_identity_mismatch.title" = "Device identity could not be confirmed";
+"backend.recovery.device_identity_mismatch.message" = "The device identity could not be confirmed. Refresh discovery and reconnect the saved device.";
+"backend.recovery.device_identity_mismatch.action.1" = "Refresh discovery and reconnect the saved device.";
+
+"discovery.identity_owned" = "This device is already saved as “%@”. Review the saved devices and use “Forget” to remove any duplicate entry.";
+"discovery.open_saved_device" = "Open saved device “%@”";
+
+"discovery.reconnect_selected" = "Saving will reconnect the selected device to “%@” and keep its saved settings.";

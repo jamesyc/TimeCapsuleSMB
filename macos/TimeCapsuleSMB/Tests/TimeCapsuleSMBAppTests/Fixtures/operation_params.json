@@ -55,6 +55,11 @@
       "vfs_aio_fork_enabled"
     ],
     "discover": [
+      "macos_local_network_preflight_duration_ms",
+      "macos_local_network_preflight_error",
+      "macos_local_network_preflight_result",
+      "macos_local_network_preflight_service",
+      "service",
       "timeout"
     ],
     "doctor": [

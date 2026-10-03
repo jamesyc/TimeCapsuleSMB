@@ -199,6 +199,7 @@ struct DiscoverPayload: Decodable, Equatable {
 
 struct DiscoveredDevicePayload: Decodable, Equatable {
     let id: String
+    let airportMAC: String?
     let name: String
     let host: String
     let sshHost: String?
@@ -218,6 +219,7 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case airportMAC = "airport_mac"
         case name
         case host
         case sshHost = "ssh_host"
@@ -237,6 +239,7 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.airportMAC = try container.decodeIfPresent(String.self, forKey: .airportMAC)
         self.id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
         self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         self.host = try container.decodeIfPresent(String.self, forKey: .host) ?? ""
@@ -349,6 +352,7 @@ struct ConfigurePayload: Decodable, Equatable {
     let sshAuthenticated: Bool
     let deviceSyap: String?
     let deviceModel: String?
+    var airportMAC: String? = nil
     let compatibility: DeviceCompatibilityPayload?
     let device: DevicePayload?
     let summary: String
@@ -363,6 +367,7 @@ struct ConfigurePayload: Decodable, Equatable {
         case sshAuthenticated = "ssh_authenticated"
         case deviceSyap = "device_syap"
         case deviceModel = "device_model"
+        case airportMAC = "airport_mac"
         case compatibility
         case device
         case summary
@@ -458,6 +463,7 @@ struct DoctorPayload: Decodable, Equatable {
     let results: [DoctorCheckPayload]
     let counts: [String: Int]
     let error: String?
+    var airportMAC: String? = nil
     let summary: String
     var summaryKey: String? = nil
     var summaryArgs: [JSONValue]? = nil
@@ -468,6 +474,7 @@ struct DoctorPayload: Decodable, Equatable {
         case results
         case counts
         case error
+        case airportMAC = "airport_mac"
         case summary
         case summaryKey = "summary_key"
         case summaryArgs = "summary_args"

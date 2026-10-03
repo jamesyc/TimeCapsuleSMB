@@ -1653,7 +1653,8 @@ def vendor_macho_dependencies(
         architecture_of[copy.resolve()] = architecture
     vendored_sources: set[Path] = set()
     used_names: set[str] = set()
-    queue = macho_vendor_roots(app)
+    # Stable architecture/name assignment must not depend on directory enumeration order.
+    queue = sorted(macho_vendor_roots(app))
     visited: set[Path] = set()
     # dyld resolves a library's @rpath/ names through its own rpaths and then
     # those of every image that loaded it, up to the executable: Homebrew's

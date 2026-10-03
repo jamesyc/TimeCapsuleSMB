@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+from dataclasses import replace
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,8 +32,46 @@ from timecapsulesmb.checks import doctor_steps
 from timecapsulesmb.checks.bonjour import BonjourExpectedIdentity
 from timecapsulesmb.checks.doctor_state import DoctorSink
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.network import RouteSelection
+from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
+
+
+@pytest.mark.parametrize("hint", ["Home", None])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("case, failure", [
+    ("healthy", None), ("port", "port is 1445"), ("missing_adisk", "Time Machine service missing"),
+    ("bad_txt", "missing Time Machine system flags"), ("afp", "Advertise AFP"),
+    ("conflict", "conflicting target, port or TXT"), ("other_link", None), ("partial_adisk", None),
+])
+def test_selected_record_validation_is_shared_by_name_and_ip_paths(hint, reverse, case, failure):
+    def record(service, port, properties=None):
+        return BonjourResolvedService("Home", "home.local", f"{service}._tcp.local.", port=port,
+            ipv4=["192.0.2.10"], properties=properties or {}, fullname=f"Home.{service}._tcp.local.", interface_index=14)
+    smb = record("_smb", 445)
+    adisk = record("_adisk", 9, {"sys": "adVF=0x1010", "dk0": "adVF=0x83,adVN=Data,adVU=volume-id"})
+    evidence = [smb, adisk, record("_device-info", 0, {"model": "TimeCapsule8,119"})]
+    if case == "port": evidence[0] = replace(smb, port=1445)
+    if case == "missing_adisk": evidence.remove(adisk)
+    if case == "bad_txt": evidence[1] = replace(adisk, properties={"dk0": adisk.properties["dk0"]})
+    if case == "afp": evidence.append(record("_afpovertcp", 548))
+    if case == "conflict": evidence.append(replace(adisk, port=10))
+    if case == "other_link": evidence.append(replace(smb, hostname="peer.local", port=1445, ipv4=["192.0.2.20"], interface_index=18))
+    if case == "partial_adisk": evidence[1] = replace(adisk, ipv4=[], ipv6=["fd00::10"])
+    if reverse: evidence.reverse()
+    snapshot = BonjourDiscoverySnapshot(
+        [BonjourServiceInstance(r.service_type, r.name, r.fullname, r.interface_index) for r in evidence], evidence)
+    with mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=()):
+        outcome = doctor_steps._evaluate_bonjour_snapshot(snapshot,
+            BonjourExpectedIdentity(hint, "home", "192.0.2.10"), target_ip="192.0.2.10", family="ipv4",
+            interfaces=None, active_share_names=["Data"], resolver=mock.Mock(side_effect=AssertionError("already resolved")),
+            browse_miss_message="browse miss", targeted_resolve_pass_message="targeted success")
+    failures = [r.message for r in outcome.results if r.status == "FAIL"]
+    if failure:
+        assert any(failure in message for message in failures)
+    else:
+        assert failures == []
+    assert outcome.instance == "Home"
+    assert outcome.addresses == ("192.0.2.10",)
 
 
 class DoctorHelperTests(unittest.TestCase):
@@ -131,22 +172,21 @@ class DoctorHelperTests(unittest.TestCase):
 
     def test_bonjour_merge_preserves_same_link_local_address_on_two_interfaces(self):
         results = []
-        empty = (None, CheckResult("FAIL", "no IPv4 _smb record"), None)
         with (
             mock.patch.object(doctor_steps, "build_bonjour_expected_identity", return_value=BonjourExpectedIdentity("Home", "home", None)),
             mock.patch.object(
                 doctor_steps,
                 "discover_smb_services_detailed",
-                side_effect=[empty, (self.scope_snapshot(addresses=("fe80::40%17", "fe80::40%18")), None, None)],
+                return_value=(self.scope_snapshot(addresses=("fe80::40%17", "fe80::40%18")), None, None),
             ) as browse,
             mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=()),
-            mock.patch.object(doctor_steps, "native_dns_sd_available", return_value=False),
+            mock.patch("timecapsulesmb.discovery.bonjour.command_exists", return_value=False),
         ):
             result = doctor_steps._add_bonjour_results(
                 AppConfig(values={"TC_HOST": "10.0.1.1"}), None,
                 proxied_ssh=False, skip_bonjour=False, add_result=results.append,
             )
-        self.assertEqual(browse.call_count, 2)
+        self.assertEqual(browse.call_count, 1)
         self.assertFalse(any(item.status == "FAIL" for item in results), results)
         self.assertEqual(result.instance, "Home")
         self.assertEqual(result.addresses, ("fe80::40%17", "fe80::40%18"))

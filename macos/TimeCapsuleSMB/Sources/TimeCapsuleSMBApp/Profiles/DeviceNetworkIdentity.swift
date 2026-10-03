@@ -60,18 +60,22 @@ struct DeviceNetworkIdentity: Codable, Equatable {
     var bonjourName: String?
     var bonjourFullname: String?
     var addresses: [DeviceNetworkAddress]
+    // Confirmed waMA survives app launches and DHCP changes in the existing profile.
+    var airportMAC: String?
 
     init(
         configuredSSHTarget: String,
         hostname: String? = nil,
         bonjourName: String? = nil,
         bonjourFullname: String? = nil,
-        addresses: [DeviceNetworkAddress] = []
+        addresses: [DeviceNetworkAddress] = [],
+        airportMAC: String? = nil
     ) {
         self.configuredSSHTarget = configuredSSHTarget
         self.hostname = Self.normalizedOptional(hostname)
         self.bonjourName = Self.normalizedOptional(bonjourName)
         self.bonjourFullname = Self.normalizedOptional(bonjourFullname)
+        self.airportMAC = Self.normalizedAirportMAC(airportMAC)
         self.addresses = DeviceEndpointPolicy.uniqueAddresses(addresses)
         appendConfiguredTargetAddress()
     }
@@ -110,20 +114,34 @@ struct DeviceNetworkIdentity: Codable, Equatable {
     }
 
     func matches(_ other: DeviceNetworkIdentity) -> Bool {
-        if let leftFullname = Self.normalizedOptional(bonjourFullname)?.lowercased(),
-           let rightFullname = Self.normalizedOptional(other.bonjourFullname)?.lowercased(),
-           leftFullname == rightFullname {
-            return true
+        if let left = airportMAC, let right = other.airportMAC {
+            return left == right
         }
         if !normalizedConfiguredHost.isEmpty && normalizedConfiguredHost == other.normalizedConfiguredHost {
             return true
         }
-        if !normalizedHostname.isEmpty && normalizedHostname == other.normalizedHostname {
-            return true
-        }
-        let leftKeys = matchableAddressKeys
-        let rightKeys = other.matchableAddressKeys
-        return !leftKeys.isEmpty && !rightKeys.isEmpty && !leftKeys.isDisjoint(with: rightKeys)
+        // This identity is the saved profile; only its configured endpoint can
+        // associate an observation. Historical Bonjour addresses can be reused.
+        return DeviceEndpointPolicy.addressFamily(for: configuredHost) != nil
+            && other.matchableAddressKeys.contains(normalizedConfiguredHost)
+    }
+
+    func sharesName(with other: DeviceNetworkIdentity) -> Bool {
+        if let left = airportMAC, let right = other.airportMAC, left != right { return false }
+        return (!normalizedHostname.isEmpty && normalizedHostname == other.normalizedHostname)
+            || (bonjourFullname?.lowercased() != nil && bonjourFullname?.lowercased() == other.bonjourFullname?.lowercased())
+    }
+
+    static func normalizedAirportMAC(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let parts = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            .replacingOccurrences(of: "-", with: ":").split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 6, parts.allSatisfy({ part in
+                  part.count == 2 && part.allSatisfy { "0123456789abcdef".contains($0) }
+              }),
+              let first = UInt8(parts[0], radix: 16), first & 1 == 0,
+              parts.contains(where: { $0 != "00" }) else { return nil }
+        return parts.joined(separator: ":")
     }
 
     mutating func setConfiguredSSHTarget(_ target: String) {
@@ -134,10 +152,6 @@ struct DeviceNetworkIdentity: Codable, Equatable {
     mutating func setAddressValues(_ values: [String], source: DeviceAddressSource = .bonjour) {
         addresses = DeviceEndpointPolicy.uniqueAddresses(values.compactMap { DeviceNetworkAddress(value: $0, source: source) })
         appendConfiguredTargetAddress()
-    }
-
-    mutating func mergeAddresses(_ newAddresses: [DeviceNetworkAddress]) {
-        addresses = DeviceEndpointPolicy.uniqueAddresses(addresses + newAddresses)
     }
 
     private mutating func appendConfiguredTargetAddress() {
@@ -152,18 +166,18 @@ struct DeviceNetworkIdentity: Codable, Equatable {
     static func make(
         configuredSSHTarget: String,
         discoveredDevice: DiscoveredDevice?,
-        existing: DeviceNetworkIdentity? = nil
+        existing: DeviceNetworkIdentity? = nil,
+        airportMAC: String? = nil
     ) -> DeviceNetworkIdentity {
-        var identity = DeviceNetworkIdentity(
+        let identity = DeviceNetworkIdentity(
             configuredSSHTarget: configuredSSHTarget,
             hostname: discoveredDevice?.hostname ?? existing?.hostname,
             bonjourName: discoveredDevice?.name ?? existing?.bonjourName,
             bonjourFullname: discoveredDevice?.fullname ?? existing?.bonjourFullname,
-            addresses: existing?.addresses ?? []
+            addresses: discoveredDevice?.networkAddresses
+                ?? (existing?.normalizedConfiguredHost == DeviceEndpointPolicy.normalizedHostKey(configuredSSHTarget) ? existing?.addresses ?? [] : []),
+            airportMAC: airportMAC ?? existing?.airportMAC
         )
-        if let discoveredDevice {
-            identity.mergeAddresses(discoveredDevice.networkAddresses)
-        }
         return identity
     }
 

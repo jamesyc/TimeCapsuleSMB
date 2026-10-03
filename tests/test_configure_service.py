@@ -579,6 +579,37 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(stages, ["acp_port_probe", "acp_enable_ssh", "wait_for_ssh_after_acp"])
         self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": False}])
 
+    def test_confirmed_mac_is_returned_and_mismatched_bonjour_never_writes_config(self) -> None:
+        from dataclasses import replace
+        base = self.make_probe_state()
+        state = replace(base, probe_result=replace(base.probe_result, airport_mac="02:aa:bb:cc:dd:ee"))
+        for advertised in (None, "02-AA-BB-CC-DD-EE", "02:aa:bb:cc:dd:ff"):
+            with self.subTest(advertised=advertised), tempfile.TemporaryDirectory() as tmp:
+                env_path = Path(tmp) / ".env"
+                env_path.write_text("original configuration")
+                writer = mock.Mock()
+                record = BonjourResolvedService("Office", "office.local", "_airport._tcp.local.",
+                    properties={"waMA": advertised} if advertised else {})
+                request = self.configure_request(env_path, mock.Mock(return_value=state),
+                    selected_record=record, write_env=writer)
+                if advertised == "02:aa:bb:cc:dd:ff":
+                    with self.assertRaises(ConfigureFlowError) as raised:
+                        run_configure_flow(request)
+                    self.assertEqual(raised.exception.code, "device_identity_mismatch")
+                    writer.assert_not_called()
+                    self.assertEqual(env_path.read_text(), "original configuration")
+                else:
+                    result = run_configure_flow(request)
+                    self.assertEqual(result.airport_mac, "02:aa:bb:cc:dd:ee")
+                    writer.assert_called_once()
+
+    def test_absent_confirmation_does_not_promote_bonjour_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = BonjourResolvedService("Office", "office.local", properties={"waMA": "02:aa:bb:cc:dd:ee"})
+            request = self.configure_request(Path(tmp) / ".env", mock.Mock(return_value=self.make_probe_state()),
+                selected_record=record, write_env=mock.Mock())
+            self.assertIsNone(run_configure_flow(request).airport_mac)
+
     def test_run_configure_flow_probes_writes_identity_and_reports_context(self) -> None:
         probe_state = self.make_probe_state()
         written: dict[str, str] = {}

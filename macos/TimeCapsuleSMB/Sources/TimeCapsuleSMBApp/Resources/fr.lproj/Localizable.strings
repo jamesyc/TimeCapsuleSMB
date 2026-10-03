@@ -10,7 +10,7 @@
 "add_device.entry.discover" = "Découvrir";
 "add_device.entry.manual" = "Adresse manuelle";
 "add_device.error.choose_target" = "Choisissez un appareil détecté ou saisissez un hôte.";
-"add_device.error.invalid_bonjour_timeout" = "Le délai d’attente Bonjour doit être un nombre positif ou nul.";
+"add_device.error.invalid_bonjour_timeout" = "Le délai de découverte doit être d’au moins 5 secondes.";
 "add_device.error.password_required" = "Le mot de passe de l’appareil est requis.";
 "add_device.host_or_ip" = "Nom d’hôte ou adresse IP";
 "add_device.password" = "Mot de passe de l’appareil";
@@ -64,7 +64,7 @@
 "app_settings.default_bonjour_timeout" = "Délai de détection (secondes)";
 "app_settings.error.ata_idle" = "Le délai d’inactivité ATA doit être un nombre de secondes positif ou nul.";
 "app_settings.error.ata_standby" = "Le délai de veille ATA doit être vide ou un nombre de secondes positif ou nul.";
-"app_settings.error.bonjour_timeout" = "Le délai d’attente Bonjour doit être un nombre positif ou nul.";
+"app_settings.error.bonjour_timeout" = "Le délai de découverte doit être d’au moins 5 secondes.";
 "app_settings.error.corrupt" = "Impossible de lire les paramètres de l’app : %@";
 "app_settings.error.mount_wait" = "Le délai d’attente du montage doit être un entier positif ou nul.";
 "app_settings.error.version_url" = "L’URL de vérification des versions doit être vide ou utiliser HTTP/HTTPS.";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "Inactivité ATA";
 
 "settings.standby" = "Veille ATA";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "Le délai de découverte doit être d’au moins 5 secondes.";
+"discovery.permission_unknown" = "L’accès au réseau local n’a pas pu être confirmé. La découverte va continuer.";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "Échec de la validation de la requête";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "Un ou plusieurs paramètres de l’opération étaient manquants ou non valides.";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "Vérifiez les champs mis en évidence.";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "Réessayez avec des valeurs valides.";
+"backend.recovery.discover.local_network_permission_denied.title" = "Accès au réseau local bloqué";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS empêche TimeCapsuleSMB d’accéder aux appareils de votre réseau local.";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "Ouvrez Réglages Système > Confidentialité et sécurité > Réseau local.";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "Activez TimeCapsuleSMB dans Réseau local.";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "Autorisez l’accès, puis relancez la découverte.";
+"backend.error.discover.local_network_permission_denied" = "macOS empêche TimeCapsuleSMB d’accéder aux appareils de votre réseau local.";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "L’identité de l’appareil n’a pas pu être confirmée. Actualisez la recherche et reconnectez l’appareil enregistré.";
+"discovery.identity_conflict" = "Plusieurs appareils enregistrés correspondent à cet appareil. Vérifiez les appareils enregistrés et utilisez « Oublier » pour supprimer les doublons.";
+"discovery.reconnect_existing" = "Reconnecter l’appareil enregistré « %@ »";
+"backend.error.device_identity_mismatch" = "L’identité de l’appareil n’a pas pu être confirmée. Actualisez la recherche et reconnectez l’appareil enregistré.";
+"backend.recovery.device_identity_mismatch.title" = "L’identité de l’appareil n’a pas pu être confirmée";
+"backend.recovery.device_identity_mismatch.message" = "L’identité de l’appareil n’a pas pu être confirmée. Actualisez la recherche et reconnectez l’appareil enregistré.";
+"backend.recovery.device_identity_mismatch.action.1" = "Actualisez la recherche et reconnectez l’appareil enregistré.";
+
+"discovery.identity_owned" = "Cet appareil est déjà enregistré sous le nom « %@ ». Vérifiez les appareils enregistrés et utilisez « Oublier » pour supprimer les doublons.";
+"discovery.open_saved_device" = "Ouvrir l’appareil enregistré « %@ »";
+
+"discovery.reconnect_selected" = "L’enregistrement reconnectera l’appareil sélectionné à « %@ » et conservera ses paramètres enregistrés.";

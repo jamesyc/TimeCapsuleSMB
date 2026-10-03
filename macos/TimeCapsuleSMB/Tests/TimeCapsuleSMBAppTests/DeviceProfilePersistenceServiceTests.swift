@@ -75,7 +75,7 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let existing = try await registry.saveConfiguredDevice(
+        let existing = try await registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -137,11 +137,57 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
         XCTAssertEqual(try passwordStore.password(for: profile.keychainAccount), "secret")
     }
 
+    func testConcurrentHardwareConflictPreservesWinningCredentialsAndConfig() async throws {
+        let temp = try TemporaryDirectory()
+        let registry = DeviceRegistryStore(applicationSupportURL: temp.url, now: { Date(timeIntervalSince1970: 1000) })
+        await registry.load()
+        let passwords = InMemoryPasswordStore()
+        let service = DeviceProfilePersistenceService(registry: registry, passwordStore: passwords)
+        let first = try service.prepareConfigureTarget(targetHost: "10.0.0.2", discoveredDevice: nil,
+            existingProfile: nil, preferredID: "one", settings: .default)
+        let second = try service.prepareConfigureTarget(targetHost: "10.0.0.3", discoveredDevice: nil,
+            existingProfile: nil, preferredID: "two", settings: .default)
+        try writeTestConfig(to: first.context.configURL, host: "root@10.0.0.2")
+        try writeTestConfig(to: second.context.configURL, host: "root@10.0.0.3")
+        func commit(_ draft: ConfigureProfileDraft) async -> Result<DeviceProfile, Error> {
+            do {
+                return .success(try await service.commitConfiguredProfile(
+                    configuredDevice: testConfiguredDevice(host: draft.targetHost, airportMAC: "02:aa:bb:cc:dd:ee"),
+                    draft: draft, password: "password-\(draft.profileID)"))
+            } catch { return .failure(error) }
+        }
+        async let one = commit(first)
+        async let two = commit(second)
+        let outcomes = await [one, two]
+        let saved = outcomes.compactMap { try? $0.get() }
+        XCTAssertEqual(saved.count, 1)
+        let winner = try XCTUnwrap(saved.first)
+        for outcome in outcomes {
+            if case .failure(let error) = outcome {
+                guard case .duplicateProfile(let field, _, let id) = error as? DeviceRegistryError else {
+                    return XCTFail("Unexpected commit error: \(error)")
+                }
+                XCTAssertEqual(field, "AirPort MAC")
+                XCTAssertEqual(id, winner.id)
+            }
+        }
+        let loser = winner.id == first.profileID ? second : first
+        XCTAssertEqual(try passwords.password(for: winner.keychainAccount), "password-\(winner.id)")
+        XCTAssertEqual(try String(contentsOf: winner.configURL, encoding: .utf8), "TC_HOST=root@\(winner.host)\n")
+        XCTAssertEqual(passwords.state(for: loser.profileID), .missing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: DeviceProfile.configURL(for: loser.profileID,
+            applicationSupportURL: temp.url).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.context.configURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.context.configURL.path))
+        await registry.load()
+        XCTAssertEqual(registry.profiles, [winner])
+    }
+
     func testConfiguredCommitReplacingConfigDoesNotLeaveRollbackArtifact() async throws {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let existing = try await registry.saveConfiguredDevice(
+        let existing = try await registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -178,7 +224,7 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let profile = try await registry.saveConfiguredDevice(
+        let profile = try await registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -217,7 +263,7 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let profile = try await registry.saveConfiguredDevice(
+        let profile = try await registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -258,7 +304,7 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let profile = try await registry.saveConfiguredDevice(
+        let profile = try await registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,

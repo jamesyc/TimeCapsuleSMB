@@ -92,7 +92,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
         telemetry=True,
         keep_awake=True,
     ),
-    OperationSpec("discover", discover_operation, frozenset({"timeout"}), telemetry=True),
+    OperationSpec("discover", discover_operation, frozenset({"timeout", "service"}) | frozenset(LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS), telemetry=True),
     OperationSpec(
         "doctor",
         doctor_operation,

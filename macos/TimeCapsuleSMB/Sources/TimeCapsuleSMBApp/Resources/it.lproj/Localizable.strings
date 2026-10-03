@@ -10,7 +10,7 @@
 "add_device.entry.discover" = "Rileva dispositivi";
 "add_device.entry.manual" = "Indirizzo manuale";
 "add_device.error.choose_target" = "Scegli un dispositivo rilevato o inserisci un host.";
-"add_device.error.invalid_bonjour_timeout" = "Il timeout di Bonjour deve essere un numero non negativo.";
+"add_device.error.invalid_bonjour_timeout" = "Il timeout di rilevamento deve essere di almeno 5 secondi.";
 "add_device.error.password_required" = "È richiesta la password del dispositivo.";
 "add_device.host_or_ip" = "Nome host o indirizzo IP";
 "add_device.password" = "Password del dispositivo";
@@ -64,7 +64,7 @@
 "app_settings.default_bonjour_timeout" = "Timeout di rilevamento (secondi)";
 "app_settings.error.ata_idle" = "Il tempo di inattività ATA deve essere un numero non negativo di secondi.";
 "app_settings.error.ata_standby" = "Il tempo di standby ATA deve essere vuoto o un numero non negativo di secondi.";
-"app_settings.error.bonjour_timeout" = "Il timeout di Bonjour deve essere un numero non negativo.";
+"app_settings.error.bonjour_timeout" = "Il timeout di rilevamento deve essere di almeno 5 secondi.";
 "app_settings.error.corrupt" = "Impossibile leggere le impostazioni dell’app: %@";
 "app_settings.error.mount_wait" = "L’attesa di montaggio deve essere un numero intero non negativo.";
 "app_settings.error.version_url" = "L’URL di verifica della versione deve essere vuoto o usare HTTP/HTTPS.";
@@ -1121,3 +1121,31 @@
 "settings.idle" = "Inattività ATA";
 
 "settings.standby" = "Standby ATA";
+
+// Discovery validation and permission recovery.
+"backend.error.discovery_timeout_too_short" = "Il timeout di rilevamento deve essere di almeno 5 secondi.";
+"discovery.permission_unknown" = "Non è stato possibile confermare l’accesso alla rete locale. Il rilevamento continuerà.";
+"backend.recovery.discover.discovery_timeout_too_short.title" = "Convalida della richiesta non riuscita";
+"backend.recovery.discover.discovery_timeout_too_short.message" = "Uno o più parametri dell’operazione erano mancanti o non validi.";
+"backend.recovery.discover.discovery_timeout_too_short.action.1" = "Controlla i campi evidenziati.";
+"backend.recovery.discover.discovery_timeout_too_short.action.2" = "Riprova con valori validi.";
+"backend.recovery.discover.local_network_permission_denied.title" = "Accesso alla rete locale bloccato";
+"backend.recovery.discover.local_network_permission_denied.message" = "macOS impedisce a TimeCapsuleSMB di accedere ai dispositivi sulla rete locale.";
+"backend.recovery.discover.local_network_permission_denied.action.1" = "Apri Impostazioni di Sistema > Privacy e sicurezza > Rete locale.";
+"backend.recovery.discover.local_network_permission_denied.action.2" = "Abilita TimeCapsuleSMB in Rete locale.";
+"backend.recovery.discover.local_network_permission_denied.action.3" = "Abilita l’accesso, poi riprova il rilevamento.";
+"backend.error.discover.local_network_permission_denied" = "macOS impedisce a TimeCapsuleSMB di accedere ai dispositivi sulla rete locale.";
+
+// Appliance identity and explicit reconnect.
+"discovery.identity_unverified" = "Non è stato possibile confermare l’identità del dispositivo. Aggiorna la ricerca e riconnetti il dispositivo salvato.";
+"discovery.identity_conflict" = "Più dispositivi salvati corrispondono a questo dispositivo. Controlla i dispositivi salvati e usa “Dimentica” per rimuovere le voci duplicate.";
+"discovery.reconnect_existing" = "Riconnetti il dispositivo salvato “%@”";
+"backend.error.device_identity_mismatch" = "Non è stato possibile confermare l’identità del dispositivo. Aggiorna la ricerca e riconnetti il dispositivo salvato.";
+"backend.recovery.device_identity_mismatch.title" = "Impossibile confermare l’identità del dispositivo";
+"backend.recovery.device_identity_mismatch.message" = "Non è stato possibile confermare l’identità del dispositivo. Aggiorna la ricerca e riconnetti il dispositivo salvato.";
+"backend.recovery.device_identity_mismatch.action.1" = "Aggiorna la ricerca e riconnetti il dispositivo salvato.";
+
+"discovery.identity_owned" = "Questo dispositivo è già salvato come “%@”. Controlla i dispositivi salvati e usa “Dimentica” per rimuovere le voci duplicate.";
+"discovery.open_saved_device" = "Apri il dispositivo salvato “%@”";
+
+"discovery.reconnect_selected" = "Il salvataggio riconnetterà il dispositivo selezionato a “%@” mantenendo le impostazioni salvate.";

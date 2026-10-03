@@ -95,13 +95,19 @@ final class DeviceProfilePersistenceService {
         password: String,
         overrides: ConfiguredDeviceProfileOverrides = .empty
     ) async throws -> DeviceProfile {
-        var profile = await registry.makeConfiguredDeviceProfile(
-            configuredDevice: configuredDevice,
-            discoveredDevice: draft.discoveredDevice,
-            passwordState: .available,
-            preferredID: draft.profileID,
-            existingProfileID: draft.existingProfileID
-        )
+        var profile: DeviceProfile
+        do {
+            profile = try await registry.makeConfiguredDeviceProfile(
+                configuredDevice: configuredDevice,
+                discoveredDevice: draft.discoveredDevice,
+                passwordState: .available,
+                preferredID: draft.profileID,
+                existingProfileID: draft.existingProfileID
+            )
+        } catch {
+            artifacts.discardStagedConfig(at: draft.context.configURL)
+            throw error
+        }
         if let displayName = overrides.displayName {
             profile.displayName = displayName
         }
@@ -127,7 +133,7 @@ final class DeviceProfilePersistenceService {
         }
 
         do {
-            let saved = try await registry.saveProfileMergingDuplicates(profile)
+            let saved = try await registry.saveProfile(profile)
             artifactRollback.discardBackup()
             return saved
         } catch {

@@ -4,7 +4,8 @@ import ipaddress
 import unittest
 from unittest import mock
 
-from timecapsulesmb.checks.network import LocalInterfaceNetwork, RouteSelection
+from timecapsulesmb.checks.network import LocalInterfaceNetwork
+from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services import acp_diagnostics
@@ -293,14 +294,17 @@ class FreshLookupTests(unittest.TestCase):
         return BonjourResolvedService(RESET_AIRPORT.name, RESET_AIRPORT.hostname, ipv4=list(ipv4), ipv6=list(ipv6))
 
     def lookup(self, by_family: dict[str, object]) -> tuple[dict[str, object], mock.Mock]:
-        def resolve(instance, timeout_ms, *, family):
+        def resolve(instance, timeout_ms, *, family, **_kwargs):
             outcome = by_family[family]
             if isinstance(outcome, Exception):
                 raise outcome
             return outcome
 
         resolver = mock.Mock(side_effect=resolve)
-        return acp_diagnostics.fresh_lookup(RESET_AIRPORT, resolve_instance=resolver), resolver
+        with mock.patch("timecapsulesmb.discovery.bonjour.command_exists", return_value=False), mock.patch(
+            "timecapsulesmb.discovery.zeroconf_backend.resolve_service_instance", resolver
+        ):
+            return acp_diagnostics.fresh_lookup(RESET_AIRPORT), resolver
 
     def test_unchanged_addresses(self) -> None:
         result, resolver = self.lookup({
@@ -326,15 +330,24 @@ class FreshLookupTests(unittest.TestCase):
             "ipv6": None,
         })
 
-        self.assertEqual(result["ipv6"], "no_answer")
+        self.assertEqual(result["ipv6"], "answered")
         self.assertTrue(result["addresses_changed"])
         self.assertEqual(result["added"], [{"family": "ipv4", "scope": "private", "address": "192.168.1.40"}])
         self.assertEqual(result["removed"], [{"family": "ipv4", "scope": "private", "address": "10.0.1.1"}])
 
+    def test_healthy_transport_can_supply_both_address_families(self) -> None:
+        result, _ = self.lookup({
+            "ipv4": self.resolved(RESET_AIRPORT.ipv4, RESET_AIRPORT.ipv6),
+            "ipv6": RuntimeError("IPv6 transport unavailable"),
+        })
+        self.assertEqual(result["ipv4"], "answered")
+        self.assertEqual(result["ipv6"], "answered")
+        self.assertFalse(result["addresses_changed"])
+
     def test_no_answer_cannot_say_whether_addresses_changed(self) -> None:
         result, _resolver = self.lookup({"ipv4": None, "ipv6": RuntimeError("zeroconf is missing")})
 
-        self.assertEqual(result, {"ipv4": "no_answer", "ipv6": "error", "ipv6_error": "zeroconf is missing"})
+        self.assertEqual(result, {"ipv4": "no_answer", "ipv6": "error", "ipv6_error": "RuntimeError: zeroconf is missing"})
 
 
 class FailureFieldsTests(unittest.TestCase):

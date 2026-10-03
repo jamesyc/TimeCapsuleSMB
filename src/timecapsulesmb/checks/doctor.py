@@ -109,9 +109,7 @@ def run_doctor_checks(
         sink.debug_fields,
         bonjour_debug_needed=bonjour_result.debug_needed,
         bonjour_expected_debug=bonjour_result.expected_debug,
-        bonjour_zeroconf_debug=bonjour_result.zeroconf_debug,
-        bonjour_native_fallback_debug=bonjour_result.native_fallback_debug,
-        bonjour_backend_debug=bonjour_result.backend_debug,
+        bonjour_discovery_debug=bonjour_result.discovery_debug,
     )
     _doctor_add_bonjour_naming_info(bonjour_result, sink)
     _doctor_check_usb_printer(target, remote, bonjour_result, sink, network)

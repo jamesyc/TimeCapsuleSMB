@@ -15,16 +15,8 @@ if str(SRC_ROOT) not in sys.path:
 import ipaddress
 from types import SimpleNamespace
 
-from timecapsulesmb.checks.network import (
-    LocalInterfaceNetwork,
-    NetworkLinkResult,
-    RouteSelection,
-    classify_network_link,
-    local_interface_networks,
-    network_display,
-    reportable_network,
-    select_route_to_address,
-)
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, NetworkLinkResult, classify_network_link, local_interface_networks, network_display, reportable_network
+from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 
 
 def adapter(name: str, *ips: tuple[object, object]) -> SimpleNamespace:
@@ -37,7 +29,7 @@ class NetworkCheckTests(unittest.TestCase):
         sock.__enter__.return_value = sock
         sock.getsockname.return_value = ("fe80::9", 43210, 0, 17)
         with (
-            mock.patch("timecapsulesmb.checks.network.socket.socket", return_value=sock),
+            mock.patch("timecapsulesmb.core.net.socket.socket", return_value=sock),
             mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", return_value=17),
             mock.patch("timecapsulesmb.core.net.socket.if_indextoname", return_value="en0"),
         ):
@@ -49,13 +41,13 @@ class NetworkCheckTests(unittest.TestCase):
         unavailable = mock.MagicMock()
         unavailable.__enter__.return_value = unavailable
         unavailable.connect.side_effect = OSError(errno.ENETUNREACH, "Network is unreachable")
-        with mock.patch("timecapsulesmb.checks.network.socket.socket", return_value=unavailable):
+        with mock.patch("timecapsulesmb.core.net.socket.socket", return_value=unavailable):
             unavailable_result = select_route_to_address("fd00::2")
 
         unknown = mock.MagicMock()
         unknown.__enter__.return_value = unknown
         unknown.connect.side_effect = OSError(errno.EACCES, "Permission denied")
-        with mock.patch("timecapsulesmb.checks.network.socket.socket", return_value=unknown):
+        with mock.patch("timecapsulesmb.core.net.socket.socket", return_value=unknown):
             unknown_result = select_route_to_address("fd00::2")
 
         self.assertEqual(unavailable_result.state, "unavailable")
@@ -64,7 +56,7 @@ class NetworkCheckTests(unittest.TestCase):
         self.assertEqual(unknown_result.error_number, errno.EACCES)
 
     def test_unscoped_link_local_never_uses_the_default_route(self) -> None:
-        with mock.patch("timecapsulesmb.checks.network.socket.socket") as socket_mock:
+        with mock.patch("timecapsulesmb.core.net.socket.socket") as socket_mock:
             result = select_route_to_address("fe80::40")
         self.assertEqual(result.state, "unavailable")
         self.assertIn("scope", result.error or "")

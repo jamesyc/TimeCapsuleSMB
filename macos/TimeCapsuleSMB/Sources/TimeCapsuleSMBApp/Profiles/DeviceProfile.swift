@@ -536,10 +536,6 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         DeviceEndpointPolicy.normalizedHostKey(host)
     }
 
-    static func matches(_ left: DeviceProfile, _ right: DeviceProfile) -> Bool {
-        left.network.matches(right.network)
-    }
-
     static func make(
         id: ID = UUID().uuidString.lowercased(),
         configuredDevice: ConfiguredDeviceState,
@@ -556,7 +552,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
             network: DeviceNetworkIdentity.make(
                 configuredSSHTarget: configuredDevice.host,
                 discoveredDevice: discoveredDevice,
-                existing: existing?.network
+                existing: existing?.network,
+                airportMAC: configuredDevice.airportMAC
             ),
             syap: configuredDevice.syap ?? existing?.syap,
             model: configuredDevice.model ?? existing?.model,

@@ -607,7 +607,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "10.0.0.2"))
             ])
         ])
-        let existing = try await fixture.registry.saveConfiguredDevice(
+        let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -666,7 +666,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
             ], pauseAfterEvents: true)
         ])
-        let existing = try await fixture.registry.saveConfiguredDevice(
+        let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -708,7 +708,8 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         fixture.store.password = "secret"
 
         fixture.store.coordinator.run(operation: "discover", laneKey: .app)
-        try await waitUntilStoreState { fixture.store.coordinator.appLane.backend.isRunning }
+        // The lane is reserved before its async helper claims the runner's first response.
+        try await waitUntilStoreState { fixture.runner.calls.map(\.operation) == ["discover"] }
         fixture.store.runConfigure()
 
         try await waitUntilStoreState { fixture.runner.calls.count == 2 }
@@ -834,7 +835,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 ))
             ])
         ])
-        let existing = try await fixture.registry.saveConfiguredDevice(
+        let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2", model: "Original Capsule"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -883,7 +884,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
             ])
         ])
-        let existing = try await fixture.registry.saveConfiguredDevice(
+        let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
@@ -960,7 +961,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record], devices: [unsupported]))
             ])
         ])
-        let existing = try await fixture.registry.saveConfiguredDevice(
+        let existing = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
@@ -1035,24 +1036,24 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.2"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let currentRecord = testDeviceRecord(
             name: "Office Capsule",
             hostname: "office-capsule.local.",
             ipv4: ["10.0.0.80"],
-            fullname: "Office Capsule._airport._tcp.local."
+            fullname: "Office Capsule._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee"
         )
         let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80"))
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80", airportMAC: "02:aa:bb:cc:dd:ee"))
             ])
         ])
-        let existing = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+        let existing = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
             preferredID: "existing-device"
@@ -1082,7 +1083,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [discovered]))
             ])
         ])
-        fixture.store.discovery.refresh(timeout: 0.1)
+        fixture.store.discovery.refresh(timeout: 6)
         try await waitUntilStoreState { fixture.store.discovery.state == .ready }
         let device = try XCTUnwrap(fixture.store.discovery.devices.first)
 
@@ -1120,7 +1121,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 )
             ])
         ])
-        fixture.store.discovery.refresh(timeout: 0.1)
+        fixture.store.discovery.refresh(timeout: 6)
         try await waitUntilStoreState { fixture.store.discovery.state == .ready }
         let first = fixture.store.discovery.devices[0]
         let second = fixture.store.discovery.devices[1]
@@ -1132,6 +1133,146 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.selectedDeviceID, second.id)
         XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.3")
         XCTAssertEqual(fixture.runner.calls.count, 1)
+    }
+
+    func testConflictingSavedHardwareStopsBeforeConfigureAndPreservesProfiles() async throws {
+        let record = testDeviceRecord(ipv4: ["10.0.0.9"], airportMAC: "02:aa:bb:cc:dd:ee")
+        let fixture = try await makeStore(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+                payload: testDiscoverPayload(records: [record]))])
+        ])
+        // Legacy/imported registries can already contain conflicting identities.
+        // Ordinary checkups now reject introducing this state.
+        var imported: [DeviceProfile] = []
+        for (id, host) in [("first", "10.0.0.2"), ("second", "10.0.0.3")] {
+            var profile = try await fixture.registry.storeTestProfile(configuredDevice: testConfiguredDevice(host: host),
+                discoveredDevice: nil, passwordState: .available, preferredID: id)
+            profile.network.airportMAC = "02:aa:bb:cc:dd:ee"
+            imported.append(profile)
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(imported).write(to: fixture.registry.registryURL)
+        await fixture.registry.load()
+        let originals = fixture.registry.profiles
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        fixture.store.password = "pw"
+        fixture.store.runConfigure()
+        XCTAssertEqual(fixture.store.state, .failed)
+        XCTAssertEqual(fixture.store.error?.message, L10n.string("discovery.identity_conflict"))
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover"])
+        XCTAssertEqual(fixture.registry.profiles, originals)
+    }
+
+    func testNameOnlyReconnectRequiresChoiceAndPreservesProfileArtifacts() async throws {
+        let moved = testDeviceRecord(ipv4: ["10.0.0.9"])
+        let fixture = try await makeStore(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+                payload: testDiscoverPayload(records: [moved]))]),
+            .init(events: [BackendEvent(type: "result", operation: "configure", ok: true,
+                payload: testConfigurePayload(host: "10.0.0.9"))])
+        ])
+        let original = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: DiscoveredDevice(record: try testDeviceRecord().decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "existing")
+        try fixture.passwordStore.save("old password", for: original.keychainAccount)
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        let device = try XCTUnwrap(fixture.store.devices.first)
+        fixture.store.select(device)
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertNil(fixture.store.reconnectProfileID)
+        XCTAssertEqual(fixture.store.suggestedProfile?.id, original.id)
+        var reconnectChanges: [DeviceProfile.ID?] = []
+        let subscription = fixture.store.$reconnectProfileID.sink { reconnectChanges.append($0) }
+        fixture.store.reconnectSuggestedProfile()
+        XCTAssertEqual(reconnectChanges, [nil, original.id])
+        XCTAssertEqual(fixture.store.reconnectProfileID, original.id)
+        XCTAssertEqual(fixture.store.reconnectMessage, L10n.format("discovery.reconnect_selected", original.title))
+        fixture.store.password = "new password"
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        XCTAssertEqual(fixture.store.savedProfile?.id, original.id)
+        XCTAssertNil(fixture.store.reconnectMessage)
+        XCTAssertEqual(fixture.store.savedProfile?.configPath, original.configPath)
+        XCTAssertEqual(fixture.store.savedProfile?.keychainAccount, original.keychainAccount)
+        XCTAssertEqual(fixture.registry.profiles.count, 1)
+        XCTAssertEqual(try fixture.passwordStore.password(for: original.keychainAccount), "new password")
+        fixture.store.select(device)
+        XCTAssertNil(fixture.store.reconnectProfileID)
+        XCTAssertEqual(reconnectChanges, [nil, original.id, nil])
+        withExtendedLifetime(subscription) {}
+    }
+
+    func testSameNameHardwarePeersCannotSuggestOneLegacyProfileUntilRefreshRemovesPeer() async throws {
+        for sharedField in ["hostname", "fullname"] {
+            for reverse in [false, true] {
+                let first = testDeviceRecord(hostname: "shared.local.", ipv4: ["10.0.0.9"],
+                    fullname: "Shared._airport._tcp.local.", airportMAC: "02:aa:bb:cc:dd:ee")
+                let second = testDeviceRecord(hostname: sharedField == "hostname" ? "shared.local." : "other.local.",
+                    ipv4: ["10.0.0.10"], fullname: sharedField == "fullname" ? "Shared._airport._tcp.local." : "Other._airport._tcp.local.",
+                    airportMAC: "02:aa:bb:cc:dd:ff")
+                let records = reverse ? [second, first] : [first, second]
+                let fixture = try await makeStore(responses: [
+                    .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+                        payload: testDiscoverPayload(records: records))]),
+                    .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+                        payload: testDiscoverPayload(records: [first]))])
+                ])
+                let legacy = try await fixture.registry.storeTestProfile(
+                    configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+                    discoveredDevice: DiscoveredDevice(record: try testDeviceRecord(hostname: "shared.local.",
+                        fullname: "Shared._airport._tcp.local.").decode(BonjourResolvedServicePayload.self), index: 0),
+                    passwordState: .available, preferredID: "legacy")
+                fixture.store.runDiscover()
+                try await waitUntilStoreState { fixture.store.state == .discoveryReady && !fixture.store.coordinator.appLane.isBusy }
+                XCTAssertEqual(fixture.store.devices.count, 2)
+                for device in fixture.store.devices {
+                    fixture.store.select(device)
+                    XCTAssertNil(fixture.store.suggestedProfile, "\(sharedField), reversed: \(reverse)")
+                    fixture.store.reconnectSuggestedProfile()
+                    XCTAssertNil(fixture.store.reconnectProfileID)
+                }
+                XCTAssertEqual(fixture.registry.profiles, [legacy])
+                fixture.store.runDiscover()
+                try await waitUntilStoreState { fixture.store.state == .discoveryReady && fixture.store.devices.count == 1 }
+                fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+                XCTAssertEqual(fixture.store.suggestedProfile?.id, legacy.id)
+                fixture.store.reconnectSuggestedProfile()
+                XCTAssertEqual(fixture.store.reconnectProfileID, legacy.id)
+            }
+        }
+    }
+
+    func testReconnectFeedbackClearsWhenTheSelectionIsChangedOrReset() async throws {
+        let moved = testDeviceRecord(ipv4: ["10.0.0.9"])
+        let response = StoreTestRunner.Response(events: [BackendEvent(type: "result", operation: "discover", ok: true,
+            payload: testDiscoverPayload(records: [moved]))])
+        let fixture = try await makeStore(responses: [response, response])
+        _ = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: DiscoveredDevice(record: try testDeviceRecord().decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available, preferredID: "existing")
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady && !fixture.store.coordinator.appLane.isBusy }
+        let device = try XCTUnwrap(fixture.store.devices.first)
+        for clear in [ { fixture.store.select(device) }, { fixture.store.startManualEntry() }, { fixture.store.reset() } ] {
+            fixture.store.select(device)
+            fixture.store.reconnectSuggestedProfile()
+            XCTAssertNotNil(fixture.store.reconnectMessage)
+            clear()
+            XCTAssertNil(fixture.store.reconnectMessage)
+            XCTAssertNil(fixture.store.reconnectProfileID)
+        }
+        fixture.store.select(device)
+        fixture.store.reconnectSuggestedProfile()
+        XCTAssertNotNil(fixture.store.reconnectMessage)
+        fixture.store.runDiscover()
+        XCTAssertNil(fixture.store.reconnectMessage)
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
     }
 
     private func makeStore(

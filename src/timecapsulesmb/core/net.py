@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import ipaddress
 import socket
+from typing import Literal
 from urllib.parse import urlparse
 
 
@@ -237,3 +239,49 @@ def resolve_host_ips(host: str) -> tuple[str, ...]:
         if ip not in ordered:
             ordered.append(ip)
     return tuple(ordered)
+
+
+RouteState = Literal["available", "unavailable", "unknown"]
+
+
+@dataclass(frozen=True)
+class RouteSelection:
+    state: RouteState
+    source: str | None = None
+    error: str | None = None
+    error_number: int | None = None
+
+
+_ROUTE_UNAVAILABLE_ERRNOS = {
+    errno.EADDRNOTAVAIL,
+    errno.EAFNOSUPPORT,
+    errno.EHOSTUNREACH,
+    errno.ENETDOWN,
+    errno.ENETUNREACH,
+}
+
+
+def select_route_to_address(address: str, *, port: int = 445) -> RouteSelection:
+    address_base, _, scope = address.partition("%")
+    try:
+        ip_obj = ipaddress.ip_address(address_base)
+    except ValueError as exc:
+        return RouteSelection("unknown", error=str(exc))
+
+    family = socket.AF_INET6 if ip_obj.version == 6 else socket.AF_INET
+    scope_id = ipv6_scope_index(scope) if family == socket.AF_INET6 and scope else 0
+    if scope_id is None or (ip_obj.version == 6 and ip_obj.is_link_local and not scope_id):
+        return RouteSelection("unavailable", error="no usable local IPv6 scope", error_number=errno.EADDRNOTAVAIL)
+    destination = (address_base, port, 0, scope_id) if family == socket.AF_INET6 else (address_base, port)
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as sock:
+            sock.connect(destination)
+            sockname = sock.getsockname()
+            source = scoped_ip_literal(sockname[0], scope_id=sockname[3] if family == socket.AF_INET6 else 0)
+    except OSError as exc:
+        state: RouteState = "unavailable" if exc.errno in _ROUTE_UNAVAILABLE_ERRNOS else "unknown"
+        return RouteSelection(state, error=str(exc) or exc.__class__.__name__, error_number=exc.errno)
+
+    if source is None or ipaddress.ip_address(source.split("%", 1)[0]).is_unspecified:
+        return RouteSelection("unknown", error="kernel did not select a source address")
+    return RouteSelection("available", source=source)
