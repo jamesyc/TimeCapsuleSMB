@@ -457,7 +457,11 @@ our Samba. `diskd` is also load-bearing: it populates `acp -q MaSt` (our
 volume/UUID source of truth) and serves `acp rpc diskd.useVolume` (how the
 manager mounts volumes). The manager therefore relaunches it as
 `/sbin/diskd -i lo0 -d local.`: it keeps doing its real job while its own
-registrations never leave loopback. Our registrations use `name=NULL` and flags
+registrations never leave loopback. ACPd still starts its own diskd at boot and
+whenever it applies a sharing setting; that second diskd would delete our
+diskd's RPC names in ACPd (F16), so `boot.sh` makes `/sbin/diskd` (RAM root) a
+guard that runs the real binary, hard-linked as `/usr/libexec/diskd`, only for
+`-i lo0` and makes every other start exit at once. Our registrations use `name=NULL` and flags
 `0`, so Apple's mDNSResponder owns the shared default service name and resolves
 conflicts. A stock-device test on 2026-09-19 showed `diskd` renaming both SMB and
 ADisk to "Name (2)" after an SMB-only conflict, while `syNm` and the hostname
@@ -469,7 +473,7 @@ on that device, rather than rejecting a suffix shared with an unrelated peer.
 | --- | --- | --- |
 | `/sbin/mDNSResponder -d` | Apple (child of ACPd) | the only responder: host `A`/`AAAA` per interface, `_airport` (via ACPd), `_device-info`, printers (via `printd`), and everything we register. Never killed. |
 | `ACPd` | Apple | registers `_airport._tcp` and follows the AirPort Utility WAN switches; serves `acp -q`/`acp rpc` |
-| `/sbin/diskd -i lo0 -d local.` | Apple binary, relaunched by the manager | disk topology (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
+| `/usr/libexec/diskd -i lo0 -d local.` | Apple binary, started by the manager through boot.sh's `/sbin/diskd` guard | disk topology (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
 | `printd` | Apple | printer discovery and `_riousbprint`/`_pdl-datastream` registration |
 | `wcifsfs` | Apple | Apple SMB server, always stopped so Samba owns SMB |
 | `/sbin/wcifsnd` | Apple, child owned by `service discovery` | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
@@ -547,7 +551,7 @@ Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.disc
 ## Registered mDNS Records
 
 Current behavior:
-- `boot.sh` prepares platform directories and the locks filesystem, then executes `service manager`; the manager reconciles Apple's loopback `diskd`
+- `boot.sh` prepares platform directories, installs the diskd guard and the locks filesystem, then executes `service manager`; the manager reconciles Apple's loopback `diskd`
 - the manager launches `/mnt/Flash/service discovery` with the canonical Samba name (`--netbios-name`), payload state (`--diskless` when applicable), and ADisk rows (`--adisk-share NAME KEY UUID FLAGS`, repeated per share); identity and link facts otherwise come from ACP, the interface table, and flash config
 - the registrant holds one `DNSServiceRef` per (link index, service), re-registers on plan changes (a `PF_ROUTE` socket plus a 30 s ACP poll), and deregisters everything on `SIGTERM` so the daemon sends goodbyes
 - in diskless mode the desired set is empty; `_airport` and `_device-info` are Apple's and stay up regardless
@@ -1726,6 +1730,7 @@ rests on these measured facts. Numbers match the v3.1 implementation guide.
 | F13 | `/etc/mdnsd.conf` (RAM root, regenerated each boot) carries `Hardware TimeCapsule6,116` / `TimeCapsule8,119`, `Software 7.8.1` / `7.9.1`, `PrimaryIPv4Interface bridge0`. |
 | F14 | Samba's IPv6 `interfaces=` tokens must use the embedded-scope form `fe80:<index hex>::…/64`; Apple's pf opens 445/139/137/138/548 on the WAN iff `usbF & 0x8` in NAT mode; router mode is `(raNA,raDS)`: `(0,0)` bridge, `(0,1)` DHCP-only, `(1,1)` NAT; the guest bridge owns `gnRo`. |
 | F15 | Device shell quirks: NetBSD 4 `sed` has no `\|` alternation; `reboot`, `ifconfig` need full paths in non-login shells; `/etc` edits do not persist; `/mnt/Memory` is the 15 MB RAM staging area; `/mnt/Flash` is ≈1 MB. |
+| F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 for every failure; stderr carries the code (-6727 for a missing name). Measured on NetBSD 4 LE, 2026-10-03. |
 
 ### Non-root Unix identity handling is risky
 

@@ -1,3 +1,50 @@
+# diskd RPC registry guard and deploy past lost names (2026-10-03)
+
+Field telemetry (v3.1.0 to v3.2.0) showed deploys failing at
+`select_payload_home` with `use_volume_rcs=22,22` on all three device families.
+`acp rpc` exits 22 for every failed RPC; its stderr (discarded) carried -6727.
+ACPd keeps one table of `diskd.*` RPC names. ACPd starts Apple's diskd at boot
+and whenever it applies a sharing setting; that second diskd's duplicate
+registration is rejected, and when it exits ACPd deletes the names it tried,
+which were the manager diskd's, in registration order. boot.sh now replaces
+`/sbin/diskd` (RAM root) with a guard that runs the real binary, hard-linked as
+`/usr/libexec/diskd`, only for `-i lo0`. The shared mount-guard script keeps
+acp's error code and accepts a mounted volume whose claim failed with -6727.
+Doctor reports `diskd.getVolumeCounts` routing as INFO.
+
+- Mechanism (NetBSD 4 LE, before the fix): after boot `getVolumeCounts` and
+  `useVolume` answered; each extra stock diskd removed the next name; the
+  second extra one left `useVolume` failing with -6727 twice while
+  `/Volumes/dk2` stayed mounted, the field signature. A reboot restored it.
+- Guard prototype in rc.local, three boots each way on NetBSD 4: with the guard
+  ACPd's boot start became a `(sh)` zombie and the names stayed whole (one forced
+  collision removed only the first name); ACPd.log showed no new messages.
+  afpserver's boot "No HFS+ volumes found" appears with and without the guard,
+  on NetBSD 4 and 6, so it is unrelated.
+- Device shell semantics (NetBSD 4 and 6, scratch dir, no ACP): `ln -f` rerun,
+  `mv -f`, `$(cmd 2>&1 >/dev/null)` keeping exit 22 and the sed code
+  extraction, wrapper exec/exit paths, the guard heredoc layout (first run,
+  rerun, `ln` failure). A heredoc body placed after a line ending in `||`
+  swallowed the next boot.sh command; restoring that layout failed 11 of the
+  13 boot tests.
+- Full parallel pytest: 3,285 passed, 34,006 subtests passed. Ruff passed.
+- NetBSD 6 deploy: `/sbin/diskd` is the 293-byte guard, `/usr/libexec/diskd`
+  shares ACPd's inode, the manager's diskd runs as
+  `/usr/libexec/diskd -i lo0 -d local.`, ACPd's boot start exited through the
+  guard (`(sh)` zombie, one runtime.log line for `-i  -d local.`). Doctor
+  passed with `INFO diskd RPC: getVolumeCounts answered`.
+- NetBSD 4 LE deploy: the same; three more ACPd-style starts were ignored and
+  logged; doctor passed, `getVolumeCounts answered`.
+- Lost names (three collisions with the real binary on NetBSD 4): doctor still
+  passed and reported `getVolumeCounts failed: -6727`; the mount guard returned
+  success with `use_volume_rcs=22 mounted=yes use_volume_errors=-6727` and
+  payload selection chose `/Volumes/dk2`; a full redeploy in that state passed;
+  uninstall in that state removed `/Volumes/dk2/.samba4`. After the uninstall
+  reboot `/sbin/diskd` was Apple's binary again (140 links) and
+  `/usr/libexec/diskd` was gone; a redeploy restored the runtime.
+- Not run: a live-applied AirPort Utility change on a guarded device, and the
+  Samba suites (Samba is unchanged).
+
 # Bonjour off-network skip validation (2026-10-01)
 
 Doctor now requires both attempted Bonjour backends to report absence before

@@ -611,45 +611,74 @@ def _remote_mounted_test(volume_root: str) -> str:
     )
 
 
+# acp prints `### RPC function "NAME" failed: CODE` on stderr; keep CODE.
+ACP_RPC_ERROR_CODE_SED = r"""sed -n 's/.*failed: \(-*[0-9][0-9]*\).*/\1/p' | sed -n '$p'"""
+
+
+def diskd_rpc_status_conn(connection: SshConnection) -> str:
+    """"answered" when ACPd routes diskd.getVolumeCounts, else acp's error code.
+
+    getVolumeCounts is the second diskd RPC name a colliding diskd deletes, so
+    it is gone before diskd.useVolume (see boot.sh's diskd guard)."""
+    script = (
+        f"err=$({DEVICE_ACP_PATH} rpc diskd.getVolumeCounts 2>&1 >/dev/null) && echo answered && exit 0; "
+        f"""printf '%s\\n' "$err" | {ACP_RPC_ERROR_CODE_SED}"""
+    )
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    return proc.stdout.strip() or "?"
+
+
 def render_ensure_volume_root_mounted_script(volume_root: str, _device_path: str, wait_seconds: int) -> str:
     root = shlex.quote(volume_root)
     mounted_test = shlex.quote(_remote_mounted_test(volume_root))
     attempts = DISKD_USE_VOLUME_GUARD_ATTEMPTS
-    # The last line reports each diskd.useVolume exit status and whether the
-    # volume was mounted in the end (see VolumeMountResult).
+    # The last line reports each diskd.useVolume exit status, whether the
+    # volume was mounted in the end, and the error acp printed for each call
+    # (0 on success, ? when it printed no code; see VolumeMountResult).
+    # acp exits 22 for every failed RPC, so only stderr carries the cause.
+    # -6727 means ACPd lost diskd's RPC names (a second diskd deleted them) or
+    # diskd does not know the volume. Either way diskd will not unmount it, so
+    # a volume that is mounted is kept; the next reboot restores the names.
+    report = '"use_volume_rcs=$use_volume_rcs mounted=%s use_volume_errors=$use_volume_errors"'
     return (
         f"mkdir -p {root}; "
-        "use_volume_rcs=; "
+        "use_volume_rcs=; use_volume_errors=; "
         "diskd_attempt=1; "
         f"while [ \"$diskd_attempt\" -le {attempts} ]; do "
-        f"{DEVICE_ACP_PATH} rpc diskd.useVolume path:s:{root} >/dev/null 2>&1; use_volume_rc=$?; "
+        f"use_volume_err=$({DEVICE_ACP_PATH} rpc diskd.useVolume path:s:{root} 2>&1 >/dev/null); use_volume_rc=$?; "
+        f"""use_volume_code=$(printf '%s\\n' "$use_volume_err" | {ACP_RPC_ERROR_CODE_SED}); """
+        'if [ "$use_volume_rc" -eq 0 ]; then use_volume_code=0; elif [ -z "$use_volume_code" ]; then use_volume_code="?"; fi; '
         'use_volume_rcs="$use_volume_rcs${use_volume_rcs:+,}$use_volume_rc"; '
+        'use_volume_errors="$use_volume_errors${use_volume_errors:+,}$use_volume_code"; '
         'if [ "$use_volume_rc" -eq 0 ]; then '
         "wait_attempt=0; "
         f'while [ "$wait_attempt" -le {wait_seconds} ]; do '
-        f'if /bin/sh -c {mounted_test}; then echo "use_volume_rcs=$use_volume_rcs mounted=yes"; exit 0; fi; '
+        f'if /bin/sh -c {mounted_test}; then echo {report % "yes"}; exit 0; fi; '
         f'if [ "$wait_attempt" -eq {wait_seconds} ]; then break; fi; '
         'wait_attempt=$((wait_attempt + 1)); sleep 1; '
         "done; "
+        f'elif [ "$use_volume_code" = -6727 ] && /bin/sh -c {mounted_test}; then echo {report % "yes"}; exit 0; '
         "fi; "
         f'if [ "$diskd_attempt" -lt {attempts} ]; then sleep 1; fi; '
         'diskd_attempt=$((diskd_attempt + 1)); '
         "done; "
         f"if /bin/sh -c {mounted_test}; then mounted=yes; else mounted=no; fi; "
-        'echo "use_volume_rcs=$use_volume_rcs mounted=$mounted"; '
+        f"echo {report % '$mounted'}; "
         "exit 1"
     )
 
 
 @dataclass(frozen=True)
 class VolumeMountResult:
-    """Whether diskd claimed the volume and it is mounted; truthy on success.
+    """Whether the volume is mounted and diskd will keep it; truthy on success.
 
-    `detail` is the script's last line: each diskd.useVolume exit status and
-    whether the volume was mounted in the end, e.g. "use_volume_rcs=1,1
-    mounted=no". A failed request can still end with the volume mounted
-    (`present`): diskd refused it, or mounted it after the wait. Deploy does
-    not use such a volume, since diskd may unmount it under us."""
+    `detail` is the script's last line: each diskd.useVolume exit status,
+    whether the volume was mounted in the end, and acp's error per call, e.g.
+    "use_volume_rcs=22,22 mounted=no use_volume_errors=-6727,-6727". Success
+    is a claimed volume, or a mounted one whose claim failed with -6727 (diskd
+    cannot unmount it). Any other failed request can still end with the volume
+    mounted (`present`): diskd refused it, or mounted it after the wait.
+    Deploy does not use such a volume, since diskd may unmount it under us."""
 
     mounted: bool
     detail: str = ""

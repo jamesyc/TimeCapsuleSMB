@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from timecapsulesmb.device.storage import (
     MaStReadResult,
     MaStVolume,
     PayloadHome,
+    diskd_rpc_status_conn,
     ensure_volume_root_mounted_conn,
     mast_probe_debug_summary,
     mast_volumes_debug_summary,
@@ -328,14 +330,20 @@ MaSt = (
         self.assertFalse(result)
         self.assertEqual(result.detail, "")
 
-    def _run_mount_script(self, tmp: Path, *, use_volume_rcs: list[int], mounted_after_claim: bool, mounted_at_start: bool = False):
+    def _run_mount_script(
+        self, tmp: Path, *, use_volume_rcs: list[int], mounted_after_claim: bool, mounted_at_start: bool = False,
+        errors: list[int | None] | None = None,
+    ):
         """Run the real mount script with fake acp, df, tail and sleep.
 
-        The fake acp answers with the given exit codes in order; the volume
-        appears in df once a claim succeeds (if mounted_after_claim) or is
-        mounted from the start (mounted_at_start)."""
+        The fake acp answers with the given exit codes in order, printing a
+        plist on stdout like acp and, for a failure with an error code, acp's
+        `### RPC function ... failed: CODE` line on stderr. The volume appears
+        in df once a claim succeeds (if mounted_after_claim) or is mounted from
+        the start (mounted_at_start)."""
         state = tmp / "state.json"
-        state.write_text(json.dumps({"rcs": use_volume_rcs, "calls": 0, "mounted": mounted_at_start}))
+        errors = errors or [None] * len(use_volume_rcs)
+        state.write_text(json.dumps({"rcs": use_volume_rcs, "errors": errors, "calls": 0, "mounted": mounted_at_start}))
         tool = tmp / "tool.py"
         tool.write_text(f"""
 import json, sys
@@ -344,7 +352,11 @@ state = Path({str(state)!r})
 d = json.loads(state.read_text())
 if sys.argv[1] == "acp":
     rc = d["rcs"][d["calls"]]
+    error = d["errors"][d["calls"]]
     d["calls"] += 1
+    print("<plist>status</plist>")
+    if error is not None:
+        print(f'### RPC function "diskd.useVolume" failed: {{error}}', file=sys.stderr)
     if rc == 0 and {mounted_after_claim!r}:
         d["mounted"] = True
     state.write_text(json.dumps(d))
@@ -368,14 +380,15 @@ if sys.argv[1] == "df":
         with tempfile.TemporaryDirectory() as tmp:
             result, state = self._run_mount_script(Path(tmp), use_volume_rcs=[0], mounted_after_claim=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "use_volume_rcs=0 mounted=yes")
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=0 mounted=yes use_volume_errors=0")
         self.assertEqual(state["calls"], 1)
 
     def test_mount_script_reports_each_refused_claim_and_an_unmounted_volume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result, state = self._run_mount_script(Path(tmp), use_volume_rcs=[1, 3], mounted_after_claim=True)
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout.strip(), "use_volume_rcs=1,3 mounted=no")
+        # acp printed no error code: "?".
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=1,3 mounted=no use_volume_errors=?,?")
         self.assertEqual(state["calls"], 2)
 
     def test_mount_script_reports_a_mounted_volume_diskd_would_not_claim(self) -> None:
@@ -385,7 +398,7 @@ if sys.argv[1] == "df":
                 Path(tmp), use_volume_rcs=[1, 1], mounted_after_claim=False, mounted_at_start=True,
             )
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout.strip(), "use_volume_rcs=1,1 mounted=yes")
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=1,1 mounted=yes use_volume_errors=?,?")
 
     def test_mount_result_tells_a_mounted_but_unconfirmed_volume_from_a_missing_one(self) -> None:
         cases = [
@@ -406,8 +419,60 @@ if sys.argv[1] == "df":
         with tempfile.TemporaryDirectory() as tmp:
             result, state = self._run_mount_script(Path(tmp), use_volume_rcs=[0, 0], mounted_after_claim=False)
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout.strip(), "use_volume_rcs=0,0 mounted=no")
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=0,0 mounted=no use_volume_errors=0,0")
         self.assertEqual(state["calls"], 2)
+
+    def test_mount_script_keeps_a_mounted_volume_when_acpd_lost_diskd_rpc_names(self) -> None:
+        # -6727: a second diskd deleted diskd.useVolume, or diskd does not know
+        # the volume. diskd cannot unmount it either way: use it, no retry.
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(
+                Path(tmp), use_volume_rcs=[22, 22], errors=[-6727, -6727],
+                mounted_after_claim=False, mounted_at_start=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=22 mounted=yes use_volume_errors=-6727")
+        self.assertEqual(state["calls"], 1)
+
+    def test_mount_script_reports_lost_diskd_rpc_names_on_an_unmounted_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(
+                Path(tmp), use_volume_rcs=[22, 22], errors=[-6727, -6727], mounted_after_claim=False,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=22,22 mounted=no use_volume_errors=-6727,-6727")
+        self.assertEqual(state["calls"], 2)
+
+    def test_mount_script_refuses_a_mounted_volume_for_any_other_diskd_error(self) -> None:
+        # -6723: diskd is disconnecting every user (archive or erase): it will unmount.
+        with tempfile.TemporaryDirectory() as tmp:
+            result, state = self._run_mount_script(
+                Path(tmp), use_volume_rcs=[22, 22], errors=[-6723, -6723],
+                mounted_after_claim=False, mounted_at_start=True,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "use_volume_rcs=22,22 mounted=yes use_volume_errors=-6723,-6723")
+        self.assertEqual(state["calls"], 2)
+        self.assertTrue(VolumeMountResult(False, result.stdout.strip()).present)
+
+    def test_diskd_rpc_status_reports_acpd_answer_or_error_code(self) -> None:
+        cases = [
+            ("echo '<plist/>'", "answered"),
+            ("echo '### RPC function \"diskd.getVolumeCounts\" failed: -6727' >&2; exit 22", "-6727"),
+            ("echo '### invalid function parameters' >&2; exit 22", "?"),
+        ]
+        for fake_acp, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                acp = Path(tmp) / "acp"
+                acp.write_text(f"#!/bin/sh\n{fake_acp}\n")
+                acp.chmod(0o755)
+
+                def run(connection, command, **kwargs):
+                    script = shlex.split(command)[2].replace("/usr/bin/acp", str(acp))
+                    return subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True)
+
+                with mock.patch("timecapsulesmb.device.storage.run_ssh", side_effect=run):
+                    self.assertEqual(diskd_rpc_status_conn(SshConnection("root@10.0.0.2", "pw", "")), expected)
 
     def test_render_ensure_volume_root_mounted_script_quotes_paths(self) -> None:
         script = render_ensure_volume_root_mounted_script("/Volumes/dk 2", "/dev/dk2", 1)

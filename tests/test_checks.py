@@ -495,6 +495,10 @@ class CheckTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.flash_runtime_config_present_conn", return_value=True))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.runtime_ram_root_present_conn", return_value=True))
+        # ACPd routes diskd's RPCs (the diskd guard kept its names).
+        self._diskd_rpc_probe = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.checks.doctor_steps.diskd_rpc_status_conn", return_value="answered")
+        )
         # A healthy device: the hostname is set and mapped for Samba.
         self._device_hostname_probe = self._exit_stack.enter_context(mock.patch(
             "timecapsulesmb.checks.doctor_steps.probe_device_hostname_conn",
@@ -2467,6 +2471,36 @@ class CheckTests(unittest.TestCase):
 
         self._device_hostname_probe.assert_not_called()
         self.assertFalse(any("hostname" in result.message for result in run.results))
+
+    def test_doctor_reports_diskd_rpc_routing_only_as_information(self) -> None:
+        baseline = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
+        cases = [
+            ("answered", "diskd RPC: getVolumeCounts answered"),
+            ("-6727", "diskd RPC: getVolumeCounts failed: -6727 "
+                      "(ACPd lost diskd's RPC names; restarting the device restores them)"),
+            ("?", "diskd RPC: getVolumeCounts failed: ?"),
+        ]
+        for status, message in cases:
+            with self.subTest(status=status):
+                self._diskd_rpc_probe.return_value = status
+                run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
+                diskd = [(result.status, result.message) for result in run.results if result.message.startswith("diskd RPC")]
+                self.assertEqual(diskd, [("INFO", message)])
+                self.assertEqual(run.fatal, baseline.fatal)
+
+    def test_doctor_reports_an_unavailable_diskd_rpc_check_as_information(self) -> None:
+        baseline = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
+        self._diskd_rpc_probe.side_effect = RuntimeError("ssh dropped")
+        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
+
+        diskd = [(result.status, result.message) for result in run.results if result.message.startswith("diskd RPC")]
+        self.assertEqual(diskd, [("INFO", "diskd RPC check unavailable: ssh dropped")])
+        self.assertEqual(run.fatal, baseline.fatal)
+
+    def test_doctor_skips_the_diskd_rpc_check_without_ssh(self) -> None:
+        self.run_doctor_with_mocks(skip_ssh=True, skip_bonjour=True, skip_smb=True)
+
+        self._diskd_rpc_probe.assert_not_called()
 
     def test_run_doctor_checks_collapses_startup_failures_into_single_fail(self) -> None:
         debug_fields: dict[str, object] = {}

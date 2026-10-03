@@ -17,6 +17,30 @@ chmod 755 "$RAM_ROOT" "$RAM_ROOT/sbin" "$RAM_ROOT/etc" "$RAM_ROOT/var" \
 chmod 700 "$RAM_ROOT/private" "$RAM_ROOT/var/cores" || exit 1
 exec >>"$RAM_ROOT/var/rc.local.log" 2>&1
 
+# ACPd starts Apple's diskd at boot and whenever it applies a sharing setting.
+# The manager already runs diskd on loopback. ACPd keeps one table of diskd.*
+# RPC names: the second diskd fails to register, and when it exits ACPd deletes
+# the names it tried, which are the manager diskd's. After a few starts
+# diskd.useVolume is gone until reboot, so deploy and disk activation fail.
+# Only the manager's loopback diskd may start; ACPd's starts exit at once.
+# /sbin and /usr/libexec are on the RAM root, recreated at every boot. The hard
+# link keeps the process named diskd (the multi-call binary dispatches on
+# argv[0]'s basename); renaming the wrapper into place never writes through
+# that shared inode. The heredoc body must follow the line that opens it.
+{ ln -f /sbin/ACPd /usr/libexec/diskd &&
+    cat >/sbin/.diskd.$$ <<'EOF' &&
+#!/bin/sh
+# TimeCapsuleSMB diskd guard: see /mnt/Flash/boot.sh.
+if [ "${1:-}" = -i ] && [ "${2:-}" = lo0 ]; then
+    exec /usr/libexec/diskd "$@"
+fi
+{ echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') diskd guard: ignored ACPd start: $*" \
+    >>/mnt/Memory/samba4/var/runtime.log; } 2>/dev/null
+exit 0
+EOF
+    chmod 555 /sbin/.diskd.$$ && mv -f /sbin/.diskd.$$ /sbin/diskd; } ||
+    { rm -f /sbin/.diskd.$$; echo 'boot: diskd guard unavailable; ACPd may start a second diskd'; }
+
 tc_prepare_locks() {
     mkdir -p "$LOCKS_ROOT" || return 1
     tc_mounts=$(/sbin/mount) || return 1

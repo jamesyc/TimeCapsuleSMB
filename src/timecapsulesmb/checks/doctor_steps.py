@@ -74,6 +74,7 @@ from timecapsulesmb.core.net import (
     same_scoped_ip,
 )
 from timecapsulesmb.device.compat import render_compatibility_message
+from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.probe import (
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
@@ -2206,6 +2207,29 @@ def _doctor_check_managed_rsync(target: DoctorTarget, remote: RemoteAccess, sink
         fallback_pass_message="managed rsync state matches runtime configuration",
         fallback_fail_message=f"managed rsync is not ready ({rsync_probe.detail})",
     )
+
+
+def _doctor_check_diskd_rpc(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    """Information only: whether ACPd still routes diskd's RPCs.
+
+    A second diskd deletes the runtime diskd's RPC names in ACPd (boot.sh's
+    diskd guard stops ACPd from starting one). Without diskd.useVolume, disks
+    are not activated until the device restarts.
+    """
+    if not remote.remote_checks_enabled:
+        return
+    try:
+        status = diskd_rpc_status_conn(target.connection)
+    except Exception as e:
+        sink.add(CheckResult("INFO", f"diskd RPC check unavailable: {e}"))
+        return
+    if status == "answered":
+        sink.add(CheckResult("INFO", "diskd RPC: getVolumeCounts answered"))
+    elif status == "-6727":
+        sink.add(CheckResult("INFO", "diskd RPC: getVolumeCounts failed: -6727 "
+                                     "(ACPd lost diskd's RPC names; restarting the device restores them)"))
+    else:
+        sink.add(CheckResult("INFO", f"diskd RPC: getVolumeCounts failed: {status}"))
 
 
 def _doctor_check_active_smb_conf(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> SmbConfigState:
