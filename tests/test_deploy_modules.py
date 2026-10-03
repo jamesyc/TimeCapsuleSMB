@@ -80,6 +80,7 @@ from timecapsulesmb.device.probe import (
     ReadinessProbeResult,
     SMBD_STATUS_HELPERS,
     RcLocalAutostartProbeResult,
+    apple_bonjour_host_label,
     derive_runtime_naming_identity,
     extract_airport_identity_from_acp_output,
     extract_airport_identity_from_text,
@@ -357,7 +358,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(result.system_name, "A.B.'s AirPort Time Capsule")
         self.assertEqual(result.hostname, "Time Capsule.local")
         self.assertEqual(result.mdns_instance_name, "A.B.'s AirPort Time Capsule")
-        self.assertEqual(result.mdns_host_label, "time-capsule")
+        self.assertEqual(result.mdns_host_label, "a-b-s-airport-time-capsule")
         self.assertEqual(result.netbios_name, "TimeCapsule")
 
     def test_runtime_naming_identity_rejects_netbios_without_alnum(self) -> None:
@@ -388,6 +389,111 @@ class DeployModuleTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             with self.assertRaisesRegex(RuntimeError, "could not read runtime naming identity: rc=1"):
                 probe_remote_runtime_naming_identity_conn(connection)
+
+    def test_runtime_naming_identity_keeps_apples_label_whitespace(self) -> None:
+        # Apple advertises syNm byte for byte as its default Bonjour name,
+        # surrounding spaces and NBSPs included; only host names are normalized.
+        expected_hosts = {" AirPort Time\u00a0Capsule ": "airport-time-capsule", "\u00a0Capsule\u00a0": "capsule",
+                          "Capsule  Office": "capsule-office", "   ": "base-station-619b7d"}
+        for name, host in expected_hosts.items():
+            with self.subTest(name=name):
+                result = derive_runtime_naming_identity(name, "airport-time-capsule", radio_mac="E8:8D:28:61:9B:7D")
+                self.assertEqual(result.system_name, name)
+                self.assertEqual(result.mdns_instance_name, name)
+                self.assertEqual(result.mdns_host_label, host)
+                self.assertEqual(result.netbios_name, "airport-time-ca")
+
+    def test_apple_bonjour_host_label_matches_acpd(self) -> None:
+        # Expected labels follow ACPd's conversion routine byte for byte.
+        cases = {
+            "AirPort Time Capsule": "AirPort-Time-Capsule",
+            "James's AirPort Time Capsule": "Jamess-AirPort-Time-Capsule",
+            "James\u2019s AirPort Time Capsule": "Jamess-AirPort-Time-Capsule",
+            "A.B.'s AirPort Time Capsule": "A-B-s-AirPort-Time-Capsule",
+            "Time.Capsule": "Time-Capsule",
+            "Time\\Capsule": "Time-Capsule",
+            " AirPort Time\u00a0Capsule ": "AirPort-Time-Capsule",
+            "a--b": "a--b",
+            "a  b": "a-b",
+            "-a-": "a",
+            "Caf\u00e9 Office": "Caf-Office",
+            "x" * 70: "x" * 63,
+            "x" * 62 + " y": "x" * 62,
+            "   ": "",
+            "!!!": "",
+            "\u6781\u7aef \u65f6\u95f4\u80f6\u56ca": "",
+            "": "",
+        }
+        for name, label in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(apple_bonjour_host_label(name), label)
+
+    def test_runtime_naming_identity_host_label_falls_back_like_acpd(self) -> None:
+        # With no letters or digits in syNm, Apple's Bonjour host is
+        # Base-Station-<last three raMA bytes>, else waMA. /bin/hostname is
+        # only a last resort: ACPd fills it from unchecked stack bytes.
+        cases = [
+            ({"radio_mac": "E8:8D:28:61:9B:7D", "airport_mac": "E8:8D:28:58:F1:5C"}, "base-station-619b7d"),
+            ({"radio_mac": "### get 'raMA' failed", "airport_mac": "E8-8D-28-58-F1-5C"}, "base-station-58f15c"),
+            ({"radio_mac": None, "airport_mac": None}, "base-station-edffbf"),
+        ]
+        for macs, host in cases:
+            with self.subTest(**macs):
+                result = derive_runtime_naming_identity("   ", "base-station-edffbf", **macs)
+                self.assertEqual(result.mdns_host_label, host)
+                self.assertEqual(result.mdns_instance_name, "   ")
+        self.assertEqual(derive_runtime_naming_identity("!!!", None).mdns_host_label, "timecapsule")
+        self.assertEqual(derive_runtime_naming_identity("Time.Capsule", "other", radio_mac="E8:8D:28:61:9B:7D").mdns_host_label,
+                         "time-capsule")
+
+    def test_runtime_naming_identity_falls_back_only_without_a_name(self) -> None:
+        for name in (None, ""):
+            with self.subTest(name=name):
+                result = derive_runtime_naming_identity(name, "base-station-edffbf")
+                self.assertIsNone(result.system_name)
+                self.assertEqual(result.mdns_instance_name, "base-station-edffbf")
+
+    def test_probe_remote_runtime_naming_identity_keeps_syNm_bytes(self) -> None:
+        import shlex
+        from timecapsulesmb.device import probe
+        connection = SshConnection("host", "pw", "-o foo")
+        with tempfile.TemporaryDirectory() as tmp:
+            acp, value, radio = Path(tmp) / "acp", Path(tmp) / "syNm", Path(tmp) / "raMA"
+            # Execute the real remote shell; command substitution drops only the
+            # trailing newline, and the parser must not trim what is left. A
+            # failed query can print its error on stdout and still exit zero.
+            acp.write_text("#!/bin/sh\ncase \"$1:$2\" in\n"
+                           f"-q:syNm) cat {shlex.quote(str(value))};;\n"
+                           f"-q:raMA) cat {shlex.quote(str(radio))};;\n"
+                           "-q:waMA) echo E8:8D:28:58:F1:5C;;\n*) exit 99;;\nesac\n")
+            acp.chmod(0o755)
+            def execute(_connection, command, **kwargs):
+                return subprocess.run(shlex.split(command), capture_output=True, text=True, encoding="utf-8", **kwargs)
+            cases = [
+                (" AirPort Time\u00a0Capsule ", "E8:8D:28:61:9B:7D", "airport-time-capsule"),
+                ("   ", "E8:8D:28:61:9B:7D", "base-station-619b7d"),
+                ("   ", "### get 'raMA' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>", "base-station-58f15c"),
+                ("Capsule\u2028Office ", "E8:8D:28:61:9B:7D", "capsule-office"),
+            ]
+            for name, radio_mac, host in cases:
+                with self.subTest(name=name, radio_mac=radio_mac):
+                    value.write_text(name + "\n", encoding="utf-8")
+                    radio.write_text(radio_mac + "\n", encoding="utf-8")
+                    with mock.patch.object(probe, "DEVICE_ACP_PATH", str(acp)), mock.patch.object(
+                        probe, "run_ssh", side_effect=execute
+                    ):
+                        result = probe_remote_runtime_naming_identity_conn(connection)
+                    self.assertEqual(result.system_name, name)
+                    self.assertEqual(result.mdns_instance_name, name)
+                    self.assertEqual(result.mdns_host_label, host)
+
+    def test_probe_remote_runtime_naming_identity_strips_only_line_endings(self) -> None:
+        proc = mock.Mock(stdout="system_name= Capsule \r\nhostname= time-capsule.local \r\n", returncode=0)
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_remote_runtime_naming_identity_conn(SshConnection("host", "pw", "-o foo"))
+        self.assertEqual(result.mdns_instance_name, " Capsule ")
+        self.assertEqual(result.hostname, "time-capsule.local")
+        self.assertEqual(result.mdns_host_label, "capsule")
 
     def test_deployment_uses_one_native_runtime_and_small_boot_scripts(self) -> None:
         plan = self._prepared_deploy_plan().plan

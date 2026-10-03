@@ -40,25 +40,35 @@ enum SMBAddressPolicy {
     }
 
     private static func bonjourSMBServiceHost(for profile: DeviceProfile) -> String? {
-        if let fullname = profile.bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let label = bonjourLabel(for: profile) else {
+            return nil
+        }
+        // macOS's SMB client splits the service host at unescaped dots, so the
+        // label's own dots and backslashes need DNS escapes: Time.Capsule
+        // connects only as Time%5C.Capsule (NetBSD 4 LE, 2026-10-03).
+        let escaped = label
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ".", with: "\\.")
+        return "\(escaped)._smb._tcp.local"
+    }
+
+    private static func bonjourLabel(for profile: DeviceProfile) -> String? {
+        if let fullname = profile.bonjourFullname,
            !fullname.isEmpty {
-            let trimmed = fullname.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            // Remove only the DNS root separator, never any part of the label.
+            let trimmed = fullname.hasSuffix(".") ? String(fullname.dropLast()) : fullname
             let lowercased = trimmed.lowercased()
-            if lowercased.hasSuffix("._smb._tcp.local") {
-                return trimmed
-            }
-            for service in ["._airport._tcp.local", "._adisk._tcp.local", "._device-info._tcp.local"] {
-                if lowercased.hasSuffix(service) {
-                    return String(trimmed.dropLast(service.count)) + "._smb._tcp.local"
-                }
+            for service in ["._smb._tcp.local", "._airport._tcp.local", "._adisk._tcp.local", "._device-info._tcp.local"]
+            where lowercased.hasSuffix(service) {
+                return String(trimmed.dropLast(service.count))
             }
         }
 
-        guard let bonjourName = profile.bonjourName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let bonjourName = profile.bonjourName,
               !bonjourName.isEmpty else {
             return nil
         }
-        return "\(bonjourName)._smb._tcp.local"
+        return bonjourName
     }
 
     private static func url(host: String, account: String?) -> URL? {

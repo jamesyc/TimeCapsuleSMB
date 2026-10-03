@@ -226,7 +226,8 @@ def test_txt_shell_metacharacters_literal_backslash_digits_and_empty_values_matc
     expected = {"label": "Café Bob's \"Capsule\" & \\123", "empty": "", "control": "\x01", "whitespace": " leading/trailing "}
     text = LOOKUP.splitlines()[0] + "\n" + native_txt_output(expected) + "\n"
     assert native._parse_dns_sd_txt_output(text) == expected
-    events, errors = native._parse_dns_sd_browse_output("_airport._tcp", r"10:20:00 Add 2 14 local. _airport._tcp. Bob's.Café\123")
+    events, errors = native._parse_dns_sd_browse_output("_airport._tcp",
+        f"10:20:00 Add {2:8X} {14:3d} {'local.':<20} {'_airport._tcp.':<20} " + r"Bob's.Café\123")
     assert not errors and events[0].name == r"Bob's.Café\123"
 
 

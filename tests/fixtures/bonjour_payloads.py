@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from unittest import mock
 
-from tests.fixtures.bonjour import info, records, native_txt_output
+from tests.fixtures.bonjour import APPLE_STAMP, info, records, native_txt_output, native_fullname
 from timecapsulesmb.app.contracts import discover_payload
 from timecapsulesmb.app.ops.discovery import snapshot_payload
 from timecapsulesmb.discovery import native_dns_sd, zeroconf_backend
@@ -44,6 +44,13 @@ def scenarios():
             {**base, "properties": {"syAP": "116"}, "interface_index": 15, "ipv4": ["192.0.2.20"], "ipv6": []},
         ], ["192.0.2.10", "192.0.2.20"]),
         ("empty", [], []),
+        ("whitespace_label", [{**base, "name": " AirPort Time\u00a0Capsule "}], ["192.0.2.10"]),
+        ("unicode_separator_label", [{**base, "name": "Capsule\u2028Office"}], ["192.0.2.10"]),
+        ("whitespace_only_label", [{**base, "name": "   "}], ["192.0.2.10"]),
+        ("distinct_whitespace_labels_no_mac", [
+            {**base, "name": label, "properties": {"syAP": "116"}}
+            for label in ["Capsule", " Capsule", "Capsule "]
+        ], ["192.0.2.10"] * 3),
     ]
 
 
@@ -51,9 +58,9 @@ def wire_record(record, provider):
     if provider == "zeroconf":
         return zeroconf_backend.resolved_service_from_info(record["service_type"], info(record))
     name, stype, host, index = (record[k] for k in ("name", "service_type", "hostname", "interface_index"))
-    lookup = f"10:20:00 {name}.{stype} can be reached at {host}.:{record['port']} (interface {index})\n"
+    lookup = f"{APPLE_STAMP}{native_fullname(name, stype)} can be reached at {host}.:{record['port']} (interface {index})\n"
     lookup += native_txt_output(record["properties"]) + "\n"
-    addresses = "".join(f"10:20:00 Add 2 {index} {host}. {address} 120\n" for address in record["ipv4"] + record["ipv6"])
+    addresses = "".join(f"{APPLE_STAMP}Add 2 {index} {host}. {address} 120\n" for address in record["ipv4"] + record["ipv6"])
     instance = BonjourServiceInstance(stype, name, f"{name}.{stype}", index)
     with mock.patch.object(native_dns_sd, "_run_dns_sd_command", side_effect=[
         (lookup, "", 0, False, ""), (addresses, "", -15, True, ""),
@@ -81,6 +88,9 @@ def build():
             if name in {"equal_fullnames", "equal_hostnames", "distinct_fullnames_shared_hostname"}:
                 assert len({d["id"] for d in payload["devices"]}) == 2
                 assert len({d["airport_mac"] for d in payload["devices"]}) == 2
+            if name == "distinct_whitespace_labels_no_mac":
+                assert [d["name"] for d in payload["devices"]] == [" Capsule", "Capsule", "Capsule "]
+                assert len({d["id"] for d in payload["devices"]}) == 3
             paired.append(payload)
         assert paired[0] == paired[1], name
         output.append(dict(case=name, expected_hosts=expected_hosts,

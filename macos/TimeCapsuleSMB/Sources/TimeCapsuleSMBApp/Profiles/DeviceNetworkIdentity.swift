@@ -73,8 +73,9 @@ struct DeviceNetworkIdentity: Codable, Equatable {
     ) {
         self.configuredSSHTarget = configuredSSHTarget
         self.hostname = Self.normalizedOptional(hostname)
-        self.bonjourName = Self.normalizedOptional(bonjourName)
-        self.bonjourFullname = Self.normalizedOptional(bonjourFullname)
+        // These are DNS identities, so whitespace is part of the service label.
+        self.bonjourName = bonjourName.flatMap { $0.isEmpty ? nil : $0 }
+        self.bonjourFullname = bonjourFullname.flatMap { $0.isEmpty ? nil : $0 }
         self.airportMAC = Self.normalizedAirportMAC(airportMAC)
         self.addresses = DeviceEndpointPolicy.uniqueAddresses(addresses)
         appendConfiguredTargetAddress()

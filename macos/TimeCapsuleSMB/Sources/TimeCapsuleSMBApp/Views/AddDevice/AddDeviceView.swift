@@ -201,7 +201,7 @@ private struct DeviceCandidateRow: View {
             Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(selected ? Color.accentColor : Color.secondary)
             VStack(alignment: .leading) {
-                Text(device.name)
+                Text(device.displayName)
                 Text([device.hostname, device.addressSummary].filter { !$0.isEmpty }.joined(separator: "  "))
                     .font(.caption)
                     .foregroundStyle(.secondary)

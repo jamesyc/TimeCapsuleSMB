@@ -27,6 +27,10 @@ from timecapsulesmb.discovery.models import (
 )
 from timecapsulesmb.discovery.interfaces import interface_index_for_target
 
+# dns-sd's printtimestamp() writes "%2d:%02d:%02d.%03d  ": hours before 10
+# start with a space, and two spaces separate the stamp from the callback.
+_DNS_SD_TIMESTAMP = r" ?\d{1,2}:\d\d:\d\d(?:\.\d+)?"
+
 
 @dataclass
 class NativeDnsSdServiceEvent:
@@ -107,7 +111,9 @@ def _dns_sd_service_type_domain(service_type: str, domain: str = "local.") -> st
 def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[NativeDnsSdServiceEvent], int]:
     events: list[NativeDnsSdServiceEvent] = []
     parse_error_count = 0
-    for line in stdout.splitlines():
+    # dns-sd prints LF records; Unicode line separators belong to service labels.
+    for line in stdout.split("\n"):
+        line = line.removesuffix("\r")
         stripped = line.strip()
         if not stripped:
             continue
@@ -115,27 +121,41 @@ def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[Na
             stripped.startswith("Browsing for ")
             or stripped.startswith("DATE:")
             or stripped.startswith("Timestamp")
-            or "...STARTING..." in stripped
+            or re.fullmatch(rf"{_DNS_SD_TIMESTAMP}[ \t]+\.\.\.STARTING\.\.\.", stripped)
         ):
             continue
-        parts = stripped.split(None, 6)
-        if len(parts) < 7:
+        prefix = re.match(rf"^{_DNS_SD_TIMESTAMP}[ \t]+(Add|Rmv)[ \t]+([0-9A-Fa-f]+)[ \t]+(-?\d+)[ \t]+", line)
+        if prefix is None:
             parse_error_count += 1
             continue
-        _timestamp, action, flags, iface, domain, observed_service_type, name = parts
-        try:
-            interface_index = int(iface)
-        except ValueError:
-            interface_index = None
+        action, flags, iface = prefix.groups()
+        remainder = line[prefix.end():].encode("utf-8")
+        fields = []
+        # Apple's %-20s fields pad UTF-8 bytes. Consume only that padding and
+        # the single separator, so even a leading space/tab remains in the label.
+        for _ in range(2):
+            field = re.match(rb"[^ \t]+", remainder)
+            if field is None:
+                break
+            value = field[0]
+            framed = value.ljust(20) + b" "
+            if not remainder.startswith(framed):
+                break
+            fields.append(value.decode("utf-8"))
+            remainder = remainder[len(framed):]
+        if len(fields) != 2 or not remainder:
+            parse_error_count += 1
+            continue
+        domain, observed_service_type = fields
         events.append(
             NativeDnsSdServiceEvent(
                 service_type=observed_service_type.rstrip(".") or service_type,
                 action=action,
-                interface_index=interface_index,
+                interface_index=int(iface),
                 flags=flags,
                 domain=domain,
                 # Browse replies print the raw instance label, not an escaped DNS fullname.
-                name=name.strip(),
+                name=remainder.decode("utf-8"),
             )
         )
     return events, parse_error_count
@@ -239,16 +259,19 @@ class _ProcessIO:
 
 def _command_error(stdout: str, stderr: str, exit_code: int | None, stopped: bool,
                    *, operation: str | None = None) -> str:
-    timestamp = r"\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    timestamp = _DNS_SD_TIMESTAMP
     callback = rf"(?:{timestamp}\s+)?Error code\s+(-\d+)\s*"
     startup = r"DNSService[A-Za-z]+(?:\(\))?\s+(?:failed|returned)\s+(-\d+)(?:\s+\(Service Not Running\))?\s*"
     resolve = rf"{timestamp}\s+.+\._[^.\s]+\._(?:tcp|udp)\.\S+\.\s+error code\s+(-\d+)(?:\s+Flags:\s+[0-9A-F]+)?\s*"
     addresses = rf"{timestamp}\s+(?:Add|Rmv)\s+[0-9A-F]+\s+(?:[A-Za-z?+-]\s+)?\d+\s+\S+\s+\S+\s+\d+\s+Error code\s+(-\d+)\s*"
     codes: list[int] = []
     for output, is_stderr in ((stdout, False), (stderr, True)):
-        for raw_line in output.splitlines(keepends=True):
+        # A Unicode separator inside a browse label cannot turn the label's
+        # remaining text into a standalone denial/error callback.
+        lines = output.split("\n")
+        for index, raw_line in enumerate(lines):
             # A live stream may end in half a callback; classification waits for its newline.
-            if exit_code is None and not raw_line.endswith(("\n", "\r")):
+            if exit_code is None and index == len(lines) - 1 and not raw_line.endswith("\r"):
                 continue
             line = raw_line.strip() if is_stderr else raw_line.rstrip("\r\n")
             match = re.fullmatch(callback, line, re.I)
@@ -310,10 +333,11 @@ def _parse_reached_line(line: str) -> tuple[str, str, int, int | None] | None:
     marker = " can be reached at "
     if marker not in line:
         return None
-    left, right = line.split(marker, 1)
-    left = left.strip()
-    parts = left.split(None, 1)
-    fullname = parts[1] if len(parts) > 1 and re.match(r"^\d\d:\d\d:\d\d(?:\.\d+)?$", parts[0]) else left
+    left, right = line.rsplit(marker, 1)
+    # dns-sd escapes ASCII spaces and controls in a fullname (\032), so every
+    # ASCII space after the timestamp is framing. A fullname may still start
+    # with an unescaped NBSP or contain other Unicode whitespace.
+    fullname = re.sub(rf"^{_DNS_SD_TIMESTAMP}[ \t]+", "", left, count=1)
 
     host_port = right.split(" (", 1)[0].strip()
     if ":" not in host_port:
@@ -329,7 +353,7 @@ def _parse_reached_line(line: str) -> tuple[str, str, int, int | None] | None:
     if interface_match:
         interface_index = int(interface_match.group(1))
 
-    return _decode_dns_sd_text(fullname.strip()), _decode_dns_sd_text(host.strip().rstrip(".")), port, interface_index
+    return _decode_dns_sd_text(fullname), _decode_dns_sd_text(host.strip().rstrip(".")), port, interface_index
 
 
 def _decode_dns_sd_text(value: str) -> str:
@@ -364,7 +388,7 @@ def _decode_dns_sd_txt_field(value: str) -> str:
 def _parse_dns_sd_txt_output(stdout: str) -> dict[str, str]:
     properties: dict[str, str] = {}
     reached_service = False
-    for line in stdout.splitlines():
+    for line in stdout.split("\n"):
         # A trailing escaped space is part of the TXT value, not line padding.
         stripped = line.lstrip()
         if _parse_reached_line(stripped) is not None:
@@ -392,8 +416,8 @@ def _parse_dns_sd_lookup_output(
     stdout: str,
 ) -> tuple[str, str, int, int | None, dict[str, str]]:
     properties = _parse_dns_sd_txt_output(stdout)
-    for line in stdout.splitlines():
-        parsed = _parse_reached_line(line.strip())
+    for line in stdout.split("\n"):
+        parsed = _parse_reached_line(line.removesuffix("\r"))
         if parsed is not None:
             return (*parsed, properties)
     return f"{name}.{_dns_sd_service_type_domain(service_type)}", "", 0, None, properties

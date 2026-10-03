@@ -75,16 +75,16 @@ def _record_complete(record: BonjourResolvedService, families: Sequence[BonjourI
 
 
 def _display_name(fullname: str, service_type: str) -> str:
-    suffix = service_type
+    suffix = "." + service_type
     if fullname.endswith(suffix):
-        return fullname[: -len(suffix)].rstrip(".")
-    return fullname.rstrip(".")
+        return fullname[: -len(suffix)]
+    return fullname.removesuffix(".")
 
 
 def _observation_merge_key(observation: BonjourResolvedService) -> tuple[str, str, str]:
     return (
         observation.service_type,
-        observation.name.strip(),
+        observation.name,
         _normalize_hostname(observation.hostname),
     )
 

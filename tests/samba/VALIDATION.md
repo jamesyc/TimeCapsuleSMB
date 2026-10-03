@@ -1,3 +1,105 @@
+# Bonjour service label preservation (2026-10-03)
+
+The v3.2.0-1 telemetry case registered `AirPort Time\u00a0Capsule ` through
+Apple's default-name callback, but host discovery stripped its trailing space
+before `dns-sd -L`. Browse parsing now consumes Apple's minimum-width metadata
+columns in bytes and preserves the remaining label. Lookup and diagnostic
+parsing split physical output records without treating Unicode separators as
+newlines. A label containing `...STARTING...` remains service data.
+Apple's `printtimestamp()` writes `%2d:%02d:%02d.%03d` and two spaces, so
+before 10:00 a line starts with a space; browse, lookup and error parsing share
+one timestamp pattern that accepts both, and every ASCII space after it is
+framing (fullnames escape ASCII spaces as `\032`).
+
+Doctor expects `syNm` exactly as Apple advertises it. The runtime naming probe
+no longer strips it (the device shell's command substitution already drops
+only the trailing newline), and doctor selects only that exact label or
+Apple's conflict rename of it (`"Capsule "` becomes `"Capsule  (2)"`: mDNSCore
+appends ` (2)` without trimming). A trimmed spelling is another service. The
+ACP-derived whitespace-hint matching from the first version of this branch is
+gone. Observation/candidate identities and macOS profile storage keep the
+exact label; macOS lists show it trimmed, or the host when it is blank. The
+service's C identity code still trims its display name (plan output, Samba
+server string fallback); it registers nothing, so it is unchanged and its
+parity test now covers only the shared 63-byte cut and control-character
+mapping.
+
+Doctor's expected Bonjour host now follows ACPd instead of `/bin/hostname`.
+ACPd converts `syNm` to a host label (LE ACPd `0x442194`): ASCII letters and
+digits keep their case, `'` and UTF-8 `’` are dropped, an inner `-` is kept,
+any other byte becomes one `-`, no leading or trailing `-`, at most 63 bytes.
+When that is empty, the Bonjour host (`0x42e1a0`) is `Base-Station-` and the
+last three `raMA` bytes, else `waMA`. The kernel hostname routine (`0x243ec4`,
+`sethostname`) makes the same conversion, but its fallback ignores the `raMA`
+read result and formats an uninitialized stack buffer: `base-station-edffbf`
+after three reboots, bytes that look like an ARM stack address. The probe
+reads `raMA` and `waMA` (an `acp -q` error line is not a MAC) and ports the
+conversion; `/bin/hostname` is the last resort. `syDN`, which ACPd reads
+first, is unreadable on both test devices, so the probe skips it. The
+`/etc/hosts` mapping keeps the kernel hostname, which smbd resolves.
+
+macOS SMB URLs escape a label's dots and backslashes as DNS does. With
+`smbutil view -N`, `Time.Capsule` failed as `smb://Time.Capsule._smb._tcp.local`
+and `Time%2ECapsule` ("No route to host") but reached the server as
+`Time%5C.Capsule`; `Time\Capsule` failed as `Time%5CCapsule` and connected as
+`Time%5C%5CCapsule`; `%20%20%20` reached the three-space name unescaped.
+
+Device evidence (NetBSD 4 LE, 2026-10-03/04). `/usr/bin/acp` is ACPd: an
+argument `code=value` takes the 4-byte code and everything after `=` verbatim;
+ACPd's property table types `syNm` as 2, a raw `strlen`/`memcpy` copy (at most
+256 bytes), in both the LE and BE 7.8.1 binaries. With the user's permission,
+`acp syNm=...` set `"   "`, `Time.Capsule`, `Time\Capsule` and `"   "` again,
+each followed by `acp acRB=00000000`; Bonjour labels changed only after the
+reboot, and every value was stored and advertised byte for byte
+(`\032\032\032`, `Time\.Capsule` and `Time\\Capsule` in `dns-sd -L`). The
+Bonjour hosts were `Base-Station-619b7d` and `Time-Capsule` (kernel hostname
+`time-capsule`). The device was then set back to its original
+`AirPort Time Capsule`.
+
+- Doctor against the three-space name: `main` dropped the label (its parser
+  stripped it to empty) and failed four Bonjour checks; the first version of
+  this branch failed IPv6 because its expected name fell back to the host
+  label; with the exact name only the host-label check failed
+  (`Base-Station-619b7d` against `base-station-edffbf`). With the ACPd host
+  derivation doctor passed with no FAIL or WARN on NetBSD 4 (three spaces,
+  then `AirPort Time Capsule`) and on NetBSD 6 (`James's AirPort Time
+  Capsule`, `jamess-airport-time-capsule`). `Time.Capsule` also passed.
+- The dedicated Python label suite runs 183 cases from 27 tests. It exercises
+  real adapters through exact-name subprocess/zeroconf fixtures, independent
+  Apple output literals, escaped fullnames, fragmented UTF-8, withdrawals,
+  distinct identities, both IP families, ADisk validation, exact-label doctor
+  selection, conflict renames and the blank-name host check, which fails with
+  the hostname-based label.
+- Naming probe tests run the real probe shell against a stand-in `acp` and
+  check leading/trailing spaces, NBSPs, U+2028, whitespace-only names, the
+  `raMA` fallback and an `acp` error line; conversion tests cover every ACPd
+  branch. The C parity test adds an inner NBSP.
+- Existing in-flight replacement, scoped removal and grace-period withdrawal
+  tests also run with the telemetry label. The helper cancellation fixture
+  uses whitespace-bearing labels and verifies that all owned children exit.
+- Nine new Swift tests cover raw UTF-8 preservation, coding and registry
+  save/reload, display edits and names, service/name-based SMB URLs (including
+  the device-verified escaped forms, which fail 58 assertions on the previous
+  policy) and distinct labels. Four new paired provider fixtures pass through
+  the existing Swift contract tests, including leading whitespace, a Unicode
+  separator and missing MACs.
+- Zeroconf retains its upstream ASCII-control rejection (including tabs).
+  Native parsing preserves observed bytes; the zeroconf test verifies an
+  unresolved outcome and closes both transports. Supporting invalid control
+  labels through dependency bypasses would add code without helping this valid
+  NBSP/trailing-space case.
+- Review fixes: a `dns-sd -B` capture from macOS with `TZ=UTC` (hour 1) gave
+  three parse errors and no instances on the first version of this branch;
+  `-L` fullnames kept a leading space at every hour and the timestamp before
+  10:00; `Error code -65570` was missed before 10:00 (also on `07a78fe0`).
+  Fake dns-sd fixtures now print Apple's framing with a single-digit hour.
+- Final full parallel local pytest on `origin/main`: **3,479 passed**, 183.25
+  seconds. Python 3.14 emitted 44 existing `forkpty()` deprecation warnings in
+  CLI tests.
+- Final full Swift suite: **665 passed**, 19.40 seconds. Ruff and
+  `git diff --check` passed.
+- Host code only: no NetBSD artifacts changed.
+
 # Runtime log of diskd.useVolume errors (2026-10-03)
 
 The manager's disk claim discarded acp's stderr, so runtime.log only showed

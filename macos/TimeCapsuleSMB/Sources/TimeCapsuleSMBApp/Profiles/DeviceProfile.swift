@@ -548,7 +548,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         let compatibility = configuredDevice.compatibility
         return DeviceProfile(
             id: resolvedID,
-            displayName: existing?.displayName ?? discoveredDevice?.name ?? configuredDevice.model ?? "Time Capsule",
+            displayName: existing?.displayName ?? discoveredDevice?.displayName ?? configuredDevice.model ?? "Time Capsule",
             network: DeviceNetworkIdentity.make(
                 configuredSSHTarget: configuredDevice.host,
                 discoveredDevice: discoveredDevice,

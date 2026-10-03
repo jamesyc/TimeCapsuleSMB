@@ -1407,5 +1407,549 @@
       ],
       "summary_key": "discovered_devices"
     }
+  },
+  {
+    "case": "whitespace_label",
+    "expected_device_count": 1,
+    "expected_hosts": [
+      "192.0.2.10"
+    ],
+    "payload": {
+      "counts": {
+        "devices": 1,
+        "instances": 1,
+        "resolved": 1
+      },
+      "devices": [
+        {
+          "addresses": [
+            "192.0.2.10",
+            "fd00::10"
+          ],
+          "airport_mac": "00:11:22:33:44:55",
+          "fullname": " AirPort Time Capsule ._airport._tcp.local.",
+          "host": "192.0.2.10",
+          "hostname": "office.local",
+          "id": "airport:00:11:22:33:44:55",
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "link_local_only": false,
+          "model": "TimeCapsule6,116",
+          "name": " AirPort Time Capsule ",
+          "preferred_ipv4": "192.0.2.10",
+          "selected_record": {
+            "fullname": " AirPort Time Capsule ._airport._tcp.local.",
+            "hostname": "office.local",
+            "interface_index": 14,
+            "ipv4": [
+              "192.0.2.10"
+            ],
+            "ipv6": [
+              "fd00::10"
+            ],
+            "name": " AirPort Time Capsule ",
+            "port": 5009,
+            "properties": {
+              "syAP": "116",
+              "syVs": "7.9.1",
+              "waMA": "00:11:22:33:44:55"
+            },
+            "service_type": "_airport._tcp.local.",
+            "services": [
+              "_airport._tcp.local."
+            ]
+          },
+          "service_type": "_airport._tcp.local.",
+          "ssh_host": "root@192.0.2.10",
+          "supported_model": true,
+          "syap": "116"
+        }
+      ],
+      "instances": [
+        {
+          "fullname": " AirPort Time Capsule ._airport._tcp.local.",
+          "interface_index": 14,
+          "name": " AirPort Time Capsule ",
+          "service_type": "_airport._tcp.local."
+        }
+      ],
+      "resolved": [
+        {
+          "fullname": " AirPort Time Capsule ._airport._tcp.local.",
+          "hostname": "office.local",
+          "interface_index": 14,
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "name": " AirPort Time Capsule ",
+          "port": 5009,
+          "properties": {
+            "syAP": "116",
+            "syVs": "7.9.1",
+            "waMA": "00:11:22:33:44:55"
+          },
+          "service_type": "_airport._tcp.local.",
+          "services": [
+            "_airport._tcp.local."
+          ]
+        }
+      ],
+      "schema_version": 1,
+      "summary": "Discovered 1 device.",
+      "summary_args": [
+        1
+      ],
+      "summary_key": "discovered_devices"
+    }
+  },
+  {
+    "case": "unicode_separator_label",
+    "expected_device_count": 1,
+    "expected_hosts": [
+      "192.0.2.10"
+    ],
+    "payload": {
+      "counts": {
+        "devices": 1,
+        "instances": 1,
+        "resolved": 1
+      },
+      "devices": [
+        {
+          "addresses": [
+            "192.0.2.10",
+            "fd00::10"
+          ],
+          "airport_mac": "00:11:22:33:44:55",
+          "fullname": "Capsule Office._airport._tcp.local.",
+          "host": "192.0.2.10",
+          "hostname": "office.local",
+          "id": "airport:00:11:22:33:44:55",
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "link_local_only": false,
+          "model": "TimeCapsule6,116",
+          "name": "Capsule Office",
+          "preferred_ipv4": "192.0.2.10",
+          "selected_record": {
+            "fullname": "Capsule Office._airport._tcp.local.",
+            "hostname": "office.local",
+            "interface_index": 14,
+            "ipv4": [
+              "192.0.2.10"
+            ],
+            "ipv6": [
+              "fd00::10"
+            ],
+            "name": "Capsule Office",
+            "port": 5009,
+            "properties": {
+              "syAP": "116",
+              "syVs": "7.9.1",
+              "waMA": "00:11:22:33:44:55"
+            },
+            "service_type": "_airport._tcp.local.",
+            "services": [
+              "_airport._tcp.local."
+            ]
+          },
+          "service_type": "_airport._tcp.local.",
+          "ssh_host": "root@192.0.2.10",
+          "supported_model": true,
+          "syap": "116"
+        }
+      ],
+      "instances": [
+        {
+          "fullname": "Capsule Office._airport._tcp.local.",
+          "interface_index": 14,
+          "name": "Capsule Office",
+          "service_type": "_airport._tcp.local."
+        }
+      ],
+      "resolved": [
+        {
+          "fullname": "Capsule Office._airport._tcp.local.",
+          "hostname": "office.local",
+          "interface_index": 14,
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "name": "Capsule Office",
+          "port": 5009,
+          "properties": {
+            "syAP": "116",
+            "syVs": "7.9.1",
+            "waMA": "00:11:22:33:44:55"
+          },
+          "service_type": "_airport._tcp.local.",
+          "services": [
+            "_airport._tcp.local."
+          ]
+        }
+      ],
+      "schema_version": 1,
+      "summary": "Discovered 1 device.",
+      "summary_args": [
+        1
+      ],
+      "summary_key": "discovered_devices"
+    }
+  },
+  {
+    "case": "whitespace_only_label",
+    "expected_device_count": 1,
+    "expected_hosts": [
+      "192.0.2.10"
+    ],
+    "payload": {
+      "counts": {
+        "devices": 1,
+        "instances": 1,
+        "resolved": 1
+      },
+      "devices": [
+        {
+          "addresses": [
+            "192.0.2.10",
+            "fd00::10"
+          ],
+          "airport_mac": "00:11:22:33:44:55",
+          "fullname": "   ._airport._tcp.local.",
+          "host": "192.0.2.10",
+          "hostname": "office.local",
+          "id": "airport:00:11:22:33:44:55",
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "link_local_only": false,
+          "model": "TimeCapsule6,116",
+          "name": "   ",
+          "preferred_ipv4": "192.0.2.10",
+          "selected_record": {
+            "fullname": "   ._airport._tcp.local.",
+            "hostname": "office.local",
+            "interface_index": 14,
+            "ipv4": [
+              "192.0.2.10"
+            ],
+            "ipv6": [
+              "fd00::10"
+            ],
+            "name": "   ",
+            "port": 5009,
+            "properties": {
+              "syAP": "116",
+              "syVs": "7.9.1",
+              "waMA": "00:11:22:33:44:55"
+            },
+            "service_type": "_airport._tcp.local.",
+            "services": [
+              "_airport._tcp.local."
+            ]
+          },
+          "service_type": "_airport._tcp.local.",
+          "ssh_host": "root@192.0.2.10",
+          "supported_model": true,
+          "syap": "116"
+        }
+      ],
+      "instances": [
+        {
+          "fullname": "   ._airport._tcp.local.",
+          "interface_index": 14,
+          "name": "   ",
+          "service_type": "_airport._tcp.local."
+        }
+      ],
+      "resolved": [
+        {
+          "fullname": "   ._airport._tcp.local.",
+          "hostname": "office.local",
+          "interface_index": 14,
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "name": "   ",
+          "port": 5009,
+          "properties": {
+            "syAP": "116",
+            "syVs": "7.9.1",
+            "waMA": "00:11:22:33:44:55"
+          },
+          "service_type": "_airport._tcp.local.",
+          "services": [
+            "_airport._tcp.local."
+          ]
+        }
+      ],
+      "schema_version": 1,
+      "summary": "Discovered 1 device.",
+      "summary_args": [
+        1
+      ],
+      "summary_key": "discovered_devices"
+    }
+  },
+  {
+    "case": "distinct_whitespace_labels_no_mac",
+    "expected_device_count": 3,
+    "expected_hosts": [
+      "192.0.2.10",
+      "192.0.2.10",
+      "192.0.2.10"
+    ],
+    "payload": {
+      "counts": {
+        "devices": 3,
+        "instances": 3,
+        "resolved": 3
+      },
+      "devices": [
+        {
+          "addresses": [
+            "192.0.2.10",
+            "fd00::10"
+          ],
+          "airport_mac": null,
+          "fullname": " Capsule._airport._tcp.local.",
+          "host": "192.0.2.10",
+          "hostname": "office.local",
+          "id": "observation:[\" capsule._airport._tcp.local\",\"office.local\",\"_airport._tcp.local.\",14,5009]",
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "link_local_only": false,
+          "model": "TimeCapsule6,116",
+          "name": " Capsule",
+          "preferred_ipv4": "192.0.2.10",
+          "selected_record": {
+            "fullname": " Capsule._airport._tcp.local.",
+            "hostname": "office.local",
+            "interface_index": 14,
+            "ipv4": [
+              "192.0.2.10"
+            ],
+            "ipv6": [
+              "fd00::10"
+            ],
+            "name": " Capsule",
+            "port": 5009,
+            "properties": {
+              "syAP": "116"
+            },
+            "service_type": "_airport._tcp.local.",
+            "services": [
+              "_airport._tcp.local."
+            ]
+          },
+          "service_type": "_airport._tcp.local.",
+          "ssh_host": "root@192.0.2.10",
+          "supported_model": true,
+          "syap": "116"
+        },
+        {
+          "addresses": [
+            "192.0.2.10",
+            "fd00::10"
+          ],
+          "airport_mac": null,
+          "fullname": "Capsule._airport._tcp.local.",
+          "host": "192.0.2.10",
+          "hostname": "office.local",
+          "id": "observation:[\"capsule._airport._tcp.local\",\"office.local\",\"_airport._tcp.local.\",14,5009]",
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "link_local_only": false,
+          "model": "TimeCapsule6,116",
+          "name": "Capsule",
+          "preferred_ipv4": "192.0.2.10",
+          "selected_record": {
+            "fullname": "Capsule._airport._tcp.local.",
+            "hostname": "office.local",
+            "interface_index": 14,
+            "ipv4": [
+              "192.0.2.10"
+            ],
+            "ipv6": [
+              "fd00::10"
+            ],
+            "name": "Capsule",
+            "port": 5009,
+            "properties": {
+              "syAP": "116"
+            },
+            "service_type": "_airport._tcp.local.",
+            "services": [
+              "_airport._tcp.local."
+            ]
+          },
+          "service_type": "_airport._tcp.local.",
+          "ssh_host": "root@192.0.2.10",
+          "supported_model": true,
+          "syap": "116"
+        },
+        {
+          "addresses": [
+            "192.0.2.10",
+            "fd00::10"
+          ],
+          "airport_mac": null,
+          "fullname": "Capsule ._airport._tcp.local.",
+          "host": "192.0.2.10",
+          "hostname": "office.local",
+          "id": "observation:[\"capsule ._airport._tcp.local\",\"office.local\",\"_airport._tcp.local.\",14,5009]",
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "link_local_only": false,
+          "model": "TimeCapsule6,116",
+          "name": "Capsule ",
+          "preferred_ipv4": "192.0.2.10",
+          "selected_record": {
+            "fullname": "Capsule ._airport._tcp.local.",
+            "hostname": "office.local",
+            "interface_index": 14,
+            "ipv4": [
+              "192.0.2.10"
+            ],
+            "ipv6": [
+              "fd00::10"
+            ],
+            "name": "Capsule ",
+            "port": 5009,
+            "properties": {
+              "syAP": "116"
+            },
+            "service_type": "_airport._tcp.local.",
+            "services": [
+              "_airport._tcp.local."
+            ]
+          },
+          "service_type": "_airport._tcp.local.",
+          "ssh_host": "root@192.0.2.10",
+          "supported_model": true,
+          "syap": "116"
+        }
+      ],
+      "instances": [
+        {
+          "fullname": "Capsule._airport._tcp.local.",
+          "interface_index": 14,
+          "name": "Capsule",
+          "service_type": "_airport._tcp.local."
+        },
+        {
+          "fullname": " Capsule._airport._tcp.local.",
+          "interface_index": 14,
+          "name": " Capsule",
+          "service_type": "_airport._tcp.local."
+        },
+        {
+          "fullname": "Capsule ._airport._tcp.local.",
+          "interface_index": 14,
+          "name": "Capsule ",
+          "service_type": "_airport._tcp.local."
+        }
+      ],
+      "resolved": [
+        {
+          "fullname": "Capsule._airport._tcp.local.",
+          "hostname": "office.local",
+          "interface_index": 14,
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "name": "Capsule",
+          "port": 5009,
+          "properties": {
+            "syAP": "116"
+          },
+          "service_type": "_airport._tcp.local.",
+          "services": [
+            "_airport._tcp.local."
+          ]
+        },
+        {
+          "fullname": " Capsule._airport._tcp.local.",
+          "hostname": "office.local",
+          "interface_index": 14,
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "name": " Capsule",
+          "port": 5009,
+          "properties": {
+            "syAP": "116"
+          },
+          "service_type": "_airport._tcp.local.",
+          "services": [
+            "_airport._tcp.local."
+          ]
+        },
+        {
+          "fullname": "Capsule ._airport._tcp.local.",
+          "hostname": "office.local",
+          "interface_index": 14,
+          "ipv4": [
+            "192.0.2.10"
+          ],
+          "ipv6": [
+            "fd00::10"
+          ],
+          "name": "Capsule ",
+          "port": 5009,
+          "properties": {
+            "syAP": "116"
+          },
+          "service_type": "_airport._tcp.local.",
+          "services": [
+            "_airport._tcp.local."
+          ]
+        }
+      ],
+      "schema_version": 1,
+      "summary": "Discovered 3 devices.",
+      "summary_args": [
+        3
+      ],
+      "summary_key": "discovered_devices"
+    }
   }
 ]

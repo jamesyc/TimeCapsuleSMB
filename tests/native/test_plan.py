@@ -788,8 +788,12 @@ def test_device_config_rejects_overlong_physical_line_continuations(tmp_path):
 
 # ---------------------------------------------------------------- identity ----
 
-@pytest.mark.parametrize("value", ["AirPort Time Capsule", "  James's  Time.Capsule  ", "Über Kapsel ünïcödé " + "x" * 80,
-                                   "ctrl\x01char\x7f", "é" * 40, "x" * 63 + "yz", "\t\t"])
+# The service trims its display name; doctor keeps syNm's surrounding whitespace
+# because Apple's Bonjour label does. They share the 63-byte cut and the
+# control-character mapping, so the inputs have no leading or trailing whitespace.
+@pytest.mark.parametrize("value", ["AirPort Time Capsule", "James's  Time.Capsule", "Über Kapsel ünïcödé " + "x" * 80,
+                                   "ctrl\x01char\x7f", "Time\tCapsule", "é" * 40, "x" * 63 + "yz",
+                                   "AirPort Time\u00a0Capsule"])
 def test_identity_instance_name_matches_probe_py(value):
     from timecapsulesmb.device.probe import normalize_runtime_mdns_instance_name
     expected = normalize_runtime_mdns_instance_name(value)

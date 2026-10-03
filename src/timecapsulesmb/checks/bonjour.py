@@ -148,11 +148,10 @@ def select_smb_instance(
 
 def build_expected_smb_instance(instance_name: str) -> BonjourServiceInstance:
     service_type = f"{SMB_SERVICE}._tcp.local."
-    stripped_name = instance_name.strip()
     return BonjourServiceInstance(
         service_type=service_type,
-        name=stripped_name,
-        fullname=f"{stripped_name}.{service_type}",
+        name=instance_name,
+        fullname=f"{instance_name}.{service_type}",
     )
 
 

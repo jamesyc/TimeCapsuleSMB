@@ -9,6 +9,11 @@ from timecapsulesmb.discovery import bonjour, native_dns_sd, zeroconf_backend
 from timecapsulesmb.discovery.models import SERVICE_TYPES
 
 
+# Apple dns-sd prints "%2d:%02d:%02d.%03d  " before each callback. Fixtures use
+# a single-digit hour, whose leading space a parser must also accept.
+APPLE_STAMP = " 9:20:00.123  "
+
+
 def records():
     return [dict(name="Office", hostname="office.local", service_type=stype, port=port,
                  ipv4=["192.0.2.10"], ipv6=["fd00::10"], interface_index=14,
@@ -31,6 +36,13 @@ def native_txt_output(properties):
         return "".join("\\" * 4 if char == "\\" else "\\" * 2 + f"x{ord(char):02X}" if ord(char) < 32
                        else "\\" + char if char in " &;`'\"|*?~<>^()[]{}$" else char for char in text)
     return " ".join(field(key + "=" + value) for key, value in properties.items())
+
+
+def native_fullname(name, service_type):
+    """DNSServiceConstructFullName escapes ASCII controls, spaces, dots and backslashes."""
+    label = "".join(f"\\{ord(char):03d}" if ord(char) <= 32 else "\\" + char
+                    if char in ".\\" else char for char in name)
+    return f"{label}.{service_type}"
 
 
 def install_zeroconf(monkeypatch, observations, *, fail_family=None, family_observations=None, delays=None,
@@ -94,31 +106,41 @@ def install_zeroconf(monkeypatch, observations, *, fail_family=None, family_obse
     return closed
 
 
-def install_native(monkeypatch, tmp_path, observations, *, address_delay=0.02, delayed_family="ipv6", ignore_terminate=False):
+def install_native(monkeypatch, tmp_path, observations, *, address_delay=0.02, delayed_family="ipv6", ignore_terminate=False,
+                   fragment_browse=False):
     script = tmp_path / "fake-dns-sd.py"
     script.write_text('''import sys,time,signal,json,threading
-records = json.loads(sys.argv[1]); delay=float(sys.argv[2]); ignore=sys.argv[3]=='1'; epoch=float(sys.argv[4]); delayed=sys.argv[5]; args=sys.argv[6:]
+records = json.loads(sys.argv[1]); delay=float(sys.argv[2]); ignore=sys.argv[3]=='1'; epoch=float(sys.argv[4]); delayed=sys.argv[5]; fragment=sys.argv[6]=='1'; args=sys.argv[7:]
 changes_ready = threading.Event()
 signal.signal(signal.SIGUSR1, lambda *_args: changes_ready.set())
 if ignore: signal.signal(signal.SIGTERM, signal.SIG_IGN)
 index=int(args[args.index('-i')+1]) if '-i' in args else None
+def emit_browse(action,r):
+    row=(' 9:20:00.123  %s %8X %3d %-20s %-20s %s' % (action,2,r.get('interface_index',14),'local.',stype.removesuffix('local.'),r['name'])+chr(10)).encode()
+    if fragment:
+        label_start=len(row)-len(r['name'].encode())-1
+        cuts=[0,label_start,label_start+1,len(row)-1,len(row)]
+        for start,end in zip(cuts,cuts[1:]):
+            sys.stdout.buffer.write(row[start:end]); sys.stdout.buffer.flush(); time.sleep(.02)
+    else:
+        sys.stdout.buffer.write(row); sys.stdout.buffer.flush()
 if '-B' in args:
     stype=args[args.index('-B')+1]+'.local.'
     for r in records:
         if r['service_type']==stype and r.get('initial',True):
-            print('10:20:00 Add 2 %d local. %s %s' % (r.get('interface_index',14), stype.removesuffix('local.'), r['name']),flush=True)
+            emit_browse('Add',r)
     for r in records:
         if r['service_type']==stype:
             for wait,action in r.get('browse_events',[]):
                 if wait is None: changes_ready.wait()
                 else: time.sleep(wait)
-                print('10:20:01 %s 2 %d local. %s %s' % (action,r.get('interface_index',14), stype.removesuffix('local.'),r['name']),flush=True)
+                emit_browse(action,r)
     time.sleep(30)
 elif '-L' in args:
     name,stype=args[args.index('-L')+1:args.index('-L')+3]
     for r in records:
         if r['name']==name and r['service_type']==stype+'.local.' and (index is None or index==r.get('interface_index',14)):
-            print('10:20:00 %s.%s can be reached at %s.:%d (interface %d)' % (name,r['service_type'],r['hostname'],r['port'],r.get('interface_index',14)),flush=True)
+            print(' 9:20:00.123  %s can be reached at %s.:%d (interface %d)' % (r['native_fullname'],r['hostname'],r['port'],r.get('interface_index',14)),flush=True)
             print(r['native_txt'],flush=True)
             break
 elif '-G' in args:
@@ -133,18 +155,19 @@ elif '-G' in args:
             if protocol != 'v4v6' and protocol != ('v4' if family=='ipv4' else 'v6'): continue
             if family==delayed: time.sleep(max(0,epoch+delay-time.clock_gettime(time.CLOCK_MONOTONIC)))
             for address in r.get(family,[]):
-                print('10:20:00 Add 2 %d %s. %s 120' % (r.get('interface_index',14),host,address),flush=True)
+                print(' 9:20:00.123  Add 2 %d %s. %s 120' % (r.get('interface_index',14),host,address),flush=True)
     time.sleep(30)
 ''')
     children = []
     epochs = {}
     launch = native_dns_sd._ProcessOwner.launch
-    wire_observations = [dict(r, native_txt=native_txt_output(r.get("properties", {}))) for r in observations]
+    wire_observations = [dict(r, native_txt=native_txt_output(r.get("properties", {})),
+                             native_fullname=native_fullname(r['name'], r['service_type'])) for r in observations]
     def fake_launch(owner, args):
         # macOS Python 3.9's monotonic() starts separately in each process.
         now = time.clock_gettime(time.CLOCK_MONOTONIC)
         epoch = epochs.setdefault(args[-1], now) if "-G" in args else now
-        proc = launch(owner, [sys.executable, "-u", str(script), json.dumps(wire_observations), str(address_delay), str(int(ignore_terminate)), str(epoch), delayed_family, *args[1:]])
+        proc = launch(owner, [sys.executable, "-u", str(script), json.dumps(wire_observations), str(address_delay), str(int(ignore_terminate)), str(epoch), delayed_family, str(int(fragment_browse)), *args[1:]])
         children.append(proc)
         return proc
     monkeypatch.setattr(native_dns_sd._ProcessOwner, "launch", fake_launch)

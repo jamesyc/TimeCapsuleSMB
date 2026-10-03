@@ -4,7 +4,7 @@ import XCTest
 final class BonjourProviderContractTests: XCTestCase {
     func testDecodesActualPairedProviderPayloadsAndKeepsSelectionEvidence() throws {
         let scenarios = try fixtureScenarios()
-        XCTAssertEqual(scenarios.count, 12)
+        XCTAssertEqual(scenarios.count, 16)
         for scenario in scenarios {
             let name = try XCTUnwrap(scenario["case"] as? String)
             let data = try JSONSerialization.data(withJSONObject: XCTUnwrap(scenario["payload"]))
@@ -13,6 +13,13 @@ final class BonjourProviderContractTests: XCTestCase {
             XCTAssertEqual(devices.count, scenario["expected_device_count"] as? Int, name)
             XCTAssertEqual(devices.map(\.connectionTarget), scenario["expected_hosts"] as? [String], name)
             XCTAssertEqual(Set(devices.map(\.id)).count, devices.count, name)
+            for (index, device) in devices.enumerated() {
+                let original = payload.devices[index]
+                XCTAssertEqual(device.name, original.name, name)
+                XCTAssertEqual(device.fullname, original.fullname, name)
+                XCTAssertEqual(device.observedIdentity.bonjourName, original.name, name)
+                XCTAssertEqual(device.observedIdentity.bonjourFullname, original.fullname, name)
+            }
             if name == "equal_fullnames" || name == "equal_hostnames" {
                 XCTAssertTrue(Set(devices.compactMap(\.airportMAC)).count == 2)
                 XCTAssertEqual(devices[0].fullname, devices[1].fullname)

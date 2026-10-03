@@ -160,7 +160,7 @@ private struct OverviewDiscoveredDeviceRow: View {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 3) {
-                Text(device.name)
+                Text(device.displayName)
                     .font(.body.weight(.medium))
                 HStack(spacing: 6) {
                     Text(device.addressSummary.isEmpty ? device.connectionTarget : device.addressSummary)

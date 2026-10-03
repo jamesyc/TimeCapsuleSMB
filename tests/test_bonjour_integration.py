@@ -190,11 +190,12 @@ def test_zeroconf_delayed_transport_completes_during_shared_grace(monkeypatch, l
     assert sorted(closed) == ["ipv4", "ipv6"]
 
 
-def test_native_removed_then_readded_instance_survives_old_inflight_resolve(monkeypatch, tmp_path):
+@pytest.mark.parametrize("name", ["Office", " AirPort Time\u00a0Capsule "])
+def test_native_removed_then_readded_instance_survives_old_inflight_resolve(monkeypatch, tmp_path, name):
     import signal
     # Withdraw only after the first generation is resolving, then release it
     # once the real browse parser has delivered the replacement generation.
-    observations = [{**records()[0], "browse_events": [[None, "Rmv"], [0, "Add"]]}]
+    observations = [{**records()[0], "name": name, "browse_events": [[None, "Rmv"], [0, "Add"]]}]
     children = install_native(monkeypatch, tmp_path, observations)
     original = native_dns_sd._resolve
     parse = native_dns_sd._parse_dns_sd_browse_output
@@ -226,9 +227,10 @@ def test_native_removed_then_readded_instance_survives_old_inflight_resolve(monk
     assert all(p.poll() is not None for p in children)
 
 
-def test_native_removal_is_scoped_to_its_interface(monkeypatch, tmp_path):
-    observations = [{**records()[0], "browse_events": [[.1, "Rmv"]]},
-                    {**records()[0], "interface_index": 18}]
+@pytest.mark.parametrize("name", ["Office", " AirPort Time\u00a0Capsule "])
+def test_native_removal_is_scoped_to_its_interface(monkeypatch, tmp_path, name):
+    observations = [{**records()[0], "name": name, "browse_events": [[.1, "Rmv"]]},
+                    {**records()[0], "name": name, "interface_index": 18}]
     children = install_native(monkeypatch, tmp_path, observations)
     snapshot, _diagnostics = bonjour.discover_snapshot_detailed("_airport", timeout=2)
     assert [r.interface_index for r in snapshot.resolved] == [18]
@@ -248,8 +250,9 @@ def test_native_keeps_full_browse_window_but_closes_admission_for_grace(monkeypa
     assert all(p.poll() is not None for p in children)
 
 
-def test_native_withdrawal_during_resolution_grace_invalidates_admitted_service(monkeypatch, tmp_path):
-    observations = [{**records()[0], "browse_events": [[2.3, "Rmv"]]}]
+@pytest.mark.parametrize("name", ["Office", " AirPort Time\u00a0Capsule "])
+def test_native_withdrawal_during_resolution_grace_invalidates_admitted_service(monkeypatch, tmp_path, name):
+    observations = [{**records()[0], "name": name, "browse_events": [[2.3, "Rmv"]]}]
     children = install_native(monkeypatch, tmp_path, observations, address_delay=20)
     snapshot, diagnostics = bonjour.discover_snapshot_detailed("_airport", timeout=2)
     assert snapshot.instances == [] and snapshot.resolved == []

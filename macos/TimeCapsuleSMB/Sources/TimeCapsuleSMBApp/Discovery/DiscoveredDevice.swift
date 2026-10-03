@@ -17,6 +17,17 @@ struct DiscoveredDevice: Identifiable, Equatable {
     var addresses: [String] { networkAddresses.map(\.value) }
     var addressSummary: String { DeviceEndpointPolicy.addressSummary(networkAddresses) }
 
+    // `name` is the advertised Bonjour label and stays exact for identity; a
+    // list shows it without surrounding whitespace, or the host when blank.
+    var displayName: String {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            return trimmedName
+        }
+        let trimmedHost = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedHost.isEmpty ? "AirPort Device" : trimmedHost
+    }
+
     // Discovery evidence is for matching only; persistence requires SSH confirmation.
     var observedIdentity: DeviceNetworkIdentity {
         DeviceNetworkIdentity(configuredSSHTarget: connectionTarget, hostname: hostname,
@@ -87,8 +98,7 @@ struct DiscoveredDevice: Identifiable, Equatable {
               case .string(let value)? = object["fullname"] else {
             return nil
         }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        return value.isEmpty ? nil : value
     }
 
     var discoveryModelText: String {

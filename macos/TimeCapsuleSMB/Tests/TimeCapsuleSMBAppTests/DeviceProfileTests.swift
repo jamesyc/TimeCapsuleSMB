@@ -64,7 +64,7 @@ final class DeviceProfileTests: XCTestCase {
         let sameFullname = makeProfile(
             id: "two",
             host: "10.0.0.9",
-            bonjourFullname: " office capsule._AIRPORT._tcp.local. "
+            bonjourFullname: "office capsule._AIRPORT._tcp.local."
         )
         let sameHost = makeProfile(id: "three", host: "tcapsule.local.")
         let sameHostWithRootUser = makeProfile(id: "five", host: "root@tcapsule.local")

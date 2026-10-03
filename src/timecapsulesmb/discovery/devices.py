@@ -145,7 +145,8 @@ def _candidate_id(record: BonjourResolvedService, *, host: str) -> str:
         return f"airport:{record.airport_mac}"
     # Without a hardware hint an ID describes this observation, not an appliance.
     # It must not change just because another similarly named peer appears.
-    key = (_normalize(record.fullname) or _normalize(record.name),
+    # Unlike user-entered endpoints, observed DNS labels include their whitespace.
+    key = ((record.fullname or "").removesuffix(".").casefold() or (record.name or "").casefold(),
            _normalize(record.hostname) or _normalize(host), record.service_type,
            record.interface_index or 0, record.port)
     return "observation:" + json.dumps(key, separators=(",", ":"), ensure_ascii=False)

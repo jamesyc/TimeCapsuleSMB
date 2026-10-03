@@ -732,19 +732,43 @@ def _hostname_first_label(value: str) -> str:
 
 
 def normalize_runtime_mdns_instance_name(value: str) -> str:
+    # Apple advertises syNm as its default Bonjour name byte for byte, so
+    # surrounding whitespace is part of the label (NetBSD 4 LE, 2026-10-03).
     normalized = "".join("-" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in value)
-    return _truncate_utf8(normalized.strip(), MAX_DNS_LABEL_BYTES)
-
-
-def _normalize_runtime_mdns_host_label_text(value: str) -> str:
-    candidate = value.strip().lower()
-    normalized = re.sub(r"[^a-z0-9-]", "-", candidate).strip("-")
-    normalized = _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES).strip("-")
-    return normalized
+    return _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES)
 
 
 def normalize_runtime_mdns_host_label(value: str) -> str:
-    return _normalize_runtime_mdns_host_label_text(_hostname_first_label(value))
+    candidate = _hostname_first_label(value).lower()
+    normalized = re.sub(r"[^a-z0-9-]", "-", candidate).strip("-")
+    return _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES).strip("-")
+
+
+def apple_bonjour_host_label(name: str) -> str:
+    """ACPd's conversion of syNm to its Bonjour host label (LE ACPd 0x442194).
+
+    ASCII letters and digits are kept with their case; an apostrophe or a UTF-8
+    right single quote is dropped; a hyphen inside the name is kept as-is; any
+    other byte becomes one hyphen. The label never starts or ends with a
+    hyphen and stops at 63 bytes. An empty result makes ACPd fall back to
+    Base-Station-<last three raMA bytes>.
+    """
+    data = name.encode("utf-8")
+    out = bytearray()
+    index = 0
+    while index < len(data) and len(out) < MAX_DNS_LABEL_BYTES:
+        byte = data[index]
+        if byte == 0x27 or data[index:index + 3] == b"\xe2\x80\x99":
+            index += 3 if byte == 0xE2 else 1
+            continue
+        if 0x30 <= byte <= 0x39 or 0x41 <= byte <= 0x5A or 0x61 <= byte <= 0x7A:
+            out.append(byte)
+        elif out and byte == 0x2D and index < len(data) - 1:
+            out.append(byte)
+        elif out and out[-1] != 0x2D:
+            out.append(0x2D)
+        index += 1
+    return out.decode("ascii").rstrip("-")
 
 
 def normalize_runtime_netbios_name(value: str) -> str:
@@ -755,13 +779,27 @@ def normalize_runtime_netbios_name(value: str) -> str:
     return _truncate_utf8(normalized, MAX_NETBIOS_NAME_BYTES)
 
 
-def derive_runtime_naming_identity(system_name: str | None, hostname: str | None) -> RuntimeNamingIdentityProbeResult:
-    raw_system_name = (system_name or "").strip() or None
+def derive_runtime_naming_identity(
+    system_name: str | None,
+    hostname: str | None,
+    *,
+    radio_mac: str | None = None,
+    airport_mac: str | None = None,
+) -> RuntimeNamingIdentityProbeResult:
+    raw_system_name = system_name or None
     raw_hostname = (hostname or "").strip() or None
 
-    mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
+    # Apple's mDNSResponder advertises ACPd's host label, not /bin/hostname:
+    # with no letters or digits in syNm, ACPd's kernel hostname reads raMA
+    # without checking the result and gets stack bytes (base-station-edffbf on
+    # NetBSD 4 LE), while the Bonjour host uses raMA, else waMA.
+    mdns_host_label = apple_bonjour_host_label(raw_system_name or "").lower()
     if not mdns_host_label:
-        mdns_host_label = _normalize_runtime_mdns_host_label_text(raw_system_name or "")
+        mac = normalize_airport_mac(radio_mac) or normalize_airport_mac(airport_mac)
+        if mac:
+            mdns_host_label = "base-station-" + mac.replace(":", "")[6:]
+    if not mdns_host_label:
+        mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
     if not mdns_host_label:
         mdns_host_label = "timecapsule"
 
@@ -783,28 +821,36 @@ def derive_runtime_naming_identity(system_name: str | None, hostname: str | None
         netbios_name=netbios_name,
         detail=(
             "derived runtime naming identity: "
-            f"mdns_instance={mdns_instance_name} mdns_host={mdns_host_label} netbios={netbios_name}"
+            f"mdns_instance={mdns_instance_name!r} mdns_host={mdns_host_label!r} netbios={netbios_name}"
         ),
     )
 
 
 def _parse_runtime_naming_probe_output(text: str) -> RuntimeNamingIdentityProbeResult:
     values: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        key, separator, value = raw_line.partition("=")
+    # The device's sed already cut syNm at LF; U+2028 and spaces are label text.
+    for raw_line in text.split("\n"):
+        key, separator, value = raw_line.removesuffix("\r").partition("=")
         if separator:
-            values[key.strip()] = value.strip()
-    return derive_runtime_naming_identity(values.get("system_name"), values.get("hostname"))
+            values[key.strip()] = value
+    return derive_runtime_naming_identity(values.get("system_name"), values.get("hostname"),
+                                          radio_mac=values.get("radio_mac"), airport_mac=values.get("airport_mac"))
 
 
 def probe_remote_runtime_naming_identity_conn(connection: SshConnection) -> RuntimeNamingIdentityProbeResult:
     script = rf"""
 system_name=
+radio_mac=
+airport_mac=
 if [ -x {DEVICE_ACP_PATH} ]; then
   system_name=$({DEVICE_ACP_PATH} -q syNm 2>/dev/null | /usr/bin/sed -n '1p')
+  radio_mac=$({DEVICE_ACP_PATH} -q raMA 2>/dev/null | /usr/bin/sed -n '1p')
+  airport_mac=$({DEVICE_ACP_PATH} -q waMA 2>/dev/null | /usr/bin/sed -n '1p')
 fi
 hostname=$(/bin/hostname 2>/dev/null | /usr/bin/sed -n '1p')
 printf 'system_name=%s\n' "$system_name"
+printf 'radio_mac=%s\n' "$radio_mac"
+printf 'airport_mac=%s\n' "$airport_mac"
 printf 'hostname=%s\n' "$hostname"
 """
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
