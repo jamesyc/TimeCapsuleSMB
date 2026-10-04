@@ -530,3 +530,59 @@ Verification:
   signatures, final bundle validation, helper/tool smoke tests and ZIP extraction.
   Output: `/private/var/folders/ng/mwbdswb919d7w5j7428_lm9c0000gn/T/tcapsule-package-adhoc-l3jlbpzr`.
 - No VM/device access or checked-in binary changes; no locks held. No commit.
+
+## 2026-10-04 — Caching for repeated macOS packaging runs
+
+- Timed the release/universal/ZIP/full-validation/Developer ID command on an
+  unchanged tree without notarization: 129.0 seconds with every existing cache
+  warm. Swift took 53.4 seconds, Developer ID signing 19.0 and final bundle
+  validation 39.2; the rest was ZIP creation and verification.
+- Swift: building arm64 and then x86_64 in one `.build` recompiled each
+  architecture every run. Measured by hand: the same architecture again took
+  0.4 seconds, but arm64 after x86_64 took 151 seconds and x86_64 after arm64
+  30 seconds. Packaging now runs one `swift build --arch arm64 --arch x86_64`
+  (universal products, no `lipo`) in `.build/package-swift/<architectures>`,
+  apart from `swift test`'s `.build`. Products still declare macOS 14.0
+  (`vtool`). A no-op build takes 2.2 seconds.
+- Signing: 318 leaf Mach-O files were identical every run but each was re-signed
+  with a secure timestamp. Their Developer ID signed bytes are now kept in
+  `.build/package-app/developer-id-signatures`, keyed by the unsigned file's
+  sha256, its name (the default identifier) and the certificate's SHA-1 from
+  `security find-identity`. If the identity matches no keychain certificate
+  or more than one, nothing is cached. The Python framework and the app are
+  still signed every run.
+- The first notarized run with reused signatures was rejected
+  (submission 3b018d58-86c5-4c8e-829f-a6e5d7318828): `python.o` was "not signed".
+  codesign keeps an object file's signature in extended attributes and leaves
+  its bytes alone, so the copied bytes were unsigned. The cached verify pass
+  for those same bytes hid it. A signed copy is now stored only when signing
+  changed the file's bytes. A `codesign --verify` pass is kept only for a file
+  with an embedded `LC_CODE_SIGNATURE`, and stored records follow the same rule.
+- Validation: during a packaging run, the output of `lipo -archs`, `otool -L/-D/-l`
+  and `vtool -show-build` is kept under each file's sha256 in
+  `.build/package-app/macho-tools-v1`; passes of `codesign --verify` follow
+  the rule above. The path inside the output is stored as a placeholder. Every
+  check still runs on the current files; `--no-cache` turns both new caches
+  off. Both caches keep `PACKAGE_CACHE_KEEP_ENTRIES` (4) runs' worth of
+  entries, oldest removed first.
+- Same command on the unchanged tree: 24.1 seconds, versus 129.0 (Swift 2.2,
+  signing 1.4 with 318 of 318 reused, bundle validation 3.2). After a Python
+  source change: 37.1 seconds, of which site-packages took 14.1. A cold run
+  that built the new Swift scratch path and refilled the caches took 132.7 seconds.
+- The user's full command with `--notarize` then passed in 125.0 seconds with
+  317 of 318 signatures reused. Apple's wait took 88.9 seconds, and Apple
+  accepted the app with no issues (submission 03bb71c9-dbb8-49a0-9cae-1bafc974d4f6).
+  Stapling, Gatekeeper and verification of the extracted ZIP passed. Output
+  went to a scratch directory, so `dist` was left alone.
+- `pytest tests/test_macos_package_app.py`: 146 passed. New tests cover one
+  universal build per architecture set and separate scratch paths. For the
+  tool cache they cover reuse across runs until the bytes change, sharing
+  between paths, unreadable records, eviction and `--no-cache`, and passes
+  that are not kept. For signatures they cover reuse only with the same bytes,
+  name and certificate; no reuse without a known certificate or without cache;
+  object-file signatures; failed signing; and eviction. They also cover
+  certificate lookup. Ruff passed, and the script still runs under Python 3.9.6.
+- Not done: splitting site-packages into a dependency layer and the
+  timecapsulesmb package (would save about 6 seconds after a Python change),
+  and faster ZIP compression (level 1 halves the 10 seconds but adds 8%).
+- No VM/device access or binary changes; no locks held.

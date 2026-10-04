@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.request
 from collections.abc import Iterator
@@ -60,6 +61,13 @@ DEFAULT_NOTARY_TIMEOUT = "30m"
 CACHE_COMPLETE_MARKER = ".complete"
 CACHE_MANIFEST_FILE = "manifest.json"
 _MACHO_INSPECTIONS: ContextVar[dict[tuple[str, Path], object] | None] = ContextVar("macho_inspections", default=None)
+_MACHO_TOOL_CACHE: ContextVar[MachoToolCache | None] = ContextVar("macho_tool_cache", default=None)
+# Bump when a cached tool's command or output parsing changes.
+MACHO_TOOL_CACHE_DIR = "macho-tools-v1"
+MACHO_TOOL_PATH_PLACEHOLDER = "\0path\0"
+DEVELOPER_ID_SIGNATURE_CACHE_DIR = "developer-id-signatures"
+# 1: codesign --force --timestamp --options runtime --sign <certificate>.
+DEVELOPER_ID_SIGNATURE_CACHE_VERSION = 1
 PACKAGE_CACHE_IGNORED_NAMES = {"__pycache__", ".DS_Store"}
 PACKAGE_CACHE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
 # Keyed cache entries are never read again once their inputs change, so every
@@ -83,10 +91,6 @@ APP_ICON_ENTRIES = [
     ("icon_512x512.png", 512),
     ("icon_512x512@2x.png", 1024),
 ]
-SWIFT_TRIPLES = {
-    "arm64": "arm64-apple-macosx14.0",
-    "x86_64": "x86_64-apple-macosx14.0",
-}
 REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
 # The bundled tools come from Homebrew bottles built on macOS 14 (Sonoma), not
 # from the packaging Mac's Homebrew: a Mac on a newer macOS gets bottles built
@@ -168,6 +172,92 @@ def cached_macho_inspection(inspect):
     return cached
 
 
+class MachoToolCache:
+    """What the read-only Mach-O tools printed for a file, kept across packaging
+    runs under the file's sha256.
+
+    lipo, otool and vtool print only what a file's bytes hold, and codesign
+    --verify passes again for bytes with an embedded signature that passed
+    before, so an unchanged file needs no new subprocess. Validation still reads every file and makes every
+    check on the results: full validation of an unchanged app ran about 1,900
+    of these subprocesses in about 40 seconds. The path, which some tools
+    print, is stored as a placeholder so a copy elsewhere shares the record.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._digests: dict[tuple[str, int, int, int, int], str] = {}
+        self._records: dict[str, dict[str, list[object]]] = {}
+
+    def _digest(self, path: Path) -> str:
+        # Every rewrite (install_name_tool, codesign, a copy) changes ctime.
+        status = path.stat()
+        key = (str(path.resolve()), status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+        if key not in self._digests:
+            self._digests[key] = sha256_file(path)
+        return self._digests[key]
+
+    def _record(self, digest: str) -> dict[str, list[object]]:
+        if digest not in self._records:
+            entry = self.root / f"{digest}.json"
+            record: object = {}
+            with contextlib.suppress(FileNotFoundError, ValueError):
+                record = json.loads(entry.read_text(encoding="utf-8"))
+                os.utime(entry)
+            self._records[digest] = record if isinstance(record, dict) else {}
+        return self._records[digest]
+
+    def lookup(self, args: list[str], path: Path) -> subprocess.CompletedProcess[str] | None:
+        value = self._record(self._digest(path)).get(" ".join(args))
+        if not (isinstance(value, list) and len(value) == 2 and isinstance(value[0], int) and isinstance(value[1], str)):
+            return None
+        return subprocess.CompletedProcess([*args, str(path)], value[0], stdout=value[1].replace(MACHO_TOOL_PATH_PLACEHOLDER, str(path)), stderr="")
+
+    def store(self, args: list[str], path: Path, completed: subprocess.CompletedProcess[str]) -> None:
+        digest = self._digest(path)
+        record = self._record(digest)
+        record[" ".join(args)] = [completed.returncode, completed.stdout.replace(str(path), MACHO_TOOL_PATH_PLACEHOLDER)]
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = self.root / f"{digest}.json.tmp-{os.getpid()}"
+        temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        temporary.replace(self.root / f"{digest}.json")
+
+    def evict(self) -> None:
+        # Files read this run were touched; keep a few runs' worth.
+        if self.root.is_dir():
+            remove_least_recently_used(self.root, PACKAGE_CACHE_KEEP_ENTRIES * max(len(self._records), 1))
+
+
+@contextlib.contextmanager
+def macho_tool_cache(enabled: bool = True) -> Iterator[None]:
+    if not enabled:
+        yield
+        return
+    cache = MachoToolCache(package_cache_dir(MACHO_TOOL_CACHE_DIR))
+    token = _MACHO_TOOL_CACHE.set(cache)
+    try:
+        yield
+    finally:
+        _MACHO_TOOL_CACHE.reset(token)
+        cache.evict()
+
+
+def macho_tool(args: list[str], path: Path, *, keep_pass: bool = True, keep_failure: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run a read-only Mach-O tool on path, or reuse its output for the same
+    bytes during a packaging run (MachoToolCache)."""
+    cache = _MACHO_TOOL_CACHE.get()
+
+    def kept(completed: subprocess.CompletedProcess[str]) -> bool:
+        return keep_pass if completed.returncode == 0 else keep_failure
+
+    if cache is not None and (cached := cache.lookup(args, path)) is not None and kept(cached):
+        return cached
+    completed = subprocess.run([*args, str(path)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if cache is not None and kept(completed):
+        cache.store(args, path, completed)
+    return completed
+
+
 def run(
     cmd: list[str],
     *,
@@ -218,75 +308,54 @@ def resolve_architectures(values: list[str] | None) -> tuple[str, ...]:
         else:
             candidates = [value]
         for candidate in candidates:
-            if candidate not in SWIFT_TRIPLES:
+            if candidate not in DEFAULT_ARCHITECTURES:
                 raise RuntimeError(f"Unsupported architecture: {candidate}")
             if candidate not in architectures:
                 architectures.append(candidate)
     return tuple(architectures)
 
 
-def swift_bin_dir(configuration: str, architecture: str) -> Path:
+def swift_scratch_path(architectures: tuple[str, ...]) -> Path:
+    """Swift's build directory for one set of architectures. Swift Build keeps
+    one build description per scratch path, and building another architecture
+    there recompiles everything the next time: alternating arm64 and x86_64
+    builds in .build took 25-150 seconds each on every run, against under a
+    second for an unchanged build. Its own directory per architecture set also
+    keeps swift test's debug builds in .build from disturbing packaging."""
+    return PACKAGE_ROOT / ".build" / "package-swift" / "-".join(architectures)
+
+
+def swift_build_command(configuration: str, architectures: tuple[str, ...]) -> list[str]:
+    # One build with every --arch makes universal products itself. Each
+    # architecture's minimum macOS comes from Package.swift's platforms.
+    command = ["swift", "build", "-c", configuration, "--scratch-path", str(swift_scratch_path(architectures))]
+    for architecture in architectures:
+        command += ["--arch", architecture]
+    return command
+
+
+def swift_bin_dir(configuration: str, architectures: tuple[str, ...]) -> Path:
     """Where swift build puts this configuration's products, as SwiftPM reports
     it. The native build system used <arch>-apple-macosx/<configuration>; Swift
     Build, the default since Swift 6.4, uses out/Products/<Configuration> for
     every architecture. Assuming the old path packaged leftovers from the last
     native build: a months-old helper and a resource bundle without plurals."""
-    result = run([
-        "swift",
-        "build",
-        "-c",
-        configuration,
-        "--triple",
-        SWIFT_TRIPLES[architecture],
-        "--show-bin-path",
-    ], cwd=PACKAGE_ROOT, capture=True)
+    result = run([*swift_build_command(configuration, architectures), "--show-bin-path"], cwd=PACKAGE_ROOT, capture=True)
     lines = (result.stdout or "").strip().splitlines()
     if not lines:
-        raise RuntimeError(f"swift build --show-bin-path printed nothing for {architecture} {configuration}")
+        raise RuntimeError(f"swift build --show-bin-path printed nothing for {', '.join(architectures)} {configuration}")
     return Path(lines[-1].strip())
 
 
 def build_swift(configuration: str, architectures: tuple[str, ...]) -> tuple[Path, Path, Path]:
-    products = (PRODUCT_NAME, HELPER_PRODUCT_NAME)
-    executables: dict[str, list[Path]] = {product: [] for product in products}
-    staging = PACKAGE_ROOT / ".build" / "package-app" / configuration
-    for architecture in architectures:
-        with timed_step(f"Building app and helper ({architecture}, {configuration})"):
-            run([
-                "swift",
-                "build",
-                "-c",
-                configuration,
-                "--triple",
-                SWIFT_TRIPLES[architecture],
-            ], cwd=PACKAGE_ROOT)
-            build_dir = swift_bin_dir(configuration, architecture)
-            # Swift Build shares its product directory across architectures.
-            # Preserve both executables and resources before the next build.
-            architecture_staging = staging / architecture
-            if architecture_staging.exists():
-                shutil.rmtree(architecture_staging)
-            architecture_staging.mkdir(parents=True, exist_ok=True)
-            for product in products:
-                built = build_dir / product
-                if not built.is_file():
-                    raise RuntimeError(f"Swift build did not produce {built}")
-                executable = architecture_staging / product
-                shutil.copy2(built, executable)
-                executables[product].append(executable)
-            copy_resources(build_dir, architecture_staging)
-
-    outputs: dict[str, Path] = {}
-    for product, paths in executables.items():
-        if len(paths) == 1:
-            outputs[product] = paths[0]
-        else:
-            output = staging / product
-            with timed_step(f"Combining {product} architectures"):
-                run(["lipo", "-create", *[str(path) for path in paths], "-output", str(output)])
-            output.chmod(0o755)
-            outputs[product] = output
-    return outputs[PRODUCT_NAME], outputs[HELPER_PRODUCT_NAME], staging / architectures[0]
+    with timed_step(f"Building app and helper ({', '.join(architectures)}, {configuration})"):
+        run(swift_build_command(configuration, architectures), cwd=PACKAGE_ROOT)
+        build_dir = swift_bin_dir(configuration, architectures)
+    for product in (PRODUCT_NAME, HELPER_PRODUCT_NAME):
+        built = build_dir / product
+        if not built.is_file():
+            raise RuntimeError(f"Swift build did not produce {built}")
+    return build_dir / PRODUCT_NAME, build_dir / HELPER_PRODUCT_NAME, build_dir
 
 
 def resource_bundle_localization(resource_bundle: Path, language: str) -> Path:
@@ -433,17 +502,23 @@ def evict_stale_cache_entries(entry: Path, keep: int = PACKAGE_CACHE_KEEP_ENTRIE
     built. Staging directories of builds in progress are left alone."""
     if entry.exists():
         os.utime(entry)
-    others = [
-        path for path in entry.parent.iterdir()
-        if path.name != entry.name and ".tmp-" not in path.name
+    remove_least_recently_used(entry.parent, keep - 1, exclude=entry.name)
+    return entry
+
+
+def remove_least_recently_used(directory: Path, keep: int, *, exclude: str | None = None) -> None:
+    """Remove all but the ``keep`` most recently used entries of directory.
+    Staging entries (".tmp-" names) are left alone."""
+    entries = [
+        path for path in directory.iterdir()
+        if path.name != exclude and ".tmp-" not in path.name
     ]
-    others.sort(key=_cache_entry_mtime, reverse=True)
-    for stale in others[max(keep - 1, 0):]:
+    entries.sort(key=_cache_entry_mtime, reverse=True)
+    for stale in entries[max(keep, 0):]:
         if stale.is_dir() and not stale.is_symlink():
             shutil.rmtree(stale, ignore_errors=True)
         else:
             stale.unlink(missing_ok=True)
-    return entry
 
 
 def python_subprocess_env(
@@ -1314,13 +1389,7 @@ def assert_distribution_artifacts(distribution: Path) -> None:
 
 @cached_macho_inspection
 def macho_architectures(path: Path) -> set[str]:
-    completed = subprocess.run(
-        ["lipo", "-archs", str(path)],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    completed = macho_tool(["lipo", "-archs"], path)
     if completed.returncode != 0:
         return set()
     return set(completed.stdout.strip().split())
@@ -1390,13 +1459,7 @@ def copy_tools_from_sources(
 
 @cached_macho_inspection
 def macho_dependencies(path: Path) -> list[str] | None:
-    completed = subprocess.run(
-        ["otool", "-L", str(path)],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    completed = macho_tool(["otool", "-L"], path)
     if completed.returncode != 0:
         return None
     dependencies: list[str] = []
@@ -1416,8 +1479,7 @@ def macho_dependencies(path: Path) -> list[str] | None:
 def macho_install_name(path: Path) -> str | None:
     """A library's own install name (LC_ID_DYLIB), which otool -L lists among
     its dependencies."""
-    completed = subprocess.run(["otool", "-D", str(path)], text=True, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, check=False)
+    completed = macho_tool(["otool", "-D"], path)
     lines = completed.stdout.splitlines() if completed.returncode == 0 else []
     return lines[1].strip() if len(lines) > 1 else None
 
@@ -1425,8 +1487,7 @@ def macho_install_name(path: Path) -> str | None:
 @cached_macho_inspection
 def macho_rpaths(path: Path) -> list[str]:
     """The LC_RPATH entries in load order, which is dyld's search order."""
-    completed = subprocess.run(["otool", "-l", str(path)], text=True, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, check=False)
+    completed = macho_tool(["otool", "-l"], path)
     if completed.returncode != 0:
         return []
     rpaths: list[str] = []
@@ -1592,6 +1653,79 @@ def developer_id_codesign(path: Path, identity: str) -> None:
     ])
 
 
+def codesign_certificate_sha1(identity: str) -> str | None:
+    """The SHA-1 of the keychain certificate codesign picks for identity: the
+    identity itself when it is a hash, or the only valid code signing identity
+    whose name contains it. None when that is not exactly one certificate."""
+    if re.fullmatch(r"[0-9A-Fa-f]{40}", identity):
+        return identity.upper()
+    completed = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"], text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if completed.returncode != 0:
+        return None
+    matches = {
+        match.group(1)
+        for match in re.finditer(r'^\s*\d+\)\s+([0-9A-F]{40})\s+"(.*)"\s*$', completed.stdout, re.MULTILINE)
+        if identity in match.group(2)
+    }
+    return matches.pop() if len(matches) == 1 else None
+
+
+class DeveloperIdSignatureCache:
+    """Developer ID signed copies of standalone Mach-O files, kept across runs.
+
+    Signing a file that is not a bundle's main executable depends only on its
+    bytes, its name (the default identifier) and the certificate; the secure
+    timestamp records when it was signed, and an older one is as valid for
+    notarization. Every run used to re-sign over 300 unchanged Python and
+    native tool files, each waiting on Apple's timestamp server.
+    """
+
+    def __init__(self, root: Path, certificate: str) -> None:
+        self.root = root
+        self.certificate = certificate
+
+    def entry(self, path: Path, sha256: str) -> Path:
+        return self.root / cache_key({
+            "kind": "developer-id-signature",
+            "version": DEVELOPER_ID_SIGNATURE_CACHE_VERSION,
+            "certificate": self.certificate,
+            "name": path.name,
+            "sha256": sha256,
+        })
+
+    def sign(self, path: Path, identity: str) -> bool:
+        """Sign path, or copy in the signed result of the same file from an
+        earlier run. True when the earlier result was reused."""
+        unsigned = sha256_file(path)
+        entry = self.entry(path, unsigned)
+        if entry.is_file():
+            os.utime(entry)
+            shutil.copyfile(entry, path)
+            return True
+        developer_id_codesign(path, identity)
+        if sha256_file(path) == unsigned:
+            # codesign keeps an object file's signature (python.o) in extended
+            # attributes, which a copy of the bytes leaves behind: Apple
+            # rejected such a copy as unsigned. Only an embedded one is kept.
+            return False
+        temporary = entry.with_name(f"{entry.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+        shutil.copyfile(path, temporary)
+        temporary.replace(entry)
+        return False
+
+    def evict(self, used: int) -> None:
+        remove_least_recently_used(self.root, PACKAGE_CACHE_KEEP_ENTRIES * max(used, 1))
+
+
+def developer_id_signature_cache(identity: str) -> DeveloperIdSignatureCache | None:
+    certificate = codesign_certificate_sha1(identity)
+    if certificate is None:
+        print("Not reusing Developer ID signatures: the signing certificate is not one keychain identity.", file=sys.stderr)
+        return None
+    return DeveloperIdSignatureCache(package_cache_dir(DEVELOPER_ID_SIGNATURE_CACHE_DIR), certificate)
+
+
 def nested_helper_code_paths(app: Path) -> list[Path]:
     helper = app / "Contents" / "Helpers" / "tcapsule"
     return [helper] if helper.is_file() else []
@@ -1672,7 +1806,7 @@ def ad_hoc_codesign_macho_bundle(app: Path) -> None:
 
 
 @timed_step("Signing app and bundled binaries with Developer ID")
-def developer_id_codesign_app_bundle(app: Path, identity: str) -> None:
+def developer_id_codesign_app_bundle(app: Path, identity: str, *, use_cache: bool = False) -> None:
     # Signing a bundle's main executable can seal the enclosing bundle too.
     # Let the container signing below cover those binaries after all its leaves.
     container_executables = {
@@ -1683,11 +1817,17 @@ def developer_id_codesign_app_bundle(app: Path, identity: str) -> None:
         path for path in macho_validation_roots(app)
         if path.resolve() not in container_executables and macho_architectures(path)
     ]
+    cache = developer_id_signature_cache(identity) if use_cache else None
     print(f"Signing {len(paths)} binaries with 4 workers.", file=sys.stderr, flush=True)
     # Only individual files run concurrently. Wait for every leaf before signing
     # enclosing bundles; an error must prevent either container from being signed.
     with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(functools.partial(developer_id_codesign, identity=identity), paths))
+        if cache is None:
+            list(pool.map(functools.partial(developer_id_codesign, identity=identity), paths))
+        else:
+            reused = sum(pool.map(functools.partial(cache.sign, identity=identity), paths))
+            print(f"Reused {reused} of {len(paths)} Developer ID signatures from earlier runs.", file=sys.stderr, flush=True)
+            cache.evict(len(paths))
     framework = bundled_python_framework(app)
     if framework.is_dir():
         developer_id_codesign(framework, identity)
@@ -1930,13 +2070,11 @@ def assert_macho_code_signatures_valid_for_paths(paths: list[Path]) -> None:
     for path in paths:
         if not macho_architectures(path):
             continue
-        completed = subprocess.run(
-            ["codesign", "--verify", "--verbose=4", str(path)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        # Only a pass is kept: a failure is reported, and rechecked next run.
+        # A signature outside the bytes (an object file's extended attributes)
+        # can go while the bytes stay the same, so that pass is not kept.
+        embedded = "cmd LC_CODE_SIGNATURE" in macho_tool(["otool", "-l"], path).stdout
+        completed = macho_tool(["codesign", "--verify", "--verbose=4"], path, keep_pass=embedded, keep_failure=False)
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip().splitlines()
             reason = detail[-1] if detail else f"codesign verification failed with rc={completed.returncode}"
@@ -2018,8 +2156,7 @@ def macho_minimum_macos(path: Path) -> dict[str, str]:
     """Each architecture's declared minimum macOS: LC_BUILD_VERSION's minos,
     or LC_VERSION_MIN_MACOSX's version in older binaries. Empty for a file
     that is not Mach-O."""
-    completed = subprocess.run(["vtool", "-show-build", str(path)], text=True, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, check=False)
+    completed = macho_tool(["vtool", "-show-build"], path)
     if completed.returncode != 0:
         return {}
     versions: dict[str, str] = {}
@@ -2514,7 +2651,7 @@ def notarize_app(app: Path, output_dir: Path, *, profile: str, timeout: str) -> 
 def package_app(args: argparse.Namespace) -> PackageResult:
     # Cached inputs are copied long after they are looked up, so the lock must
     # cover the whole run, not just eviction.
-    with package_cache_lock():
+    with package_cache_lock(), macho_tool_cache(enabled=not getattr(args, "no_cache", False)):
         return build_app_package(args)
 
 
@@ -2554,7 +2691,7 @@ def build_app_package(args: argparse.Namespace) -> PackageResult:
         remove_appledouble_files(app)
         assert_no_appledouble_files(app)
     if args.codesign_identity:
-        developer_id_codesign_app_bundle(app, args.codesign_identity)
+        developer_id_codesign_app_bundle(app, args.codesign_identity, use_cache=not args.no_cache)
     else:
         ad_hoc_codesign_app_bundle(app)
     assert_bundle_layout(
