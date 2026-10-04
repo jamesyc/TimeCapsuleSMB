@@ -229,6 +229,10 @@ int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, siz
     return advance(c) ? (c->aborted ? -1 : 1) : 0;
 }
 
+static int acp_eof_poll(const struct acp_collector *c, long long now) {
+    return c->eof && now - c->eof_ms < 100;
+}
+
 int acp_collect_fd(const struct acp_collector *c) {
     return c->active && !c->eof ? c->fd : -1;
 }
@@ -237,12 +241,44 @@ long long acp_collect_deadline_ms(const struct acp_collector *c) {
     if (c->finished) {
         return -1;
     }
-    /* Poll the child at least every 100 ms: exit is observed via WNOHANG. */
+    /* Poll the child at least every 100 ms: exit is observed via WNOHANG.
+     * Its output can close just before it becomes reapable, and then no
+     * descriptor wakes the caller: poll the first 100 ms after that closely. */
     if (c->active) {
-        long long poll = acp_monotonic_ms() + 100;
+        long long now = acp_monotonic_ms();
+        long long poll = now + (acp_eof_poll(c, now) ? 5 : 100);
         return poll < c->child_deadline_ms ? poll : c->child_deadline_ms;
     }
     return c->deadline_ms;
+}
+
+/* Reap the child once its output closed, and finish its key. */
+static void reap_child(struct acp_collector *c) {
+    int status;
+    pid_t waited = waitpid(c->child, &status, WNOHANG);
+    if (waited == c->child) {
+        close(c->fd);
+        c->active = 0;
+        if (WIFEXITED(status)) c->requests[c->next].exit_status = WEXITSTATUS(status);
+        if (acp_stop_requested) {
+            finish_key(c, ACP_ABORT);
+        } else if (!WIFEXITED(status) || WEXITSTATUS(status) == 126 || WEXITSTATUS(status) == 127) {
+            acp_log_failure(c->requests[c->next].key, "collector setup, exec, or signal failure");
+            finish_key(c, ACP_ABORT);
+        } else if (WEXITSTATUS(status) != 0) {
+            finish_key(c, ACP_UNAVAILABLE);
+        } else {
+            struct acp_request *value = &c->requests[c->next];
+            value->output[c->used] = '\0';
+            if (value->trim_whitespace) trim_line(value->output);
+            value->length = strlen(value->output);
+            finish_key(c, ACP_OK);
+        }
+    } else if (waited < 0 && errno != EINTR) {
+        close(c->fd);
+        acp_log_failure(c->requests[c->next].key, "cannot reap collector");
+        finish_key(c, ACP_ABORT);
+    }
 }
 
 int acp_collect_pump(struct acp_collector *c) {
@@ -258,36 +294,16 @@ int acp_collect_pump(struct acp_collector *c) {
         } else if (now >= c->child_deadline_ms) {
             abort_current_child(c, "timed out");
         } else if (c->eof) {
-            int status;
-            pid_t waited = waitpid(c->child, &status, WNOHANG);
-            if (waited == c->child) {
-                close(c->fd);
-                c->active = 0;
-                if (WIFEXITED(status)) c->requests[c->next].exit_status = WEXITSTATUS(status);
-                if (acp_stop_requested) {
-                    finish_key(c, ACP_ABORT);
-                } else if (!WIFEXITED(status) || WEXITSTATUS(status) == 126 || WEXITSTATUS(status) == 127) {
-                    acp_log_failure(c->requests[c->next].key, "collector setup, exec, or signal failure");
-                    finish_key(c, ACP_ABORT);
-                } else if (WEXITSTATUS(status) != 0) {
-                    finish_key(c, ACP_UNAVAILABLE);
-                } else {
-                    struct acp_request *value = &c->requests[c->next];
-                    value->output[c->used] = '\0';
-                    if (value->trim_whitespace) trim_line(value->output);
-                    value->length = strlen(value->output);
-                    finish_key(c, ACP_OK);
-                }
-            } else if (waited < 0 && errno != EINTR) {
-                close(c->fd);
-                acp_log_failure(c->requests[c->next].key, "cannot reap collector");
-                finish_key(c, ACP_ABORT);
-            }
+            reap_child(c);
         } else {
             char chunk[256];
             ssize_t n = read(c->fd, chunk, sizeof(chunk));
             if (n == 0) {
+                /* The child closes its output as it exits: reap it now, not
+                 * at the next poll, or every key waits a whole poll. */
                 c->eof = 1;
+                c->eof_ms = now;
+                reap_child(c);
             } else if (n < 0) {
                 if (errno != EINTR && errno != EAGAIN) {
                     abort_current_child(c, "cannot read output");
@@ -342,7 +358,7 @@ int acp_collect_run(struct acp_request *requests, size_t count, long long timeou
 
         FD_ZERO(&reads);
         if (fd >= 0) FD_SET(fd, &reads);
-        timeout.tv_sec = 0; timeout.tv_usec = 100000;
+        timeout.tv_sec = 0; timeout.tv_usec = c.active && acp_eof_poll(&c, acp_monotonic_ms()) ? 5000 : 100000;
         ready = select(fd >= 0 ? fd + 1 : 0, &reads, NULL, NULL, &timeout);
         if (ready < 0 && errno != EINTR) {
             if (c.active) {

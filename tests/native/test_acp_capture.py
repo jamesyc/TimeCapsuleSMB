@@ -17,14 +17,19 @@ def capture_tools(tmp_path_factory):
     compile_modules(driver, ("native/common/acp.c",),
                     flags=(*flags, "-I", str(ROOT / "build/native/common")),
                     extra_sources=(ROOT / "tests/native/unit/test_acp_capture.c",))
+    reap = work / "reap"
+    compile_modules(reap, ("native/common/acp.c",),
+                    flags=(*flags, "-I", str(ROOT / "build/native/common")),
+                    extra_sources=(ROOT / "tests/native/unit/test_acp_reap.c",))
     service = compile_service(work / "service", flags=flags)
     # macOS checks a just-linked binary at its first exec, one binary at a
     # time across the host: with other workers linking, that took over 5 s
     # and spent the tests' ACP budgets. Run each binary once, untimed.
     subprocess.run([str(acp), "-q", "syAP"], capture_output=True, check=True)
     subprocess.run([str(driver), "0", "0", "1", "0", "0"], capture_output=True, check=True)
+    subprocess.run([str(reap)], capture_output=True)
     subprocess.run([str(service), "--print-nt-hash-from-stdin"], input=b"password", capture_output=True, check=True)
-    return driver, service
+    return driver, service, reap
 
 
 def raw_env(tmp_path, data, *, key="*", exit_code=0):
@@ -153,3 +158,22 @@ def test_samba_identity_uses_observed_model(capture_tools, tmp_path, value, mode
     header, netbios, server, actual_model = result.stdout.splitlines()
     assert header == "samba-identity 1" and netbios
     assert server == "Test Capsule" and actual_model == model
+
+
+def test_child_that_already_exited_is_reaped_on_the_pump_that_reads_eof(capture_tools):
+    # Finishing the key on the pump that reads EOF matters: no descriptor
+    # wakes the caller again, so a key left for the next poll cost every ACP
+    # read 100 ms (a telemetry cycle spent 1.8 s waiting).
+    result = subprocess.run([str(capture_tools[2]), "exit"], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "pending_after_eof=0 rc=1 status=0 value=0x77\n"
+
+
+def test_child_that_closes_output_but_runs_is_polled_closely_then_every_100_ms(capture_tools):
+    env = {**os.environ, "TC_TEST_ACP_MODE": "closed_hang", "TC_TEST_ACP_KEY": "syAP"}
+    result = subprocess.run([str(capture_tools[2]), "closed"], env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    fields = dict(item.split("=") for item in result.stdout.split())
+    assert fields["fd"] == "-1"
+    assert 0 <= int(fields["soon"]) <= 5
+    assert 5 < int(fields["later"]) <= 100

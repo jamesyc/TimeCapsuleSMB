@@ -73,6 +73,7 @@ struct acp_collector {
     int fd;
     size_t used;
     int eof;
+    long long eof_ms;            /* when the child's output closed */
     int line_done;
     int active;
     int finished;

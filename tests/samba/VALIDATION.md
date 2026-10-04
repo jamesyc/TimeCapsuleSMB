@@ -1,3 +1,37 @@
+# ACP collector reaps each child when its output closes (2026-10-04)
+
+`acp_collect_pump()` set `eof` when `read()` returned 0 and left the reap to
+its next call. After EOF the collector offers no descriptor
+(`acp_collect_fd()` returns -1), so nothing woke the caller before its
+100 ms poll: every `acp -q` key cost at least 100 ms more than the child
+took. The pump that reads EOF now reaps the child and finishes the key. A
+child can close its output a moment before it becomes reapable, so for the
+first 100 ms after EOF the collector polls every 5 ms, then every 100 ms as
+before (a child that closes stdout and keeps running is still bounded by
+its per-key timeout).
+
+On the host a telemetry `--once` cycle (16 keys) went from 1.85 s to 0.10 s.
+On the NetBSD 6 device, `service --print-link-plan` (the 10 keys discovery
+and telemetry collect) took 1.60-1.74 s over SSH with the deployed binary
+and 0.53-0.82 s with this build; the two printed the same plan. On the
+NetBSD 4 LE device the same command took 1.80-1.92 s with main's binary and
+0.69-0.73 s with this one, again with the same plan. Deploy and doctor passed
+on both devices (86 checks each; a doctor run 29 s after the NetBSD 6 boot
+timed out its NBNS query once, and passed when rerun after startup).
+`test_acp_capture.py` covers both cases: an already-exited child's key
+finishes on the pump that reads EOF (main's collector left it pending for
+the next poll), and a child that closed its output but runs gets a 5 ms
+poll, then a 100 ms one.
+
+Clean lane builds of the unchanged tree first reproduced the committed
+service hashes, so only this change moved them.
+
+| Lane | Stripped bytes | SHA256 |
+| --- | --- | --- |
+| NetBSD 6 | 376228 | `e6f5100619e2c3f9cb46cef573b23843ba6dafca358bdcdc623ec64457e7bd09` |
+| NetBSD 4 LE | 333548 | `8c90462bf79fce2ca69cfd0d8cd5cdbc4af3487f2333bec8c393f83d47d919bf` |
+| NetBSD 4 BE | 332968 | `88147dae183ea42c5faea61dcd135abd8b68a8772db53c9cf97f9db51dbee43a` |
+
 # Bonjour service label preservation (2026-10-03)
 
 The v3.2.0-1 telemetry case registered `AirPort Time\u00a0Capsule ` through
