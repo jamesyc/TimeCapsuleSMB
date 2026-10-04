@@ -54,3 +54,38 @@ def block_real_acp_connections(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(acp, "_open_connection", guarded)
     yield
+
+
+@pytest.fixture(autouse=True)
+def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
+    # Tests use made-up device addresses such as 10.0.0.2. A real TCP connect
+    # to one waits seconds for a timeout and reaches whatever answers on the
+    # user's network. Loopback servers and UDP route lookups (a UDP connect
+    # sends nothing) stay allowed. Code under test may swallow the error, so
+    # the attempt also fails the test.
+    import ipaddress
+    import socket
+
+    attempts: list[object] = []
+
+    def remote(sock: socket.socket, address: object) -> bool:
+        if sock.family not in (socket.AF_INET, socket.AF_INET6) or sock.type != socket.SOCK_STREAM:
+            return False
+        host = str(address[0]) if isinstance(address, tuple) else str(address)
+        try:
+            return not ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+        except ValueError:
+            return host != "localhost"
+
+    def guard(real):
+        def connect(sock: socket.socket, address: object):
+            if remote(sock, address):
+                attempts.append(address)
+                raise AssertionError(f"tests must not open a real TCP connection to {address}")
+            return real(sock, address)
+        return connect
+
+    monkeypatch.setattr(socket.socket, "connect", guard(socket.socket.connect))
+    monkeypatch.setattr(socket.socket, "connect_ex", guard(socket.socket.connect_ex))
+    yield
+    assert not attempts, f"tests must not open real TCP connections: {attempts}"

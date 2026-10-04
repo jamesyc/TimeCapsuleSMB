@@ -387,7 +387,8 @@ class ProbeFailureErrorTests(unittest.TestCase):
 
     def test_connection_compatibility_raises_the_coded_error_when_ssh_did_not_log_in(self) -> None:
         state = ProbedDeviceState(probe_result=self.failed_probe(SshAccessStatus.CLOSED), compatibility=None)
-        with mock.patch.object(service_runtime, "probe_connection_state", return_value=state):
+        # The closed-port recheck has its own tests; this is the state it ends in.
+        with mock.patch.object(service_runtime, "probe_managed_connection_state", return_value=state):
             with mock.patch.object(service_runtime, "tcp_connect_error", return_value=None):
                 with self.assertRaises(service_runtime.DeviceAccessError) as raised:
                     service_runtime.require_connection_compatibility(SshConnection("root@10.0.0.2", "pw", ""))

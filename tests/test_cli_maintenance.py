@@ -60,7 +60,7 @@ class CliMaintenanceTests(CliTestCase):
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
                 with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
                     with redirect_stdout(output):
                         rc = activate.main(["--dry-run"])
@@ -99,7 +99,7 @@ class CliMaintenanceTests(CliTestCase):
     def test_activate_rejects_non_netbsd4_device(self) -> None:
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_compatibility())):
                 with self.assertRaises(SystemExit) as cm:
                     activate.main(["--dry-run"])
         self.assertIn("only supported for NetBSD4", str(cm.exception))
@@ -165,7 +165,7 @@ class CliMaintenanceTests(CliTestCase):
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock:
@@ -194,7 +194,7 @@ class CliMaintenanceTests(CliTestCase):
         values = self.make_valid_env()
         self._installed_config_present.return_value = False
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn") as runtime_probe:
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
                         with redirect_stdout(output):
@@ -211,7 +211,7 @@ class CliMaintenanceTests(CliTestCase):
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn") as verify_mock:
@@ -226,7 +226,7 @@ class CliMaintenanceTests(CliTestCase):
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions"):
                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
@@ -242,7 +242,7 @@ class CliMaintenanceTests(CliTestCase):
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+            with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
                 with redirect_stdout(output):
                     rc = activate.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)

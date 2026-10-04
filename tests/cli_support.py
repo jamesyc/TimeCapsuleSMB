@@ -355,6 +355,18 @@ class CliTestCase(unittest.TestCase):
             airport_syap="119",
         )
 
+    def make_logged_in_probe_state(self, compatibility: DeviceCompatibility) -> ProbedDeviceState:
+        """What the managed-target probe returns for a device SSH logged in to."""
+        probe_result = ProbeResult(
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
+            error=None,
+            os_name=compatibility.os_name,
+            os_release=compatibility.os_release,
+            arch=compatibility.arch,
+            elf_endianness=compatibility.elf_endianness,
+        )
+        return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
+
     def make_probe_state(self, probe_result: ProbeResult) -> ProbedDeviceState:
         compatibility = compatibility_from_probe_result(probe_result) if probe_result.ssh_authenticated else None
         return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
