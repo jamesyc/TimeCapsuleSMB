@@ -29,6 +29,7 @@ from timecapsulesmb.core.config import (
     validate_app_config,
     validate_airport_syap,
     validate_bool,
+    validate_ssh_opts,
     validate_ssh_target,
     write_env_file,
 )
@@ -377,6 +378,49 @@ class ConfigTests(unittest.TestCase):
             "Replace 192.168.x.x with the device's actual IP address.",
         )
         self.assertIsNone(validate_ssh_target("root@192.168.1.101", "Device SSH target"))
+
+    def test_validate_ssh_opts_rejects_every_proxy_spelling(self) -> None:
+        for opts in (
+            "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
+            "-o proxycommand=ssh\\ -W\\ %h:%p\\ bastion",
+            "-oProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
+            "-o ProxyJump=bastion.example.com",
+            "-oproxyjump=bastion.example.com",
+            "-o 'ProxyJump bastion.example.com'",
+            "-J bastion.example.com",
+            "-Jbastion.example.com -o HostKeyAlgorithms=+ssh-rsa",
+            # Unbalanced quotes still get checked, token by token.
+            "-J jump.example 'unterminated",
+            "-oProxyCommand='unterminated",
+        ):
+            with self.subTest(opts=opts):
+                error = validate_ssh_opts(opts, "TC_SSH_OPTS")
+                self.assertIsNotNone(error)
+                assert error is not None
+                self.assertIn("TC_SSH_OPTS must not use ProxyJump", error)
+
+    def test_validate_ssh_opts_accepts_direct_options(self) -> None:
+        for opts in (
+            DEFAULTS["TC_SSH_OPTS"],
+            "",
+            "-i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -p 2222",
+            "-o ServerAliveInterval=5",
+        ):
+            with self.subTest(opts=opts):
+                self.assertIsNone(validate_ssh_opts(opts, "TC_SSH_OPTS"))
+
+    def test_every_device_profile_rejects_proxy_ssh_opts(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        values["TC_SSH_OPTS"] = "-o ProxyJump=bastion"
+        config = AppConfig.from_values(values, file_values=values)
+        for profile in ("configure", "deploy", "activate", "doctor", "uninstall", "fsck", "set_ssh", "set_ssh_status", "flash"):
+            with self.subTest(profile=profile):
+                errors = validate_app_config(config, profile=profile)
+                self.assertEqual([(error.kind, error.key) for error in errors], [("invalid_value", "TC_SSH_OPTS")])
+        # repair-xattrs runs against a share mounted on this Mac, never over SSH.
+        self.assertEqual(validate_app_config(config, profile="repair_xattrs"), [])
 
     def test_validate_app_config_uses_profiles(self) -> None:
         values = dict(DEFAULTS)

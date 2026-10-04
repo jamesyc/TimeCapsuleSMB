@@ -319,7 +319,7 @@ class CliSetSshTests(CliTestCase):
 
     def test_set_ssh_disable_fails_when_ssh_reopens(self) -> None:
         output = io.StringIO()
-        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o ProxyJump=bastion"}
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o ServerAliveInterval=5"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
@@ -330,7 +330,7 @@ class CliSetSshTests(CliTestCase):
                                     rc = set_ssh.main([])
         self.assertEqual(rc, 1)
         disable_ssh_mock.assert_called_once_with(
-            SshConnection("root@10.0.0.2", "pw", "-o ProxyJump=bastion"),
+            SshConnection("root@10.0.0.2", "pw", "-o ServerAliveInterval=5"),
             reboot_device=True,
             log=print,
         )

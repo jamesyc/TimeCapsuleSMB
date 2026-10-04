@@ -498,10 +498,6 @@ class SSHTransportTests(unittest.TestCase):
             ],
         )
 
-    def test_ssh_opts_use_proxy_falls_back_for_unbalanced_quotes(self) -> None:
-        self.assertTrue(ssh_transport.ssh_opts_use_proxy("-J jump.example 'unterminated"))
-        self.assertTrue(ssh_transport.ssh_opts_use_proxy("-oProxyCommand='unterminated"))
-
     def test_normalize_ssh_tokens_preserves_proxycommand_payload(self) -> None:
         with mock.patch(
             "timecapsulesmb.transport.ssh._ssh_option_supported",

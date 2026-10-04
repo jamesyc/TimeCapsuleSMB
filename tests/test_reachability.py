@@ -158,27 +158,6 @@ class ReachabilityTests(unittest.TestCase):
         self.assertEqual(result.status, "partial")
         self.assertEqual(result.summary, Summary("reachability.ssh_only", "SSH reachable, SMB port closed."))
 
-    def test_ssh_proxy_skips_direct_port_check_but_auth_can_pass(self) -> None:
-        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": "-J jump"})
-
-        with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
-            with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
-                return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
-            ):
-                with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value="connection refused") as tcp:
-                    with mock.patch(
-                        "timecapsulesmb.services.reachability.run_ssh",
-                        return_value=subprocess.CompletedProcess(["ssh"], 0, stdout=reachability.REACHABILITY_OK_TOKEN, stderr=""),
-                    ) as ssh:
-                        result = reachability.run_reachability(config, {}, password="pw")
-
-        self.assertEqual(tcp.call_count, 1)
-        ssh.assert_called_once()
-        self.assertEqual({check.id: check.status for check in result.checks}["ssh_port"], "SKIP")
-        self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "PASS")
-        self.assertEqual(result.status, "partial")
-
     def test_ping_is_secondary_when_tcp_services_fail(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
 
@@ -369,11 +348,11 @@ class ReachabilityTests(unittest.TestCase):
 
     def test_ssh_network_failure_makes_auth_check_unavailable(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
-        port_check = reachability.ReachabilityCheck("ssh_port", "SKIP", "proxied", host="10.0.0.2")
+        port_check = reachability.ReachabilityCheck("ssh_port", "PASS", "ok", host="10.0.0.2")
 
         with mock.patch(
             "timecapsulesmb.services.reachability.run_ssh",
-            side_effect=SshNetworkError("proxy unavailable"),
+            side_effect=SshNetworkError("Connection reset by peer"),
         ):
             result = reachability.check_ssh_auth(
                 "root@10.0.0.2",
@@ -385,7 +364,7 @@ class ReachabilityTests(unittest.TestCase):
 
         self.assertEqual(result.status, "SKIP")
         self.assertEqual(result.message, "SSH authentication could not be checked.")
-        self.assertEqual(result.detail, "proxy unavailable")
+        self.assertEqual(result.detail, "Connection reset by peer")
 
     def test_app_operation_uses_effective_config_password(self) -> None:
         base = AppConfig.from_values(

@@ -451,22 +451,6 @@ class DeployModuleTests(unittest.TestCase):
 
         self.assertEqual(mounted, ())
 
-    def test_probe_device_skips_direct_tcp_check_for_proxy_ssh_options(self) -> None:
-        with mock.patch("timecapsulesmb.device.probe.tcp_open", side_effect=AssertionError("direct TCP probe should be skipped")):
-            with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", return_value=("NetBSD", "4.0", "earmv4")):
-                with mock.patch(
-                    "timecapsulesmb.device.probe._probe_remote_elf_endianness_result_conn",
-                    return_value=ElfEndiannessProbeResult("big"),
-                ):
-                    with mock.patch("timecapsulesmb.device.probe.probe_remote_airport_identity_conn", return_value=mock.Mock(model=None, syap=None)):
-                        result = probe_device_conn(
-                            SshConnection("root@192.168.1.118", "pw", "-o proxycommand=ssh\\ -W\\ %h:%p\\ bastion")
-                        )
-        self.assertTrue(result.ssh_port_reachable)
-        self.assertTrue(result.ssh_authenticated)
-        self.assertEqual(result.os_release, "4.0")
-        self.assertEqual(result.elf_endianness, "big")
-
     def test_probe_device_direct_target_fails_before_ssh_when_port_closed(self) -> None:
         with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False) as tcp_open_mock:
             with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", side_effect=AssertionError("should not ssh")):

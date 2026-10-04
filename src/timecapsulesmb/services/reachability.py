@@ -12,7 +12,7 @@ from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host, parse_e
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.transport.errors import SshAuthenticationError, TransportError
 from timecapsulesmb.transport.local import tcp_connect_error
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 REACHABILITY_OK_TOKEN = "timecapsulesmb-reachability-ok"
@@ -71,7 +71,7 @@ def run_reachability(
     emit_stage(stage, "check_ping")
     checks.append(check_ping(ping_hosts, timeout=tcp_timeout))
     emit_stage(stage, "check_ssh_port")
-    ssh_port = check_ssh_port(ssh_host, config, timeout=tcp_timeout)
+    ssh_port = check_ssh_port(ssh_host, timeout=tcp_timeout)
     checks.append(ssh_port)
     emit_stage(stage, "check_ssh_auth")
     ssh_auth = check_ssh_auth(
@@ -211,17 +211,9 @@ def ping_command(host: str) -> list[str] | None:
     return [command, "-c", "1", host]
 
 
-def check_ssh_port(host: str, config: AppConfig, *, timeout: float) -> ReachabilityCheck:
+def check_ssh_port(host: str, *, timeout: float) -> ReachabilityCheck:
     if not host:
         return ReachabilityCheck(id="ssh_port", status="SKIP", message="No SSH host is configured.")
-    ssh_opts = config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
-    if ssh_opts_use_proxy(ssh_opts):
-        return ReachabilityCheck(
-            id="ssh_port",
-            status="SKIP",
-            message="Direct SSH port check skipped because SSH uses a proxy.",
-            host=host,
-        )
     error = tcp_connect_error(host, 22, timeout=timeout)
     if error is None:
         return ReachabilityCheck(id="ssh_port", status="PASS", message="SSH port is reachable.", host=host)

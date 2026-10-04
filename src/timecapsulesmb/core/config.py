@@ -377,8 +377,26 @@ def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+def validate_ssh_opts(value: str, field_name: str) -> Optional[str]:
+    # Reboots are proven over AirPort ACP (TCP 5009) and doctor checks SMB and
+    # Bonjour directly, so the Mac must reach the device itself.
+    try:
+        tokens = shlex.split(value)
+    except ValueError:
+        tokens = value.split()
+    for token in tokens:
+        lowered = token.lower().removeprefix("-o")
+        if token.startswith("-J") or lowered.startswith(("proxycommand", "proxyjump")):
+            return (
+                f"{field_name} must not use ProxyJump, ProxyCommand or -J. "
+                "TimeCapsuleSMB needs a direct network path to the device."
+            )
+    return None
+
+
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_HOST": validate_ssh_target,
+    "TC_SSH_OPTS": validate_ssh_opts,
     "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
     "TC_SMB_BROWSE_COMPATIBILITY": validate_bool,
@@ -403,6 +421,7 @@ class ConfigProfile:
 
 
 CONFIGURE_VALIDATED_KEYS = (
+    "TC_SSH_OPTS",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
@@ -417,6 +436,7 @@ CONFIGURE_VALIDATED_KEYS = (
 )
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
+    "TC_SSH_OPTS",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
@@ -437,6 +457,7 @@ FLASH_REQUIRED_FILE_KEYS = (
 )
 FLASH_VALIDATED_KEYS = (
     "TC_HOST",
+    "TC_SSH_OPTS",
 )
 
 CONFIG_PROFILES: dict[str, ConfigProfile] = {
@@ -459,19 +480,19 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
     ),
     "uninstall": ConfigProfile(
         required_file_values=("TC_HOST",),
-        validated_keys=("TC_HOST",),
+        validated_keys=("TC_HOST", "TC_SSH_OPTS"),
     ),
     "fsck": ConfigProfile(
         required_file_values=("TC_HOST",),
-        validated_keys=("TC_HOST",),
+        validated_keys=("TC_HOST", "TC_SSH_OPTS"),
     ),
     "set_ssh": ConfigProfile(
         required_file_values=("TC_HOST", "TC_PASSWORD"),
-        validated_keys=("TC_HOST",),
+        validated_keys=("TC_HOST", "TC_SSH_OPTS"),
     ),
     "set_ssh_status": ConfigProfile(
         required_file_values=("TC_HOST",),
-        validated_keys=("TC_HOST",),
+        validated_keys=("TC_HOST", "TC_SSH_OPTS"),
     ),
     "flash": ConfigProfile(
         required_file_values=FLASH_REQUIRED_FILE_KEYS,

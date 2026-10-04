@@ -100,7 +100,6 @@ def run_doctor_checks(
     bonjour_result = _add_bonjour_results(
         inputs.config,
         naming.identity,
-        proxied_ssh=target.proxied_ssh,
         skip_bonjour=inputs.options.skip_bonjour,
         active_share_names=parse_active_share_names(smb_config.text or ""),
         add_result=sink.add,

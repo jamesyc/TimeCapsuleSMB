@@ -91,7 +91,7 @@ class DoctorHelperTests(unittest.TestCase):
                     mock.patch.object(doctor_steps, "_add_remote_service_socket_debug") as debug,
                 ):
                     state = doctor_steps._doctor_check_direct_smb_port(
-                        SimpleNamespace(proxied_ssh=False, host="10.0.1.1"),
+                        SimpleNamespace(host="10.0.1.1"),
                         mock.Mock(),
                         ("fe80::40%17", "fe80::40%18"),
                         sink,
@@ -116,7 +116,7 @@ class DoctorHelperTests(unittest.TestCase):
             mock.patch.object(doctor_steps, "scoped_tcp_connect_errors", return_value=errors) as probe,
         ):
             state = doctor_steps._doctor_check_direct_smb_port(
-                SimpleNamespace(proxied_ssh=False, host="10.0.1.1"), mock.Mock(), ("fe80::40",), sink,
+                SimpleNamespace(host="10.0.1.1"), mock.Mock(), ("fe80::40",), sink,
             )
         probe.assert_called_once_with(["fe80::40%en0", "fe80::40%en1"], 445)
         self.assertEqual(state.observed_addresses, ("fe80::40",))
@@ -126,7 +126,7 @@ class DoctorHelperTests(unittest.TestCase):
         sink = DoctorSink(None, {})
         with mock.patch.object(doctor_steps, "local_interface_addresses", return_value=()):
             state = doctor_steps._doctor_check_direct_smb_port(
-                SimpleNamespace(proxied_ssh=False, host="10.0.1.1"), mock.Mock(), ("fe80::40",), sink,
+                SimpleNamespace(host="10.0.1.1"), mock.Mock(), ("fe80::40",), sink,
             )
         self.assertEqual(state.testable_addresses, ())
         self.assertEqual(sink.results[-1].status, "FAIL")
@@ -165,7 +165,7 @@ class DoctorHelperTests(unittest.TestCase):
                     mock.patch.object(doctor_steps, "_add_remote_service_socket_debug"),
                 ):
                     doctor_steps._doctor_check_direct_smb_port(
-                        SimpleNamespace(proxied_ssh=False, host="10.0.0.2"), mock.Mock(), addresses, sink,
+                        SimpleNamespace(host="10.0.0.2"), mock.Mock(), addresses, sink,
                     )
                 self.assertEqual([result.status for result in sink.results], statuses)
                 self.assertEqual(sink.fatal(), fatal)
@@ -184,7 +184,7 @@ class DoctorHelperTests(unittest.TestCase):
         ):
             result = doctor_steps._add_bonjour_results(
                 AppConfig(values={"TC_HOST": "10.0.1.1"}), None,
-                proxied_ssh=False, skip_bonjour=False, add_result=results.append,
+                skip_bonjour=False, add_result=results.append,
             )
         self.assertEqual(browse.call_count, 1)
         self.assertFalse(any(item.status == "FAIL" for item in results), results)

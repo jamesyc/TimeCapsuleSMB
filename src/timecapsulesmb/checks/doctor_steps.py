@@ -39,7 +39,6 @@ from timecapsulesmb.checks.local_tools import check_required_artifacts, check_re
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import NetworkLinkResult, check_smb_port, check_ssh_login, classify_network_link, local_interface_addresses, local_interface_networks, network_display
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
-from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
     NBNS_OFF_SUBNET_CODE,
@@ -1038,7 +1037,6 @@ def _add_bonjour_results(
     config: AppConfig,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     *,
-    proxied_ssh: bool,
     skip_bonjour: bool,
     active_share_names: list[str] | None = None,
     add_result: Callable[[CheckResult], None],
@@ -1054,10 +1052,7 @@ def _add_bonjour_results(
     bonjour_addresses: list[str] = []
     active_share_names = active_share_names or []
 
-    if proxied_ssh and not skip_bonjour:
-        bonjour_reason = "Bonjour check skipped for SSH-proxied target"
-        add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different AirPort device"))
-    elif not skip_bonjour:
+    if not skip_bonjour:
         try:
             bonjour_expected = build_bonjour_expected_identity(config, runtime_naming_identity)
             bonjour_expected_debug = {
@@ -1220,7 +1215,7 @@ class DoctorNetworkProbe:
 
     def device(self) -> DeviceNetworksProbeResult:
         if self._device is None:
-            if not self._remote.remote_checks_enabled or self._target.proxied_ssh:
+            if not self._remote.remote_checks_enabled:
                 self._device = DeviceNetworksProbeResult(error="SSH checks were not run")
             else:
                 try:
@@ -1276,7 +1271,6 @@ def _off_link_message(prefix: str, link: NetworkLinkResult, consequence: str) ->
 
 def _add_nbns_results(
     *,
-    proxied_ssh: bool,
     active_smb_conf: str | None,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     reachable_addresses: tuple[str, ...],
@@ -1287,44 +1281,41 @@ def _add_nbns_results(
     debug_fields: dict[str, object] | None = None,
 ) -> None:
     try:
-        if proxied_ssh:
-            add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
-        else:
-            expected_name = parse_active_netbios_name(active_smb_conf or "")
-            if expected_name is None and runtime_naming_identity is not None:
-                expected_name = runtime_naming_identity.netbios_name
-            if expected_name is None:
-                add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
-                return
-            ipv4_addresses = [address for address in reachable_addresses if _smb_target_family(address) == "ipv4"]
-            expected_ip = next((address for address in ipv4_addresses if not is_link_local_ipv4(address)), None)
-            if expected_ip is None and ipv4_addresses:
-                expected_ip = ipv4_addresses[0]
-            if expected_ip is None:
-                add_result(CheckResult("SKIP", "NBNS check skipped; no TCP-reachable IPv4 SMB address was discovered"))
-                return
-            def query() -> CheckResult:
-                return check_nbns_name_resolution(expected_name, expected_ip, expected_ip)
+        expected_name = parse_active_netbios_name(active_smb_conf or "")
+        if expected_name is None and runtime_naming_identity is not None:
+            expected_name = runtime_naming_identity.netbios_name
+        if expected_name is None:
+            add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
+            return
+        ipv4_addresses = [address for address in reachable_addresses if _smb_target_family(address) == "ipv4"]
+        expected_ip = next((address for address in ipv4_addresses if not is_link_local_ipv4(address)), None)
+        if expected_ip is None and ipv4_addresses:
+            expected_ip = ipv4_addresses[0]
+        if expected_ip is None:
+            add_result(CheckResult("SKIP", "NBNS check skipped; no TCP-reachable IPv4 SMB address was discovered"))
+            return
+        def query() -> CheckResult:
+            return check_nbns_name_resolution(expected_name, expected_ip, expected_ip)
 
-            if native_nbns_ready is False:
-                # The device has not finished registering its name yet: a
-                # timeout may clear, and during startup grace it is a startup
-                # failure. Once native NBNS is ready a timeout is a network
-                # problem between here and the device that waiting cannot fix.
-                result = _run_doctor_retryable_check(query, _nbns_query_timed_out)
-                if _nbns_query_timed_out(result):
-                    result = _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
-            else:
-                result = query()
-            if _nbns_off_subnet_symptom(result) is not None and probe_device_subnets is not None:
-                result = _nbns_off_subnet_result(
-                    result,
-                    expected_name,
-                    dict(route_sources).get(expected_ip),
-                    probe_device_subnets,
-                    debug_fields,
-                )
-            add_result(result)
+        if native_nbns_ready is False:
+            # The device has not finished registering its name yet: a
+            # timeout may clear, and during startup grace it is a startup
+            # failure. Once native NBNS is ready a timeout is a network
+            # problem between here and the device that waiting cannot fix.
+            result = _run_doctor_retryable_check(query, _nbns_query_timed_out)
+            if _nbns_query_timed_out(result):
+                result = _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
+        else:
+            result = query()
+        if _nbns_off_subnet_symptom(result) is not None and probe_device_subnets is not None:
+            result = _nbns_off_subnet_result(
+                result,
+                expected_name,
+                dict(route_sources).get(expected_ip),
+                probe_device_subnets,
+                debug_fields,
+            )
+        add_result(result)
     except Exception as e:
         add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
 
@@ -1575,7 +1566,6 @@ def _add_authenticated_smb_results(
     *,
     host: str,
     smb_password: str,
-    proxied_ssh: bool,
     active_smb_conf: str | None,
     active_smb_conf_reason: str,
     direct_smb: DirectSmbState,
@@ -1583,20 +1573,6 @@ def _add_authenticated_smb_results(
     add_result: Callable[[CheckResult], None],
 ) -> None:
     active_share_names = parse_active_share_names(active_smb_conf or "")
-    if proxied_ssh:
-        _add_tunneled_authenticated_smb_results(
-            connection,
-            host=host,
-            smb_password=smb_password,
-            active_share_names=active_share_names,
-            active_smb_conf_reason=active_smb_conf_reason,
-            remote_port=445,
-            debug_prefix="authenticated_smb",
-            debug_fields=debug_fields,
-            add_result=add_result,
-        )
-        return
-
     smb_servers = _doctor_smb_client_targets(
         config,
         bonjour_target,
@@ -1730,7 +1706,6 @@ def _build_doctor_target(inputs: DoctorInputs) -> DoctorTarget:
         connection=connection,
         host=endpoint_host(connection.host),
         smb_password=inputs.config.require("TC_PASSWORD"),
-        proxied_ssh=ssh_opts_use_proxy(connection.ssh_opts),
     )
 
 
@@ -2289,10 +2264,6 @@ def _doctor_check_direct_smb_port(
     discovered_addresses: tuple[str, ...],
     sink: DoctorSink,
 ) -> DirectSmbState:
-    if target.proxied_ssh:
-        sink.add(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {target.host}"))
-        return DirectSmbState()
-
     observed_addresses = _dedupe_addresses(discovered_addresses or _fallback_smb_addresses(target.host))
     if not observed_addresses:
         sink.add(CheckResult("FAIL", "no SMB address was discovered or resolved for direct connectivity testing"))
@@ -2437,7 +2408,6 @@ def _doctor_check_nbns(
     network = network or DoctorNetworkProbe(target, remote, sink.debug_fields)
     result_start = sink.result_count()
     _add_nbns_results(
-        proxied_ssh=target.proxied_ssh,
         active_smb_conf=smb_config.text,
         runtime_naming_identity=naming.identity,
         reachable_addresses=direct_smb.reachable_addresses,
@@ -2470,7 +2440,6 @@ def _doctor_check_authenticated_smb(
         naming.identity,
         host=target.host,
         smb_password=target.smb_password,
-        proxied_ssh=target.proxied_ssh,
         active_smb_conf=smb_config.text,
         active_smb_conf_reason=smb_config.reason,
         direct_smb=direct_smb,

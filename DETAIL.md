@@ -1376,7 +1376,6 @@ The normal goal is to use it as a quick health check after:
 - reboot
 
 Current doctor caveats:
-- for SSH-proxied targets, `doctor` now creates a temporary local SMB tunnel and runs the authenticated SMB checks through that forwarded port
 - the xattr persistence check inspects the active runtime config under `/mnt/Memory/samba4`, not the persistent template on disk
 
 ## Repair Xattrs Command

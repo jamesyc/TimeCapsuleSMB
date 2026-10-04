@@ -48,11 +48,11 @@ class RuntimeTests(unittest.TestCase):
         config = AppConfig.from_values({
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o ProxyJump=bastion",
+            "TC_SSH_OPTS": "-o ConnectTimeout=9",
         })
         connection = resolve_env_connection(config)
 
-        self.assertEqual(connection.ssh_opts, "-o ProxyJump=bastion")
+        self.assertEqual(connection.ssh_opts, "-o ConnectTimeout=9")
 
     def test_resolve_env_connection_uses_password_provider_when_password_missing(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2"})
@@ -77,7 +77,6 @@ class RuntimeTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
             error = ssh_target_link_local_resolution_error(
                 "root@capsule.local",
-                DEFAULTS["TC_SSH_OPTS"],
             )
 
         self.assertIsNotNone(error)
@@ -94,7 +93,6 @@ class RuntimeTests(unittest.TestCase):
         ):
             error = ssh_target_link_local_resolution_error(
                 "root@capsule.local",
-                DEFAULTS["TC_SSH_OPTS"],
             )
 
         self.assertIsNotNone(error)
@@ -107,16 +105,6 @@ class RuntimeTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
             error = ssh_target_link_local_resolution_error(
                 "root@localhost",
-                DEFAULTS["TC_SSH_OPTS"],
-            )
-
-        self.assertIsNone(error)
-
-    def test_ssh_target_link_local_resolution_error_skips_proxied_ssh(self) -> None:
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=AssertionError("should not resolve")):
-            error = ssh_target_link_local_resolution_error(
-                "root@capsule.local",
-                "-o ProxyJump=bastion",
             )
 
         self.assertIsNone(error)
@@ -236,7 +224,7 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertIn("TC_HOST host capsule.local resolves to link-local address 169.254.44.9", str(ctx.exception))
 
-    def test_managed_target_allows_proxied_hostname_that_resolves_link_local(self) -> None:
+    def test_managed_target_rejects_proxy_ssh_opts_before_any_lookup(self) -> None:
         config = app_config(
             valid_env(
                 TC_HOST="root@capsule.local",
@@ -244,14 +232,15 @@ class RuntimeTests(unittest.TestCase):
             )
         )
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=AssertionError("should not resolve")):
-            target = service_runtime.resolve_validated_managed_target(
-                config,
-                command_name="deploy",
-                profile="deploy",
-                include_probe=False,
-            )
+            with self.assertRaises(ConfigError) as ctx:
+                service_runtime.resolve_validated_managed_target(
+                    config,
+                    command_name="deploy",
+                    profile="deploy",
+                    include_probe=False,
+                )
 
-        self.assertEqual(target.connection.host, "root@capsule.local")
+        self.assertIn("TC_SSH_OPTS must not use ProxyJump", str(ctx.exception))
 
     def _bad_decode(self) -> UnicodeDecodeError:
         # What a UTF-8 stdin raises for a KOI8/CP1251 byte (telemetry, v3.1.1).

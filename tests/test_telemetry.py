@@ -643,7 +643,7 @@ class TelemetryTests(unittest.TestCase):
                                 values={
                                     "TC_HOST": "root@192.168.1.217",
                                     "TC_PASSWORD": "secret-password",
-                                    "TC_SSH_OPTS": "-o ProxyJump=bastion",
+                                    "TC_SSH_OPTS": "-o ConnectTimeout=9",
                                     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
                                 },
                             ) as command:
@@ -652,7 +652,7 @@ class TelemetryTests(unittest.TestCase):
         finished_payload = send_mock.call_args.args[0]
         self.assertIn("stage=ssh_probe", finished_payload["error"])
         self.assertIn("TC_HOST=root@192.168.1.217", finished_payload["error"])
-        self.assertIn("TC_SSH_OPTS=-o ProxyJump=bastion", finished_payload["error"])
+        self.assertIn("TC_SSH_OPTS=-o ConnectTimeout=9", finished_payload["error"])
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=true", finished_payload["error"])
         self.assertNotIn("TC_PASSWORD", finished_payload["error"])
         self.assertNotIn("secret-password", finished_payload["error"])
@@ -701,7 +701,7 @@ class TelemetryTests(unittest.TestCase):
                                 "deploy_finished",
                                 values={
                                     "TC_HOST": "root@192.168.1.217",
-                                    "TC_SSH_OPTS": "-o ProxyJump=bastion",
+                                    "TC_SSH_OPTS": "-o ConnectTimeout=9",
                                     "TC_NET_IFACE": "bridge0",
                                     "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
                                     "TC_AIRPORT_SYAP": "119",
@@ -782,11 +782,11 @@ class TelemetryTests(unittest.TestCase):
         lines = render_operation_debug_lines(
             operation_name="configure",
             stage="ssh_probe",
-            connection=SshConnection("root@192.168.1.217", "secret", "-o ProxyJump=bastion"),
+            connection=SshConnection("root@192.168.1.217", "secret", "-o ConnectTimeout=9"),
             values={
                 "TC_HOST": "root@10.0.1.1",
                 "TC_PASSWORD": "secret",
-                "TC_SSH_OPTS": "-o ProxyJump=old",
+                "TC_SSH_OPTS": "-o ConnectTimeout=5",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             },
@@ -805,7 +805,7 @@ class TelemetryTests(unittest.TestCase):
 
         self.assertEqual(lines[0:3], ["Debug context:", "command=configure", "stage=ssh_probe"])
         self.assertIn("host=root@192.168.1.217", lines)
-        self.assertIn("ssh_opts=-o ProxyJump=bastion", lines)
+        self.assertIn("ssh_opts=-o ConnectTimeout=9", lines)
         self.assertIn("TC_HOST=root@10.0.1.1", lines)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=true", lines)
         self.assertIn("preflight_error=preflight failed", lines)

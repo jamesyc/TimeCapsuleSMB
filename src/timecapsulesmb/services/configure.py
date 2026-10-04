@@ -128,7 +128,10 @@ def configure_ssh_target(
         validation_error = CONFIG_VALIDATORS["TC_HOST"](target, label)
         if validation_error is not None:
             raise ValueError(validation_error)
-    resolution_error = ssh_target_link_local_resolution_error(target, ssh_opts)
+    opts_error = CONFIG_VALIDATORS["TC_SSH_OPTS"](ssh_opts, "TC_SSH_OPTS")
+    if opts_error is not None:
+        raise ValueError(opts_error)
+    resolution_error = ssh_target_link_local_resolution_error(target)
     if resolution_error is not None:
         raise ValueError(resolution_error)
     return target

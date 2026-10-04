@@ -25,7 +25,7 @@ from timecapsulesmb.device.probe import (
     probe_connection_state,
 )
 from timecapsulesmb.integrations.acp import ACP_PORT
-from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.transport.local import tcp_connect_error, tcp_open
 
 PasswordProvider = Callable[[str], str]
@@ -197,12 +197,9 @@ def resolve_env_connection(
 
 def ssh_target_link_local_resolution_error(
     target: str,
-    ssh_opts: str,
     *,
     field_name: str = "Device SSH target",
 ) -> str | None:
-    if ssh_opts_use_proxy(ssh_opts):
-        return None
     host = endpoint_host(target).strip()
     if not host or ipv4_literal(host) is not None:
         return None
@@ -229,11 +226,7 @@ def resolve_validated_managed_target(
     password_provider: PasswordProvider | None = None,
 ) -> ManagedTargetState:
     require_valid_app_config(config, profile=profile, command_name=command_name)
-    resolution_error = ssh_target_link_local_resolution_error(
-        config.require("TC_HOST"),
-        config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]),
-        field_name="TC_HOST",
-    )
+    resolution_error = ssh_target_link_local_resolution_error(config.require("TC_HOST"), field_name="TC_HOST")
     if resolution_error is not None:
         raise ConfigError(resolution_error)
     connection = resolve_env_connection(

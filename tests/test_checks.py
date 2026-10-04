@@ -50,7 +50,6 @@ from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login
 from timecapsulesmb.core.net import RouteSelection
-from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
     NBNS_OFF_SUBNET_CODE,
@@ -3683,17 +3682,6 @@ class CheckTests(unittest.TestCase):
             for result in run.results
         ))
 
-    def test_ssh_opts_use_proxy_detects_proxycommand_and_proxyjump(self) -> None:
-        self.assertTrue(ssh_opts_use_proxy("-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
-        self.assertTrue(ssh_opts_use_proxy("-o proxycommand=ssh\\ -W\\ %h:%p\\ bastion"))
-        self.assertTrue(ssh_opts_use_proxy("-J bastion.example.com"))
-        self.assertTrue(ssh_opts_use_proxy("-Jbastion.example.com"))
-        self.assertTrue(ssh_opts_use_proxy("-o ProxyJump=bastion.example.com"))
-        self.assertTrue(ssh_opts_use_proxy("-o proxyjump=bastion.example.com"))
-        self.assertTrue(ssh_opts_use_proxy("-oProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
-        self.assertTrue(ssh_opts_use_proxy("-oproxycommand=ssh\\ -W\\ %h:%p\\ bastion"))
-        self.assertFalse(ssh_opts_use_proxy("-o HostKeyAlgorithms=+ssh-rsa"))
-
     def test_check_ssh_login_uses_configured_ssh_transport(self) -> None:
         connection = SshConnection("root@192.168.1.118", "pw", "-o ProxyCommand=jump")
         with mock.patch(
@@ -3721,112 +3709,6 @@ class CheckTests(unittest.TestCase):
             result.message,
             "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
         )
-
-    def test_run_doctor_checks_proxy_target_skips_local_network_checks(self) -> None:
-        values = {
-            "TC_HOST": "root@192.168.1.118",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
-            "TC_NET_IFACE": "bridge0",
-            "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-        }
-        tunnel_mock = mock.MagicMock()
-        nbns_mock = mock.Mock()
-        run = self.run_doctor_with_mocks(
-            values,
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=None,
-            smb_instance=[],
-            smb_listing=self.smb_listing_result(),
-            smb_file_ops=[mock.Mock(status="PASS", message="file ops ok")],
-            run_ssh_side_effect=self.run_ssh_with_active_smb_conf(other_stdout="enabled\n"),
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.find_free_local_port": mock.Mock(return_value=1445),
-                "timecapsulesmb.checks.doctor_steps.ssh_local_forward": tunnel_mock,
-                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
-            },
-        )
-        self.assertFalse(run.fatal)
-        run.mocks.check_ssh_login.assert_called_once()
-        self.assertEqual(run.mocks.check_ssh_login.call_args.args[0], SshConnection("root@192.168.1.118", "pw", values["TC_SSH_OPTS"]))
-        run.mocks.check_smb_port.assert_not_called()
-        run.mocks.check_smb_instance.assert_not_called()
-        nbns_mock.assert_not_called()
-        tunnel_mock.assert_called_once_with(
-            mock.ANY,
-            local_port=1445,
-            remote_host="192.168.1.118",
-            remote_port=445,
-        )
-        self.assertEqual(tunnel_mock.call_args.args[0].host, "root@192.168.1.118")
-        self.assertEqual(tunnel_mock.call_args.args[0].ssh_opts, values["TC_SSH_OPTS"])
-        run.mocks.check_authenticated_smb_listing.assert_called_once_with(
-            "admin",
-            "pw",
-            "127.0.0.1",
-            port=1445,
-        )
-        run.mocks.check_authenticated_smb_file_ops_detailed.assert_called_once_with(
-            "admin",
-            "pw",
-            "127.0.0.1",
-            "Data",
-            port=1445,
-        )
-        messages = [result.message for result in run.results if result.status == "SKIP"]
-        self.assertTrue(any("direct SMB port check skipped" in message for message in messages))
-        self.assertTrue(any("Bonjour check skipped" in message for message in messages))
-        self.assertTrue(any("NBNS check skipped" in message for message in messages))
-        self.assertFalse(any("authenticated SMB checks skipped" in message for message in messages))
-
-    def test_run_doctor_checks_compact_jump_option_skips_local_network_checks(self) -> None:
-        values = {
-            "TC_HOST": "root@192.168.1.118",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-Jbastion.example.com -o HostKeyAlgorithms=+ssh-rsa",
-            "TC_NET_IFACE": "bridge0",
-            "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-        }
-        tunnel_mock = mock.MagicMock()
-        nbns_mock = mock.Mock()
-        run = self.run_doctor_with_mocks(
-            values,
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=None,
-            smb_instance=[],
-            smb_listing=self.smb_listing_result(),
-            smb_file_ops=[mock.Mock(status="PASS", message="file ops ok")],
-            run_ssh_side_effect=self.run_ssh_with_active_smb_conf(other_stdout="enabled\n"),
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.find_free_local_port": mock.Mock(return_value=1446),
-                "timecapsulesmb.checks.doctor_steps.ssh_local_forward": tunnel_mock,
-                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
-            },
-        )
-        self.assertFalse(run.fatal)
-        run.mocks.check_smb_port.assert_not_called()
-        run.mocks.check_smb_instance.assert_not_called()
-        nbns_mock.assert_not_called()
-        tunnel_mock.assert_called_once()
-        run.mocks.check_authenticated_smb_listing.assert_called_once()
-        run.mocks.check_authenticated_smb_file_ops_detailed.assert_called_once()
-        messages = [result.message for result in run.results if result.status == "SKIP"]
-        self.assertTrue(any("direct SMB port check skipped" in message for message in messages))
-        self.assertTrue(any("Bonjour check skipped" in message for message in messages))
-        self.assertTrue(any("NBNS check skipped" in message for message in messages))
-        self.assertFalse(any("authenticated SMB checks skipped" in message for message in messages))
 
     def test_run_doctor_checks_skip_ssh_does_not_probe_nbns_flash_config(self) -> None:
         values = {
@@ -6180,33 +6062,6 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
                 )
         self.assertEqual(len(results), 10)
         self.assertTrue(all(args[:5] == ["smbclient", "-s", "/dev/null", "-I", "fd00::217"] for args in captured_args))
-
-    def test_run_doctor_checks_proxy_target_reports_tunnel_failure_as_fatal(self) -> None:
-        values = {
-            "TC_HOST": "root@192.168.1.118",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
-            "TC_NET_IFACE": "bridge0",
-            "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-        }
-        with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
-            with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
-                with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
-                    with mock.patch("timecapsulesmb.checks.doctor_steps.find_free_local_port", return_value=1445):
-                        with mock.patch("timecapsulesmb.checks.doctor_steps.ssh_local_forward", side_effect=SshError("tunnel failed")):
-                            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
-                                results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT, skip_bonjour=True)
-        self.assertTrue(fatal)
-        smb_result = next(result for result in results if result.message.startswith("authenticated SMB checks failed through SSH tunnel:"))
-        self.assertEqual(smb_result.status, "FAIL")
-        self.assertIn("tunnel failed", smb_result.message)
-
 
 if __name__ == "__main__":
     unittest.main()

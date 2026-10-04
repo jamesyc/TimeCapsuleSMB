@@ -124,28 +124,6 @@ def _summarize_remote_command(remote_cmd: str) -> str:
     return summary[: REMOTE_COMMAND_SUMMARY_LIMIT - 3] + "..."
 
 
-def ssh_opts_use_proxy(ssh_opts: str) -> bool:
-    try:
-        tokens = shlex.split(ssh_opts)
-    except ValueError:
-        tokens = ssh_opts.split()
-
-    for token in tokens:
-        lowered = token.lower()
-        if token == "-J":
-            return True
-        if token.startswith("-J"):
-            return True
-        if lowered in {"proxycommand", "proxyjump"}:
-            return True
-        if lowered.startswith("proxycommand=") or lowered.startswith("proxyjump="):
-            return True
-        if lowered.startswith("-oproxycommand=") or lowered.startswith("-oproxyjump="):
-            return True
-
-    return False
-
-
 def _decode_remote_error_output(stderr: bytes, stdout: bytes = b"", *, include_stdout: bool = True) -> str:
     stderr_text = stderr[:SSH_ERROR_STDERR_LIMIT_BYTES].decode("utf-8", errors="replace")
     stdout_text = stdout[:SSH_ERROR_STDOUT_PREFIX_BYTES].decode("utf-8", errors="replace") if include_stdout else ""

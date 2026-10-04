@@ -65,7 +65,6 @@ class DoctorTarget:
     connection: SshConnection
     host: str
     smb_password: str
-    proxied_ssh: bool
 
 
 @dataclass(frozen=True)

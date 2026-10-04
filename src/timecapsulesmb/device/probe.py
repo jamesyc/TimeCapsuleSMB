@@ -21,7 +21,7 @@ from timecapsulesmb.transport.errors import (
     SshAuthenticationError,
     TransportError,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes
 from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_MODEL,
     AIRPORT_IDENTITIES_BY_SYAP,
@@ -445,7 +445,7 @@ class RuntimeNamingIdentityProbeResult:
 
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
     probe_host = connection.host.split("@", 1)[1] if "@" in connection.host else connection.host
-    if not ssh_opts_use_proxy(connection.ssh_opts) and not tcp_open(probe_host, 22):
+    if not tcp_open(probe_host, 22):
         return ProbeResult(
             ssh_status=SshAccessStatus.CLOSED,
             error="SSH is not reachable yet.",

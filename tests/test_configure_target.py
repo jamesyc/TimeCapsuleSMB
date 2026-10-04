@@ -36,6 +36,18 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertEqual(target.host, "root@10.0.0.9")
         self.assertEqual(target.source, "explicit_host")
 
+    def test_proxy_ssh_opts_are_rejected_before_any_name_lookup(self) -> None:
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=AssertionError("must not resolve")):
+            with self.assertRaises(ValueError) as raised:
+                resolve_configure_target(
+                    explicit_host="root@capsule.local",
+                    selected_record=None,
+                    existing={},
+                    ssh_opts="-o ProxyJump=bastion",
+                )
+
+        self.assertIn("TC_SSH_OPTS must not use ProxyJump", str(raised.exception))
+
     def test_explicit_link_local_host_is_rejected(self) -> None:
         with self.assertRaises(ValueError) as raised:
             resolve_configure_target(
