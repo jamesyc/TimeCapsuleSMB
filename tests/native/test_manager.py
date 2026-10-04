@@ -22,17 +22,21 @@ from tests.native.build import compile_service
 # This host build shortens the manager's waits; the device keeps the defaults.
 # tests/native/unit/test_storage_settle.c pins the device settle and retry.
 TIMINGS=dict(
-    TC_STORAGE_SETTLE_MS=1000,  # device 5 s
-    TC_STORAGE_RETRY_MS=1000,   # device 5 s; automatic retries back off 1x, 3x, then 12x
-    JOB_RETRY_MS=1000,          # device 5 s
-    TC_STALE_KILL_MS=4000,      # device 10 s
+    TC_STORAGE_SETTLE_MS=500,   # device 5 s
+    TC_STORAGE_RETRY_MS=500,    # device 5 s; automatic retries back off 1x, 3x, then 12x
+    JOB_RETRY_MS=500,           # device 5 s
+    TC_STALE_KILL_MS=2000,      # device 10 s
+    # Long enough for test_stall_while_stopping_is_still_recovered to see a
+    # raise and a wake before the drain ends.
+    TC_CHILD_GRACE_MS=5000,     # device 10 s
     # The manager samples once per loop pass, at least every second.
-    TC_BUFSTALL_TRIGGER_MS=1500, # device 5 s
-    TC_BUFSTALL_QUIET_MS=2500,   # device 10 s
+    TC_BUFSTALL_TRIGGER_MS=1000, # device 5 s
+    TC_BUFSTALL_QUIET_MS=2000,   # device 10 s
     TC_BUFSTALL_HOLD_MS=6000,    # device 60 s
-    TC_BUFSTALL_REPORT_MS=20000, # device 1 hour after delivery
-    TC_BUFSTALL_REPORT_RETRY_MS=3000, # device 60 s after failure
-    TC_BUFSTALL_REPORT_TIMEOUT_MS=15000, # device 180 s
+    TC_BUFSTALL_REPORT_MS=8000,  # device 1 hour after delivery
+    TC_BUFSTALL_REPORT_RETRY_MS=2000, # device 60 s after failure
+    # Outlasts a report held across a second episode (about 5 s).
+    TC_BUFSTALL_REPORT_TIMEOUT_MS=10000, # device 180 s
 )
 
 CHILD = '''
