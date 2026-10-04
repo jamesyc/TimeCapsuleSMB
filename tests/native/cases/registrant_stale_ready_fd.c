@@ -6,7 +6,9 @@
  * its readable bit. The fake daemon holds its reply: reading that socket
  * would block until the IPC fence exits with EXIT_DAEMON_STALLED. After
  * "dispatched", a normal prepare/select/dispatch loop must still deliver
- * the reply once the test releases it. */
+ * the reply once the test releases it. The registrant times its callback
+ * with the monotonic clock, so every call gets the real time: a made-up one
+ * reads as long overdue on a host that booted a minute ago. */
 #include <sys/select.h>
 #include <sys/time.h>
 #include "common/plan.h"
@@ -26,7 +28,7 @@ int main(int argc, char **argv) {
     fclose(fp);
     memset(&options, 0, sizeof(options));
     memset(&cfg, 0, sizeof(cfg));
-    if (device_plan_build(&plan, &facts, NULL, &options, 100000) != 0 || !plan.status.validated) return 3;
+    if (device_plan_build(&plan, &facts, NULL, &options, acp_monotonic_ms()) != 0 || !plan.status.validated) return 3;
     registrant_install_ipc_fence();
     registrant_init(&reg, &cfg);
 
@@ -38,11 +40,11 @@ int main(int argc, char **argv) {
     close(pipefd[0]);
     close(pipefd[1]);
 
-    registrant_apply_plan(&reg, &plan, 100000);
+    registrant_apply_plan(&reg, &plan, acp_monotonic_ms());
     if (!reg.entries[0].in_use || reg.entries[0].ref == NULL) return 5;
     printf("reused=%d\n", DNSServiceRefSockFD(reg.entries[0].ref) == stale);
     fflush(stdout);
-    registrant_dispatch(&reg, &reads, 100000);
+    registrant_dispatch(&reg, &reads, acp_monotonic_ms());
     printf("dispatched status=%d\n", (int)reg.entries[0].status);
     fflush(stdout);
 
@@ -53,7 +55,7 @@ int main(int argc, char **argv) {
         FD_ZERO(&reads);
         registrant_prepare(&reg, &reads, &maxfd, &wake);
         if (select(maxfd + 1, &reads, NULL, NULL, &timeout) < 0) return 6;
-        registrant_dispatch(&reg, &reads, 100000);
+        registrant_dispatch(&reg, &reads, acp_monotonic_ms());
     }
     printf("final status=%d\n", (int)reg.entries[0].status);
     registrant_shutdown(&reg);
