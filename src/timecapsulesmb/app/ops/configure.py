@@ -22,14 +22,12 @@ from timecapsulesmb.services.app import (
     OperationResult,
     bool_param,
     config_path,
-    int_param,
     jsonable,
     optional_bool_param,
     require_string_param,
     string_param,
 )
 from timecapsulesmb.services import configure as configure_service
-from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     build_managed_config_env_values,
@@ -252,7 +250,6 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 selected_record_airport_syap=target.selected_record_airport_syap,
                 selected_record=target.target_record,
                 enable_ssh=bool_param(params, "enable_ssh", True),
-                ssh_wait_timeout=int_param(params, "ssh_wait_timeout", ACP_SSH_ENABLE_WAIT_SECONDS),
                 internal_share_use_disk_root=bool_param(
                     params,
                     "internal_share_use_disk_root",

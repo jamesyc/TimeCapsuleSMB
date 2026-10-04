@@ -16,12 +16,12 @@ from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.services.set_ssh import (
     SetSshAction,
     SetSshResult,
     SetSshStatusResult,
-    SetSshVerificationError,
     disable_set_ssh,
     enable_set_ssh,
     probe_set_ssh_status,
@@ -49,9 +49,6 @@ def _update_fields_from_result(command_context: CommandContext, result: SetSshRe
         set_ssh_action=result.action,
         ssh_final_reachable=result.ssh_final_reachable,
         ssh_verification_skipped=result.ssh_verification_skipped,
-        ssh_disable_persisted=result.ssh_disable_persisted,
-        ssh_reboot_observed_down=result.ssh_reboot_observed_down,
-        device_recovered=result.device_recovered,
     )
 
 
@@ -183,7 +180,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 callbacks=_callbacks(command_context),
                 initial=status,
             )
-        except SetSshVerificationError as e:
+        except RebootFlowError as e:
             error_text = str(e)
             print(color_red("Failed to verify SSH disable:"))
             print(error_text)

@@ -49,7 +49,6 @@ OPTION_KEYS = frozenset({
     "skip_bonjour",
     "skip_smb",
     "skip_ssh",
-    "ssh_wait_timeout",
     "timeout",
     "verbose",
     "wait_after_reboot",
@@ -349,9 +348,6 @@ def _details_set_ssh(_params: Mapping[str, object], payload: object | None) -> d
             "reboot_requested",
             "waited",
             "ssh_verification_skipped",
-            "ssh_disable_persisted",
-            "ssh_reboot_observed_down",
-            "device_recovered",
             "summary",
         ))
     return details

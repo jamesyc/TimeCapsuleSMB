@@ -78,7 +78,6 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "persist_password",
             "selected_record",
             "ssh_opts",
-            "ssh_wait_timeout",
         }),
         telemetry=True,
         keep_awake=True,

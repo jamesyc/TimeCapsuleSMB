@@ -42,7 +42,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--yes", action="store_true", help="Do not prompt before running fsck")
     add_no_input_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Run fsck only; do not reboot afterward. File sharing stays off until the next reboot")
-    parser.add_argument("--no-wait", action="store_true", help="Do not wait for SSH to go down and come back after reboot")
+    parser.add_argument("--no-wait", action="store_true", help="Do not wait for the device to restart and SSH to come back")
     parser.add_argument("--volume", help="HFS volume device to repair, for example dk2 or /dev/dk2")
     args = parser.parse_args(argv)
 
@@ -65,7 +65,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.fail_with_error(message)
             return 1
         command_context.set_stage("resolve_connection")
-        connection = command_context.resolve_env_connection(allow_empty_password=True)
+        # Key-only SSH can run fsck, but the reboot goes through AirPort ACP,
+        # which needs the password: ask before the disk is touched.
+        connection = command_context.resolve_env_connection(allow_empty_password=args.no_reboot)
         if connection.password:
             command_context.start_optional_airport_identity_probe(connection)
 

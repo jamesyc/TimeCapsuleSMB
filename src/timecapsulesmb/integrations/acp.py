@@ -431,18 +431,3 @@ def reboot(
     logger = _resolve_log(log, verbose)
     _emit(logger, f"Sending ACP reboot request to {host}")
     set_property_int(host, password, "acRB", 0, timeout=timeout)
-
-
-def enable_ssh(
-    host: str,
-    password: str,
-    *,
-    reboot_device: bool = True,
-    log: LogCallback | None = None,
-    verbose: bool = False,
-    timeout: float = 25.0,
-) -> None:
-    logger = _resolve_log(log, verbose)
-    set_dbug(host, password, DBUG_SSH_VALUE, log=logger, timeout=timeout)
-    if reboot_device:
-        reboot(host, password, log=logger, timeout=timeout)

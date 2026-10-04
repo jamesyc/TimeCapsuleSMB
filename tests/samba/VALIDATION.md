@@ -2403,3 +2403,58 @@ the NetBSD 4 deployment already in progress was allowed to finish safely,
 without starting its test suites.
 
 Logs are under `~/tmp/tc-issue360-20261003-044035/`.
+
+## Every reboot proven by the ACP uptime, one shared wait (2026-10-03)
+
+Deploy, uninstall, fsck, flash restore, configure's SSH enable and set-ssh
+enable/disable now reboot through one function, `services.reboot.reboot_device`.
+It reads the device uptime (ACP property `syUT`, seconds since the kernel
+started) over network ACP, waits one second, sends one `acRB` request over
+network ACP, and polls `syUT` every 5 s. A reading below the starting uptime
+plus the elapsed time, less 2 s for whole-second counts and clock drift, can
+only come from a new boot. Then port 22 must open, or, after disabling SSH,
+stay closed on two checks 5 s apart from 60 s of uptime (one lost connection
+attempt also reads as closed). The old proof (SSH stops answering,
+then answers) took a dropped SSH connection for a reboot, failed a reboot fast
+enough to fall between two probes, and for set-ssh disable took ACPd still
+answering during shutdown for a finished reboot. This supersedes the
+2026-10-01 entry's request over SSH: the network ACP password is the device
+password, so nothing needed the SSH route any more. Start limits are 90 s
+(fsck 120 s); the up limits are unchanged (240 s, fsck 420 s). Reads before
+the request fail before anything is sent, so an unreachable ACP or a wrong
+password never leaves a half-requested reboot. fsck and uninstall still accept
+key-only SSH with no password, but only when they will not reboot: a run that
+reboots asks for the password (or fails under `--no-input`) before it touches
+the disk. `TC_SSH_OPTS` proxy options are rejected, since ACP needs a direct
+path.
+
+Measured `syUT` first (read-only, both LAN devices): local `acp -q syUT`
+prints hex, network ACP returns a uint32 in about 10 ms, and `kern.boottime`
+agrees within 2 s. ACPd starts 4-5 s after the kernel and sshd 7 s (NetBSD 6)
+or 10 s (NetBSD 4 LE) after it.
+
+Validation:
+- pytest: 3,290 passed. `tests/test_reboot.py` drives the real loop against a
+  simulated device and clock (fast reboots between reads, lost requests,
+  transient ACP failures, slow reads, a slower device clock, the Mac sleeping
+  through the reboot, SSH that never opens or reopens after disabling) plus
+  500 seeded random timelines; no timeline reports a reboot that did not
+  happen. Mutating the uptime test, the 60 s wait or the start limit fails it.
+  A conftest guard fails any test that opens a real ACP connection.
+- `swift test`: 657 passed, including the shared reboot stage titles for every
+  rebooting operation.
+- No reboot requested, both devices in parallel: the wait read the live uptime
+  and ended `did_not_go_down` after 92.6 s on each.
+- NetBSD 6 (192.168.1.218): deploy (ACP stopped answering 11 s after the
+  request, new boot seen at 63 s with uptime 17 s, SSH already open), doctor
+  passed; fsck with reboot (fsck_hfs exit 0; new boot seen at 77 s under the
+  120/420 s limits), doctor passed.
+- NetBSD 4 LE (192.168.1.10): deploy (down at 11 s, new boot seen at 111 s
+  with uptime 22 s, activation completed), doctor passed; uninstall (new boot
+  seen at 111 s, post-uninstall verification passed right after the wait);
+  redeploy (u0 384 s, new boot seen at 79 s), doctor passed.
+- Not run: flash restore (rewrites a firmware bank), set-ssh enable/disable
+  and configure's enable (they need `acp remove dbug`, which agents do not
+  run), the macOS app's own deploy, and NetBSD 4 BE (no LAN device; `syUT` is
+  unverified there, but a missing property fails before any request). The
+  Samba device suites were skipped: smbd is unchanged.

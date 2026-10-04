@@ -8,23 +8,12 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn
-from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
 
 if TYPE_CHECKING:
     from timecapsulesmb.deploy.migration import OversizedSummary
 
 
-# Ask Apple's ACPd to reboot, as AirPort Utility does. ACPd saves ACPData.bin
-# and only then runs shutdown itself. Running shutdown directly instead makes
-# ACPd rewrite that file after SIGTERM, inside shutdown's few seconds before
-# SIGKILL, and an interrupted write makes ACPd erase Flash on the next boot
-# (issue #177). ACPd answers before it starts shutting down, so this runs in
-# the foreground and its exit status is real.
-ACP_REBOOT_COMMAND = f"{DEVICE_ACP_PATH} acRB=00000000"
-# The reboot route's name in telemetry and dry-run plans.
-ACP_REBOOT_STRATEGY = "native_acp"
-REBOOT_REQUEST_TIMEOUT_SECONDS = 30
 PAYLOAD_FLUSH_SETTLE_SECONDS = 10
 FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
     f"/bin/sh -c {shlex.quote(f'/bin/sync && /bin/sleep {PAYLOAD_FLUSH_SETTLE_SECONDS} && /bin/sync')}"
@@ -119,10 +108,6 @@ def run_remote_actions(
         run_ssh(connection, command)
         if on_action_done is not None:
             on_action_done(action, index, total)
-
-
-def remote_request_reboot(connection: SshConnection) -> None:
-    run_ssh(connection, ACP_REBOOT_COMMAND, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
 
 
 def flush_remote_filesystem_writes(connection: SshConnection) -> None:

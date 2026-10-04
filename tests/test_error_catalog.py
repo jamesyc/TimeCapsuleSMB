@@ -77,7 +77,10 @@ class RecoveryCatalogTests(unittest.TestCase):
     def test_recovery_for_sends_the_key_of_the_most_specific_entry(self) -> None:
         english = catalog("en")
         cases = (
-            (("deploy", "remote_error", "wait_for_reboot_up"), "deploy.remote_error.wait_for_reboot_up"),
+            (("deploy", "remote_error", "verify_runtime_reboot"), "deploy.remote_error.verify_runtime_reboot"),
+            (("deploy", "reboot_not_finished", "wait_for_reboot_up"), "deploy.reboot_not_finished"),
+            (("fsck", "reboot_not_finished", "wait_for_reboot_up"), "reboot_not_finished"),
+            (("set-ssh", "ssh_still_enabled", "wait_for_reboot_up"), "ssh_still_enabled"),
             (("deploy", "remote_error", "not_a_stage"), "remote_error"),
             (("deploy", "deploy_disk_not_confirmed", None), "deploy.deploy_disk_not_confirmed"),
             (("configure", "auth_failed", None), "configure.auth_failed"),

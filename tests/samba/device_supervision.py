@@ -21,7 +21,7 @@ from smbprotocol.session import Session
 from smbprotocol.tree import TreeConnect
 
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.services.runtime import wait_for_tcp_port_state
+from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
 
 CONF = "/mnt/Memory/samba4/etc/smb.conf"
@@ -80,8 +80,10 @@ class Device:
 
     def session(self, client_guid=None):
         # A restarted smbd appears in ps before it binds its listening socket.
-        assert wait_for_tcp_port_state(self.host, 445, expected_state=True,
-                                       timeout_seconds=30, interval_seconds=1), "SMB listener did not recover"
+        deadline = time.monotonic() + 30
+        while not tcp_open(self.host, 445):
+            assert time.monotonic() < deadline, "SMB listener did not recover"
+            time.sleep(1)
         # Samba requires signed/encrypted tree connects for its root account,
         # even when optional client signing is disabled in the appliance config.
         connection = Connection(client_guid or uuid.uuid4(), self.host, require_signing=True)

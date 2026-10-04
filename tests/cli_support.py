@@ -6,6 +6,8 @@ import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
+
+from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
@@ -285,11 +287,9 @@ class CliTestCase(unittest.TestCase):
                 side_effect=fake_configure_acp_probe,
             )
         )
-        # No test may send a real reboot request; tests that check the request
-        # patch it again themselves.
-        self.remote_request_reboot = self._exit_stack.enter_context(
-            mock.patch("timecapsulesmb.services.reboot.remote_request_reboot")
-        )
+        # No test may reach a real device's ACP. Every reboot goes to this
+        # simulated device, which reboots normally unless a test reconfigures it.
+        self.device = self._exit_stack.enter_context(FakeAcpDevice().patched())
         self._version_check = self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.cli.main.check_client_version",

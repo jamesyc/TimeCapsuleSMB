@@ -32,14 +32,11 @@ from timecapsulesmb.deploy.commands import (
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
-    ACP_REBOOT_COMMAND,
     FLUSH_REMOTE_FILESYSTEMS_COMMAND,
     FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
-    REBOOT_REQUEST_TIMEOUT_SECONDS,
     XattrMigrationResult,
     flush_remote_filesystem_writes,
     migrate_xattr_tdb_to_hfs,
-    remote_request_reboot,
     run_remote_actions,
     remote_uninstall_payload,
     upload_deployment_payload,
@@ -74,7 +71,6 @@ from timecapsulesmb.device.processes import (
     render_process_present_by_ucomm,
 )
 from timecapsulesmb.device.probe import (
-    ElfEndiannessProbeResult,
     MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
     MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
     MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
@@ -96,7 +92,6 @@ from timecapsulesmb.device.probe import (
     probe_managed_rsync_conn,
     probe_managed_smbd_conn,
     probe_remote_airport_identity_conn,
-    wait_for_ssh_state_conn,
 )
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
@@ -240,22 +235,6 @@ class DeployModuleTests(unittest.TestCase):
             debug_fields,
             finish_fields,
         )
-
-    def test_remote_request_reboot_asks_acpd_in_the_foreground(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_request_reboot(connection)
-        # check stays on: ACPd answers before it shuts down, so a nonzero exit
-        # is a real rejection rather than the session dying mid-reboot.
-        run_ssh_mock.assert_called_once_with(connection, ACP_REBOOT_COMMAND, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
-        self.assertEqual(ACP_REBOOT_COMMAND, "/usr/bin/acp acRB=00000000")
-
-    def test_remote_request_reboot_surfaces_acp_rejection(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", side_effect=SshError("ssh command failed with rc=1")) as run_ssh_mock:
-            with self.assertRaisesRegex(SshError, "rc=1"):
-                remote_request_reboot(connection)
-        run_ssh_mock.assert_called_once()
 
     def test_flush_remote_filesystem_writes_syncs_and_waits(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -1885,27 +1864,19 @@ describe_managed_smbd_status "" ""
         )
         callbacks, _stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        request_reboot_func = mock.Mock()
-        request_reboot_and_wait_func = mock.Mock()
         verify_runtime = mock.Mock()
 
-        result = complete_deployment_after_upload(
-            connection,
-            prepared_plan,
-            no_wait=True,
-            callbacks=callbacks,
-            messages=DeployCompletionMessages(reboot_request_message="Requesting reboot..."),
-            request_reboot_func=request_reboot_func,
-            request_reboot_and_wait_func=request_reboot_and_wait_func,
-            verify_runtime_func=verify_runtime,
-        )
+        with mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
+            result = complete_deployment_after_upload(
+                connection,
+                prepared_plan,
+                no_wait=True,
+                callbacks=callbacks,
+                messages=DeployCompletionMessages(reboot_request_message="Requesting reboot..."),
+                verify_runtime_func=verify_runtime,
+            )
 
-        request_reboot_func.assert_called_once_with(
-            connection,
-            callbacks=callbacks,
-            raise_on_request_error=True,
-        )
-        request_reboot_and_wait_func.assert_not_called()
+        reboot.assert_called_once_with("root@10.0.0.2", "pw", wait=False, callbacks=callbacks)
         verify_runtime.assert_not_called()
         self.assertIn("Requesting reboot...", logs)
         self.assertTrue(result.reboot_requested)
@@ -1922,7 +1893,6 @@ describe_managed_smbd_status "" ""
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         run_actions = mock.Mock()
         verify_runtime = mock.Mock()
-        request_reboot_and_wait_func = mock.Mock()
         activation_decision = ActivationDecision(
             run_actions=True,
             verify_runtime=True,
@@ -1938,19 +1908,19 @@ describe_managed_smbd_status "" ""
         with mock.patch(
             "timecapsulesmb.services.runtime_verification.sleep",
             side_effect=lambda seconds: settle_calls.append(seconds),
-        ) as sleep_mock:
+        ) as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
             result = complete_deployment_after_upload(
                 connection,
                 prepared_plan,
                 no_wait=False,
                 callbacks=callbacks,
                 run_remote_actions_func=run_actions,
-                request_reboot_and_wait_func=request_reboot_and_wait_func,
                 decide_post_reboot_activation=mock.Mock(side_effect=decide_after_settle),
                 verify_runtime_func=verify_runtime,
             )
 
-        request_reboot_and_wait_func.assert_called_once()
+        reboot.assert_called_once()
+        self.assertTrue(reboot.call_args.kwargs["wait"])
         self.assertEqual(sleep_mock.call_args_list, [mock.call(BOOT_SETTLE_SECONDS), mock.call(ACTIVATION_SETTLE_SECONDS)])
         run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
         verify_runtime.assert_called_once()
@@ -1981,14 +1951,13 @@ describe_managed_smbd_status "" ""
         with mock.patch(
             "timecapsulesmb.services.runtime_verification.sleep",
             side_effect=lambda seconds: settle_calls.append(seconds),
-        ) as sleep_mock:
+        ) as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device"):
             result = complete_deployment_after_upload(
                 connection,
                 prepared_plan,
                 no_wait=False,
                 callbacks=callbacks,
                 messages=DeployCompletionMessages(reboot_runtime_wait_message="Waiting for managed runtime..."),
-                request_reboot_and_wait_func=mock.Mock(),
                 verify_runtime_func=verify_runtime,
             )
 
@@ -2428,46 +2397,6 @@ describe_managed_smbd_status "" ""
         self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
         self.assertIn("/usr/bin/pkill -9 '^smbd$' >/dev/null 2>&1 || true;", command)
         self.assertIn("echo 'process smbd did not stop' >&2; exit 1", command)
-
-    def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
-        proc = mock.Mock(returncode=0, stdout="ok\n")
-        connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            self.assertTrue(wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=1))
-        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=30)
-
-    def test_wait_for_ssh_state_treats_probe_failure_as_down(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshError("timeout")) as run_ssh_mock:
-            self.assertTrue(wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=1))
-        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=30)
-
-    def test_wait_for_ssh_state_retries_until_up(self) -> None:
-        fail = mock.Mock(returncode=255, stdout="")
-        ok = mock.Mock(returncode=0, stdout="ok\n")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[fail, ok]) as run_ssh_mock:
-            with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
-                self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=True, timeout_seconds=6))
-        self.assertEqual(run_ssh_mock.call_count, 2)
-        sleep_mock.assert_called_once_with(5)
-
-    def test_wait_for_ssh_state_retries_until_down(self) -> None:
-        ok = mock.Mock(returncode=0, stdout="ok\n")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[ok, SshError("down")]) as run_ssh_mock:
-            with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
-                self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=6))
-        self.assertEqual(run_ssh_mock.call_count, 2)
-        sleep_mock.assert_called_once_with(5)
-
-    def test_wait_for_ssh_state_times_out_when_state_never_matches(self) -> None:
-        ok = mock.Mock(returncode=0, stdout="ok\n")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=ok) as run_ssh_mock:
-            with mock.patch("timecapsulesmb.device.probe.time.time", side_effect=[0.0, 0.0, 2.0]):
-                with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
-                    self.assertFalse(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=1))
-        run_ssh_mock.assert_called_once()
-        sleep_mock.assert_called_once_with(5)
-
 
 class NoDiskErrorTests(unittest.TestCase):
     """An empty MaSt means different things on a Time Capsule and an Extreme."""

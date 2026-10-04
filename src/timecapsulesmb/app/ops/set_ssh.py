@@ -7,9 +7,9 @@ from timecapsulesmb.app.ops.common import load_request_config
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import resolve_env_connection
 from timecapsulesmb.services.set_ssh import (
-    SetSshVerificationError,
     disable_set_ssh,
     enable_set_ssh,
     probe_set_ssh_status,
@@ -53,8 +53,10 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 code="auth_failed",
                 debug=str(exc),
             ) from exc
-        except SetSshVerificationError as exc:
-            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="ssh_enable_timeout") from exc
+        except RebootFlowError as exc:
+            # SSH not opening in time keeps its own guidance: enabling it can be slow.
+            code = "ssh_enable_timeout" if exc.code == "reboot_not_finished" else exc.code
+            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=code) from exc
         except Exception as exc:
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
     else:
@@ -68,6 +70,8 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 callbacks=context.to_operation_callbacks(),
                 initial=initial,
             )
+        except RebootFlowError as exc:
+            raise AppOperationError(f"Failed to disable SSH: {exc}", code=exc.code) from exc
         except Exception as exc:
             raise AppOperationError(f"Failed to disable SSH: {exc}", code="remote_error") from exc
 
@@ -78,9 +82,6 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
         acp_port_reachable=result.acp_port_reachable,
         reboot_was_attempted=result.reboot_requested,
         ssh_verification_skipped=result.ssh_verification_skipped,
-        ssh_disable_persisted=result.ssh_disable_persisted,
-        ssh_reboot_observed_down=result.ssh_reboot_observed_down,
-        device_recovered=result.device_recovered,
     )
     return OperationResult(True, set_ssh_payload(result))
 

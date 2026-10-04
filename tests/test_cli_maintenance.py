@@ -11,7 +11,9 @@ from types import SimpleNamespace
 from unittest import mock
 from timecapsulesmb.cli import activate, fsck, uninstall
 from timecapsulesmb.cli.main import main
+from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services import maintenance as maintenance_service
+from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.runtime_verification import (
     ACTIVATION_SETTLE_MESSAGE,
     ACTIVATION_SETTLE_SECONDS,
@@ -26,7 +28,6 @@ from timecapsulesmb.deploy.commands import (
     render_remote_actions,
 )
 from timecapsulesmb.deploy.verify import VerificationResult
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshError
 
 from tests.cli_support import CliTestCase, FakeCommandContext
 
@@ -286,9 +287,9 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn("volume roots:\n    resolved from MaSt at uninstall time", text)
         self.assertIn(f"payload dirs:\n    resolved from MaSt at uninstall time/{MANAGED_PAYLOAD_DIR_NAME}", text)
-        self.assertIn("request: ACP reboot over SSH (/usr/bin/acp acRB=00000000)", text)
-        self.assertIn("strategy: native_acp", text)
-        self.assertIn("follow-up: wait for SSH down, then SSH up", text)
+        self.assertIn("request: AirPort ACP reboot (acRB)", text)
+        self.assertIn("strategy: network_acp", text)
+        self.assertIn("follow-up: wait for the ACP uptime (syUT) to restart, then SSH up", text)
         started = self.telemetry_payload("uninstall_started")
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(started["command_id"], finished["command_id"])
@@ -336,7 +337,7 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("Reboot:\n  yes", text)
         self.assertIn("follow-up: return immediately after reboot request", text)
         self.assertIn("Post-uninstall checks:\n  none", text)
-        self.assertNotIn("wait for SSH down, then SSH up", text)
+        self.assertNotIn("wait for the ACP uptime", text)
 
     def test_uninstall_validates_only_host_and_ignores_legacy_payload_dir(self) -> None:
         values = {
@@ -352,6 +353,33 @@ class CliMaintenanceTests(CliTestCase):
             with redirect_stdout(io.StringIO()):
                 rc = uninstall.main(["--dry-run"])
         self.assertEqual(rc, 0)
+
+    def test_uninstall_without_password_needs_one_only_to_reboot(self) -> None:
+        # Key-only SSH can remove the files, but the reboot needs the AirPort password.
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "", "TC_SSH_OPTS": "-o foo"}
+        for reboot in (True, False):
+            with self.subTest(reboot=reboot):
+                self.device.calls.clear()
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+                    flow = self._patch_mast_volume_flow(stack, "uninstall")
+                    remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+                    argv = ["--yes", "--no-input"] + ([] if reboot else ["--no-reboot"])
+                    with redirect_stdout(io.StringIO()):
+                        if reboot:
+                            with self.assertRaises(SystemExit) as raised:
+                                uninstall.main(argv)
+                        else:
+                            rc = uninstall.main(argv)
+
+                if reboot:
+                    self.assertIn("TC_PASSWORD is required", str(raised.exception.code))
+                    flow.mounted_mast_volumes_conn.assert_not_called()
+                    remove.assert_not_called()
+                else:
+                    self.assertEqual(rc, 0)
+                    remove.assert_called_once()
+                self.assertEqual(self.device.calls, [])
 
     def test_uninstall_ignores_unsafe_legacy_payload_dir(self) -> None:
         output = io.StringIO()
@@ -391,8 +419,8 @@ class CliMaintenanceTests(CliTestCase):
             payload["reboot_request"],
             {
                 "mode": "device_reboot",
-                "strategy": "native_acp",
-                "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
+                "strategy": "network_acp",
+                "follow_up": ["wait_for_uptime_reset", "wait_for_ssh_up"],
             },
         )
         self.assertEqual(
@@ -436,18 +464,17 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             uninstall_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
+            reboot_spy = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.reboot_device", wraps=reboot_service.reboot_device))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall", return_value=VerificationResult(True, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
         self.assertEqual(rc, 0)
         uninstall_mock.assert_called_once()
-        run_ssh_mock.assert_called_once()
-        self.assertEqual(wait_mock.call_args_list[0].args[0].host, "root@10.0.0.2")
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(wait_mock.call_args_list[1].args[0].host, "root@10.0.0.2")
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
+        self.assertEqual(reboot_spy.call_args.args, ("root@10.0.0.2", "pw"))
+        self.assertTrue(reboot_spy.call_args.kwargs["wait"])
+        self.assertNotIn("start_timeout_seconds", reboot_spy.call_args.kwargs)  # the 90 s default
+        self.assertNotIn("up_timeout_seconds", reboot_spy.call_args.kwargs)  # the 240 s default
+        self.assertEqual(self.device.calls[:3], ["read", "sleep 1", "request"])
         verify_mock.assert_called_once()
         self.assertIn("Device is back online.", output.getvalue())
         finished = self.telemetry_payload("uninstall_finished")
@@ -463,16 +490,13 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             mast_mocks = self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            reboot_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall"))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes", "--mount-wait", "17", "--no-wait"])
 
         self.assertEqual(rc, 0)
         self.assertEqual(mast_mocks.mounted_mast_volumes_conn.call_args.kwargs["wait_seconds"], 17)
-        reboot_mock.assert_called_once()
-        wait_mock.assert_not_called()
+        self.assertEqual(self.device.calls, ["request"])
         verify_mock.assert_not_called()
         self.assertIn("Post-uninstall verification skipped.", output.getvalue())
 
@@ -483,46 +507,35 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            reboot_mock = stack.enter_context(
-                mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255"))
-            )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
+            self.device.request_error = ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009: refused")
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall"))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes", "--no-wait"])
 
         self.assertEqual(rc, 1)
-        self.assertIn("ssh command failed with rc=255", output.getvalue())
-        reboot_mock.assert_called_once()
-        wait_mock.assert_not_called()
+        self.assertIn("ACP reboot request failed: Could not connect to ACP on 10.0.0.2:5009: refused", output.getvalue())
+        self.assertEqual(self.device.calls, ["request"])
         verify_mock.assert_not_called()
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(finished["result"], "failure")
 
-    def test_uninstall_reboot_request_timeout_continues_when_device_reboots(self) -> None:
+    def test_uninstall_lost_reboot_reply_continues_when_device_reboots(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.services.reboot.remote_request_reboot",
-                    side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
-                )
-            )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
+            self.device.request_error = ACPConnectionError("ACP receive failed: timed out")
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall", return_value=VerificationResult(True, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
 
         self.assertEqual(rc, 0)
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
+        self.assertEqual(self.device.calls.count("request"), 1)
         verify_mock.assert_called_once()
         text = output.getvalue()
-        self.assertIn("ACP reboot request timed out; checking whether the device is rebooting...", text)
+        self.assertIn("ACP reboot request failed; checking whether the device is restarting anyway...", text)
         self.assertIn("Device is back online.", text)
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(finished["result"], "success")
@@ -530,29 +543,24 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertEqual(finished["post_uninstall_verified"], True)
 
-    def test_uninstall_reboot_request_timeout_fails_when_device_never_goes_down(self) -> None:
+    def test_uninstall_lost_reboot_reply_fails_when_device_never_restarts(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.services.reboot.remote_request_reboot",
-                    side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
-                )
-            )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", return_value=False))
+            self.device.reboots = False
+            self.device.request_error = ACPConnectionError("ACP receive failed: timed out")
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall"))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
 
         self.assertEqual(rc, 1)
-        wait_mock.assert_called_once()
+        self.assertEqual(self.device.calls.count("request"), 1)
         verify_mock.assert_not_called()
         text = output.getvalue()
-        self.assertIn("Reboot was requested but the device did not go down.", text)
+        self.assertIn("Reboot was requested but the device did not restart.", text)
         self.assertIn("The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall.", text)
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(finished["result"], "failure")
@@ -560,7 +568,7 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(finished["device_came_back_after_reboot"], False)
         self.assertEqual(finished["post_uninstall_verified"], False)
         self.assertIn("stage=wait_for_reboot_down", finished["error"])
-        self.assertIn("ssh_reboot_timed_out=true", finished["error"])
+        self.assertIn("acp_reboot_succeeded=false", finished["error"])
 
     def test_uninstall_no_reboot_skips_reboot_and_returns_success(self) -> None:
         output = io.StringIO()
@@ -574,13 +582,12 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             uninstall_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall"))
             with redirect_stdout(output):
                 rc = uninstall.main(["--no-reboot"])
         self.assertEqual(rc, 0)
         uninstall_mock.assert_called_once()
-        run_ssh_mock.assert_not_called()
+        self.assertEqual(self.device.calls, [])
         verify_mock.assert_not_called()
         self.assertIn("Skipping reboot.", output.getvalue())
 
@@ -628,11 +635,10 @@ class CliMaintenanceTests(CliTestCase):
                     return_value=SimpleNamespace(model="AirPort7,120", syap="120"),
                 )
             )
-            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
             with redirect_stdout(output):
                 rc = uninstall.main([])
         self.assertEqual(rc, 0)
-        run_ssh_mock.assert_not_called()
+        self.assertEqual(self.device.calls, [])
         self.assertEqual(prompt_text, ["This will reboot the AirPort Extreme 6th generation now. Continue? [Y/n]: "])
         self.assertIn("Skipped reboot. The AirPort Extreme 6th generation may need a manual reboot", output.getvalue())
         finished = self.telemetry_payload("uninstall_finished")
@@ -651,8 +657,6 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
-            stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
             stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall", return_value=VerificationResult(False, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
@@ -673,7 +677,7 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
+            reboot_spy = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.reboot_device", wraps=reboot_service.reboot_device))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -690,9 +694,10 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("umount -f /Volumes/dk2", remote_cmd)
         self.assertIn("fsck_hfs -fy /dev/dk2", remote_cmd)
         # The host sends the one ACP reboot request after fsck has reported.
-        self.remote_request_reboot.assert_called_once_with(run_ssh_mock.call_args.args[0])
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 90})
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 420})
+        self.assertEqual(reboot_spy.call_args.args, ("root@10.0.0.2", "pw"))
+        self.assertEqual(reboot_spy.call_args.kwargs["start_timeout_seconds"], 120)
+        self.assertEqual(reboot_spy.call_args.kwargs["up_timeout_seconds"], 420)
+        self.assertEqual(self.device.calls.count("request"), 1)
         text = output.getvalue()
         self.assertIn("Mounted HFS volume: /dev/dk2 on /Volumes/dk2", text)
         self.assertIn("--- fsck_hfs /dev/dk2 ---", text)
@@ -723,7 +728,40 @@ class CliMaintenanceTests(CliTestCase):
                 rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
 
-    def test_fsck_no_wait_skips_ssh_waits(self) -> None:
+    def test_fsck_reboot_without_password_fails_before_touching_the_disk(self) -> None:
+        # Key-only SSH could run fsck, but the reboot needs the AirPort password.
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "", "TC_SSH_OPTS": "-o foo"}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "fsck")
+            run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+                fsck.main(["--yes", "--no-input"])
+
+        self.assertIn("TC_PASSWORD is required", str(raised.exception.code))
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        run_ssh.assert_not_called()
+        self.assertEqual(self.device.calls, [])
+
+    def test_fsck_reboot_without_password_prompts_and_reboots_with_it(self) -> None:
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "", "TC_SSH_OPTS": "-o foo"}
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n", returncode=0)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck")
+            stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
+            prompt = stack.enter_context(mock.patch("timecapsulesmb.cli.runtime.prompt_device_password", return_value="typed"))
+            reboot = stack.enter_context(mock.patch("timecapsulesmb.integrations.acp.reboot"))
+            with redirect_stdout(io.StringIO()):
+                rc = fsck.main(["--yes", "--no-wait"])
+
+        self.assertEqual(rc, 0)
+        prompt.assert_called_once()
+        reboot.assert_called_once()
+        self.assertEqual(reboot.call_args.args[1], "typed")
+
+    def test_fsck_no_wait_requests_reboot_without_waiting(self) -> None:
         output = io.StringIO()
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -735,12 +773,10 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes", "--no-wait"])
         self.assertEqual(rc, 0)
-        self.remote_request_reboot.assert_called_once()
-        wait_mock.assert_not_called()
+        self.assertEqual(self.device.calls, ["request"])
 
     def test_fsck_no_reboot_omits_reboot_and_waits(self) -> None:
         output = io.StringIO()
@@ -754,12 +790,10 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
-        self.remote_request_reboot.assert_not_called()
-        wait_mock.assert_not_called()
+        self.assertEqual(self.device.calls, [])
         self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], maintenance_service.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
 
     def test_fsck_prompt_decline_cancels_before_remote_actions(self) -> None:
@@ -901,13 +935,16 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", return_value=False))
+            self.device.reboots = False
+            started = self.device.now
             with redirect_stdout(output):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)
-        wait_mock.assert_called_once()
-        self.assertIn("Reboot was requested after fsck, but the device did not go down.", output.getvalue())
-        self.remote_request_reboot.assert_called_once()
+        # fsck gives the reboot two minutes to start.
+        self.assertGreaterEqual(self.device.now - started, 120)
+        self.assertLess(self.device.now - started, 130)
+        self.assertIn("Reboot was requested but the device did not restart.", output.getvalue())
+        self.assertEqual(self.device.calls.count("request"), 1)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["reboot_was_attempted"], True)
@@ -922,7 +959,7 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, False]))
+            self.device.kernel_after = 10_000
             with redirect_stdout(output):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)
@@ -941,13 +978,12 @@ class CliMaintenanceTests(CliTestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
             with redirect_stdout(output):
                 rc = fsck.main(argv)
-        return rc, output.getvalue(), wait_mock
+        return rc, output.getvalue(), self.device
 
     def test_fsck_failed_status_still_reboots_and_waits_then_fails(self) -> None:
-        rc, text, wait_mock = self._run_fsck_with_remote_output(
+        rc, text, device = self._run_fsck_with_remote_output(
             "--- fsck_hfs /dev/dk2 ---\n** The volume could not be repaired.\n"
             "tcapsule-fsck: fsck_hfs exit status 8\n",
             8,
@@ -956,7 +992,8 @@ class CliMaintenanceTests(CliTestCase):
 
         self.assertEqual(rc, 1)
         # Rebooting is what brings file sharing back, so the wait still runs.
-        self.assertEqual(wait_mock.call_count, 2)
+        self.assertEqual(device.calls[:3], ["read", "sleep 1", "request"])
+        self.assertTrue(device.served_new_boot)
         self.assertIn("fsck_hfs exited with status 8; the disk may still need repair.", text)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")
@@ -967,42 +1004,39 @@ class CliMaintenanceTests(CliTestCase):
     def test_fsck_failed_status_fails_without_reboot_or_wait(self) -> None:
         for argv, requested in ((["--yes", "--no-reboot"], False), (["--yes", "--no-wait"], True)):
             with self.subTest(argv=argv):
-                self.remote_request_reboot.reset_mock()
-                rc, text, wait_mock = self._run_fsck_with_remote_output(
+                self.device.calls.clear()
+                rc, text, device = self._run_fsck_with_remote_output(
                     "tcapsule-fsck: fsck_hfs exit status 8\n", 8, argv,
                 )
 
                 self.assertEqual(rc, 1)
-                wait_mock.assert_not_called()
-                self.assertEqual(self.remote_request_reboot.called, requested)
+                self.assertEqual(device.calls, ["request"] if requested else [])
                 self.assertIn("fsck_hfs exited with status 8", text)
                 self.assertEqual(self.telemetry_payload("fsck_finished")["result"], "failure")
 
     def test_fsck_failed_status_survives_a_rejected_no_wait_reboot(self) -> None:
-        self.remote_request_reboot.side_effect = SshError("ssh command failed with rc=1")
-        rc, text, wait_mock = self._run_fsck_with_remote_output(
+        self.device.request_error = ACPConnectionError("refused")
+        rc, text, device = self._run_fsck_with_remote_output(
             "tcapsule-fsck: fsck_hfs exit status 8\n", 8, ["--yes", "--no-wait"],
         )
 
         self.assertEqual(rc, 1)
-        wait_mock.assert_not_called()
-        self.remote_request_reboot.assert_called_once()
+        self.assertEqual(device.calls, ["request"])
         # Both the reboot failure and the repair failure reach the user.
-        self.assertIn("SSH reboot request failed: ssh command failed with rc=1", text)
+        self.assertIn("ACP reboot request failed: refused", text)
         self.assertIn("fsck_hfs exited with status 8; the disk may still need repair.", text)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")
-        self.assertIn("SSH reboot request failed", finished["error"])
+        self.assertIn("ACP reboot request failed", finished["error"])
         self.assertIn("fsck_hfs exited with status 8", finished["error"])
 
     def test_fsck_without_status_line_fails_and_skips_reboot(self) -> None:
         # A process that would not stop aborts the script before fsck, so no
         # status line arrives and the host requests no reboot.
-        rc, text, wait_mock = self._run_fsck_with_remote_output("process smbd did not stop\n", 1, ["--yes"])
+        rc, text, device = self._run_fsck_with_remote_output("process smbd did not stop\n", 1, ["--yes"])
 
         self.assertEqual(rc, 1)
-        wait_mock.assert_not_called()
-        self.remote_request_reboot.assert_not_called()
+        self.assertEqual(device.calls, [])
         self.assertIn("fsck did not run", text)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")
@@ -1011,12 +1045,11 @@ class CliMaintenanceTests(CliTestCase):
     def test_fsck_on_a_volume_that_stayed_mounted_names_the_unmount(self) -> None:
         # The volume was still mounted after umount, so the script stopped
         # before fsck_hfs and the host requests no reboot.
-        rc, text, wait_mock = self._run_fsck_with_remote_output(
+        rc, text, device = self._run_fsck_with_remote_output(
             "umount: /Volumes/Data: Device busy\ntcapsule-fsck: volume not unmounted\n", 1, ["--yes"])
 
         self.assertEqual(rc, 1)
-        wait_mock.assert_not_called()
-        self.remote_request_reboot.assert_not_called()
+        self.assertEqual(device.calls, [])
         self.assertIn("could not be confirmed unmounted", text)
         finished = self.telemetry_payload("fsck_finished")
         self.assertEqual(finished["result"], "failure")

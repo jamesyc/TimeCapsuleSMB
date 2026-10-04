@@ -63,7 +63,7 @@ class CliSetSshTests(CliTestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_ssh_mock:
-                    with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True):
+                    with mock.patch.object(self.device, "ssh_open", False):
                         with redirect_stdout(output):
                             rc = set_ssh.main([])
         self.assertEqual(rc, 0)
@@ -124,13 +124,12 @@ class CliSetSshTests(CliTestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
-                    with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state") as wait_mock:
-                        with redirect_stdout(output):
-                            rc = set_ssh.main(["--enable", "--no-wait"])
+                    with redirect_stdout(output):
+                        rc = set_ssh.main(["--enable", "--no-wait"])
 
         self.assertEqual(rc, 0)
         enable_mock.assert_called_once()
-        wait_mock.assert_not_called()
+        self.assertEqual(self.device.calls, ["request"])
         self.assertIn("SSH enable requested; not waiting for SSH to open.", output.getvalue().splitlines())
         self.assertNotIn("Summary(", output.getvalue())
 
@@ -140,13 +139,12 @@ class CliSetSshTests(CliTestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
-                    with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state") as wait_mock:
-                        with redirect_stdout(output):
-                            rc = set_ssh.main(["--disable", "--yes", "--no-wait"])
+                    with redirect_stdout(output):
+                        rc = set_ssh.main(["--disable", "--yes", "--no-wait"])
 
         self.assertEqual(rc, 0)
         disable_mock.assert_called_once()
-        wait_mock.assert_not_called()
+        self.assertEqual(self.device.calls, ["request"])
         self.assertIn(
             "SSH disable requested; not waiting for reboot or verifying SSH stays closed.",
             output.getvalue().splitlines(),
@@ -182,7 +180,7 @@ class CliSetSshTests(CliTestCase):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="Connection refused"):
                     with mock.patch("timecapsulesmb.services.acp_ssh.time.sleep") as sleep:
-                        with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_mock:
+                        with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_mock:
                             with redirect_stdout(output):
                                 rc = set_ssh.main([])
 
@@ -204,8 +202,8 @@ class CliSetSshTests(CliTestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
-                    with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_mock:
-                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True):
+                    with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_mock:
+                        with mock.patch.object(self.device, "ssh_open", False):
                             with redirect_stdout(output):
                                 rc = set_ssh.main([])
 
@@ -272,115 +270,80 @@ class CliSetSshTests(CliTestCase):
         self.assertEqual(finished["set_ssh_action"], "leave_enabled")
         self.assertEqual(finished["ssh_final_reachable"], True)
 
-    def test_set_ssh_disable_fails_when_ssh_never_goes_down(self) -> None:
-        output = io.StringIO()
-        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"):
-                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=False) as wait_port_mock:
-                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up") as wait_up_mock:
-                                with redirect_stdout(output):
-                                    rc = set_ssh.main([])
-        self.assertEqual(rc, 1)
-        wait_port_mock.assert_called_once_with("10.0.0.2", 22, expected_state=False, log=print, service_name="SSH port")
-        wait_up_mock.assert_not_called()
-        self.assertIn("SSH did not close after disable/reboot request; disable could not be verified.", output.getvalue())
-        finished = self.telemetry_payload("set_ssh_finished")
-        self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
-        self.assertEqual(finished["ssh_final_reachable"], True)
-        self.assertEqual(finished["ssh_disable_persisted"], False)
-        self.assertEqual(finished["ssh_reboot_observed_down"], False)
-        self.assertIn("stage=wait_for_ssh_down", finished["error"])
-
-    def test_set_ssh_disable_fails_when_device_does_not_come_back(self) -> None:
-        output = io.StringIO()
-        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"):
-                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True) as wait_port_mock:
-                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=False) as wait_up_mock:
-                                with redirect_stdout(output):
-                                    rc = set_ssh.main([])
-        self.assertEqual(rc, 1)
-        wait_port_mock.assert_called_once_with("10.0.0.2", 22, expected_state=False, log=print, service_name="SSH port")
-        wait_up_mock.assert_called_once_with("10.0.0.2")
-        self.assertIn("Device went down after disable request but did not come back within timeout.", output.getvalue())
-        finished = self.telemetry_payload("set_ssh_finished")
-        self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
-        self.assertEqual(finished["ssh_reboot_observed_down"], True)
-        self.assertEqual(finished["device_recovered"], False)
-        self.assertIn("stage=wait_for_device_up", finished["error"])
-
-    def test_set_ssh_disable_fails_when_ssh_reopens(self) -> None:
+    def run_disable(self, argv: list[str], *, answer: str = "y"):
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o ServerAliveInterval=5"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_ssh_mock:
-                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, False]):
-                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=True):
-                                with redirect_stdout(output):
-                                    rc = set_ssh.main([])
+                with mock.patch("builtins.input", return_value=answer) as input_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                        with redirect_stdout(output):
+                            rc = set_ssh.main(argv)
+        return rc, output.getvalue(), disable_mock, input_mock
+
+    def test_set_ssh_disable_fails_when_the_device_never_restarts(self) -> None:
+        self.device.reboots = False
+        rc, text, _disable, _input = self.run_disable([])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Failed to verify SSH disable:", text)
+        self.assertIn("Reboot was requested but the device did not restart.", text)
+        self.assertNotIn("tcp 22", self.device.calls)
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
+        self.assertIn("stage=wait_for_reboot_down", finished["error"])
+
+    def test_set_ssh_disable_fails_when_device_does_not_come_back(self) -> None:
+        self.device.kernel_after = 10_000
+        rc, text, _disable, _input = self.run_disable([])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Device went down after disable request but did not come back within timeout.", text)
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
+        self.assertIn("stage=wait_for_reboot_up", finished["error"])
+
+    def test_set_ssh_disable_fails_when_ssh_reopens(self) -> None:
+        self.device.ssh_up_after_boot = 10.0
+        rc, text, disable_ssh_mock, _input = self.run_disable([])
+
         self.assertEqual(rc, 1)
         disable_ssh_mock.assert_called_once_with(
             SshConnection("root@10.0.0.2", "pw", "-o ServerAliveInterval=5"),
-            reboot_device=True,
             log=print,
         )
-        self.assertIn("SSH reopened after reboot. Disable did not persist.", output.getvalue())
+        self.assertIn("SSH reopened after reboot. Disable did not persist.", text)
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["set_ssh_action"], "disable_ssh")
         self.assertEqual(finished["ssh_initially_reachable"], True)
-        self.assertEqual(finished["ssh_reboot_observed_down"], True)
-        self.assertEqual(finished["device_recovered"], True)
-        self.assertEqual(finished["ssh_final_reachable"], True)
-        self.assertEqual(finished["ssh_disable_persisted"], False)
-        self.assertIn("stage=verify_ssh_disabled", finished["error"])
+        self.assertNotIn("device_came_back_after_reboot", finished)
+        self.assertIn("stage=wait_for_reboot_up", finished["error"])
 
     def test_set_ssh_disable_flow_confirms_ssh_disabled(self) -> None:
-        output = io.StringIO()
-        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"):
-                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=True):
-                                with redirect_stdout(output):
-                                    rc = set_ssh.main([])
+        self.device.ssh_up_after_boot = None
+        rc, text, _disable, _input = self.run_disable([])
+
         self.assertEqual(rc, 0)
-        self.assertIn("SSH disabled (remains closed after reboot)", output.getvalue())
+        self.assertIn("SSH disabled (remains closed after reboot)", text)
+        # The uptime proved the reboot before port 22 was checked twice.
+        self.assertTrue(self.device.served_new_boot)
+        self.assertEqual(self.device.calls.count("tcp 22"), 2)
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "success")
         self.assertEqual(finished["set_ssh_action"], "disable_ssh")
-        self.assertEqual(finished["ssh_reboot_observed_down"], True)
-        self.assertEqual(finished["device_recovered"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertEqual(finished["ssh_final_reachable"], False)
-        self.assertEqual(finished["ssh_disable_persisted"], True)
 
     def test_set_ssh_yes_disables_legacy_enabled_state_without_prompt(self) -> None:
-        output = io.StringIO()
-        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("builtins.input", side_effect=AssertionError("--yes should skip prompt")) as input_mock:
-                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
-                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=True):
-                                with redirect_stdout(output):
-                                    rc = set_ssh.main(["--yes"])
+        self.device.ssh_up_after_boot = None
+        rc, _text, disable_mock, input_mock = self.run_disable(["--yes"])
+
         self.assertEqual(rc, 0)
         input_mock.assert_not_called()
         disable_mock.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()

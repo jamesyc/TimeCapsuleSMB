@@ -195,6 +195,25 @@ final class OperationTimelineBuilderTests: XCTestCase {
         )
     }
 
+    func testEveryRebootingOperationShowsTheSharedRebootStages() {
+        // The helper's one reboot path emits these stages for every operation.
+        for operation in ["deploy", "uninstall", "fsck", "flash", "set-ssh", "configure"] {
+            XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: operation, stage: "reboot"), "Request Reboot", operation)
+            XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: operation, stage: "wait_for_reboot_down"), "Wait for Device Restart", operation)
+            XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: operation, stage: "wait_for_reboot_up"), "Device is offline", operation)
+            XCTAssertEqual(
+                OperationTimelineBuilder.stageDetail(for: operation, stage: "reboot", fallback: "raw backend detail"),
+                "Sending the reboot request through AirPort ACP.",
+                operation
+            )
+            XCTAssertEqual(
+                OperationTimelineBuilder.stageDetail(for: operation, stage: "wait_for_reboot_down", fallback: "raw backend detail"),
+                "Waiting for the device to restart.",
+                operation
+            )
+        }
+    }
+
     func testAllKnownDeployStagesHaveLocalizedTitlesAndDetails() {
         let deployStages = [
             "load_config",

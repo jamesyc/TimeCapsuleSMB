@@ -39,6 +39,8 @@ from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 
 from tests.cli_support import CliTestCase
+from tests.reboot_support import FakeAcpDevice
+from timecapsulesmb.integrations.acp import ACPConnectionError
 
 
 class CliDeployTests(CliTestCase):
@@ -68,8 +70,7 @@ class CliDeployTests(CliTestCase):
         payload_verification_side_effect=None,
         login_autostart_enabled: bool = False,
         verify_runtime=None,
-        reboot_side_effect=None,
-        wait_side_effect=(True, True),
+        device: FakeAcpDevice | None = None,
         input_side_effect=None,
         raises=None,
     ):
@@ -195,20 +196,15 @@ class CliDeployTests(CliTestCase):
                     ),
                 )
             )
-            mocks.remote_request_reboot = stack.enter_context(
-                mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=reboot_side_effect)
-            )
-            # The reboot is a native ACP request over SSH, never network ACP.
-            mocks.network_acp_set = stack.enter_context(
+            # The reboot goes to the simulated device's ACP; nothing else on
+            # the network may change an ACP property.
+            mocks.device = stack.enter_context((device or FakeAcpDevice()).patched())
+            stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.integrations.acp.set_property_int",
-                    side_effect=AssertionError("deploy must not set ACP properties over the network"),
+                    side_effect=AssertionError("deploy must not set other ACP properties"),
                 )
             )
-            if wait_side_effect is not None:
-                mocks.wait_for_ssh_state_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=wait_side_effect)
-                )
             mocks.runtime_wait_sleep = stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
             if input_side_effect is not None:
                 mocks.input = stack.enter_context(mock.patch("builtins.input", side_effect=input_side_effect))
@@ -290,7 +286,7 @@ class CliDeployTests(CliTestCase):
         self.assertNotIn("generated:nbns.enabled", {upload["source_id"] for upload in payload["uploads"]})
         self.assertNotIn("initialize_data_root", {action["kind"] for action in payload["pre_upload_actions"]})
         self.assertIn("ensure_volume_mounted", {action["kind"] for action in payload["pre_upload_actions"]})
-        self.assertEqual(payload["reboot_request"]["strategy"], "native_acp")
+        self.assertEqual(payload["reboot_request"]["strategy"], "network_acp")
         self.assertEqual(
             [check["id"] for check in payload["post_deploy_checks"]],
             [
@@ -365,7 +361,7 @@ class CliDeployTests(CliTestCase):
         self.assertIn("Deployed Samba payload to /Volumes/dk2/.samba4", result.text)
         self.assertIn("Updated /mnt/Flash boot files.", result.text)
         self.assertIn("Requesting reboot...", result.text)
-        result.mocks.remote_request_reboot.assert_called_once()
+        self.assertEqual(result.mocks.device.calls.count("request"), 1)
         result.mocks.verify_managed_runtime.assert_called_once()
         self.assertIn("Deploy Finished.", result.text)
 
@@ -875,13 +871,12 @@ class CliDeployTests(CliTestCase):
             artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
-            wait_side_effect=AssertionError("deploy --no-wait should not wait for SSH"),
             verify_runtime=AssertionError("deploy --no-wait should not verify runtime"),
         )
 
         self.assertEqual(result.rc, 0)
-        result.mocks.remote_request_reboot.assert_called_once()
-        result.mocks.wait_for_ssh_state_conn.assert_not_called()
+        self.assertEqual(result.mocks.device.calls.count("request"), 1)
+        self.assertEqual(result.mocks.device.calls, ["request"])
         result.mocks.verify_managed_runtime.assert_not_called()
         self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertIn("Requesting reboot...", result.text)
@@ -899,13 +894,12 @@ class CliDeployTests(CliTestCase):
             compatibility=self.make_supported_netbsd4_compatibility(),
             patch_actions=True,
             patch_upload=True,
-            wait_side_effect=AssertionError("deploy --no-wait should not wait for SSH"),
             verify_runtime=AssertionError("deploy --no-wait should not verify runtime"),
         )
 
         self.assertEqual(result.rc, 0)
-        result.mocks.remote_request_reboot.assert_called_once()
-        result.mocks.wait_for_ssh_state_conn.assert_not_called()
+        self.assertEqual(result.mocks.device.calls.count("request"), 1)
+        self.assertEqual(result.mocks.device.calls, ["request"])
         result.mocks.verify_managed_runtime.assert_not_called()
         self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertNotIn("Activating deployed runtime after reboot.", result.text)
@@ -918,12 +912,11 @@ class CliDeployTests(CliTestCase):
             patch_actions=True,
             patch_upload=True,
             payload_verification=PayloadVerificationResult(False, "missing smbd"),
-            reboot_side_effect=AssertionError("deploy should not request reboot after payload verification failure"),
             raises=SystemExit,
         )
 
         self.assertEqual(str(result.exception), "managed payload verification failed at /Volumes/dk2/.samba4: missing smbd")
-        result.mocks.remote_request_reboot.assert_not_called()
+        self.assertNotIn("request", result.mocks.device.calls)
         result.mocks.verify_payload_home_conn.assert_called_once()
         result.mocks.flush_remote_filesystem_writes.assert_called_once()
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
@@ -939,7 +932,6 @@ class CliDeployTests(CliTestCase):
                 PayloadVerificationResult(True, "ok"),
                 PayloadVerificationResult(False, "missing payload directory"),
             ],
-            reboot_side_effect=AssertionError("deploy should not request reboot after post-sync verification failure"),
             raises=SystemExit,
         )
 
@@ -948,7 +940,7 @@ class CliDeployTests(CliTestCase):
             "managed payload verification failed at /Volumes/dk2/.samba4: missing payload directory",
         )
         self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
-        result.mocks.remote_request_reboot.assert_not_called()
+        self.assertNotIn("request", result.mocks.device.calls)
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
         self.assertIn("stage=verify_payload_upload_after_sync", telemetry_error)
@@ -960,13 +952,12 @@ class CliDeployTests(CliTestCase):
             artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
-            reboot_side_effect=AssertionError("declined deploy should not request a reboot"),
             input_side_effect=["n"],
         )
 
         self.assertEqual(result.rc, 0)
         self.assertIn("Deployment cancelled.", result.text)
-        result.mocks.remote_request_reboot.assert_not_called()
+        self.assertNotIn("request", result.mocks.device.calls)
         result.mocks.verify_payload_home_conn.assert_not_called()
         result.mocks.flush_remote_filesystem_writes.assert_not_called()
         result.mocks.run_remote_actions.assert_not_called()
@@ -978,16 +969,14 @@ class CliDeployTests(CliTestCase):
             artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
-            reboot_side_effect=SshCommandTimeout("reboot timed out"),
-            wait_side_effect=[False],
+            device=FakeAcpDevice(reboots=False, request_error=ACPConnectionError("ACP receive failed: timed out")),
             verify_runtime=self.managed_runtime_probe(True),
         )
 
         self.assertEqual(result.rc, 1)
-        self.assertIn("ACP reboot request timed out; checking whether the device is rebooting...", result.text)
+        self.assertIn("ACP reboot request failed; checking whether the device is restarting anyway...", result.text)
         self.assertIn(DEPLOY_REBOOT_NO_DOWN_MESSAGE, result.text)
-        result.mocks.remote_request_reboot.assert_called_once()
-        result.mocks.network_acp_set.assert_not_called()
+        self.assertEqual(result.mocks.device.calls.count("request"), 1)
         result.mocks.verify_managed_runtime.assert_not_called()
 
     def test_deploy_failure_telemetry_includes_current_stage(self) -> None:
@@ -1065,7 +1054,6 @@ class CliDeployTests(CliTestCase):
             patch_actions=True,
             patch_upload=True,
             verify_runtime=self.managed_runtime_probe(True),
-            wait_side_effect=[True, True],
         )
 
         self.assertEqual(result.rc, 0)
@@ -1082,7 +1070,7 @@ class CliDeployTests(CliTestCase):
         payload = json.loads(result.text)
         self.assertTrue(payload["reboot_required"])
         self.assertEqual(payload["startup_mode"], DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE)
-        self.assertEqual(payload["reboot_request"]["strategy"], "native_acp")
+        self.assertEqual(payload["reboot_request"]["strategy"], "network_acp")
         self.assertEqual(
             payload["runtime_startup"]["post_reboot_probe"],
             {
@@ -1130,14 +1118,13 @@ class CliDeployTests(CliTestCase):
             patch_actions=True,
             patch_upload=True,
             verify_runtime=self.managed_runtime_probe(True),
-            wait_side_effect=[True, True],
         )
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.mocks.run_remote_actions.call_count, 8)
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 3)
-        result.mocks.remote_request_reboot.assert_called_once()
+        self.assertEqual(result.mocks.device.calls.count("request"), 1)
         self.assertEqual(
             result.mocks.run_remote_actions.call_args_list[-1].args[1],
             [RunScriptAction("/mnt/Flash/rc.local")],
@@ -1154,7 +1141,6 @@ class CliDeployTests(CliTestCase):
             patch_actions=True,
             patch_upload=True,
             verify_runtime=self.managed_runtime_probe(True),
-            wait_side_effect=[True, True],
         )
 
         self.assertEqual(result.rc, 0)
@@ -1167,7 +1153,6 @@ class CliDeployTests(CliTestCase):
             patch_actions=True,
             patch_upload=True,
             verify_runtime=self.managed_runtime_probe(True),
-            wait_side_effect=[True, True],
         )
 
         self.assertEqual(result.rc, 0)
@@ -1184,12 +1169,11 @@ class CliDeployTests(CliTestCase):
             patch_upload=True,
             login_autostart_enabled=True,
             verify_runtime=self.managed_runtime_probe(True),
-            wait_side_effect=[True, True],
         )
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
-        result.mocks.remote_request_reboot.assert_called_once()
+        self.assertEqual(result.mocks.device.calls.count("request"), 1)
         result.mocks.verify_managed_runtime.assert_called_once()
         self.assertIn("/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local", result.text)
         self.assertIn("NetBSD4 firmware autostart is enabled", result.text)

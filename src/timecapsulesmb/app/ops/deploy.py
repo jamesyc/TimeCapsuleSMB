@@ -376,7 +376,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             messages=DeployCompletionMessages(),
         )
     except RebootFlowError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        raise AppOperationError(str(exc), code=exc.code) from exc
     except DeviceError as exc:
         raise device_operation_error(context, exc) from exc
     return OperationResult(True, _deploy_completion_payload(completion))

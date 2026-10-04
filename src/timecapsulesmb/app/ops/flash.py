@@ -288,5 +288,5 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
             callbacks=context.to_operation_callbacks(),
         )
     except RebootFlowError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        raise AppOperationError(str(exc), code=exc.code) from exc
     return OperationResult(True, flash_write_payload(bundle.manifest))

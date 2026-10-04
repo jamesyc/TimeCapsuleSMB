@@ -125,7 +125,8 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     config = load_request_config(params, context)
-    connection = resolve_request_connection(config, context, allow_empty_password=True)
+    # The reboot goes through AirPort ACP, which needs the password.
+    connection = resolve_request_connection(config, context, allow_empty_password=no_reboot or dry_run)
     if not dry_run:
         presentation_id = "uninstall.no_reboot" if no_reboot else "uninstall.reboot"
         presentation_values = {
@@ -170,7 +171,9 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     remote_uninstall_payload(connection, plan)
     try:
         verified = reboot_after_uninstall(connection, plan, callbacks=context.to_operation_callbacks())
-    except (RebootFlowError, DeviceError) as exc:
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc
+    except DeviceError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
     return OperationResult(True, uninstall_result_payload(
         rebooted=verified,
@@ -224,7 +227,8 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
     context.config = config
     context.stage("resolve_connection")
-    connection = resolve_env_connection(config, allow_empty_password=True)
+    # The reboot goes through AirPort ACP, which needs the password.
+    connection = resolve_env_connection(config, allow_empty_password=no_reboot or dry_run or list_volumes)
     context.connection = connection
     mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
         connection,
@@ -266,7 +270,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             callbacks=context.to_operation_callbacks(),
         )
     except RebootFlowError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        raise AppOperationError(str(exc), code=exc.code) from exc
     if outcome.status is None:
         raise AppOperationError(outcome.failure or FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
     if outcome.failure is not None:

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from unittest import mock
 
+from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.app import contracts
 from timecapsulesmb.app.events import AppEvent, EventSink
 from timecapsulesmb.app.ops.configure import SETTINGS_SYNCHRONIZED
@@ -49,22 +50,24 @@ def _set_ssh_results() -> list[tuple[str, SetSshResult]]:
     connection = SshConnection("root@10.0.0.2", "pw", "")
     ssh_open = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True)
     ssh_closed = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False)
-    wait = mock.Mock(return_value=True)
-    disable = mock.Mock()
-    with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"):
-        return [
+    with (
+        mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"),
+        mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"),
+    ):
+        results = [
             ("ssh_already_enabled", enable_set_ssh(connection, no_wait=False, initial=ssh_open)),
-            ("ssh_enable_requested", enable_set_ssh(connection, no_wait=True, initial=ssh_closed)),
-            ("ssh_configured", enable_set_ssh(
-                connection, no_wait=False, initial=ssh_closed, wait_for_tcp_port_state=wait)),
-            ("ssh_already_disabled", disable_set_ssh(
-                connection, no_wait=False, initial=ssh_closed, disable_func=disable)),
-            ("ssh_disable_requested", disable_set_ssh(
-                connection, no_wait=True, initial=ssh_open, disable_func=disable)),
-            ("ssh_disabled", disable_set_ssh(
-                connection, no_wait=False, initial=ssh_open, disable_func=disable,
-                wait_for_tcp_port_state=wait, wait_for_device_up_func=wait)),
+            ("ssh_already_disabled", disable_set_ssh(connection, no_wait=False, initial=ssh_closed)),
         ]
+        with FakeAcpDevice().patched():
+            results.append(("ssh_enable_requested", enable_set_ssh(connection, no_wait=True, initial=ssh_closed)))
+            results.append(("ssh_disable_requested", disable_set_ssh(connection, no_wait=True, initial=ssh_open)))
+        with FakeAcpDevice(ssh_open=False).patched():
+            results.append(("ssh_configured", enable_set_ssh(connection, no_wait=False, initial=ssh_closed)))
+        with FakeAcpDevice(ssh_up_after_boot=None).patched():
+            results.append(("ssh_disabled", disable_set_ssh(connection, no_wait=False, initial=ssh_open)))
+    order = ("ssh_already_enabled", "ssh_enable_requested", "ssh_configured",
+             "ssh_already_disabled", "ssh_disable_requested", "ssh_disabled")
+    return sorted(results, key=lambda item: order.index(item[0]))
 
 
 def _reachability(ssh: str | None, smb: str | None, auth: str | None = None) -> ReachabilityResult:

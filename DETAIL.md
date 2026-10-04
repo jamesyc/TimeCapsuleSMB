@@ -1163,7 +1163,7 @@ Arguments:
 - `--yes`: do not prompt before disk repair
 - `--no-input`: fail instead of prompting; repair requires `--yes`
 - `--no-reboot`: run `fsck_hfs` only and do not reboot afterward
-- `--no-wait`: when rebooting, do not wait for SSH to go down and come back
+- `--no-wait`: when rebooting, do not wait for the device to restart and SSH to come back
 - `--volume VOLUME`: select the HFS volume device, for example `dk2` or `/dev/dk2`; if omitted and multiple mounted volumes exist, interactive mode prompts
 
 Use this only when the disk needs repair before deploy or when doctor/troubleshooting points at filesystem problems.

@@ -540,7 +540,6 @@ def _finish_write(
     operation: str,
     target: FlashTarget,
     bundle: FlashAnalysisBundle,
-    log: ProgressLogger,
 ) -> int:
     reboot = operation == "restore" and args.reboot
     wait = reboot and not args.no_wait
@@ -552,12 +551,11 @@ def _finish_write(
             reboot=reboot,
             wait=wait,
             callbacks=command_context.to_operation_callbacks(),
-            progress_log=log,
         )
     except RebootFlowError as exc:
         print(str(exc))
         command_context.fail_with_error(str(exc))
-        # With a wait, only the down/up wait can fail; the device may be stuck mid-reboot.
+        # With a wait, the device may be stuck mid-reboot.
         if wait:
             print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
         return 1
@@ -626,7 +624,7 @@ def _run_flash(
     ) is None:
         return 1
 
-    return _finish_write(command_context, args=args, operation=operation, target=target, bundle=bundle, log=log)
+    return _finish_write(command_context, args=args, operation=operation, target=target, bundle=bundle)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

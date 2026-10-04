@@ -41,11 +41,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("set-ssh", "confirm_disable_ssh"): StagePolicy(REBOOT, True, "Confirm SSH disablement and reboot."),
     ("set-ssh", "acp_port_probe"): StagePolicy(REMOTE_READ, True, "Check AirPort ACP reachability before enabling SSH."),
     ("set-ssh", "acp_enable_ssh"): StagePolicy(REMOTE_WRITE, False, "Request SSH enablement through AirPort ACP."),
-    ("set-ssh", "wait_for_ssh_enabled"): StagePolicy(REMOTE_READ, True, "Wait for SSH to open after ACP enablement."),
     ("set-ssh", "disable_ssh"): StagePolicy(REMOTE_WRITE, False, "Request SSH disablement over SSH."),
-    ("set-ssh", "wait_for_ssh_down"): StagePolicy(REMOTE_READ, True, "Wait for SSH to close after disablement."),
-    ("set-ssh", "wait_for_device_up"): StagePolicy(REMOTE_READ, True, "Wait for the device to return after reboot."),
-    ("set-ssh", "verify_ssh_disabled"): StagePolicy(REMOTE_READ, True, "Verify SSH remains closed after reboot."),
     ("set-telemetry", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve local app state paths."),
     ("set-telemetry", "write_bootstrap"): StagePolicy(LOCAL_WRITE, False, "Update local telemetry preference."),
     ("validate-install", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve app installation paths."),
@@ -58,7 +54,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("configure", "confirm_enable_ssh"): StagePolicy(REBOOT, True, "Confirm SSH enablement and reboot through AirPort ACP."),
     ("configure", "acp_port_probe"): StagePolicy(REMOTE_READ, True, "Check AirPort ACP reachability before enabling SSH."),
     ("configure", "acp_enable_ssh"): StagePolicy(REMOTE_WRITE, False, "Request SSH enablement through AirPort ACP."),
-    ("configure", "wait_for_ssh_after_acp"): StagePolicy(REMOTE_READ, True, "Wait for SSH to open after ACP enablement."),
     ("configure", "ssh_probe_after_acp"): StagePolicy(REMOTE_READ, True, "Probe SSH again after ACP enablement."),
     ("configure", "write_env"): StagePolicy(LOCAL_WRITE, False, "Write the app .env configuration."),
     ("update-config-settings", "load_existing_config"): StagePolicy(LOCAL_READ, True, "Read the existing device .env configuration."),
@@ -96,9 +91,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "post_activation_settle"): StagePolicy(REMOTE_READ, True, "Wait briefly after activation before probing runtime readiness."),
     ("deploy", "post_reboot_activation"): StagePolicy(REMOTE_WRITE, False, "Start the deployed runtime after reboot."),
     ("deploy", "verify_runtime_activation"): StagePolicy(REMOTE_READ, True, "Wait for the activated runtime to become ready."),
-    ("deploy", "reboot"): StagePolicy(REBOOT, False, "Request a device reboot."),
-    ("deploy", "wait_for_reboot_down"): StagePolicy(REBOOT, True, "Wait for SSH to go down after reboot request."),
-    ("deploy", "wait_for_reboot_up"): StagePolicy(REBOOT, True, "Wait for SSH to return after reboot."),
     ("deploy", "verify_runtime_reboot"): StagePolicy(REMOTE_READ, True, "Wait for the managed runtime after reboot."),
     ("doctor", "load_config"): StagePolicy(LOCAL_READ, True, "Read diagnostic configuration."),
     ("doctor", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
@@ -116,9 +108,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("uninstall", "mount_mast_volumes"): StagePolicy(REMOTE_WRITE, False, "Mount HFS volumes before uninstall."),
     ("uninstall", "build_uninstall_plan"): StagePolicy(LOCAL_READ, True, "Build the uninstall action plan."),
     ("uninstall", "uninstall_payload"): StagePolicy(DESTRUCTIVE, False, "Remove managed payload files and flash hooks."),
-    ("uninstall", "reboot"): StagePolicy(REBOOT, False, "Request a device reboot."),
-    ("uninstall", "wait_for_reboot_down"): StagePolicy(REBOOT, True, "Wait for SSH to go down after reboot request."),
-    ("uninstall", "wait_for_reboot_up"): StagePolicy(REBOOT, True, "Wait for SSH to return after reboot."),
     ("uninstall", "verify_post_uninstall"): StagePolicy(REMOTE_READ, True, "Verify managed files are absent after reboot."),
     ("fsck", "load_config"): StagePolicy(LOCAL_READ, True, "Read fsck configuration."),
     ("fsck", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
@@ -127,8 +116,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("fsck", "list_fsck_volumes"): StagePolicy(REMOTE_READ, True, "List mounted HFS volumes available for fsck."),
     ("fsck", "select_fsck_volume"): StagePolicy(REMOTE_READ, True, "Select the HFS volume to repair."),
     ("fsck", "run_fsck"): StagePolicy(DESTRUCTIVE, False, "Unmount the selected disk and run fsck_hfs."),
-    ("fsck", "wait_for_reboot_down"): StagePolicy(REBOOT, True, "Wait for SSH to go down after fsck reboot."),
-    ("fsck", "wait_for_reboot_up"): StagePolicy(REBOOT, True, "Wait for SSH to return after fsck reboot."),
     ("repair-xattrs", "platform_check"): StagePolicy(LOCAL_READ, True, "Verify repair-xattrs is running on macOS."),
     ("repair-xattrs", "validate_params"): StagePolicy(LOCAL_READ, True, "Validate repair-xattrs request parameters."),
     ("repair-xattrs", "resolve_scan_root"): StagePolicy(LOCAL_READ, True, "Resolve the mounted SMB share scan root."),
@@ -151,6 +138,11 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("flash", "write_active_bank"): StagePolicy(DESTRUCTIVE, False, "Write the active firmware bank."),
     ("flash", "post_write_validation"): StagePolicy(REMOTE_READ, True, "Read back and validate the written firmware bank."),
 }
+# Every reboot goes through services.reboot.reboot_device.
+for _operation in ("configure", "set-ssh", "deploy", "uninstall", "fsck", "flash"):
+    _POLICIES[(_operation, "reboot")] = StagePolicy(REBOOT, False, "Ask AirPort ACP to reboot the device.")
+    _POLICIES[(_operation, "wait_for_reboot_down")] = StagePolicy(REBOOT, True, "Wait for the device's ACP uptime to restart.")
+    _POLICIES[(_operation, "wait_for_reboot_up")] = StagePolicy(REBOOT, True, "Wait for the restarted device's SSH port.")
 
 
 def stage_policy(operation: str, stage: str) -> StagePolicy | None:

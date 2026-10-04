@@ -27,12 +27,12 @@ from timecapsulesmb.device.compat import (
 from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, probe_connection_state
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
-from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS, enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
+from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import (
     PROBE_STATUS_ERROR_CODES,
     ssh_target_link_local_resolution_error,
-    wait_for_tcp_port_state,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -80,8 +80,6 @@ class ConfigureFlowRequest:
     # The Bonjour record the host came from, for ACP probe telemetry.
     selected_record: BonjourResolvedService | None = None
     enable_ssh: bool = True
-    ssh_wait_timeout: int = ACP_SSH_ENABLE_WAIT_SECONDS
-    verbose_wait: bool = True
     internal_share_use_disk_root: bool | None = None
     smb_browse_compatibility: bool | None = None
     mdns_advertise_afp: bool | None = None
@@ -140,8 +138,6 @@ def configure_ssh_target(
 def enable_ssh_and_reprobe(
     connection: SshConnection,
     *,
-    timeout_seconds: int = ACP_SSH_ENABLE_WAIT_SECONDS,
-    verbose_wait: bool = True,
     callbacks: OperationCallbacks | None = None,
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
     record: BonjourResolvedService | None = None,
@@ -159,7 +155,6 @@ def enable_ssh_and_reprobe(
         enable_ssh_with_port_preflight(
             host,
             connection.password,
-            reboot_device=True,
             callbacks=callbacks,
             record=record,
         )
@@ -174,15 +169,11 @@ def enable_ssh_and_reprobe(
         raise
 
     callbacks.debug(configure_acp_enable_succeeded=True)
-    callbacks.stage("wait_for_ssh_after_acp")
-    if not wait_for_tcp_port_state(
-        host,
-        22,
-        expected_state=True,
-        timeout_seconds=timeout_seconds,
-        service_name="SSH port",
-        log=callbacks.log if verbose_wait else None,
-    ):
+    try:
+        reboot_device(host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE)
+    except RebootFlowError as exc:
+        if exc.code != "reboot_not_finished":
+            raise
         callbacks.update(ssh_final_reachable=False)
         return None
 
@@ -272,8 +263,6 @@ def run_configure_flow(
         try:
             probed_state = enable_ssh_and_reprobe(
                 connection,
-                timeout_seconds=request.ssh_wait_timeout,
-                verbose_wait=request.verbose_wait,
                 callbacks=callbacks,
                 probe=probe_connection,
                 record=request.selected_record,
@@ -284,8 +273,10 @@ def run_configure_flow(
                 code="auth_failed",
                 debug=str(exc),
             ) from exc
+        except RebootFlowError as exc:
+            raise ConfigureFlowError(str(exc), code=exc.code) from exc
         if probed_state is None:
-            raise ConfigureFlowError("SSH did not open after enabling via ACP.", code="ssh_enable_timeout")
+            raise ConfigureFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="ssh_enable_timeout")
         if hooks.after_probe is not None:
             hooks.after_probe(connection, probed_state)
         probe = probed_state.probe_result

@@ -21,8 +21,6 @@ from timecapsulesmb.services.maintenance import (
     FSCK_DID_NOT_RUN_MESSAGE,
     FSCK_NOT_UNMOUNTED_LINE,
     FSCK_NOT_UNMOUNTED_MESSAGE,
-    FSCK_REBOOT_NO_DOWN_MESSAGE,
-    FSCK_REBOOT_UP_TIMEOUT_MESSAGE,
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     UNINSTALL_FILES_REMAIN_MESSAGE,
     UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
@@ -31,8 +29,10 @@ from timecapsulesmb.services.maintenance import (
     reboot_after_uninstall,
     run_fsck,
 )
-from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.integrations.acp import ACPConnectionError
+from timecapsulesmb.services.reboot import REBOOT_NO_DOWN_MESSAGE, REBOOT_UP_TIMEOUT_MESSAGE, RebootFlowError
+from timecapsulesmb.transport.ssh import SshConnection
+from tests.reboot_support import FakeAcpDevice
 
 
 class RecordingCallbacks:
@@ -54,30 +54,32 @@ FSCK_TARGET = FsckTarget(device="/dev/dk2", mountpoint="/Volumes/dk2", name="Dat
 
 
 class RunFsckTests(unittest.TestCase):
-    """run_fsck against a fake SSH session and the real reboot service.
+    """run_fsck against a fake SSH session and a simulated device.
 
-    Only the transport is faked: the ACP request (remote_request_reboot) and
-    the SSH down/up probe, so the reboot decisions run as in production.
+    Only the transport is faked: the SSH session and the device's ACP, so the
+    reboot decisions run as in production.
     """
 
     def run_fsck(self, stdout: str, *, reboot: bool = True, wait: bool = True, returncode: int = 0,
-                 ssh_states=(True, True), request_error=None):
+                 device: FakeAcpDevice | None = None):
         recorder = RecordingCallbacks()
+        device = device or FakeAcpDevice()
         proc = SimpleNamespace(stdout=stdout, returncode=returncode)
-        order = mock.Mock()
-        with mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=proc) as run_ssh:
-            with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=request_error) as request:
-                with mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=list(ssh_states)) as ssh_state:
-                    order.attach_mock(run_ssh, "run_ssh")
-                    order.attach_mock(request, "request")
-                    try:
-                        outcome = run_fsck(CONNECTION, FSCK_TARGET, reboot=reboot, wait=wait, callbacks=recorder.callbacks)
-                    except RebootFlowError as exc:
-                        outcome = exc
-        return outcome, recorder, run_ssh, request, ssh_state, order
+
+        def remote(*_args, **_kwargs):
+            device.calls.append("run_ssh")
+            return proc
+
+        with mock.patch("timecapsulesmb.services.maintenance.run_ssh", side_effect=remote) as run_ssh:
+            with device.patched():
+                try:
+                    outcome = run_fsck(CONNECTION, FSCK_TARGET, reboot=reboot, wait=wait, callbacks=recorder.callbacks)
+                except RebootFlowError as exc:
+                    outcome = exc
+        return outcome, recorder, run_ssh, device
 
     def test_clean_fsck_then_requests_the_reboot_and_waits(self) -> None:
-        outcome, recorder, run_ssh, request, ssh_state, order = self.run_fsck(
+        outcome, recorder, run_ssh, device = self.run_fsck(
             "--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n")
 
         self.assertEqual((outcome.status, outcome.failure, outcome.reboot_requested, outcome.waited), (0, None, True, True))
@@ -88,121 +90,131 @@ class RunFsckTests(unittest.TestCase):
         self.assertTrue(recorder.fields["device_came_back_after_reboot"])
         self.assertEqual(run_ssh.call_args.kwargs, {"check": False, "timeout": FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS})
         # The reboot is one ACP request from the host, after fsck has reported.
-        self.assertEqual([call[0] for call in order.mock_calls], ["run_ssh", "request"])
-        request.assert_called_once_with(CONNECTION)
-        self.assertEqual(ssh_state.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 90})
-        self.assertEqual(ssh_state.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 420})
+        self.assertEqual(device.calls[:4], ["run_ssh", "read", "sleep 1", "request"])
+        self.assertEqual(device.calls.count("request"), 1)
+        self.assertTrue(device.served_new_boot)
+
+    def test_reboot_gets_two_minutes_to_start_and_seven_to_return(self) -> None:
+        for kernel_after, ok in ((110.0, True), (10_000.0, False)):
+            with self.subTest(kernel_after=kernel_after):
+                device = FakeAcpDevice(shutdown_after=100.0, kernel_after=kernel_after)
+                outcome, _recorder, _run_ssh, _device = self.run_fsck("tcapsule-fsck: fsck_hfs exit status 0\n", device=device)
+                if ok:
+                    # ACP kept answering for 100 s: past deploy's 90 s, inside fsck's 120 s.
+                    self.assertTrue(outcome.waited)
+                else:
+                    self.assertEqual(outcome.code, "reboot_not_finished")
+                    self.assertGreaterEqual(device.now - 1000.0, 100 + 420)
 
     def test_failed_fsck_still_reboots_and_reports_the_failure(self) -> None:
-        outcome, recorder, _run_ssh, request, _ssh_state, _order = self.run_fsck("tcapsule-fsck: fsck_hfs exit status 8\n")
+        outcome, recorder, _run_ssh, device = self.run_fsck("tcapsule-fsck: fsck_hfs exit status 8\n")
 
         self.assertEqual(outcome.status, 8)
         self.assertEqual(outcome.failure, "fsck_hfs exited with status 8; the disk may still need repair.")
         self.assertTrue(outcome.waited)
         self.assertEqual(recorder.fields["returncode"], 8)
-        request.assert_called_once_with(CONNECTION)
+        self.assertEqual(device.calls.count("request"), 1)
 
     def test_no_reboot_requests_nothing_and_does_not_wait(self) -> None:
-        outcome, recorder, _run_ssh, request, ssh_state, _order = self.run_fsck(
+        outcome, recorder, _run_ssh, device = self.run_fsck(
             "tcapsule-fsck: fsck_hfs exit status 0\n", reboot=False)
 
         self.assertEqual((outcome.reboot_requested, outcome.waited), (False, False))
         self.assertNotIn("reboot_was_attempted", recorder.fields)
-        request.assert_not_called()
-        ssh_state.assert_not_called()
+        self.assertEqual(device.calls, ["run_ssh"])
 
     def test_no_wait_requests_the_reboot_without_observing_it(self) -> None:
-        outcome, recorder, _run_ssh, request, ssh_state, _order = self.run_fsck(
+        outcome, recorder, _run_ssh, device = self.run_fsck(
             "tcapsule-fsck: fsck_hfs exit status 0\n", wait=False)
 
         self.assertEqual((outcome.reboot_requested, outcome.waited), (True, False))
         self.assertTrue(recorder.fields["reboot_was_attempted"])
-        request.assert_called_once_with(CONNECTION)
-        ssh_state.assert_not_called()
+        self.assertEqual(device.calls, ["run_ssh", "request"])
 
     def test_no_wait_reports_a_rejected_reboot_request(self) -> None:
-        outcome, _recorder, _run_ssh, request, ssh_state, _order = self.run_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 0\n", wait=False, request_error=SshError("ssh command failed with rc=1"))
+        outcome, _recorder, _run_ssh, device = self.run_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n", wait=False,
+            device=FakeAcpDevice(request_error=ACPConnectionError("refused")))
 
         self.assertIsInstance(outcome, RebootFlowError)
-        self.assertEqual(outcome.reason, "request_failed")
+        self.assertEqual(outcome.code, "remote_error")
         # A clean repair has nothing to add to the reboot error.
-        self.assertEqual(str(outcome), "SSH reboot request failed: ssh command failed with rc=1")
-        request.assert_called_once()
-        ssh_state.assert_not_called()
+        self.assertEqual(str(outcome), "ACP reboot request failed: refused")
+        self.assertEqual(device.calls, ["run_ssh", "request"])
 
     def test_rejected_no_wait_request_keeps_the_failed_repair(self) -> None:
-        outcome, _recorder, _run_ssh, request, _ssh_state, _order = self.run_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 8\n", wait=False, request_error=SshError("ssh command failed with rc=1"))
+        outcome, _recorder, _run_ssh, device = self.run_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 8\n", wait=False,
+            device=FakeAcpDevice(request_error=ACPConnectionError("refused")))
 
         self.assertIsInstance(outcome, RebootFlowError)
-        self.assertEqual(outcome.reason, "request_failed")
+        self.assertEqual(outcome.code, "remote_error")
         # The reboot error comes first; the repair failure is not lost behind it.
         self.assertEqual(
             str(outcome),
-            "SSH reboot request failed: ssh command failed with rc=1\n"
+            "ACP reboot request failed: refused\n"
             "fsck_hfs exited with status 8; the disk may still need repair.",
         )
         self.assertIsInstance(outcome.__cause__, RebootFlowError)
-        request.assert_called_once()
+        self.assertEqual(device.calls.count("request"), 1)
 
     def test_waited_request_error_is_observed_without_a_second_request(self) -> None:
-        outcome, _recorder, _run_ssh, request, ssh_state, _order = self.run_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 0\n", request_error=SshCommandTimeout("timed out"))
+        outcome, _recorder, _run_ssh, device = self.run_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            device=FakeAcpDevice(request_error=ACPConnectionError("ACP receive failed: timed out")))
 
         self.assertEqual(outcome.status, 0)
         self.assertTrue(outcome.waited)
-        request.assert_called_once()
-        self.assertEqual(ssh_state.call_count, 2)
+        self.assertEqual(device.calls.count("request"), 1)
+        self.assertTrue(device.served_new_boot)
 
     def test_fsck_that_never_ran_does_not_reboot_and_keeps_the_ssh_status(self) -> None:
-        outcome, recorder, _run_ssh, request, ssh_state, _order = self.run_fsck("stopping file sharing failed\n", returncode=1)
+        outcome, recorder, _run_ssh, device = self.run_fsck("stopping file sharing failed\n", returncode=1)
 
         self.assertIsNone(outcome.status)
         self.assertEqual(outcome.failure, FSCK_DID_NOT_RUN_MESSAGE)
         self.assertEqual((outcome.reboot_requested, outcome.waited), (False, False))
         self.assertEqual(recorder.fields, {"returncode": 1})
-        request.assert_not_called()
-        ssh_state.assert_not_called()
+        self.assertEqual(device.calls, ["run_ssh"])
 
     def test_volume_still_mounted_explains_why_fsck_did_not_run(self) -> None:
-        outcome, _recorder, _run_ssh, request, _ssh_state, _order = self.run_fsck(f"{FSCK_NOT_UNMOUNTED_LINE}\n", returncode=1)
+        outcome, _recorder, _run_ssh, device = self.run_fsck(f"{FSCK_NOT_UNMOUNTED_LINE}\n", returncode=1)
 
         self.assertIsNone(outcome.status)
         self.assertEqual(outcome.failure, FSCK_NOT_UNMOUNTED_MESSAGE)
-        request.assert_not_called()
+        self.assertNotIn("request", device.calls)
 
     def test_device_that_never_goes_down_fails_the_reboot(self) -> None:
-        outcome, recorder, _run_ssh, request, _ssh_state, _order = self.run_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 0\n", ssh_states=(False,))
+        outcome, recorder, _run_ssh, device = self.run_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n", device=FakeAcpDevice(reboots=False))
 
         self.assertIsInstance(outcome, RebootFlowError)
-        self.assertEqual(outcome.reason, "did_not_go_down")
-        self.assertEqual(str(outcome), FSCK_REBOOT_NO_DOWN_MESSAGE)
+        self.assertEqual(outcome.code, "reboot_not_started")
+        self.assertEqual(str(outcome), REBOOT_NO_DOWN_MESSAGE)
         self.assertTrue(recorder.fields["reboot_was_attempted"])
-        request.assert_called_once()
+        self.assertEqual(device.calls.count("request"), 1)
 
     def test_device_that_never_goes_down_keeps_the_failed_repair(self) -> None:
-        outcome, recorder, _run_ssh, _request, _ssh_state, _order = self.run_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 8\n", ssh_states=(False,))
+        outcome, recorder, _run_ssh, _device = self.run_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 8\n", device=FakeAcpDevice(reboots=False))
 
         self.assertIsInstance(outcome, RebootFlowError)
-        self.assertEqual(outcome.reason, "did_not_go_down")
+        self.assertEqual(outcome.code, "reboot_not_started")
         self.assertEqual(
             str(outcome),
-            f"{FSCK_REBOOT_NO_DOWN_MESSAGE}\nfsck_hfs exited with status 8; the disk may still need repair.",
+            f"{REBOOT_NO_DOWN_MESSAGE}\nfsck_hfs exited with status 8; the disk may still need repair.",
         )
         self.assertEqual(recorder.fields["returncode"], 8)
 
     def test_device_that_never_comes_back_keeps_the_failed_repair(self) -> None:
-        outcome, _recorder, _run_ssh, _request, _ssh_state, _order = self.run_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 8\n", ssh_states=(True, False))
+        outcome, _recorder, _run_ssh, _device = self.run_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 8\n", device=FakeAcpDevice(kernel_after=10_000))
 
         self.assertIsInstance(outcome, RebootFlowError)
-        self.assertEqual(outcome.reason, "did_not_come_back_up")
+        self.assertEqual(outcome.code, "reboot_not_finished")
         self.assertEqual(
             str(outcome),
-            f"{FSCK_REBOOT_UP_TIMEOUT_MESSAGE}\nfsck_hfs exited with status 8; the disk may still need repair.",
+            f"{REBOOT_UP_TIMEOUT_MESSAGE}\nfsck_hfs exited with status 8; the disk may still need repair.",
         )
 
 
@@ -250,60 +262,47 @@ class UninstallTests(unittest.TestCase):
 
     def reboot(self, plan, *, verification=None, reboot_error=None):
         recorder = RecordingCallbacks()
-        with mock.patch("timecapsulesmb.services.maintenance.request_reboot", side_effect=reboot_error) as request:
-            with mock.patch("timecapsulesmb.services.maintenance.request_reboot_and_wait", side_effect=reboot_error) as request_and_wait:
-                with mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall", return_value=verification) as verify:
-                    try:
-                        result = reboot_after_uninstall(CONNECTION, plan, callbacks=recorder.callbacks)
-                    except (RebootFlowError, DeviceError) as exc:
-                        result = exc
-        return result, recorder, request, request_and_wait, verify
+        with mock.patch("timecapsulesmb.services.maintenance.reboot_device", side_effect=reboot_error) as reboot:
+            with mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall", return_value=verification) as verify:
+                try:
+                    result = reboot_after_uninstall(CONNECTION, plan, callbacks=recorder.callbacks)
+                except (RebootFlowError, DeviceError) as exc:
+                    result = exc
+        return result, recorder, reboot, verify
 
     def test_no_reboot_does_nothing(self) -> None:
         plan, _recorder, _mount = self.prepare(reboot=False)
-        result, _recorder, request, request_and_wait, verify = self.reboot(plan)
+        result, _recorder, reboot, verify = self.reboot(plan)
 
         self.assertIs(result, False)
-        request.assert_not_called()
-        request_and_wait.assert_not_called()
+        reboot.assert_not_called()
         verify.assert_not_called()
 
     def test_no_wait_requests_the_reboot_and_skips_verification(self) -> None:
         plan, _recorder, _mount = self.prepare(wait=False)
-        result, _recorder, request, request_and_wait, verify = self.reboot(plan)
+        result, _recorder, reboot, verify = self.reboot(plan)
 
         self.assertIs(result, False)
-        request.assert_called_once_with(CONNECTION, callbacks=mock.ANY, raise_on_request_error=True)
-        request_and_wait.assert_not_called()
+        reboot.assert_called_once()
+        self.assertEqual(reboot.call_args.args, ("root@10.0.0.2", "pw"))
+        self.assertIs(reboot.call_args.kwargs["wait"], False)
         verify.assert_not_called()
 
     def test_waited_reboot_verifies_the_removal(self) -> None:
         plan, _recorder, _mount = self.prepare()
         verification = VerificationResult(ok=True, lines=("PASS:/Volumes/dk2/.samba4 absent",))
-        result, recorder, request, request_and_wait, verify = self.reboot(plan, verification=verification)
+        result, recorder, reboot, verify = self.reboot(plan, verification=verification)
 
         self.assertIs(result, True)
-        request.assert_not_called()
-        self.assertEqual(request_and_wait.call_args.kwargs["reboot_no_down_message"], UNINSTALL_REBOOT_NO_DOWN_MESSAGE)
+        self.assertIs(reboot.call_args.kwargs["wait"], True)
+        self.assertEqual(reboot.call_args.kwargs["no_down_message"], UNINSTALL_REBOOT_NO_DOWN_MESSAGE)
         verify.assert_called_once_with(CONNECTION, plan)
         self.assertEqual(recorder.stages, ["verify_post_uninstall"])
         self.assertTrue(recorder.messages)
 
-    def test_key_only_uninstall_reboots_without_the_network_acp_password(self) -> None:
-        # The ACP request runs on the device over the existing SSH session, so a
-        # key-only (or jump-host) connection needs no TCP ACP access or password.
-        plan, _recorder, _mount = self.prepare(wait=False)
-        key_only = SshConnection("root@10.0.0.2", "", "-o ProxyJump=bastion")
-        with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as request:
-            with mock.patch("timecapsulesmb.integrations.acp.set_property_int", side_effect=AssertionError("network ACP used")):
-                result = reboot_after_uninstall(key_only, plan, callbacks=RecordingCallbacks().callbacks)
-
-        self.assertIs(result, False)
-        request.assert_called_once_with(key_only)
-
     def test_files_left_after_the_reboot_fail_the_uninstall(self) -> None:
         plan, _recorder, _mount = self.prepare()
-        result, _recorder, _request, _request_and_wait, _verify = self.reboot(
+        result, _recorder, _reboot, _verify = self.reboot(
             plan, verification=VerificationResult(ok=False, lines=("FAIL:/mnt/Flash/rc.local present",)),
         )
 
@@ -312,8 +311,8 @@ class UninstallTests(unittest.TestCase):
 
     def test_failed_reboot_skips_verification(self) -> None:
         plan, _recorder, _mount = self.prepare()
-        error = RebootFlowError(UNINSTALL_REBOOT_NO_DOWN_MESSAGE, "did_not_go_down")
-        result, _recorder, _request, _request_and_wait, verify = self.reboot(plan, reboot_error=error)
+        error = RebootFlowError(UNINSTALL_REBOOT_NO_DOWN_MESSAGE, "reboot_not_started")
+        result, _recorder, _reboot, verify = self.reboot(plan, reboot_error=error)
 
         self.assertIs(result, error)
         verify.assert_not_called()

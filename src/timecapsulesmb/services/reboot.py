@@ -1,243 +1,205 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
 
-from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.deploy.executor import ACP_REBOOT_COMMAND, ACP_REBOOT_STRATEGY, remote_request_reboot
-from timecapsulesmb.device.probe import wait_for_ssh_state_conn
+from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.integrations import acp
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.transport.local import tcp_open
 
 
-ACP_REBOOT_PROGRESS_MESSAGE = f"SSH: {ACP_REBOOT_COMMAND}"
+# Every TimeCapsuleSMB reboot goes through Apple's ACPd over the network, as
+# AirPort Utility does: ACPd saves ACPData.bin and only then runs shutdown
+# (issue #177). The same connection proves the reboot happened: ACP property
+# syUT is the device's uptime in seconds, so a reading smaller than the time
+# since the request can only come from a new boot.
+REBOOT_STRATEGY = "network_acp"
+REBOOT_START_TIMEOUT_SECONDS = 90
+# Turning on SSH can take minutes: in v3.1.x telemetry, successful enable waits
+# had a p99 of 163 s, and 17 of 57 timeouts at 180 s found SSH open when the
+# user retried 1.4-5.8 minutes later.
+REBOOT_UP_TIMEOUT_SECONDS = 240
+REBOOT_POLL_SECONDS = 5
+ACP_REQUEST_TIMEOUT_SECONDS = 25
+UPTIME_READ_TIMEOUT_SECONDS = 5
+# syUT counts whole seconds, and the device's clock may run a little slower
+# than this host's. A new boot reads minutes below the old boot's count, so
+# two seconds of margin costs nothing.
+UPTIME_SLACK_SECONDS = 2
+# sshd starts 7-10 s after the kernel on both device families, ACPd at 4-5 s.
+# A device whose SSH is still closed at this uptime kept SSH off.
+SSH_CLOSED_CHECK_UPTIME_SECONDS = 60
+SSH_PORT = 22
+
+REBOOT_NO_DOWN_MESSAGE = "Reboot was requested but the device did not restart."
+REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+SSH_STILL_OPEN_MESSAGE = "SSH reopened after reboot. Disable did not persist."
 
 
-@dataclass(frozen=True)
-class RebootCycleResult:
-    went_down: bool
-    came_back_up: bool
-
-    @property
-    def completed(self) -> bool:
-        return self.went_down and self.came_back_up
-
-
-@dataclass(frozen=True)
 class RebootFlowError(RuntimeError):
-    message: str
-    reason: str
+    """A reboot that failed or could not be proven; `code` is the app's error code."""
 
-    def __str__(self) -> str:
-        return self.message
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
-def request_reboot(
-    connection: SshConnection,
+def reboot_device(
+    host: str,
+    password: str,
     *,
+    wait: bool,
     callbacks: OperationCallbacks | None = None,
-    progress_log: Callable[[str], None] | None = None,
-    raise_on_request_error: bool = False,
-    request_reboot_func: Callable[[SshConnection], None] | None = None,
+    expect_ssh: bool = True,
+    start_timeout_seconds: int = REBOOT_START_TIMEOUT_SECONDS,
+    up_timeout_seconds: int = REBOOT_UP_TIMEOUT_SECONDS,
+    no_down_message: str = REBOOT_NO_DOWN_MESSAGE,
+    up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
 ) -> None:
-    if request_reboot_func is None:
-        request_reboot_func = remote_request_reboot
-    try:
-        _request_reboot(
-            connection,
-            callbacks=callbacks,
-            progress_log=progress_log,
-            raise_on_request_error=raise_on_request_error,
-            request_reboot=request_reboot_func,
-        )
-    except SshCommandTimeout as exc:
-        raise RebootFlowError(f"SSH reboot request timed out: {exc}", "request_timeout") from exc
-    except SshError as exc:
-        raise RebootFlowError(f"SSH reboot request failed: {exc}", "request_failed") from exc
+    """Reboot the device through ACP and, with `wait`, prove it rebooted.
 
-
-def request_reboot_and_wait(
-    connection: SshConnection,
-    *,
-    callbacks: OperationCallbacks | None = None,
-    progress_log: Callable[[str], None] | None = None,
-    raise_on_request_error: bool = False,
-    down_timeout_seconds: int,
-    up_timeout_seconds: int,
-    reboot_no_down_message: str,
-    reboot_up_timeout_message: str,
-    request_reboot_func: Callable[[SshConnection], None] | None = None,
-    wait_for_ssh_state: Callable[..., bool] | None = None,
-) -> None:
-    if request_reboot_func is None:
-        request_reboot_func = remote_request_reboot
-    if wait_for_ssh_state is None:
-        wait_for_ssh_state = wait_for_ssh_state_conn
-    try:
-        result = _request_reboot_and_observe(
-            connection,
-            callbacks=callbacks,
-            progress_log=progress_log,
-            raise_on_request_error=raise_on_request_error,
-            down_timeout_seconds=down_timeout_seconds,
-            up_timeout_seconds=up_timeout_seconds,
-            request_reboot=request_reboot_func,
-            wait_for_ssh_state=wait_for_ssh_state,
-        )
-    except SshCommandTimeout as exc:
-        raise RebootFlowError(f"SSH reboot request timed out: {exc}", "request_timeout") from exc
-    except SshError as exc:
-        raise RebootFlowError(f"SSH reboot request failed: {exc}", "request_failed") from exc
-    _raise_if_incomplete(result, reboot_no_down_message, reboot_up_timeout_message)
-
-
-def _request_reboot(
-    connection: SshConnection,
-    *,
-    callbacks: OperationCallbacks | None = None,
-    progress_log: Callable[[str], None] | None = None,
-    raise_on_request_error: bool = False,
-    request_reboot: Callable[[SshConnection], None] = remote_request_reboot,
-) -> None:
+    After the reboot SSH must be open (`expect_ssh`) or must stay closed.
+    Raises RebootFlowError.
+    """
     callbacks = callbacks or OperationCallbacks()
+    host = endpoint_host(host)
+    if not wait:
+        _request(host, password, callbacks, raise_errors=True)
+        return
+    u0, error = _read_uptime(host, password)
+    if u0 is None:
+        code = "auth_failed" if isinstance(error, acp.ACPAuthError) else "device_unreachable"
+        raise RebootFlowError(f"Could not read the device's uptime through AirPort ACP before rebooting: {error}", code)
+    started = time.monotonic()
+    time.sleep(1)
+    _request(host, password, callbacks, raise_errors=False)
+    _wait(
+        host,
+        password,
+        u0,
+        started,
+        callbacks=callbacks,
+        expect_ssh=expect_ssh,
+        start_timeout_seconds=start_timeout_seconds,
+        up_timeout_seconds=up_timeout_seconds,
+        no_down_message=no_down_message,
+        up_timeout_message=up_timeout_message,
+    )
+
+
+def _read_uptime(host: str, password: str) -> tuple[int | None, acp.ACPError | None]:
+    try:
+        return acp.get_property_int(host, password, "syUT", timeout=UPTIME_READ_TIMEOUT_SECONDS), None
+    except acp.ACPError as exc:
+        return None, exc
+
+
+def _request(host: str, password: str, callbacks: OperationCallbacks, *, raise_errors: bool) -> None:
     callbacks.stage("reboot")
     callbacks.update(reboot_was_attempted=True)
-    callbacks.debug(reboot_request_strategy=ACP_REBOOT_STRATEGY, ssh_reboot_attempted=True)
-    if progress_log is not None:
-        progress_log(ACP_REBOOT_PROGRESS_MESSAGE)
+    callbacks.debug(reboot_request_strategy=REBOOT_STRATEGY)
     started = time.monotonic()
-    result = "success"
-    error_type: str | None = None
-    # One request, never a second mechanism: a failed or lost request is only
-    # observed (or raised), because ACPd may already be saving and shutting down.
+    error: acp.ACPError | None = None
+    # One request, never a second mechanism: a lost reply is only observed,
+    # because ACPd may already be saving and shutting down.
     try:
-        request_reboot(connection)
-    except SshCommandTimeout as exc:
-        result, error_type = "failure", type(exc).__name__
-        callbacks.debug(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_timed_out=True,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise
-        callbacks.message("ACP reboot request timed out; checking whether the device is rebooting...")
-    except SshError as exc:
-        result, error_type = "failure", type(exc).__name__
-        callbacks.debug(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise
-        callbacks.message("ACP reboot request failed; checking whether the device is rebooting anyway...")
+        acp.reboot(host, password, timeout=ACP_REQUEST_TIMEOUT_SECONDS)
+    except acp.ACPError as exc:
+        error = exc
+        callbacks.debug(acp_reboot_succeeded=False, acp_reboot_error=str(exc))
     else:
-        callbacks.debug(ssh_reboot_succeeded=True)
+        callbacks.debug(acp_reboot_succeeded=True)
+    callbacks.measurement(
+        "reboot_request",
+        strategy=REBOOT_STRATEGY,
+        duration_sec=round(time.monotonic() - started, 3),
+        result="success" if error is None else "failure",
+        error_type=None if error is None else type(error).__name__,
+    )
+    if error is None:
         callbacks.message("ACP reboot requested.")
-    finally:
-        callbacks.measurement(
-            "reboot_request",
-            strategy=ACP_REBOOT_STRATEGY,
-            duration_sec=round(time.monotonic() - started, 3),
-            result=result,
-            error_type=error_type,
-        )
+    elif raise_errors:
+        code = "auth_failed" if isinstance(error, acp.ACPAuthError) else "remote_error"
+        raise RebootFlowError(f"ACP reboot request failed: {error}", code) from error
+    else:
+        callbacks.message("ACP reboot request failed; checking whether the device is restarting anyway...")
 
 
-def _request_reboot_and_observe(
-    connection: SshConnection,
+def _wait(
+    host: str,
+    password: str,
+    u0: int,
+    started: float,
     *,
-    callbacks: OperationCallbacks | None = None,
-    progress_log: Callable[[str], None] | None = None,
-    raise_on_request_error: bool = False,
-    down_timeout_seconds: int,
+    callbacks: OperationCallbacks,
+    expect_ssh: bool,
+    start_timeout_seconds: int,
     up_timeout_seconds: int,
-    request_reboot: Callable[[SshConnection], None] = remote_request_reboot,
-    wait_for_ssh_state: Callable[..., bool] = wait_for_ssh_state_conn,
-) -> RebootCycleResult:
-    callbacks = callbacks or OperationCallbacks()
-    _request_reboot(
-        connection,
-        callbacks=callbacks,
-        progress_log=progress_log,
-        raise_on_request_error=raise_on_request_error,
-        request_reboot=request_reboot,
-    )
-    return _observe_reboot_cycle(
-        connection,
-        callbacks=callbacks,
-        down_timeout_seconds=down_timeout_seconds,
-        up_timeout_seconds=up_timeout_seconds,
-        wait_for_ssh_state=wait_for_ssh_state,
-    )
+    no_down_message: str,
+    up_timeout_message: str,
+) -> None:
+    fields: dict[str, object] = {
+        "start_timeout_sec": start_timeout_seconds,
+        "up_timeout_sec": up_timeout_seconds,
+        "expect_ssh": expect_ssh,
+        "u0_sec": u0,
+    }
 
+    def finish(result: str, code: str | None = None, message: str = "") -> None:
+        fields["total_wait_duration_sec"] = round(time.monotonic() - started, 3)
+        callbacks.measurement("reboot_cycle", result=result, **fields)
+        if code is not None:
+            raise RebootFlowError(message, code)
 
-def _observe_reboot_cycle(
-    connection: SshConnection,
-    *,
-    callbacks: OperationCallbacks | None = None,
-    down_timeout_seconds: int,
-    up_timeout_seconds: int,
-    wait_for_ssh_state: Callable[..., bool] = wait_for_ssh_state_conn,
-) -> RebootCycleResult:
-    callbacks = callbacks or OperationCallbacks()
-    cycle_started = time.monotonic()
-    callbacks.message("Waiting for the device to go down...")
+    callbacks.message("Waiting for the device to restart...")
     callbacks.stage("wait_for_reboot_down")
-    down_started = time.monotonic()
-    if not wait_for_ssh_state(connection, expected_up=False, timeout_seconds=down_timeout_seconds):
-        callbacks.measurement(
-            "reboot_cycle",
-            down_timeout_sec=down_timeout_seconds,
-            up_timeout_sec=up_timeout_seconds,
-            down_wait_duration_sec=round(time.monotonic() - down_started, 3),
-            total_wait_duration_sec=round(time.monotonic() - cycle_started, 3),
-            went_down=False,
-            came_back_up=False,
-            result="did_not_go_down",
-        )
-        return RebootCycleResult(went_down=False, came_back_up=False)
+    down_since: float | None = None
+    up_stage = False
+    while True:
+        time.sleep(REBOOT_POLL_SECONDS)
+        read_started = time.monotonic()
+        uptime, error = _read_uptime(host, password)
+        now = time.monotonic()
+        if error is not None:
+            fields["last_read_error"] = str(error)
+        if uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started):
+            break
+        if uptime is not None:
+            down_since = None
+            if now - started >= start_timeout_seconds:
+                finish("did_not_go_down", "reboot_not_started", no_down_message)
+            continue
+        if down_since is None:
+            down_since = now
+            fields.setdefault("down_seen_after_sec", round(now - started, 3))
+        if not up_stage:
+            up_stage = True
+            callbacks.message("Device went down; waiting for it to come back up...")
+            callbacks.stage("wait_for_reboot_up")
+        if now - down_since >= up_timeout_seconds:
+            finish("did_not_come_back_up", "reboot_not_finished", up_timeout_message)
 
-    callbacks.message("Device went down; waiting for it to come back up...")
-    callbacks.stage("wait_for_reboot_up")
-    up_started = time.monotonic()
-    if not wait_for_ssh_state(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
-        callbacks.measurement(
-            "reboot_cycle",
-            down_timeout_sec=down_timeout_seconds,
-            up_timeout_sec=up_timeout_seconds,
-            down_wait_duration_sec=round(up_started - down_started, 3),
-            up_wait_duration_sec=round(time.monotonic() - up_started, 3),
-            total_wait_duration_sec=round(time.monotonic() - cycle_started, 3),
-            went_down=True,
-            came_back_up=False,
-            result="did_not_come_back_up",
-        )
-        return RebootCycleResult(went_down=True, came_back_up=False)
-
+    fields["reset_seen_after_sec"] = round(now - started, 3)
+    fields["uptime_at_return_sec"] = uptime
+    if not up_stage:
+        callbacks.stage("wait_for_reboot_up")
+    deadline = (down_since if down_since is not None else now) + up_timeout_seconds
+    if expect_ssh:
+        while not tcp_open(host, SSH_PORT):
+            if time.monotonic() >= deadline:
+                finish("ssh_not_open", "reboot_not_finished", up_timeout_message)
+            time.sleep(REBOOT_POLL_SECONDS)
+    else:
+        # The device's uptime now is the reading plus the time since it.
+        time.sleep(max(0.0, SSH_CLOSED_CHECK_UPTIME_SECONDS - uptime - (time.monotonic() - now)))
+        # A lost connection attempt also reads as closed, so SSH counts as
+        # off only when a second check a poll later agrees.
+        for attempt in range(2):
+            if attempt:
+                time.sleep(REBOOT_POLL_SECONDS)
+            if tcp_open(host, SSH_PORT):
+                finish("ssh_still_open", "ssh_still_enabled", SSH_STILL_OPEN_MESSAGE)
+    fields["ssh_ready_after_sec"] = round(time.monotonic() - started, 3)
     callbacks.update(device_came_back_after_reboot=True)
     callbacks.message("Device is back online.")
-    callbacks.measurement(
-        "reboot_cycle",
-        down_timeout_sec=down_timeout_seconds,
-        up_timeout_sec=up_timeout_seconds,
-        down_wait_duration_sec=round(up_started - down_started, 3),
-        up_wait_duration_sec=round(time.monotonic() - up_started, 3),
-        total_wait_duration_sec=round(time.monotonic() - cycle_started, 3),
-        went_down=True,
-        came_back_up=True,
-        result="success",
-    )
-    return RebootCycleResult(went_down=True, came_back_up=True)
-
-
-def _raise_if_incomplete(
-    result: RebootCycleResult,
-    reboot_no_down_message: str,
-    reboot_up_timeout_message: str,
-) -> None:
-    if not result.went_down:
-        raise RebootFlowError(reboot_no_down_message, "did_not_go_down")
-    if not result.came_back_up:
-        raise RebootFlowError(reboot_up_timeout_message, "did_not_come_back_up")
+    finish("success")

@@ -58,15 +58,20 @@ enum OperationTimelineBuilder {
         "enable_boot": .init(titleKey: "timeline.deploy.title.upload_boot_files", detailKey: "timeline.deploy.detail.upload_boot_files"),
         "flush_boot_hook": .init(titleKey: "timeline.deploy.title.flush_payload_upload", detailKey: "timeline.deploy.detail.flush_payload_upload"),
         "verify_payload_upload_after_sync": .init(titleKey: "timeline.deploy.title.verify_payload_upload_after_sync", detailKey: "timeline.deploy.detail.verify_payload_upload_after_sync"),
-        "reboot": .init(titleKey: "timeline.deploy.title.reboot", detailKey: "timeline.deploy.detail.reboot"),
-        "wait_for_reboot_down": .init(titleKey: "timeline.deploy.title.wait_for_reboot_down", detailKey: "timeline.deploy.detail.wait_for_reboot_down"),
-        "wait_for_reboot_up": .init(titleKey: "timeline.deploy.title.wait_for_reboot_up", detailKey: "timeline.deploy.detail.wait_for_reboot_up"),
         "probe_runtime": .init(titleKey: "timeline.deploy.title.probe_runtime", detailKey: "timeline.deploy.detail.probe_runtime"),
         "post_reboot_boot_settle": .init(titleKey: "timeline.deploy.title.post_reboot_boot_settle", detailKey: "timeline.deploy.detail.post_reboot_boot_settle"),
         "post_activation_settle": .init(titleKey: "timeline.deploy.title.post_activation_settle", detailKey: "timeline.deploy.detail.post_activation_settle"),
         "post_reboot_activation": .init(titleKey: "timeline.deploy.title.post_reboot_activation", detailKey: "timeline.deploy.detail.post_reboot_activation"),
         "verify_runtime_activation": .init(titleKey: "timeline.deploy.title.verify_runtime_activation", detailKey: "timeline.deploy.detail.verify_runtime_activation"),
         "verify_runtime_reboot": .init(titleKey: "timeline.deploy.title.verify_runtime_reboot", detailKey: "timeline.deploy.detail.verify_runtime_reboot")
+    ]
+
+    // Every operation that reboots the device goes through the helper's one
+    // reboot path, so these stages read the same everywhere.
+    private static let rebootStageLocalizations: [String: OperationStageLocalization] = [
+        "reboot": .init(titleKey: "timeline.deploy.title.reboot", detailKey: "timeline.deploy.detail.reboot"),
+        "wait_for_reboot_down": .init(titleKey: "timeline.deploy.title.wait_for_reboot_down", detailKey: "timeline.deploy.detail.wait_for_reboot_down"),
+        "wait_for_reboot_up": .init(titleKey: "timeline.deploy.title.wait_for_reboot_up", detailKey: "timeline.deploy.detail.wait_for_reboot_up")
     ]
 
     private static let stageLocalizations: [String: [String: OperationStageLocalization]] = [
@@ -200,8 +205,6 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.checking_airport_acp")
         case ("set-ssh", "acp_enable_ssh"):
             return L10n.string("timeline.stage.enabling_ssh")
-        case ("set-ssh", "wait_for_ssh_enabled"):
-            return L10n.string("timeline.stage.waiting_for_device")
         case ("configure", "ssh_probe"), ("configure", "ssh_probe_after_acp"):
             return L10n.string("timeline.stage.checking_ssh")
         case ("configure", "confirm_enable_ssh"):
@@ -212,8 +215,6 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.checking_airport_acp")
         case ("configure", "acp_enable_ssh"):
             return L10n.string("timeline.stage.enabling_ssh")
-        case ("configure", "wait_for_ssh_after_acp"):
-            return L10n.string("timeline.stage.waiting_for_device")
         case ("configure", "write_env"):
             return L10n.string("timeline.stage.saving_device")
         case ("update-config-settings", "load_existing_config"),
@@ -257,11 +258,15 @@ enum OperationTimelineBuilder {
         return fallback
     }
 
+    private static func stageLocalization(for operation: String, stage: String) -> OperationStageLocalization? {
+        stageLocalizations[operation]?[stage] ?? rebootStageLocalizations[stage]
+    }
+
     private static func localizedStageTitle(for operation: String, stage: String) -> String? {
-        stageLocalizations[operation]?[stage].map { L10n.string($0.titleKey) }
+        stageLocalization(for: operation, stage: stage).map { L10n.string($0.titleKey) }
     }
 
     private static func localizedStageDetail(for operation: String, stage: String) -> String? {
-        stageLocalizations[operation]?[stage].map { L10n.string($0.detailKey) }
+        stageLocalization(for: operation, stage: stage).map { L10n.string($0.detailKey) }
     }
 }

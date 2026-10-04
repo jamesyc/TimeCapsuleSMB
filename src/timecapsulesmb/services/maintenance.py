@@ -11,19 +11,16 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
 UNINSTALL_REBOOT_NO_DOWN_MESSAGE = (
-    "Reboot was requested but the device did not go down.\n"
+    "Reboot was requested but the device did not restart.\n"
     "The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall."
 )
-UNINSTALL_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 UNINSTALL_FILES_REMAIN_MESSAGE = "Managed TimeCapsuleSMB files are still present after reboot."
-FSCK_REBOOT_NO_DOWN_MESSAGE = "Reboot was requested after fsck, but the device did not go down."
-FSCK_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 FSCK_STATUS_PREFIX = "tcapsule-fsck: fsck_hfs exit status "
 FSCK_DID_NOT_RUN_MESSAGE = (
     "fsck did not run: file sharing could not be stopped, or the connection "
@@ -126,7 +123,7 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
         f"  {'yes' if reboot else 'no'}",
     ]
     if reboot:
-        lines.append(f"  follow-up: {'wait for SSH down, then SSH up' if wait else 'do not wait'}")
+        lines.append(f"  follow-up: {'wait for the ACP uptime (syUT) to restart, then SSH up' if wait else 'do not wait'}")
     return "\n".join(lines)
 
 
@@ -205,7 +202,7 @@ def run_fsck(
     """Run the remote fsck script, log its output, then reboot if asked.
 
     Raises RebootFlowError when the reboot request fails or the device does
-    not go down or come back.
+    not restart or come back.
     """
     callbacks.stage("run_fsck")
     script = build_remote_fsck_script(target.device, target.mountpoint)
@@ -223,23 +220,21 @@ def run_fsck(
     rebooting = reboot and status is not None
     failure = fsck_failure_message(status, output)
     try:
-        if rebooting and wait:
-            request_reboot_and_wait(
-                connection,
+        if rebooting:
+            reboot_device(
+                connection.host,
+                connection.password,
+                wait=wait,
                 callbacks=callbacks,
-                reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
-                reboot_up_timeout_message=FSCK_REBOOT_UP_TIMEOUT_MESSAGE,
-                down_timeout_seconds=90,
+                start_timeout_seconds=120,
                 up_timeout_seconds=420,
             )
-        elif rebooting:
-            request_reboot(connection, callbacks=callbacks, raise_on_request_error=True)
     except RebootFlowError as exc:
         if failure is None:
             raise
         # A failed reboot must not hide a failed repair. The reboot error
         # stays first so its known message prefixes still match.
-        raise RebootFlowError(f"{exc}\n{failure}", exc.reason) from exc
+        raise RebootFlowError(f"{exc}\n{failure}", exc.code) from exc
     return FsckOutcome(
         status=status,
         failure=failure,
@@ -287,21 +282,15 @@ def reboot_after_uninstall(connection: SshConnection, plan: UninstallPlan, *, ca
     """
     if not plan.reboot_required:
         return False
-    if not plan.wait_after_reboot:
-        request_reboot(
-            connection,
-            callbacks=callbacks,
-            raise_on_request_error=True,
-        )
-        return False
-    request_reboot_and_wait(
-        connection,
+    reboot_device(
+        connection.host,
+        connection.password,
+        wait=plan.wait_after_reboot,
         callbacks=callbacks,
-        down_timeout_seconds=60,
-        up_timeout_seconds=240,
-        reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
-        reboot_up_timeout_message=UNINSTALL_REBOOT_UP_TIMEOUT_MESSAGE,
+        no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
     )
+    if not plan.wait_after_reboot:
+        return False
     callbacks.stage("verify_post_uninstall")
     verification = verify_post_uninstall(connection, plan)
     for line in render_post_uninstall_verification(verification):

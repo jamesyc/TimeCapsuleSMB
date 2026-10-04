@@ -11,18 +11,16 @@ from timecapsulesmb.integrations.acp import (
     ACPAuthError,
     ACPConnectionError,
     ACPError,
-    enable_ssh,
+    DBUG_SSH_VALUE,
+    set_dbug,
 )
 from timecapsulesmb.services import acp_diagnostics
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.local import tcp_connect_error
 
 
-# How long configure and set-ssh wait for SSH after asking ACP to turn it on.
-# The request restarts the device. In v3.1.x telemetry, successful waits had a
-# p99 of 163 s and topped out at the old 180 s limit, and 17 of 57 timeouts
-# found SSH already open when the user retried 1.4-5.8 minutes later.
-ACP_SSH_ENABLE_WAIT_SECONDS = 240
+# The dashboard groups enable timeouts by this message's text.
+SSH_ENABLE_TIMEOUT_MESSAGE = "SSH did not open after enabling via ACP."
 ACP_PORT_PROBE_ATTEMPTS = 3
 ACP_PORT_PROBE_RETRY_WINDOW_SECONDS = 4.0
 ACP_PORT_PROBE_RETRY_DELAY_SECONDS = ACP_PORT_PROBE_RETRY_WINDOW_SECONDS / (ACP_PORT_PROBE_ATTEMPTS - 1)
@@ -41,7 +39,6 @@ def _run_enable_ssh(
     host: str,
     password: str,
     *,
-    reboot_device: bool,
     timeout: float,
     callbacks: OperationCallbacks,
 ) -> None:
@@ -49,7 +46,7 @@ def _run_enable_ssh(
     callbacks.message(f"Enabling SSH through ACP on {host}...")
     callbacks.stage("acp_enable_ssh")
     try:
-        enable_ssh(host, password, reboot_device=reboot_device, log=callbacks.log, timeout=timeout)
+        set_dbug(host, password, DBUG_SSH_VALUE, log=callbacks.log, timeout=timeout)
     except ACPAuthError:
         callbacks.debug(
             acp_ssh_enable_succeeded=False,
@@ -85,14 +82,13 @@ def enable_ssh_with_port_preflight(
     host: str,
     password: str,
     *,
-    reboot_device: bool = True,
     timeout: float = 25.0,
     callbacks: OperationCallbacks | None = None,
     record: BonjourResolvedService | None = None,
     tcp_connect_error_func: Callable[[str, int], str | None] | None = None,
     sleep_func: Callable[[float], None] | None = None,
 ) -> None:
-    """Ask ACP to turn SSH on, once its port answers.
+    """Ask ACP to turn SSH on at the next boot, once its port answers.
 
     `record` is the Bonjour record `host` came from, if any; it only adds
     telemetry about the device's other addresses.
@@ -153,7 +149,6 @@ def enable_ssh_with_port_preflight(
     _run_enable_ssh(
         host,
         password,
-        reboot_device=reboot_device,
         timeout=timeout,
         callbacks=callbacks,
     )

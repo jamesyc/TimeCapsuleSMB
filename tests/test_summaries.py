@@ -14,6 +14,7 @@ from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import SUMMARY_KEYS, Summary
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.set_ssh import SetSshStatusResult, disable_set_ssh
+from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -326,14 +327,12 @@ class SummaryProducerTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         open_ssh = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True)
         closed_ssh = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False)
-        disable = mock.Mock()
-
-        noop = disable_set_ssh(connection, no_wait=False, initial=closed_ssh, disable_func=disable)
-        requested = disable_set_ssh(connection, no_wait=True, initial=open_ssh, disable_func=disable)
-        verified = disable_set_ssh(
-            connection, no_wait=False, initial=open_ssh, disable_func=disable,
-            wait_for_tcp_port_state=mock.Mock(return_value=True), wait_for_device_up_func=mock.Mock(return_value=True),
-        )
+        with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable:
+            noop = disable_set_ssh(connection, no_wait=False, initial=closed_ssh)
+            with FakeAcpDevice().patched():
+                requested = disable_set_ssh(connection, no_wait=True, initial=open_ssh)
+            with FakeAcpDevice(ssh_up_after_boot=None).patched():
+                verified = disable_set_ssh(connection, no_wait=False, initial=open_ssh)
 
         self.assertEqual(noop.summary, Summary("ssh.already_disabled", "SSH already disabled."))
         self.assertEqual(requested.summary.key, "ssh.disable_requested")

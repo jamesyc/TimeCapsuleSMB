@@ -61,7 +61,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.fail_with_error(message)
             return 1
         command_context.set_stage("resolve_connection")
-        connection = command_context.resolve_env_connection(allow_empty_password=True)
+        # Key-only SSH can remove the files, but the reboot goes through AirPort
+        # ACP, which needs the password: ask before anything is removed.
+        connection = command_context.resolve_env_connection(allow_empty_password=args.no_reboot or args.dry_run)
         if connection.password:
             command_context.start_optional_airport_identity_probe(connection)
 

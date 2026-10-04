@@ -91,7 +91,7 @@ from timecapsulesmb.device.storage import (
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation, run_activation_actions_and_verify
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import reboot_device
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
@@ -118,7 +118,7 @@ DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
     "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
 )
 DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
-    "Reboot was requested but the device did not go down.\n"
+    "Reboot was requested but the device did not restart.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
 )
 DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
@@ -1251,8 +1251,6 @@ def complete_deployment_after_upload(
     callbacks: OperationCallbacks | None = None,
     messages: DeployCompletionMessages | None = None,
     run_remote_actions_func=None,
-    request_reboot_func=None,
-    request_reboot_and_wait_func=None,
     decide_post_reboot_activation=None,
     verify_runtime_func=None,
 ) -> DeployCompletionResult:
@@ -1260,10 +1258,6 @@ def complete_deployment_after_upload(
     messages = messages or DeployCompletionMessages()
     if run_remote_actions_func is None:
         run_remote_actions_func = run_remote_actions
-    if request_reboot_func is None:
-        request_reboot_func = request_reboot
-    if request_reboot_and_wait_func is None:
-        request_reboot_and_wait_func = request_reboot_and_wait
     if decide_post_reboot_activation is None:
         decide_post_reboot_activation = decide_netbsd4_post_reboot_activation
     if verify_runtime_func is None:
@@ -1277,11 +1271,7 @@ def complete_deployment_after_upload(
     if no_wait:
         if messages.reboot_request_message:
             callbacks.message(messages.reboot_request_message)
-        request_reboot_func(
-            connection,
-            callbacks=callbacks,
-            raise_on_request_error=True,
-        )
+        reboot_device(connection.host, connection.password, wait=False, callbacks=callbacks)
         return DeployCompletionResult(
             payload_dir=plan.payload_dir,
             payload_family=payload_family,
@@ -1294,13 +1284,13 @@ def complete_deployment_after_upload(
 
     if messages.reboot_request_message:
         callbacks.message(messages.reboot_request_message)
-    request_reboot_and_wait_func(
-        connection,
+    reboot_device(
+        connection.host,
+        connection.password,
+        wait=True,
         callbacks=callbacks,
-        down_timeout_seconds=60,
-        up_timeout_seconds=240,
-        reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-        reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+        no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+        up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
     )
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:

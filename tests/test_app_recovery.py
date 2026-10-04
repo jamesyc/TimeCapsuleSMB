@@ -59,11 +59,32 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertTrue(recovery["retryable"])
                 self.assertEqual(recovery["actions"][0], "Wait a few minutes, then try again.")
 
+    def test_every_rebooting_operation_gets_the_shared_reboot_guidance(self) -> None:
+        # One reboot path, so one entry per failure for every operation that
+        # reboots; only deploy adds its NetBSD 4 and issue-177 steps.
+        for operation in ("configure", "set-ssh", "uninstall", "fsck", "flash"):
+            with self.subTest(operation=operation):
+                started = recovery_for(operation, "reboot_not_started", stage="wait_for_reboot_down")
+                finished = recovery_for(operation, "reboot_not_finished", stage="wait_for_reboot_up")
+                self.assertEqual((started["localization_key"], started["title"]), ("reboot_not_started", "Reboot did not start"))
+                self.assertEqual((finished["localization_key"], finished["title"]), ("reboot_not_finished", "Reboot did not finish"))
+                self.assertEqual(finished["action_ids"], ["run_checkup"])
+                self.assertTrue(started["retryable"] and finished["retryable"])
+        self.assertEqual(recovery_for("deploy", "reboot_not_started")["localization_key"], "reboot_not_started")
+        self.assertEqual(recovery_for("deploy", "reboot_not_finished")["localization_key"], "deploy.reboot_not_finished")
+
+    def test_ssh_still_enabled_points_back_to_ssh_access(self) -> None:
+        recovery = recovery_for("set-ssh", "ssh_still_enabled", stage="wait_for_reboot_up")
+
+        self.assertEqual(recovery["localization_key"], "ssh_still_enabled")
+        self.assertEqual(recovery["action_ids"], ["open_ssh_access"])
+        self.assertEqual(recovery["actions"][0], "Disable SSH again in SSH Access.")
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
-        recovery = recovery_for("deploy", "remote_error", stage="wait_for_reboot_up")
+        recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 
         self.assertEqual(recovery["title"], "Reboot did not finish")
-        self.assertEqual(recovery["localization_key"], "deploy.remote_error.wait_for_reboot_up")
+        self.assertEqual(recovery["localization_key"], "deploy.reboot_not_finished")
         self.assertEqual(recovery["retryable"], True)
         self.assertEqual(recovery["suggested_operation"], "doctor")
         self.assertEqual(recovery["action_ids"], ["run_checkup"])

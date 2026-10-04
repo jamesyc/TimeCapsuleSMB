@@ -245,33 +245,3 @@ def require_connection_compatibility(connection: SshConnection) -> DeviceCompati
     if state.compatibility is None:
         raise probe_failure_error(state.probe_result, connection.host)
     return state.compatibility
-
-
-def wait_for_tcp_port_state(
-    host: str,
-    port: int,
-    *,
-    expected_state: bool,
-    timeout_seconds: int = 120,
-    interval_seconds: int = 5,
-    log: Callable[[str], None] | None = None,
-    service_name: str | None = None,
-    tcp_open_func: Callable[[str, int], bool] = tcp_open,
-) -> bool:
-    label = service_name or f"TCP port {port}"
-    expected_state_string = "open" if expected_state else "closed"
-    if log is not None:
-        log(f"Waiting for {label} to be {expected_state_string}...")
-    deadline = time.time() + timeout_seconds
-    while True:
-        is_open = tcp_open_func(host, port)
-        if is_open == expected_state:
-            if log is not None:
-                log(f"{label} is {expected_state_string}.")
-            return True
-        if time.time() >= deadline:
-            break
-        time.sleep(interval_seconds)
-    if log is not None:
-        log(f"{label} did not become {expected_state_string} within {timeout_seconds}s.")
-    return False

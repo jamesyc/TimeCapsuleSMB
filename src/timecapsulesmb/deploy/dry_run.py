@@ -4,7 +4,6 @@ from dataclasses import asdict
 
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_remote_actions
-from timecapsulesmb.deploy.executor import ACP_REBOOT_COMMAND, ACP_REBOOT_STRATEGY
 from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
@@ -13,6 +12,7 @@ from timecapsulesmb.deploy.planner import (
     UninstallPlan,
 )
 from timecapsulesmb.device.probe import NETBSD4_LOGIN_PATH, NETBSD4_LOGIN_RC_LOCAL_MARKER
+from timecapsulesmb.services.reboot import REBOOT_STRATEGY
 
 
 NETBSD4_AUTOSTART_MARKER = NETBSD4_LOGIN_RC_LOCAL_MARKER.decode("ascii")
@@ -21,10 +21,10 @@ NETBSD4_AUTOSTART_MARKER = NETBSD4_LOGIN_RC_LOCAL_MARKER.decode("ascii")
 def _append_reboot_request(lines: list[str], reboot_required: bool, *, wait_after_reboot: bool = True) -> None:
     if not reboot_required:
         return
-    lines.append(f"  request: ACP reboot over SSH ({ACP_REBOOT_COMMAND})")
-    lines.append(f"  strategy: {ACP_REBOOT_STRATEGY}")
+    lines.append("  request: AirPort ACP reboot (acRB)")
+    lines.append(f"  strategy: {REBOOT_STRATEGY}")
     if wait_after_reboot:
-        lines.append("  follow-up: wait for SSH down, then SSH up")
+        lines.append("  follow-up: wait for the ACP uptime (syUT) to restart, then SSH up")
     else:
         lines.append("  follow-up: return immediately after reboot request")
 
@@ -34,8 +34,8 @@ def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, 
         return
     data["reboot_request"] = {
         "mode": "device_reboot",
-        "strategy": ACP_REBOOT_STRATEGY,
-        "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"] if wait_after_reboot else ["return_after_reboot_request"],
+        "strategy": REBOOT_STRATEGY,
+        "follow_up": ["wait_for_uptime_reset", "wait_for_ssh_up"] if wait_after_reboot else ["return_after_reboot_request"],
     }
 
 

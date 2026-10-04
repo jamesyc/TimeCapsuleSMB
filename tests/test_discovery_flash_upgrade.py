@@ -244,15 +244,14 @@ def test_reboot_request_failure_can_be_retried_without_a_marker(tmp_path, monkey
         if len(requests) == 1:
             raise RuntimeError("request failed")
 
+    monkeypatch.setattr("timecapsulesmb.services.deploy.reboot_device", reboot)
     with pytest.raises(RuntimeError, match="request failed"):
-        complete_deployment_after_upload(device.connection, device.prepared,
-                                         no_wait=True, request_reboot_func=reboot)
+        complete_deployment_after_upload(device.connection, device.prepared, no_wait=True)
     # No automatic second request: observing an ambiguous reboot belongs to
     # the reboot flow. A later explicit deploy safely replaces the software.
     assert requests == ["reboot"]
     device.install()
-    result = complete_deployment_after_upload(device.connection, device.prepared,
-                                              no_wait=True, request_reboot_func=reboot)
+    result = complete_deployment_after_upload(device.connection, device.prepared, no_wait=True)
     assert result.reboot_requested and not result.verified
     device.assert_installed()
 

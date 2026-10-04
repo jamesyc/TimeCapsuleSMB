@@ -31,7 +31,6 @@
       "selected_record",
       "smb_browse_compatibility",
       "ssh_opts",
-      "ssh_wait_timeout",
       "vfs_aio_fork_enabled"
     ],
     "deploy": [

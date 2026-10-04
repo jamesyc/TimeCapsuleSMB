@@ -155,12 +155,42 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         action_ids=("run_checkup",),
     ),
     # Configure and set-ssh: ACP took the request but SSH did not open within
-    # services.acp_ssh.ACP_SSH_ENABLE_WAIT_SECONDS.
+    # services.reboot.REBOOT_UP_TIMEOUT_SECONDS.
     "ssh_enable_timeout": RecoveryInfo(
         "SSH has not opened yet",
         "Turning on SSH restarts the device. Some devices take longer to restart than TimeCapsuleSMB waits.",
         ("Wait a few minutes, then try again.", "If SSH still does not open, restart the device, then try again."),
         retryable=True,
+    ),
+    # services.reboot.reboot_device: every reboot that does not finish.
+    "reboot_not_started": RecoveryInfo(
+        "Reboot did not start",
+        "The reboot request was sent, but the device did not restart.",
+        ("Power-cycle the device.", "Try again once the device is reachable."),
+        retryable=True,
+        suggested_operation="doctor",
+    ),
+    "reboot_not_finished": RecoveryInfo(
+        "Reboot did not finish",
+        (
+            "The device went offline or restarted, but did not come back in time. It may still be "
+            "starting up, or it may have a new IP address."
+        ),
+        (
+            "Wait a few more minutes.",
+            "The device may have a new IP address. Run Discover and reselect it.",
+            "Make sure you are connected to the same network or Wi-Fi as the device.",
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
+    "ssh_still_enabled": RecoveryInfo(
+        "SSH is still enabled",
+        "The device restarted, but SSH was still enabled afterwards.",
+        ("Disable SSH again in SSH Access.", "If SSH stays enabled, restart the device, then try again."),
+        retryable=True,
+        action_ids=("open_ssh_access",),
     ),
     "confirmation_required": RecoveryInfo(
         "Confirmation required",
@@ -192,6 +222,30 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
 
 
 _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
+    ("deploy", "reboot_not_finished"): RecoveryInfo(
+        "Reboot did not finish",
+        (
+            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH "
+            "again before the 4 minute timeout. It may still be booting, or it may have come back with a "
+            "different IP address."
+        ),
+        (
+            "Wait a few more minutes.",
+            "The device may have a new IP address. Run Discover and reselect it.",
+            "Make sure you are connected to the same network or Wi-Fi as the device.",
+            (
+                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "
+                "enough to activate Samba after reboot."
+            ),
+            (
+                "If your device resets itself, see "
+                "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
+            ),
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
     ("configure", "auth_failed"): RecoveryInfo(
         "AirPort password rejected",
         "ACP or SSH authentication failed while configuring the device.",
@@ -381,13 +435,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
-    ("configure", "remote_error", "wait_for_ssh_after_acp"): RecoveryInfo(
-        "SSH did not open",
-        "ACP accepted the request, but the SSH port did not become reachable in time.",
-        ("Wait for the device to finish rebooting.", "Retry configure with a longer SSH wait timeout."),
-        retryable=True,
-        suggested_operation="configure",
-    ),
     ("deploy", "remote_error", "read_mast"): RecoveryInfo(
         "No HFS volumes found",
         "The device did not report a deployable HFS disk through MaSt.",
@@ -415,37 +462,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Retry deploy.", "Check the disk for write or corruption issues."),
         retryable=True,
         suggested_operation="deploy",
-    ),
-    ("deploy", "remote_error", "wait_for_reboot_down"): RecoveryInfo(
-        "Reboot did not start",
-        "The reboot request was sent, but SSH did not go down.",
-        ("Power-cycle the device.", "Retry deploy after it is reachable."),
-        retryable=True,
-        suggested_operation="doctor",
-    ),
-    ("deploy", "remote_error", "wait_for_reboot_up"): RecoveryInfo(
-        "Reboot did not finish",
-        (
-            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH "
-            "again before the 4 minute timeout. It may still be booting, or it may have come back with a "
-            "different IP address."
-        ),
-        (
-            "Wait a few more minutes.",
-            "The device may have a new IP address. Run Discover and reselect it.",
-            "Make sure you are connected to the same network or Wi-Fi as the device.",
-            (
-                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "
-                "enough to activate Samba after reboot."
-            ),
-            (
-                "If your device resets itself, see "
-                "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
-            ),
-        ),
-        retryable=True,
-        suggested_operation="doctor",
-        action_ids=("run_checkup",),
     ),
     ("deploy", "remote_error", "verify_runtime_reboot"): RecoveryInfo(
         "Runtime not ready",

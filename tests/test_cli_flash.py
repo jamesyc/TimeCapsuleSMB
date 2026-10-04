@@ -34,6 +34,8 @@ from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.core.config import AppConfig
 
 from tests.cli_support import CliTestCase, FakeCommandContext
+from tests.reboot_support import FakeAcpDevice
+from timecapsulesmb.services.reboot import reboot_device
 from tests.flash_fixtures import (
     bank_checksum,
     bank_end_offset,
@@ -864,7 +866,7 @@ class CliFlashTests(CliTestCase):
                         with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                             with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                 with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                    with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
+                                    with FakeAcpDevice().patched() as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--patch",
@@ -883,7 +885,7 @@ class CliFlashTests(CliTestCase):
         reparsed_payload = parse_nested_basebinary(written["payload"])
         self.assertEqual(reparsed_payload.inner.payload, fake_readback(None, "")[: bank_end_offset(primary)])
         self.assertTrue(payload_file_exists)
-        reboot_mock.assert_not_called()
+        self.assertEqual(reboot_mock.calls, [])
         self.assertEqual(manifest["write_outcome"]["status"], "validated")
         self.assertTrue(manifest["write_outcome"]["write_may_have_modified_device"])
         self.assertEqual(manifest["write_result"]["bank"], "primary")
@@ -1103,7 +1105,7 @@ class CliFlashTests(CliTestCase):
                     with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                         with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                             with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
+                                with FakeAcpDevice().patched() as reboot_mock:
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
                                             "--restore",
@@ -1121,7 +1123,7 @@ class CliFlashTests(CliTestCase):
         self.assertEqual(written["bank_name"], b"primary")
         self.assertEqual(written["payload"], template)
         self.assertTrue(payload_file_exists)
-        self.assertFalse(reboot_mock.called)
+        self.assertEqual(reboot_mock.calls, [])
         self.assertEqual(manifest["operation"], "restore")
         self.assertEqual(manifest["flash_plan"]["mode"], "restore")
         self.assertFalse(manifest["flash_plan"]["already_satisfied"])
@@ -1180,9 +1182,9 @@ class CliFlashTests(CliTestCase):
                     with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash):
                         with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                             with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as ssh_reboot_mock:
-                                    with mock.patch("timecapsulesmb.integrations.acp.set_property_int", side_effect=AssertionError("flash should not set ACP properties over the network")) as network_acp_set_mock:
-                                        with mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                                with FakeAcpDevice().patched() as device:
+                                    with mock.patch("timecapsulesmb.integrations.acp.set_property_int", side_effect=AssertionError("flash should not set other ACP properties")) as network_acp_set_mock:
+                                        with mock.patch("timecapsulesmb.services.flash.reboot_device", wraps=reboot_device) as reboot_spy:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--restore",
@@ -1201,10 +1203,13 @@ class CliFlashTests(CliTestCase):
         self.assertTrue(write_outcome["rebooted"])
         self.assertTrue(write_outcome["waited_after_reboot"])
         self.assertEqual(written["bank_name"], b"primary")
-        ssh_reboot_mock.assert_called_once()
+        self.assertEqual(device.calls[:3], ["read", "sleep 1", "request"])
+        self.assertTrue(device.served_new_boot)
         network_acp_set_mock.assert_not_called()
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
+        self.assertTrue(reboot_spy.call_args.kwargs["wait"])
+        # The default limits: 90 s to start the reboot, 240 s to come back.
+        self.assertNotIn("start_timeout_seconds", reboot_spy.call_args.kwargs)
+        self.assertNotIn("up_timeout_seconds", reboot_spy.call_args.kwargs)
         text = output.getvalue()
         self.assertIn("ACP reboot requested.", text)
         self.assertIn("Device is back online.", text)
@@ -1219,9 +1224,8 @@ class CliFlashTests(CliTestCase):
         operation: str,
         reboot: bool,
         no_wait: bool,
-        request_error: Exception | None = None,
-        ssh_states: list[bool] | None = None,
-    ) -> tuple[int, str, dict[str, object], FakeCommandContext, mock.Mock, mock.Mock]:
+        device: FakeAcpDevice | None = None,
+    ) -> tuple[int, str, dict[str, object], FakeCommandContext, FakeAcpDevice]:
         output = io.StringIO()
         command_context = FakeCommandContext()
         debug_fields: dict[str, object] = {}
@@ -1235,29 +1239,26 @@ class CliFlashTests(CliTestCase):
                 manifest={"write_outcome": {"status": "validated", "mode": operation}},
                 backup_dir=backup_dir,
             )
-            with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=request_error) as reboot_mock:
-                with mock.patch("timecapsulesmb.integrations.acp.set_property_int", side_effect=AssertionError("flash must not set ACP properties over the network")):
-                    with mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=ssh_states or []) as wait_mock:
-                        with redirect_stdout(output):
-                            rc = cli_flash._finish_write(
-                                command_context,
-                                args=args,
-                                operation=operation,
-                                target=target,
-                                bundle=bundle,
-                                log=None,
-                            )
+            with (device or FakeAcpDevice()).patched() as device:
+                with mock.patch("timecapsulesmb.integrations.acp.set_property_int", side_effect=AssertionError("flash must not set other ACP properties")):
+                    with redirect_stdout(output):
+                        rc = cli_flash._finish_write(
+                            command_context,
+                            args=args,
+                            operation=operation,
+                            target=target,
+                            bundle=bundle,
+                        )
             saved = json.loads((backup_dir / "manifest.json").read_text())
-        return rc, output.getvalue(), saved["write_outcome"], command_context, reboot_mock, wait_mock
+        return rc, output.getvalue(), saved["write_outcome"], command_context, device
 
     def test_flash_patch_write_records_manual_power_cycle_without_rebooting(self) -> None:
-        rc, text, outcome, command_context, reboot_mock, wait_mock = self.run_finish_write(
+        rc, text, outcome, command_context, device = self.run_finish_write(
             operation="patch", reboot=False, no_wait=False,
         )
 
         self.assertEqual(rc, 0)
-        reboot_mock.assert_not_called()
-        wait_mock.assert_not_called()
+        self.assertEqual(device.calls, [])
         self.assertEqual(outcome["post_write_action"], "manual_power_cycle")
         self.assertFalse(outcome["reboot_requested"])
         self.assertEqual(outcome["status"], "validated")
@@ -1266,68 +1267,64 @@ class CliFlashTests(CliTestCase):
         self.assertEqual(command_context.result, "success")
 
     def test_flash_restore_write_without_reboot_records_manual_reboot(self) -> None:
-        rc, text, outcome, _context, reboot_mock, _wait = self.run_finish_write(
+        rc, text, outcome, _context, device = self.run_finish_write(
             operation="restore", reboot=False, no_wait=False,
         )
 
         self.assertEqual(rc, 0)
-        reboot_mock.assert_not_called()
+        self.assertEqual(device.calls, [])
         self.assertEqual(outcome["post_write_action"], "manual_reboot")
         self.assertFalse(outcome["reboot_requested"])
         self.assertIn("Restore write successful.", text)
         self.assertNotIn("POWER-CYCLE REQUIRED", text)
 
     def test_flash_restore_reboot_and_wait_records_reboot(self) -> None:
-        rc, text, outcome, command_context, reboot_mock, wait_mock = self.run_finish_write(
-            operation="restore", reboot=True, no_wait=False, ssh_states=[True, True],
+        rc, text, outcome, command_context, device = self.run_finish_write(
+            operation="restore", reboot=True, no_wait=False,
         )
 
         self.assertEqual(rc, 0)
-        reboot_mock.assert_called_once()
-        self.assertEqual(
-            [call.kwargs for call in wait_mock.call_args_list],
-            [{"expected_up": False, "timeout_seconds": 60}, {"expected_up": True, "timeout_seconds": 240}],
-        )
+        self.assertEqual(device.calls.count("request"), 1)
+        self.assertTrue(device.served_new_boot)
         self.assertEqual(outcome["post_write_action"], "ssh_reboot")
         self.assertTrue(outcome["reboot_requested"])
         self.assertTrue(outcome["rebooted"])
         self.assertTrue(outcome["waited_after_reboot"])
         self.assertIn("Device returned after reboot.", text)
-        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "native_acp")
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "network_acp")
 
     def test_flash_restore_reboot_that_never_goes_down_asks_for_power_cycle(self) -> None:
-        rc, text, outcome, command_context, reboot_mock, _wait = self.run_finish_write(
-            operation="restore", reboot=True, no_wait=False, ssh_states=[False],
+        rc, text, outcome, command_context, device = self.run_finish_write(
+            operation="restore", reboot=True, no_wait=False, device=FakeAcpDevice(reboots=False),
         )
 
         self.assertEqual(rc, 1)
-        reboot_mock.assert_called_once()
+        self.assertEqual(device.calls.count("request"), 1)
         self.assertEqual(outcome["post_write_action"], "ssh_reboot")
         self.assertTrue(outcome["reboot_requested"])
         self.assertFalse(outcome["rebooted"])
-        self.assertIn("Firmware restore write validated, but the device did not go down after reboot request.", text)
+        self.assertIn("Firmware restore write validated, but the device did not restart after the reboot request.", text)
         self.assertIn("POWER-CYCLE REQUIRED", text)
         self.assertNotIn("Device returned after reboot.", text)
         self.assertEqual(command_context.result, "failure")
 
     def test_flash_restore_reboot_that_never_comes_back_asks_for_power_cycle(self) -> None:
-        rc, text, outcome, _context, _reboot, _wait = self.run_finish_write(
-            operation="restore", reboot=True, no_wait=False, ssh_states=[True, False],
+        rc, text, outcome, _context, _device = self.run_finish_write(
+            operation="restore", reboot=True, no_wait=False, device=FakeAcpDevice(kernel_after=10_000),
         )
 
         self.assertEqual(rc, 1)
         self.assertFalse(outcome["rebooted"])
-        self.assertIn("Timed out waiting for SSH after firmware restore reboot.", text)
+        self.assertIn("Timed out waiting for SSH after reboot.", text)
         self.assertIn("POWER-CYCLE REQUIRED", text)
 
     def test_flash_restore_reboot_no_wait_skips_reboot_observation(self) -> None:
-        rc, text, outcome, _context, reboot_mock, wait_mock = self.run_finish_write(
+        rc, text, outcome, _context, device = self.run_finish_write(
             operation="restore", reboot=True, no_wait=True,
         )
 
         self.assertEqual(rc, 0)
-        reboot_mock.assert_called_once()
-        wait_mock.assert_not_called()
+        self.assertEqual(device.calls, ["request"])
         self.assertEqual(outcome["post_write_action"], "ssh_reboot")
         self.assertTrue(outcome["reboot_requested"])
         self.assertFalse(outcome["rebooted"])
@@ -1335,19 +1332,18 @@ class CliFlashTests(CliTestCase):
         self.assertIn("not waiting for the device", text)
 
     def test_flash_restore_reboot_no_wait_fails_when_reboot_request_fails(self) -> None:
-        rc, text, outcome, command_context, reboot_mock, wait_mock = self.run_finish_write(
+        rc, text, outcome, command_context, device = self.run_finish_write(
             operation="restore",
             reboot=True,
             no_wait=True,
-            request_error=SshError("ssh command failed with rc=255"),
+            device=FakeAcpDevice(request_error=ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009: refused")),
         )
 
         self.assertEqual(rc, 1)
-        reboot_mock.assert_called_once()
-        wait_mock.assert_not_called()
+        self.assertEqual(device.calls, ["request"])
         self.assertTrue(outcome["reboot_requested"])
         self.assertFalse(outcome["rebooted"])
-        self.assertIn("ssh command failed with rc=255", text)
+        self.assertIn("ACP reboot request failed: Could not connect to ACP on 10.0.0.2:5009: refused", text)
         self.assertNotIn("not waiting for the device", text)
         self.assertNotIn("POWER-CYCLE REQUIRED", text)
         self.assertEqual(command_context.result, "failure")
@@ -1655,7 +1651,7 @@ class CliFlashTests(CliTestCase):
                     ):
                         with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")):
                             with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", return_value=primary):
-                                with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
+                                with FakeAcpDevice().patched() as reboot_mock:
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
                                             "--patch",
@@ -1667,7 +1663,7 @@ class CliFlashTests(CliTestCase):
                                         ])
 
         self.assertEqual(rc, 1)
-        reboot_mock.assert_not_called()
+        self.assertEqual(reboot_mock.calls, [])
         self.assertIn("read-back firmware bank prefix SHA-256 mismatch", output.getvalue())
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
         self.assertIn("flash_error_stage=post_write_validation", command_context.finish.call_args.kwargs["error"])
@@ -1714,7 +1710,7 @@ class CliFlashTests(CliTestCase):
                         with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                             with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                 with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after full-bank mismatch")) as acp_mock:
-                                    with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
+                                    with FakeAcpDevice().patched() as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--patch",
@@ -1729,7 +1725,7 @@ class CliFlashTests(CliTestCase):
         self.assertEqual(rc, 1)
         flash_mock.assert_called_once()
         acp_mock.assert_not_called()
-        reboot_mock.assert_not_called()
+        self.assertEqual(reboot_mock.calls, [])
         self.assertIn("read-back firmware bank SHA-256 mismatch", output.getvalue())
         self.assertEqual(manifest["write_outcome"]["status"], "failed")
         self.assertTrue(manifest["write_outcome"]["write_may_have_modified_device"])
@@ -1753,7 +1749,7 @@ class CliFlashTests(CliTestCase):
                         with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")) as flash_mock:
                             with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=SshError("ssh command failed with rc=255")):
                                 with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after read-back failure")) as acp_mock:
-                                    with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
+                                    with FakeAcpDevice().patched() as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--patch",
@@ -1767,7 +1763,7 @@ class CliFlashTests(CliTestCase):
         self.assertEqual(rc, 1)
         flash_mock.assert_called_once()
         acp_mock.assert_not_called()
-        reboot_mock.assert_not_called()
+        self.assertEqual(reboot_mock.calls, [])
         self.assertIn("SSH post-write validation failed", output.getvalue())
         self.assertIn("ssh command failed with rc=255", output.getvalue())
         finished = command_context.finish.call_args.kwargs
@@ -1853,7 +1849,7 @@ class CliFlashTests(CliTestCase):
                         with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                             with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                 with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                    with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
+                                    with FakeAcpDevice().patched() as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--patch",
@@ -1866,7 +1862,7 @@ class CliFlashTests(CliTestCase):
 
         self.assertEqual(rc, 1)
         flash_mock.assert_called_once()
-        reboot_mock.assert_not_called()
+        self.assertEqual(reboot_mock.calls, [])
         self.assertIn("ACP checksum property cks1 read failed after write", output.getvalue())
         finished = command_context.finish.call_args.kwargs
         self.assertEqual(finished["result"], "failure")

@@ -2253,22 +2253,3 @@ def probe_paths_absent_conn(
         script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
     script_lines.append("exit \"$missing\"")
     return run_ssh(connection, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
-
-
-def wait_for_ssh_state_conn(
-    connection: SshConnection,
-    *,
-    expected_up: bool,
-    timeout_seconds: int = 180,
-) -> bool:
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        try:
-            proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=30)
-            is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
-        except TransportError:
-            is_up = False
-        if is_up == expected_up:
-            return True
-        time.sleep(5)
-    return False

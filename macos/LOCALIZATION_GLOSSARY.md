@@ -79,6 +79,7 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Permissions | Zugriffsrechte | toegangsrechten | autorisations | permisos |
 | Standby | Standby | stand-by | veille | modo de espera |
 | Disk I/O | Festplatten-I/O | schijf-I/O | E/S disque | E/S de disco |
+| Reboot / restart | Neustart (noun) / neu starten (verb) | herstart (noun) / opnieuw opstarten (verb) | redémarrage (noun) / redémarrer (verb) | reinicio (noun) / reiniciar (verb) |
 
 | Concept | it | pt-BR | ru | zh-Hans | lt |
 |---|---|---|---|---|---|
@@ -108,6 +109,7 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Permissions | permessi | permissões | права доступа | 权限 | leidimai |
 | Standby | standby | modo de espera | режим ожидания | 待机 | budėjimas |
 | Disk I/O | I/O del disco | E/S de disco | дисковый ввод-вывод | 磁盘 I/O | disko įvestis ir išvestis |
+| Reboot / restart | riavvio (noun) / riavviare (verb) | reinicialização (noun) / reiniciar (verb) | перезагрузка (noun) / перезагрузить (verb) | 重启 | paleidimas iš naujo (noun) / paleisti iš naujo (verb) |
 
 Notes on the new rows:
 
@@ -115,6 +117,7 @@ Notes on the new rows:
 - **Reachable:** a network service or host answers on its port. It is not "available" (usable), "accessible" in the disability sense, or "connected".
 - **Authentication:** Chinese uses 身份验证, the usual macOS term for verifying a password or key. 双重认证 is only the brand name of Apple's two-factor feature; do not use 认证 or 身份认证 for SSH or ACP authentication.
 - **Flash:** the router's NAND flash storage, or writing to it. Never a camera flash, and not Adobe Flash.
+- **Reboot / restart:** the whole device starting over, as the AirPort reboot request does. English uses both words for the same thing; translate both with the row's term. Chinese uses 重启 (or 重新启动), never a bare 启动, which is the **Activate** action.
 - **Host:** a network host, entered as a name or IP address. It is not a "server" in the client/server sense and not the person hosting.
 - **Lithuanian firmware:** the human translation uses *programinė įranga* for firmware, which also means "software" in general. Keep it for firmware (the flash screens need it), and say *įdiegta programinė įranga* or *diegimo failai* for our installed software so the two do not collide.
 

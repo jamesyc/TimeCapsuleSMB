@@ -367,11 +367,11 @@ final class RecoveryActionMapperTests: XCTestCase {
             ],
             actionIDs: ["run_checkup"],
             message: "The device went down but SSH did not return before the timeout.",
-            localizationKey: "deploy.remote_error.wait_for_reboot_up"
+            localizationKey: "deploy.reboot_not_finished"
         ).decode(BackendRecoveryPayload.self)
         let error = BackendErrorViewModel(
             operation: "deploy",
-            code: "remote_error",
+            code: "reboot_not_finished",
             message: "Timed out waiting for SSH after reboot.",
             recovery: recovery
         )
@@ -495,11 +495,11 @@ final class RecoveryActionMapperTests: XCTestCase {
             title: "Reboot did not finish",
             actions: ["Wait a few more minutes."],
             message: "The payload was uploaded.",
-            localizationKey: "deploy.remote_error.wait_for_reboot_up"
+            localizationKey: "deploy.reboot_not_finished"
         ).decode(BackendRecoveryPayload.self)
         let error = BackendErrorViewModel(
             operation: "deploy",
-            code: "remote_error",
+            code: "reboot_not_finished",
             message: "Timed out waiting for SSH after reboot.",
             recovery: recovery
         )

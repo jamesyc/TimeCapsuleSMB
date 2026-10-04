@@ -134,7 +134,7 @@ def add_mount_wait_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def add_no_wait_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--no-wait", action="store_true", help="Do not wait for the device to go down and come back after reboot")
+    parser.add_argument("--no-wait", action="store_true", help="Do not wait for the device to restart and come back after reboot")
 
 
 def add_boolean_override_arguments(

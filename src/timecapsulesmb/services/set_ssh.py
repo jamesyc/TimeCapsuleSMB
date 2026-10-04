@@ -3,18 +3,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-import time
 
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.summaries import Summary
-from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
-from timecapsulesmb.services import runtime as runtime_service
-from timecapsulesmb.services.acp_ssh import ACP_SSH_ENABLE_WAIT_SECONDS, enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.transport.local import tcp_connect_error, tcp_open
+from timecapsulesmb.services.reboot import reboot_device
+from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.errors import SshAuthenticationError
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 SSH_PORT = 22
@@ -54,9 +52,6 @@ class SetSshResult:
     acp_port_error: str | None = None
     ssh_port_error: str | None = None
     ssh_verification_skipped: bool = False
-    ssh_disable_persisted: bool | None = None
-    ssh_reboot_observed_down: bool | None = None
-    device_recovered: bool | None = None
 
 
 class SetSshAction(Enum):
@@ -65,10 +60,6 @@ class SetSshAction(Enum):
     DISABLE = "disable_ssh"
     DISABLE_NOOP = "disable_noop"
     PROMPT_DISABLE = "prompt_disable_ssh"
-
-
-class SetSshVerificationError(RuntimeError):
-    pass
 
 
 def select_set_ssh_action(*, explicit_enable: bool, explicit_disable: bool, ssh_open: bool) -> SetSshAction:
@@ -111,7 +102,6 @@ def enable_set_ssh(
     *,
     no_wait: bool,
     callbacks: OperationCallbacks | None = None,
-    wait_for_tcp_port_state: Callable[..., bool] | None = None,
     initial: SetSshStatusResult | None = None,
     probe: Callable[[str], SetSshStatusResult] | None = None,
 ) -> SetSshResult:
@@ -137,13 +127,14 @@ def enable_set_ssh(
             summary=Summary("ssh.already_enabled", "SSH is already enabled."),
         )
 
-    enable_ssh_with_port_preflight(
+    enable_ssh_with_port_preflight(target_host, connection.password, callbacks=callbacks)
+    reboot_device(
         target_host,
         connection.password,
-        reboot_device=True,
+        wait=not no_wait,
         callbacks=callbacks,
+        up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
     )
-
     if no_wait:
         return SetSshResult(
             host=target_host,
@@ -158,21 +149,7 @@ def enable_set_ssh(
             ssh_verification_skipped=True,
             summary=Summary("ssh.enable_requested", "SSH enable requested; not waiting for SSH to open."),
         )
-
-    callbacks.stage("wait_for_ssh_enabled")
-    wait_func = wait_for_tcp_port_state or runtime_service.wait_for_tcp_port_state
-    # The same wait as configure: the request restarts the device first.
-    final_reachable = wait_func(
-        target_host,
-        SSH_PORT,
-        expected_state=True,
-        timeout_seconds=ACP_SSH_ENABLE_WAIT_SECONDS,
-        log=callbacks.log,
-        service_name="SSH port",
-    )
-    if not final_reachable:
-        callbacks.update(ssh_final_reachable=False)
-        raise SetSshVerificationError("SSH did not open after enabling via ACP.")
+    callbacks.update(ssh_final_reachable=True)
     return SetSshResult(
         host=target_host,
         action=SetSshAction.ENABLE.value,
@@ -192,9 +169,6 @@ def disable_set_ssh(
     *,
     no_wait: bool,
     callbacks: OperationCallbacks | None = None,
-    wait_for_tcp_port_state: Callable[..., bool] | None = None,
-    wait_for_device_up_func: Callable[[str], bool] | None = None,
-    disable_func: Callable[..., None] | None = None,
     initial: SetSshStatusResult | None = None,
 ) -> SetSshResult:
     callbacks = callbacks or OperationCallbacks()
@@ -220,8 +194,17 @@ def disable_set_ssh(
         )
 
     callbacks.stage("disable_ssh")
-    (disable_func or disable_ssh_over_ssh)(connection, reboot_device=True, log=callbacks.log)
-
+    disable_ssh_over_ssh(connection, log=callbacks.log)
+    # SSH must stay closed on the new boot: the uptime proves the reboot,
+    # which a closed port alone cannot.
+    reboot_device(
+        target_host,
+        connection.password,
+        wait=not no_wait,
+        callbacks=callbacks,
+        expect_ssh=False,
+        up_timeout_message="Device went down after disable request but did not come back within timeout.",
+    )
     if no_wait:
         return SetSshResult(
             host=target_host,
@@ -237,45 +220,7 @@ def disable_set_ssh(
             summary=Summary("ssh.disable_requested", "SSH disable requested; not waiting for reboot or verifying SSH stays closed."),
         )
 
-    callbacks.message("Device is starting reboot now, waiting for it to shut down...")
-    callbacks.stage("wait_for_ssh_down")
-    wait_func = wait_for_tcp_port_state or runtime_service.wait_for_tcp_port_state
-    if not wait_func(
-        target_host,
-        SSH_PORT,
-        expected_state=False,
-        log=callbacks.log,
-        service_name="SSH port",
-    ):
-        callbacks.update(
-            ssh_final_reachable=True,
-            ssh_disable_persisted=False,
-            ssh_reboot_observed_down=False,
-        )
-        raise SetSshVerificationError("SSH did not close after disable/reboot request; disable could not be verified.")
-
-    callbacks.update(ssh_reboot_observed_down=True)
-    callbacks.message("Device is down now, verifying persistence after reboot...")
-    callbacks.stage("wait_for_device_up")
-    wait_up = wait_for_device_up_func or wait_for_device_up
-    if not wait_up(target_host):
-        callbacks.update(device_recovered=False)
-        raise SetSshVerificationError("Device went down after disable request but did not come back within timeout.")
-
-    callbacks.update(device_recovered=True)
-    callbacks.message("Device successfully rebooted. Checking if SSH is still disabled...")
-    callbacks.stage("verify_ssh_disabled")
-    if not wait_func(
-        target_host,
-        SSH_PORT,
-        expected_state=False,
-        timeout_seconds=30,
-        log=callbacks.log,
-        service_name="SSH port",
-    ):
-        callbacks.update(ssh_final_reachable=True, ssh_disable_persisted=False)
-        raise SetSshVerificationError("SSH reopened after reboot. Disable did not persist.")
-
+    callbacks.update(ssh_final_reachable=False)
     callbacks.message("SSH disabled (remains closed after reboot). Enable SSH again if this was not intended.")
     return SetSshResult(
         host=target_host,
@@ -287,19 +232,11 @@ def disable_set_ssh(
         waited=True,
         acp_port_error=initial_status.acp_port_error,
         ssh_port_error="SSH port is closed.",
-        ssh_disable_persisted=True,
-        ssh_reboot_observed_down=True,
-        device_recovered=True,
         summary=Summary("ssh.disabled", "SSH disabled (remains closed after reboot)."),
     )
 
 
-def disable_ssh_over_ssh(
-    connection: SshConnection,
-    *,
-    reboot_device: bool = True,
-    log: Callable[[str], None] | None = None,
-) -> None:
+def disable_ssh_over_ssh(connection: SshConnection, *, log: Callable[[str], None] | None = None) -> None:
     command = f"{DEVICE_ACP_PATH} remove dbug"
     try:
         proc = run_ssh(connection, command, check=False, timeout=30)
@@ -312,27 +249,6 @@ def disable_ssh_over_ssh(
         _emit(log, f"SSH debug flag 'dbug' already absent via: {command}")
     else:
         raise RuntimeError(f"Failed to remove 'dbug' via on-device acp (rc={proc.returncode}). Output: {out}")
-
-    if reboot_device:
-        try:
-            remote_request_reboot(connection)
-        except SshCommandTimeout as exc:
-            _emit(log, f"Reboot request timed out; continuing to observe whether the device is rebooting... ({exc})")
-
-
-def wait_for_device_up(
-    host: str,
-    *,
-    timeout_seconds: int = 180,
-    interval_seconds: int = 5,
-) -> bool:
-    deadline = time.time() + timeout_seconds
-    while True:
-        if any(tcp_open(host, port) for port in (ACP_PORT, 445, 139)):
-            return True
-        if time.time() >= deadline:
-            return False
-        time.sleep(interval_seconds)
 
 
 def _dbug_property_already_absent(output: str) -> bool:

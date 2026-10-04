@@ -598,7 +598,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                         selected_record_airport_syap=target.selected_record_airport_syap,
                         selected_record=target.target_record,
                         enable_ssh=True,
-                        verbose_wait=not args.json,
                         internal_share_use_disk_root=args.internal_share_use_disk_root,
                         smb_browse_compatibility=args.smb_browse_compatibility,
                         mdns_advertise_afp=args.mdns_advertise_afp,
