@@ -49,6 +49,8 @@ def event(kind):
         hosts=Path(os.environ['TC_TEST_ROOT'])/'hosts'
         row['hosts']=hosts.read_text() if hosts.is_file() else None
     with log.open('a') as f:f.write(json.dumps(row)+'\\n')
+# Like smbd still starting up: no signal handlers yet, so SIGHUP kills it.
+while role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-hold').exists():time.sleep(.05)
 def stopped(sig,frame):
     event('stop')
     sys.exit(0)
@@ -144,13 +146,23 @@ if p.exists():
         print(row)
 ''')
     executable('fstat','''
-import os,sys
+import json,os,sys
 from pathlib import Path
-if not (Path(os.environ['TC_TEST_ROOT'])/'no-listener').exists():
-    os.kill(int(sys.argv[-1]),0)
-    print('root smbd 1 3* internet stream tcp deadbeef *:445')
-    print('root smbd 1 4* internet6 stream tcp deadbeef *:445')
-    print('root rsync 1 4* internet stream tcp 192.0.2.1:873')
+root=Path(os.environ['TC_TEST_ROOT'])
+pid=int(sys.argv[-1])
+if (root/'record-fstat').exists():
+    with (root/'events').open('a') as out:out.write(json.dumps(dict(kind='command',role='fstat',pid=pid))+'\\n')
+if not (root/'no-listener').exists():
+    os.kill(pid,0)
+    # A listener makes smbd ready, and the manager then reloads it with
+    # SIGHUP. A fake daemon logs its start event after installing its
+    # handlers; until then SIGHUP kills it, so it is not listening yet. On a
+    # loaded host the manager can probe before the fake gets that far.
+    if any(row['kind']=='start' and row['pid']==pid
+           for row in map(json.loads,(root/'events').read_text().splitlines())):
+        print('root smbd 1 3* internet stream tcp deadbeef *:445')
+        print('root smbd 1 4* internet6 stream tcp deadbeef *:445')
+        print('root rsync 1 4* internet stream tcp 192.0.2.1:873')
 ''')
     binary=compile_service(root/'manager',flags=[
         f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
@@ -170,7 +182,7 @@ def manager(manager_tools):
     hosts=root/'hosts'
     if hosts.is_dir():hosts.rmdir()
     else:hosts.unlink(missing_ok=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','record-ps','hold-activation',
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','record-ps','record-fstat','smbd-hold','hold-activation',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
                  'report-hold','report-exit'):
         (root/name).unlink(missing_ok=True)
@@ -573,6 +585,20 @@ def test_server_string_change_keeps_existing_discovery_generation(manager):
     wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
     assert [e['pid'] for e in events() if e['role']=='discovery' and e['kind']=='start']==before
     assert 'CapsuleLongName Second' in (root/'ram/etc/smb.conf').read_text()
+
+
+def test_discovery_stays_diskless_until_smbd_listens(manager):
+    root,start,_,wait,_,_=manager
+    (root/'smbd-hold').touch();(root/'record-fstat').touch()
+    start()
+    def shared(rows):return [e for e in rows if e['role']=='discovery' and '--adisk-share' in e['args']]
+    # A second probe starts only after the first one's result was applied.
+    values=wait(lambda rows:len([e for e in rows if e['role']=='fstat'])>=2 or shared(rows))
+    assert not shared(values)
+    (root/'smbd-hold').unlink()
+    values=wait(shared)
+    smbd=next(e for e in values if e['role']=='smbd' and e['kind']=='start')
+    assert smbd['at']<shared(values)[0]['at']
 
 
 def test_rsync_is_owned_then_drained_before_its_ram_files_are_removed(manager):
