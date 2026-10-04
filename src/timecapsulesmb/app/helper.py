@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import uuid
 from typing import Optional, TextIO
@@ -30,6 +31,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Also write request parsing errors to stderr for local debugging.",
     )
     args = parser.parse_args(argv)
+    # The app cancels with SIGINT. Python keeps an inherited SIG_IGN (a shell's
+    # `&` job sets one), and then a cancel is ignored until the app kills us.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     sink = _sink_for_stream(sys.stdout).with_request_id(str(uuid.uuid4()))
 
     raw = sys.stdin.read(MAX_REQUEST_CHARS + 1)

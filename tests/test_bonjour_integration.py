@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
@@ -355,16 +356,21 @@ def test_candidate_boundary_keeps_conflicting_ports_as_distinct_evidence():
     assert {c.selected_record.port for c in candidates} == {5009, 5010}
 
 
-def test_real_helper_sigint_reaps_several_native_children_and_emits_one_terminal_event(tmp_path, monkeypatch):
+# A shell's `&` job hands its children SIGINT ignored; the helper must still cancel.
+@pytest.mark.parametrize("inherited_sigint", [signal.SIG_DFL, signal.SIG_IGN], ids=["default", "ignored"])
+def test_real_helper_sigint_reaps_several_native_children_and_emits_one_terminal_event(tmp_path, monkeypatch, inherited_sigint):
     import os
     import selectors
-    import signal
     import subprocess
     import sys
     import time
     env = dict(os.environ, PYTHONPATH=str(__import__('pathlib').Path(__file__).resolve().parents[1] / "src") + os.pathsep + str(__import__('pathlib').Path(__file__).resolve().parents[1]), TCAPSULE_STATE_DIR=str(tmp_path / "state"))
-    proc = subprocess.Popen([sys.executable, "-u", "-m", "tests.fixtures.bonjour_cancel_helper", str(tmp_path)], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    previous = signal.signal(signal.SIGINT, inherited_sigint)
+    try:
+        proc = subprocess.Popen([sys.executable, "-u", "-m", "tests.fixtures.bonjour_cancel_helper", str(tmp_path)], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    finally:
+        signal.signal(signal.SIGINT, previous)
     child_pids = []
     stderr = bytearray()
     try:
