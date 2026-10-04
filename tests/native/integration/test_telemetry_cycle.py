@@ -3,6 +3,7 @@ import json
 from hashlib import sha512
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -194,7 +195,7 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
     process = subprocess.Popen(telemetry_command(binary, '--once', 'manual'), env={**env, 'TC_TEST_FINISH': str(finish)},
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        wait_until(marker.exists)
+        wait_until(debug_started(marker))
         process.terminate()
         assert process.poll() is None
         blocked = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
@@ -230,7 +231,7 @@ def test_report_and_its_cancellation_do_not_touch_a_running_signed_job(cycle, ri
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     report = None
     try:
-        wait_until(marker.exists)
+        wait_until(debug_started(marker))
         before = marker.read_bytes()
         debug = (root / 'work/debug').read_bytes()
         # Even cleanup must not run while another process owns these files.
@@ -317,6 +318,12 @@ def test_opt_out_keeps_local_cleanup_available(cycle, rig):
     assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     assert state['calls'] == []
+
+
+def debug_started(marker):
+    # The debug fixture creates its marker, then writes "executed\n<pid>\n";
+    # the file exists before that record is in it.
+    return lambda: marker.exists() and re.fullmatch(r'executed\n\d+\n', marker.read_text()) is not None
 
 
 def wait_until(predicate, seconds=HANG_TIMEOUT):
@@ -419,7 +426,7 @@ def test_inherited_owner_survives_parent_death_and_cleanup_waits(cycle, rig, tmp
     process = subprocess.Popen(telemetry_command(binary, '--once'), env=child_env, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
     try:
-        wait_until(lambda: marker.exists() and marker.read_text().startswith('executed\n'))
+        wait_until(debug_started(marker))
         if detach:
             assert process.wait(timeout=HANG_TIMEOUT) == 0
         else:
