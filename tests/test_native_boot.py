@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.executables import write_executable
 from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 
 
@@ -14,8 +15,8 @@ def boot(tmp_path):
     tools = tmp_path / 'tools'
     tools.mkdir()
     for name in ('mount', 'mount_tmpfs', 'mount_mfs', 'uname', 'sysctl', 'service'):
-        tool = tools / name
-        tool.write_text(f'#!{sys.executable}\n' + '''
+        # One shared file serves every tool name; each records argv[0].
+        write_executable(tools / name, f'#!{sys.executable}\n' + '''
 import os,sys,json
 from pathlib import Path
 root=Path(os.environ['BOOT_ROOT']);name=Path(sys.argv[0]).name
@@ -25,18 +26,16 @@ if name=='mount' and os.environ.get('MOUNTED')=='1':print('tmpfs on '+str(root/'
 if name=='uname':print(os.environ.get('KERNEL','6.0'))
 if name=='sysctl' and sys.argv[1]=='-n':print(os.environ.get('BUFCACHE','5'))
 ''')
-        tool.chmod(0o755)
     # The RAM root the diskd guard edits: a fake multi-call ACPd records the
     # name it was started as (argv[0]'s basename) and its arguments.
     ram = tmp_path / 'ram'
     (ram / 'sbin').mkdir(parents=True)
     (ram / 'usr/libexec').mkdir(parents=True)
-    (ram / 'sbin/ACPd').write_text(f'#!{sys.executable}\n' + '''
+    write_executable(ram / 'sbin/ACPd', f'#!{sys.executable}\n' + '''
 import os,sys,json
 from pathlib import Path
 with (Path(os.environ['BOOT_ROOT'])/'calls').open('a') as log:log.write(json.dumps(['multicall',Path(sys.argv[0]).name,*sys.argv[1:]])+'\\n')
 ''')
-    (ram / 'sbin/ACPd').chmod(0o755)
     text = load_boot_asset_text('boot.sh')
     replacements = {'/mnt/Memory': str(tmp_path / 'Memory'), '/mnt/Locks': str(tmp_path / 'Locks'),
                     '/sbin/ACPd': str(ram / 'sbin/ACPd'), '/sbin/diskd': str(ram / 'sbin/diskd'),
