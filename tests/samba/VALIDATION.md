@@ -1,3 +1,15 @@
+# Manager loop pass as a build setting (2026-10-04)
+
+The manager's loop woke at least once a second through a literal 1000 ms;
+buffer-stall sampling runs on those passes, so the host rig's stall tests
+could not sample faster than once a second. `TC_MANAGER_PASS_MS` (default
+1000) now names it. Clean lane builds with the change produced the committed
+service binaries byte for byte (NetBSD 6 `e6f51006...`, NetBSD 4 LE
+`8c90462b...`, NetBSD 4 BE `88147dae...`), so nothing on the devices changes.
+The host rig samples every 250 ms with shorter stall timings, and
+`tests/native/test_manager.py` takes about a third less time; sixteen runs
+of it beside full parallel suites passed.
+
 # ACP collector reaps each child when its output closes (2026-10-04)
 
 `acp_collect_pump()` set `eof` when `read()` returned 0 and left the reap to

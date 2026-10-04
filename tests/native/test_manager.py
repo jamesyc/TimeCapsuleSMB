@@ -30,14 +30,18 @@ TIMINGS=dict(
     # Long enough for test_stall_while_stopping_is_still_recovered to see a
     # raise and a wake before the drain ends.
     TC_CHILD_GRACE_MS=5000,     # device 10 s
-    # The manager samples once per loop pass, at least every second.
-    TC_BUFSTALL_TRIGGER_MS=1000, # device 5 s
-    TC_BUFSTALL_QUIET_MS=2000,   # device 10 s
-    TC_BUFSTALL_HOLD_MS=6000,    # device 60 s
+    # The manager's loop wakes, and samples, at least this often.
+    TC_MANAGER_PASS_MS=250,      # device 1 s
+    TC_BUFSTALL_SAMPLE_MS=250,   # device 1 s
+    TC_BUFSTALL_TRIGGER_MS=500,  # device 5 s
+    TC_BUFSTALL_QUIET_MS=1000,   # device 10 s
+    TC_BUFSTALL_HOLD_MS=3000,    # device 60 s
+    # Outlasts test_buffer_stall_raises_wakes_in_process_and_restores_after_the_stall's
+    # second episode, which must not be reported again.
     TC_BUFSTALL_REPORT_MS=8000,  # device 1 hour after delivery
-    TC_BUFSTALL_REPORT_RETRY_MS=2000, # device 60 s after failure
-    # Outlasts a report held across a second episode (about 5 s).
-    TC_BUFSTALL_REPORT_TIMEOUT_MS=10000, # device 180 s
+    TC_BUFSTALL_REPORT_RETRY_MS=1000, # device 60 s after failure
+    # Outlasts a report held across a second episode (about 2 s).
+    TC_BUFSTALL_REPORT_TIMEOUT_MS=5000, # device 180 s
 )
 
 CHILD = '''
@@ -1137,6 +1141,7 @@ def test_internal_export_root_change_reloads_without_restarting(manager, initial
 # Buffer-cache stall recovery (kern/60584): the fixture file stands in for
 # vm.bufmem* and the processes' kernel wait messages (bufstall.c).
 HIWATER=40243200
+HOLD_S=TIMINGS['TC_BUFSTALL_HOLD_MS']//1000
 APPLE_LOWATER=HIWATER>>3
 RAISED_LOWATER=HIWATER-16
 
@@ -1347,7 +1352,7 @@ def test_buffer_stall_that_outlasts_the_raise_is_restored_then_raised_again(mana
     kernel(root,(4242,'getnewbuf'))
     until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
     until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER])
-    until(root,lambda:'processes still waiting' in stderr(root) and 'raising again in 6 s' in stderr(root))
+    until(root,lambda:'processes still waiting' in stderr(root) and f'raising again in {HOLD_S} s' in stderr(root))
     # Raising again is cheap: it is retried while the stall lasts.
     until(root,lambda:lowater_writes(root)==[RAISED_LOWATER,APPLE_LOWATER,RAISED_LOWATER])
     assert reports(events)==[]
@@ -1374,7 +1379,7 @@ def test_capped_stall_is_rechecked_and_raised_once_the_cache_shrinks(manager):
     kernel(root)
     start();wait(started('smbd'))
     kernel(root,(4242,'getnewbuf'),bufmem=RAISED_LOWATER)
-    until(root,lambda:'raising vm.bufmem_lowater cannot help; checking again every 6 s' in stderr(root))
+    until(root,lambda:f'raising vm.bufmem_lowater cannot help; checking again every {HOLD_S} s' in stderr(root))
     time.sleep(1)
     assert lowater_writes(root)==[] and wakes(root)==[]
     kernel(root,(4242,'getnewbuf'),bufmem=3000000)

@@ -21,6 +21,12 @@
 #ifndef TC_STALE_KILL_MS
 #define TC_STALE_KILL_MS 10000
 #endif
+/* The loop wakes at least this often without an event; buffer-stall sampling
+ * (bufstall.h) runs on these passes. Host tests shorten it with the stall
+ * timings. */
+#ifndef TC_MANAGER_PASS_MS
+#define TC_MANAGER_PASS_MS 1000
+#endif
 #ifndef TC_DISKD_PATH
 #define TC_DISKD_PATH "/sbin/diskd"
 #endif
@@ -908,7 +914,7 @@ int tc_manager_main(int argc, char **argv) {
     for (;;) {
         fd_set reads;
         int maxfd = -1;
-        long long now = acp_monotonic_ms(), deadline = now + 1000;
+        long long now = acp_monotonic_ms(), deadline = now + TC_MANAGER_PASS_MS;
         unsigned events = tc_events_take(&m->events);
         if (events & TC_EVENT_STOP)
             m->stopping = 1;

@@ -24,7 +24,8 @@
  * with a full process table. Detection, the raise, the wake and the restore
  * are system calls in the manager itself, on buffers allocated statically. */
 
-/* The manager samples at most this often (its loop wakes every second). */
+/* The manager samples at most this often (its loop wakes every
+ * TC_MANAGER_PASS_MS, a second on the device). */
 #ifndef TC_BUFSTALL_SAMPLE_MS
 #define TC_BUFSTALL_SAMPLE_MS 1000
 #endif
