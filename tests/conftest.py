@@ -4,6 +4,19 @@ from unittest import mock
 
 import pytest
 
+# Native children close every descriptor up to the soft limit, which macOS can
+# set above a million: about 0.1 s per child. `make test` runs pytest under
+# `ulimit -n 256`; give a direct pytest run the same limit.
+OPEN_FILE_LIMIT = 256
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft == resource.RLIM_INFINITY or soft > OPEN_FILE_LIMIT:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (OPEN_FILE_LIMIT, hard))
+
 
 @pytest.fixture(autouse=True)
 def block_unmocked_telemetry_posts(monkeypatch: pytest.MonkeyPatch):
