@@ -4,6 +4,7 @@ from hashlib import sha512
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 import signal
@@ -137,8 +138,19 @@ def cycle(rig, tmp_path):
     def run(mode, **changes):
         state['mode'] = mode
         result = subprocess.run(telemetry_command(binary, '--once', 'manual'), env={**env, **changes}, capture_output=True, text=True, timeout=HANG_TIMEOUT)
-        assert not (root / 'work/debug').exists()
-        assert not (root / 'work/debug.sig').exists()
+        outcome = f'exit {result.returncode}: {result.stderr}'
+        if mode == 'bad_executable' and sys.platform == 'darwin' and (root / 'work/debug').exists():
+            # macOS checks a new file at exec. When that exec fails, the child's
+            # descriptors, and so its workspace lock, can outlive the reap by a
+            # few milliseconds; the cycle then sees a busy workspace and leaves
+            # the files, as it would for a surviving worker. The device kernel
+            # has no such check. The next cleanup must still remove them.
+            def cleaned():
+                return subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True,
+                                      timeout=HANG_TIMEOUT).returncode == 0
+            wait_until(cleaned, seconds=5)
+        assert not (root / 'work/debug').exists(), outcome
+        assert not (root / 'work/debug.sig').exists(), outcome
         assert (root / 'work/keep.txt').read_text() == 'unrelated runtime file'
         return result
     return run, state, tmp_path / 'marker', binary, env
