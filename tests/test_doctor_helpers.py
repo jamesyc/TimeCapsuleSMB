@@ -181,6 +181,9 @@ class DoctorHelperTests(unittest.TestCase):
             ) as browse,
             mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=()),
             mock.patch("timecapsulesmb.discovery.bonjour.command_exists", return_value=False),
+            # A targeted resolve that nothing answers, as on a network without the device.
+            mock.patch.object(doctor_steps, "resolve_smb_instance",
+                              return_value=(None, CheckResult("FAIL", "could not resolve service target"))),
         ):
             result = doctor_steps._add_bonjour_results(
                 AppConfig(values={"TC_HOST": "10.0.1.1"}), None,

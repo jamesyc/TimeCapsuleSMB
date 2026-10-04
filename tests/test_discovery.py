@@ -173,6 +173,8 @@ class DiscoveryTests(unittest.TestCase):
         fake_collector.lock = threading.RLock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
+        # Nothing waits for resolution, so the scan ends with its browse window.
+        fake_collector.pending_count.return_value = 0
         fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
@@ -1046,6 +1048,7 @@ class DiscoveryTests(unittest.TestCase):
             for observation in observations.values()
         ]
         fake_collector.service_instances.return_value = []
+        fake_collector.pending_count.return_value = 0
         fake_zc = mock.Mock()
         fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
