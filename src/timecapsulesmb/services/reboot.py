@@ -6,6 +6,7 @@ from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.ssh import close_ssh_masters
 
 
 # Every TimeCapsuleSMB reboot goes through Apple's ACPd over the network, as
@@ -98,6 +99,9 @@ def _request(host: str, password: str, callbacks: OperationCallbacks, *, raise_e
     callbacks.stage("reboot")
     callbacks.update(reboot_was_attempted=True)
     callbacks.debug(reboot_request_strategy=REBOOT_STRATEGY)
+    # The reboot drops the device's SSH connections. Close the shared one now
+    # so the first command after the reboot logs in afresh.
+    close_ssh_masters(host)
     started = time.monotonic()
     error: acp.ACPError | None = None
     # One request, never a second mechanism: a lost reply is only observed,

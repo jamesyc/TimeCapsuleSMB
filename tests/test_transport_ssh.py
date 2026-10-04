@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
@@ -680,6 +681,7 @@ class SSHTransportTests(unittest.TestCase):
         self.assertNotIn("/tmp/user.conf", args)
         self.assertNotIn("/tmp/master", args)
         self.assertNotIn("LogLevel=DEBUG", args)
+        self.assertNotIn("ControlPath=/tmp/other", args)
 
     def test_connection_ssh_args_leave_stdin_open_for_piped_requests(self) -> None:
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
@@ -791,6 +793,9 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(fake_child.sendline.call_args_list, [mock.call("yes"), mock.call("pw")])
         tcp_open_mock.assert_called_once_with("127.0.0.1", 10445, timeout=0.2)
         fake_child.close.assert_called_once_with(force=True)
+        # The tunnel logs in on its own connection, never through a master.
+        self.assertEqual(cmd[1][cmd[1].index("-S") + 1], "none")
+        self.assertFalse(any(arg.startswith("Control") for arg in cmd[1]))
 
     def test_ssh_local_forward_reports_transport_error_before_ready(self) -> None:
         try:
@@ -938,7 +943,7 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(command[:3], ["sshpass", "-e", "ssh"])
         self.assertIn("-n", command)
         self.assertIn("-T", command)
-        self.assertIn("-S", command)
+        self.assertIn("ControlMaster=auto", command)
 
     def test_run_ssh_capture_bytes_without_password_uses_plain_ssh(self) -> None:
         payload = b"bank"
@@ -1056,6 +1061,339 @@ class SSHTransportTests(unittest.TestCase):
                 ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "ls /missing", timeout=10)
         self.assertEqual(spawn.call_args.args[0][-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "ls /missing")
         self.assertEqual(str(exc.exception), "no such file")
+
+
+MUX_SESSION_LOG = (
+    "debug1: auto-mux: Trying existing master at '/tmp/tcsmb-ssh-x/0123456789abcdef'\n"
+    "debug1: mux_client_request_session: master session id: 2\n"
+)
+
+
+class SharedConnectionTests(unittest.TestCase):
+    """Commands share one authenticated connection per device and process."""
+
+    def setUp(self) -> None:
+        directory = TemporaryDirectory(prefix="tcsmb-test-", dir="/tmp")
+        self.addCleanup(directory.cleanup)
+        self.control_dir = directory.name
+        for name, value in (("_control_dir", self.control_dir), ("_control_hosts", {})):
+            patcher = mock.patch.object(ssh_transport, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch("timecapsulesmb.transport.ssh._local_ssh_macs", return_value=())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def option(args: list[str], name: str) -> str | None:
+        values = [arg.split("=", 1)[1] for arg in args if arg.startswith(f"{name}=")]
+        return values[0] if values else None
+
+    def shared_args(self, connection: ssh_transport.SshConnection) -> list[str]:
+        return ssh_transport._connection_ssh_args(
+            connection, client_log=Path("/tmp/client.log"), stdin_null=True, shared=True,
+        )
+
+    def test_shared_args_reuse_a_private_master_and_mark_shared_sessions(self) -> None:
+        args = self.shared_args(ssh_transport.SshConnection("root@192.168.1.118", "pw", ""))
+
+        self.assertEqual(self.option(args, "ControlMaster"), "auto")
+        self.assertEqual(self.option(args, "ControlPersist"), "180")
+        path = self.option(args, "ControlPath")
+        self.assertEqual(os.path.dirname(path), self.control_dir)
+        # The DEBUG1 log carries the shared-session marker.
+        self.assertEqual(self.option(args, "LogLevel"), "DEBUG1")
+        self.assertEqual(self.option(args, "ServerAliveInterval"), "15")
+        self.assertEqual(self.option(args, "ServerAliveCountMax"), "3")
+        self.assertNotIn("-S", args)
+
+    def test_unshared_args_keep_their_own_connection(self) -> None:
+        args = ssh_transport._connection_ssh_args(
+            ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
+            client_log=Path("/tmp/client.log"),
+            stdin_null=True,
+        )
+        self.assertEqual(args[args.index("-S") + 1], "none")
+        self.assertEqual(self.option(args, "LogLevel"), "VERBOSE")
+        self.assertIsNone(self.option(args, "ControlMaster"))
+        self.assertIsNone(self.option(args, "ServerAliveInterval"))
+        self.assertEqual(ssh_transport._control_hosts, {})
+
+    def test_callers_cannot_take_over_the_master_settings(self) -> None:
+        args = self.shared_args(ssh_transport.SshConnection(
+            "device", "pw",
+            "-S /tmp/theirs -o ControlMaster=yes -o ControlPersist=yes -oControlPath=/tmp/other "
+            "-o ServerAliveInterval=30",
+        ))
+
+        self.assertEqual([a for a in args if a.startswith("ControlMaster=")], ["ControlMaster=auto"])
+        self.assertEqual([a for a in args if a.startswith("ControlPersist=")], ["ControlPersist=180"])
+        self.assertEqual(os.path.dirname(self.option(args, "ControlPath")), self.control_dir)
+        self.assertNotIn("/tmp/theirs", args)
+        self.assertNotIn("-oControlPath=/tmp/other", args)
+        # ssh keeps an option's first value: the caller's own keepalive wins.
+        self.assertEqual(self.option(args, "ServerAliveInterval"), "30")
+
+    def test_one_master_per_host_password_and_options(self) -> None:
+        def path(host: str, password: str, opts: str) -> str:
+            return self.option(self.shared_args(ssh_transport.SshConnection(host, password, opts)), "ControlPath")
+
+        base = path("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa")
+        self.assertEqual(base, path("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa"))
+        # A different password must log in itself, never ride on this master.
+        self.assertNotEqual(base, path("root@10.0.0.2", "other", "-o HostKeyAlgorithms=+ssh-rsa"))
+        self.assertNotEqual(base, path("root@10.0.0.3", "pw", "-o HostKeyAlgorithms=+ssh-rsa"))
+        self.assertNotEqual(base, path("root@10.0.0.2", "pw", "-p 2222"))
+        self.assertNotIn("pw", base)
+
+    def test_first_shared_command_creates_a_short_private_directory(self) -> None:
+        with mock.patch.object(ssh_transport, "_control_dir", None), \
+             mock.patch("timecapsulesmb.transport.ssh.atexit.register") as register:
+            first = self.option(self.shared_args(ssh_transport.SshConnection("root@10.0.0.2", "pw", "")), "ControlPath")
+            second = self.option(self.shared_args(ssh_transport.SshConnection("root@10.0.0.3", "pw", "")), "ControlPath")
+            directory = ssh_transport._control_dir
+        self.addCleanup(lambda: os.path.isdir(directory) and os.rmdir(directory))
+
+        self.assertEqual(os.path.dirname(first), directory)
+        self.assertEqual(os.path.dirname(second), directory)
+        self.assertTrue(os.path.basename(directory).startswith(ssh_transport.SSH_CONTROL_DIR_PREFIX))
+        self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
+        # ssh binds a temporary name 17 bytes longer; macOS allows 104 bytes.
+        self.assertLess(len(first) + 17, 104)
+        register.assert_called_once_with(ssh_transport.close_ssh_masters)
+
+    def test_shared_session_counts_as_authenticated(self) -> None:
+        diagnostics = ssh_transport.parse_ssh_client_diagnostics(MUX_SESSION_LOG)
+        self.assertTrue(diagnostics.authenticated)
+        self.assertIsNone(diagnostics.error)
+
+    def test_marker_outside_a_debug_line_is_not_a_shared_session(self) -> None:
+        diagnostics = ssh_transport.parse_ssh_client_diagnostics(
+            "mux_client_request_session: master session id: 2\n"
+        )
+        self.assertFalse(diagnostics.authenticated)
+
+    def test_shared_session_failure_after_falling_back_still_reports_the_login_error(self) -> None:
+        # The master was gone, so ssh logged in itself and was refused.
+        diagnostics = ssh_transport.parse_ssh_client_diagnostics(
+            "debug1: auto-mux: Trying existing master at '/tmp/tcsmb-ssh-x/0123456789abcdef'\n"
+            "debug1: Control socket \"/tmp/tcsmb-ssh-x/0123456789abcdef\" does not exist\n"
+            "root@device: Permission denied (password).\n"
+        )
+        self.assertFalse(diagnostics.authenticated)
+        self.assertIsInstance(diagnostics.error, ssh_transport.SshAuthenticationError)
+
+    def test_remote_exit_255_over_a_shared_session_is_the_commands_status(self) -> None:
+        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
+            Path(client_log).write_text(MUX_SESSION_LOG)
+            return 255, "remote said no\n"
+
+        with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn) as spawned:
+            proc = ssh_transport.run_ssh(
+                ssh_transport.SshConnection("root@device", "pw", ""), "exit 255", check=False,
+            )
+        self.assertEqual(proc.returncode, 255)
+        self.assertEqual(proc.stdout, "remote said no\n")
+        self.assertEqual(spawned.call_count, 1)
+
+    def test_rc_255_with_neither_login_nor_shared_session_is_a_client_failure(self) -> None:
+        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
+            Path(client_log).write_text("debug1: auto-mux: Trying existing master\nConnection closed by 10.0.0.2 port 22\n")
+            return 255, ""
+
+        with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn):
+            with self.assertRaises(ssh_transport.SshError):
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "true", check=False)
+
+    def test_piped_shared_session_keeps_remote_status_that_looks_like_sshpass(self) -> None:
+        # sshpass reports its own failures as 5, 6 and 7; over a shared
+        # session these can only be the remote command's status.
+        for status in (5, 6, 7):
+            with self.subTest(status=status):
+                def run(command, **_kwargs):
+                    if "-E" not in command:
+                        return subprocess.CompletedProcess(command, 0, b"", b"")
+                    Path(command[command.index("-E") + 1]).write_text(MUX_SESSION_LOG)
+                    return subprocess.CompletedProcess(command, status, b"", b"")
+
+                with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
+                     mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run) as subprocess_run:
+                    proc = ssh_transport.run_ssh_input(
+                        ssh_transport.SshConnection("root@device", "pw", ""),
+                        "helper", raw_remote_status=True,
+                    )
+                self.assertEqual(proc.returncode, status)
+                self.assertEqual(sum("-E" in call.args[0] for call in subprocess_run.call_args_list), 1)
+
+    def test_piped_commands_use_the_shared_connection(self) -> None:
+        process = subprocess.CompletedProcess(["sshpass"], 0, b"", b"")
+        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
+             mock.patch("timecapsulesmb.transport.ssh.subprocess.run",
+                        side_effect=SSHTransportTests.completed_run(process)) as run, \
+             mock.patch("timecapsulesmb.transport.ssh._verify_uploaded_size"):
+            with NamedTemporaryFile() as source:
+                ssh_transport.upload_file(ssh_transport.SshConnection("root@device", "pw", ""), Path(source.name), "/tmp/x")
+        command = run.call_args.args[0]
+        self.assertEqual(self.option(command, "ControlMaster"), "auto")
+        self.assertEqual(os.path.dirname(self.option(command, "ControlPath")), self.control_dir)
+
+    def master_run(self, log: str, process: subprocess.CompletedProcess[bytes]):
+        commands: list[list[str]] = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+            self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
+            Path(command[command.index("-E") + 1]).write_text(log)
+            return process
+
+        return run, commands
+
+    def test_live_master_runs_commands_over_pipes_without_a_password_prompt(self) -> None:
+        connection = ssh_transport.SshConnection("root@device", "pw", "")
+        self.make_master("root@device")
+        run, commands = self.master_run(MUX_SESSION_LOG, subprocess.CompletedProcess([], 3, b"out\nerr\n"))
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
+             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
+            proc = ssh_transport.run_ssh(connection, "probe", check=False, timeout=7)
+
+        spawn.assert_not_called()
+        self.assertEqual((proc.returncode, proc.stdout), (3, "out\nerr\n"))
+        [command] = commands
+        self.assertEqual(command[0], "ssh")
+        self.assertIn("BatchMode=yes", command)
+        self.assertEqual(self.option(command, "ControlMaster"), "auto")
+        self.assertEqual(command[-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "probe")
+
+    def test_live_master_failure_raises_with_the_device_output(self) -> None:
+        self.make_master("root@device")
+        run, _commands = self.master_run(MUX_SESSION_LOG, subprocess.CompletedProcess([], 1, b"no such file\n"))
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
+             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
+            with self.assertRaisesRegex(ssh_transport.SshError, "^no such file$"):
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "ls /missing")
+        spawn.assert_not_called()
+
+    def test_master_that_ended_falls_back_to_one_password_login(self) -> None:
+        # The master quit after the check; ssh's own batch login was refused,
+        # so the command never ran and the password login runs it once.
+        self.make_master("root@device")
+        refused = (
+            "debug1: auto-mux: Trying existing master at '/tmp/tcsmb-ssh-x/0123456789abcdef'\n"
+            "root@device: Permission denied (password,keyboard-interactive).\n"
+        )
+        run, commands = self.master_run(refused, subprocess.CompletedProcess([], 255, b""))
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
+             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password",
+                        side_effect=SSHTransportTests.authenticated_spawn(output="done\n")) as spawn:
+            proc = ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "mkdir /x")
+
+        self.assertEqual(len(commands), 1)
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[0][-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "mkdir /x")
+        self.assertEqual(proc.stdout, "done\n")
+
+    def test_master_that_ended_but_a_key_login_ran_the_command_is_not_rerun(self) -> None:
+        self.make_master("root@device", opts="-i ~/.ssh/id")
+        run, commands = self.master_run(
+            'Authenticated to device ([192.0.2.1]:22) using "publickey".\n',
+            subprocess.CompletedProcess([], 0, b"made\n"),
+        )
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
+             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
+            proc = ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", "-i ~/.ssh/id"), "mkdir /x")
+        spawn.assert_not_called()
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(proc.stdout, "made\n")
+
+    def test_without_a_master_the_first_command_logs_in_with_the_password(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run, \
+             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password",
+                        side_effect=SSHTransportTests.authenticated_spawn()) as spawn:
+            ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "true")
+        run.assert_not_called()
+        spawn.assert_called_once()
+        # The login itself becomes the master for later commands.
+        self.assertEqual(self.option(spawn.call_args.args[0], "ControlMaster"), "auto")
+
+    def test_command_over_a_master_that_hangs_times_out_naming_the_command(self) -> None:
+        self.make_master("root@device")
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run",
+                        side_effect=subprocess.TimeoutExpired("ssh", 7)), \
+             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
+            with self.assertRaises(ssh_transport.SshCommandTimeout) as raised:
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "sleep 99", timeout=7)
+        spawn.assert_not_called()
+        self.assertEqual(str(raised.exception), "Timed out waiting for ssh command to finish: sleep 99")
+
+    def make_master(self, host: str, *, opts: str = "", live: bool = True) -> str:
+        path = self.option(self.shared_args(ssh_transport.SshConnection(host, "pw", opts)), "ControlPath")
+        if live:
+            Path(path).touch()
+        return path
+
+    @staticmethod
+    def exited(run: mock.Mock) -> list[str]:
+        paths = []
+        for call in run.call_args_list:
+            command = call.args[0]
+            assert command[-3:-1] == ["-O", "exit"], command
+            paths.append(command[command.index("-o") + 1].removeprefix("ControlPath="))
+        return paths
+
+    def test_closing_a_device_exits_only_its_masters(self) -> None:
+        device = self.make_master("root@10.0.0.2")
+        other_login = self.option(
+            self.shared_args(ssh_transport.SshConnection("admin@10.0.0.2", "pw2", "")), "ControlPath",
+        )
+        Path(other_login).touch()
+        other_device = self.make_master("root@10.0.0.3")
+
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run:
+            ssh_transport.close_ssh_masters("root@10.0.0.2")
+
+        self.assertCountEqual(self.exited(run), [device, other_login])
+        self.assertEqual(list(ssh_transport._control_hosts), [other_device])
+        self.assertTrue(os.path.isdir(self.control_dir))
+
+    def test_closing_skips_masters_that_already_ended(self) -> None:
+        self.make_master("root@10.0.0.2", live=False)
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run:
+            ssh_transport.close_ssh_masters("10.0.0.2")
+        run.assert_not_called()
+        self.assertEqual(ssh_transport._control_hosts, {})
+
+    def test_closing_everything_exits_every_master_and_removes_the_directory(self) -> None:
+        first = self.make_master("root@10.0.0.2")
+        second = self.make_master("root@10.0.0.3")
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run:
+            ssh_transport.close_ssh_masters()
+        self.assertCountEqual(self.exited(run), [first, second])
+        self.assertFalse(os.path.exists(self.control_dir))
+        self.assertEqual(ssh_transport._control_hosts, {})
+
+        # A later shared command gets a new directory, not the removed one.
+        with mock.patch("timecapsulesmb.transport.ssh.atexit.register"):
+            later = self.make_master("root@10.0.0.2", live=False)
+        directory = os.path.dirname(later)
+        self.addCleanup(lambda: os.path.isdir(directory) and os.rmdir(directory))
+        self.assertNotEqual(directory, self.control_dir)
+        self.assertTrue(os.path.isdir(directory))
+
+    def test_a_master_that_will_not_exit_does_not_stop_the_others(self) -> None:
+        first = self.make_master("root@10.0.0.2")
+        second = self.make_master("root@10.0.0.3")
+        with mock.patch(
+            "timecapsulesmb.transport.ssh.subprocess.run",
+            side_effect=[subprocess.TimeoutExpired("ssh", 5), OSError("no ssh")],
+        ) as run:
+            ssh_transport.close_ssh_masters()
+        self.assertCountEqual(self.exited(run), [first, second])
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], ssh_transport.SSH_CONTROL_EXIT_TIMEOUT_SECONDS)
 
 
 class MigrationInputTransportTests(unittest.TestCase):

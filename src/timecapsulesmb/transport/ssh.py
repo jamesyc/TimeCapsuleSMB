@@ -4,15 +4,20 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
+import atexit
+import hashlib
 import shlex
+import shutil
 import subprocess
 import os
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 from timecapsulesmb.core.errors import missing_dependency_message
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
@@ -70,6 +75,23 @@ SSH_STARTUP_CONFIG_ERROR_PATTERNS = (
     "unknown option -- e",
 )
 SSH_CLIENT_LOG_PREFIX = "timecapsulesmb-ssh-"
+# Every command shares one authenticated SSH connection per device. A new
+# login costs about a second against a Time Capsule (key exchange on its CPU,
+# then password authentication), a shared session about 40 ms, and a deploy
+# runs nearly 200 commands. The first command authenticates and its ssh
+# becomes the background master (ControlMaster=auto); while it lives, later
+# commands open sessions over it, and once it is gone ssh logs in afresh.
+# A master quits after ControlPersist idle seconds, when this process exits,
+# and before every reboot request; ServerAlive ends one whose device vanished
+# some other way, so commands then reconnect instead of waiting on it.
+SSH_CONTROL_DIR_PREFIX = "tcsmb-ssh-"
+SSH_CONTROL_PERSIST_SECONDS = 180
+SSH_SERVER_ALIVE_INTERVAL_SECONDS = 15
+SSH_SERVER_ALIVE_COUNT_MAX = 3
+SSH_CONTROL_EXIT_TIMEOUT_SECONDS = 5
+# A session over a master never authenticates itself, so its log has no
+# "Authenticated to" line; at DEBUG1 ssh logs this line for it instead.
+SSH_MUX_SESSION_MARKER = "mux_client_request_session: master session id:"
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
@@ -175,6 +197,10 @@ def parse_ssh_client_diagnostics(output: str) -> SshClientDiagnostics:
     other_error: SshError | None = None
     for raw_line in output.splitlines():
         line = raw_line.strip()
+        if line.startswith("debug1:") and SSH_MUX_SESSION_MARKER in line:
+            # The master authenticated this session's connection.
+            authenticated = True
+            continue
         if not line or line.startswith(("debug1:", "debug2:", "debug3:")):
             continue
         if _is_authenticated_log_line(line):
@@ -365,7 +391,9 @@ def _tokens_include_mac_option(tokens: list[str]) -> bool:
 
 
 _TRANSPORT_OWNED_SSH_OPTIONS = {
+    "controlmaster",
     "controlpath",
+    "controlpersist",
     "exitonforwardfailure",
     "forwardagent",
     "forwardx11",
@@ -512,14 +540,80 @@ def _tokens_request_public_key_auth(tokens: list[str]) -> bool:
     )
 
 
+_control_lock = threading.Lock()
+_control_dir: str | None = None
+# Control socket path -> device host, for closing a device's master.
+_control_hosts: dict[str, str] = {}
+
+
+def _control_path(connection: SshConnection) -> str:
+    """Return this process's master socket path for the connection.
+
+    The name covers the password and options too, so a command never rides on
+    a master that another password or option set authenticated: a password
+    check must log in itself. The private directory is short because macOS
+    limits socket paths to 104 bytes.
+    """
+    global _control_dir
+    key = hashlib.sha256(
+        "\0".join((connection.host, connection.ssh_opts, connection.password)).encode("utf-8")
+    ).hexdigest()[:16]
+    with _control_lock:
+        if _control_dir is None:
+            _control_dir = tempfile.mkdtemp(prefix=SSH_CONTROL_DIR_PREFIX, dir="/tmp")
+            atexit.register(close_ssh_masters)
+        path = os.path.join(_control_dir, key)
+        _control_hosts[path] = endpoint_host(connection.host)
+    return path
+
+
+def close_ssh_masters(host: str | None = None) -> None:
+    """Close this process's shared SSH connections, to `host` or to every device.
+
+    Call before anything that drops the device's SSH connections, such as a
+    reboot: a master left to a rebooting device would hold the next commands
+    until ServerAlive gives up on it.
+    """
+    global _control_dir
+    wanted = endpoint_host(host) if host is not None else None
+    with _control_lock:
+        paths = [path for path, path_host in _control_hosts.items() if wanted is None or path_host == wanted]
+        for path in paths:
+            del _control_hosts[path]
+        directory = None
+        if wanted is None:
+            # The directory goes too; the next shared command makes a new one.
+            directory, _control_dir = _control_dir, None
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            subprocess.run(
+                ["ssh", "-F", "/dev/null", "-o", f"ControlPath={path}", "-O", "exit", "tcsmb-master"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=SSH_CONTROL_EXIT_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if directory is not None:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def _connection_ssh_args(
     connection: SshConnection,
     *,
     client_log: Path,
     stdin_null: bool,
     extra_args: tuple[str, ...] = (),
+    shared: bool = False,
 ) -> list[str]:
-    """Return config-isolated SSH args with transport-owned session behavior."""
+    """Return config-isolated SSH args with transport-owned session behavior.
+
+    `shared` sends the command over the device's shared connection.
+    """
     tokens = _normalize_ssh_tokens(connection.ssh_opts)
 
     if not connection.password:
@@ -531,16 +625,32 @@ def _connection_ssh_args(
         # explicit key configuration and keyboard-interactive password servers.
         auth_args = ["-o", "PubkeyAuthentication=no"]
 
+    if shared:
+        session_args = [
+            "-o", "ControlMaster=auto",
+            "-o", f"ControlPath={_control_path(connection)}",
+            "-o", f"ControlPersist={SSH_CONTROL_PERSIST_SECONDS}",
+        ]
+        # After the caller's options, which may set their own keepalive.
+        keepalive_args = [
+            "-o", f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECONDS}",
+            "-o", f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}",
+        ]
+    else:
+        session_args = ["-S", "none"]
+        keepalive_args = []
+
     return [
         "-F", "/dev/null",
-        "-o", "LogLevel=VERBOSE",
+        "-o", f"LogLevel={'DEBUG1' if shared else 'VERBOSE'}",
         "-o", "NumberOfPasswordPrompts=1",
         "-o", "ExitOnForwardFailure=yes",
         *auth_args,
         *extra_args,
         *tokens,
+        *keepalive_args,
         "-E", str(client_log),
-        "-S", "none",
+        *session_args,
         "-T",
         "-a",
         "-x",
@@ -548,11 +658,68 @@ def _connection_ssh_args(
     ]
 
 
+def _run_over_master(
+    connection: SshConnection,
+    remote_cmd: str,
+    *,
+    timeout: int,
+    timeout_message: str,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a command through the device's live master over plain pipes.
+
+    A PTY costs about 250 ms a command (pexpect's spawn closes every possible
+    descriptor, and its close sleeps), several times the shared session
+    itself; a master never asks for a password, so pipes are enough. Like the
+    PTY, the output joins stdout and stderr. BatchMode keeps a master that
+    ended meanwhile from prompting: ssh then logs in itself and may be
+    refused. Returns None when neither the master nor such a login ran the
+    command, so the caller can log in with the password without running it
+    twice.
+    """
+    if not os.path.exists(_control_path(connection)):
+        return None
+    with _ssh_client_log_path() as client_log:
+        cmd = [
+            "ssh",
+            *_connection_ssh_args(
+                connection,
+                client_log=client_log,
+                stdin_null=True,
+                extra_args=("-o", "BatchMode=yes"),
+                shared=True,
+            ),
+            connection.host,
+            _with_client_hosts_line(remote_cmd),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SshCommandTimeout(timeout_message) from exc
+        except OSError as exc:
+            raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
+        diagnostics = _read_ssh_client_diagnostics(client_log)
+    if not diagnostics.authenticated:
+        return None
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout=proc.stdout.decode("utf-8", errors="replace"), stderr="")
+
+
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     timeout_message = (
         "Timed out waiting for ssh command to finish: "
         f"{_summarize_remote_command(remote_cmd)}"
     )
+    shared = _run_over_master(connection, remote_cmd, timeout=timeout, timeout_message=timeout_message)
+    if shared is not None:
+        if check and shared.returncode != 0:
+            raise SshError(shared.stdout.strip() or f"ssh command failed with rc={shared.returncode}")
+        return shared
     rc = 1
     stdout = ""
     cmd: list[str] = []
@@ -560,7 +727,7 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
         with _ssh_client_log_path() as client_log:
             cmd = [
                 "ssh",
-                *_connection_ssh_args(connection, client_log=client_log, stdin_null=True),
+                *_connection_ssh_args(connection, client_log=client_log, stdin_null=True, shared=True),
                 connection.host,
                 _with_client_hosts_line(remote_cmd),
             ]
@@ -630,6 +797,7 @@ def _run_piped_ssh(
                     client_log=client_log,
                     stdin_null=input_bytes is None,
                     extra_args=extra_ssh_args,
+                    shared=True,
                 ),
                 connection.host,
                 _with_client_hosts_line(remote_cmd),
@@ -744,6 +912,8 @@ def ssh_local_forward(
         raise SshError(missing_dependency_message("pexpect", e)) from e
 
     with _ssh_client_log_path() as client_log:
+        # A tunnel keeps its own connection: a forward opened through a
+        # master belongs to the master and would outlive this tunnel.
         cmd = [
             "ssh",
             *_connection_ssh_args(connection, client_log=client_log, stdin_null=True),

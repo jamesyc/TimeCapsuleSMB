@@ -47,6 +47,9 @@ class FakeAcpDevice:
     reads: int = 0
     # Whether any read returned the new boot's uptime.
     served_new_boot: bool = False
+    # Hosts whose shared SSH connections were closed, and whether the reboot
+    # request had been sent at the time.
+    ssh_master_closes: list[tuple[str, bool]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._boot_at = self.now - self.uptime / self.device_rate
@@ -128,6 +131,10 @@ class FakeAcpDevice:
             mock.patch("timecapsulesmb.integrations.acp.get_property_int", side_effect=self.get_property_int),
             mock.patch("timecapsulesmb.integrations.acp.reboot", side_effect=self.reboot),
             mock.patch("timecapsulesmb.services.reboot.tcp_open", side_effect=self.tcp_open),
+            mock.patch(
+                "timecapsulesmb.services.reboot.close_ssh_masters",
+                side_effect=lambda host: self.ssh_master_closes.append((host, self.requested_at is not None)),
+            ),
         ):
             yield self
 

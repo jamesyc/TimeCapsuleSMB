@@ -50,6 +50,19 @@ class RebootDeviceTests(unittest.TestCase):
         self.assertEqual(device.calls[:3], ["read", "sleep 1", "request"])
         self.assertEqual(device.calls.count("request"), 1)
 
+    def test_shared_ssh_connection_closes_before_the_request(self) -> None:
+        for wait in (True, False):
+            with self.subTest(wait=wait):
+                device = FakeAcpDevice()
+                run(device, wait=wait)
+                self.assertEqual(device.ssh_master_closes, [("10.0.0.2", False)])
+
+    def test_unreadable_baseline_keeps_the_shared_ssh_connection(self) -> None:
+        device = FakeAcpDevice(first_read_error=ACPConnectionError("refused"))
+        error, _recorder = run(device)
+        self.assertIsNotNone(error)
+        self.assertEqual(device.ssh_master_closes, [])
+
     def test_fast_reboot_between_two_reads_still_succeeds(self) -> None:
         # ACP is down for less than one poll interval, so no read sees it down.
         device = FakeAcpDevice(shutdown_after=2.0, kernel_after=2.5, acp_up_after_boot=0.5, ssh_up_after_boot=1.0)

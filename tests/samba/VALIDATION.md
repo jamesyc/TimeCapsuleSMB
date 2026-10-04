@@ -2588,3 +2588,35 @@ Validation:
   failure from another session's doctor at 20:54, before this deploy and while
   no lock was held here, so the device state predates this change; it was left
   alone.
+
+## One shared SSH connection per device (2026-10-04)
+
+A traced NetBSD 6 deploy took 293 s, and 205 s of its 212 s before the reboot
+were 179 separate SSH logins of about 1 s each (key exchange on the device's
+CPU, then password authentication). The work itself was under 20 s, plus three
+10 s flush sleeps. Commands now share one authenticated connection per device:
+the first command's ssh becomes the background master (`ControlMaster=auto`,
+`ControlPersist=180`, socket in a private `/tmp/tcsmb-ssh-*` directory named by
+a hash of host, options and password), and the reboot request, process exit or
+ServerAlive (15 s x 3) ends it. A shared session never authenticates, so its
+log has no `Authenticated to` line; the transport logs at DEBUG1 and counts
+`mux_client_request_session: master session id:` as authenticated, which keeps
+a remote exit of 255, or 5-7 under sshpass, the command's own status. Over a
+live master `run_ssh` uses pipes with `BatchMode=yes` instead of pexpect's PTY
+(287 ms a command against 41 ms: ptyprocess closes every descriptor up to the
+fd limit before exec, and its close sleeps 100 ms); if the master ended and no
+login ran the command, the password login runs it once. The doctor's SMB
+tunnel keeps its own connection.
+
+Validation:
+- pytest: 3,512 passed. One native test failed once under load in the full
+  run and passes alone; under a repeated `-n 12 tests/native` loop a
+  different native test (`test_acp_capture`) failed once. Neither touches the
+  SSH transport.
+- NetBSD 6: deploy 293 s -> 123 s (179 commands over the master, median
+  60 ms; two password logins, before and after the reboot), doctor 34 s ->
+  15-16 s (43 s right after the deploy's reboot).
+- NetBSD 4 LE (OpenSSH 4.4): deploy passed in 332 s with one password login;
+  doctor 39 s -> 18 s. Its remaining time is the device's flash: removing
+  `/mnt/Flash/service` took 27 s and writing the 333 KB service there 118 s,
+  while the 10 MB smbd reached the HFS disk in 4.4 s.
