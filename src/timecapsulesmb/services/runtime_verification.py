@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from time import sleep
 
 from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
@@ -15,37 +13,6 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
-
-
-BOOT_SETTLE_STAGE = "post_reboot_boot_settle"
-BOOT_SETTLE_SECONDS = 20
-BOOT_SETTLE_MESSAGE = Summary("waiting_device_boot", "Waiting a few seconds for device to boot...")
-
-ACTIVATION_SETTLE_STAGE = "post_activation_settle"
-ACTIVATION_SETTLE_SECONDS = 20
-ACTIVATION_SETTLE_MESSAGE = Summary("waiting_device_activate", "Waiting a few seconds for device to activate...")
-
-
-def wait_for_boot_settle(
-    callbacks: OperationCallbacks,
-    *,
-    sleep_func: Callable[[float], None] | None = None,
-) -> None:
-    sleep_func = sleep_func or sleep
-    callbacks.stage(BOOT_SETTLE_STAGE)
-    callbacks.message(BOOT_SETTLE_MESSAGE)
-    sleep_func(BOOT_SETTLE_SECONDS)
-
-
-def wait_for_activation_settle(
-    callbacks: OperationCallbacks,
-    *,
-    sleep_func: Callable[[float], None] | None = None,
-) -> None:
-    sleep_func = sleep_func or sleep
-    callbacks.stage(ACTIVATION_SETTLE_STAGE)
-    callbacks.message(ACTIVATION_SETTLE_MESSAGE)
-    sleep_func(ACTIVATION_SETTLE_SECONDS)
 
 
 def verify_managed_runtime_ready(

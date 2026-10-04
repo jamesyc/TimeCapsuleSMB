@@ -320,8 +320,6 @@
 "backend.summary.reachability.smb_only" = "Порт SMB доступен, SSH отключен.";
 "backend.summary.reachability.ssh_only" = "SSH доступен, порт SMB закрыт.";
 "backend.summary.reachability.unreachable" = "Не удалось связаться с SSH или SMB.";
-"backend.summary.waiting_device_activate" = "Подождите несколько секунд, пока устройство активируется...";
-"backend.summary.waiting_device_boot" = "Подождите несколько секунд, пока устройство загрузится...";
 "backend.summary.telemetry_disabled" = "Телеметрия отключена.";
 "backend.summary.telemetry_enabled" = "Телеметрия включена.";
 "backend.summary.uninstall_completed" = "Удаление завершено.";
@@ -956,13 +954,10 @@
 "timeline.deploy.detail.flush_payload_upload" = "Запись на диск оставшихся в буфере данных установки.";
 "timeline.deploy.detail.load_config" = "Чтение сохраненной конфигурации устройства.";
 "timeline.deploy.detail.post_reboot_activation" = "Запуск SMB после возврата SSH.";
-"timeline.deploy.detail.post_reboot_boot_settle" = "Короткое ожидание после восстановления SSH перед проверкой служб запуска.";
-"timeline.deploy.detail.post_activation_settle" = "Короткое ожидание после активации перед проверкой готовности служб.";
 "timeline.deploy.detail.post_upload_actions" = "Установка хуков запуска во флеш-памяти и применение прав доступа к файлам.";
 "timeline.deploy.detail.pre_upload_actions" = "Остановка управляемых служб и удаление старых файлов установки.";
 "timeline.deploy.detail.prepare_deployment_files" = "Создание конфигурации служб.";
 "timeline.activate.detail.probe_runtime" = "Проверка того, запущен ли TimeCapsuleSMB, перед его активацией.";
-"timeline.activate.detail.post_activation_settle" = "Короткое ожидание после активации перед проверкой готовности служб.";
 "timeline.deploy.detail.probe_runtime" = "Проверка автоматического запуска TimeCapsuleSMB на устройстве.";
 "timeline.deploy.detail.read_mast" = "Поиск смонтированных томов HFS для файлов установки.";
 "timeline.deploy.detail.reboot" = "Отправка запроса перезагрузки через AirPort ACP.";
@@ -991,13 +986,10 @@
 "timeline.deploy.title.flush_payload_upload" = "Синхронизировать запись на диск";
 "timeline.deploy.title.load_config" = "Прочитать конфигурацию";
 "timeline.deploy.title.post_reboot_activation" = "Запустить SMB после перезагрузки";
-"timeline.deploy.title.post_reboot_boot_settle" = "Дождаться завершения запуска устройства";
-"timeline.deploy.title.post_activation_settle" = "Дождаться готовности служб";
 "timeline.deploy.title.post_upload_actions" = "Применить права доступа к файлам";
 "timeline.deploy.title.pre_upload_actions" = "Остановить работающие службы";
 "timeline.deploy.title.prepare_deployment_files" = "Создать конфигурацию служб";
 "timeline.activate.title.probe_runtime" = "Проверить работающие службы";
-"timeline.activate.title.post_activation_settle" = "Дождаться готовности служб";
 "timeline.deploy.title.probe_runtime" = "Проверить автоматический запуск";
 "timeline.deploy.title.read_mast" = "Найти том установки";
 "timeline.deploy.title.reboot" = "Запросить перезагрузку";

@@ -192,42 +192,42 @@ final class BackendEventTests: XCTestCase {
         defer { L10n.apply(language: originalLanguage) }
         let boot = BackendEvent(
             type: "log",
-            operation: "deploy",
+            operation: "uninstall",
             level: "info",
-            message: "Waiting a few seconds for device to boot...",
-            messageKey: "waiting_device_boot",
+            message: "Uninstall completed.",
+            messageKey: "uninstall_completed",
             messageArgs: []
         )
         let activate = BackendEvent(
             type: "log",
-            operation: "activate",
+            operation: "fsck",
             level: "info",
-            message: "Waiting a few seconds for device to activate...",
-            messageKey: "waiting_device_activate"
+            message: "Dry-run plan generated for fsck.",
+            messageKey: "fsck_plan_generated"
         )
         let plain = BackendEvent(type: "log", operation: "deploy", level: "info", message: "Copying smbd.")
 
         L10n.apply(language: .english)
-        XCTAssertEqual(boot.localizedSummary, "Waiting a few seconds for device to boot...")
-        XCTAssertEqual(activate.localizedSummary, "Waiting a few seconds for device to activate...")
+        XCTAssertEqual(boot.localizedSummary, "Uninstall completed.")
+        XCTAssertEqual(activate.localizedSummary, "Dry-run plan generated for fsck.")
 
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertEqual(boot.localizedSummary, "正在等待设备完成启动...")
-        XCTAssertEqual(activate.localizedSummary, "正在等待服务完成启动...")
+        XCTAssertEqual(boot.localizedSummary, "卸载已完成。")
+        XCTAssertEqual(activate.localizedSummary, "已生成 fsck 预演计划。")
         XCTAssertEqual(plain.localizedSummary, "Copying smbd.")
     }
 
     func testDecodedLogEventKeepsItsMessageKey() throws {
         let data = Data(#"""
-        {"type": "log", "operation": "deploy", "level": "info", "message": "Waiting a few seconds for device to boot...",
-         "message_key": "waiting_device_boot", "message_args": []}
+        {"type": "log", "operation": "uninstall", "level": "info", "message": "Uninstall completed.",
+         "message_key": "uninstall_completed", "message_args": []}
         """#.utf8)
 
         let event = try JSONDecoder().decode(BackendEvent.self, from: data)
 
-        XCTAssertEqual(event.messageKey, "waiting_device_boot")
+        XCTAssertEqual(event.messageKey, "uninstall_completed")
         XCTAssertEqual(event.messageArgs, [])
-        XCTAssertEqual(event.withRequestId("r").messageKey, "waiting_device_boot")
+        XCTAssertEqual(event.withRequestId("r").messageKey, "uninstall_completed")
     }
 
     func testBackendEventLocalizesResultSummaryArguments() {

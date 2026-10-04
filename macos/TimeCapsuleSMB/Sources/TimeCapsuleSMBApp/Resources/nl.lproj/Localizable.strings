@@ -320,8 +320,6 @@
 "backend.summary.reachability.smb_only" = "SMB-poort bereikbaar, SSH gesloten.";
 "backend.summary.reachability.ssh_only" = "SSH bereikbaar, SMB-poort gesloten.";
 "backend.summary.reachability.unreachable" = "Kan SSH of SMB niet bereiken.";
-"backend.summary.waiting_device_activate" = "Een paar seconden wachten tot het apparaat wordt geactiveerd...";
-"backend.summary.waiting_device_boot" = "Een paar seconden wachten tot het apparaat opstart...";
 "backend.summary.telemetry_disabled" = "Telemetrie is uitgeschakeld.";
 "backend.summary.telemetry_enabled" = "Telemetrie is ingeschakeld.";
 "backend.summary.uninstall_completed" = "Deïnstallatie voltooid.";
@@ -956,13 +954,10 @@
 "timeline.deploy.detail.flush_payload_upload" = "Openstaande schrijfbewerkingen voor de installatiebestanden naar schijf wegschrijven.";
 "timeline.deploy.detail.load_config" = "De opgeslagen apparaatconfiguratie lezen.";
 "timeline.deploy.detail.post_reboot_activation" = "SMB starten zodra SSH weer bereikbaar is.";
-"timeline.deploy.detail.post_reboot_boot_settle" = "Kort wachten nadat SSH terugkeert voordat de opstartservices worden onderzocht.";
-"timeline.deploy.detail.post_activation_settle" = "Na activering kort wachten voordat wordt gecontroleerd of de services gereed zijn.";
 "timeline.deploy.detail.post_upload_actions" = "Opstart-hooks in flash installeren en bestandsrechten toepassen.";
 "timeline.deploy.detail.pre_upload_actions" = "Beheerde services stoppen en oude installatiebestanden verwijderen.";
 "timeline.deploy.detail.prepare_deployment_files" = "Serviceconfiguratie maken.";
 "timeline.activate.detail.probe_runtime" = "Controleren of TimeCapsuleSMB al actief is voordat u deze activeert.";
-"timeline.activate.detail.post_activation_settle" = "Na activering kort wachten voordat wordt gecontroleerd of de services gereed zijn.";
 "timeline.deploy.detail.probe_runtime" = "Controleren of het apparaat TimeCapsuleSMB automatisch start.";
 "timeline.deploy.detail.read_mast" = "Gekoppelde HFS-volumes voor installatiebestanden zoeken.";
 "timeline.deploy.detail.reboot" = "Het herstartverzoek via AirPort ACP verzenden.";
@@ -991,13 +986,10 @@
 "timeline.deploy.title.flush_payload_upload" = "Naar schijf wegschrijven";
 "timeline.deploy.title.load_config" = "Configuratie lezen";
 "timeline.deploy.title.post_reboot_activation" = "SMB starten na herstart";
-"timeline.deploy.title.post_reboot_boot_settle" = "Wachten tot het apparaat is opgestart";
-"timeline.deploy.title.post_activation_settle" = "Wachten tot de services gereed zijn";
 "timeline.deploy.title.post_upload_actions" = "Bestandsrechten toepassen";
 "timeline.deploy.title.pre_upload_actions" = "Bestaande services stoppen";
 "timeline.deploy.title.prepare_deployment_files" = "Serviceconfiguratie maken";
 "timeline.activate.title.probe_runtime" = "Bestaande services controleren";
-"timeline.activate.title.post_activation_settle" = "Wachten tot de services gereed zijn";
 "timeline.deploy.title.probe_runtime" = "Automatisch opstarten controleren";
 "timeline.deploy.title.read_mast" = "Volume voor installatiebestanden zoeken";
 "timeline.deploy.title.reboot" = "Verzoek om opnieuw opstarten";

@@ -109,7 +109,7 @@ class SummaryTests(unittest.TestCase):
                     Summary("hfs_volumes_found", "text", args)
 
     def test_callbacks_send_keyed_messages_to_the_app_and_text_elsewhere(self) -> None:
-        summary = Summary("waiting_device_boot", "Waiting a few seconds for device to boot...")
+        summary = Summary("uninstall_completed", "Uninstall completed.")
         plain: list[str] = []
         keyed: list[Summary] = []
 
@@ -117,20 +117,20 @@ class SummaryTests(unittest.TestCase):
         OperationCallbacks(log=plain.append, log_summary=keyed.append).message(summary)
         OperationCallbacks(log=plain.append, log_summary=keyed.append).message("free text")
 
-        self.assertEqual(plain, ["Waiting a few seconds for device to boot...", "free text"])
+        self.assertEqual(plain, ["Uninstall completed.", "free text"])
         self.assertEqual(keyed, [summary])
 
     def test_app_context_emits_keyed_log_events(self) -> None:
         events: list[AppEvent] = []
         context = AppOperationContext("deploy", EventSink(events.append, request_id="r"))
 
-        context.to_operation_callbacks().message(Summary("waiting_device_activate", "Waiting a few seconds for device to activate..."))
+        context.to_operation_callbacks().message(Summary("fsck_plan_generated", "Dry-run plan generated for fsck."))
         context.to_operation_callbacks().message("free text")
 
         keyed, plain = (event.to_jsonable() for event in events)
         self.assertEqual(keyed["type"], "log")
-        self.assertEqual(keyed["message"], "Waiting a few seconds for device to activate...")
-        self.assertEqual(keyed["message_key"], "waiting_device_activate")
+        self.assertEqual(keyed["message"], "Dry-run plan generated for fsck.")
+        self.assertEqual(keyed["message_key"], "fsck_plan_generated")
         self.assertEqual(keyed["message_args"], [])
         self.assertNotIn("message_key", plain)
 
@@ -208,7 +208,6 @@ class SummaryProducerTests(unittest.TestCase):
         "flash_restore_write_manual_reboot": (
             "flash_restore_write_validated_manual_reboot", [], "Flash restore write validated; manual reboot required."),
         "flash_write_completed": ("flash_write_completed", [], "Flash write completed."),
-        "log_waiting_boot": ("waiting_device_boot", [], "Waiting a few seconds for device to boot..."),
     }
 
     def test_each_branch_emits_its_key_arguments_and_unchanged_english(self) -> None:

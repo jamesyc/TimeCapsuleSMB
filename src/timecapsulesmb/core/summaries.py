@@ -51,8 +51,6 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "activation_already_active": (),
     "activation_completed": (),
     "activation_completed_followup": (),
-    "waiting_device_boot": (),
-    "waiting_device_activate": (),
     "uninstall_completed": (),
     "uninstall_unverified": (),
     "hfs_volumes_found": ("int",),

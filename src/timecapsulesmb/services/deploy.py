@@ -95,7 +95,6 @@ from timecapsulesmb.services.reboot import reboot_device
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
-    wait_for_boot_settle,
 )
 from timecapsulesmb.transport.ssh import (
     SshConnection,
@@ -1294,7 +1293,6 @@ def complete_deployment_after_upload(
     )
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-        wait_for_boot_settle(callbacks)
         callbacks.stage("probe_runtime")
         decision = decide_post_reboot_activation(connection)
         callbacks.debug(
@@ -1338,7 +1336,6 @@ def complete_deployment_after_upload(
             summary=netbsd4_activation_summary(),
         )
 
-    wait_for_boot_settle(callbacks)
     if messages.reboot_runtime_wait_message:
         callbacks.message(messages.reboot_runtime_wait_message)
     verify_runtime_func(

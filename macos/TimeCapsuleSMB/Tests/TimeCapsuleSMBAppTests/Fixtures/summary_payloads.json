@@ -2121,32 +2121,6 @@
   },
   {
     "event": {
-      "level": "info",
-      "message": "Waiting a few seconds for device to boot...",
-      "message_args": [],
-      "message_key": "waiting_device_boot",
-      "operation": "deploy",
-      "request_id": "fixture",
-      "schema_version": 1,
-      "type": "log"
-    },
-    "name": "log_waiting_boot"
-  },
-  {
-    "event": {
-      "level": "info",
-      "message": "Waiting a few seconds for device to activate...",
-      "message_args": [],
-      "message_key": "waiting_device_activate",
-      "operation": "deploy",
-      "request_id": "fixture",
-      "schema_version": 1,
-      "type": "log"
-    },
-    "name": "log_waiting_activate"
-  },
-  {
-    "event": {
       "ok": true,
       "operation": "set-ssh",
       "payload": {

@@ -25,8 +25,7 @@ private struct OperationStageLocalization {
 
 enum OperationTimelineBuilder {
     private static let activateStageLocalizations: [String: OperationStageLocalization] = [
-        "probe_runtime": .init(titleKey: "timeline.activate.title.probe_runtime", detailKey: "timeline.activate.detail.probe_runtime"),
-        "post_activation_settle": .init(titleKey: "timeline.activate.title.post_activation_settle", detailKey: "timeline.activate.detail.post_activation_settle")
+        "probe_runtime": .init(titleKey: "timeline.activate.title.probe_runtime", detailKey: "timeline.activate.detail.probe_runtime")
     ]
 
     private static let deployStageLocalizations: [String: OperationStageLocalization] = [
@@ -59,8 +58,6 @@ enum OperationTimelineBuilder {
         "flush_boot_hook": .init(titleKey: "timeline.deploy.title.flush_payload_upload", detailKey: "timeline.deploy.detail.flush_payload_upload"),
         "verify_payload_upload_after_sync": .init(titleKey: "timeline.deploy.title.verify_payload_upload_after_sync", detailKey: "timeline.deploy.detail.verify_payload_upload_after_sync"),
         "probe_runtime": .init(titleKey: "timeline.deploy.title.probe_runtime", detailKey: "timeline.deploy.detail.probe_runtime"),
-        "post_reboot_boot_settle": .init(titleKey: "timeline.deploy.title.post_reboot_boot_settle", detailKey: "timeline.deploy.detail.post_reboot_boot_settle"),
-        "post_activation_settle": .init(titleKey: "timeline.deploy.title.post_activation_settle", detailKey: "timeline.deploy.detail.post_activation_settle"),
         "post_reboot_activation": .init(titleKey: "timeline.deploy.title.post_reboot_activation", detailKey: "timeline.deploy.detail.post_reboot_activation"),
         "verify_runtime_activation": .init(titleKey: "timeline.deploy.title.verify_runtime_activation", detailKey: "timeline.deploy.detail.verify_runtime_activation"),
         "verify_runtime_reboot": .init(titleKey: "timeline.deploy.title.verify_runtime_reboot", detailKey: "timeline.deploy.detail.verify_runtime_reboot")

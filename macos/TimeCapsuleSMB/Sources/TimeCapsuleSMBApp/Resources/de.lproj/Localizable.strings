@@ -320,8 +320,6 @@
 "backend.summary.reachability.smb_only" = "SMB-Port erreichbar, SSH geschlossen.";
 "backend.summary.reachability.ssh_only" = "SSH erreichbar, SMB-Port geschlossen.";
 "backend.summary.reachability.unreachable" = "Konnte SSH oder SMB nicht erreichen.";
-"backend.summary.waiting_device_activate" = "Warten Sie ein paar Sekunden, bis das Gerät aktiviert wird ...";
-"backend.summary.waiting_device_boot" = "Warten Sie ein paar Sekunden, bis das Gerät startet ...";
 "backend.summary.telemetry_disabled" = "Telemetrie ist deaktiviert.";
 "backend.summary.telemetry_enabled" = "Telemetrie ist aktiviert.";
 "backend.summary.uninstall_completed" = "Deinstallation abgeschlossen.";
@@ -956,13 +954,10 @@
 "timeline.deploy.detail.flush_payload_upload" = "Ausstehende Schreibvorgänge für die Installationsdateien werden auf den Datenträger geschrieben.";
 "timeline.deploy.detail.load_config" = "Lesen der gespeicherten Gerätekonfiguration.";
 "timeline.deploy.detail.post_reboot_activation" = "SMB wird gestartet, nachdem SSH wieder erreichbar ist.";
-"timeline.deploy.detail.post_reboot_boot_settle" = "Nach der Rückkehr von SSH wird vor der Prüfung der Startdienste kurz gewartet.";
-"timeline.deploy.detail.post_activation_settle" = "Nach der Aktivierung wird vor der Prüfung der Dienstbereitschaft kurz gewartet.";
 "timeline.deploy.detail.post_upload_actions" = "Flash-Starthooks werden installiert und Dateirechte angewendet.";
 "timeline.deploy.detail.pre_upload_actions" = "Verwaltete Dienste werden gestoppt und veraltete Installationsdateien entfernt.";
 "timeline.deploy.detail.prepare_deployment_files" = "Dienstkonfiguration wird erstellt.";
 "timeline.activate.detail.probe_runtime" = "Vor der Aktivierung wird geprüft, ob TimeCapsuleSMB bereits läuft.";
-"timeline.activate.detail.post_activation_settle" = "Nach der Aktivierung wird vor der Prüfung der Dienstbereitschaft kurz gewartet.";
 "timeline.deploy.detail.probe_runtime" = "Prüft, ob das Gerät TimeCapsuleSMB automatisch startet.";
 "timeline.deploy.detail.read_mast" = "Eingebundene HFS-Volumes für Installationsdateien werden gesucht.";
 "timeline.deploy.detail.reboot" = "Senden der Neustartanforderung über AirPort ACP.";
@@ -991,13 +986,10 @@
 "timeline.deploy.title.flush_payload_upload" = "Auf Datenträger schreiben";
 "timeline.deploy.title.load_config" = "Konfiguration lesen";
 "timeline.deploy.title.post_reboot_activation" = "SMB nach dem Neustart starten";
-"timeline.deploy.title.post_reboot_boot_settle" = "Abschluss des Gerätestarts abwarten";
-"timeline.deploy.title.post_activation_settle" = "Warten, bis die Dienste bereit sind";
 "timeline.deploy.title.post_upload_actions" = "Zugriffsrechte anwenden";
 "timeline.deploy.title.pre_upload_actions" = "Vorhandene Dienste stoppen";
 "timeline.deploy.title.prepare_deployment_files" = "Dienstkonfiguration erstellen";
 "timeline.activate.title.probe_runtime" = "Vorhandene Dienste prüfen";
-"timeline.activate.title.post_activation_settle" = "Warten, bis die Dienste bereit sind";
 "timeline.deploy.title.probe_runtime" = "Automatischen Start prüfen";
 "timeline.deploy.title.read_mast" = "Volume für Installationsdateien suchen";
 "timeline.deploy.title.reboot" = "Neustart anfordern";

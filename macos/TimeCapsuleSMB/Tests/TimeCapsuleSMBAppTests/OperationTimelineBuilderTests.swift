@@ -90,30 +90,18 @@ final class OperationTimelineBuilderTests: XCTestCase {
     func testDeployStartupStagesAreUserFacing() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "deploy", stage: "probe_runtime"),
-            BackendEvent(type: "stage", operation: "deploy", stage: "post_reboot_boot_settle"),
             BackendEvent(type: "stage", operation: "deploy", stage: "post_reboot_activation"),
-            BackendEvent(type: "stage", operation: "deploy", stage: "post_activation_settle"),
             BackendEvent(type: "stage", operation: "deploy", stage: "verify_runtime_activation")
         ])
 
         XCTAssertEqual(timeline.map(\.title), [
             "Check Boot Startup",
-            "Let Device Finish Booting",
             "Start SMB After Reboot",
-            "Wait for services to settle",
             "Verify SMB Startup"
         ])
         XCTAssertEqual(
             timeline.first?.detail,
             "Checking whether the device will start TimeCapsuleSMB automatically."
-        )
-        XCTAssertEqual(
-            timeline[1].detail,
-            "Waiting briefly after SSH returns before probing boot-time services."
-        )
-        XCTAssertEqual(
-            timeline[3].detail,
-            "Waiting briefly after activation before probing runtime readiness."
         )
     }
 
@@ -135,18 +123,13 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
     func testActivateRuntimeProbeStageIsUserFacing() {
         let timeline = OperationTimelineBuilder.timeline(from: [
-            BackendEvent(type: "stage", operation: "activate", stage: "probe_runtime"),
-            BackendEvent(type: "stage", operation: "activate", stage: "post_activation_settle")
+            BackendEvent(type: "stage", operation: "activate", stage: "probe_runtime")
         ])
 
-        XCTAssertEqual(timeline.map(\.title), ["Check Existing Runtime", "Wait for services to settle"])
+        XCTAssertEqual(timeline.map(\.title), ["Check Existing Runtime"])
         XCTAssertEqual(
             timeline.first?.detail,
             "Checking whether TimeCapsuleSMB is already running before activating it."
-        )
-        XCTAssertEqual(
-            timeline[1].detail,
-            "Waiting briefly after activation before probing runtime readiness."
         )
     }
 
@@ -248,8 +231,6 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "wait_for_reboot_down",
             "wait_for_reboot_up",
             "probe_runtime",
-            "post_reboot_boot_settle",
-            "post_activation_settle",
             "post_reboot_activation",
             "verify_runtime_activation",
             "verify_runtime_reboot"
@@ -267,8 +248,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
     func testAllKnownActivateStagesHaveLocalizedTitlesAndDetails() {
         let activateStages = [
-            "probe_runtime",
-            "post_activation_settle"
+            "probe_runtime"
         ]
 
         for stage in activateStages {

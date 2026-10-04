@@ -1259,7 +1259,10 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         else:
             nbns_status, nbns_detail = "fail", "discovery native NBNS state does not match the active plan"
         if native_nbns == "advisory" and nbns_status == "fail":
-            if nbns_detail == "discovery native NBNS is still starting":
+            # "waiting" with a validated plan is discovery between retries.
+            # After a reboot that is normal: ACPd's own wcifsnd holds UDP 137
+            # and 138 until the manager stops it, which took up to 40 s.
+            if eligible and nbns_state in {"starting", "waiting"}:
                 nbns_status, nbns_detail = "skip", "native NBNS is still starting; deploy does not wait for it"
             else:
                 nbns_status = "info"

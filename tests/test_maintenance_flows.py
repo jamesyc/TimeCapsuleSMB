@@ -338,7 +338,7 @@ class ActivateRuntimeTests(unittest.TestCase):
                     "timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime,
                 ) as probe:
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as run_actions:
-                        with mock.patch("timecapsulesmb.services.activation.wait_for_activation_settle") as settle:
+                        with mock.patch("time.sleep") as settle:
                             with mock.patch(
                                 "timecapsulesmb.services.activation.verify_managed_runtime_ready", side_effect=verify_error,
                             ) as verify:
@@ -447,7 +447,8 @@ class ActivateRuntimeTests(unittest.TestCase):
         self.assertEqual(recorder.debug["activation_decision"], "runtime_not_ready")
         self.assertIn("Activating NetBSD4 payload without file transfer.", recorder.messages)
         run_actions.assert_called_once_with(CONNECTION, self.ACTIONS)
-        settle.assert_called_once()
+        # Verification starts right away and polls; nothing sleeps a fixed time.
+        settle.assert_not_called()
         self.assertEqual(verify.call_args.kwargs["stage"], "verify_runtime_activation")
         self.assertEqual(verify.call_args.kwargs["timeout_seconds"], 200)
         self.assertEqual(verify.call_args.kwargs["failure_message"], "NetBSD4 activation failed.")

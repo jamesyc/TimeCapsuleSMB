@@ -320,8 +320,6 @@
 "backend.summary.reachability.smb_only" = "SMB prievadas pasiekiamas, SSH uždaryta.";
 "backend.summary.reachability.ssh_only" = "SSH pasiekiama, SMB prievadas uždarytas.";
 "backend.summary.reachability.unreachable" = "Nepavyko pasiekti SSH ar SMB.";
-"backend.summary.waiting_device_activate" = "Laukiama kelias sekundes, kol įrenginys aktyvuosis...";
-"backend.summary.waiting_device_boot" = "Laukiama kelias sekundes, kol įrenginys įsikraus...";
 "backend.summary.telemetry_disabled" = "Telemetrija išjungta.";
 "backend.summary.telemetry_enabled" = "Telemetrija įjungta.";
 "backend.summary.uninstall_completed" = "Pašalinimas baigtas.";
@@ -956,13 +954,10 @@
 "timeline.deploy.detail.flush_payload_upload" = "Baigiamas diegimo failų įrašymas į diską.";
 "timeline.deploy.detail.load_config" = "Skaitoma išsaugota įrenginio konfigūracija.";
 "timeline.deploy.detail.post_reboot_activation" = "SMB paleidimas grįžus SSH.";
-"timeline.deploy.detail.post_reboot_boot_settle" = "Trumpas laukimas grįžus SSH prieš tikrinant paleisties paslaugas.";
-"timeline.deploy.detail.post_activation_settle" = "Trumpas laukimas po aktyvavimo prieš tikrinant aplinkos parengtį.";
 "timeline.deploy.detail.post_upload_actions" = "Diegiami flash įskiepiai ir taikomi failų teisių režimai.";
 "timeline.deploy.detail.pre_upload_actions" = "Sustabdomos valdomos paslaugos ir šalinami pasenę diegimo failai.";
 "timeline.deploy.detail.prepare_deployment_files" = "Generuojama aplinkos konfigūracija.";
 "timeline.activate.detail.probe_runtime" = "Tikrinama, ar TimeCapsuleSMB jau veikia prieš ją aktyvuojant.";
-"timeline.activate.detail.post_activation_settle" = "Trumpas laukimas po aktyvavimo prieš tikrinant aplinkos parengtį.";
 "timeline.deploy.detail.probe_runtime" = "Tikrinama, ar įrenginys paleis TimeCapsuleSMB automatiškai.";
 "timeline.deploy.detail.read_mast" = "Ieškoma prijungtų HFS tomų diegimo failams.";
 "timeline.deploy.detail.reboot" = "Siunčiama paleidimo iš naujo užklausa per AirPort ACP.";
@@ -991,13 +986,10 @@
 "timeline.deploy.title.flush_payload_upload" = "Išvalyti į diską";
 "timeline.deploy.title.load_config" = "Skaityti konfigūraciją";
 "timeline.deploy.title.post_reboot_activation" = "Paleisti SMB po paleidimo iš naujo";
-"timeline.deploy.title.post_reboot_boot_settle" = "Leisti įrenginiui baigti krauti";
-"timeline.deploy.title.post_activation_settle" = "Leisti aplinkai stabilizuotis";
 "timeline.deploy.title.post_upload_actions" = "Taikyti failų leidimus";
 "timeline.deploy.title.pre_upload_actions" = "Sustabdyti esamą aplinką";
 "timeline.deploy.title.prepare_deployment_files" = "Kurti aplinkos konfigūraciją";
 "timeline.activate.title.probe_runtime" = "Tikrinti esamą aplinką";
-"timeline.activate.title.post_activation_settle" = "Leisti aplinkai stabilizuotis";
 "timeline.deploy.title.probe_runtime" = "Tikrinti paleisties paleidimą";
 "timeline.deploy.title.read_mast" = "Rasti diegimo tomą";
 "timeline.deploy.title.reboot" = "Prašyti paleisti iš naujo";

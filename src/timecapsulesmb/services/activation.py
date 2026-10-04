@@ -16,7 +16,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready, wait_for_activation_settle
+from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -167,7 +167,6 @@ def run_activation_actions_and_verify(
     callbacks.stage(activation_stage)
     callbacks.message(activation_message)
     run_remote_actions_func(connection, activation_actions)
-    wait_for_activation_settle(callbacks)
     verify_runtime_func(
         connection,
         callbacks=callbacks,

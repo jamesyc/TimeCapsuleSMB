@@ -242,7 +242,6 @@ class AppApiTests(unittest.TestCase):
         self._telemetry_urlopen = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.telemetry.urllib.request.urlopen", side_effect=AssertionError("tests must not send telemetry"))
         )
-        self._runtime_wait_sleep = self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
         # activate first checks the device holds an install of this version;
         # tests that model a missing or other install set these return values.
         self._installed_config_present = self._exit_stack.enter_context(
@@ -4942,9 +4941,8 @@ MaSt = (
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
-                        with mock.patch("timecapsulesmb.services.activation.wait_for_activation_settle"):
-                            with mock.patch("timecapsulesmb.services.activation.verify_managed_runtime_ready"):
-                                rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+                        with mock.patch("timecapsulesmb.services.activation.verify_managed_runtime_ready"):
+                            rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
 
         self.assertEqual(rc, 0)
         remote_actions.assert_called_once()
@@ -5247,16 +5245,15 @@ MaSt = (
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
-                        with mock.patch("timecapsulesmb.services.activation.wait_for_activation_settle"):
-                            with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=verification) as verify_probe:
-                                with mock.patch(
-                                    "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
-                                    return_value={
-                                        "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
-                                        "remote_discovery_log_tail": "mdns: before interface probe",
-                                    },
-                                ):
-                                    rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
+                        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=verification) as verify_probe:
+                            with mock.patch(
+                                "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
+                                return_value={
+                                    "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
+                                    "remote_discovery_log_tail": "mdns: before interface probe",
+                                },
+                            ):
+                                rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)
         remote_actions.assert_called_once()

@@ -205,7 +205,6 @@ class CliDeployTests(CliTestCase):
                     side_effect=AssertionError("deploy must not set other ACP properties"),
                 )
             )
-            mocks.runtime_wait_sleep = stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
             if input_side_effect is not None:
                 mocks.input = stack.enter_context(mock.patch("builtins.input", side_effect=input_side_effect))
             if raises is None:

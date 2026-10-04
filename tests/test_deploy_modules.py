@@ -117,10 +117,6 @@ from timecapsulesmb.services.deploy import (
     upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.runtime_verification import (
-    ACTIVATION_SETTLE_MESSAGE,
-    ACTIVATION_SETTLE_SECONDS,
-    BOOT_SETTLE_MESSAGE,
-    BOOT_SETTLE_SECONDS,
     verify_managed_runtime_ready,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
@@ -1538,7 +1534,11 @@ describe_managed_smbd_status "" ""
              "PASS:Apple wcifsnd is ready on UDP 137 and 138"),
             ("starting", self.PS_V31.replace("nbns=ready", "nbns=starting"), None, None,
              "SKIP:native NBNS is still starting; deploy does not wait for it"),
+            # Between retries, as after every reboot while ACPd's own wcifsnd
+            # still holds the ports.
             ("retrying", no_wcifsnd_ps.replace("nbns=ready", "nbns=waiting"), no_wcifsnd_fstat, None,
+             "SKIP:native NBNS is still starting; deploy does not wait for it"),
+            ("ready without its ports", self.PS_V31, no_wcifsnd_fstat, None,
              "INFO:discovery native NBNS is not ready" + unlisted),
             ("no state", self.PS_V31.replace("nbns=ready mode=payload ", ""), None, None,
              "INFO:discovery NBNS state is not available yet" + unlisted),
@@ -1899,37 +1899,31 @@ describe_managed_smbd_status "" ""
             reason="firmware_autostart_missing",
             detail="/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local",
         )
-        settle_calls: list[int] = []
-
-        def decide_after_settle(_connection: SshConnection) -> ActivationDecision:
-            self.assertEqual(settle_calls, [BOOT_SETTLE_SECONDS])
-            return activation_decision
-
-        with mock.patch(
-            "timecapsulesmb.services.runtime_verification.sleep",
-            side_effect=lambda seconds: settle_calls.append(seconds),
-        ) as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
+        order = mock.Mock()
+        with mock.patch("time.sleep") as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
+            order.attach_mock(reboot, "reboot")
+            order.attach_mock(run_actions, "run_actions")
+            order.attach_mock(verify_runtime, "verify_runtime")
             result = complete_deployment_after_upload(
                 connection,
                 prepared_plan,
                 no_wait=False,
                 callbacks=callbacks,
                 run_remote_actions_func=run_actions,
-                decide_post_reboot_activation=mock.Mock(side_effect=decide_after_settle),
+                decide_post_reboot_activation=mock.Mock(return_value=activation_decision),
                 verify_runtime_func=verify_runtime,
             )
 
-        reboot.assert_called_once()
         self.assertTrue(reboot.call_args.kwargs["wait"])
-        self.assertEqual(sleep_mock.call_args_list, [mock.call(BOOT_SETTLE_SECONDS), mock.call(ACTIVATION_SETTLE_SECONDS)])
+        # The reboot wait returns once SSH is open, and verification polls on
+        # its own, so nothing waits a fixed time in between.
+        sleep_mock.assert_not_called()
+        self.assertEqual([call[0] for call in order.mock_calls], ["reboot", "run_actions", "verify_runtime"])
         run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
-        verify_runtime.assert_called_once()
-        self.assertEqual(stages, ["post_reboot_boot_settle", "probe_runtime", "post_reboot_activation", "post_activation_settle"])
+        self.assertEqual(stages, ["probe_runtime", "post_reboot_activation"])
         self.assertEqual(debug_fields["activation_decision"], "firmware_autostart_missing")
         self.assertTrue(debug_fields["manual_activation_required"])
-        self.assertIn(BOOT_SETTLE_MESSAGE.text, logs)
         self.assertIn("Activating deployed runtime after reboot.", logs)
-        self.assertIn(ACTIVATION_SETTLE_MESSAGE.text, logs)
         self.assertTrue(result.rebooted)
         self.assertTrue(result.verified)
         # The app translates the follow-up through this key, so the service owns it.
@@ -1941,17 +1935,8 @@ describe_managed_smbd_status "" ""
         callbacks, stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         verify_runtime = mock.Mock()
-        settle_calls: list[int] = []
 
-        def verify_after_settle(*args, **kwargs) -> None:
-            self.assertEqual(settle_calls, [BOOT_SETTLE_SECONDS])
-
-        verify_runtime.side_effect = verify_after_settle
-
-        with mock.patch(
-            "timecapsulesmb.services.runtime_verification.sleep",
-            side_effect=lambda seconds: settle_calls.append(seconds),
-        ) as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device"):
+        with mock.patch("time.sleep") as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device"):
             result = complete_deployment_after_upload(
                 connection,
                 prepared_plan,
@@ -1961,12 +1946,11 @@ describe_managed_smbd_status "" ""
                 verify_runtime_func=verify_runtime,
             )
 
-        sleep_mock.assert_called_once_with(BOOT_SETTLE_SECONDS)
+        sleep_mock.assert_not_called()
         verify_runtime.assert_called_once()
         self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_reboot")
-        self.assertIn(BOOT_SETTLE_MESSAGE.text, logs)
         self.assertIn("Waiting for managed runtime...", logs)
-        self.assertEqual(stages, ["post_reboot_boot_settle"])
+        self.assertEqual(stages, [])
         self.assertTrue(result.verified)
         self.assertIsNone(result.summary)
         self.assertIsNone(result.message)

@@ -2458,3 +2458,31 @@ Validation:
   run), the macOS app's own deploy, and NetBSD 4 BE (no LAN device; `syUT` is
   unverified there, but a missing property fails before any request). The
   Samba device suites were skipped: smbd is unchanged.
+
+## No fixed settle sleeps after a reboot or activation (2026-10-03)
+
+Deploy slept 20 s after SSH returned before probing the runtime, and activation
+slept 20 s after starting it. The shared reboot wait now returns only once SSH
+is open on the new boot, and runtime verification polls for up to 240 s
+(200 s after activation), so both sleeps went, with their stages, keyed log
+messages and strings.
+
+Validation:
+- pytest: 3,290 passed; `swift test`: 657 passed.
+- NetBSD 6: deploy (new boot seen at 64 s, runtime ready without the sleep),
+  doctor passed. Readiness now passes before NBNS finishes registering, so the
+  deploy printed the existing note "discovery native NBNS is not ready"; the
+  doctor that followed resolved the NBNS name. The device's discovery log
+  shows why: right after boot ACPd's own `wcifsnd` held UDP 137/138, so
+  discovery's child exited 0 four times (retries after 2, 4, 8 and 16 s,
+  title `nbns=waiting` in between) until the manager stopped ACPd's copy; the
+  name registered at 21:04:53, 21 s after deploy finished. Deploy now reports
+  `waiting` with a validated plan like `starting` (a quiet skip, since deploy
+  does not wait for NBNS); doctor still treats it as not ready and retries.
+- NetBSD 4 LE: deploy passed (new boot seen at 114 s, activation verified).
+  Doctor then failed only its Bonjour checks: the device's AirPort name
+  (`acp -q syNm`) is empty, so its `_smb`/`_airport` instances have blank
+  names while the hostname is `base-station-edffbf`. Telemetry shows the same
+  failure from another session's doctor at 20:54, before this deploy and while
+  no lock was held here, so the device state predates this change; it was left
+  alone.

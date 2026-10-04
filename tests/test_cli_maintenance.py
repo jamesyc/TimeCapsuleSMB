@@ -14,10 +14,6 @@ from timecapsulesmb.cli.main import main
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services import maintenance as maintenance_service
 from timecapsulesmb.services import reboot as reboot_service
-from timecapsulesmb.services.runtime_verification import (
-    ACTIVATION_SETTLE_MESSAGE,
-    ACTIVATION_SETTLE_SECONDS,
-)
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.deploy.commands import (
@@ -173,7 +169,7 @@ class CliMaintenanceTests(CliTestCase):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock:
-                            with mock.patch("timecapsulesmb.services.runtime_verification.sleep") as sleep_mock:
+                            with mock.patch("time.sleep") as sleep_mock:
                                 with redirect_stdout(output):
                                     rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -188,9 +184,10 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(actions_mock.call_args.kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
         self.assertEqual(verify_mock.call_args.kwargs["timeout_seconds"], 200)
-        sleep_mock.assert_called_once_with(ACTIVATION_SETTLE_SECONDS)
+        # Verification polls on its own; nothing waits a fixed time first.
+        sleep_mock.assert_not_called()
         self.assertIn("without file transfer", output.getvalue())
-        self.assertIn(ACTIVATION_SETTLE_MESSAGE.text, output.getvalue())
+        self.assertNotIn("Waiting a few seconds", output.getvalue())
 
     def test_activate_on_a_device_without_an_install_exits_before_running_anything(self) -> None:
         output = io.StringIO()
@@ -233,11 +230,12 @@ class CliMaintenanceTests(CliTestCase):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions"):
                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
-                            with mock.patch("timecapsulesmb.services.runtime_verification.sleep") as sleep_mock:
+                            with mock.patch("time.sleep") as sleep_mock:
                                 with redirect_stdout(output):
                                     rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)
-        sleep_mock.assert_called_once_with(ACTIVATION_SETTLE_SECONDS)
+        # Only the verification's own polling sleeps; nothing waits a fixed time first.
+        self.assertTrue(all(call.args[0] < 20 for call in sleep_mock.call_args_list))
         self.assertIn("NetBSD4 activation failed.", output.getvalue())
 
     def test_activate_dry_run_json_outputs_activation_plan(self) -> None:
