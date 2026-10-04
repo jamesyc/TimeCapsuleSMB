@@ -20,7 +20,6 @@ from timecapsulesmb.core.net import (  # noqa: E402
     is_link_local_ip,
     is_link_local_ipv4,
     is_link_local_ipv6,
-    is_loopback_ipv4,
     resolve_host_ips,
     resolve_host_ipv4s,
     resolve_host_ipv6s,
@@ -78,8 +77,6 @@ class NetTests(unittest.TestCase):
         self.assertTrue(is_link_local_ip("169.254.44.9"))
         self.assertTrue(is_link_local_ip("fe80::1"))
         self.assertFalse(is_link_local_ip("10.0.0.2"))
-        self.assertTrue(is_loopback_ipv4("127.0.0.1"))
-        self.assertFalse(is_loopback_ipv4("169.254.44.9"))
 
     def test_resolve_host_ipv4s_deduplicates_and_normalizes(self) -> None:
         addrinfo = [

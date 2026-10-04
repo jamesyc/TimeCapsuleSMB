@@ -9,11 +9,9 @@ import re
 import tempfile
 
 from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, is_link_local_ip, parse_endpoint
-from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
+from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 
-REPO_ROOT = package_project_root()
-ENV_PATH = REPO_ROOT / ".env"
 MAX_DNS_LABEL_BYTES = 63
 MAX_NETBIOS_NAME_BYTES = 15
 MANAGED_PAYLOAD_DIR_NAME = ".samba4"

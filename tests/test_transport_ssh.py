@@ -154,13 +154,13 @@ class SSHTransportTests(unittest.TestCase):
             ],
         )
 
-    def test_classify_ssh_client_error_detects_no_matching_mac_offer(self) -> None:
+    def test_client_diagnostics_detect_no_matching_mac_offer(self) -> None:
         line = (
             "Unable to negotiate with 192.168.200.214 port 22: no matching MAC found. "
             "Their offer: hmac-md5,hmac-sha1,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96"
         )
 
-        error = ssh_transport.classify_ssh_client_error(line)
+        error = ssh_transport.parse_ssh_client_diagnostics(line).error
 
         self.assertIsInstance(error, ssh_transport.SshAlgorithmNegotiationError)
         assert isinstance(error, ssh_transport.SshAlgorithmNegotiationError)
@@ -168,8 +168,8 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(error.offered[0:2], ("hmac-md5", "hmac-sha1"))
         self.assertEqual(str(error), line)
 
-    def test_classify_ssh_client_error_detects_auth_rejection(self) -> None:
-        error = ssh_transport.classify_ssh_client_error("Permission denied, please try again.\n")
+    def test_client_diagnostics_detect_auth_rejection(self) -> None:
+        error = ssh_transport.parse_ssh_client_diagnostics("Permission denied, please try again.\n").error
 
         self.assertIsInstance(error, ssh_transport.SshAuthenticationError)
 
@@ -427,13 +427,13 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(len(summary), ssh_transport.REMOTE_COMMAND_SUMMARY_LIMIT)
         self.assertTrue(summary.endswith("..."))
 
-    def test_classify_ssh_client_error_detects_forward_bind_failure(self) -> None:
+    def test_client_diagnostics_detect_forward_bind_failure(self) -> None:
         output = (
             "bind [127.0.0.1]:108: Permission denied\n"
             "channel_setup_fwd_listener_tcpip: cannot listen to port: 108\n"
             "NetBSD\n"
         )
-        error = ssh_transport.classify_ssh_client_error(output)
+        error = ssh_transport.parse_ssh_client_diagnostics(output).error
         self.assertEqual(str(error), "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied")
 
     def test_run_ssh_raises_on_ssh_transport_warning_even_with_zero_exit(self) -> None:

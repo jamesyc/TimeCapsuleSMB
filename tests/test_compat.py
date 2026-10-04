@@ -18,7 +18,6 @@ from timecapsulesmb.device.compat import (
     airport_syap_supported,
     classify_device_compatibility,
     is_netbsd4_payload_family,
-    is_netbsd6_payload_family,
     payload_family_description,
     render_compatibility_message,
     unsupported_syap_message,
@@ -280,8 +279,6 @@ class CompatibilityTests(unittest.TestCase):
         self.assertTrue(is_netbsd4_payload_family(PAYLOAD_FAMILY_NETBSD4LE))
         self.assertTrue(is_netbsd4_payload_family(PAYLOAD_FAMILY_NETBSD4BE))
         self.assertFalse(is_netbsd4_payload_family(PAYLOAD_FAMILY_NETBSD6))
-        self.assertTrue(is_netbsd6_payload_family(PAYLOAD_FAMILY_NETBSD6))
-        self.assertFalse(is_netbsd6_payload_family(PAYLOAD_FAMILY_NETBSD4LE))
 
     def test_payload_family_description_names_endian_lanes(self) -> None:
         self.assertEqual(payload_family_description(PAYLOAD_FAMILY_NETBSD4LE), "NetBSD 4 little-endian")

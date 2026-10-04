@@ -139,11 +139,6 @@ def is_link_local_ip(value: str) -> bool:
     return is_link_local_ipv4(value) or is_link_local_ipv6(value)
 
 
-def is_loopback_ipv4(value: str) -> bool:
-    literal = ipv4_literal(value)
-    return literal is not None and literal.startswith("127.")
-
-
 def resolve_host_ipv4s(host: str) -> tuple[str, ...]:
     if not host:
         return ()

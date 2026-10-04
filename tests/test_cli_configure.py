@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 from timecapsulesmb.cli import configure
-from timecapsulesmb.core.config import DEFAULTS, ENV_PATH, render_env_text
+from timecapsulesmb.core.config import DEFAULTS, default_env_path, render_env_text
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
@@ -325,7 +325,7 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(command_context.finish.call_args.kwargs["device_model"], "TimeCapsule8,119")
         text = result.text
         self.assertIn("This writes a local .env configuration file", text)
-        self.assertIn(f"Review the .env file configuration: wrote {ENV_PATH}", text)
+        self.assertIn(f"Review the .env file configuration: wrote {default_env_path()}", text)
         self.assertNotIn("set-ssh", text)
         self.assertIn("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:", text)
         self.assertIn("    .venv/bin/tcapsule deploy", text)

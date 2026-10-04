@@ -1959,10 +1959,6 @@ def probe_device_networks_conn(connection: SshConnection) -> DeviceNetworksProbe
     return DeviceNetworksProbeResult(parse_ifconfig_ipv4_entries(text), parse_ifconfig_networks(text))
 
 
-def probe_device_ipv4_subnets_conn(connection: SshConnection) -> DeviceIpv4SubnetsProbeResult:
-    return probe_device_networks_conn(connection).ipv4_subnets
-
-
 MANAGER_ELAPSED_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o etime= -o ucomm= -o command="
 
 

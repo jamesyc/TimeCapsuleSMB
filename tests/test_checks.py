@@ -78,7 +78,6 @@ from timecapsulesmb.device.probe import (
     UsbPrinterProbeResult,
     parse_ifconfig_ipv4_entries,
     parse_ifconfig_networks,
-    probe_device_ipv4_subnets_conn,
     probe_device_networks_conn,
     DeviceHostnameProbeResult,
     DeployedVersionProbeResult,
@@ -5588,7 +5587,7 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             "timecapsulesmb.device.probe.run_ssh",
             return_value=subprocess.CompletedProcess([], 0, self.IFCONFIG_NETBSD6, ""),
         ) as run_ssh_mock:
-            result = probe_device_ipv4_subnets_conn(connection)
+            result = probe_device_networks_conn(connection).ipv4_subnets
 
         # /sbin is not on the device's ssh PATH.
         run_ssh_mock.assert_called_once()
@@ -5607,7 +5606,7 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
         for run_ssh_mock, error in cases:
             with self.subTest(error=error):
                 with mock.patch("timecapsulesmb.device.probe.run_ssh", run_ssh_mock):
-                    result = probe_device_ipv4_subnets_conn(connection)
+                    result = probe_device_networks_conn(connection).ipv4_subnets
                 self.assertEqual(result, DeviceIpv4SubnetsProbeResult(error=error))
 
     def test_run_doctor_checks_checks_nbns_without_flash_preference(self) -> None:

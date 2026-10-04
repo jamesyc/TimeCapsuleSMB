@@ -1470,18 +1470,6 @@ def _authenticated_smb_target_groups(
     return groups or [(None, targets)]
 
 
-def _config_bool_enabled(config: AppConfig, key: str) -> bool:
-    return config.get(key).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _format_list_for_message(values: Iterable[str]) -> str:
-    items = [value for value in values if value]
-    if not items:
-        return "none"
-    return ", ".join(items)
-
-
-
 def _smb_listing_looks_like_local_route_failure(result: CheckResult) -> bool:
     if "NT_STATUS_HOST_UNREACHABLE" in result.message:
         return True

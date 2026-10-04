@@ -110,21 +110,6 @@ def optional_int_param(params: dict[str, object], name: str) -> int | None:
     return _parse_optional_int_value(value, name)
 
 
-def float_param(params: dict[str, object], name: str, default: float) -> float:
-    value = params.get(name, default)
-    if isinstance(value, bool):
-        raise AppOperationError(f"{name} must be a number", code="validation_failed")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise AppOperationError(f"{name} must be a number", code="validation_failed") from exc
-    if not math.isfinite(parsed):
-        raise AppOperationError(f"{name} must be finite", code="validation_failed")
-    if parsed < 0:
-        raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
-    return parsed
-
-
 def string_param(params: dict[str, object], name: str, default: str = "") -> str:
     value = params.get(name, default)
     return "" if value is None else str(value)

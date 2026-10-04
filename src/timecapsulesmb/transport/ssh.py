@@ -191,11 +191,6 @@ def parse_ssh_client_diagnostics(output: str) -> SshClientDiagnostics:
     )
 
 
-def classify_ssh_client_error(output: str) -> SshError | None:
-    """Classify text read from an OpenSSH -E client log, never remote output."""
-    return parse_ssh_client_diagnostics(output).error
-
-
 def _classify_ssh_startup_error(output: str) -> SshClientConfigError | None:
     for raw_line in output.splitlines():
         line = raw_line.strip()

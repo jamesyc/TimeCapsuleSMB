@@ -835,11 +835,3 @@ def bank_inspection_status_line(bank: BankInspection) -> str:
     if bank.active_failures:
         details.append(f"active_failures={', '.join(bank.active_failures)}")
     return "; ".join(details)
-
-
-def inspection_error_message(inspection: FlashInspection) -> str:
-    return "\n".join((
-        "firmware bank inspection failed",
-        bank_inspection_status_line(inspection.primary),
-        bank_inspection_status_line(inspection.secondary),
-    ))
