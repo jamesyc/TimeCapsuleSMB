@@ -18,6 +18,14 @@ The work directory must not exist. Dependencies are listed in the CI job. Global
 Samba allocations are retained at process exit, so leak detection is disabled;
 address and undefined-behavior checking remain enabled.
 
+`--tree-cache DIR` keeps the build in `DIR` and, while the Samba pin, the patch
+series, the drivers and the toolchain are unchanged, the next run only runs the
+drivers; any change rebuilds from a fresh clone. `tests.samba.check` runs the host
+step in a local `tc-samba-host` image with this cache and ccache in two Docker
+volumes (`tc-samba-host-tree`, about 4 GB, and `tc-samba-host-ccache`): about
+45 s when nothing changed and 2.5 minutes after a change, against 3.7 minutes
+before. Remove the volumes with `docker volume rm` to reclaim the space.
+
 For NetBSD release validation, use the existing VM/toolchains and the matching
 test device credentials with the normal lane wrapper:
 

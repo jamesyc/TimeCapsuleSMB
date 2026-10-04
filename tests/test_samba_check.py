@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
-from tests.samba import run
+from tests.samba import check, run
 from tests.samba.check import (DRIVER_RAM, QUICK_DRIVERS, Outcome, Phase, Step, describe, driver_plan, plan,
                                run_drivers, run_phases, summary)
 
@@ -332,3 +333,38 @@ class RunDriversTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostImageTest(unittest.TestCase):
+    """The host regression's dependencies are installed once, into a local image."""
+
+    def runner(self, inspect_rc, build_rc=0):
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, inspect_rc if argv[:3] == ["docker", "image", "inspect"] else build_rc)
+        return calls, run
+
+    def test_an_existing_image_is_used_as_it_is(self) -> None:
+        calls, run = self.runner(0)
+        self.assertTrue(check.ensure_host_image(None, run))
+        self.assertEqual([argv for argv, _ in calls], [["docker", "image", "inspect", check.HOST_IMAGE]])
+
+    def test_a_missing_image_is_built_from_the_package_list(self) -> None:
+        calls, run = self.runner(1)
+        self.assertTrue(check.ensure_host_image(None, run))
+        build, kwargs = calls[1]
+        self.assertEqual(build, ["docker", "build", "-t", check.HOST_IMAGE, "-"])
+        dockerfile = kwargs["input"].decode()
+        self.assertTrue(dockerfile.startswith("FROM ubuntu:24.04\n"))
+        for package in check.HOST_PACKAGES:
+            self.assertIn(f" {package} ", dockerfile)
+
+    def test_a_failed_build_fails_the_step_before_any_container_starts(self) -> None:
+        calls, run = self.runner(1, build_rc=1)
+        self.assertFalse(check.ensure_host_image(None, run))
+        with mock.patch.object(check, "ensure_host_image", return_value=False), \
+                mock.patch.object(check.subprocess, "run", side_effect=AssertionError("no container")), \
+                tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(check.run_host_regression(Path(tmp) / "host.log"))

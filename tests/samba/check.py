@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import os
@@ -144,20 +145,46 @@ def run_pytest(log: Path) -> bool:
                               cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, preexec_fn=limit).returncode == 0
 
 
+# The host regression's build dependencies, baked into a local image once (its
+# tag follows this text) rather than installed on every run.
+HOST_PACKAGES = ("build-essential", "pkg-config", "python3", "git", "bison", "flex", "libparse-yapp-perl",
+                 "libgnutls28-dev", "zlib1g-dev", "libpopt-dev", "patch", "rsync", "ccache")
+HOST_DOCKERFILE = ("FROM ubuntu:24.04\n"
+                   "RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                   + " ".join(HOST_PACKAGES) + " >/dev/null && rm -rf /var/lib/apt/lists/*\n")
+HOST_IMAGE = "tc-samba-host:" + hashlib.sha256(HOST_DOCKERFILE.encode()).hexdigest()[:12]
+# The last build, reused while its inputs are unchanged (tests/samba/run.py's
+# --tree-cache), and ccache, which keys objects by preprocessed source and
+# flags, so a build after a change recompiles only what changed.
+HOST_TREE_VOLUME = "tc-samba-host-tree"
+HOST_CCACHE_VOLUME = "tc-samba-host-ccache"
+
+
+def ensure_host_image(out, run=subprocess.run) -> bool:
+    if run(["docker", "image", "inspect", HOST_IMAGE], stdout=subprocess.DEVNULL,
+           stderr=subprocess.DEVNULL).returncode == 0:
+        return True
+    return run(["docker", "build", "-t", HOST_IMAGE, "-"], input=HOST_DOCKERFILE.encode(),
+               stdout=out, stderr=subprocess.STDOUT).returncode == 0
+
+
 def run_host_regression(log: Path) -> bool:
     name = f"tc-host-{os.getpid()}"
     script = (
         f"docker rm -f {name} >/dev/null 2>&1; "
-        f"docker run -d --name {name} ubuntu:24.04 sleep infinity >/dev/null && "
-        f"docker exec {name} sh -c 'apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install "
-        "-y -qq build-essential pkg-config python3 git bison flex libparse-yapp-perl libgnutls28-dev zlib1g-dev "
-        "libpopt-dev patch rsync >/dev/null' && "
+        f"docker run -d --name {name} -v {HOST_CCACHE_VOLUME}:/root/.cache/ccache -v {HOST_TREE_VOLUME}:/root/tree "
+        "-e CCACHE_DIR=/root/.cache/ccache -e CCACHE_MAXSIZE=5G "
+        "-e PATH=/usr/lib/ccache:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
+        f"{HOST_IMAGE} sleep infinity >/dev/null && "
         "tar --exclude=./bin --exclude=./.git --exclude='*.pyc' --exclude=./macos --exclude=./.venv -cf - . | "
         f"docker exec -i {name} sh -c 'mkdir -p /root/repo && tar -xf - -C /root/repo' && "
         f"docker exec {name} sh -c 'cd /root/repo && python3 -m tests.samba.run host --work /root/work "
-        "--jobs 8 --sanitizers'; rc=$?; "
+        "--jobs 8 --sanitizers --tree-cache /root/tree'; rc=$?; "
         f"docker rm -f {name} >/dev/null 2>&1; exit $rc")
-    with log.open("w") as out:
+    with log.open("wb") as out:
+        if not ensure_host_image(out):
+            return False
+        out.flush()
         return subprocess.run(["sh", "-c", script], cwd=ROOT, stdout=out, stderr=subprocess.STDOUT).returncode == 0
 
 

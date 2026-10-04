@@ -140,3 +140,111 @@ def test_host_refuses_existing_directory_before_external_commands(tmp_path, monk
     with pytest.raises(FileExistsError):
         run.host(tmp_path, 2, False)
     assert marker.read_text() == "user data"
+
+
+def build_inputs(root):
+    files = {
+        "build/_patch_helpers.sh": "patch_apply_series() { :; }\n",
+        "build/patches/samba4x/series": "0001-a.patch\n",
+        "build/patches/samba4x/0001-a.patch": "--- a\n+++ b\n",
+        "build/patches/samba4x/overlay/lib/replace/x.c": "int x;\n",
+        "tests/samba/run.py": "# runner\n",
+        "tests/samba/targets.py": "# targets\n",
+        "tests/samba/tc_a_test.c": "int main(void) { return 0; }\n",
+    }
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    return list(files)
+
+
+def test_host_build_key_follows_every_build_input_and_nothing_else(tmp_path):
+    inputs = build_inputs(tmp_path)
+    key = run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path)
+    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) == key
+    for name in inputs:
+        path = tmp_path / name
+        original = path.read_text()
+        path.write_text(original + "changed\n")
+        assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) != key, name
+        path.write_text(original)
+    assert run.host_build_key("url", "samba-4.25.0rc2", False, tmp_path) != key
+    assert run.host_build_key("url", "samba-4.25.0rc1", True, tmp_path) != key
+    assert run.host_build_key("other", "samba-4.25.0rc2", True, tmp_path) != key
+    # A new overlay file, or a new driver, is an input too.
+    (tmp_path / "build/patches/samba4x/overlay/new.c").write_text("int y;\n")
+    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) != key
+    (tmp_path / "build/patches/samba4x/overlay/new.c").unlink()
+    (tmp_path / "tests/samba/tc_b_test.c").write_text("int main(void) { return 1; }\n")
+    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) != key
+    (tmp_path / "tests/samba/tc_b_test.c").unlink()
+    # Documentation and device-only tools are not.
+    (tmp_path / "tests/samba/README.md").write_text("notes\n")
+    (tmp_path / "tests/samba/dir_device.py").write_text("# device\n")
+    (tmp_path / "build/service.sh").write_text("# service\n")
+    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) == key
+
+
+class FakeHostBuild:
+    """Stands in for the clone/configure/build and the driver run."""
+
+    def __init__(self, monkeypatch, key="first"):
+        self.key = key
+        self.builds = []
+        self.runs = []
+        self.fail = False
+        monkeypatch.setattr(run.subprocess, "check_output", lambda *a, **k: "url\nref\n")
+        monkeypatch.setattr(run, "host_build_key", lambda url, ref, sanitizers: self.key)
+        monkeypatch.setattr(run, "build_host", self.build)
+        monkeypatch.setattr(run, "run_host_tests", lambda source, env: self.runs.append(source))
+
+    def build(self, url, ref, source, jobs, env):
+        # Every build starts from an empty directory: never on an old tree.
+        assert not source.exists()
+        self.builds.append(source)
+        if self.fail:
+            raise subprocess.CalledProcessError(2, ["waf", "build"])
+        (source / "bin").mkdir(parents=True)
+
+
+def test_tree_cache_builds_once_then_runs_the_same_build_while_inputs_match(tmp_path, monkeypatch):
+    fake = FakeHostBuild(monkeypatch)
+    cache = tmp_path / "tree"
+    run.host(tmp_path / "work1", 8, True, cache)
+    run.host(tmp_path / "work2", 8, True, cache)
+    assert fake.builds == [cache / "source"]
+    assert fake.runs == [cache / "source", cache / "source"]
+    assert (cache / "build-key").read_text() == "first"
+
+
+def test_tree_cache_rebuilds_from_scratch_when_an_input_changes(tmp_path, monkeypatch):
+    fake = FakeHostBuild(monkeypatch)
+    cache = tmp_path / "tree"
+    run.host(tmp_path / "work1", 8, True, cache)
+    (cache / "source/stale-object.o").write_text("old")
+    fake.key = "second"
+    run.host(tmp_path / "work2", 8, True, cache)
+    assert fake.builds == [cache / "source", cache / "source"]
+    assert not (cache / "source/stale-object.o").exists()
+    assert (cache / "build-key").read_text() == "second"
+    assert len(fake.runs) == 2
+
+
+def test_tree_cache_failed_build_runs_nothing_and_is_rebuilt_next_time(tmp_path, monkeypatch):
+    fake = FakeHostBuild(monkeypatch)
+    cache = tmp_path / "tree"
+    fake.fail = True
+    with pytest.raises(subprocess.CalledProcessError):
+        run.host(tmp_path / "work1", 8, True, cache)
+    assert not (cache / "build-key").exists() and fake.runs == []
+    fake.fail = False
+    run.host(tmp_path / "work2", 8, True, cache)
+    assert len(fake.builds) == 2 and fake.runs == [cache / "source"]
+
+
+def test_without_tree_cache_every_run_builds_its_new_work_directory(tmp_path, monkeypatch):
+    fake = FakeHostBuild(monkeypatch)
+    run.host(tmp_path / "work1", 8, True)
+    run.host(tmp_path / "work2", 8, True)
+    assert fake.builds == [tmp_path / "work1/source", tmp_path / "work2/source"]
+    assert fake.runs == fake.builds

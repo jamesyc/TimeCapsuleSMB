@@ -6,6 +6,8 @@ fixtures into their already-patched source and use their existing toolchain.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -206,7 +208,22 @@ def run_tests(source: Path, cross_exec: str | None = None) -> None:
             process.wait()
 
 
-def host(work: Path, jobs: int, sanitizers: bool) -> None:
+def host_build_key(url: str, ref: str, sanitizers: bool, root: Path = ROOT) -> str:
+    """Everything a host build depends on: the Samba pin, the patch series and
+    its overlay, the staged drivers and this script, and the toolchain."""
+    digest = hashlib.sha256(repr((url, ref, sanitizers, sys.version)).encode())
+    for tool in ("cc", "ld"):
+        digest.update(subprocess.run([tool, "--version"], capture_output=True).stdout)
+    here = root / "tests/samba"
+    inputs = [root / "build/_patch_helpers.sh", *sorted((root / "build/patches/samba4x").rglob("*")),
+              *sorted(here.glob("*.c")), here / "targets.py", here / "run.py"]
+    for path in inputs:
+        if path.is_file():
+            digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None) -> None:
     # --work must be a new directory. This command never resets a user's tree.
     work.mkdir(parents=True, exist_ok=False)
     source = work / "source"
@@ -217,18 +234,49 @@ def host(work: Path, jobs: int, sanitizers: bool) -> None:
         ["sh", "-c", '. "$1"; printf "%s\\n%s\\n" "$SAMBA4X_GIT_URL" "$SAMBA4X_GIT_REF"',
          config, config], env=dict(os.environ, TC_ENV_FILE="/dev/null"), text=True,
     ).splitlines()
-    subprocess.run(["git", "clone", "--depth", "1", "--branch", ref,
-                    url, str(source)], check=True)
-    subprocess.run(["sh", "-c", '. "$1"; patch_apply_series Samba "$2" "$3"', "sh",
-                    str(ROOT / "build/_patch_helpers.sh"),
-                    str(ROOT / "build/patches/samba4x/series"), str(source)], check=True)
-    stage(source)
     env = dict(os.environ, PYTHONHASHSEED="1", PYTHON=sys.executable)
     if sanitizers:
         flags = "-fsanitize=address,undefined -fno-omit-frame-pointer"
         env.update(CFLAGS=flags, LDFLAGS=flags,
                    ASAN_OPTIONS="detect_leaks=0:exitcode=86",
                    UBSAN_OPTIONS="halt_on_error=1:exitcode=86")
+    if tree_cache is None:
+        build_host(url, ref, source, jobs, env)
+        run_host_tests(source, env)
+    else:
+        # One build kept between runs (the quick tier's Docker volume): a run
+        # whose inputs all match reuses it and only runs the drivers; any change
+        # rebuilds from a fresh clone. The path stays fixed so that ccache's
+        # hashes, which include the build directory, keep matching.
+        tree_cache.mkdir(parents=True, exist_ok=True)
+        source = tree_cache / "source"
+        stamp = tree_cache / "build-key"
+        key = host_build_key(url, ref, sanitizers)
+        with (tree_cache / "lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if source.is_dir() and stamp.is_file() and stamp.read_text() == key:
+                print("Reusing the host build of these inputs in", source, flush=True)
+            else:
+                stamp.unlink(missing_ok=True)
+                shutil.rmtree(source, ignore_errors=True)
+                build_host(url, ref, source, jobs, env)
+                stamp.write_text(key)
+            run_host_tests(source, env)
+
+
+def run_host_tests(source: Path, env: dict[str, str]) -> None:
+    # Child processes must inherit sanitizer runtime settings as well.
+    subprocess.run([sys.executable, "-m", "tests.samba.run", "run", "--source", str(source)],
+                   cwd=ROOT, env=env, check=True)
+
+
+def build_host(url: str, ref: str, source: Path, jobs: int, env: dict[str, str]) -> None:
+    subprocess.run(["git", "clone", "--depth", "1", "--branch", ref,
+                    url, str(source)], check=True)
+    subprocess.run(["sh", "-c", '. "$1"; patch_apply_series Samba "$2" "$3"', "sh",
+                    str(ROOT / "build/_patch_helpers.sh"),
+                    str(ROOT / "build/patches/samba4x/series"), str(source)], check=True)
+    stage(source)
     options = ["--without-" + item for item in (
         "ad-dc", "ads", "ldap", "acl-support", "pam", "json", "libarchive", "winbind",
         "quotas", "utmp", "automount", "dmapi", "gettext", "syslog", "ldb-lmdb")]
@@ -240,9 +288,6 @@ def host(work: Path, jobs: int, sanitizers: bool) -> None:
     host_flags(source)
     subprocess.run([sys.executable, "buildtools/bin/waf", "build", "-j" + str(jobs),
                     "--targets=" + ",".join(BUILD_TARGETS)], cwd=source, env=env, check=True)
-    # Child processes must inherit sanitizer runtime settings as well.
-    subprocess.run([sys.executable, "-m", "tests.samba.run", "run", "--source", str(source)],
-                   cwd=ROOT, env=env, check=True)
 
 
 def main() -> None:
@@ -257,13 +302,16 @@ def main() -> None:
     command.add_argument("--work", required=True, type=Path)
     command.add_argument("--jobs", default=2, type=int)
     command.add_argument("--sanitizers", action="store_true")
+    command.add_argument("--tree-cache", type=Path,
+                         help="keep the build here and reuse it while its inputs are unchanged")
     args = parser.parse_args()
     if args.command == "stage":
         stage(args.source.resolve())
     elif args.command == "run":
         run_tests(args.source.resolve(), args.cross_exec)
     else:
-        host(args.work.resolve(), args.jobs, args.sanitizers)
+        host(args.work.resolve(), args.jobs, args.sanitizers,
+             args.tree_cache.resolve() if args.tree_cache else None)
 
 
 if __name__ == "__main__":
