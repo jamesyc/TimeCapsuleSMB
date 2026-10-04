@@ -19,12 +19,13 @@
 #   make coverage-html           - write an HTML coverage report to htmlcov/
 #   make coverage-native         - report native C coverage with LLVM tools
 #   make test-c                  - compile-check the unified native service image
+#   make test-swift              - run the macOS app's Swift tests in parallel
 #   make discover                - run tcapsule discover (depends on install)
 #   make bootstrap-host          - run the host bootstrap helper
 #   make set-ssh                 - advanced SSH toggle helper
 #   make clean                   - remove the .venv directory
 
-.PHONY: venv install lint test test-parallel coverage coverage-html coverage-native test-c discover bootstrap-host set-ssh setup clean
+.PHONY: venv install lint test test-parallel coverage coverage-html coverage-native test-c test-swift discover bootstrap-host set-ssh setup clean
 
 VENVDIR := .venv
 PYTHON := python3
@@ -70,6 +71,10 @@ coverage-html: coverage
 
 test-c:
 	./build/native/host-check.sh
+
+# Each test case runs in its own process; about twice as fast as the serial run.
+test-swift:
+	swift test --parallel --package-path macos/TimeCapsuleSMB
 
 discover: install
 	$(VENVDIR)/bin/tcapsule discover
