@@ -29,7 +29,7 @@ TIMINGS=dict(
     TC_STALE_KILL_MS=2000,      # device 10 s
     # Long enough for test_stall_while_stopping_is_still_recovered to see a
     # raise and a wake before the drain ends.
-    TC_CHILD_GRACE_MS=5000,     # device 10 s
+    TC_CHILD_GRACE_MS=3000,     # device 10 s
     # The manager's loop wakes, and samples, at least this often.
     TC_MANAGER_PASS_MS=250,      # device 1 s
     TC_BUFSTALL_SAMPLE_MS=250,   # device 1 s
