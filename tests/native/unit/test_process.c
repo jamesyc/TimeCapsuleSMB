@@ -149,11 +149,14 @@ int main(int argc, char **argv) {
         long long deadline = now_ms() + 5000;
         int done = 0;
         assert(tc_child_fork(&a, orphan_worker, NULL, NULL, capture, sizeof(capture), 0) == 0);
-        while (!a.exited && now_ms() < deadline) {
+        /* The worker closes its copy of the output pipe after it starts. On a
+         * loaded host the direct child can exit first; only once the output
+         * has closed too does the remaining group start the owner's stop. */
+        while (!(a.exited && a.output < 0) && now_ms() < deadline) {
             done = tc_child_poll(&a, now_ms());
             usleep(1000);
         }
-        assert(a.exited && !done && a.used == sizeof(worker));
+        assert(a.exited && a.output < 0 && a.stopping && !done && a.used == sizeof(worker));
         memcpy(&worker, capture, sizeof(worker));
         assert(kill(worker, 0) == 0);
         /* Losing the direct parent must not authorize replacing binaries or
