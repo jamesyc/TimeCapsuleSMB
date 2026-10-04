@@ -16,6 +16,7 @@ import sys
 import time
 
 import pytest
+from tests.executables import write_executable
 from tests.native.build import compile_service
 
 
@@ -83,11 +84,12 @@ while True:
 def manager_tools(tmp_path_factory):
     root=tmp_path_factory.mktemp('manager-native')
     def executable(name,code):
-        path=root/name
-        path.write_text(f'#!{sys.executable}\n'+code)
-        path.chmod(0o755)
-        return path
-    executable('roles',CHILD)
+        # Every worker's fake tools are the same file (tests/executables.py).
+        return write_executable(root/name,f'#!{sys.executable}\n'+code)
+    # Not shared: the manager locks the image it runs from (TC_SERVICE_BIN),
+    # and a worker's lock must not hold off another worker's manager.
+    (root/'roles').write_text(f'#!{sys.executable}\n'+CHILD)
+    (root/'roles').chmod(0o755)
     executable('diskd',CHILD)
     executable('atactl','''
 import os,sys,json
