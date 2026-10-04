@@ -17,7 +17,14 @@ def capture_tools(tmp_path_factory):
     compile_modules(driver, ("native/common/acp.c",),
                     flags=(*flags, "-I", str(ROOT / "build/native/common")),
                     extra_sources=(ROOT / "tests/native/unit/test_acp_capture.c",))
-    return driver, compile_service(work / "service", flags=flags)
+    service = compile_service(work / "service", flags=flags)
+    # macOS checks a just-linked binary at its first exec, one binary at a
+    # time across the host: with other workers linking, that took over 5 s
+    # and spent the tests' ACP budgets. Run each binary once, untimed.
+    subprocess.run([str(acp), "-q", "syAP"], capture_output=True, check=True)
+    subprocess.run([str(driver), "0", "0", "1", "0", "0"], capture_output=True, check=True)
+    subprocess.run([str(service), "--print-nt-hash-from-stdin"], input=b"password", capture_output=True, check=True)
+    return driver, service
 
 
 def raw_env(tmp_path, data, *, key="*", exit_code=0):
