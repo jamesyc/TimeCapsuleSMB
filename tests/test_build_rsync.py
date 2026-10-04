@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from tests.build_wrapper_harness import make_fake_elf_tools
+from tests.executables import write_executable
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -15,9 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 class RsyncBuildScriptTests(unittest.TestCase):
     def make_executable(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        path.chmod(0o755)
+        write_executable(path, text)
 
     def make_file(self, path: Path, content: str = "") -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

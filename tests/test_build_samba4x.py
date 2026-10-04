@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from tests.build_wrapper_harness import make_fake_elf_tools
+from tests.executables import write_executable
 from tests.samba.run import GROWTH_CALLERS
 
 
@@ -39,9 +40,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertTrue((REPO_ROOT / f"build/cross-answers/samba4x-{version}-{lane}.answers").is_file())
 
     def make_executable(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        path.chmod(0o755)
+        write_executable(path, text)
 
     def make_file(self, path: Path, content: str = "") -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

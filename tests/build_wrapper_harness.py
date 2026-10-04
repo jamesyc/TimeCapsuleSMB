@@ -5,6 +5,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+from tests.executables import write_executable
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -83,16 +85,12 @@ def make_fake_elf_tools(tools: Path, triple: str) -> None:
             esac
             """,
     }.items():
-        path = tools / f"{triple}-{name}"
-        path.write_text(textwrap.dedent(script))
-        path.chmod(0o755)
+        write_executable(tools / f"{triple}-{name}", textwrap.dedent(script))
 
 
 class BuildWrapperHarness:
     def make_executable(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        path.chmod(0o755)
+        write_executable(path, text)
 
     def prepare_fake_toolchain(self, out: Path, triple: str) -> None:
         tools = out / "tools" / "bin"
