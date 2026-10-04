@@ -586,3 +586,33 @@ Verification:
   timecapsulesmb package (would save about 6 seconds after a Python change),
   and faster ZIP compression (level 1 halves the 10 seconds but adds 8%).
 - No VM/device access or binary changes; no locks held.
+
+## 2026-10-04 — Ship only the app's Swift resource bundle
+
+- Swift Build writes the test target's resource bundle
+  (`TimeCapsuleSMBMac_TimeCapsuleSMBAppTests.bundle`, ~140 KB with the
+  `Fixtures` folder) into the same products directory as the app's.
+  `copy_resources` copied every `*.bundle` there, so the packaged app carried
+  test fixtures (`macos/TimeCapsuleSMB/dist/TimeCapsuleSMB.app/Contents/Resources/`
+  had both bundles).
+- `copy_resources` now copies only `RESOURCE_BUNDLE_NAME` and fails with
+  "Swift build did not produce ..." when that bundle is missing.
+  `assert_bundle_layout` fails if `Contents/Resources` holds any other
+  `*.bundle`.
+- Tests: the fake `swift build` now writes both bundles, as the real one does;
+  `copy_resources` copies only the app bundle, replaces a stale copy, and
+  copies nothing when only the test bundle exists; `assert_bundle_layout`
+  rejects a test bundle or any other bundle; and `package_app` run end to end
+  through the real `build_swift` and `copy_resources` ships exactly one
+  resource bundle while the test bundle stays in the build products.
+- Rebased onto the universal-build caching commit (0e90d8f5). With that
+  commit's `package_app.py` the 5 new cases failed; with the fix
+  `.venv/bin/pytest tests/test_macos_package_app.py`: 151 passed in 2.23 s
+  (the main checkout's `.venv`, since the worktree has none). Ruff and
+  `git diff --check` passed.
+- Before the rebase, `copy_resources` against the real
+  `macos/TimeCapsuleSMB/.build/out/Products/Release` (which holds both
+  bundles) copied only `TimeCapsuleSMBMac_TimeCapsuleSMBApp.bundle`. The app
+  was not repackaged; the existing `dist` output still has the test bundle
+  until the next `package_app.py` run.
+- No VM/device access or binary changes; no locks held.

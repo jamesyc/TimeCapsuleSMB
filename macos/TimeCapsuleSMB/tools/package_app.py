@@ -368,11 +368,15 @@ def resource_bundle_localization(resource_bundle: Path, language: str) -> Path:
 
 @timed_step("Copying Swift resources")
 def copy_resources(build_dir: Path, resources_dir: Path) -> None:
-    for resource_bundle in build_dir.glob("*.bundle"):
-        destination = resources_dir / resource_bundle.name
-        if destination.exists():
-            shutil.rmtree(destination)
-        shutil.copytree(resource_bundle, destination)
+    # Swift Build also writes the test target's bundle, with its fixtures, to
+    # the same products directory; the app ships only its own.
+    resource_bundle = build_dir / RESOURCE_BUNDLE_NAME
+    if not resource_bundle.is_dir():
+        raise RuntimeError(f"Swift build did not produce {resource_bundle}")
+    destination = resources_dir / RESOURCE_BUNDLE_NAME
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(resource_bundle, destination)
 
 
 def write_info_plist(contents_dir: Path, *, icon_name: str | None = None) -> None:
@@ -2483,6 +2487,10 @@ def assert_bundle_layout(
     # Count sentences exist only as plural rules; without this file the app shows raw keys.
     if not (english / "Localizable.stringsdict").is_file():
         raise RuntimeError(f"App bundle is missing Swift resource bundle plural localizations: {resource_bundle}")
+    unexpected_bundles = sorted(path.name for path in resource_bundle.parent.glob("*.bundle") if path != resource_bundle)
+    if unexpected_bundles:
+        joined = "\n  - ".join(unexpected_bundles)
+        raise RuntimeError(f"App bundle contains Swift resource bundle(s) the app does not use:\n  - {joined}")
     if not python_packages.is_dir():
         raise RuntimeError(f"App bundle is missing bundled Python packages: {python_packages}")
     if not (distribution / "bin").is_dir():

@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -83,6 +84,8 @@ def test_timed_step_decorator_times_each_call_and_preserves_return_values(
 PLURALS_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict></dict></plist>
 """
+# Swift Build writes the test target's resource bundle beside the app's.
+TEST_RESOURCE_BUNDLE_NAME = "TimeCapsuleSMBMac_TimeCapsuleSMBAppTests.bundle"
 
 
 def create_fake_app_executable_and_resources(app: Path) -> None:
@@ -327,6 +330,24 @@ def test_assert_bundle_layout_accepts_the_swift_build_resource_bundle(
     package_app.assert_bundle_layout(app)
 
 
+@pytest.mark.parametrize("extra_bundle", [TEST_RESOURCE_BUNDLE_NAME, "Other.bundle"])
+def test_assert_bundle_layout_rejects_resource_bundles_the_app_does_not_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra_bundle: str
+) -> None:
+    package_app = load_package_app_module()
+    app = app_with_deep_resource_bundle(package_app, tmp_path)
+    (app / "Contents" / "Resources" / extra_bundle / "Contents" / "Resources" / "Fixtures").mkdir(parents=True)
+    monkeypatch.setattr(package_app, "artifact_paths", lambda: [])
+    monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
+
+    with pytest.raises(RuntimeError, match=f"the app does not use:\n  - {re.escape(extra_bundle)}$"):
+        package_app.assert_bundle_layout(app)
+
+
 def test_assert_bundle_layout_requires_plurals_in_the_swift_build_resource_bundle(tmp_path: Path) -> None:
     package_app = load_package_app_module()
     app = app_with_deep_resource_bundle(package_app, tmp_path)
@@ -342,7 +363,9 @@ def fake_swift_build(package_app, layout: str, calls: list[list[str]]):
     """swift build as each build system lays out its products under the
     scratch path: the native one in apple/Products/Release for several
     architectures and <arch>-apple-macosx/release for one, Swift Build in
-    out/Products/Release. Several --arch values build universal products."""
+    out/Products/Release. Several --arch values build universal products.
+    Like the real build, it writes the test target's resource bundle beside
+    the app's."""
 
     def bin_dir(cmd: list[str]) -> Path:
         scratch = Path(cmd[cmd.index("--scratch-path") + 1])
@@ -366,7 +389,10 @@ def fake_swift_build(package_app, layout: str, calls: list[list[str]]):
             executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_text(f"{product} {architectures}", encoding="utf-8")
             executable.chmod(0o755)
-        (bin_dir(cmd) / "Resources.bundle").mkdir(exist_ok=True)
+        (bin_dir(cmd) / package_app.RESOURCE_BUNDLE_NAME).mkdir(exist_ok=True)
+        fixtures = bin_dir(cmd) / TEST_RESOURCE_BUNDLE_NAME / "Contents" / "Resources" / "Fixtures"
+        fixtures.mkdir(parents=True, exist_ok=True)
+        (fixtures / "fixture.json").write_text("{}", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0)
 
     return fake_run
@@ -392,7 +418,7 @@ def test_build_swift_builds_every_architecture_in_one_build(
     assert helper == resource_build_dir / "tcapsule"
     assert executable.read_text() == "TimeCapsuleSMB arm64 x86_64"
     assert helper.read_text() == "tcapsule arm64 x86_64"
-    assert (resource_build_dir / "Resources.bundle").is_dir()
+    assert (resource_build_dir / package_app.RESOURCE_BUNDLE_NAME).is_dir()
 
 
 def test_build_swift_keeps_each_architecture_set_in_its_own_scratch_path(
@@ -479,6 +505,51 @@ def test_build_swift_rejects_a_missing_helper(monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setattr(package_app, "run", missing_helper)
     with pytest.raises(RuntimeError, match="did not produce .*tcapsule"):
         package_app.build_swift("release", ("arm64",))
+
+
+def swift_products_with_both_resource_bundles(package_app, build_dir: Path) -> None:
+    """A Swift Build products directory: the app's bundle in Swift Build's
+    layout, the test target's bundle with its fixtures, and the executables."""
+    english = build_dir / package_app.RESOURCE_BUNDLE_NAME / "Contents" / "Resources" / "en.lproj"
+    english.mkdir(parents=True)
+    (english / "Localizable.strings").write_text('"screen.readiness" = "Readiness";\n', encoding="utf-8")
+    (english / "Localizable.stringsdict").write_text(PLURALS_PLIST, encoding="utf-8")
+    fixtures = build_dir / TEST_RESOURCE_BUNDLE_NAME / "Contents" / "Resources" / "Fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "fixture.json").write_text("{}", encoding="utf-8")
+    (build_dir / package_app.PRODUCT_NAME).write_text("app", encoding="utf-8")
+
+
+def test_copy_resources_copies_only_the_app_resource_bundle(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    build_dir = tmp_path / "Release"
+    swift_products_with_both_resource_bundles(package_app, build_dir)
+    resources = tmp_path / "Resources"
+    # A copy from an earlier run is replaced, not merged into.
+    stale = resources / package_app.RESOURCE_BUNDLE_NAME / "stale.strings"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale", encoding="utf-8")
+
+    package_app.copy_resources(build_dir, resources)
+
+    assert sorted(path.name for path in resources.iterdir()) == [package_app.RESOURCE_BUNDLE_NAME]
+    english = package_app.resource_bundle_localization(resources / package_app.RESOURCE_BUNDLE_NAME, "en")
+    assert (english / "Localizable.stringsdict").read_text(encoding="utf-8") == PLURALS_PLIST
+    assert not stale.exists()
+
+
+def test_copy_resources_rejects_a_build_without_the_app_resource_bundle(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    build_dir = tmp_path / "Release"
+    swift_products_with_both_resource_bundles(package_app, build_dir)
+    shutil.rmtree(build_dir / package_app.RESOURCE_BUNDLE_NAME)
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+
+    # The test target's bundle alone must not pass for the app's resources.
+    with pytest.raises(RuntimeError, match=f"did not produce .*{re.escape(package_app.RESOURCE_BUNDLE_NAME)}"):
+        package_app.copy_resources(build_dir, resources)
+    assert list(resources.iterdir()) == []
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -2960,6 +3031,53 @@ def test_package_app_signs_final_bundle_after_native_tools(
     assert result.app == tmp_path / "dist" / "TimeCapsuleSMB.app"
     assert result.zip_path is None
     assert result.notarization_archive is None
+
+
+def test_package_app_ships_only_the_app_resource_bundle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # The real build_swift and copy_resources run against a Swift Build that
+    # also wrote the test target's bundle; the steps after them are stubbed.
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(package_app, "run", fake_swift_build(package_app, "swiftbuild", []))
+    monkeypatch.setattr(package_app, "resolve_architectures", lambda arch: ("arm64",))
+    monkeypatch.setattr(package_app, "copy_helper_executable", lambda source, destination: None)
+    monkeypatch.setattr(package_app, "copy_python_runtime", lambda args, resources, architectures: resources / "Python" / "Runtime" / "bin" / "python3")
+    monkeypatch.setattr(package_app, "create_python_packages", lambda python, resources, architectures, use_cache=True: None)
+    monkeypatch.setattr(package_app, "finalize_python_bundle", lambda resources, *, sign: None)
+    monkeypatch.setattr(package_app, "copy_distribution", lambda resources: None)
+    monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: None)
+    monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: None)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: None)
+    shipped: list[list[str]] = []
+    monkeypatch.setattr(
+        package_app,
+        "assert_bundle_layout",
+        lambda app, **kwargs: shipped.append(sorted(path.name for path in (app / "Contents" / "Resources").iterdir())),
+    )
+    args = SimpleNamespace(
+        arch="native",
+        configuration="release",
+        output=tmp_path / "dist",
+        icon=None,
+        no_cache=False,
+        full_validation=False,
+        skip_smoke=True,
+        codesign_identity=None,
+        notarize=False,
+        notary_profile="tcapsulesmb-notary",
+        notary_timeout="30m",
+        zip=False,
+        zip_output=None,
+    )
+
+    result = package_app.package_app(args)
+
+    assert shipped == [[package_app.RESOURCE_BUNDLE_NAME]]
+    assert (result.app / "Contents" / "Resources" / package_app.RESOURCE_BUNDLE_NAME).is_dir()
+    # The test bundle was in the build products but stayed there.
+    products = tmp_path / ".build" / "package-swift" / "arm64" / "out" / "Products" / "Release"
+    assert (products / TEST_RESOURCE_BUNDLE_NAME).is_dir()
 
 
 def test_notarization_requires_identity_before_building(monkeypatch: pytest.MonkeyPatch) -> None:
