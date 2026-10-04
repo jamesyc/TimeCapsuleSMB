@@ -3945,7 +3945,9 @@ class CheckTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn", return_value=probed_identity):
                                             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=active_smb_conf)):
-                                                results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+                                                with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution",
+                                                                return_value=CheckResult("PASS", "native NBNS resolved")):
+                                                    results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
 
         self.assertTrue(fatal)
         messages = [result.message for result in results]

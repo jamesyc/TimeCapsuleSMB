@@ -59,11 +59,12 @@ def block_real_acp_connections(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(autouse=True)
 def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
     # Tests use made-up device addresses such as 10.0.0.2 and capsule.local.
-    # A real TCP connect to one, or a lookup of the name, waits seconds for a
-    # timeout and reaches whatever answers on the user's network. Loopback
-    # servers, address literals and UDP route lookups (a UDP connect sends
-    # nothing) stay allowed. Code under test may swallow the error, so the
-    # attempt also fails the test.
+    # A real TCP connect to one, a UDP datagram to it (an NBNS query), or a
+    # lookup of the name, waits seconds for a timeout and reaches whatever
+    # answers on the user's network. Loopback servers, address literals,
+    # multicast and UDP route lookups (a UDP connect sends nothing) stay
+    # allowed. Code under test may swallow the error, so the attempt also
+    # fails the test.
     import ipaddress
     import socket
 
@@ -98,7 +99,22 @@ def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
                 raise socket.gaierror(socket.EAI_NONAME, f"tests must not look up {name}")
         return real_getaddrinfo(host, *args, **kwargs)
 
+    real_sendto = socket.socket.sendto
+
+    def sendto(sock: socket.socket, data, *args):
+        address = args[-1]
+        if sock.family in (socket.AF_INET, socket.AF_INET6) and isinstance(address, tuple):
+            try:
+                ip = ipaddress.ip_address(str(address[0]).split("%", 1)[0])
+            except ValueError:
+                ip = None
+            if ip is None or not (ip.is_loopback or ip.is_multicast):
+                attempts.append(address)
+                raise AssertionError(f"tests must not send a real datagram to {address}")
+        return real_sendto(sock, data, *args)
+
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(socket.socket, "sendto", sendto)
     monkeypatch.setattr(socket.socket, "connect", guard(socket.socket.connect))
     monkeypatch.setattr(socket.socket, "connect_ex", guard(socket.socket.connect_ex))
     yield
