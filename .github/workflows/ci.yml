@@ -59,11 +59,9 @@ jobs:
         run: |
           # Native children close descriptors up to the host soft limit.
           ulimit -n 256
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            python -m pytest -n 3 --dist worksteal tests/native tests/test_deploy_modules.py
-          else
-            python -m pytest tests/native tests/test_deploy_modules.py
-          fi
+          # One worker per runner CPU: 3 on macOS, 4 on Ubuntu, which ran
+          # these serially in 14 minutes.
+          python -m pytest -n auto --dist worksteal tests/native tests/test_deploy_modules.py
 
       - name: Run Ruff
         run: python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
