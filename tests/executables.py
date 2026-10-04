@@ -9,7 +9,12 @@ temporary toolchain per build-wrapper run) therefore link one shared copy per
 content instead of writing a new file each time.
 
 The shared copies are read-only, so a test or script that tries to rewrite a
-linked tool in place fails instead of changing it for every other test.
+linked tool in place fails instead of changing it for every other test. A
+chmod cannot be stopped that way and would reach every link: a test that
+changes a tool's mode must write its own file.
+
+Builds that embed a run's temporary paths are new every run, so copies unused
+for a day are deleted; links made from them keep their files.
 """
 from __future__ import annotations
 
@@ -17,15 +22,20 @@ import hashlib
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 CACHE = Path(tempfile.gettempdir()) / f"tc-test-executables-{os.getuid()}"
+UNUSED_SECONDS = 86400
 
 
 def shared_copy(data: bytes) -> Path:
     """The read-only shared file holding data, created on first use."""
     cached = CACHE / hashlib.sha256(data).hexdigest()
-    if not cached.is_file():
+    try:
+        # A use keeps the copy from being pruned.
+        os.utime(cached)
+    except FileNotFoundError:
         CACHE.mkdir(parents=True, exist_ok=True)
         # Concurrent writers each publish a complete file; the last rename wins.
         fd, temp = tempfile.mkstemp(dir=CACHE, prefix=".partial-")
@@ -56,3 +66,25 @@ def write_executable(path: Path, content: str | bytes) -> Path:
     """Make path an executable holding content."""
     data = content.encode() if isinstance(content, str) else content
     return link_shared(shared_copy(data), path)
+
+
+def prune(now: float | None = None) -> None:
+    """Delete copies unused for UNUSED_SECONDS, checking at most hourly."""
+    now = time.time() if now is None else now
+    marker = CACHE / ".pruned"
+    try:
+        if now - marker.stat().st_mtime < 3600:
+            return
+    except FileNotFoundError:
+        pass
+    CACHE.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    for entry in CACHE.iterdir():
+        try:
+            if entry != marker and now - entry.stat().st_mtime > UNUSED_SECONDS:
+                entry.unlink()
+        except OSError:
+            pass
+
+
+prune()
