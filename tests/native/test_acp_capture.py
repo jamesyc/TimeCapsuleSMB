@@ -4,14 +4,13 @@ import subprocess
 
 import pytest
 
-from tests.native.build import ROOT, compile_modules, compile_service
+from tests.native.build import ROOT, compile_modules, compile_program, compile_service
 
 
 @pytest.fixture(scope="module")
 def capture_tools(tmp_path_factory):
     work = tmp_path_factory.mktemp("acp-capture")
-    acp = work / "acp"
-    subprocess.run(["cc", str(ROOT / "tests/native/integration/acp_fixture.c"), "-o", str(acp)], check=True)
+    acp = compile_program(work / "acp", ROOT / "tests/native/integration/acp_fixture.c")
     flags = [f'-DTC_ACP_PATH="{acp}"', "-DTC_ACP_TIMEOUT_SECONDS=5"]
     driver = work / "capture"
     compile_modules(driver, ("native/common/acp.c",),

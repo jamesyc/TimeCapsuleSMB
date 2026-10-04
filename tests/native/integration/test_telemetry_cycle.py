@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
-from tests.native.build import ROOT, compile_service
+from tests.native.build import ROOT, compile_program, compile_service
 
 # Hang guards only. Under ASan on shared hosted macOS runners, process startup
 # alone can take seconds; tests with real deadlines assert elapsed time
@@ -37,10 +37,10 @@ def rig(tmp_path_factory):
     root = tmp_path_factory.mktemp('telemetry-integration')
     key = ECC.construct(curve='Ed25519', seed=bytes(range(32)))
     signer = eddsa.new(key, 'rfc8032')
-    fixture = root / 'debug'
-    subprocess.run(['cc', str(Path(__file__).with_name('debug_fixture.c')), '-o', str(fixture)], check=True, timeout=30)
-    acp = root / 'acp'
-    subprocess.run(['cc', str(Path(__file__).with_name('acp_fixture.c')), '-o', str(acp)], check=True, timeout=30)
+    fixture = compile_program(root / 'debug', Path(__file__).with_name('debug_fixture.c'))
+    # Its own file: test_acp_exec_failure_aborts_without_posting takes away its
+    # execute permission.
+    acp = compile_program(root / 'acp', Path(__file__).with_name('acp_fixture.c'), shared=False)
     first_exec(acp, '-q', 'syAP')
     state = {'mode': 'false', 'calls': [], 'payloads': [], 'raw': [], 'hold': threading.Event(), 'signature_started': threading.Event()}
     class Handler(BaseHTTPRequestHandler):

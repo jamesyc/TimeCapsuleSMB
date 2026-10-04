@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_program, instrumentation_flags
 
 
 @pytest.fixture(scope='module')
@@ -15,9 +15,7 @@ def device_driver(tmp_path_factory):
     work = tmp_path_factory.mktemp('acp-driver')
     native = ROOT / 'build/native/common'
     unit = Path(__file__).parent / 'unit'
-    acp = work / 'acp'
-    subprocess.run(['cc', str(Path(__file__).parent / 'integration/acp_fixture.c'), '-o', str(acp)],
-                   check=True, capture_output=True, timeout=30)
+    acp = compile_program(work / 'acp', Path(__file__).parent / 'integration/acp_fixture.c')
     flags = ['cc', '-D_GNU_SOURCE', '-Wall', '-Wextra', '-Werror', *instrumentation_flags(),
              '-I', str(native), '-I', str(unit), f'-DTC_ACP_PATH="{acp}"']
     binaries = {}
@@ -25,10 +23,8 @@ def device_driver(tmp_path_factory):
         obj = work / f'{name}.o'
         subprocess.run([*flags, *extra, '-DTC_TEST_DEVICE_FAULTS', '-include', str(unit / 'device_faults.h'),
                         '-c', str(native / 'acp.c'), '-o', str(obj)], check=True, capture_output=True, timeout=30)
-        binary = work / f'test-device-{name}'
-        subprocess.run([*flags, *extra, str(unit / 'test_device.c'), str(obj), '-o', str(binary)],
-                       check=True, capture_output=True, timeout=30)
-        binaries[name] = binary
+        binaries[name] = compile_program(work / f'test-device-{name}', *flags[1:], *extra,
+                                         unit / 'test_device.c', obj)
     return binaries
 
 

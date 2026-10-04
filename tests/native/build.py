@@ -1,4 +1,9 @@
-"""Compile the unified native service from the production source manifest."""
+"""Compile the unified native service from the production source manifest.
+
+Outputs go through tests/executables.py: links are deterministic, so workers
+and runs that build the same binary share one file, and macOS checks it on
+its first exec only once.
+"""
 from pathlib import Path
 import hashlib
 import subprocess
@@ -7,6 +12,8 @@ import tempfile
 import shutil
 import os
 from functools import lru_cache
+
+from tests.executables import write_executable
 
 ROOT = Path(__file__).resolve().parents[2]
 _BUILD = tempfile.TemporaryDirectory(prefix='tc-native-build-')
@@ -41,8 +48,7 @@ def instrumentation_flags():
 
 def compile_service(output, *, flags=(), extra_sources=(), exclude=()):
     binary = _compile(tuple(flags), tuple(extra_sources), tuple(exclude))
-    shutil.copy2(binary, output)
-    return output
+    return write_executable(output, binary.read_bytes())
 
 
 def compile_modules(output, modules, *, flags=(), extra_sources=()):
@@ -51,8 +57,24 @@ def compile_modules(output, modules, *, flags=(), extra_sources=()):
     if not set(selected) <= production:
         raise AssertionError("unit test module is not part of service.sources")
     binary = _compile_selected(selected, tuple(flags), tuple(extra_sources))
-    shutil.copy2(binary, output)
-    return output
+    return write_executable(output, binary.read_bytes())
+
+
+def compile_program(output, *arguments, shared=True):
+    """cc arguments -o output, for fixtures built outside service.sources.
+
+    A test that changes the program's mode needs shared=False: links share
+    the mode, so a chmod would reach every worker using the same build."""
+    with tempfile.TemporaryDirectory() as directory:
+        built = Path(directory) / Path(output).name
+        result = subprocess.run(['cc', *map(str, arguments), '-o', str(built)],
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        if not shared:
+            shutil.move(built, output)
+            return Path(output)
+        return write_executable(output, built.read_bytes())
 
 
 def _compiler_flags(flags, instrumentation):
