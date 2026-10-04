@@ -60,7 +60,8 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertIn("Device SSH target host must not be a link-local address", str(raised.exception))
 
     def test_explicit_hostname_that_resolves_link_local_is_rejected(self) -> None:
-        with mock.patch("timecapsulesmb.services.runtime.resolve_host_ipv4s", return_value=("169.254.44.9",)):
+        with mock.patch("timecapsulesmb.services.runtime.resolve_host_ipv4s", return_value=("169.254.44.9",)), \
+                mock.patch("timecapsulesmb.services.runtime.resolve_host_ipv6s", return_value=()):
             with self.assertRaises(ValueError) as raised:
                 resolve_configure_target(
                     explicit_host="root@capsule.local",

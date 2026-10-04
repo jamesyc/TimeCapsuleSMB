@@ -58,11 +58,12 @@ def block_real_acp_connections(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
-    # Tests use made-up device addresses such as 10.0.0.2. A real TCP connect
-    # to one waits seconds for a timeout and reaches whatever answers on the
-    # user's network. Loopback servers and UDP route lookups (a UDP connect
-    # sends nothing) stay allowed. Code under test may swallow the error, so
-    # the attempt also fails the test.
+    # Tests use made-up device addresses such as 10.0.0.2 and capsule.local.
+    # A real TCP connect to one, or a lookup of the name, waits seconds for a
+    # timeout and reaches whatever answers on the user's network. Loopback
+    # servers, address literals and UDP route lookups (a UDP connect sends
+    # nothing) stay allowed. Code under test may swallow the error, so the
+    # attempt also fails the test.
     import ipaddress
     import socket
 
@@ -85,7 +86,20 @@ def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
             return real(sock, address)
         return connect
 
+    real_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        name = host.decode() if isinstance(host, bytes) else host
+        if name not in (None, "", "localhost"):
+            try:
+                ipaddress.ip_address(str(name).split("%", 1)[0])
+            except ValueError:
+                attempts.append(name)
+                raise socket.gaierror(socket.EAI_NONAME, f"tests must not look up {name}")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(socket.socket, "connect", guard(socket.socket.connect))
     monkeypatch.setattr(socket.socket, "connect_ex", guard(socket.socket.connect_ex))
     yield
-    assert not attempts, f"tests must not open real TCP connections: {attempts}"
+    assert not attempts, f"tests must not reach the real network: {attempts}"
