@@ -256,6 +256,9 @@ class AppApiTests(unittest.TestCase):
         self._flash_capacity = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
         )
+        self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.deploy._flash_files_holding_new_bytes", return_value=set())
+        )
         self._install_identity = self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.app.ops.deploy.load_install_identity",

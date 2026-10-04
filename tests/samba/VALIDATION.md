@@ -2620,3 +2620,41 @@ Validation:
   doctor 39 s -> 18 s. Its remaining time is the device's flash: removing
   `/mnt/Flash/service` took 27 s and writing the 333 KB service there 118 s,
   while the 10 MB smbd reached the HFS disk in 4.4 s.
+
+## Flash writes only for changed files, in large blocks (2026-10-04)
+
+NetBSD 4 spent 146 s of a 332 s deploy on one file: removing
+`/mnt/Flash/service` took 27 s and writing the 333 KB replacement 118 s.
+Apple's fstab mounts `/mnt/Flash` (FFS on the 1 MB `flash2a`) `synchronous`,
+and its flash driver skips sectors whose bytes stay the same. Measured on the
+NetBSD 4 LE device with the same 333 KB binary: a new file took 124 s through
+`cat` from the SSH pipe and 98-99 s as one large write (`dd obs=512k`, or `cp`
+from `/mnt/Memory`); overwriting a file in place took 2.5 s with identical
+bytes and 134 s with different ones; deleting it took 28 s; reading it back
+0.4 s. NetBSD 6 wrote the 376 KB service in 1.9 s.
+
+Uploads now run `dd of=DEST ibs=65536 obs=1048576 && ls -l DEST` and check
+the printed size, replacing `cat >` and the separate, retried size-check SSH
+call left from the scp transport. Before removing old software, deploy reads
+back each upload bound for `/mnt/Flash` and leaves a file that already holds
+its new bytes in place: not removed, not written, not counted against flash
+space. A file that cannot be read is written again. Each removal list is now
+one `rm -rf` per volume (flash plus RAM, then the payload behind its mount
+guard, and one per other detected payload), and uninstall's 19 removals are
+one; a removal gets 300 s, as the flush does, rather than the 120 s each path
+had alone. A kept config still has its mode set to 600. A changed service still costs about 100 s on NetBSD 4; in-place
+overwrite of changed bytes was slower (134 s) and would fail with ETXTBSY
+against a still-running service, and the service cannot move to the HDD
+because the manager it runs starts the diskd that mounts it.
+
+Validation:
+- pytest: 3,516 passed. One test failed once under the load of two deploys
+  (`test_bonjour_integration` SIGINT helper, 3 s timeout) and passes alone;
+  the discovery code is unchanged here. The filesystem install harness now
+  runs the production upload command in a local shell.
+- NetBSD 6: deploy passed in 128 s with the service kept (pytest ran in
+  parallel on the Mac); doctor passed.
+- NetBSD 4 LE: deploy 332 s -> 173 s with the service kept: removing old
+  software 35.7 s -> 1.1 s, uploads 126.6 s -> 4.7 s (10 MB smbd 3.9 s
+  through `dd`). Doctor passed. The rest is the reboot (102 s), two 11 s
+  flushes and stopping the runtime.

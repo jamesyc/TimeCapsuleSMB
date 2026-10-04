@@ -23,7 +23,7 @@ from timecapsulesmb.deploy.commands import (
     PrepareDirsAction,
     RemotePermission,
     RemoteSymlink,
-    RemovePathAction,
+    RemovePathsAction,
     RunScriptAction,
     StopServiceRuntimeAction,
     StopProcessAction,
@@ -135,6 +135,10 @@ def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> Readin
     return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
 
 
+
+def removed_paths(actions) -> set[str]:
+    return {path for action in actions if isinstance(action, RemovePathsAction) for path in action.paths}
+
 class DeployModuleTests(unittest.TestCase):
     def setUp(self):
         from tests.test_xattr_migration import fake_inventory
@@ -142,6 +146,8 @@ class DeployModuleTests(unittest.TestCase):
             ("inventory_metadata", {"side_effect": lambda *_a: fake_inventory()}),
             ("inspect_sources", {}),
             ("flush_remote_filesystem_writes", {}),
+            # No flash file holds its new bytes yet: every file is written.
+            ("_flash_files_holding_new_bytes", {"return_value": set()}),
         ):
             patcher = mock.patch("timecapsulesmb.services.deploy." + target, **kwargs)
             patcher.start()
@@ -248,7 +254,7 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_run_remote_actions_reports_completed_actions(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        actions = [StopServiceRuntimeAction(), RemovePathAction("/tmp/tc-old")]
+        actions = [StopServiceRuntimeAction(), RemovePathsAction(("/tmp/tc-old",))]
         completed = []
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             run_remote_actions(
@@ -259,6 +265,8 @@ class DeployModuleTests(unittest.TestCase):
 
         self.assertEqual(run_ssh_mock.call_count, 2)
         self.assertEqual(completed, [(actions[0], 1, 2), (actions[1], 2, 2)])
+        # One rm removes every listed path, so it gets the longer bound.
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list], [120, 300])
 
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         with boot_asset_path("boot.sh") as path:
@@ -860,7 +868,7 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual(migration["timed_out"], timed_out)
                 self.assertEqual(migration["result"], "failure")
                 self.assertFalse(any(
-                    RemovePathAction(RAM_HELPER) in call.args[1]
+                    RemovePathsAction((RAM_HELPER,)) in call.args[1]
                     for call in remote_actions.call_args_list
                 ))
 
@@ -886,7 +894,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("phase=inspect", str(caught.exception))
         migrate.assert_not_called()
         self.assertFalse(any(
-            RemovePathAction(RAM_HELPER) in call.args[1]
+            RemovePathsAction((RAM_HELPER,)) in call.args[1]
             for call in remote_actions.call_args_list
         ))
 
@@ -940,7 +948,7 @@ class DeployModuleTests(unittest.TestCase):
             ],
         )
         self.assertTrue(any(
-            call.args[1] == [RemovePathAction(RAM_HELPER)]
+            call.args[1] == [RemovePathsAction((RAM_HELPER,))]
             for call in remote_actions.call_args_list
         ))
 
@@ -2207,9 +2215,9 @@ describe_managed_smbd_status "" ""
         self.assertIn("/usr/bin/pkill '^mdns$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/acp rpc diskd.useVolume path:s:/Volumes/dk2", text)
         self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
-        self.assertIn(f"rm -rf {payload_dir}/smb.conf.template", text)
-        self.assertIn(f"rm -rf {payload_dir}/private/adisk.uuid", text)
-        self.assertIn(f"rm -rf {payload_dir}/private/nbns.enabled", text)
+        payload_rm = next(line.strip() for line in text.splitlines() if line.strip().startswith(f"rm -rf {payload_dir}/"))
+        for name in ("smb.conf.template", "private/adisk.uuid", "private/nbns.enabled"):
+            self.assertIn(f" {payload_dir}/{name}", payload_rm)
         self.assertNotIn("generated smbpasswd", text)
         self.assertNotIn("generated:username.map", text)
         self.assertIn("upload generated flash runtime config -> /mnt/Flash/tcapsulesmb.conf", text)
@@ -2302,7 +2310,7 @@ describe_managed_smbd_status "" ""
     def test_build_uninstall_plan_stops_supervisors_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         self.assertEqual(plan.remote_actions[0], StopServiceRuntimeAction())
-        first_remove = next(i for i, action in enumerate(plan.remote_actions) if isinstance(action, RemovePathAction))
+        first_remove = next(i for i, action in enumerate(plan.remote_actions) if isinstance(action, RemovePathsAction))
         self.assertLess(plan.remote_actions.index(StopProcessAction("smbd")), first_remove)
         self.assertLess(plan.remote_actions.index(StopProcessAction("rsync")), first_remove)
         for native in ("afpserver", "mDNSResponder"):
@@ -2313,7 +2321,7 @@ describe_managed_smbd_status "" ""
 
         self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
         self.assertIn("/mnt/Flash/tcapsulesmb.conf", plan.verify_absent_targets)
-        self.assertIn(RemovePathAction("/mnt/Flash/tcapsulesmb.conf"), plan.remote_actions)
+        self.assertIn("/mnt/Flash/tcapsulesmb.conf", removed_paths(plan.remote_actions))
 
     def test_build_uninstall_plan_removes_each_payload_home_once(self) -> None:
         plan = build_uninstall_plan(
@@ -2324,11 +2332,9 @@ describe_managed_smbd_status "" ""
 
         self.assertEqual(plan.volume_roots, ["/Volumes/dk2", "/Volumes/dk5"])
         self.assertEqual(plan.payload_dirs, ["/Volumes/dk2/samba4", "/Volumes/dk5/samba4"])
-        self.assertEqual(
-            [action for action in plan.remote_actions if action == RemovePathAction("/Volumes/dk2/samba4")],
-            [RemovePathAction("/Volumes/dk2/samba4")],
-        )
-        self.assertIn(RemovePathAction("/Volumes/dk5/samba4"), plan.remote_actions)
+        removed = [path for action in plan.remote_actions if isinstance(action, RemovePathsAction) for path in action.paths]
+        self.assertEqual(removed.count("/Volumes/dk2/samba4"), 1)
+        self.assertEqual(removed.count("/Volumes/dk5/samba4"), 1)
 
     def test_render_remove_path_refuses_flash_root(self) -> None:
         unsafe_paths = [
@@ -2340,12 +2346,13 @@ describe_managed_smbd_status "" ""
         ]
         for unsafe_path in unsafe_paths:
             with self.subTest(path=unsafe_path):
+                # One unsafe path refuses the whole command.
                 with self.assertRaisesRegex(ValueError, "Refusing to remove flash root path"):
-                    render_remote_action(RemovePathAction(unsafe_path))
+                    render_remote_action(RemovePathsAction(("/mnt/Flash/rc.local", unsafe_path)))
 
         self.assertEqual(
-            render_remote_action(RemovePathAction("/mnt/Flash/rc.local")),
-            "rm -rf /mnt/Flash/rc.local",
+            render_remote_action(RemovePathsAction(("/mnt/Flash/rc.local", "/Volumes/dk2/Time Capsule/smbd"))),
+            "rm -rf /mnt/Flash/rc.local '/Volumes/dk2/Time Capsule/smbd'",
         )
 
     def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
@@ -2419,21 +2426,23 @@ describe_managed_smbd_status "" ""
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
         for index, action in enumerate(plan.replace_software_actions):
-            if isinstance(action, RemovePathAction) and action.path.startswith("/Volumes/"):
+            if isinstance(action, RemovePathsAction) and any(path.startswith("/Volumes/") for path in action.paths):
                 self.assertEqual(plan.replace_software_actions[index - 1], expected_guard)
+                # The guard covers one volume: no flash path shares its command.
+                self.assertTrue(all(path.startswith(plan.payload_dir + "/") for path in action.paths))
         prepare = next(index for index, action in enumerate(plan.pre_upload_actions)
                        if isinstance(action, PrepareDirsAction))
         self.assertEqual(plan.pre_upload_actions[prepare - 1], expected_guard)
         self.assertEqual(plan.post_upload_actions[0], expected_guard)
         for protocol in ("mdns", "nbns"):
-            self.assertIn(RemovePathAction(f"{plan.payload_dir}/{protocol}"), plan.replace_software_actions)
+            self.assertIn(f"{plan.payload_dir}/{protocol}", removed_paths(plan.replace_software_actions))
             self.assertIn(StopProcessAction(protocol), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol + "-advertiser"), plan.pre_upload_actions)
-        self.assertIn(RemovePathAction(f"{plan.payload_dir}/discoveryd"), plan.replace_software_actions)
+        self.assertIn(f"{plan.payload_dir}/discoveryd", removed_paths(plan.replace_software_actions))
         self.assertIn(StopProcessAction("discoveryd"), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("wcifsnd"), plan.pre_upload_actions)
-        self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.replace_software_actions)
-        self.assertIn(RemovePathAction("/mnt/Flash/mdns-advertiser"), plan.replace_software_actions)
+        self.assertIn("/mnt/Flash/mdns", removed_paths(plan.replace_software_actions))
+        self.assertIn("/mnt/Flash/mdns-advertiser", removed_paths(plan.replace_software_actions))
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

@@ -64,8 +64,8 @@ class StopTelemetryAction:
 
 
 @dataclass(frozen=True)
-class RemovePathAction:
-    path: str
+class RemovePathsAction:
+    paths: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ RemoteAction = Union[
     StopServiceRuntimeAction,
     WaitForIdleJobsAction,
     StopTelemetryAction,
-    RemovePathAction,
+    RemovePathsAction,
     RunScriptAction,
 ]
 
@@ -140,15 +140,15 @@ def _render_install_permissions_action(action: InstallPermissionsAction) -> str:
     return " && ".join(commands) if commands else "true"
 
 
-def _render_remove_path_action(action: RemovePathAction) -> str:
-    path = action.path
-    if path.rstrip("/") == "/mnt/Flash" or (
-        path.startswith("/mnt/Flash")
-        and len(path) > len("/mnt/Flash")
-        and path[len("/mnt/Flash")].isspace()
-    ):
-        raise ValueError(f"Refusing to remove flash root path: {path}")
-    return f"rm -rf {shlex.quote(path)}"
+def _render_remove_paths_action(action: RemovePathsAction) -> str:
+    for path in action.paths:
+        if path.rstrip("/") == "/mnt/Flash" or (
+            path.startswith("/mnt/Flash")
+            and len(path) > len("/mnt/Flash")
+            and path[len("/mnt/Flash")].isspace()
+        ):
+            raise ValueError(f"Refusing to remove flash root path: {path}")
+    return "rm -rf " + " ".join(shlex.quote(path) for path in action.paths)
 
 
 def render_remote_action(action: RemoteAction) -> str:
@@ -169,8 +169,8 @@ def render_remote_action(action: RemoteAction) -> str:
         return _render_prepare_dirs_action(action)
     if isinstance(action, InstallPermissionsAction):
         return _render_install_permissions_action(action)
-    if isinstance(action, RemovePathAction):
-        return _render_remove_path_action(action)
+    if isinstance(action, RemovePathsAction):
+        return _render_remove_paths_action(action)
     if isinstance(action, RunScriptAction):
         return f"/bin/sh {shlex.quote(action.path)}"
     raise TypeError(f"Unsupported remote action: {action!r}")
@@ -213,8 +213,8 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
                 for permission in action.permissions
             ],
         }
-    if isinstance(action, RemovePathAction):
-        return {"kind": "remove_path", "args": [action.path]}
+    if isinstance(action, RemovePathsAction):
+        return {"kind": "remove_paths", "args": list(action.paths)}
     if isinstance(action, RunScriptAction):
         return {"kind": "run_script", "args": [action.path]}
     raise TypeError(f"Unsupported remote action: {action!r}")

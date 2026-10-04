@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
+import shlex
 import time
 import tempfile
 
@@ -44,7 +45,7 @@ from timecapsulesmb.deploy.executor import (
     run_remote_actions,
     upload_deployment_payload,
 )
-from timecapsulesmb.deploy.commands import EnsureVolumeMountedAction, InstallPermissionsAction, RemoteAction, RemotePermission, RemovePathAction, StopProcessAction
+from timecapsulesmb.deploy.commands import EnsureVolumeMountedAction, InstallPermissionsAction, RemoteAction, RemotePermission, RemovePathsAction, StopProcessAction
 from timecapsulesmb.deploy.planner import (
     BINARY_SERVICE_SOURCE,
     BINARY_RSYNC_SOURCE,
@@ -99,8 +100,9 @@ from timecapsulesmb.services.runtime_verification import (
 from timecapsulesmb.transport.ssh import (
     SshConnection,
     run_ssh,
+    run_ssh_capture_bytes,
 )
-from timecapsulesmb.transport.errors import is_ssh_timeout_error
+from timecapsulesmb.transport.errors import SshError, is_ssh_timeout_error
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
@@ -365,6 +367,37 @@ def _probe_flash_capacity(
             code="flash_capacity_probe_failed",
         ) from exc
     return available, required
+
+
+def _flash_files_holding_new_bytes(
+    connection: SshConnection,
+    transfers: list[FileTransfer],
+    source_resolver: Mapping[str, Path],
+) -> set[str]:
+    """Return the /mnt/Flash destinations that already hold their new bytes.
+
+    NetBSD 4 mounts /mnt/Flash synchronously: replacing the 333 KB service
+    takes 28 s to delete it and 99 s to write it, but reading it takes 0.4 s.
+    A file that cannot be read is written again.
+    """
+    kept: set[str] = set()
+    for transfer in transfers:
+        if not transfer.destination.startswith("/mnt/Flash/"):
+            continue
+        try:
+            current = run_ssh_capture_bytes(
+                connection,
+                f"cat {shlex.quote(transfer.destination)}",
+                missing_tool_message=(
+                    "SSH with a password requires local sshpass. "
+                    "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."
+                ),
+            )
+        except SshError:
+            continue
+        if current == source_resolver[transfer.source_id].read_bytes():
+            kept.add(transfer.destination)
+    return kept
 
 
 def _best_effort_debug_summary(render, value: object) -> object | None:
@@ -1093,7 +1126,7 @@ def upload_and_verify_deployment_payload(
                 if not migration_helper_cleanup_safe:
                     return
                 try:
-                    run_remote_actions_func(connection, [RemovePathAction(RAM_HELPER)])
+                    run_remote_actions_func(connection, [RemovePathsAction((RAM_HELPER,))])
                 except Exception as exc:
                     callbacks.debug(migration_helper_cleanup_error=str(exc))
             boot_assets.callback(remove_migration_helper)
@@ -1109,25 +1142,40 @@ def upload_and_verify_deployment_payload(
             callbacks.debug(xattr_migration="skipped reason=no_legacy_tdb")
 
         callbacks.stage("replace_software")
+        # Flash files that already hold the new bytes are neither removed nor
+        # written, so they need no flash space either.
+        kept = _flash_files_holding_new_bytes(connection, [*plan.uploads, plan.config_upload], upload_sources)
+        callbacks.debug(flash_files_kept=sorted(kept))
+        plan = replace(
+            plan,
+            uploads=[transfer for transfer in plan.uploads if transfer.destination not in kept],
+            replace_software_actions=[
+                RemovePathsAction(tuple(path for path in action.paths if path not in kept))
+                if isinstance(action, RemovePathsAction) else action
+                for action in plan.replace_software_actions
+            ],
+        )
+        config_uploads = [] if plan.config_upload.destination in kept else [plan.config_upload]
         run_remote_actions_func(connection, plan.replace_software_actions)
         # Apply the same explicit software ownership list to other detected
         # payloads. Their metadata, receipts, logs and quarantines stay intact.
+        payload_software = [
+            path
+            for action in plan.replace_software_actions if isinstance(action, RemovePathsAction)
+            for path in action.paths if path.startswith(plan.payload_dir + "/")
+        ]
         for directory in inventory.payload_dirs:
             if directory == plan.payload_dir:
                 continue
             volume = next(v for v in inventory.volumes if directory.startswith(v.volume_root + "/"))
-            actions = []
-            for action in plan.replace_software_actions:
-                if isinstance(action, RemovePathAction) and action.path.startswith(plan.payload_dir + "/"):
-                    actions.extend([
-                        EnsureVolumeMountedAction(volume.volume_root, volume.device_path, plan.apple_mount_wait_seconds),
-                        RemovePathAction(directory + action.path[len(plan.payload_dir):]),
-                    ])
-            run_remote_actions_func(connection, actions)
+            run_remote_actions_func(connection, [
+                EnsureVolumeMountedAction(volume.volume_root, volume.device_path, plan.apple_mount_wait_seconds),
+                RemovePathsAction(tuple(directory + path[len(plan.payload_dir):] for path in payload_software)),
+            ])
         callbacks.stage("check_flash_capacity")
         try:
             available_flash_bytes, required_flash_bytes = probe_flash_capacity_func(
-                connection, [*plan.uploads, plan.config_upload, plan.boot_upload], upload_sources
+                connection, [*plan.uploads, *config_uploads, plan.boot_upload], upload_sources
             )
         except DeployDeviceError:
             raise
@@ -1222,10 +1270,12 @@ def upload_and_verify_deployment_payload(
             run_xattr_migration_phase("cleanup")
 
         callbacks.stage("install_runtime_config")
-        upload_payload_func(
-            replace(plan, uploads=[plan.config_upload]),
-            **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs),
-        )
+        if config_uploads:
+            upload_payload_func(
+                replace(plan, uploads=config_uploads),
+                **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs),
+            )
+        # A kept config also gets its mode, like the kept software files.
         run_remote_actions_func(connection, [
             InstallPermissionsAction((RemotePermission(plan.config_upload.destination, "600"),)),
         ])

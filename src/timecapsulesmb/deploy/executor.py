@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
-from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
+from timecapsulesmb.deploy.commands import RemoteAction, RemovePathsAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
@@ -21,6 +21,10 @@ FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
 # Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
 # payload after a slow upload. Keep this bounded, but long enough for real disks.
 FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300
+REMOTE_ACTION_TIMEOUT_SECONDS = 120
+# One rm removes every listed path. NetBSD 4's synchronous flash frees the
+# 333 KB service in 28 s, and an older release left several binaries there.
+REMOVE_PATHS_TIMEOUT_SECONDS = 300
 @dataclass(frozen=True)
 class XattrMigrationResult:
     output: str
@@ -105,7 +109,8 @@ def run_remote_actions(
     commands = render_remote_actions(action_list)
     total = len(action_list)
     for index, (action, command) in enumerate(zip(action_list, commands), start=1):
-        run_ssh(connection, command)
+        timeout = REMOVE_PATHS_TIMEOUT_SECONDS if isinstance(action, RemovePathsAction) else REMOTE_ACTION_TIMEOUT_SECONDS
+        run_ssh(connection, command, timeout=timeout)
         if on_action_done is not None:
             on_action_done(action, index, total)
 
@@ -115,6 +120,6 @@ def flush_remote_filesystem_writes(connection: SshConnection) -> None:
 
 
 def remote_uninstall_payload(connection: SshConnection, plan: UninstallPlan) -> None:
-    # Use for loop to avoid rc=255 bug on NetBSD 4 Time Capsules
-    for command in render_remote_actions(plan.remote_actions):
-        run_ssh(connection, command)
+    # One SSH command per action: the stop commands chained with rm in one
+    # command failed with rc=255 on NetBSD 4 Time Capsules.
+    run_remote_actions(connection, plan.remote_actions)

@@ -121,7 +121,7 @@ def test_uninstall_stops_before_deleting_files_when_cleanup_is_busy():
     cleanup = StopTelemetryAction(cleanup=True)
     cleanup_command = render_remote_action(cleanup)
     executed = []
-    def ssh(_connection, command):
+    def ssh(_connection, command, **_kwargs):
         executed.append(command)
         if command == cleanup_command:
             raise RuntimeError('telemetry busy')

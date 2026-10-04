@@ -120,6 +120,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("  while a lone TDB waits for such a disk, copy it aside and drop its verified records")
     lines.append("")
     lines.append("Remote actions (after metadata copy):")
+    lines.append("  keep flash files that already hold their new bytes; neither remove nor upload them")
     for command in render_remote_actions(plan.replace_software_actions):
         lines.append(f"  {command}")
     lines.append("  check free flash space after cleanup")

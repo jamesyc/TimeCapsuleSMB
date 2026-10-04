@@ -11,7 +11,7 @@ import pytest
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.deploy import executor
 from timecapsulesmb.deploy.commands import (
-    EnsureVolumeMountedAction, RemovePathAction,
+    EnsureVolumeMountedAction, RemovePathsAction,
     StopProcessAction, StopServiceRuntimeAction, StopTelemetryAction,
     WaitForIdleJobsAction, render_remote_action,
 )
@@ -19,7 +19,7 @@ from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
-    DeployDeviceError, DeployRuntimeConfig,
+    FLASH_CAPACITY_MARGIN_BYTES, DeployDeviceError, DeployRuntimeConfig,
     upload_and_verify_deployment_payload, complete_deployment_after_upload,
 )
 from timecapsulesmb.transport.ssh import SshConnection, SshError, upload_file
@@ -45,6 +45,8 @@ class Device:
                                             startup_mode="reboot_then_verify"),
         )
         self.failure = None
+        self.flash_free_kb = 4096
+        self.uploading = None
         self.unmount_after = None
         self.parked = root / "unmounted"
         self.transfers = []
@@ -101,6 +103,8 @@ class Device:
         return command
 
     def piped(self, connection, remote_cmd, *, input_bytes=None, **kwargs):
+        if input_bytes is None:  # a read, not an upload
+            return subprocess.run(self.local(remote_cmd), shell=True, executable='/bin/sh', capture_output=True)
         destination = self.uploading
         if self.failure == 'transfer' and destination.endswith('/smbd'):
             self.write(destination, b'partial')
@@ -119,7 +123,7 @@ class Device:
         if command == '/bin/df -k /mnt/Flash':
             self.events.append('capacity')
             assert not self.path('/mnt/Flash/rc.local').exists()
-            free = 0 if self.failure == 'capacity' else 4096
+            free = 0 if self.failure == 'capacity' else self.flash_free_kb
             return SimpleNamespace(stdout=f'Filesystem 1K-blocks Used Avail Capacity Mounted on\n/dev/flash 5000 100 {free} 2% /mnt/Flash\n')
         command = self.local(command)
         if self.failure == 'permissions' and 'chmod' in command:
@@ -223,10 +227,11 @@ def test_surviving_supervisor_blocks_deletion(tmp_path, monkeypatch):
 def test_absent_managed_software_installs_without_old_scripts(tmp_path, monkeypatch):
     device = Device(tmp_path, monkeypatch)
     for action in device.plan.pre_upload_actions:
-        if isinstance(action, RemovePathAction):
-            path = device.path(action.path)
-            if path.is_file():
-                path.unlink()
+        if isinstance(action, RemovePathsAction):
+            for name in action.paths:
+                path = device.path(name)
+                if path.is_file():
+                    path.unlink()
     device.install()
     device.assert_installed()
 
@@ -335,3 +340,49 @@ def test_known_software_removed_from_every_detected_payload_only(tmp_path, monke
         assert not device.path(secondary + '/' + name).exists()
     for name in ('private/xattr.tdb', 'private/xattr.tdb.orphaned.1', 'logs/old.log'):
         assert device.path(secondary + '/' + name).read_bytes() == b'preserve'
+
+
+FLASH_SOFTWARE = ('/mnt/Flash/service', '/mnt/Flash/boot.sh', '/mnt/Flash/dfree.sh', '/mnt/Flash/tcapsulesmb.conf')
+
+
+def test_rerun_keeps_flash_files_that_hold_their_new_bytes(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    device.install()
+    inodes = {name: device.path(name).stat().st_ino for name in FLASH_SOFTWARE}
+    device.path('/mnt/Flash/tcapsulesmb.conf').chmod(0o644)
+    device.transfers.clear()
+    device.install()
+    # Neither removed nor written again; the HDD payload is never compared.
+    assert {name: device.path(name).stat().st_ino for name in FLASH_SOFTWARE} == inodes
+    assert not set(FLASH_SOFTWARE) & set(device.transfers)
+    assert device.home.payload_dir + '/smbd' in device.transfers
+    assert device.transfers[-1] == '/mnt/Flash/rc.local'
+    # Kept files still get their modes, the config's 600 included.
+    device.assert_installed()
+
+
+def test_changed_or_unreadable_flash_files_are_replaced(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    device.install()
+    device.write('/mnt/Flash/service', b'older service')
+    device.write('/mnt/Flash/tcapsulesmb.conf', b'SMBD_DEBUG_LOGGING=1\n')
+    # cat fails on a directory even for root; rm -rf then replaces it.
+    device.path('/mnt/Flash/boot.sh').unlink()
+    device.path('/mnt/Flash/boot.sh').mkdir()
+    device.transfers.clear()
+    device.install()
+    assert {'/mnt/Flash/service', '/mnt/Flash/tcapsulesmb.conf', '/mnt/Flash/boot.sh'} <= set(device.transfers)
+    assert '/mnt/Flash/dfree.sh' not in device.transfers
+    device.assert_installed()
+
+
+def test_flash_space_is_needed_only_for_files_written(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    device.install()
+    # The margin plus rc.local's 1 KiB, which every install writes.
+    device.flash_free_kb = FLASH_CAPACITY_MARGIN_BYTES // 1024 + 1
+    device.install()
+    device.assert_installed()
+    device.write('/mnt/Flash/service', b'older service')
+    with pytest.raises(DeployDeviceError, match='Not enough free space on /mnt/Flash'):
+        device.install()

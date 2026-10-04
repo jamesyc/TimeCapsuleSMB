@@ -943,9 +943,9 @@ if sys.argv[1] == "df":
         self.assertNotIn("generated:install.id", source_ids)
         self.assertEqual(plan.private_dir, "/Volumes/dk2/.samba4/private")
         self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
-        self.assertIn("/Volumes/dk2/.samba4/smb.conf.template", {action.path for action in plan.replace_software_actions if hasattr(action, "path")})
-        self.assertIn("/Volumes/dk2/.samba4/private/adisk.uuid", {action.path for action in plan.replace_software_actions if hasattr(action, "path")})
-        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", {action.path for action in plan.replace_software_actions if hasattr(action, "path")})
+        self.assertIn("/Volumes/dk2/.samba4/smb.conf.template", {path for action in plan.replace_software_actions for path in getattr(action, "paths", ())})
+        self.assertIn("/Volumes/dk2/.samba4/private/adisk.uuid", {path for action in plan.replace_software_actions for path in getattr(action, "paths", ())})
+        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", {path for action in plan.replace_software_actions for path in getattr(action, "paths", ())})
         # The installer applies config permissions after verified migration.
         self.assertNotIn(
             ("/mnt/Flash/tcapsulesmb.conf", "600"),

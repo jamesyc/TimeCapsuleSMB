@@ -42,7 +42,7 @@ if {scenario!r} != 'finishes' or n == 0: print({rows[scenario]!r})
     monkeypatch.setattr(commands, 'render_wait_for_idle_jobs', lambda: script)
     guard = commands.render_remote_action(commands.WaitForIdleJobsAction())
     calls = []
-    def ssh(connection, command):
+    def ssh(connection, command, **_kwargs):
         calls.append(command)
         if command == guard:
             result = subprocess.run(shlex.split(command), capture_output=True, text=True)
@@ -76,4 +76,4 @@ def test_uninstall_guard_precedes_every_payload_removal():
     plan = build_uninstall_plan('fixture', ['/Volumes/dk2', '/Volumes/dk3'],
                                 ['/Volumes/dk2/.samba4', '/Volumes/dk3/.samba4'])
     guard = plan.remote_actions.index(commands.WaitForIdleJobsAction())
-    assert all(guard < i for i,a in enumerate(plan.remote_actions) if isinstance(a, commands.RemovePathAction))
+    assert all(guard < i for i,a in enumerate(plan.remote_actions) if isinstance(a, commands.RemovePathsAction))

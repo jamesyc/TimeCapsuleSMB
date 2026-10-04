@@ -243,6 +243,9 @@ class CliTestCase(unittest.TestCase):
         self._flash_capacity = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
         )
+        self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.deploy._flash_files_holding_new_bytes", return_value=set())
+        )
         for target in (
             "timecapsulesmb.cli.configure.TelemetryClient.from_config",
             "timecapsulesmb.cli.deploy.TelemetryClient.from_config",
