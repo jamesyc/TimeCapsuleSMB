@@ -970,34 +970,18 @@ def ssh_local_forward(
                 pass
 
 
-def _verify_uploaded_size(connection: SshConnection, src: Path, dest: str, *, timeout: int) -> None:
-    expected_size = src.stat().st_size
-    quoted_dest = shlex.quote(dest)
-    remote_script = (
-        f"[ -f {quoted_dest} ] || exit 1; "
-        f"if command -v wc >/dev/null 2>&1; then "
-        f"wc -c < {quoted_dest}; "
-        f"else set -- $(ls -l {quoted_dest}); echo \"$5\"; fi"
-    )
-    remote_cmd = f"/bin/sh -c {shlex.quote(remote_script)}"
-    proc = None
-    actual_size = None
-    for attempt in range(3):
-        proc = run_ssh(connection, remote_cmd, check=False, timeout=timeout)
-        matches = re.findall(r"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
-        actual_size = int(matches[-1]) if matches else None
-        if proc.returncode == 0 and actual_size == expected_size:
-            return
-        if attempt < 2:
-            time.sleep(1)
-    raise SshError(
-        f"upload verification failed for {src.name} -> {dest}: expected {expected_size} bytes, "
-        f"got {actual_size if actual_size is not None else 'unknown'} bytes"
-    )
-
-
 def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
-    remote_cmd = f"/bin/sh -c {shlex.quote('cat > ' + shlex.quote(dest))}"
+    """Write src to dest on the device and check the written size.
+
+    dd gathers the pipe's short reads into 1 MiB writes: NetBSD 4 mounts
+    /mnt/Flash synchronously, so every write is a flash write, and cat's small
+    ones took the 333 KB service 124 s against 99 s. The same command prints
+    the size the device then has, so a short file fails here.
+    """
+    quoted_dest = shlex.quote(dest)
+    remote_script = f'dd of={quoted_dest} ibs=65536 obs=1048576 && set -- $(ls -l {quoted_dest}) && echo "$5"'
+    expected_size = src.stat().st_size
+    remote_cmd = f"/bin/sh -c {shlex.quote(remote_script)}"
     proc = _run_piped_ssh(
         connection,
         remote_cmd,
@@ -1012,4 +996,10 @@ def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int
     if proc.returncode != 0:
         stdout = _decode_remote_error_output(proc.stderr, proc.stdout).strip()
         raise SshError(stdout or f"SSH upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
-    _verify_uploaded_size(connection, src, dest, timeout=30)
+    sizes = re.findall(rb"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
+    actual_size = int(sizes[-1]) if sizes else None
+    if actual_size != expected_size:
+        raise SshError(
+            f"upload verification failed for {src.name} -> {dest}: expected {expected_size} bytes, "
+            f"got {actual_size if actual_size is not None else 'unknown'} bytes"
+        )

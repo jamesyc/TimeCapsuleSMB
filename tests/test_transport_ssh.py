@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import unittest
@@ -849,61 +850,54 @@ class SSHTransportTests(unittest.TestCase):
         )
         fake_child.close.assert_called_once_with(force=True)
 
-    def test_verify_uploaded_size_retries_transient_failure(self) -> None:
+    def upload(self, stdout: bytes, content: bytes = b"hello") -> tuple[mock.Mock, Path]:
+        process = subprocess.CompletedProcess(["ssh"], 0, stdout, b"5+0 records in\n")
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
-            src.write_bytes(b"hello")
-            responses = [
-                subprocess.CompletedProcess(["ssh"], 1, stdout="not ready\n", stderr=""),
-                subprocess.CompletedProcess(["ssh"], 0, stdout="5\n", stderr=""),
-            ]
-            with mock.patch("timecapsulesmb.transport.ssh.run_ssh", side_effect=responses) as run, \
-                 mock.patch("timecapsulesmb.transport.ssh.time") as time_mock:
-                ssh_transport._verify_uploaded_size(
-                    ssh_transport.SshConnection("device", "pw", ""),
-                    src,
-                    "/tmp/test-upload",
-                    timeout=30,
-                )
-        self.assertEqual(run.call_count, 2)
-        time_mock.sleep.assert_called_once_with(1)
-
-    def test_verify_uploaded_size_failure_reports_source_and_destination(self) -> None:
-        with NamedTemporaryFile() as tmp:
-            src = Path(tmp.name)
-            src.write_bytes(b"hello")
-            process = subprocess.CompletedProcess(["ssh"], 0, stdout="3\n", stderr="")
-            with mock.patch("timecapsulesmb.transport.ssh.run_ssh", return_value=process), \
-                 mock.patch("timecapsulesmb.transport.ssh.time"):
-                with self.assertRaises(ssh_transport.SshError) as exc:
-                    ssh_transport._verify_uploaded_size(
-                        ssh_transport.SshConnection("device", "pw", ""),
-                        src,
-                        "/tmp/test-upload",
-                        timeout=30,
-                    )
-        self.assertEqual(
-            str(exc.exception),
-            f"upload verification failed for {src.name} -> /tmp/test-upload: expected 5 bytes, got 3 bytes",
-        )
-
-    def test_upload_file_streams_bytes_and_verifies_size(self) -> None:
-        process = subprocess.CompletedProcess(["ssh"], 0, b"", b"")
-        with NamedTemporaryFile() as tmp:
-            src = Path(tmp.name)
-            src.write_bytes(b"hello")
-            with mock.patch("timecapsulesmb.transport.ssh._run_piped_ssh", return_value=process) as run, \
-                 mock.patch("timecapsulesmb.transport.ssh._verify_uploaded_size") as verify:
+            src.write_bytes(content)
+            with mock.patch("timecapsulesmb.transport.ssh._run_piped_ssh", return_value=process) as run:
                 ssh_transport.upload_file(
                     ssh_transport.SshConnection("device", "pw", ""),
                     src,
                     "/Volumes/dk2/.samba4/smbd",
                     timeout=180,
                 )
+        return run, src
+
+    def test_upload_file_writes_large_blocks_and_checks_size_in_one_command(self) -> None:
+        run, _src = self.upload(b"5\n")
+        run.assert_called_once()
         self.assertEqual(run.call_args.kwargs["input_bytes"], b"hello")
         self.assertEqual(run.call_args.kwargs["timeout"], 180)
-        self.assertIn("cat > ", run.call_args.args[1])
-        verify.assert_called_once_with(run.call_args.args[0], src, "/Volumes/dk2/.samba4/smbd", timeout=30)
+        script = shlex.split(run.call_args.args[1])[2]
+        self.assertTrue(script.startswith("dd of=/Volumes/dk2/.samba4/smbd ibs=65536 obs=1048576 && "))
+        self.assertIn("ls -l /Volumes/dk2/.samba4/smbd", script)
+
+    def test_upload_file_rejects_a_short_file(self) -> None:
+        with self.assertRaises(ssh_transport.SshError) as exc:
+            self.upload(b"3\n")
+        self.assertRegex(
+            str(exc.exception),
+            r"^upload verification failed for \S+ -> /Volumes/dk2/.samba4/smbd: expected 5 bytes, got 3 bytes$",
+        )
+
+    def test_upload_file_without_a_size_reports_unknown(self) -> None:
+        with self.assertRaisesRegex(ssh_transport.SshError, "expected 5 bytes, got unknown bytes"):
+            self.upload(b"")
+
+    def test_upload_command_writes_the_file_and_prints_its_size_in_a_shell(self) -> None:
+        with TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            src.write_bytes(bytes(range(256)) * 9000)
+            dest = Path(tmp) / "dest dir" / "smbd"
+            dest.parent.mkdir()
+
+            def run(_connection, remote_cmd, *, input_bytes, **_kwargs):
+                return subprocess.run(remote_cmd, shell=True, input=input_bytes, capture_output=True)
+
+            with mock.patch("timecapsulesmb.transport.ssh._run_piped_ssh", side_effect=run):
+                ssh_transport.upload_file(ssh_transport.SshConnection("device", "pw", ""), src, str(dest))
+            self.assertEqual(dest.read_bytes(), src.read_bytes())
 
     def test_upload_file_reports_remote_failure(self) -> None:
         process = subprocess.CompletedProcess(["ssh"], 1, b"", b"disk full\n")
@@ -1229,11 +1223,11 @@ class SharedConnectionTests(unittest.TestCase):
                 self.assertEqual(sum("-E" in call.args[0] for call in subprocess_run.call_args_list), 1)
 
     def test_piped_commands_use_the_shared_connection(self) -> None:
-        process = subprocess.CompletedProcess(["sshpass"], 0, b"", b"")
+        # The empty source file arrives as an empty file on the device.
+        process = subprocess.CompletedProcess(["sshpass"], 0, b"0\n", b"")
         with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
              mock.patch("timecapsulesmb.transport.ssh.subprocess.run",
-                        side_effect=SSHTransportTests.completed_run(process)) as run, \
-             mock.patch("timecapsulesmb.transport.ssh._verify_uploaded_size"):
+                        side_effect=SSHTransportTests.completed_run(process)) as run:
             with NamedTemporaryFile() as source:
                 ssh_transport.upload_file(ssh_transport.SshConnection("root@device", "pw", ""), Path(source.name), "/tmp/x")
         command = run.call_args.args[0]

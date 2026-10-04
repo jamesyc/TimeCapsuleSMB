@@ -22,7 +22,7 @@ from timecapsulesmb.services.deploy import (
     DeployDeviceError, DeployRuntimeConfig,
     upload_and_verify_deployment_payload, complete_deployment_after_upload,
 )
-from timecapsulesmb.transport.ssh import SshConnection, SshError, _verify_uploaded_size
+from timecapsulesmb.transport.ssh import SshConnection, SshError, upload_file
 
 
 class Device:
@@ -68,8 +68,7 @@ class Device:
         monkeypatch.setattr(executor, 'upload_file', self.upload)
         monkeypatch.setattr(executor, 'run_ssh', self.ssh)
         monkeypatch.setattr(executor, 'ensure_volume_root_mounted_conn', self.mount)
-        monkeypatch.setattr('timecapsulesmb.transport.ssh.run_ssh', self.ssh)
-        monkeypatch.setattr('timecapsulesmb.transport.ssh.time.sleep', lambda _seconds: None)
+        monkeypatch.setattr('timecapsulesmb.transport.ssh._run_piped_ssh', self.piped)
         monkeypatch.setattr('timecapsulesmb.services.deploy.run_ssh', self.ssh)
 
     def mount(self, *args, **kwargs):
@@ -89,23 +88,32 @@ class Device:
     def upload(self, connection, source, destination, **kwargs):
         self.transfers.append(destination)
         self.sources[destination] = source.read_bytes()
-        self.write(destination, source.read_bytes())
+        self.uploading = destination
+        # The production upload, whose device command runs in a local shell.
+        upload_file(connection, source, destination, **kwargs)
+        if destination == self.unmount_after:
+            self.path('/Volumes/dk2').rename(self.parked)
+            self.events.append('unmount')
+
+    def local(self, command):
+        for prefix in ('/mnt/', '/Volumes/', '/root'):
+            command = command.replace(prefix, str(self.root) + prefix)
+        return command
+
+    def piped(self, connection, remote_cmd, *, input_bytes=None, **kwargs):
+        destination = self.uploading
         if self.failure == 'transfer' and destination.endswith('/smbd'):
             self.write(destination, b'partial')
             raise RuntimeError('injected transfer')
         if self.failure == 'flash_transfer' and destination == '/mnt/Flash/service':
             self.write(destination, b'partial flash file')
             raise RuntimeError('injected flash transfer')
-        if self.failure == 'truncate_flash' and destination == '/mnt/Flash/service':
-            self.write(destination, b'truncated')
-        if self.failure == 'truncate' and destination.endswith('/smbd'):
-            self.write(destination, b'truncated')
-        # Replace only the byte transport. Run its production size verification
-        # so malformed transfers still fail when the executor stops duplicating it.
-        _verify_uploaded_size(connection, source, destination, timeout=30)
-        if destination == self.unmount_after:
-            self.path('/Volumes/dk2').rename(self.parked)
-            self.events.append('unmount')
+        # The stream ends early but the remote command still succeeds.
+        if (self.failure == 'truncate_flash' and destination == '/mnt/Flash/service') or (
+                self.failure == 'truncate' and destination.endswith('/smbd')):
+            input_bytes = b'truncated'
+        return subprocess.run(self.local(remote_cmd), shell=True, executable='/bin/sh',
+                              input=input_bytes, capture_output=True)
 
     def ssh(self, connection, command, **kwargs):
         if command == '/bin/df -k /mnt/Flash':
@@ -113,8 +121,7 @@ class Device:
             assert not self.path('/mnt/Flash/rc.local').exists()
             free = 0 if self.failure == 'capacity' else 4096
             return SimpleNamespace(stdout=f'Filesystem 1K-blocks Used Avail Capacity Mounted on\n/dev/flash 5000 100 {free} 2% /mnt/Flash\n')
-        for prefix in ('/mnt/', '/Volumes/', '/root'):
-            command = command.replace(prefix, str(self.root) + prefix)
+        command = self.local(command)
         if self.failure == 'permissions' and 'chmod' in command:
             raise RuntimeError('injected permissions')
         result = subprocess.run(command, shell=True, executable='/bin/sh', text=True, capture_output=True)

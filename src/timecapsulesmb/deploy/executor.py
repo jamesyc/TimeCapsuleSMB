@@ -88,7 +88,7 @@ def upload_deployment_payload(
             on_uploading(transfer)
         _ensure_payload_volume_before_transfer(connection, plan, transfer)
         _upload_transfer(connection, source, transfer)
-        # upload_file verifies the size after the SSH stream closes.
+        # upload_file checks the written size in the same command.
         # HDD permissions belong to the later mount-guarded action: Apple's
         # diskd may unmount the volume after the transfer closes its files.
         if on_uploaded is not None:
