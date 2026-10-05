@@ -137,6 +137,9 @@ STARTUP_GRACE_MASK = "mask"
 STARTUP_GRACE_PRESERVE = "preserve"
 STARTUP_GRACE_DETAIL_KEY = "startup_grace"
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
+# Installed (the checks above passed) but not running. On NetBSD4 the app
+# offers Activate for it: stock firmware does not start Samba at boot.
+DOCTOR_CODE_RUNTIME_NOT_STARTED = "runtime_not_started"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
@@ -1809,6 +1812,7 @@ def _doctor_check_runtime_ram_root(target: DoctorTarget, remote: RemoteAccess, s
             CheckResult(
                 "FAIL",
                 f"managed runtime directory {RUNTIME_RAM_ROOT} is missing; run deploy or activate to start the managed runtime",
+                details={"code": DOCTOR_CODE_RUNTIME_NOT_STARTED},
             )
         )
         return StepDecision(stop=True)

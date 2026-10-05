@@ -193,7 +193,7 @@
 "dashboard.health.connection.running" = "Foninė operacija naudoja šį profilį.";
 "dashboard.health.checkup" = "Patikrinimas";
 "dashboard.health.runtime" = "Aplinka";
-"dashboard.health.runtime.activation_needed" = "Šiam NetBSD4 įrenginiui gali reikėti aktyvavimo po paleidimo iš naujo.";
+"dashboard.health.runtime.activation_needed" = "Failų bendrinimas neveikia. „Aktyvuoti“ jį paleidžia.";
 "dashboard.health.runtime.installing" = "Vyksta diegimas / atnaujinimas.";
 "dashboard.health.runtime.not_installed" = "Samba nebuvo įdiegta iš šios programos.";
 "dashboard.health.status.failed" = "Nepavyko";

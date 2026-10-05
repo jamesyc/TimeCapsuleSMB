@@ -193,7 +193,7 @@
 "dashboard.health.connection.running" = "Een achtergrondbewerking gebruikt dit profiel.";
 "dashboard.health.checkup" = "Controle";
 "dashboard.health.runtime" = "Servicestatus";
-"dashboard.health.runtime.activation_needed" = "Dit NetBSD4-apparaat kan na een herstart ‘Activeren’ nodig hebben.";
+"dashboard.health.runtime.activation_needed" = "Bestandsdeling is niet actief. ‘Activeren’ start deze.";
 "dashboard.health.runtime.installing" = "Installatie/update wordt uitgevoerd.";
 "dashboard.health.runtime.not_installed" = "Samba is niet geïnstalleerd vanaf deze app.";
 "dashboard.health.status.failed" = "Mislukt";

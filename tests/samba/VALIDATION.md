@@ -2795,3 +2795,18 @@ Validation:
   NetBSD 6 in either revision, and doctor passed. Not rerun on this one.
 - The `rc.local` start path is covered by unit tests and by deploy: both test
   devices start file sharing by themselves.
+
+## "Activation Needed" from a stopped NetBSD 4 runtime, not from warnings (2026-10-05)
+
+The app showed "Activation Needed" for any checkup warning on an installed
+NetBSD 4 device (`f4a77261`, tested against a doctor warning the helper never
+emits), and plain Unhealthy when the runtime was actually stopped. Doctor now
+tags its missing-runtime FAIL `runtime_not_started`; the app shows that as
+"Activation Needed" on NetBSD 4 ("File sharing is not running. Activate
+starts it.", ten languages) and a warning checkup as installed, unverified.
+CLI `activate` says "NetBSD 4 devices cannot auto-run Samba after a reboot."
+only when the device probe found no boot hook.
+
+Validation: full pytest (3,600 passed), ruff, native host checks, `swift
+test` (668 passed). No device run: the doctor change adds a result code to an
+existing failure.

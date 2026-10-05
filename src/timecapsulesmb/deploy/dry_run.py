@@ -197,7 +197,12 @@ def activation_plan_to_jsonable(plan: ActivationPlan) -> dict[str, object]:
     return data
 
 
-def format_activation_plan(plan: ActivationPlan, *, device_name: str = "AirPort storage device") -> str:
+def format_activation_plan(
+    plan: ActivationPlan,
+    *,
+    device_name: str = "AirPort storage device",
+    rc_local_autostart: bool = False,
+) -> str:
     lines: list[str] = []
     lines.append("Dry run: NetBSD4 activation plan")
     lines.append("")
@@ -213,7 +218,8 @@ def format_activation_plan(plan: ActivationPlan, *, device_name: str = "AirPort 
         lines.append(f"  {check.description}")
     lines.append("")
     lines.append(f"This will start the deployed Samba payload on the {device_name}.")
-    lines.append(f"{NETBSD4_REBOOT_GUIDANCE}")
+    if not rc_local_autostart:
+        lines.append(f"{NETBSD4_REBOOT_GUIDANCE}")
     return "\n".join(lines)
 
 

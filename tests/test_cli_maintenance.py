@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 import shlex
 import json
 import unittest
@@ -95,6 +96,19 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("managed mDNS registrant becomes ready", text)
         self.assertIn("This will start the deployed Samba payload on the AirPort storage device.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
+
+    def test_activate_says_netbsd4_cannot_auto_run_samba_only_without_the_boot_hook(self) -> None:
+        warning = "NetBSD 4 devices cannot auto-run Samba after a reboot."
+        for rc_local_autostart, shown in ((False, True), (True, False)):
+            with self.subTest(rc_local_autostart=rc_local_autostart):
+                state = self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())
+                state = replace(state, probe_result=replace(state.probe_result, rc_local_autostart=rc_local_autostart))
+                output = io.StringIO()
+                with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                    with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=state):
+                        with redirect_stdout(output):
+                            self.assertEqual(activate.main(["--dry-run"]), 0)
+                self.assertEqual(warning in output.getvalue(), shown)
 
     def test_activate_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()

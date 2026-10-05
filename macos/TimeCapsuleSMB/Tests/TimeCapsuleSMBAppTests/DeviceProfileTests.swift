@@ -267,7 +267,6 @@ final class DeviceProfileTests: XCTestCase {
         let netbsd4 = makeProfile(payloadFamily: "netbsd4_samba4")
         XCTAssertTrue(netbsd4.traits.isNetBSD4)
         XCTAssertFalse(netbsd4.traits.isNetBSD6)
-        XCTAssertTrue(netbsd4.traits.needsActivationAfterReboot)
         XCTAssertTrue(netbsd4.traits.supportsFlashBootHook)
         XCTAssertTrue(netbsd4.traits.isSupported)
 
@@ -278,7 +277,6 @@ final class DeviceProfileTests: XCTestCase {
         let netbsd6 = makeProfile(osRelease: "6.0")
         XCTAssertFalse(netbsd6.traits.isNetBSD4)
         XCTAssertTrue(netbsd6.traits.isNetBSD6)
-        XCTAssertFalse(netbsd6.traits.needsActivationAfterReboot)
         XCTAssertFalse(netbsd6.traits.supportsFlashBootHook)
         XCTAssertTrue(netbsd6.traits.isSupported)
 

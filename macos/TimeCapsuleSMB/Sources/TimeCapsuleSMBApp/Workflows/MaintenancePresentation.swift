@@ -410,7 +410,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
 enum MaintenanceWorkflowAvailability {
     static func workflows(for profile: DeviceProfile) -> [MaintenanceWorkflow] {
         MaintenanceWorkflow.allCases.filter { workflow in
-            workflow != .activate || profile.traits.needsActivationAfterReboot
+            workflow != .activate || profile.traits.isNetBSD4
         }
     }
 }

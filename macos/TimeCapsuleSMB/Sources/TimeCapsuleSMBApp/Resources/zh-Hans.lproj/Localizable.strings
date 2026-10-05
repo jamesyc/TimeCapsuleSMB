@@ -193,7 +193,7 @@
 "dashboard.health.connection.running" = "后台操作正在使用此配置。";
 "dashboard.health.checkup" = "检查";
 "dashboard.health.runtime" = "服务状态";
-"dashboard.health.runtime.activation_needed" = "此 NetBSD4 设备重启后可能需要执行“启动 SMB”。";
+"dashboard.health.runtime.activation_needed" = "文件共享未运行。“启动 SMB”会启动它。";
 "dashboard.health.runtime.installing" = "安装 / 更新正在运行。";
 "dashboard.health.runtime.not_installed" = "尚未通过此应用安装 Samba。";
 "dashboard.health.status.failed" = "失败";

@@ -193,7 +193,7 @@
 "dashboard.health.connection.running" = "Uma operação em segundo plano está usando este perfil.";
 "dashboard.health.checkup" = "Verificação";
 "dashboard.health.runtime" = "Status dos serviços";
-"dashboard.health.runtime.activation_needed" = "Este dispositivo NetBSD4 pode precisar da ação “Ativar” após reiniciar.";
+"dashboard.health.runtime.activation_needed" = "O compartilhamento de arquivos não está ativo. “Ativar” o inicia.";
 "dashboard.health.runtime.installing" = "A instalação/atualização está em execução.";
 "dashboard.health.runtime.not_installed" = "Samba não foi instalado a partir deste app.";
 "dashboard.health.status.failed" = "Falha";

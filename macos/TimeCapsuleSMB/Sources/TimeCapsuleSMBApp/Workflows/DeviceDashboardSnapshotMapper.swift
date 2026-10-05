@@ -47,12 +47,8 @@ enum DeviceDashboardSnapshotMapper {
                 recovery: nil
             )
         case .warning:
-            let runtimeAlreadyInstalled = profile.runtimeState?.state.isInstalled == true
-            let nextState: DeviceRuntimeState = profile.traits.needsActivationAfterReboot && runtimeAlreadyInstalled
-                ? .activationNeeded
-                : .installedUnverified
             return DeviceRuntimeStateSnapshot(
-                state: nextState,
+                state: .installedUnverified,
                 source: .doctor,
                 stage: nil,
                 payloadFamily: payloadFamily,
@@ -78,7 +74,8 @@ enum DeviceDashboardSnapshotMapper {
                 )
             }
             return DeviceRuntimeStateSnapshot(
-                state: .unhealthy,
+                // Installed but not running: on NetBSD4 that is what Activate fixes.
+                state: summary.runtimeNotStarted && profile.traits.isNetBSD4 ? .activationNeeded : .unhealthy,
                 source: .doctor,
                 stage: nil,
                 payloadFamily: payloadFamily,

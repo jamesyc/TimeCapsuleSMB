@@ -37,28 +37,34 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertNil(runtimeState)
     }
 
-    func testWarningCheckupKeepsNetBSD4InstalledRuntimeActivationNeeded() throws {
-        var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        profile.runtimeState = testRuntimeState(
-            state: .installedVerified,
-            payloadFamily: "netbsd4_samba4",
-            verified: true
-        )
+    func testWarningCheckupOnNetBSD4IsInstalledUnverified() throws {
+        // Doctor warnings come from a running runtime; a stopped one fails.
+        var profile = try makeProfile(payloadFamily: "netbsd4le_samba4")
+        profile.runtimeState = testRuntimeState(state: .installedVerified, payloadFamily: "netbsd4le_samba4", verified: true)
         let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "WARN", message: "activation required after reboot", domain: "Runtime")
+            testDoctorCheck(status: "WARN", message: "NBNS check skipped: timed out", domain: "Runtime")
         ])
 
         let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
-            profile: profile,
-            skipSSH: false,
-            state: .warning,
-            summary: summary
-        )
+            profile: profile, skipSSH: false, state: .warning, summary: summary)
 
-        XCTAssertEqual(runtimeState?.state, .activationNeeded)
-        XCTAssertEqual(runtimeState?.source, .doctor)
-        XCTAssertEqual(runtimeState?.payloadFamily, "netbsd4_samba4")
-        XCTAssertEqual(runtimeState?.verified, false)
+        XCTAssertEqual(runtimeState?.state, .installedUnverified)
+    }
+
+    func testRuntimeNotStartedNeedsActivationOnlyOnNetBSD4() throws {
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "managed runtime directory /mnt/Memory/samba4 is missing; run deploy or activate to start the managed runtime",
+                domain: "Runtime",
+                code: "runtime_not_started"
+            )
+        ])
+        for (family, expected) in [("netbsd4le_samba4", DeviceRuntimeState.activationNeeded), ("netbsd6_samba4", .unhealthy)] {
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: try makeProfile(payloadFamily: family), skipSSH: false, state: .failed, summary: summary)
+            XCTAssertEqual(runtimeState?.state, expected, family)
+        }
     }
 
     func testDeployResultUsesCurrentOperationIdentityWhenPriorDeployExists() throws {

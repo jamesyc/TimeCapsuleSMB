@@ -38,12 +38,14 @@ struct DoctorCheckGroup: Identifiable, Equatable {
 
 struct DoctorSummary: Equatable {
     static let runtimeNotInstalledResultCode = "runtime_not_installed"
+    static let runtimeNotStartedResultCode = "runtime_not_started"
 
     let passCount: Int
     let warnCount: Int
     let failCount: Int
     let infoCount: Int
     let runtimeNotInstalled: Bool
+    let runtimeNotStarted: Bool
     let groups: [DoctorCheckGroup]
 
     init(payload: DoctorPayload) {
@@ -52,6 +54,7 @@ struct DoctorSummary: Equatable {
         self.failCount = Self.count(status: "FAIL", in: payload)
         self.infoCount = Self.count(status: "INFO", in: payload)
         self.runtimeNotInstalled = Self.containsResultCode(Self.runtimeNotInstalledResultCode, in: payload)
+        self.runtimeNotStarted = Self.containsResultCode(Self.runtimeNotStartedResultCode, in: payload)
         self.groups = Self.group(payload.results)
     }
 

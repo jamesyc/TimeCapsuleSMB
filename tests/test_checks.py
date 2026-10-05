@@ -717,6 +717,8 @@ class CheckTests(unittest.TestCase):
             run.results[-1].message,
             f"managed runtime directory {RUNTIME_RAM_ROOT} is missing; run deploy or activate to start the managed runtime",
         )
+        # Installed but not running: the app offers Activate on NetBSD4.
+        self.assertEqual(run.results[-1].details, {"code": "runtime_not_started"})
         managed_smbd.assert_not_called()
 
     def test_run_doctor_checks_stops_when_deployed_version_metadata_is_missing(self) -> None:

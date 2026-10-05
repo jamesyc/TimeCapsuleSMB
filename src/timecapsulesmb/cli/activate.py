@@ -60,6 +60,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("resolve_managed_target")
         target = command_context.resolve_validated_managed_target(profile="activate", include_probe=True)
         connection = target.connection
+        # The firmware boot hook starts Samba at boot; only without it is the warning true.
+        rc_local_autostart = target.probe_state is not None and target.probe_state.probe_result.rc_local_autostart
         command_context.set_stage("check_compatibility")
         require_netbsd4_device_compatibility(
             command_context,
@@ -77,14 +79,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.json:
                 print_json(activation_plan_to_jsonable(plan))
             else:
-                print(format_activation_plan(plan, device_name=device_name))
+                print(format_activation_plan(plan, device_name=device_name, rc_local_autostart=rc_local_autostart))
             command_context.succeed()
             return 0
 
         if not args.yes:
             command_context.set_stage("confirm_activation")
             print(f"This will start the deployed Samba payload on the {device_name}.")
-            print(color_red(NETBSD4_REBOOT_GUIDANCE))
+            if not rc_local_autostart:
+                print(color_red(NETBSD4_REBOOT_GUIDANCE))
             proceed = command_context.confirm_or_fail(
                 "Continue with NetBSD4 activation?",
                 default=False,

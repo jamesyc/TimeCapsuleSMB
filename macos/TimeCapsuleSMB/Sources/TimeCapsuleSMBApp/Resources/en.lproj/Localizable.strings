@@ -191,7 +191,7 @@
 "dashboard.health.connection.running" = "A backend operation is using this profile.";
 "dashboard.health.checkup" = "Checkup";
 "dashboard.health.runtime" = "Runtime";
-"dashboard.health.runtime.activation_needed" = "This NetBSD4 device may need Activate after reboot.";
+"dashboard.health.runtime.activation_needed" = "File sharing is not running. Activate starts it.";
 "dashboard.health.runtime.installing" = "Install / Update is running.";
 "dashboard.health.runtime.not_installed" = "Samba has not been installed from this app.";
 "dashboard.health.status.failed" = "Failed";

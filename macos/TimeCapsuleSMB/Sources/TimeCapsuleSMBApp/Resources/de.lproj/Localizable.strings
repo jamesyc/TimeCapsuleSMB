@@ -193,7 +193,7 @@
 "dashboard.health.connection.running" = "Ein Hintergrundvorgang verwendet dieses Profil.";
 "dashboard.health.checkup" = "Überprüfung";
 "dashboard.health.runtime" = "Dienststatus";
-"dashboard.health.runtime.activation_needed" = "Nach dem Neustart dieses NetBSD4-Geräts kann „Aktivieren“ erforderlich sein.";
+"dashboard.health.runtime.activation_needed" = "Die Dateifreigabe läuft nicht. „Aktivieren“ startet sie.";
 "dashboard.health.runtime.installing" = "Installation / Aktualisierung läuft.";
 "dashboard.health.runtime.not_installed" = "Samba wurde nicht über diese App installiert.";
 "dashboard.health.status.failed" = "Fehlgeschlagen";

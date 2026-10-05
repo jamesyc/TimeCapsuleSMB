@@ -193,7 +193,7 @@
 "dashboard.health.connection.running" = "Фоновая операция использует этот профиль.";
 "dashboard.health.checkup" = "Проверка";
 "dashboard.health.runtime" = "Состояние служб";
-"dashboard.health.runtime.activation_needed" = "После перезагрузки этого устройства NetBSD4 может потребоваться действие «Активировать».";
+"dashboard.health.runtime.activation_needed" = "Общий доступ к файлам не работает. «Активировать» запускает его.";
 "dashboard.health.runtime.installing" = "Выполняется установка/обновление.";
 "dashboard.health.runtime.not_installed" = "Samba не установлен через это приложение.";
 "dashboard.health.status.failed" = "Ошибка";
