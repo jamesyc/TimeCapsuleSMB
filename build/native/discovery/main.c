@@ -2,6 +2,7 @@
 #include "wcifsnd.h"
 #include "../common/loop.h"
 #include "../common/parent.h"
+#include "../common/process.h"
 
 volatile sig_atomic_t g_stop = 0;
 static int parent_fd = -1;
@@ -111,7 +112,8 @@ int tc_discovery_main(int argc, char **argv) {
         registrant_prepare(&reg, &reads, &maxfd, &deadline);
         wcifsnd_prepare(&nbns, &reads, &maxfd, &deadline);
         tc_parent_prepare(parent_fd, &reads, &maxfd);
-        if (plan_loop_wait(&reads, maxfd, now, deadline) < 0) {
+        /* Nothing due: wake for the plan's next poll. */
+        if (tc_wait_until(&reads, maxfd, now, deadline < 0 ? now + TC_PLAN_POLL_MS : deadline) < 0) {
             perror("select");
             result = EXIT_PLAN_FAILED;
             break;

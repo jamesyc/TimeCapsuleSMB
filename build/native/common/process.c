@@ -256,3 +256,20 @@ void tc_child_close(struct tc_child *child) {
     memset(child, 0, sizeof(*child));
     child->lifetime = child->output = -1;
 }
+int tc_wait_until(fd_set *reads, int maxfd, long long now_ms, long long deadline_ms) {
+    struct timeval timeout;
+    long long wait_ms = deadline_ms - now_ms;
+    int rc;
+    if (wait_ms < 0) wait_ms = 0;
+    timeout.tv_sec = wait_ms / 1000;
+    timeout.tv_usec = (wait_ms % 1000) * 1000;
+    rc = select(maxfd + 1, reads, NULL, NULL, &timeout);
+    if (rc < 0) {
+        if (errno == EINTR) {
+            FD_ZERO(reads);
+            return 0;
+        }
+        return -1;
+    }
+    return rc;
+}

@@ -28,4 +28,7 @@ void tc_child_stop(struct tc_child *, long long now, int allow_kill);
 void tc_child_close(struct tc_child *);
 int tc_child_ok(const struct tc_child *);
 void tc_close_other_fds(int keep);
+/* select() until an fd in reads is readable or the deadline passes; returns
+ * select's result, 0 when a signal interrupts it (reads then cleared). */
+int tc_wait_until(fd_set *reads, int maxfd, long long now_ms, long long deadline_ms);
 #endif

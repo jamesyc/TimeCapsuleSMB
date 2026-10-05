@@ -44,7 +44,4 @@ int plan_loop_dispatch(struct plan_loop *loop, long long now_ms, const fd_set *r
 /* Request a recollection now (e.g. startup). */
 void plan_loop_request(struct plan_loop *loop, long long now_ms);
 long long plan_loop_now_ms(void);
-/* select() helper: waits until an fd is readable or deadline_ms; returns
- * select's result (EINTR yields 0). */
-int plan_loop_wait(fd_set *reads, int maxfd, long long now_ms, long long deadline_ms);
 #endif

@@ -187,20 +187,3 @@ int plan_loop_dispatch(struct plan_loop *loop, long long now_ms, const fd_set *r
     return 0;
 }
 
-int plan_loop_wait(fd_set *reads, int maxfd, long long now_ms, long long deadline_ms) {
-    struct timeval timeout;
-    long long wait_ms = deadline_ms < 0 ? TC_PLAN_POLL_MS : deadline_ms - now_ms;
-    int rc;
-    if (wait_ms < 0) wait_ms = 0;
-    timeout.tv_sec = wait_ms / 1000;
-    timeout.tv_usec = (wait_ms % 1000) * 1000;
-    rc = select(maxfd + 1, reads, NULL, NULL, &timeout);
-    if (rc < 0) {
-        if (errno == EINTR) {
-            FD_ZERO(reads);
-            return 0;
-        }
-        return -1;
-    }
-    return rc;
-}

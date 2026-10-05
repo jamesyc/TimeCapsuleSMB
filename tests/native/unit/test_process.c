@@ -20,6 +20,9 @@ static void parent_term(int sig) {
     (void)sig;
     parent_signals++;
 }
+static void interrupt_wait(int sig) {
+    (void)sig;
+}
 static long long now_ms(void) {
     struct timespec t;
     assert(clock_gettime(CLOCK_MONOTONIC, &t) == 0);
@@ -199,6 +202,56 @@ int main(int argc, char **argv) {
         finish(&a, 0);
         assert(WTERMSIG(a.status) == SIGKILL);
         tc_child_close(&a);
+    } else if (!strcmp(argv[1], "wait_until")) {
+        /* The supervisor loops' select(). Lower bounds only where the wait
+         * is the point; upper bounds are loose for a loaded host. */
+        int fds[2];
+        fd_set reads;
+        long long start;
+        struct sigaction action;
+        struct itimerval soon = {{0, 0}, {0, 100000}};
+        assert(pipe(fds) == 0);
+        /* A quiet descriptor waits out the deadline and is not reported. */
+        FD_ZERO(&reads);
+        FD_SET(fds[0], &reads);
+        start = now_ms();
+        assert(tc_wait_until(&reads, fds[0], start, start + 50) == 0);
+        assert(now_ms() - start >= 40 && !FD_ISSET(fds[0], &reads));
+        /* A readable one answers at once. */
+        assert(write(fds[1], "x", 1) == 1);
+        FD_ZERO(&reads);
+        FD_SET(fds[0], &reads);
+        start = now_ms();
+        assert(tc_wait_until(&reads, fds[0], start, start + 10000) == 1);
+        assert(FD_ISSET(fds[0], &reads) && now_ms() - start < 5000);
+        /* A deadline already past polls without blocking. */
+        FD_ZERO(&reads);
+        start = now_ms();
+        assert(tc_wait_until(&reads, -1, start, start - 5000) == 0);
+        assert(now_ms() - start < 5000);
+        /* A signal ends the wait with 0 and nothing reported ready. */
+        assert(read(fds[0], capture, 1) == 1);
+        alarm(0);
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = interrupt_wait;
+        sigemptyset(&action.sa_mask);
+        assert(sigaction(SIGALRM, &action, NULL) == 0);
+        assert(setitimer(ITIMER_REAL, &soon, NULL) == 0);
+        FD_ZERO(&reads);
+        FD_SET(fds[0], &reads);
+        start = now_ms();
+        assert(tc_wait_until(&reads, fds[0], start, start + 10000) == 0);
+        assert(now_ms() - start < 5000 && !FD_ISSET(fds[0], &reads));
+        signal(SIGALRM, SIG_DFL);
+        alarm(15);
+        /* A closed descriptor is an error, with select's errno. */
+        close(fds[0]);
+        FD_ZERO(&reads);
+        FD_SET(fds[0], &reads);
+        errno = 0;
+        start = now_ms();
+        assert(tc_wait_until(&reads, fds[0], start, start + 10000) == -1 && errno == EBADF);
+        close(fds[1]);
     } else
         return 2;
     return 0;

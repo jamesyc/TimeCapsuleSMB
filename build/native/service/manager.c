@@ -115,21 +115,6 @@ static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-static int wait_until(fd_set *reads, int maxfd, long long now, long long deadline) {
-    struct timeval timeout;
-    long long wait = deadline - now;
-    int result;
-    if (wait < 0)
-        wait = 0;
-    timeout.tv_sec = wait / 1000;
-    timeout.tv_usec = (wait % 1000) * 1000;
-    result = select(maxfd + 1, reads, NULL, NULL, &timeout);
-    if (result < 0 && errno == EINTR) {
-        FD_ZERO(reads);
-        return 0;
-    }
-    return result;
-}
 static void set_manager_title(int waiting) {
 #if defined(__NetBSD__)
     setproctitle(waiting ? "role=manager waiting=hostname" : "role=manager");
@@ -970,7 +955,7 @@ int tc_manager_main(int argc, char **argv) {
                     lower(&deadline, m->storage_retry.at > m->storage_at ? m->storage_retry.at : m->storage_at);
             }
         }
-        if (wait_until(&reads, maxfd, now, deadline) < 0) {
+        if (tc_wait_until(&reads, maxfd, now, deadline) < 0) {
             result = 1;
             m->stopping = 1;
         }

@@ -2871,3 +2871,23 @@ still unescapes. The service grew by about 190 bytes.
 internal wd0 and a 4 TB external `4TB` on sd0; NetBSD 4 LE: `Data` on sd0,
 CRLF lines) gave the same volumes and inventory, sizes included, with the
 old and the new Python code, and deploy passed on both.
+
+## Manager and discovery wait through one tc_wait_until (2026-10-05)
+
+`manager.c`'s `wait_until()` repeated `plan_loop_wait()` from
+`common/loop.c`. Both loops now call `tc_wait_until()` in
+`common/process.c`, which takes a finite deadline, so the manager no longer
+includes the plan loop. Discovery, which can have nothing due, passes its
+plan poll (`now + TC_PLAN_POLL_MS`) itself, as `plan_loop_wait()` did; the
+manager's deadline is always finite (each pass starts from
+`now + TC_MANAGER_PASS_MS`). A new `wait_until` case of
+`tests/native/unit/test_process.c` covers a timeout, a ready descriptor, a
+deadline already past, a signal and a closed descriptor.
+
+The clean lane builds shrank the service from 376,436 to 376,324 bytes on
+NetBSD 6, 333,764 to 333,608 on NetBSD 4 LE and 333,184 to 333,028 on
+NetBSD 4 BE. The native host tests passed. An earlier build of this change,
+with the helper still in `loop.c`, passed the full tier on both LAN devices;
+this build passed deploy and doctor on both. On NetBSD 4 LE, doctor run
+17 s after the deploy's reboot failed its NBNS query (the name it asked for
+was not yet settled) and passed when run again 70 s after boot.

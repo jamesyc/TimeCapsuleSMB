@@ -16,7 +16,7 @@ def driver(tmp_path_factory):
 
 
 @pytest.mark.parametrize("case", ["lifetime", "group", "capture", "overflow", "exec_failure", "orphan", "stop", "drain",
-                                  "term_before_reset"])
+                                  "term_before_reset", "wait_until"])
 def test_owned_process_lifecycle(driver, case):
     # Isolate the regression driver as well as its owned children: a failing
     # process-group test must never signal pytest or the user's terminal.
