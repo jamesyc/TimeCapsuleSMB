@@ -378,7 +378,8 @@ def _flash_files_holding_new_bytes(
 
     NetBSD 4 mounts /mnt/Flash synchronously: replacing the 333 KB service
     takes 28 s to delete it and 99 s to write it, but reading it takes 0.4 s.
-    A file that cannot be read is written again.
+    A file that cannot be read is written again, and so is a symlink: cat
+    would read its target, which may be on a disk Apple can unmount.
     """
     kept: set[str] = set()
     for transfer in transfers:
@@ -387,7 +388,7 @@ def _flash_files_holding_new_bytes(
         try:
             current = run_ssh_capture_bytes(
                 connection,
-                f"cat {shlex.quote(transfer.destination)}",
+                f"test ! -h {shlex.quote(transfer.destination)} && cat {shlex.quote(transfer.destination)}",
                 missing_tool_message=(
                     "SSH with a password requires local sshpass. "
                     "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."

@@ -665,6 +665,67 @@ def test_macho_tool_cache_shares_a_record_between_copies_at_other_paths(
     assert str(staged) not in json.dumps(record)
 
 
+def test_macho_tool_cache_keeps_install_names_that_match_the_inspected_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # A dylib linked with its build path as its install name, then copied into
+    # the bundle unchanged: the copy still names the build path, and
+    # validation must see that, not the copy's own path.
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    staged, bundled = tmp_path / "build" / "libfoo.dylib", tmp_path / "TimeCapsuleSMB.app" / "libfoo.dylib"
+    for path in (staged, bundled):
+        path.parent.mkdir(parents=True)
+        path.write_text("absolute install name")
+    calls = counting_macho_tools(package_app, monkeypatch, {"absolute install name": (0, "")})
+    staged_name = str(staged)
+    outputs = {
+        "otool -D": f"{{path}}:\n{staged_name}\n",
+        "otool -L": (f"{{path}} (architecture arm64):\n\t{staged_name} (compatibility version 1.0.0)\n"
+                     f"\t{staged_name}.framework/Foo (compatibility version 1.0.0)\n"),
+        "otool -l": f"{{path}}:\nLoad command 3\n          cmd LC_ID_DYLIB\n         name {staged_name} (offset 24)\n",
+    }
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=outputs[" ".join(cmd[:2])].format(path=cmd[-1]), stderr="")
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+    with package_app.macho_tool_cache():
+        uncached = {args: package_app.macho_tool(args.split(), staged).stdout for args in outputs}
+    with package_app.macho_tool_cache():
+        cached = {args: package_app.macho_tool(args.split(), bundled).stdout for args in outputs}
+        assert package_app.macho_install_name(bundled) == staged_name
+        # Not the copy itself, so not skipped as its own ID: a path outside the bundle.
+        assert package_app.macho_dependencies(bundled) == [staged_name, staged_name + ".framework/Foo"]
+    assert len(calls) == 3
+    # Only the header that names the inspected file follows the copy.
+    for args in outputs:
+        assert cached[args] == uncached[args].replace(f"{staged_name}:", f"{bundled}:", 1).replace(
+            f"{staged_name} (architecture", f"{bundled} (architecture", 1)
+        assert cached[args].count(staged_name) == uncached[args].count(staged_name) - 1
+
+
+def test_macho_tool_cache_names_the_copy_in_otools_not_an_object_file_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Executable scripts are candidates too; otool exits 0 for them.
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    staged, bundled = tmp_path / "build" / "tool", tmp_path / "TimeCapsuleSMB.app" / "tool"
+    for path in (staged, bundled):
+        path.parent.mkdir(parents=True)
+        path.write_text("#!/bin/sh")
+    calls = counting_macho_tools(package_app, monkeypatch, {"#!/bin/sh": (0, "{path}: is not an object file\n")})
+    with package_app.macho_tool_cache():
+        package_app.macho_tool(["otool", "-L"], staged)
+    with package_app.macho_tool_cache():
+        assert package_app.macho_tool(["otool", "-L"], bundled).stdout == f"{bundled}: is not an object file\n"
+        assert package_app.macho_dependencies(bundled) == []
+        assert package_app.macho_install_name(bundled) is None
+    assert len(calls) == 2  # otool -D for the install name; -L came from the record
+
+
 def test_macho_tool_cache_keeps_embedded_signature_passes_but_rechecks_failures(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

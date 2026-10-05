@@ -174,5 +174,11 @@ def test_child_that_closes_output_but_runs_is_polled_closely_then_every_100_ms(c
     assert result.returncode == 0, result.stderr
     fields = dict(item.split("=") for item in result.stdout.split())
     assert fields["fd"] == "-1"
-    assert 0 <= int(fields["soon"]) <= 5
-    assert 5 < int(fields["later"]) <= 100
+    # Every 5 ms for the first 100 ms after the close, then every 100 ms, but
+    # never past the key's own timeout.
+    assert fields["soon"] == fields["edge"] == "5"
+    assert fields["later"] == "100"
+    assert fields["capped"] == "50"
+    # The real-clock form, 150 ms after the close: 100 ms from a time it read
+    # between the driver's two clock readings, however long those were apart.
+    assert int(fields["real_min"]) <= 100 <= int(fields["real_max"])

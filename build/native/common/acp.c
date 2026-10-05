@@ -237,7 +237,7 @@ int acp_collect_fd(const struct acp_collector *c) {
     return c->active && !c->eof ? c->fd : -1;
 }
 
-long long acp_collect_deadline_ms(const struct acp_collector *c) {
+long long acp_collect_deadline_at(const struct acp_collector *c, long long now) {
     if (c->finished) {
         return -1;
     }
@@ -245,11 +245,14 @@ long long acp_collect_deadline_ms(const struct acp_collector *c) {
      * Its output can close just before it becomes reapable, and then no
      * descriptor wakes the caller: poll the first 100 ms after that closely. */
     if (c->active) {
-        long long now = acp_monotonic_ms();
         long long poll = now + (acp_eof_poll(c, now) ? 5 : 100);
         return poll < c->child_deadline_ms ? poll : c->child_deadline_ms;
     }
     return c->deadline_ms;
+}
+
+long long acp_collect_deadline_ms(const struct acp_collector *c) {
+    return acp_collect_deadline_at(c, acp_monotonic_ms());
 }
 
 /* Reap the child once its output closed, and finish its key. */

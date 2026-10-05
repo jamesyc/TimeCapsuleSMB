@@ -1,4 +1,5 @@
 """Exercise runner failure propagation without downloading or building Samba."""
+import os
 import subprocess
 import sys
 
@@ -158,31 +159,84 @@ def build_inputs(root):
     return list(files)
 
 
+SANITIZED = {"PATH": os.environ["PATH"], "CFLAGS": "-fsanitize=address", "LDFLAGS": "-fsanitize=address"}
+
+
 def test_host_build_key_follows_every_build_input_and_nothing_else(tmp_path):
     inputs = build_inputs(tmp_path)
-    key = run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path)
-    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) == key
+    key = run.host_build_key("url", "samba-4.25.0rc2", SANITIZED, tmp_path)
+    assert run.host_build_key("url", "samba-4.25.0rc2", SANITIZED, tmp_path) == key
     for name in inputs:
         path = tmp_path / name
         original = path.read_text()
         path.write_text(original + "changed\n")
-        assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) != key, name
+        assert run.host_build_key("url", "samba-4.25.0rc2", SANITIZED, tmp_path) != key, name
         path.write_text(original)
-    assert run.host_build_key("url", "samba-4.25.0rc2", False, tmp_path) != key
-    assert run.host_build_key("url", "samba-4.25.0rc1", True, tmp_path) != key
-    assert run.host_build_key("other", "samba-4.25.0rc2", True, tmp_path) != key
+    assert run.host_build_key("url", "samba-4.25.0rc1", SANITIZED, tmp_path) != key
+    assert run.host_build_key("other", "samba-4.25.0rc2", SANITIZED, tmp_path) != key
     # A new overlay file, or a new driver, is an input too.
     (tmp_path / "build/patches/samba4x/overlay/new.c").write_text("int y;\n")
-    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) != key
+    assert run.host_build_key("url", "samba-4.25.0rc2", SANITIZED, tmp_path) != key
     (tmp_path / "build/patches/samba4x/overlay/new.c").unlink()
     (tmp_path / "tests/samba/tc_b_test.c").write_text("int main(void) { return 1; }\n")
-    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) != key
+    assert run.host_build_key("url", "samba-4.25.0rc2", SANITIZED, tmp_path) != key
     (tmp_path / "tests/samba/tc_b_test.c").unlink()
     # Documentation and device-only tools are not.
     (tmp_path / "tests/samba/README.md").write_text("notes\n")
     (tmp_path / "tests/samba/dir_device.py").write_text("# device\n")
     (tmp_path / "build/service.sh").write_text("# service\n")
-    assert run.host_build_key("url", "samba-4.25.0rc2", True, tmp_path) == key
+    assert run.host_build_key("url", "samba-4.25.0rc2", SANITIZED, tmp_path) == key
+
+
+@pytest.mark.parametrize("change", [
+    {"CFLAGS": None, "LDFLAGS": None},  # no sanitizers
+    {"CFLAGS": "-fsanitize=address -O3"},
+    {"CPPFLAGS": "-DNDEBUG"},
+    {"LDFLAGS": "-fsanitize=address -static-libasan"},
+    {"LINKFLAGS": "-Wl,-z,now"},
+    {"CC": "compiler-b"},
+])
+def test_host_build_key_follows_the_compiler_and_flags_configure_reads(tmp_path, change):
+    build_inputs(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("compiler-a", "compiler-b"):
+        (bin_dir / name).write_text(f"#!/bin/sh\necho {name}\n")
+        (bin_dir / name).chmod(0o755)
+    env = {**SANITIZED, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CC": "compiler-a"}
+    key = run.host_build_key("url", "ref", env, tmp_path)
+    changed = {name: value for name, value in {**env, **change}.items() if value is not None}
+    assert run.host_build_key("url", "ref", changed, tmp_path) != key
+    # Settings configure does not read, such as the drivers' runtime options, are not inputs.
+    assert run.host_build_key("url", "ref", {**env, "ASAN_OPTIONS": "detect_leaks=1"}, tmp_path) == key
+
+
+def test_host_build_key_without_cc_follows_the_gcc_waf_picks(tmp_path):
+    build_inputs(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("gcc", "cc"):
+        (bin_dir / name).write_text(f"#!/bin/sh\necho {name} 13\n")
+        (bin_dir / name).chmod(0o755)
+    env = {**SANITIZED, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    key = run.host_build_key("url", "ref", env, tmp_path)
+    (bin_dir / "cc").write_text("#!/bin/sh\necho cc 14\n")
+    assert run.host_build_key("url", "ref", env, tmp_path) == key
+    (bin_dir / "gcc").write_text("#!/bin/sh\necho gcc 14\n")
+    assert run.host_build_key("url", "ref", env, tmp_path) != key
+
+
+def test_host_build_key_follows_the_compiler_cc_names_not_just_its_name(tmp_path):
+    # The same CC string, but a different compiler behind it (an upgrade).
+    build_inputs(tmp_path)
+    compiler = tmp_path / "bin" / "cc-wrapper"
+    compiler.parent.mkdir()
+    compiler.write_text("#!/bin/sh\necho gcc 13\n")
+    compiler.chmod(0o755)
+    env = {**SANITIZED, "CC": f"{compiler} -m64"}
+    key = run.host_build_key("url", "ref", env, tmp_path)
+    compiler.write_text("#!/bin/sh\necho gcc 14\n")
+    assert run.host_build_key("url", "ref", env, tmp_path) != key
 
 
 class FakeHostBuild:
@@ -194,7 +248,7 @@ class FakeHostBuild:
         self.runs = []
         self.fail = False
         monkeypatch.setattr(run.subprocess, "check_output", lambda *a, **k: "url\nref\n")
-        monkeypatch.setattr(run, "host_build_key", lambda url, ref, sanitizers: self.key)
+        monkeypatch.setattr(run, "host_build_key", lambda url, ref, env: self.key)
         monkeypatch.setattr(run, "build_host", self.build)
         monkeypatch.setattr(run, "run_host_tests", lambda source, env: self.runs.append(source))
 

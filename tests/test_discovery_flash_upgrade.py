@@ -376,6 +376,23 @@ def test_changed_or_unreadable_flash_files_are_replaced(tmp_path, monkeypatch):
     device.assert_installed()
 
 
+def test_flash_symlink_to_the_same_bytes_is_replaced_by_a_flash_file(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    device.install()
+    # Identical bytes, but on the data disk, which Apple can unmount.
+    on_disk = device.path('/Volumes/dk2/service-copy')
+    on_disk.write_bytes(device.path('/mnt/Flash/service').read_bytes())
+    device.path('/mnt/Flash/service').unlink()
+    device.path('/mnt/Flash/service').symlink_to(on_disk)
+    device.transfers.clear()
+    device.install()
+    assert '/mnt/Flash/service' in device.transfers
+    assert not device.path('/mnt/Flash/service').is_symlink()
+    assert '/mnt/Flash/boot.sh' not in device.transfers
+    assert on_disk.exists()  # the target was never written through
+    device.assert_installed()
+
+
 def test_flash_space_is_needed_only_for_files_written(tmp_path, monkeypatch):
     device = Device(tmp_path, monkeypatch)
     device.install()

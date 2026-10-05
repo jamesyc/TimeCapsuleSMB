@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import subprocess
@@ -208,12 +209,20 @@ def run_tests(source: Path, cross_exec: str | None = None) -> None:
             process.wait()
 
 
-def host_build_key(url: str, ref: str, sanitizers: bool, root: Path = ROOT) -> str:
+# What configure and waf read from the environment build_host() passes them
+# (waflib's c_config add_os_flags, and CC).
+HOST_BUILD_ENV = ("CC", "CFLAGS", "CPPFLAGS", "LDFLAGS", "LINKFLAGS")
+
+
+def host_build_key(url: str, ref: str, env: dict[str, str], root: Path = ROOT) -> str:
     """Everything a host build depends on: the Samba pin, the patch series and
-    its overlay, the staged drivers and this script, and the toolchain."""
-    digest = hashlib.sha256(repr((url, ref, sanitizers, sys.version)).encode())
-    for tool in ("cc", "ld"):
-        digest.update(subprocess.run([tool, "--version"], capture_output=True).stdout)
+    its overlay, the staged drivers and this script, and the toolchain and
+    compiler settings in the build's environment (sanitizers included)."""
+    settings = [(name, env.get(name)) for name in HOST_BUILD_ENV]
+    digest = hashlib.sha256(repr((url, ref, settings, sys.version)).encode())
+    # Without CC, waf's compiler_c tries gcc first on Linux, where this runs.
+    for tool in (shlex.split(env.get("CC") or "gcc"), ["ld"]):
+        digest.update(subprocess.run([*tool, "--version"], env=env, capture_output=True).stdout)
     here = root / "tests/samba"
     inputs = [root / "build/_patch_helpers.sh", *sorted((root / "build/patches/samba4x").rglob("*")),
               *sorted(here.glob("*.c")), here / "targets.py", here / "run.py"]
@@ -251,7 +260,7 @@ def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None
         tree_cache.mkdir(parents=True, exist_ok=True)
         source = tree_cache / "source"
         stamp = tree_cache / "build-key"
-        key = host_build_key(url, ref, sanitizers)
+        key = host_build_key(url, ref, env)
         with (tree_cache / "lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if source.is_dir() and stamp.is_file() and stamp.read_text() == key:

@@ -616,3 +616,26 @@ Verification:
   was not repackaged; the existing `dist` output still has the test bundle
   until the next `package_app.py` run.
 - No VM/device access or binary changes; no locks held.
+
+## 2026-10-04 — Mach-O tool cache keeps install names verbatim
+
+- The tool cache stored output with every occurrence of the file's path
+  replaced by a placeholder, and put the new path back on reuse. A dylib whose
+  install name is its own build path, copied unchanged into the bundle, was
+  then reported with the bundle path as its install name and as its own
+  dependency, which `macho_dependencies` skips as the file's ID. Validation
+  could miss an absolute build-directory install name.
+- Only lines that start with the path followed by `:` or ` (architecture `
+  now carry the placeholder: otool's and vtool's headers (`PATH:`,
+  `PATH (architecture ARCH):`) and otool's `PATH: is not an object file`,
+  which it prints with exit status 0 for executable scripts. Every other line
+  is stored as printed. Archives are never inspected (`is_macho_candidate`). The cache directory moved to `macho-tools-v2`, since v1
+  records hold placeholders in their bodies.
+- Checked with a real universal dylib linked with
+  `-install_name <build path>` and copied into an app folder: through the cache,
+  `otool -D`, `otool -L` and `otool -l` of the copy matched uncached output
+  exactly; the previous code differed on all three (vtool matched either way).
+- New tests: install names, dependencies and `LC_ID_DYLIB` that equal or start
+  with the inspected path survive reuse at another path, and a script's
+  "is not an object file" line names the copy (both fail without the fix).
+- No VM/device access for this part.

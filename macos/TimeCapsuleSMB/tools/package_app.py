@@ -63,7 +63,7 @@ CACHE_MANIFEST_FILE = "manifest.json"
 _MACHO_INSPECTIONS: ContextVar[dict[tuple[str, Path], object] | None] = ContextVar("macho_inspections", default=None)
 _MACHO_TOOL_CACHE: ContextVar[MachoToolCache | None] = ContextVar("macho_tool_cache", default=None)
 # Bump when a cached tool's command or output parsing changes.
-MACHO_TOOL_CACHE_DIR = "macho-tools-v1"
+MACHO_TOOL_CACHE_DIR = "macho-tools-v2"
 MACHO_TOOL_PATH_PLACEHOLDER = "\0path\0"
 DEVELOPER_ID_SIGNATURE_CACHE_DIR = "developer-id-signatures"
 # 1: codesign --force --timestamp --options runtime --sign <certificate>.
@@ -172,6 +172,17 @@ def cached_macho_inspection(inspect):
     return cached
 
 
+def _replace_header_path(output: str, old: str, new: str) -> str:
+    """Swap the path at the start of the lines otool and vtool print to name
+    the file ("PATH:", "PATH: is not an object file" and
+    "PATH (architecture ARCH):") and leave every other line alone."""
+    lines = output.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.startswith((f"{old}:", f"{old} (architecture ")):
+            lines[index] = new + line[len(old):]
+    return "".join(lines)
+
+
 class MachoToolCache:
     """What the read-only Mach-O tools printed for a file, kept across packaging
     runs under the file's sha256.
@@ -180,8 +191,10 @@ class MachoToolCache:
     --verify passes again for bytes with an embedded signature that passed
     before, so an unchanged file needs no new subprocess. Validation still reads every file and makes every
     check on the results: full validation of an unchanged app ran about 1,900
-    of these subprocesses in about 40 seconds. The path, which some tools
-    print, is stored as a placeholder so a copy elsewhere shares the record.
+    of these subprocesses in about 40 seconds. The path in otool's and
+    vtool's header lines is stored as a placeholder so a copy elsewhere shares
+    the record; the same text anywhere else, such as an install name that is
+    the file's build path, is the file's own bytes and is kept verbatim.
     """
 
     def __init__(self, root: Path) -> None:
@@ -211,12 +224,12 @@ class MachoToolCache:
         value = self._record(self._digest(path)).get(" ".join(args))
         if not (isinstance(value, list) and len(value) == 2 and isinstance(value[0], int) and isinstance(value[1], str)):
             return None
-        return subprocess.CompletedProcess([*args, str(path)], value[0], stdout=value[1].replace(MACHO_TOOL_PATH_PLACEHOLDER, str(path)), stderr="")
+        return subprocess.CompletedProcess([*args, str(path)], value[0], stdout=_replace_header_path(value[1], MACHO_TOOL_PATH_PLACEHOLDER, str(path)), stderr="")
 
     def store(self, args: list[str], path: Path, completed: subprocess.CompletedProcess[str]) -> None:
         digest = self._digest(path)
         record = self._record(digest)
-        record[" ".join(args)] = [completed.returncode, completed.stdout.replace(str(path), MACHO_TOOL_PATH_PLACEHOLDER)]
+        record[" ".join(args)] = [completed.returncode, _replace_header_path(completed.stdout, str(path), MACHO_TOOL_PATH_PLACEHOLDER)]
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = self.root / f"{digest}.json.tmp-{os.getpid()}"
         temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")

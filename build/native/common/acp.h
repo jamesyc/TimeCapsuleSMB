@@ -87,6 +87,8 @@ int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, siz
                       long long timeout_ms, long long budget_ms);
 int acp_collect_fd(const struct acp_collector *c);
 long long acp_collect_deadline_ms(const struct acp_collector *c);
+/* The same deadline as seen at monotonic time now; tests choose the time. */
+long long acp_collect_deadline_at(const struct acp_collector *c, long long now);
 int acp_collect_pump(struct acp_collector *c);      /* 1 = finished, 0 = in progress, -1 = aborted */
 void acp_collect_cancel(struct acp_collector *c);
 int acp_collect_run(struct acp_request *requests, size_t count, long long timeout_ms, long long budget_ms);

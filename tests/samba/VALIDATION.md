@@ -2704,3 +2704,42 @@ Validation:
   software 35.7 s -> 1.1 s, uploads 126.6 s -> 4.7 s (10 MB smbd 3.9 s
   through `dd`). Doctor passed. The rest is the reboot (102 s), two 11 s
   flushes and stopping the runtime.
+
+## Review fixes: flash symlinks, host build key, ACP poll test (2026-10-04)
+
+- A `/mnt/Flash` destination that is a symlink is now written again even when
+  its target holds the new bytes. The keep check ran `cat`, which follows the
+  link, so a redeploy left `/mnt/Flash/service` pointing at a copy on the data
+  disk, which Apple can unmount. The check is now `test ! -h DEST && cat DEST`;
+  `rm -rf` then removes the link, not its target. No release ever put a symlink
+  on `/mnt/Flash` (the old `RemoteSymlink`s were `/root/tc-netbsd4*`), so this
+  only restores convergence for a hand-made state. `tcapsulesmb.conf` is the
+  exception: it is not on the removal list, so a symlinked config is written
+  through the link and its upload size check (`ls -l` of the link) fails on
+  every run, where the previous check kept it when the bytes matched. Accepted:
+  nothing creates that symlink, and the config stays off the removal list.
+- The host regression's tree-cache key (`host_build_key`) now covers `CC`,
+  `CFLAGS`, `CPPFLAGS`, `LDFLAGS` and `LINKFLAGS` from the environment handed
+  to configure and waf (the sanitizer flags are in it; waflib's `c_config`
+  reads all four flag variables), and fingerprints `$CC --version`, or
+  `gcc --version` without `CC`: Samba's waf (`compiler_c`) tries gcc first on
+  Linux. It hashed a literal `cc` before, and a run with another compiler or
+  flags reused the previous run's binaries.
+- `acp_collect_deadline_ms` read the clock inside, so the `closed` reap test
+  subtracted a second clock reading and failed whenever the scheduler paused
+  it between the two (a 10 ms pause gave `soon=-6`). The rule moved to
+  `acp_collect_deadline_at(c, now)`, which the old function calls with the
+  monotonic clock. The test reads it at the close, 99 ms and 100 ms after it,
+  and 50 ms before the key's timeout, and expects exactly 5, 5, 100 and 50.
+  It also brackets one real-clock call between two clock readings 150 ms
+  after the close and checks the result is 100 ms past a time inside them.
+
+Validation:
+- Service rebuilt for all three lanes (fault-ahead and fork-repair checks
+  passed); each stripped binary grew 24 bytes: NetBSD 6 376,252, NetBSD 4 LE
+  333,572, NetBSD 4 BE 332,992. Manifest hashes updated. No deploy: the only
+  service change is the split function, with identical behavior.
+- New tests: a flash symlink to identical bytes is replaced by a regular file
+  (fails without the fix); the build key changes with each compiler setting,
+  with the compiler behind an unchanged `CC`, and with `gcc` (not `cc`) when
+  `CC` is unset, but not with `ASAN_OPTIONS`.
