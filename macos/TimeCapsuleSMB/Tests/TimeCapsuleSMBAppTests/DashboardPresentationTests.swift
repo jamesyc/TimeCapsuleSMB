@@ -39,7 +39,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.domain, .general)
         XCTAssertEqual(
             row.message,
-            "The Samba folder is missing from the data disk; the disk may have been erased. Run \"Install / Update Samba\" to reinstall."
+            "The Samba folder is missing from the data disk; the disk may have been erased. Run “Install / Update Samba” to reinstall."
         )
         XCTAssertFalse(row.message.contains("managed runtime payload directory"))
     }
@@ -87,7 +87,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.domain, .runtime)
         XCTAssertEqual(
             row.message,
-            "The Samba folder is missing from the data disk; the disk may have been erased. Run \"Install / Update Samba\" to reinstall."
+            "The Samba folder is missing from the data disk; the disk may have been erased. Run “Install / Update Samba” to reinstall."
         )
         XCTAssertFalse(row.message.contains("xattr_tdb"))
     }

@@ -81,6 +81,7 @@
 "app_settings.section.updates" = "Updates";
 "app_settings.show_raw_events" = "Unverarbeitete Backend-Ereignisse in der Diagnose anzeigen";
 "app_settings.subtitle" = "Standardeinstellungen für neue Geräte und Verhalten der App.";
+"app_settings.telemetry_deploy_notice" = "Wird auf Geräten beim nächsten „Samba installieren / aktualisieren“ wirksam.";
 "app_settings.telemetry_enabled" = "Anonyme Telemetriedaten teilen";
 "app_settings.time_machine_warnings" = "Kompatibilitätswarnungen für Time Machine unter macOS anzeigen";
 "app_settings.title" = "Einstellungen";
@@ -588,7 +589,7 @@
 "password.hide" = "Passwort ausblenden";
 "password.show" = "Passwort anzeigen";
 "profile_editor.advanced" = "Erweitert";
-"profile_editor.advanced.deploy_notice" = "Speichern, dann „Samba installieren / aktualisieren“ ausführen.";
+"profile_editor.advanced.deploy_notice" = "Um diese Einstellungen auf das Gerät zu übertragen, klicken Sie auf „Profil speichern“ und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";
 "profile_editor.display_name" = "Anzeigename";
 "profile_editor.error.duplicate_host" = "Ein anderes gespeichertes Gerät verwendet diesen Host bereits.";
 "profile_editor.error.host_required" = "Host ist erforderlich.";

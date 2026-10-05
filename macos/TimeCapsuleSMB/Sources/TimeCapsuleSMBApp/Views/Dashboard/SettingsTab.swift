@@ -131,9 +131,20 @@ private struct DeviceProfileAdvancedSettingsView: View {
     var body: some View {
         DashboardDisclosureSection(title: L10n.string("profile_editor.advanced")) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(L10n.string("profile_editor.advanced.deploy_notice"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Label {
+                    Text(L10n.string("profile_editor.advanced.deploy_notice"))
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.tint)
+                }
+                .font(.callout)
+                .padding(.vertical, 10)
+                .padding(.leading, 14)
+                .padding(.trailing, 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
 
                 DeviceAdvancedSettingsFields(
                     rsyncEnabled: $store.draft.rsyncEnabled,

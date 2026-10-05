@@ -79,6 +79,7 @@
 "app_settings.section.updates" = "Updates";
 "app_settings.show_raw_events" = "Show raw backend events in Diagnostics";
 "app_settings.subtitle" = "Defaults for new devices and app-level behavior.";
+"app_settings.telemetry_deploy_notice" = "Takes effect on devices at the next “Install / Update Samba”.";
 "app_settings.telemetry_enabled" = "Share anonymous telemetry";
 "app_settings.time_machine_warnings" = "Show macOS Time Machine compatibility warnings";
 "app_settings.title" = "Settings";
@@ -224,7 +225,7 @@
 "deploy.result.message" = "Message";
 "deploy.result.reboot_requested" = "Reboot Requested";
 "deploy.result.verified" = "Verified";
-"deploy.failure.reboot_guidance" = "Troubleshooting tip: try rebooting your device and waiting 5 minutes for it to load. Then run \"Install / Update Samba\" again.";
+"deploy.failure.reboot_guidance" = "Troubleshooting tip: try rebooting your device and waiting 5 minutes for it to load. Then run “Install / Update Samba” again.";
 "install.action.install_update" = "Install / Update Samba";
 "install.action.reinstall" = "Reinstall Samba";
 "install.advanced_options" = "Advanced Options";
@@ -283,7 +284,7 @@
 "dialog.forget.message" = "Remove %@ from this Mac? This does not uninstall Samba from the device.";
 "dialog.forget.title" = "Forget This Device?";
 "doctor.check.device_starting_up" = "The device is still starting up. Wait a few minutes, then run Checkup again.";
-"doctor.check.payload_missing_from_disk" = "The Samba folder is missing from the data disk; the disk may have been erased. Run \"Install / Update Samba\" to reinstall.";
+"doctor.check.payload_missing_from_disk" = "The Samba folder is missing from the data disk; the disk may have been erased. Run “Install / Update Samba” to reinstall.";
 "doctor.domain.general" = "General";
 "doctor.domain.runtime" = "Runtime";
 "event.summary.check" = "%@ %@";
@@ -586,7 +587,7 @@
 "password.hide" = "Hide Password";
 "password.show" = "Show Password";
 "profile_editor.advanced" = "Advanced";
-"profile_editor.advanced.deploy_notice" = "Save, then run “Install / Update Samba” to apply.";
+"profile_editor.advanced.deploy_notice" = "To apply these settings to the device, click “Save Profile”, then run “Install / Update Samba” again.";
 "profile_editor.display_name" = "Display Name";
 "profile_editor.error.duplicate_host" = "Another saved device already uses this host.";
 "profile_editor.error.host_required" = "Host is required.";
@@ -647,8 +648,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "A valid HFS disk was found, but TimeCapsuleSMB could not write the payload to it. Wake or remount the disk, check free space, then retry.";
 "backend.error.deploy.deploy_disk_not_mounted" = "A valid HFS disk was found, but it is not mounted, and the device did not mount it when asked. Wait a minute, then retry, or restart the device.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "A valid HFS disk is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be unmounted during the install. Wait a minute, then retry, or restart the device.";
-"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is not installed on this device. Run \"Install / Update Samba\" first.";
-"backend.error.activate.runtime_outdated" = "The TimeCapsuleSMB installed on this device is too old for this app to start. Run \"Install / Update Samba\" first.";
+"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is not installed on this device. Run “Install / Update Samba” first.";
+"backend.error.activate.runtime_outdated" = "The TimeCapsuleSMB installed on this device is too old for this app to start. Run “Install / Update Samba” first.";
 "backend.error.activate.client_outdated" = "The TimeCapsuleSMB installed on this device is from a newer major version than this app. Update TimeCapsuleSMB, then try again.";
 "backend.error.ssh_enable_timeout" = "The device accepted the setting, but SSH hasn't come up yet. Wait a few minutes (or restart the device) and try again.";
 "backend.error.disk_write_test_unresponsive" = "The disk did not respond when tested. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.";

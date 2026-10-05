@@ -55,6 +55,8 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 |---|---|---|---|---|
 | Device profile | Geräteprofil | apparaatprofiel | profil de l’appareil | perfil del dispositivo |
 | Save profile | Profil speichern | Profiel opslaan | Enregistrer le profil | Guardar perfil |
+| Install / Update Samba (button) | Samba installieren / aktualisieren | Samba installeren / bijwerken | Installer / mettre à jour Samba | Instalar / actualizar Samba |
+| Install / Update (tab, timeline) | Installieren / Aktualisieren | Installeren / bijwerken | Installer / mettre à jour | Instalar / actualizar |
 | Diagnostics | Diagnose | Diagnostiek | Diagnostic | Diagnóstico |
 | Helper program | Hilfsprogramm | hulpprogramma | programme auxiliaire | programa auxiliar |
 | Discovery | Erkennung (process) / Gerätesuche (operation title) | detectie (process) / apparaatdetectie (operation title) | découverte | descubrimiento |
@@ -85,6 +87,8 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 |---|---|---|---|---|---|
 | Device profile | profilo del dispositivo | perfil do dispositivo | профиль устройства | 设备配置 | įrenginio profilis |
 | Save profile | Salva profilo | Salvar perfil | Сохранить профиль | 保存配置 | Išsaugoti profilį |
+| Install / Update Samba (button) | Installa/aggiorna Samba | Instalar/atualizar Samba | Установить/обновить Samba | 安装 / 更新 Samba | Įdiegti / atnaujinti Samba |
+| Install / Update (tab, timeline) | Installa/aggiorna | Instalar/atualizar | Установить/обновить | 安装 / 更新 | Diegti / atnaujinti |
 | Diagnostics | Diagnostica | Diagnóstico | Диагностика | 诊断 | Diagnostika |
 | Helper program | programma ausiliario | programa auxiliar | вспомогательная программа | 辅助程序 | pagalbinė programa |
 | Discovery | rilevamento | descoberta | обнаружение | 发现 | paieška |
@@ -146,7 +150,16 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 
 - Translate complete sentences. Retaining a technical word does not justify broken local word order or missing grammatical agreement.
 - Use concise action labels. Use an action verb for a button and a state/result for a status. Match references to other screen titles to their actual localized labels.
+- A sentence that names a button or screen quotes its exact localized label, spacing and capitalization included (`“Instalar/atualizar Samba”`, not `“Instalar / atualizar Samba”`). Copy the label from its key rather than retyping it: retyped labels drifted from the button in five languages before 2026-10-05.
+- Each locale uses one kind of quotation mark, everywhere in the catalog:
+  - English, Italian, Portuguese and Chinese: curly `“…”`. English never uses straight quotes (`\"…\"` in the catalog); four English strings once did while the rest were curly.
+  - Dutch: single quotes, written curly `‘…’`, because Apple's Dutch documentation quotes UI names in single quotes (`Kies Apple-menu > 'Systeeminstellingen'`). The catalog once mixed `“…”` and `‘…’`.
+  - German and Lithuanian: `„…“`.
+  - Spanish and Russian: `«…»`. Apple's Spanish documentation uses `“…”`, but `«…»` is the Real Academia Española's first choice and the catalog uses it throughout; keep it.
+  - French: `« … »`, with the no-break spaces described below.
 - Prefer sentence case except language-required noun capitalization and exact OS/product names. Do not mechanically propagate English title case.
+- In an action name made of two verbs joined by a slash, the verb after the slash is not the start of a sentence, so it is lowercase (`Installer / mettre à jour Samba`, `Instalar / actualizar Samba`, `Installa/aggiorna Samba`), except where the language itself capitalizes it (German nominalized infinitives: `Installieren / Aktualisieren`). The capitalized French, Spanish and Italian forms were English title case carried over.
+- One action has one spelling in a locale, including its slash spacing, across every key that shows it: buttons, tab titles, timeline names, confirmation titles and the sentences that refer to it. When a label changes, search the catalog for its old spelling and change every mention in the same commit.
 - Use consistent voice within a locale. German buttons use infinitives; Dutch buttons normally place the verb last; Russian buttons use infinitives. Avoid mixing polite commands, infinitives, and noun phrases arbitrarily.
 - French and Italian use the typographic apostrophe `’` (`l’appareil`, `dell’app`), never the straight `'`.
 - French uses *Paramètres* for this app's own settings and keeps *Réglages* for Apple's *Réglages Système*.

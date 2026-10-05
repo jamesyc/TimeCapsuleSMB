@@ -94,7 +94,15 @@ struct AppSettingsView: View {
                 }
 
                 SettingsFormSection(title: L10n.string("app_settings.section.privacy"), contentWidth: contentWidth) {
-                    Toggle(L10n.string("app_settings.telemetry_enabled"), isOn: $editor.draft.telemetryEnabled)
+                    Toggle(isOn: $editor.draft.telemetryEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L10n.string("app_settings.telemetry_enabled"))
+                            Text(L10n.string("app_settings.telemetry_deploy_notice"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
 
                 SettingsFormSection(title: L10n.string("app_settings.section.time_machine"), contentWidth: contentWidth) {

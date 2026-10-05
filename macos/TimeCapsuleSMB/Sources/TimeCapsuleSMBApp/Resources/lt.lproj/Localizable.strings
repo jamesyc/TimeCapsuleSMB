@@ -81,6 +81,7 @@
 "app_settings.section.updates" = "Naujinimai";
 "app_settings.show_raw_events" = "Rodyti neapdorotus pagalbinės programos įvykius diagnostikoje";
 "app_settings.subtitle" = "Naujų įrenginių numatytieji ir programos lygio elgesio nustatymai.";
+"app_settings.telemetry_deploy_notice" = "Įrenginiuose įsigalios kitą kartą paleidus „Įdiegti / atnaujinti Samba“.";
 "app_settings.telemetry_enabled" = "Dalintis anoniminiais telemetrijos duomenimis";
 "app_settings.time_machine_warnings" = "Rodyti macOS Time Machine suderinamumo įspėjimus";
 "app_settings.title" = "Nustatymai";
@@ -226,7 +227,7 @@
 "deploy.result.message" = "Pranešimas";
 "deploy.result.reboot_requested" = "Paleidimas iš naujo užklaustas";
 "deploy.result.verified" = "Patvirtinta";
-"deploy.failure.reboot_guidance" = "Trikčių šalinimo patarimas: bandykite paleisti įrenginį iš naujo ir palaukite 5 minutes, kol jis įsikraus. Tada bandykite diegti dar kartą.";
+"deploy.failure.reboot_guidance" = "Trikčių šalinimo patarimas: bandykite paleisti įrenginį iš naujo ir palaukite 5 minutes, kol jis įsikraus. Tada dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
 "install.action.install_update" = "Įdiegti / atnaujinti Samba";
 "install.action.reinstall" = "Iš naujo įdiegti Samba";
 "install.advanced_options" = "Išplėstinės parinktys";
@@ -588,7 +589,7 @@
 "password.hide" = "Slėpti slaptažodį";
 "password.show" = "Rodyti slaptažodį";
 "profile_editor.advanced" = "Išplėstiniai";
-"profile_editor.advanced.deploy_notice" = "Išsaugokite, tada paleiskite „Įdiegti / atnaujinti Samba“.";
+"profile_editor.advanced.deploy_notice" = "Kad šie nustatymai būtų pritaikyti įrenginyje, spustelėkite „Išsaugoti profilį“, tada dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
 "profile_editor.display_name" = "Rodomas pavadinimas";
 "profile_editor.error.duplicate_host" = "Kitas išsaugotas įrenginys jau naudoja šį kompiuterio pavadinimą.";
 "profile_editor.error.host_required" = "Kompiuterio pavadinimas būtinas.";

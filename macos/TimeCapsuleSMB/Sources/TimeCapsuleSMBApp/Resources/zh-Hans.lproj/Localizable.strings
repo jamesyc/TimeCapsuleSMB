@@ -81,6 +81,7 @@
 "app_settings.section.updates" = "更新";
 "app_settings.show_raw_events" = "在诊断中显示原始后端事件";
 "app_settings.subtitle" = "新设备的默认设置和应用级行为。";
+"app_settings.telemetry_deploy_notice" = "将在下次运行“安装 / 更新 Samba”后在设备上生效。";
 "app_settings.telemetry_enabled" = "共享匿名遥测数据";
 "app_settings.time_machine_warnings" = "显示 macOS 时间机器兼容性警告";
 "app_settings.title" = "设置";
@@ -285,7 +286,7 @@
 "dialog.forget.message" = "从此 Mac 移除 %@？这不会从设备卸载 Samba。";
 "dialog.forget.title" = "忘记此设备？";
 "doctor.check.device_starting_up" = "设备仍在启动中。请等待几分钟，然后再次运行检查。";
-"doctor.check.payload_missing_from_disk" = "数据磁盘上缺少 Samba 文件夹；磁盘可能已被抹掉。请运行“安装/更新 Samba”以重新安装。";
+"doctor.check.payload_missing_from_disk" = "数据磁盘上缺少 Samba 文件夹；磁盘可能已被抹掉。请运行“安装 / 更新 Samba”以重新安装。";
 "doctor.domain.general" = "常规";
 "doctor.domain.runtime" = "服务状态";
 "event.summary.check" = "%@ %@";
@@ -588,7 +589,7 @@
 "password.hide" = "隐藏密码";
 "password.show" = "显示密码";
 "profile_editor.advanced" = "高级";
-"profile_editor.advanced.deploy_notice" = "保存后，运行“安装 / 更新 Samba”以应用设置。";
+"profile_editor.advanced.deploy_notice" = "要将这些设置应用到设备，请点击“保存配置”，然后再次运行“安装 / 更新 Samba”。";
 "profile_editor.display_name" = "显示名称";
 "profile_editor.error.duplicate_host" = "另一个保存的设备已使用此主机。";
 "profile_editor.error.host_required" = "主机为必填。";
