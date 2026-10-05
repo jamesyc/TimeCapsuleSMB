@@ -2810,3 +2810,32 @@ only when the device probe found no boot hook.
 Validation: full pytest (3,600 passed), ruff, native host checks, `swift
 test` (668 passed). No device run: the doctor change adds a result code to an
 existing failure.
+
+## Renumbered disk no longer walked under a completed disk's number (2026-10-05)
+
+v3.2.0-2 telemetry (TimeCapsule8,119): the internal disk completed migration
+under v3.1.1 while it was dk4. Before the next deploy Apple renumbered the
+disks (internal dk2, external dk4). Legacy rows are keyed by (st_dev, st_ino),
+and HFS inode numbers repeat across volumes, so the external disk's copy walk
+matched the internal disk's dk4 rows to its own files. Its cleanup then saved
+coverage that contradicted the internal disk's, and every later deploy failed
+with "Inconsistent saved metadata key coverage". The user then uninstalled,
+which (we infer from the next deploy finding no legacy database) removed it.
+
+Each completed volume's coverage keys carry the device number its rows were
+matched under. `migrate_phase` now skips a volume whose current st_dev is such
+a number of another completed volume (`deferred reason=device_renumbered`).
+Its rows stay in the database, and it is walked once its number is free again.
+Rows a lone source dropped leave the coverage too, so a number whose rows are
+all gone does not hold the walk back. Matching a renumbered volume's rows under
+its old number would need a stored device map and a migrator change; that is
+left out until telemetry shows deferred volumes.
+
+Validation:
+- New tests: a disk renumbered to a completed disk's number is not walked while
+  that disk's orphaned or kept rows remain, and is walked once the number is
+  free (both fail without the fix); a number whose rows were all dropped does
+  not defer the walk.
+- `tests/test_xattr_migration.py` (89 passed) and ruff on the changed files.
+- No device run: the LAN devices hold no legacy database, so deploy skips
+  migration there, and renumbering cannot be staged on them.

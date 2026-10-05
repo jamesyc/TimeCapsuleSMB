@@ -58,11 +58,12 @@ def device(tmp_path, monkeypatch):
     # attached, so retirement waits, as the helper decides it.
     # fail_save_after_drop: receipt paths whose writes fail once rows were
     # dropped. moved: after a drop, inspect finds the database under another
-    # canonical path.
+    # canonical path. dev: st_dev that inspect-root reports for a volume root,
+    # as Apple's dkN renumbering changes it.
     state = SimpleNamespace(volumes=volumes, source=source, calls=[], mounted={UUID_A, UUID_B}, fail=None,
                             reads=[], native={UUID_A: "old", UUID_B: "old"},
                             kind={UUID_A: "M", UUID_B: "M"}, oversized={}, rows={}, absent=True,
-                            dropped=False, fail_save_after_drop=set(), moved=False)
+                            dropped=False, fail_save_after_drop=set(), moved=False, dev={})
     keys = {UUID_A: KEY_A, UUID_B: KEY_B, UUID_C: KEY_C}
     monkeypatch.setattr(m, "read_mast_volumes_conn", lambda _conn: state.volumes)
     monkeypatch.setattr(m, "ensure_volume_root_mounted_conn", lambda _c, root, *_a, **_k: any(v.volume_root == root and v.adisk_uuid in state.mounted for v in state.volumes))
@@ -87,7 +88,7 @@ def device(tmp_path, monkeypatch):
             canonical = path.resolve()
             if args[0] == "inspect" and state.moved and state.dropped:
                 canonical = canonical.with_name(canonical.name + ".moved")
-            return {"path_hex": os.fsencode(canonical).hex(), "dev": st.st_dev, "inode": st.st_ino,
+            return {"path_hex": os.fsencode(canonical).hex(), "dev": state.dev.get(str(path), st.st_dev), "inode": st.st_ino,
                     "size": st.st_size, "mtime": st.st_mtime_ns // 10**9, "nsec": st.st_mtime_ns % 10**9,
                     "hash": hashlib.sha256(path.read_bytes()).hexdigest()[:16] if path.is_file() else "0" * 16}
         lines = request.decode().splitlines()
@@ -266,6 +267,59 @@ def test_disk_number_reordering_keeps_completion_and_decoder(device):
     device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
     assert inv.sources[0]["mode"] == "netatalk"
     assert not device.scan_calls()
+
+
+@pytest.mark.parametrize("kind", ["O", "X"])
+def test_disk_renumbered_to_a_completed_disks_old_number_waits_until_the_number_is_free(device, kind):
+    # v3.2.0-2 telemetry: disk A completed while it was dk4; after a reboot the
+    # other disk became dk4. HFS inode numbers repeat across volumes, so walking
+    # it matched A's rows to its own files and recorded conflicting coverage.
+    # A's orphaned (O) and kept (X) rows stay in the database after the lone
+    # source drops its verified rows.
+    device.kind[UUID_A] = kind
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert inv.completed.keys() == {UUID_A}
+    a_number = int.from_bytes(bytes.fromhex(KEY_A)[:8], "little")
+
+    device.mounted.add(UUID_B)
+    device.dev[device.volumes[1].volume_root] = a_number
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    output = device.phase(inv, "cleanup")
+    assert not device.scan_calls()
+    assert device.native[UUID_B] == "old"
+    # Deferred in copy; cleanup then walks only volumes copy walked.
+    assert output.count(f"uuid={UUID_B} deferred reason=device_renumbered owner={UUID_A}") == 1
+    assert f"phase=copy uuid={UUID_B} deferred" in output
+    assert inv.completed.keys() == {UUID_A}
+    # The cleanup still ends in retirement, which keeps B's unresolved rows.
+    assert any(call[0] == ["multi", "retire"] for call in device.calls)
+    assert device.source.exists()
+
+    # Once B's number no longer belongs to A, B is walked and completes.
+    device.dev.clear()
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert [request.count(f"R {UUID_B} ".encode()) for _args, request, _kw in device.scan_calls()] == [1, 1]
+    assert device.native[UUID_B] == "migrated"
+    assert inv.completed.keys() == {UUID_A, UUID_B}
+
+
+def test_disk_renumbered_to_a_number_whose_rows_were_all_dropped_is_walked(device):
+    # The lone source dropped A's verified rows: none of A's rows is left to
+    # match B's files, so B's walk is safe and goes ahead.
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert device.dropped and inv.completed[UUID_A]["coverage"] == {m.source_id(inv.sources[0]): []}
+
+    device.mounted.add(UUID_B)
+    device.dev[device.volumes[1].volume_root] = int.from_bytes(bytes.fromhex(KEY_A)[:8], "little")
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); output = device.phase(inv, "cleanup")
+    assert "deferred" not in output
+    assert len(device.scan_calls()) == 2
+    assert inv.completed.keys() == {UUID_A, UUID_B}
 
 
 @pytest.mark.parametrize("uuid", ["", UUID_A])

@@ -416,6 +416,21 @@ def covered_keys(inventory: MigrationInventory, source: dict) -> dict[str, str]:
     return keys
 
 
+def claimed_devices(inventory: MigrationInventory) -> dict[int, str]:
+    """The device number each completed volume's rows were matched under.
+
+    A legacy key starts with the file's st_dev (8 bytes, little-endian), and
+    Apple renumbers /Volumes/dkN across boots and USB attach order. HFS inode
+    numbers repeat across volumes, so a volume that now has a completed
+    volume's old number would match that volume's rows to its own files.
+    Dropped rows leave the coverage with the database (forget_dropped_rows),
+    so only rows the database still holds reserve a number.
+    """
+    return {int.from_bytes(bytes.fromhex(key)[:8], "little"): volume_uuid
+            for volume_uuid, entry in inventory.completed.items()
+            for records in entry["coverage"].values() for _kind, key in records}
+
+
 def drops_verified_rows(inventory: MigrationInventory) -> bool:
     """A deferred retirement may drop verified rows only from a lone source.
 
@@ -565,6 +580,12 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
             inventory.output.append(f"phase={phase} uuid={key} unavailable")
             continue
         stat = _native(connection, ["inspect-root", volume.volume_root], log=log)
+        owner = claimed_devices(inventory).get(stat["dev"])
+        if owner is not None:
+            # A renumbered disk waits for its number to be free; matching its
+            # rows under the old number would need a stored device map.
+            inventory.output.append(f"phase={phase} uuid={key} deferred reason=device_renumbered owner={owner}")
+            continue
         report = _native(connection, ["multi", phase], request=request_bytes(inventory, (volume, stat)), log=log)
         coverage = validate_native_report(report, inventory)
         kept = decode_oversized(report)
