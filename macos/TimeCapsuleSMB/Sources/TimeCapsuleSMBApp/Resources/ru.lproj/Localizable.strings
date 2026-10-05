@@ -310,6 +310,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Восстановление флеш-памяти проверено; перезагрузка запрошена.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Восстановление флеш-памяти проверено; устройство перезагружено.";
 "backend.summary.flash_write_completed" = "Запись во флеш-память завершена.";
+"backend.summary.migration.waiting_for_previous" = "Ожидание завершения переноса метаданных от предыдущей установки...";
 "backend.summary.flash_write_not_needed" = "Запись во флеш-память не требовалась.";
 "backend.summary.fsck_completed" = "Исправление диска с помощью fsck завершено.";
 "backend.summary.fsck_plan_generated" = "План пробного прогона создан для fsck.";
@@ -656,6 +657,7 @@
 "backend.error.ssh_enable_timeout" = "Устройство приняло настройку, но SSH еще не стал доступен. Подождите несколько минут (или перезапустите устройство) и повторите попытку.";
 "backend.error.disk_write_test_unresponsive" = "Диск не ответил во время проверки. Возможно, он неисправен или не может раскрутиться. Запустите исправление диска; если проблема сохраняется, может потребоваться замена.";
 "backend.error.manager_stop_timeout" = "Служба на устройстве зависла, часто из-за неисправного диска. Отключите устройство от питания, подключите его снова и повторите попытку.";
+"backend.error.previous_migration_stalled" = "Перенос метаданных, оставленный на устройстве предыдущей установкой, перестал продвигаться, часто из-за неисправного диска. Отключите устройство от питания, подключите его снова и повторите попытку.";
 "backend.error.payload_upload_timeout" = "Диск не ответил при копировании файлов установки SMB. Возможно, он неисправен или не может раскрутиться. Запустите исправление диска; если проблема сохраняется, может потребоваться замена.";
 "backend.error.ssh_disabled" = "SSH отключен на этом устройстве.";
 "backend.error.device_unreachable" = "Устройство не отвечает ни по SSH, ни по AirPort ACP.";
@@ -975,6 +977,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "Копирование на устройство одноразовой вспомогательной программы для миграции метаданных.";
 "timeline.deploy.detail.inspect_migration_sources" = "Фиксация текущего состояния старых метаданных Samba (xattr.tdb) перед миграцией.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Копирование старых метаданных Samba в собственные расширенные атрибуты HFS и проверка копии.";
+"timeline.deploy.detail.wait_for_previous_migration" = "Ожидание переноса метаданных, который прерванная установка оставила выполняться на устройстве.";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Повторная проверка собственных метаданных HFS, затем удаление перенесенных старых метаданных Samba.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Поиск на каждом диске предыдущих установок и старых метаданных Samba (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Удаление ранее установленных файлов программ из флеш-памяти и с дисков. Метаданные и журналы сохраняются.";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "Отправить программу миграции метаданных";
 "timeline.deploy.title.inspect_migration_sources" = "Проверить старые метаданные";
 "timeline.deploy.title.migrate_xattrs_copy" = "Перенести метаданные";
+"timeline.deploy.title.wait_for_previous_migration" = "Дождаться предыдущего переноса";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "Удалить перенесенные метаданные";
 "timeline.deploy.title.inventory_legacy_metadata" = "Найти существующие установки";
 "timeline.deploy.title.replace_software" = "Удалить старое ПО";

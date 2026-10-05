@@ -373,20 +373,20 @@ Verification:
   Added checks cover fair admission, cancellation, stale generations, scope,
   inconclusive retries and both doctor selection paths in both record orders.
 - `make test-parallel`: host native compile checks and all 3,252 Python tests
-  passed in 172.90 seconds (`/tmp/tc-ponytail-full-final.log`). Python 3.14 emitted
+  passed in 172.90 seconds (`/tmp/tc-simplify-full-final.log`). Python 3.14 emitted
   the 44 existing forkpty deprecation warnings. Final obsolete-type/helper removal
-  also passed 177 focused tests and 22 subtests (`/tmp/tc-ponytail-orphans.log`).
+  also passed 177 focused tests and 22 subtests (`/tmp/tc-simplify-orphans.log`).
 - `swift test --package-path macos/TimeCapsuleSMB`: all 656 tests passed
-  (`/tmp/tc-ponytail-swift-final.log`).
+  (`/tmp/tc-simplify-swift-final.log`).
 - Python 3.9.6 with zeroconf 0.148.0: 286 focused discovery, doctor, CLI and
-  diagnostics tests passed (`/tmp/tc-ponytail-py39-verified.log`).
+  diagnostics tests passed (`/tmp/tc-simplify-py39-verified.log`).
 - Ruff, fixture freshness and `git diff --check` passed. Native release packaging
-  uses `--full-validation`; output is `/tmp/tc-ponytail-package/TimeCapsuleSMB.app`
-  and the final log is `/tmp/tc-ponytail-package-verified.log`.
+  uses `--full-validation`; output is `/tmp/tc-simplify-package/TimeCapsuleSMB.app`
+  and the final log is `/tmp/tc-simplify-package-verified.log`.
 - Live discovery returned six resolved, dual-stack services
-  (`/tmp/tc-ponytail-live-discovery.json`). Read-only doctor `--skip-smb` passed on
-  NetBSD 6 and NetBSD 4 (`/tmp/tc-ponytail-live-doctor6.log` and
-  `/tmp/tc-ponytail-live-doctor4.log`). Both LAN rows were claimed and re-read,
+  (`/tmp/tc-simplify-live-discovery.json`). Read-only doctor `--skip-smb` passed on
+  NetBSD 6 and NetBSD 4 (`/tmp/tc-simplify-live-doctor6.log` and
+  `/tmp/tc-simplify-live-doctor4.log`). Both LAN rows were claimed and re-read,
   then released. No deploy/reboot, native payload changes or VM builds occurred.
   No locks are held. Changes remain uncommitted.
 

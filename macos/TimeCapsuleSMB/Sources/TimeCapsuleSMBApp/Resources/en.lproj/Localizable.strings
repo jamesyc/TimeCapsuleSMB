@@ -308,6 +308,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Flash restore write validated; reboot requested.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash restore write validated; device rebooted.";
 "backend.summary.flash_write_completed" = "Flash write completed.";
+"backend.summary.migration.waiting_for_previous" = "Waiting for the metadata migration from an earlier installation to finish...";
 "backend.summary.flash_write_not_needed" = "Flash write was not needed.";
 "backend.summary.fsck_completed" = "Disk repair completed with fsck.";
 "backend.summary.fsck_plan_generated" = "Dry-run plan generated for fsck.";
@@ -654,6 +655,7 @@
 "backend.error.ssh_enable_timeout" = "The device accepted the setting, but SSH hasn't come up yet. Wait a few minutes (or restart the device) and try again.";
 "backend.error.disk_write_test_unresponsive" = "The disk did not respond when tested. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.";
 "backend.error.manager_stop_timeout" = "A service on the device is stuck, often due to a failing disk. Unplug the device, plug it back in, and try again.";
+"backend.error.previous_migration_stalled" = "A metadata migration left on the device by an earlier installation stopped making progress, often due to a failing disk. Unplug the device, plug it back in, and try again.";
 "backend.error.payload_upload_timeout" = "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.";
 "backend.error.ssh_disabled" = "SSH is turned off on this device.";
 "backend.error.device_unreachable" = "The device isn't answering on SSH or AirPort ACP.";
@@ -974,6 +976,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "Copying the one-time metadata migration helper to the device.";
 "timeline.deploy.detail.inspect_migration_sources" = "Recording the current state of the legacy Samba metadata (xattr.tdb) before migrating it.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Copying legacy Samba metadata into native HFS extended attributes and verifying the copy.";
+"timeline.deploy.detail.wait_for_previous_migration" = "Waiting for a metadata migration that an interrupted installation left running on the device.";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Re-verifying the native HFS metadata, then removing the migrated legacy Samba metadata.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Looking on each disk for earlier installations and legacy Samba metadata (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Removing previously installed software files from flash and the disks. Metadata and logs are kept.";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "Upload metadata migrator";
 "timeline.deploy.title.inspect_migration_sources" = "Inspect legacy metadata";
 "timeline.deploy.title.migrate_xattrs_copy" = "Migrate metadata";
+"timeline.deploy.title.wait_for_previous_migration" = "Wait for earlier migration";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "Remove migrated metadata";
 "timeline.deploy.title.inventory_legacy_metadata" = "Find existing installations";
 "timeline.deploy.title.replace_software" = "Remove old software";

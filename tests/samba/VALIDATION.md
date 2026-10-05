@@ -2962,3 +2962,29 @@ posted `client_disconnected` with `stopped_before_stage: check_flash_capacity`
 and `disconnected_during_stage: pre_upload_actions`; the runtime was stopped
 and the boot hook gone, as that stage leaves them. A deploy right after it
 finished and doctor passed.
+
+## Deploy waits for a migration an interrupted deploy left running; uninstall stops it (2026-10-05)
+
+In v3.2.0-2 telemetry one user's deploy reached `migrate_xattrs_copy` and was
+lost with the app; the device migrator kept running, and the next two deploys
+and an uninstall each failed after the 5 s idle-jobs wait with "migration or
+diagnostic work is still active". Deploy now probes for a running migrator
+before its inventory (`device.migration_jobs`: `ps` rows plus the migrator's
+`--log` size, time and last progress line) and, if one runs, shows
+`wait_for_previous_migration` and polls every 5 s while the log grows or the
+process uses CPU. It fails with `previous_migration_stalled` only after 360 s
+without progress, a minute past the migrator's own 300 s stall guard.
+Uninstall removes everything such a job works on, so it now stops it:
+`render_stop_idle_jobs` shares the idle-jobs classifier (now keyed by pid)
+with the deploy wait, sends SIGTERM each pass and SIGKILL once the attempts
+are spent, and fails only if a job survives that.
+
+Validation: full pytest (3,646 passed), ruff, `swift test` (672 passed).
+On NetBSD 6, with the branch's migrator left blocked on its request as a
+stand-in (`multi copy` reading a pipe that never sends; its 300 s guard ends
+it), deploy showed "Waiting for the metadata migration from an earlier
+installation to finish...", waited about five minutes, then migrated and
+finished; doctor passed. A NetBSD 4 deploy with nothing running added no
+wait stage. The wait and stop scripts ran on both devices' `/bin/sh`: the
+wait reported the stand-in busy, the stop ended it (and the runtime's
+telemetry daemon, which the manager restarted), and the wait then passed.

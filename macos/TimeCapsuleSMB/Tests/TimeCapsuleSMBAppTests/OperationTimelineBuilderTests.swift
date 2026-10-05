@@ -246,6 +246,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "check_compatibility",
             "read_mast",
             "select_payload_home",
+            "wait_for_previous_migration",
             "inventory_legacy_metadata",
             "build_deployment_plan",
             "check_flash_capacity",

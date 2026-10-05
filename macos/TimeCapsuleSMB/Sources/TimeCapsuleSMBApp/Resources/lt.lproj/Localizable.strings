@@ -310,6 +310,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Flash atminties atkūrimo įrašymas patvirtintas; paprašyta paleisti iš naujo.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash atminties atkūrimo įrašymas patvirtintas; įrenginys paleistas iš naujo.";
 "backend.summary.flash_write_completed" = "Įrašymas į flash atmintį baigtas.";
+"backend.summary.migration.waiting_for_previous" = "Laukiama, kol baigsis ankstesnio diegimo metaduomenų perkėlimas...";
 "backend.summary.flash_write_not_needed" = "Įrašyti į flash atmintį nereikėjo.";
 "backend.summary.fsck_completed" = "Disko taisymas su fsck baigtas.";
 "backend.summary.fsck_plan_generated" = "Bandomasis fsck planas sugeneruotas.";
@@ -656,6 +657,7 @@
 "backend.error.ssh_enable_timeout" = "Įrenginys priėmė nustatymą, bet SSH dar nepasiekiama. Palaukite kelias minutes (arba paleiskite įrenginį iš naujo) ir bandykite dar kartą.";
 "backend.error.disk_write_test_unresponsive" = "Diskas neatsakė atliekant testą. Jis gali gesti arba negalėti įsisukti. Paleiskite Disk Repair; jei tai kartojasi, diską gali reikėti pakeisti.";
 "backend.error.manager_stop_timeout" = "Įrenginio paslauga užstrigo, dažnai dėl gendančio disko. Atjunkite įrenginį nuo maitinimo, vėl prijunkite ir bandykite dar kartą.";
+"backend.error.previous_migration_stalled" = "Ankstesnio diegimo įrenginyje paliktas metaduomenų perkėlimas nebejuda į priekį, dažnai dėl gendančio disko. Atjunkite įrenginį nuo maitinimo, vėl prijunkite ir bandykite dar kartą.";
 "backend.error.payload_upload_timeout" = "Diskas neatsakė kopijuojant SMB paketą. Jis gali gesti arba negalėti įsisukti. Paleiskite Disk Repair; jei tai kartojasi, diską gali reikėti pakeisti.";
 "backend.error.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
 "backend.error.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
@@ -975,6 +977,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "Į įrenginį kopijuojama vienkartinė pagalbinė metaduomenų perkėlimo programa.";
 "timeline.deploy.detail.inspect_migration_sources" = "Prieš perkėlimą užfiksuojama dabartinė senų Samba metaduomenų (xattr.tdb) būsena.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Seni Samba metaduomenys kopijuojami į savuosius HFS išplėstinius atributus ir kopija patikrinama.";
+"timeline.deploy.detail.wait_for_previous_migration" = "Laukiama metaduomenų perkėlimo, kurį nutrauktas diegimas paliko veikti įrenginyje.";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Savieji HFS metaduomenys dar kartą patikrinami, tada pašalinami perkelti seni Samba metaduomenys.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Kiekviename diske ieškoma ankstesnių diegimų ir senų Samba metaduomenų (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Iš flash atminties ir diskų šalinami anksčiau įdiegti programinės įrangos failai. Metaduomenys ir žurnalai išsaugomi.";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "Įkelti metaduomenų perkėlimo programą";
 "timeline.deploy.title.inspect_migration_sources" = "Patikrinti senus metaduomenis";
 "timeline.deploy.title.migrate_xattrs_copy" = "Perkelti metaduomenis";
+"timeline.deploy.title.wait_for_previous_migration" = "Palaukti ankstesnio perkėlimo";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "Pašalinti perkeltus metaduomenis";
 "timeline.deploy.title.inventory_legacy_metadata" = "Rasti esamus diegimus";
 "timeline.deploy.title.replace_software" = "Pašalinti seną programinę įrangą";

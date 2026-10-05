@@ -141,16 +141,16 @@ done
     ).replace("__STUCK_PS__", STUCK_PROCESS_PS_COMMAND).strip()
 
 
-def render_wait_for_idle_jobs(*, attempts: int = 5) -> str:
-    # An interrupted SSH session may leave a migration or diagnostic child.
-    # Never unlink its executable or kill it halfway through a metadata write.
-    return r'''
-attempt=0
-while :; do
-    jobs_ps=$(/bin/ps axww -o stat= -o ucomm= -o command=) || exit 1
-    busy=0
-    while read -r state comm rest; do
+# Metadata and diagnostic jobs that outlive the SSH session that started them:
+# the native migrator (ucomm truncated to 15 characters), shell migrations of
+# older releases, and telemetry/debug jobs. Prints "pid ucomm" for each.
+# device.migration_jobs matches the same migrators in Python; keep them in step.
+IDLE_JOBS_FUNCTION = r'''
+idle_jobs() {
+    jobs_ps=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command=) || return 1
+    while read -r pid state comm rest; do
         case "$state" in Z*|"") continue ;; esac
+        busy=
         case "$comm" in
             telemetry|debug|heartbeat|tc-xattr-hfs-mi*|xattr-hfs-migra*) busy=1 ;;
         esac
@@ -167,10 +167,24 @@ while :; do
                 /mnt/Flash/migrate.sh|/mnt/Flash/xattr-migrate-wrapper.sh) busy=1 ;;
             esac
         fi
+        [ -z "$busy" ] || echo "$pid $comm"
     done <<EOF
 $jobs_ps
 EOF
-    [ "$busy" = 1 ] || exit 0
+}
+'''
+
+
+def render_wait_for_idle_jobs(*, attempts: int = 5) -> str:
+    # An interrupted SSH session may leave a migration or diagnostic child.
+    # Never unlink its executable or kill it halfway through a metadata write.
+    # Deploy waits for a running migration before this (wait_for_previous_migration),
+    # so in practice this waits out short telemetry and diagnostic jobs.
+    return (IDLE_JOBS_FUNCTION + r'''
+attempt=0
+while :; do
+    busy=$(idle_jobs) || exit 1
+    [ -n "$busy" ] || exit 0
     if [ "$attempt" -ge __ATTEMPTS__ ]; then
         echo 'migration or diagnostic work is still active; retry after it finishes' >&2
         exit 1
@@ -178,7 +192,36 @@ EOF
     attempt=$((attempt + 1))
     sleep 1
 done
-'''.replace("__ATTEMPTS__", str(attempts)).strip()
+''').replace("__ATTEMPTS__", str(attempts)).strip()
+
+
+def render_stop_idle_jobs(*, attempts: int = 5) -> str:
+    # Uninstall removes everything these jobs work on, so it stops them instead
+    # of waiting: SIGTERM on each pass, SIGKILL once the attempts are spent.
+    return (IDLE_JOBS_FUNCTION + r'''
+attempt=0
+while :; do
+    busy=$(idle_jobs) || exit 1
+    [ -n "$busy" ] || exit 0
+    if [ "$attempt" -gt __ATTEMPTS__ ]; then
+        while read -r pid comm; do
+            echo "job $comm (pid $pid) did not stop" >&2
+        done <<EOF_BUSY
+$busy
+EOF_BUSY
+        exit 1
+    fi
+    signal=TERM
+    [ "$attempt" -lt __ATTEMPTS__ ] || signal=KILL
+    while read -r pid comm; do
+        /bin/kill -$signal "$pid" 2>/dev/null || true
+    done <<EOF_STOP
+$busy
+EOF_STOP
+    attempt=$((attempt + 1))
+    sleep 1
+done
+''').replace("__ATTEMPTS__", str(attempts)).strip()
 
 
 def _ucomm_pkill_pattern(name: str) -> str:

@@ -310,6 +310,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Écriture de restauration en mémoire flash vérifiée ; redémarrage demandé.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Écriture de restauration en mémoire flash vérifiée ; appareil redémarré.";
 "backend.summary.flash_write_completed" = "Écriture en mémoire flash terminée.";
+"backend.summary.migration.waiting_for_previous" = "Attente de la fin de la migration des métadonnées d’une installation précédente...";
 "backend.summary.flash_write_not_needed" = "L’écriture en mémoire flash n’était pas nécessaire.";
 "backend.summary.fsck_completed" = "Réparation du disque terminée avec fsck.";
 "backend.summary.fsck_plan_generated" = "Plan de simulation généré pour fsck.";
@@ -656,6 +657,7 @@
 "backend.error.ssh_enable_timeout" = "L’appareil a accepté le réglage, mais SSH n’est pas encore disponible. Patientez quelques minutes (ou redémarrez l’appareil), puis réessayez.";
 "backend.error.disk_write_test_unresponsive" = "Le disque n’a pas répondu au test. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
 "backend.error.manager_stop_timeout" = "Un service de l’appareil est bloqué, souvent à cause d’un disque défaillant. Débranchez l’appareil, rebranchez-le, puis réessayez.";
+"backend.error.previous_migration_stalled" = "Une migration des métadonnées laissée sur l’appareil par une installation précédente ne progresse plus, souvent à cause d’un disque défaillant. Débranchez l’appareil, rebranchez-le, puis réessayez.";
 "backend.error.payload_upload_timeout" = "Le disque n’a pas répondu pendant la copie des fichiers d’installation SMB. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
 "backend.error.ssh_disabled" = "SSH est désactivé sur cet appareil.";
 "backend.error.device_unreachable" = "L’appareil ne répond ni par SSH ni par AirPort ACP.";
@@ -975,6 +977,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "Copie vers l’appareil du programme auxiliaire à usage unique de migration des métadonnées.";
 "timeline.deploy.detail.inspect_migration_sources" = "Relevé de l’état actuel des anciennes métadonnées Samba (xattr.tdb) avant la migration.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Copie des anciennes métadonnées Samba vers les attributs étendus HFS natifs, puis vérification de la copie.";
+"timeline.deploy.detail.wait_for_previous_migration" = "Attente d’une migration des métadonnées qu’une installation interrompue a laissée en cours sur l’appareil.";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Nouvelle vérification des métadonnées HFS natives, puis suppression des anciennes métadonnées Samba migrées.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Recherche, sur chaque disque, des installations précédentes et des anciennes métadonnées Samba (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Suppression des fichiers logiciels déjà installés dans la mémoire flash et sur les disques. Les métadonnées et les journaux sont conservés.";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "Envoyer le programme de migration des métadonnées";
 "timeline.deploy.title.inspect_migration_sources" = "Examiner les anciennes métadonnées";
 "timeline.deploy.title.migrate_xattrs_copy" = "Migrer les métadonnées";
+"timeline.deploy.title.wait_for_previous_migration" = "Attendre la migration précédente";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "Supprimer les métadonnées migrées";
 "timeline.deploy.title.inventory_legacy_metadata" = "Rechercher les installations existantes";
 "timeline.deploy.title.replace_software" = "Supprimer l’ancien logiciel";

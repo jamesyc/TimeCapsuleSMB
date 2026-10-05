@@ -310,6 +310,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Gravação de restauração na memória flash verificada; reinicialização solicitada.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Gravação de restauração na memória flash verificada; dispositivo reiniciado.";
 "backend.summary.flash_write_completed" = "Gravação na memória flash concluída.";
+"backend.summary.migration.waiting_for_previous" = "Aguardando a conclusão da migração de metadados de uma instalação anterior...";
 "backend.summary.flash_write_not_needed" = "A gravação na memória flash não foi necessária.";
 "backend.summary.fsck_completed" = "Reparo de disco concluído com fsck.";
 "backend.summary.fsck_plan_generated" = "Plano de simulação gerado para fsck.";
@@ -656,6 +657,7 @@
 "backend.error.ssh_enable_timeout" = "O dispositivo aceitou a configuração, mas o SSH ainda não ficou disponível. Aguarde alguns minutos (ou reinicie o dispositivo) e tente novamente.";
 "backend.error.disk_write_test_unresponsive" = "O disco não respondeu durante o teste. Ele pode estar falhando ou não conseguir girar. Execute o Reparo de Disco; se isso continuar acontecendo, talvez seja necessário substituir o disco.";
 "backend.error.manager_stop_timeout" = "Um serviço no dispositivo está travado, muitas vezes por causa de um disco com falha. Desconecte o dispositivo da tomada, conecte-o novamente e tente de novo.";
+"backend.error.previous_migration_stalled" = "Uma migração de metadados deixada no dispositivo por uma instalação anterior parou de avançar, muitas vezes por causa de um disco com falha. Desconecte o dispositivo da tomada, conecte-o novamente e tente de novo.";
 "backend.error.payload_upload_timeout" = "O disco não respondeu ao copiar os arquivos de instalação SMB. Ele pode estar falhando ou não conseguir girar. Execute o reparo do disco; se o problema persistir, talvez seja necessário substituí-lo.";
 "backend.error.ssh_disabled" = "O SSH está desativado neste dispositivo.";
 "backend.error.device_unreachable" = "O dispositivo não responde por SSH nem por AirPort ACP.";
@@ -975,6 +977,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "Copiando para o dispositivo o programa auxiliar de uso único para migrar metadados.";
 "timeline.deploy.detail.inspect_migration_sources" = "Registrando o estado atual dos metadados antigos do Samba (xattr.tdb) antes da migração.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Copiando os metadados antigos do Samba para atributos estendidos nativos do HFS e verificando a cópia.";
+"timeline.deploy.detail.wait_for_previous_migration" = "Aguardando uma migração de metadados que uma instalação interrompida deixou em andamento no dispositivo.";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Verificando novamente os metadados nativos do HFS e, em seguida, removendo os metadados antigos do Samba já migrados.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Procurando em cada disco instalações anteriores e metadados antigos do Samba (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Removendo da memória flash e dos discos os arquivos de software já instalados. Metadados e logs são mantidos.";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "Enviar programa de migração de metadados";
 "timeline.deploy.title.inspect_migration_sources" = "Examinar metadados antigos";
 "timeline.deploy.title.migrate_xattrs_copy" = "Migrar metadados";
+"timeline.deploy.title.wait_for_previous_migration" = "Aguardar a migração anterior";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "Remover metadados migrados";
 "timeline.deploy.title.inventory_legacy_metadata" = "Procurar instalações existentes";
 "timeline.deploy.title.replace_software" = "Remover software antigo";

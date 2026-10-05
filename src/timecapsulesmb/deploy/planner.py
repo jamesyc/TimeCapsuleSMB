@@ -13,6 +13,7 @@ from timecapsulesmb.deploy.commands import (
     RemotePermission,
     RemoteSymlink,
     RunScriptAction,
+    StopIdleJobsAction,
     WaitForIdleJobsAction,
     StopTelemetryAction,
     managed_stop_actions,
@@ -388,9 +389,10 @@ def build_uninstall_plan(
         remote_actions=[
             *managed_stop_actions(stop_afpserver=False),
             StopTelemetryAction(cleanup=True),
-            # A disconnected deployment can leave its standalone migrator
-            # writing metadata inside a payload we are about to remove.
-            WaitForIdleJobsAction(),
+            # A deployment whose app went away can leave its migrator writing
+            # metadata inside a payload we are about to remove. Uninstall
+            # removes everything, so it stops the migrator instead of waiting.
+            StopIdleJobsAction(),
             RemovePathsAction((
                 *payload_dirs,
                 *flash_targets.values(),

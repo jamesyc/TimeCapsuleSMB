@@ -81,6 +81,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "enable_boot"): StagePolicy(REMOTE_WRITE, False, "Enable boot after payload verification and migration cleanup."),
     ("deploy", "flush_boot_hook"): StagePolicy(REMOTE_WRITE, False, "Flush the completed installation before reboot."),
     ("deploy", "verify_payload_upload_after_sync"): StagePolicy(REMOTE_READ, True, "Verify uploaded payload files after sync."),
+    ("deploy", "wait_for_previous_migration"): StagePolicy(REMOTE_READ, True, "Wait for a metadata migration left by an interrupted installation."),
     ("deploy", "migrate_xattrs_copy"): StagePolicy(REMOTE_WRITE, False, "Copy and verify legacy Samba metadata in native HFS storage."),
     ("deploy", "inspect_migration_sources"): StagePolicy(REMOTE_WRITE, False, "Fingerprint legacy Samba metadata before migration."),
     ("deploy", "migrate_xattrs_cleanup"): StagePolicy(DESTRUCTIVE, False, "Reverify native HFS metadata and remove migrated legacy storage."),

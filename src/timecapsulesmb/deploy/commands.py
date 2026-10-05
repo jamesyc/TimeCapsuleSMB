@@ -7,6 +7,7 @@ from typing import Union
 from timecapsulesmb.device.processes import (
     render_pkill_wait_pkill9_by_ucomm,
     render_stop_service_runtime,
+    render_stop_idle_jobs,
     render_wait_for_idle_jobs,
 )
 from timecapsulesmb.device.storage import render_ensure_volume_root_mounted_script
@@ -59,6 +60,11 @@ class WaitForIdleJobsAction:
 
 
 @dataclass(frozen=True)
+class StopIdleJobsAction:
+    pass
+
+
+@dataclass(frozen=True)
 class StopTelemetryAction:
     cleanup: bool = False
 
@@ -80,6 +86,7 @@ RemoteAction = Union[
     StopProcessAction,
     StopServiceRuntimeAction,
     WaitForIdleJobsAction,
+    StopIdleJobsAction,
     StopTelemetryAction,
     RemovePathsAction,
     RunScriptAction,
@@ -156,6 +163,8 @@ def render_remote_action(action: RemoteAction) -> str:
         return f"/bin/sh -c {shlex.quote(render_stop_service_runtime())}"
     if isinstance(action, WaitForIdleJobsAction):
         return f"/bin/sh -c {shlex.quote(render_wait_for_idle_jobs())}"
+    if isinstance(action, StopIdleJobsAction):
+        return f"/bin/sh -c {shlex.quote(render_stop_idle_jobs())}"
     if isinstance(action, EnsureVolumeMountedAction):
         script = render_ensure_volume_root_mounted_script(action.volume_root, action.device_path, action.wait_seconds)
         return f"/bin/sh -c {shlex.quote(script)}"
@@ -185,6 +194,8 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
         return {"kind": "stop_service_runtime", "args": []}
     if isinstance(action, WaitForIdleJobsAction):
         return {"kind": "wait_for_idle_jobs", "args": []}
+    if isinstance(action, StopIdleJobsAction):
+        return {"kind": "stop_idle_jobs", "args": []}
     if isinstance(action, EnsureVolumeMountedAction):
         return {
             "kind": "ensure_volume_mounted",

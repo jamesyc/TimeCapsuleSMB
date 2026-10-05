@@ -73,6 +73,7 @@ from timecapsulesmb.device.compat import (
     render_compatibility_message,
 )
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.migration_jobs import MigrationActivity, probe_migration_activity
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
@@ -100,7 +101,7 @@ from timecapsulesmb.transport.ssh import (
     run_ssh,
     run_ssh_capture_bytes,
 )
-from timecapsulesmb.transport.errors import SshError, is_ssh_timeout_error
+from timecapsulesmb.transport.errors import SshError, TransportError, is_ssh_timeout_error
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
@@ -141,7 +142,21 @@ XATTR_MIGRATION_STALLED_MESSAGE = (
     "Samba metadata migration stopped after making no progress. "
     "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
 )
+PREVIOUS_MIGRATION_STALLED_MESSAGE = (
+    "A metadata migration left on the device by an earlier installation stopped making progress, "
+    "often due to a failing disk. Unplug the device, plug it back in, and try again."
+)
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
+# A migrator left by an interrupted deploy is polled this often. It kills
+# itself after STALL_SECONDS without progress, so one that still runs a
+# minute past that is stuck in the kernel (a failing disk).
+PREVIOUS_MIGRATION_POLL_SECONDS = 5
+PREVIOUS_MIGRATION_STALL_SECONDS = STALL_SECONDS + 60
+PREVIOUS_MIGRATION_PROBE_ATTEMPTS = 3
+WAITING_FOR_PREVIOUS_MIGRATION = Summary(
+    "migration.waiting_for_previous",
+    "Waiting for the metadata migration from an earlier installation to finish...",
+)
 OVERSIZED_MESSAGE_EXAMPLES = 10
 OVERSIZED_TELEMETRY_NAMES = 10
 
@@ -863,6 +878,61 @@ def _verify_deployed_payload(
         raise DeviceError(payload_verification_error(payload_home, verification))
 
 
+def wait_for_previous_migration(
+    connection: SshConnection,
+    *,
+    callbacks: OperationCallbacks,
+    probe: Callable[[SshConnection], MigrationActivity] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    monotonic: Callable[[], float] | None = None,
+) -> None:
+    """Wait for a metadata migration an interrupted deploy left running.
+
+    The migrator outlives the SSH session that started it. Running a second one
+    beside it, or removing its files, would fail or race it; waiting lets this
+    deploy pick up the volumes it finished.
+
+    A deliberate limit: a migrator of another client's live deploy looks the
+    same, so it is waited for and that deploy's later stages then overlap this one.
+    Concurrent deploys from two clients overlapped before too; add a device-side
+    holder if telemetry shows two clients deploying one device.
+    """
+    probe = probe or probe_migration_activity
+    sleep = sleep or time.sleep
+    monotonic = monotonic or time.monotonic
+    activity = probe(connection)
+    if not activity.migrations:
+        return
+    callbacks.stage("wait_for_previous_migration")
+    callbacks.message(WAITING_FOR_PREVIOUS_MIGRATION)
+    phase = activity.phase
+    started = last_change = monotonic()
+    signature = activity.signature()
+    failures = 0
+    while activity.migrations:
+        callbacks.stop_if_disconnected()
+        if monotonic() - last_change > PREVIOUS_MIGRATION_STALL_SECONDS:
+            callbacks.measurement("previous_migration_wait", waited_sec=round(monotonic() - started, 1),
+                                  phase=phase, outcome="stalled")
+            callbacks.debug(previous_migration_pids=[migration.pid for migration in activity.migrations])
+            raise DeployDeviceError(PREVIOUS_MIGRATION_STALLED_MESSAGE, code="previous_migration_stalled")
+        sleep(PREVIOUS_MIGRATION_POLL_SECONDS)
+        try:
+            activity = probe(connection)
+        except TransportError:
+            failures += 1
+            if failures >= PREVIOUS_MIGRATION_PROBE_ATTEMPTS:
+                raise
+            continue
+        failures = 0
+        phase = activity.phase or phase
+        if activity.signature() != signature:
+            signature = activity.signature()
+            last_change = monotonic()
+    callbacks.measurement("previous_migration_wait", waited_sec=round(monotonic() - started, 1),
+                          phase=phase, outcome="finished")
+
+
 def upload_and_verify_deployment_payload(
     config: AppConfig,
     connection: SshConnection,
@@ -900,6 +970,8 @@ def upload_and_verify_deployment_payload(
         probe_flash_capacity_func = _probe_flash_capacity
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
+    # Before the inventory, so it sees what that migration left behind.
+    wait_for_previous_migration(connection, callbacks=callbacks)
     callbacks.stage("inventory_legacy_metadata")
     inventory = inventory_metadata(connection, plan)
     callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],

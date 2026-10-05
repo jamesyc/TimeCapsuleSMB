@@ -310,6 +310,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Herstel naar flash geverifieerd; herstart aangevraagd.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Herstel naar flash geverifieerd; apparaat herstart.";
 "backend.summary.flash_write_completed" = "Schrijven naar flash voltooid.";
+"backend.summary.migration.waiting_for_previous" = "Wachten tot de metadatamigratie van een eerdere installatie klaar is...";
 "backend.summary.flash_write_not_needed" = "Schrijven naar flash was niet nodig.";
 "backend.summary.fsck_completed" = "Schijfreparatie voltooid met fsck.";
 "backend.summary.fsck_plan_generated" = "Proefplan voor fsck aangemaakt.";
@@ -656,6 +657,7 @@
 "backend.error.ssh_enable_timeout" = "Het apparaat heeft de instelling geaccepteerd, maar SSH is nog niet beschikbaar. Wacht een paar minuten (of start het apparaat opnieuw op) en probeer het opnieuw.";
 "backend.error.disk_write_test_unresponsive" = "De schijf reageerde niet tijdens de test. Deze is mogelijk defect of kan niet gaan draaien. Voer Schijfreparatie uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "backend.error.manager_stop_timeout" = "Een service op het apparaat zit vast, vaak door een defecte schijf. Haal de stekker uit het apparaat, sluit het opnieuw aan en probeer het opnieuw.";
+"backend.error.previous_migration_stalled" = "Een metadatamigratie die een eerdere installatie op het apparaat heeft achtergelaten, komt niet meer vooruit, vaak door een defecte schijf. Haal de stekker uit het apparaat, sluit het opnieuw aan en probeer het opnieuw.";
 "backend.error.payload_upload_timeout" = "De schijf reageerde niet tijdens het kopiëren van de SMB-installatiebestanden. Deze is mogelijk defect of kan niet gaan draaien. Voer Schijfreparatie uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "backend.error.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
 "backend.error.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
@@ -975,6 +977,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "Het eenmalige hulpprogramma voor metadatamigratie naar het apparaat kopiëren.";
 "timeline.deploy.detail.inspect_migration_sources" = "De huidige staat van de oude Samba-metadata (xattr.tdb) vastleggen vóór de migratie.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Oude Samba-metadata kopiëren naar native uitgebreide HFS-attributen en de kopie controleren.";
+"timeline.deploy.detail.wait_for_previous_migration" = "Wachten op een metadatamigratie die een onderbroken installatie op het apparaat heeft laten doorlopen.";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "De native HFS-metadata opnieuw controleren en daarna de gemigreerde oude Samba-metadata verwijderen.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Op elke schijf zoeken naar eerdere installaties en oude Samba-metadata (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Eerder geïnstalleerde softwarebestanden uit flashgeheugen en van de schijven verwijderen. Metadata en logbestanden blijven behouden.";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "Metadatamigratieprogramma uploaden";
 "timeline.deploy.title.inspect_migration_sources" = "Oude metadata controleren";
 "timeline.deploy.title.migrate_xattrs_copy" = "Metadata migreren";
+"timeline.deploy.title.wait_for_previous_migration" = "Wachten op eerdere migratie";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "Gemigreerde metadata verwijderen";
 "timeline.deploy.title.inventory_legacy_metadata" = "Bestaande installaties zoeken";
 "timeline.deploy.title.replace_software" = "Oude software verwijderen";

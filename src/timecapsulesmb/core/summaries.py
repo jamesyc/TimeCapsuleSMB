@@ -89,6 +89,8 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "flash_restore_write_validated_reboot_requested": (),
     "flash_restore_write_validated_manual_reboot": (),
     "flash_write_completed": (),
+    # Deploy found a migration an interrupted deploy left running.
+    "migration.waiting_for_previous": (),
     # Metadata migration: values kept in legacy storage (issue 345), one
     # sentence per key; the app shows the ones that apply, in this order.
     "migration.kept_too_large": ("int",),

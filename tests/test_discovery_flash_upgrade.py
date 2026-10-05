@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from timecapsulesmb.device.migration_jobs import MigrationActivity
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.deploy import executor
 from timecapsulesmb.deploy.commands import (
@@ -29,6 +30,7 @@ class Device:
     def __init__(self, root, monkeypatch):
         from tests.test_xattr_migration import fake_inventory
         monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a: fake_inventory())
+        monkeypatch.setattr('timecapsulesmb.services.deploy.probe_migration_activity', lambda *_a: MigrationActivity(()))
         monkeypatch.setattr('timecapsulesmb.services.deploy.inspect_sources', lambda *_a: None)
         self.root = root
         self.home = PayloadHome('/Volumes/dk2', '/dev/dk2', '.samba4')

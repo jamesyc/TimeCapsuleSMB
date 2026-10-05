@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from timecapsulesmb.device.migration_jobs import running_migrations
 from timecapsulesmb.device.processes import render_stop_service_runtime, render_wait_for_idle_jobs
 
 
@@ -66,7 +67,7 @@ else:
         assert json.loads(state.read_text()) == [r for r in rows if r.split()[0] not in {'12','13','14','15','20','27','28','29','30','31','32','33'}]
 
 
-@pytest.mark.parametrize('comm,state,expected', [
+IDLE_JOB_ROWS = [
     ('tc-xattr-hfs-mi', 'S', 1), ('xattr-hfs-migrate', 'S', 1),
     ('debug', 'S', 1), ('telemetry', 'S', 1), ('heartbeat', 'S', 1),
     ('tc-xattr-hfs-mi', 'Z', 0), ('afpserver', 'S', 0),
@@ -76,13 +77,26 @@ else:
     ('service service: role=telemetry --daemon', 'S', 1),
     ('service service: role=job storage', 'S', 1),
     ('service service: role=discovery nbns=ready', 'S', 0),
-])
+]
+
+
+@pytest.mark.parametrize('comm,state,expected', IDLE_JOB_ROWS)
 def test_active_metadata_and_diagnostic_jobs_block_cleanup(comm, state, expected):
     script = render_wait_for_idle_jobs(attempts=0).replace(
-        '/bin/ps axww -o stat= -o ucomm= -o command=', f"printf '%s\\n' '{state} {comm}'"
+        '/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', f"printf '%s\\n' '17 {state} {comm}'"
     )
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True)
     assert result.returncode == expected
+
+
+@pytest.mark.parametrize('comm,state,expected', IDLE_JOB_ROWS)
+def test_python_and_shell_agree_on_which_rows_are_migrations(comm, state, expected):
+    # device.migration_jobs finds the migrations the shell guard waits for or
+    # stops; the telemetry and debug jobs are the shell's alone.
+    migrations = {'tc-xattr-hfs-mi', 'xattr-hfs-migrate', 'sh /bin/sh /mnt/Flash/migrate.sh',
+                  'sh /mnt/Flash/xattr-migrate-wrapper.sh'}
+    found = running_migrations(f'17 {state} 0:01.00 {comm}')
+    assert bool(found) == (expected == 1 and comm in migrations)
 
 
 @pytest.mark.parametrize('failed_sync', [0, 1, 2])

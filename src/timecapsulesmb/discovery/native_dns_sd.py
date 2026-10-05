@@ -502,7 +502,7 @@ def _resolve(instance: BonjourServiceInstance, previous: BonjourResolvedService 
     stype = _normalize_dns_sd_service_type(instance.service_type)
     domain = instance.service_type[len(stype):].strip(".") or "local"
     result = NativeDnsSdResolveResult(stype, instance.name, interface_index=instance.interface_index)
-    # ponytail: retain evidence only for this bounded scan, not a persistent DNS
+    # Retain evidence only for this bounded scan, not a persistent DNS
     # cache. Fresh family answers replace it; silence at shutdown does not erase it.
     record = replace(previous, ipv4=list(previous.ipv4), ipv6=list(previous.ipv6)) if previous else None
     if attempt_sec is not None:

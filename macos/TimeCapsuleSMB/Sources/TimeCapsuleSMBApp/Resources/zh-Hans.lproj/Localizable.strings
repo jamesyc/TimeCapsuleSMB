@@ -310,6 +310,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "闪存恢复写入已验证；已请求重启。";
 "backend.summary.flash_restore_write_validated_rebooted" = "闪存恢复写入已验证；设备已重启。";
 "backend.summary.flash_write_completed" = "闪存写入已完成。";
+"backend.summary.migration.waiting_for_previous" = "正在等待之前一次安装的元数据迁移完成...";
 "backend.summary.flash_write_not_needed" = "无需闪存写入。";
 "backend.summary.fsck_completed" = "已使用 fsck 完成磁盘修复。";
 "backend.summary.fsck_plan_generated" = "已生成 fsck 预演计划。";
@@ -656,6 +657,7 @@
 "backend.error.ssh_enable_timeout" = "设备已接受该设置，但 SSH 尚未启动。请等待几分钟（或重启设备），然后重试。";
 "backend.error.disk_write_test_unresponsive" = "磁盘在测试时没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";
 "backend.error.manager_stop_timeout" = "设备上的某项服务卡住了，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。";
+"backend.error.previous_migration_stalled" = "之前一次安装留在设备上的元数据迁移已停止进展，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。";
 "backend.error.payload_upload_timeout" = "复制 SMB 安装文件时磁盘没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";
 "backend.error.ssh_disabled" = "此设备上的 SSH 已禁用。";
 "backend.error.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
@@ -975,6 +977,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "正在将一次性元数据迁移辅助程序复制到设备。";
 "timeline.deploy.detail.inspect_migration_sources" = "正在迁移前记录旧版 Samba 元数据（xattr.tdb）的当前状态。";
 "timeline.deploy.detail.migrate_xattrs_copy" = "正在将旧版 Samba 元数据复制到 HFS 原生扩展属性并验证副本。";
+"timeline.deploy.detail.wait_for_previous_migration" = "正在等待一次中断的安装留在设备上继续运行的元数据迁移。";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "正在重新验证 HFS 原生元数据，然后移除已迁移的旧版 Samba 元数据。";
 "timeline.deploy.detail.inventory_legacy_metadata" = "正在每个磁盘上查找以前的安装和旧版 Samba 元数据（xattr.tdb）。";
 "timeline.deploy.detail.replace_software" = "正在从闪存和磁盘中移除以前安装的软件文件。元数据和日志会保留。";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "上传元数据迁移工具";
 "timeline.deploy.title.inspect_migration_sources" = "检查旧版元数据";
 "timeline.deploy.title.migrate_xattrs_copy" = "迁移元数据";
+"timeline.deploy.title.wait_for_previous_migration" = "等待之前的迁移";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "移除已迁移的元数据";
 "timeline.deploy.title.inventory_legacy_metadata" = "查找现有安装";
 "timeline.deploy.title.replace_software" = "移除旧软件";

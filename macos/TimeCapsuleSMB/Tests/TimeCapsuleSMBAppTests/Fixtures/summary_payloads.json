@@ -2687,5 +2687,18 @@
       "type": "log"
     },
     "name": "log_kept_two_in_place_4"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Waiting for the metadata migration from an earlier installation to finish...",
+      "message_args": [],
+      "message_key": "migration.waiting_for_previous",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_waiting_for_previous_migration"
   }
 ]

@@ -16,6 +16,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from tests.test_xattr_migration import fake_inventory
+from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.deploy.commands import (
     EnsureVolumeMountedAction,
@@ -142,6 +144,7 @@ class DeployModuleTests(unittest.TestCase):
         from tests.test_xattr_migration import fake_inventory
         for target, kwargs in (
             ("inventory_metadata", {"side_effect": lambda *_a: fake_inventory()}),
+            ("probe_migration_activity", {"return_value": MigrationActivity(())}),
             ("inspect_sources", {}),
             ("flush_remote_filesystem_writes", {}),
             # No flash file holds its new bytes yet: every file is written.
@@ -1031,6 +1034,47 @@ class DeployModuleTests(unittest.TestCase):
 
         upload.assert_not_called()
         migrate.assert_not_called()
+
+    def test_upload_and_verify_waits_for_a_previous_migration_before_inventory(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        events: list[str] = []
+        stages: list[str] = []
+        busy = MigrationActivity(
+            (RunningMigration(412, "copy", "/Volumes/dk2/.samba4/logs/xattr-migration-copy.log", "0:01.00"),),
+            10, "Oct 5 00:20:15 2026", MigrationProgress("copy"))
+        answers = iter([busy, MigrationActivity(())])
+
+        def probe(_connection):
+            events.append("probe")
+            return next(answers)
+
+        def inventory(*_args):
+            events.append("inventory")
+            return fake_inventory()
+
+        def first_device_change(*_args, **_kwargs):
+            events.append("actions")
+            raise SshError("stop here")
+
+        with mock.patch("timecapsulesmb.services.deploy.probe_migration_activity", side_effect=probe), \
+                mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=inventory), \
+                mock.patch("time.sleep"), self.assertRaises(SshError):
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                SshConnection("host", "pw", "-o foo"),
+                prepared_plan,
+                DeployRuntimeConfig(),
+                callbacks=OperationCallbacks(set_stage=stages.append),
+                run_remote_actions_func=first_device_change,
+                upload_payload_func=mock.Mock(),
+                migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            )
+
+        # The inventory and every device change come after the earlier
+        # migration finished, so they see the volumes it completed.
+        self.assertEqual(events, ["probe", "probe", "inventory", "actions"])
+        self.assertEqual(stages[:2], ["wait_for_previous_migration", "inventory_legacy_metadata"])
 
     def test_upload_and_verify_deployment_payload_codes_manager_stop_timeout(self) -> None:
         prepared_plan = self._prepared_deploy_plan()

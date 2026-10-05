@@ -21,6 +21,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.device.migration_jobs import MigrationActivity
 from timecapsulesmb.checks.network import LocalInterfaceNetwork
 from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
@@ -275,6 +276,7 @@ class AppApiTests(unittest.TestCase):
 
         from tests.test_xattr_migration import fake_inventory
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: fake_inventory()))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.probe_migration_activity", return_value=MigrationActivity(())))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inspect_sources"))
 
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"))

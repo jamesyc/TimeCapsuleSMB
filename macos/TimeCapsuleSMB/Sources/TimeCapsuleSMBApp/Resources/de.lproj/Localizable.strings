@@ -310,6 +310,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Wiederherstellung im Flash-Speicher geprüft; Neustart angefordert.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Wiederherstellung im Flash-Speicher geprüft; Gerät neu gestartet.";
 "backend.summary.flash_write_completed" = "Schreiben in den Flash-Speicher abgeschlossen.";
+"backend.summary.migration.waiting_for_previous" = "Warten, bis die Metadaten-Migration einer früheren Installation abgeschlossen ist...";
 "backend.summary.flash_write_not_needed" = "Schreiben in den Flash-Speicher war nicht erforderlich.";
 "backend.summary.fsck_completed" = "Festplattenreparatur mit fsck abgeschlossen.";
 "backend.summary.fsck_plan_generated" = "Probelaufplan für fsck erstellt.";
@@ -656,6 +657,7 @@
 "backend.error.ssh_enable_timeout" = "Das Gerät hat die Einstellung akzeptiert, aber SSH ist noch nicht verfügbar. Warten Sie ein paar Minuten (oder starten Sie das Gerät neu) und versuchen Sie es erneut.";
 "backend.error.disk_write_test_unresponsive" = "Die Festplatte hat beim Test nicht reagiert. Sie fällt möglicherweise aus oder kann nicht hochdrehen. Führen Sie die Festplattenreparatur aus; wenn dies weiterhin passiert, muss die Festplatte möglicherweise ersetzt werden.";
 "backend.error.manager_stop_timeout" = "Ein Dienst auf dem Gerät hängt fest, oft wegen einer fehlerhaften Festplatte. Trennen Sie das Gerät vom Strom, schließen Sie es wieder an und versuchen Sie es erneut.";
+"backend.error.previous_migration_stalled" = "Eine Metadaten-Migration, die eine frühere Installation auf dem Gerät hinterlassen hat, kommt nicht mehr voran, oft wegen einer fehlerhaften Festplatte. Trennen Sie das Gerät vom Strom, schließen Sie es wieder an und versuchen Sie es erneut.";
 "backend.error.payload_upload_timeout" = "Der Datenträger reagierte beim Kopieren der SMB-Installationsdateien nicht. Er ist möglicherweise defekt oder läuft nicht an. Führen Sie die Festplattenreparatur aus; bleibt das Problem bestehen, muss er eventuell ersetzt werden.";
 "backend.error.ssh_disabled" = "SSH ist auf diesem Gerät deaktiviert.";
 "backend.error.device_unreachable" = "Das Gerät antwortet weder über SSH noch über AirPort ACP.";
@@ -975,6 +977,7 @@
 "timeline.deploy.detail.upload_xattr_migrator" = "Das einmalige Hilfsprogramm für die Metadatenmigration wird auf das Gerät kopiert.";
 "timeline.deploy.detail.inspect_migration_sources" = "Der aktuelle Zustand der alten Samba-Metadaten (xattr.tdb) wird vor der Migration erfasst.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Alte Samba-Metadaten werden in native erweiterte HFS-Attribute kopiert und die Kopie wird überprüft.";
+"timeline.deploy.detail.wait_for_previous_migration" = "Es wird auf eine Metadaten-Migration gewartet, die eine unterbrochene Installation auf dem Gerät weiterlaufen ließ.";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Die nativen HFS-Metadaten werden erneut überprüft, danach werden die migrierten alten Samba-Metadaten entfernt.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Auf jedem Datenträger wird nach früheren Installationen und alten Samba-Metadaten (xattr.tdb) gesucht.";
 "timeline.deploy.detail.replace_software" = "Früher installierte Softwaredateien werden aus dem Flash-Speicher und von den Datenträgern entfernt. Metadaten und Protokolle bleiben erhalten.";
@@ -1006,6 +1009,7 @@
 "timeline.deploy.title.upload_xattr_migrator" = "Metadaten-Migrationsprogramm hochladen";
 "timeline.deploy.title.inspect_migration_sources" = "Alte Metadaten prüfen";
 "timeline.deploy.title.migrate_xattrs_copy" = "Metadaten migrieren";
+"timeline.deploy.title.wait_for_previous_migration" = "Auf frühere Migration warten";
 "timeline.deploy.title.migrate_xattrs_cleanup" = "Migrierte Metadaten entfernen";
 "timeline.deploy.title.inventory_legacy_metadata" = "Vorhandene Installationen suchen";
 "timeline.deploy.title.replace_software" = "Alte Software entfernen";

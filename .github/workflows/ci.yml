@@ -64,7 +64,14 @@ jobs:
           python -m pytest -n auto --dist worksteal tests/native tests/test_deploy_modules.py
 
       - name: Run Ruff
-        run: python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
+        run: |
+          python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
+          # One word never goes in this repo; it is split here so the check
+          # does not match itself.
+          if git grep -n -i 'pony''tail'; then
+            echo 'Remove this word from the repo; write a plain comment instead.' >&2
+            exit 1
+          fi
 
       - name: Verify checked-in artifact manifest
         run: python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py

@@ -44,6 +44,7 @@ enum OperationTimelineBuilder {
         "upload_smbd": .init(titleKey: "timeline.deploy.title.upload_smbd", detailKey: "timeline.deploy.detail.upload_smbd"),
         "upload_xattr_migrator": .init(titleKey: "timeline.deploy.title.upload_xattr_migrator", detailKey: "timeline.deploy.detail.upload_xattr_migrator"),
         "inspect_migration_sources": .init(titleKey: "timeline.deploy.title.inspect_migration_sources", detailKey: "timeline.deploy.detail.inspect_migration_sources"),
+        "wait_for_previous_migration": .init(titleKey: "timeline.deploy.title.wait_for_previous_migration", detailKey: "timeline.deploy.detail.wait_for_previous_migration"),
         "migrate_xattrs_copy": .init(titleKey: "timeline.deploy.title.migrate_xattrs_copy", detailKey: "timeline.deploy.detail.migrate_xattrs_copy"),
         "migrate_xattrs_cleanup": .init(titleKey: "timeline.deploy.title.migrate_xattrs_cleanup", detailKey: "timeline.deploy.detail.migrate_xattrs_cleanup"),
         "replace_software": .init(titleKey: "timeline.deploy.title.replace_software", detailKey: "timeline.deploy.detail.replace_software"),

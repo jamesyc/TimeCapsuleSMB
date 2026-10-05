@@ -29,7 +29,7 @@ from timecapsulesmb.repair_xattrs import RepairCandidate, RepairFinding, RepairS
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services.maintenance import fsck_failure_message, fsck_plan_to_jsonable, FsckTarget
 from timecapsulesmb.services.reachability import ReachabilityCheck, ReachabilityResult, result_from_checks, run_reachability
-from timecapsulesmb.services.deploy import _oversized_summaries
+from timecapsulesmb.services.deploy import WAITING_FOR_PREVIOUS_MIGRATION, _oversized_summaries
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult, disable_set_ssh, enable_set_ssh
 from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.transport.ssh import SshConnection
@@ -250,6 +250,7 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
     for name, ssh_result in _set_ssh_results():
         rows.append((name, result, "set-ssh", True, contracts.set_ssh_payload(ssh_result)))
     rows.extend(_kept_values_logs())
+    rows.append(("log_waiting_for_previous_migration", "log", "deploy", True, WAITING_FOR_PREVIOUS_MIGRATION))
     return rows
 
 

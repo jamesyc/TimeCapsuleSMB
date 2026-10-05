@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.reboot_support import FakeAcpDevice
+from timecapsulesmb.device.migration_jobs import MigrationActivity
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
@@ -309,6 +310,7 @@ class CliTestCase(unittest.TestCase):
 
         from tests.test_xattr_migration import fake_inventory
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: fake_inventory()))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.probe_migration_activity", return_value=MigrationActivity(())))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inspect_sources"))
 
     def tearDown(self) -> None:

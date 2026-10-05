@@ -50,6 +50,8 @@ install: $(DEPS_STAMP)
 
 lint: install
 	$(PY) -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
+	@# One word never goes in this repo; it is split here so the check does not match itself.
+	@if git grep -n -i --untracked 'pony''tail'; then echo 'Remove this word from the repo; write a plain comment instead.' >&2; exit 1; fi
 
 test: install test-c
 	@# Native test children close descriptors up to the host soft limit, which can exceed a million.
