@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import ExitStack, contextmanager, redirect_stdout
 from pathlib import Path
@@ -1854,6 +1856,44 @@ class AppApiTests(unittest.TestCase):
         with self.assertRaises(OSError):
             sink.log("deploy", "message")
         self.assertFalse(sink.client.disconnected)
+
+    def test_helper_stream_writes_one_event_at_a_time_from_two_threads(self) -> None:
+        # Deploy's migration progress poller sends events from its own thread.
+        class Stream:
+            def __init__(self) -> None:
+                self.pending: str | None = None
+                self.lines: list[str] = []
+                self.interleaved = 0
+
+            def write(self, text: str) -> None:
+                if self.pending is not None:
+                    self.interleaved += 1
+                self.pending = text
+                time.sleep(0.0005)
+
+            def flush(self) -> None:
+                if self.pending is not None:
+                    self.lines.append(self.pending)
+                self.pending = None
+
+        stream = Stream()
+        sink = helper._sink_for_stream(stream)
+
+        def send(name: str) -> None:
+            for index in range(200):
+                sink.progress("deploy", "migrate_xattrs_copy", entries=index, sender=name)
+
+        threads = [threading.Thread(target=send, args=(name,)) for name in ("poller", "main")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(stream.interleaved, 0)
+        events = [json.loads(line) for line in stream.lines]
+        self.assertEqual(len(events), 400)
+        for name in ("poller", "main"):
+            self.assertEqual([event["entries"] for event in events if event["sender"] == name], list(range(200)))
 
     def test_discarded_output_swallows_later_writes(self) -> None:
         saved = [os.dup(1), os.dup(2)]

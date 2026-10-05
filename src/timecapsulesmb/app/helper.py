@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import uuid
 from typing import Optional, TextIO
 
@@ -17,9 +18,14 @@ MAX_REQUEST_CHARS = 1024 * 1024
 
 
 def _sink_for_stream(stream: TextIO) -> EventSink:
+    # Deploy reports migration progress from a polling thread while the main
+    # thread may send its own events; one line at a time keeps the JSON whole.
+    lock = threading.Lock()
+
     def emit(event: AppEvent) -> None:
-        stream.write(event.to_json_line())
-        stream.flush()
+        with lock:
+            stream.write(event.to_json_line())
+            stream.flush()
 
     return EventSink(emit, client=AppClient(on_disconnect=_discard_output))
 

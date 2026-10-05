@@ -634,6 +634,47 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
         self.assertEqual(batch_measurements[0]["result"], "success")
 
+    def test_each_migration_phase_reports_progress_from_its_own_log(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        progress: list[tuple[str, dict[str, object]]] = []
+        polled_logs: list[str] = []
+
+        class FakePoller:
+            def __init__(self, _connection, log, report):
+                polled_logs.append(log)
+                self.report = report
+
+            def __enter__(self):
+                # The migrator logged a position while the phase ran.
+                self.report(MigrationProgress("copy", "u1", 4000))
+                self.report(MigrationProgress("copy", "u1", None))
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+        with mock.patch("timecapsulesmb.services.deploy.MigrationProgressPoller", FakePoller):
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                SshConnection("host", "pw", "-o foo"),
+                prepared_plan,
+                DeployRuntimeConfig(),
+                callbacks=OperationCallbacks(report_progress=lambda stage, **fields: progress.append((stage, fields))),
+                run_remote_actions_func=mock.Mock(),
+                upload_payload_func=mock.Mock(),
+                migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                flush_remote_writes=mock.Mock(),
+                verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+            )
+
+        payload_dir = prepared_plan.plan.payload_dir
+        self.assertEqual(polled_logs, [f"{payload_dir}/logs/xattr-migration-copy.log",
+                                       f"{payload_dir}/logs/xattr-migration-cleanup.log"])
+        fields = {"entries": 4000}
+        # A log without a counter yet reports nothing.
+        self.assertEqual(progress, [("migrate_xattrs_copy", fields), ("migrate_xattrs_cleanup", fields)])
+
     def test_new_metadata_preference_never_overrides_old_migration_inventory(self) -> None:
         for saved, override, expected in (("true", None, "netatalk"), ("false", None, "stream"),
                                           ("true", False, "stream"), ("false", True, "netatalk")):

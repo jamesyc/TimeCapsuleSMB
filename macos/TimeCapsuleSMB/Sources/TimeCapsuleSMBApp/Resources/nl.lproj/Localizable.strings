@@ -979,6 +979,7 @@
 "timeline.deploy.detail.inspect_migration_sources" = "De huidige staat van de oude Samba-metadata (xattr.tdb) vastleggen vóór de migratie.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Oude Samba-metadata kopiëren naar native uitgebreide HFS-attributen en de kopie controleren.";
 "timeline.deploy.detail.wait_for_previous_migration" = "Wachten op een metadatamigratie die een onderbroken installatie op het apparaat heeft laten doorlopen.";
+"timeline.progress.migration_files" = "Gecontroleerde bestanden: %lld";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "De native HFS-metadata opnieuw controleren en daarna de gemigreerde oude Samba-metadata verwijderen.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Op elke schijf zoeken naar eerdere installaties en oude Samba-metadata (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Eerder geïnstalleerde softwarebestanden uit flashgeheugen en van de schijven verwijderen. Metadata en logbestanden blijven behouden.";

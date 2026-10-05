@@ -994,6 +994,20 @@ final class DashboardPresentationTests: XCTestCase {
         }
     }
 
+    func testInstallProgressShowsTheMigrationsPositionForItsStageOnly() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        let stage = try XCTUnwrap(OperationStageState(event: BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy")))
+        let progress = BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_copy", entries: 120000)
+
+        let updated = try XCTUnwrap(stage.updated(by: progress))
+        XCTAssertEqual(InstallProgressPresentation(state: .deploying, currentStage: updated)?.detail,
+                       "Files checked: 120,000")
+        XCTAssertNil(stage.updated(by: BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_cleanup", entries: 1)))
+        XCTAssertNil(stage.updated(by: BackendEvent(type: "log", operation: "deploy", stage: "migrate_xattrs_copy", message: "x")))
+    }
+
     func testCheckupProgressPresentationAppearsOnlyWhileRunning() {
         let stage = OperationStageState(event: BackendEvent(
             type: "stage",

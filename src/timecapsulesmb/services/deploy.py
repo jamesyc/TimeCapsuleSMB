@@ -73,7 +73,12 @@ from timecapsulesmb.device.compat import (
     render_compatibility_message,
 )
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.migration_jobs import MigrationActivity, probe_migration_activity
+from timecapsulesmb.device.migration_jobs import (
+    MigrationActivity,
+    MigrationProgress,
+    MigrationProgressPoller,
+    probe_migration_activity,
+)
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
@@ -878,6 +883,11 @@ def _verify_deployed_payload(
         raise DeviceError(payload_verification_error(payload_home, verification))
 
 
+def report_migration_progress(callbacks: OperationCallbacks, stage: str, progress: MigrationProgress) -> None:
+    if progress.entries is not None:
+        callbacks.progress(stage, entries=progress.entries)
+
+
 def wait_for_previous_migration(
     connection: SshConnection,
     *,
@@ -908,6 +918,8 @@ def wait_for_previous_migration(
     phase = activity.phase
     started = last_change = monotonic()
     signature = activity.signature()
+    last_progress = activity.progress
+    report_migration_progress(callbacks, "wait_for_previous_migration", last_progress)
     failures = 0
     while activity.migrations:
         callbacks.stop_if_disconnected()
@@ -926,6 +938,9 @@ def wait_for_previous_migration(
             continue
         failures = 0
         phase = activity.phase or phase
+        if activity.progress != last_progress:
+            last_progress = activity.progress
+            report_migration_progress(callbacks, "wait_for_previous_migration", last_progress)
         if activity.signature() != signature:
             signature = activity.signature()
             last_change = monotonic()
@@ -1026,13 +1041,17 @@ def upload_and_verify_deployment_payload(
         )
         migration_started = time.monotonic()
         migration_log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
+        stage = f"migrate_xattrs_{phase}"
         try:
-            migration_result = migrate_xattrs_func(
-                connection,
-                plan,
-                phase=phase,
-                inventory=inventory,
-            )
+            with MigrationProgressPoller(
+                connection, migration_log, lambda progress: report_migration_progress(callbacks, stage, progress)
+            ):
+                migration_result = migrate_xattrs_func(
+                    connection,
+                    plan,
+                    phase=phase,
+                    inventory=inventory,
+                )
         except Exception as exc:
             raise_migration_failure(phase, migration_started, migration_log, exc)
         oversized = migration_result.oversized

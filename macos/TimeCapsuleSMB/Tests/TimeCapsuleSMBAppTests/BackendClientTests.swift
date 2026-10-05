@@ -100,6 +100,36 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(client.lastExitCode, 0)
     }
 
+    func testRepeatedProgressKeepsOnlyTheLatestOfARun() async throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let progress = (1...100).map {
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_copy", entries: Int64($0 * 1000))
+        }
+        let runner = RecordingHelperRunner(
+            events: [BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy")]
+                + progress
+                + [
+                    BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_cleanup"),
+                    BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_cleanup", entries: 5),
+                    BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_cleanup", entries: 9),
+                    BackendEvent(type: "result", operation: "deploy", ok: true)
+                ],
+            result: HelperRunResult(exitCode: 0, sawTerminalEvent: true, stderr: "")
+        )
+        let client = BackendClient(runner: runner)
+
+        client.run(operation: "deploy")
+        try await waitUntil {
+            !client.isRunning
+        }
+
+        XCTAssertEqual(client.events.map(\.type), ["stage", "progress", "stage", "progress", "result"])
+        XCTAssertEqual(client.events.compactMap(\.entries), [100_000, 9])
+        L10n.apply(language: .english)
+        XCTAssertEqual(client.events[1].summary, "Files checked: 100,000")
+    }
+
     func testConfirmationRequiredEventPublishesPendingConfirmation() async throws {
         let runner = RecordingHelperRunner(
             events: [

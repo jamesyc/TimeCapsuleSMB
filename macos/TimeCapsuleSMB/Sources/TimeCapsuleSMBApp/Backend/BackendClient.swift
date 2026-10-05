@@ -137,6 +137,13 @@ final class BackendClient: ObservableObject {
             currentRisk = event.risk
             currentCancellable = event.cancellable
         }
+        // A migration reports progress every few seconds for many minutes;
+        // keep only the latest report of a run of them.
+        if event.type == "progress", let last = events.last, last.type == "progress",
+           last.operation == event.operation, last.stage == event.stage {
+            events[events.count - 1] = event
+            return
+        }
         if let activeCall, let confirmation = PendingConfirmation(
             confirmationEvent: event,
             originalParams: activeCall.params,

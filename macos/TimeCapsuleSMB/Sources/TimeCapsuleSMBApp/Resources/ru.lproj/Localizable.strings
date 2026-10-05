@@ -979,6 +979,7 @@
 "timeline.deploy.detail.inspect_migration_sources" = "Фиксация текущего состояния старых метаданных Samba (xattr.tdb) перед миграцией.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Копирование старых метаданных Samba в собственные расширенные атрибуты HFS и проверка копии.";
 "timeline.deploy.detail.wait_for_previous_migration" = "Ожидание переноса метаданных, который прерванная установка оставила выполняться на устройстве.";
+"timeline.progress.migration_files" = "Проверено файлов: %lld";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Повторная проверка собственных метаданных HFS, затем удаление перенесенных старых метаданных Samba.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Поиск на каждом диске предыдущих установок и старых метаданных Samba (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Удаление ранее установленных файлов программ из флеш-памяти и с дисков. Метаданные и журналы сохраняются.";

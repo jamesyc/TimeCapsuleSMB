@@ -60,6 +60,19 @@ static struct tc_inactivity_guard tc_guard = { .previous_stderr = -1 };
 #ifndef TC_MIGRATION_PROGRESS_HOOK
 #define TC_MIGRATION_PROGRESS_HOOK() do { } while (0)
 #endif
+/* A deploy shows how far a long walk got from the latest "progress" line in
+ * the log: entries walked, and the source records matched so far out of all
+ * the source databases hold. Rows that belong to other volumes never match
+ * in this walk, so matched may stay below total. One line goes out at most
+ * every TC_PROGRESS_INTERVAL_SECONDS; the walk reads the clock once per
+ * TC_PROGRESS_STRIDE entries. */
+#ifndef TC_PROGRESS_CLOCK
+#define TC_PROGRESS_CLOCK() time(NULL)
+#endif
+#ifndef TC_PROGRESS_STRIDE
+#define TC_PROGRESS_STRIDE 256
+#endif
+#define TC_PROGRESS_INTERVAL_SECONDS 5
 
 static void tc_stall_handler(int signal_number)
 {
@@ -1802,6 +1815,8 @@ static struct tc_tdb_key *tc_tdb_key_of(struct tc_migration *migration,
 	return NULL;
 }
 
+static void tc_multi_progress(const struct tc_migration *migration, bool force);
+
 static int tc_scan_path(struct tc_migration *migration,
 			const char *path,
 			bool scan_sidecar)
@@ -1829,6 +1844,7 @@ static int tc_scan_path(struct tc_migration *migration,
 	migration->counts.entries++;
 	if (migration->multi && migration->counts.entries % 10000 == 0)
 		fprintf(stderr, "scan progress entries=%"PRIu64" path=%s\n", migration->counts.entries, path);
+	tc_multi_progress(migration, false);
 	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
 		uint64_t kept_before = migration->counts.oversized_tdb;
 		uint64_t folder_forks_before = migration->counts.folder_forks_tdb;
@@ -2706,6 +2722,34 @@ invalid:
 	fprintf(stderr, "invalid multi migration input line=%zu\n", line_number);
 	errno = EINVAL; return -1;
 }
+static void tc_multi_progress(const struct tc_migration *migration, bool force)
+{
+	static time_t last;
+	const struct tc_multi *multi = migration->multi;
+	uint64_t matched = 0;
+	time_t now;
+	size_t i;
+
+	if (multi == NULL) {
+		return;
+	}
+	if (!force && migration->counts.entries % TC_PROGRESS_STRIDE != 0) {
+		return;
+	}
+	now = TC_PROGRESS_CLOCK();
+	/* A clock stepped backwards (NTP correcting one that ran ahead) counts as
+	 * time passed, so the lines do not stop until it catches up. */
+	if (!force && now >= last && now - last < TC_PROGRESS_INTERVAL_SECONDS) {
+		return;
+	}
+	last = now;
+	for (i = 0; i < multi->count; i++) {
+		matched += multi->sources[i].scan.counts.tdb_matched;
+	}
+	fprintf(stderr, "progress phase=%s volume=%s entries=%"PRIu64" matched=%"PRIu64" total=%zu\n",
+		multi->phase == TC_PHASE_COPY ? "copy" : "cleanup", multi->root_uuid,
+		migration->counts.entries, matched, multi->total_keys);
+}
 static int tc_multi_root_valid(struct tc_multi *multi, struct stat *out)
 {
 	if (lstat(multi->root, out) || !S_ISDIR(out->st_mode) ||
@@ -2731,7 +2775,9 @@ static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
 	if (fd < 0) return -1;
 	fprintf(stderr, "volume phase=%s uuid=%s root=%s sources=%zu start\n",
 		multi->phase == TC_PHASE_COPY ? "copy" : "cleanup", multi->root_uuid, multi->root, multi->count);
+	tc_multi_progress(&scan, true);
 	result = tc_scan_root(&scan, multi->root);
+	tc_multi_progress(&scan, true);
 	/* Apple's HFS may disappear while a walk is in flight. Both the original
 	 * root descriptor and its current pathname must still identify this mount. */
 	if (fstat(fd, &st) || (uint64_t)st.st_dev != multi->root_dev ||

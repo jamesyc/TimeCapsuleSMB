@@ -333,6 +333,11 @@ final class DeployWorkflowStore: ObservableObject {
             return
         }
 
+        if let stage = currentStage?.updated(by: event) {
+            currentStage = stage
+            return
+        }
+
         if event.type == "error" {
             applyError(event, activeOperation: activeOperation)
             return

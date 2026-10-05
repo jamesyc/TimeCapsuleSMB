@@ -978,6 +978,7 @@
 "timeline.deploy.detail.inspect_migration_sources" = "Recording the current state of the legacy Samba metadata (xattr.tdb) before migrating it.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Copying legacy Samba metadata into native HFS extended attributes and verifying the copy.";
 "timeline.deploy.detail.wait_for_previous_migration" = "Waiting for a metadata migration that an interrupted installation left running on the device.";
+"timeline.progress.migration_files" = "Files checked: %lld";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Re-verifying the native HFS metadata, then removing the migrated legacy Samba metadata.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Looking on each disk for earlier installations and legacy Samba metadata (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Removing previously installed software files from flash and the disks. Metadata and logs are kept.";

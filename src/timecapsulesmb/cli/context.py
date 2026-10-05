@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime as cli_runtime
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
 
 
 OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS = 0.1
+CLI_PROGRESS_SECONDS = 30
 
 
 class CommandContext:
@@ -67,6 +69,8 @@ class CommandContext:
         self.compatibility: DeviceCompatibility | None = None
         self._optional_airport_identity_thread: threading.Thread | None = None
         self._optional_airport_identity: tuple[str | None, str | None] | None = None
+        # The stage and time of the last progress line printed.
+        self._last_progress_print: tuple[str, float] | None = None
         self.telemetry_session = OperationTelemetrySession(
             telemetry,
             command_name,
@@ -189,7 +193,18 @@ class CommandContext:
             add_debug_fields=self.add_debug_fields,
             update_fields=self.update_fields,
             record_execution_measurement=self.record_execution_measurement,
+            report_progress=self.print_progress,
         )
+
+    def print_progress(self, stage: str, *, entries: int, now: Callable[[], float] = time.monotonic) -> None:
+        # A terminal line every half minute is enough for a walk of many
+        # minutes; a new stage (cleanup after copy) gets its first line at once.
+        current = now()
+        last = self._last_progress_print
+        if last is not None and last[0] == stage and current - last[1] < CLI_PROGRESS_SECONDS:
+            return
+        self._last_progress_print = (stage, current)
+        print(f"  {entries:,} files checked", flush=True)
 
     def update_fields(self, **fields: object) -> None:
         self.operation_context.update_fields(**fields)

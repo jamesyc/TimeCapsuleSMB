@@ -229,6 +229,17 @@ static void migration_test_progress(void)
 	progress_resets++;
 }
 
+/* The progress line's clock: each reading advances it by the step, so a step
+ * of 0 holds time still and one past the interval allows a line every read. */
+static time_t migration_test_now;
+static time_t migration_test_clock_step;
+
+static time_t migration_test_clock(void)
+{
+	migration_test_now += migration_test_clock_step;
+	return migration_test_now;
+}
+
 static int migration_test_fsync(int fd)
 {
 	if (fsync_error != 0) {
@@ -289,6 +300,9 @@ static void *migration_test_talloc_realloc_array(
 #define sync migration_test_sync
 #define dbwrap_transaction_commit migration_test_commit
 #define TC_MIGRATION_PROGRESS_HOOK() migration_test_progress()
+#define TC_PROGRESS_CLOCK() migration_test_clock()
+/* Read the clock on every entry, so a few-file walk exercises the interval. */
+#define TC_PROGRESS_STRIDE 1
 /* Production refuses a resource fork on any directory. The resource fixtures
  * fake a file's fork with a directory, so here only the inode a test names
  * is a folder; the hfs case uses the production rule on the real kernel. */
@@ -309,6 +323,7 @@ static ino_t test_folder_inode;
 #undef sync
 #undef dbwrap_transaction_commit
 #undef TC_MIGRATION_PROGRESS_HOOK
+#undef TC_PROGRESS_CLOCK
 
 static int write_all(int fd, const void *value, size_t size)
 {
@@ -1575,6 +1590,109 @@ static void write_file(const char *path, const void *value, size_t size)
 	close(fd);
 }
 
+/* Each walk's "progress" lines, read back from stderr as deploy reads the log. */
+static unsigned scan_progress_lines(struct tc_multi *multi, struct tc_counts *counts,
+				    char *first, char *last, size_t size)
+{
+	FILE *log = tmpfile();
+	char line[512];
+	unsigned lines = 0;
+	int saved, scanned;
+
+	CHECK(log != NULL);
+	fflush(stderr);
+	saved = dup(2);
+	CHECK(saved >= 0 && dup2(fileno(log), 2) == 2);
+	scanned = tc_multi_scan(multi, counts);
+	fflush(stderr);
+	CHECK(dup2(saved, 2) == 2);
+	close(saved);
+	rewind(log);
+	first[0] = last[0] = 0;
+	while (fgets(line, sizeof(line), log) != NULL) {
+		if (scanned != 0) {
+			fputs(line, stderr);
+		}
+		if (strncmp(line, "progress ", 9) != 0) {
+			continue;
+		}
+		if (lines++ == 0) {
+			snprintf(first, size, "%s", line);
+		}
+		snprintf(last, size, "%s", line);
+	}
+	fclose(log);
+	CHECK(scanned == 0);
+	return lines;
+}
+
+static void test_multi_progress(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[PATH_MAX] = "/tmp/tc-progress.XXXXXX", private_dir[PATH_MAX + 16];
+	char old[PATH_MAX + 32], newer[PATH_MAX + 32], object[PATH_MAX + 16];
+	char first[512], last[512], expected[512];
+	const uint8_t value[] = {'v', 0};
+	struct tc_multi multi;
+	struct tc_counts counts;
+	struct stat st;
+	struct file_id id;
+	uint64_t matched;
+	unsigned lines;
+	int fd;
+
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
+	snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root);
+	CHECK(mkdir(private_dir, 0700) == 0);
+	snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
+	snprintf(newer, sizeof(newer), "%s/new.tdb", private_dir);
+	snprintf(object, sizeof(object), "%s/object", root);
+	fd = open(object, O_CREAT | O_RDWR, 0600);
+	CHECK(fd >= 0 && fstat(fd, &st) == 0);
+	close(fd);
+	id = tc_file_id(&st);
+	multi_value(old, &id, "com.apple.old", value, sizeof(value));
+	multi_value(newer, &id, "com.apple.new", value, sizeof(value));
+	multi_prepare(&multi, frame, root, old, newer);
+
+	/* Time stands still: only the lines at the walk's start and end. Cleanup
+	 * then verifies the values this copy wrote. */
+	reset_xattrs();
+	migration_test_clock_step = 0;
+	lines = scan_progress_lines(&multi, &counts, first, last, sizeof(first));
+	CHECK(lines == 2);
+	CHECK(!strcmp(first, "progress phase=copy volume=33333333-3333-3333-3333-333333333333"
+			     " entries=0 matched=0 total=2\n"));
+	/* The end of the walk reports its own counters: every entry it walked and
+	 * the source records it found, out of all the sources hold. */
+	matched = multi.sources[0].scan.counts.tdb_matched + multi.sources[1].scan.counts.tdb_matched;
+	snprintf(expected, sizeof(expected), "progress phase=copy volume=33333333-3333-3333-3333-333333333333"
+		 " entries=%"PRIu64" matched=%"PRIu64" total=2\n", counts.entries, matched);
+	CHECK(counts.entries > 0 && matched > 0 && !strcmp(last, expected));
+
+	/* Each entry's clock reading is past the interval: one line per entry. */
+	migration_test_clock_step = TC_PROGRESS_INTERVAL_SECONDS;
+	multi.phase = TC_PHASE_CLEANUP;
+	lines = scan_progress_lines(&multi, &counts, first, last, sizeof(first));
+	CHECK(lines == counts.entries + 2);
+	CHECK(!strncmp(first, "progress phase=cleanup ", 23));
+
+	/* Within the interval the walk stays quiet between those two lines. */
+	migration_test_clock_step = 1;
+	lines = scan_progress_lines(&multi, &counts, first, last, sizeof(first));
+	CHECK(lines < counts.entries + 2);
+
+	/* A clock stepping backwards counts as time passed, not as silence. */
+	migration_test_clock_step = -3600;
+	lines = scan_progress_lines(&multi, &counts, first, last, sizeof(first));
+	CHECK(lines == counts.entries + 2);
+
+	migration_test_clock_step = 0;
+	TALLOC_FREE(frame);
+	unlink(old); unlink(newer); unlink(object);
+	rmdir(private_dir); rmdir(root);
+}
+
 static struct tc_multi *report_multi;
 static struct tc_counts *report_counts;
 static char report_output[64 * 1024];
@@ -2763,7 +2881,10 @@ int main(int argc, char **argv)
 	CHECK(argc == 2);
 	setup_logging(argv[0], DEBUG_STDERR);
 	if (!strcmp(argv[1], "guard") || !strcmp(argv[1], "all")) test_guard();
-	if (!strcmp(argv[1], "multi") || !strcmp(argv[1], "all")) test_multi();
+	if (!strcmp(argv[1], "multi") || !strcmp(argv[1], "all")) {
+		test_multi();
+		test_multi_progress();
+	}
 	if (strcmp(argv[1], "appledouble") == 0 || strcmp(argv[1], "all") == 0) {
 		test_appledouble();
 	}

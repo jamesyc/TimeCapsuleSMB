@@ -79,6 +79,40 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
     }
 
+    func testInstallProgressFollowsEveryMigrationProgressReport() async throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        // BackendClient keeps only the latest of a run of progress events, so
+        // each one replaces the last; the overlay must follow every one.
+        let progress = [1000, 2000, 3000].map {
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_copy", entries: Int64($0))
+        }
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy", risk: "remote_write", cancellable: false)
+            ] + progress + [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
+            ])
+        ])
+        let backend = BackendClient(runner: runner)
+        let store = DeployWorkflowStore(backend: backend)
+        var details: [String?] = []
+        var cancellables: Set<AnyCancellable> = []
+        store.$currentStage
+            .sink { details.append($0?.progressDetail) }
+            .store(in: &cancellables)
+
+        store.runDeploy(password: "pw")
+        try await waitUntilStoreState { store.state == .deployed }
+
+        XCTAssertEqual(backend.events.compactMap(\.entries), [3000])
+        XCTAssertEqual(details.compactMap { $0 }, ["Files checked: 1,000", "Files checked: 2,000", "Files checked: 3,000"])
+        XCTAssertEqual(InstallProgressPresentation(state: .deploying, currentStage: store.currentStage)?.detail,
+                       "Files checked: 3,000")
+        _ = cancellables
+    }
+
     func testPublishesWhenBackendFinishesAfterDeployResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

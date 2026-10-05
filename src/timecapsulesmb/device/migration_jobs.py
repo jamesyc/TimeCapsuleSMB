@@ -7,9 +7,11 @@ both treating the device as idle.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import re
 import shlex
+import threading
 
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
@@ -24,6 +26,8 @@ LEGACY_MIGRATION_SCRIPTS = ("/mnt/Flash/migrate.sh", "/mnt/Flash/xattr-migrate-w
 _VALUE_OPTIONS = {"--stall-seconds", "--log"}
 LOG_TAIL_BYTES = 2048
 PROBE_TIMEOUT_SECONDS = 30
+# The migrator writes a progress line every 5 s (TC_PROGRESS_INTERVAL_SECONDS).
+PROGRESS_POLL_SECONDS = 5
 _FIELD = re.compile(r"(\w+)=(\S+)")
 
 
@@ -44,8 +48,6 @@ class MigrationProgress:
     phase: str | None = None
     volume_uuid: str | None = None
     entries: int | None = None
-    matched: int | None = None
-    total: int | None = None
 
 
 @dataclass(frozen=True)
@@ -113,40 +115,36 @@ def parse_migration_log(text: str) -> MigrationProgress:
 
     The deploy writes `phase=copy sources=N ...` first; the migrator then logs
     `volume phase=copy uuid=... start`, `scan progress entries=N path=...` every
-    10,000 entries, and `progress phase=... volume=... entries=N matched=M
-    total=T` every few seconds. The tail may start mid-line; that line is skipped.
+    10,000 entries, and `progress phase=... volume=... entries=N ...` every few
+    seconds. The tail may start mid-line; that line is skipped. Only the file
+    count is shown: the record counts it also logs cannot reach their total
+    when rows belong to other volumes or deleted files.
     """
     phase = volume = None
-    entries = matched = total = None
+    entries = None
     for line in text.splitlines():
         fields = dict(_FIELD.findall(line))
         if line.startswith("progress "):
             phase = fields.get("phase", phase)
             volume = fields.get("volume", volume)
             entries = _int(fields.get("entries"), entries)
-            matched = _int(fields.get("matched"), matched)
-            total = _int(fields.get("total"), total)
         elif line.startswith("scan progress "):
             entries = _int(fields.get("entries"), entries)
         elif line.startswith("volume ") and line.endswith(" start"):
             phase = fields.get("phase", phase)
             volume = fields.get("uuid", volume)
-            entries = matched = total = None
+            entries = None
         elif line.startswith("phase=") and "sources" in fields:
             phase = fields["phase"]
-    return MigrationProgress(phase, volume, entries, matched, total)
+    return MigrationProgress(phase, volume, entries)
 
 
 def _int(value: str | None, default: int | None) -> int | None:
     return int(value) if value is not None and value.isdigit() else default
 
 
-def probe_migration_activity(connection: SshConnection) -> MigrationActivity:
-    """The migrations running now, and their log's size, time and position."""
-    migrations = running_migrations(run_ssh(connection, JOBS_PS_COMMAND, timeout=PROBE_TIMEOUT_SECONDS).stdout)
-    log = next((migration.log_path for migration in migrations if migration.log_path), None)
-    if log is None:
-        return MigrationActivity(migrations)
+def read_migration_log(connection: SshConnection, log: str) -> tuple[int | None, str | None, MigrationProgress]:
+    """The log's size and modification time, and the position its end records."""
     quoted = shlex.quote(log)
     output = run_ssh(
         connection,
@@ -158,5 +156,66 @@ def probe_migration_activity(connection: SshConnection) -> MigrationActivity:
     fields = listing.split()
     # -rw-r--r--  1 0  0  12345 Oct  5 00:20:15 2026 /Volumes/dk2/...
     if len(fields) < 10 or not fields[4].isdigit():
+        return None, None, MigrationProgress()
+    return int(fields[4]), " ".join(fields[5:9]), parse_migration_log(tail)
+
+
+def probe_migration_activity(connection: SshConnection) -> MigrationActivity:
+    """The migrations running now, and their log's size, time and position."""
+    migrations = running_migrations(run_ssh(connection, JOBS_PS_COMMAND, timeout=PROBE_TIMEOUT_SECONDS).stdout)
+    log = next((migration.log_path for migration in migrations if migration.log_path), None)
+    if log is None:
         return MigrationActivity(migrations)
-    return MigrationActivity(migrations, int(fields[4]), " ".join(fields[5:9]), parse_migration_log(tail))
+    size, mtime, progress = read_migration_log(connection, log)
+    return MigrationActivity(migrations, size, mtime, progress)
+
+
+class MigrationProgressPoller:
+    """Reads a running migration's log and reports each new position.
+
+    The migration itself is one blocking SSH command, so a thread polls its log
+    over a separate session. A failed read is skipped: progress is only shown,
+    it never decides whether the migration worked. Nothing is reported once the
+    block exits, even if a read is still in flight.
+    """
+
+    def __init__(
+        self,
+        connection: SshConnection,
+        log: str,
+        report: Callable[[MigrationProgress], None],
+        *,
+        interval: float = PROGRESS_POLL_SECONDS,
+        read: Callable[[SshConnection, str], tuple[int | None, str | None, MigrationProgress]] = read_migration_log,
+    ) -> None:
+        self._connection = connection
+        self._log = log
+        self._report = report
+        self._interval = interval
+        self._read = read
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, name="migration-progress", daemon=True)
+
+    def __enter__(self) -> "MigrationProgressPoller":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        with self._lock:
+            self._stop.set()
+
+    def _run(self) -> None:
+        last = MigrationProgress()
+        while not self._stop.wait(self._interval):
+            try:
+                progress = self._read(self._connection, self._log)[2]
+            except Exception:
+                continue
+            if progress.entries is None or progress == last:
+                continue
+            last = progress
+            with self._lock:
+                if self._stop.is_set():
+                    return
+                self._report(progress)

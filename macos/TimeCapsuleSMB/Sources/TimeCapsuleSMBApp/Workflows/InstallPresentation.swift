@@ -195,7 +195,7 @@ struct InstallProgressPresentation: Equatable, BlockingProgressPresenting {
             return nil
         }
         if let currentStage {
-            self.detail = OperationTimelineBuilder.stageDetail(
+            self.detail = currentStage.progressDetail ?? OperationTimelineBuilder.stageDetail(
                 for: currentStage.operation,
                 stage: currentStage.stage,
                 fallback: currentStage.description ?? currentStage.stage

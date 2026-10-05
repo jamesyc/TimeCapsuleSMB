@@ -37,6 +37,41 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline[2].detail, "Samba installation or update completed.")
     }
 
+    func testMigrationProgressReplacesTheStageDetailWithoutAddingRows() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        let events = [
+            BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy", cancellable: false),
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_copy", entries: 4000),
+            // Another stage's progress, or another operation's, is not this row's.
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_cleanup", entries: 1),
+            BackendEvent(type: "progress", operation: "doctor", stage: "migrate_xattrs_copy", entries: 2),
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_copy", entries: 8000),
+            BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_cleanup", cancellable: false),
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_cleanup", entries: 120),
+            BackendEvent(type: "stage", operation: "deploy", stage: "replace_software", cancellable: false)
+        ]
+
+        let timeline = OperationTimelineBuilder.timeline(from: events)
+
+        XCTAssertEqual(timeline.map(\.title), ["Migrate metadata", "Remove migrated metadata", OperationTimelineBuilder.stageTitle(for: "deploy", stage: "replace_software")])
+        // The row keeps the last position it reached.
+        XCTAssertEqual(timeline[0].detail, "Files checked: 8,000")
+        XCTAssertEqual(timeline[1].detail, "Files checked: 120")
+        XCTAssertEqual(timeline[2].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "replace_software", fallback: nil))
+    }
+
+    func testStageWithoutProgressKeepsItsDetail() {
+        let events = [
+            BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy"),
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_copy")
+        ]
+        let timeline = OperationTimelineBuilder.timeline(from: events)
+        XCTAssertEqual(timeline.count, 1)
+        XCTAssertEqual(timeline[0].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "migrate_xattrs_copy", fallback: nil))
+    }
+
     func testStageBecomesSucceededWhenLaterStageForSameOperationAppears() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "deploy", stage: "validate_artifacts"),

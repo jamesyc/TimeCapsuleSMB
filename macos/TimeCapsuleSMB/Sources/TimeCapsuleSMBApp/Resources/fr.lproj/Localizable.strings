@@ -979,6 +979,7 @@
 "timeline.deploy.detail.inspect_migration_sources" = "Relevé de l’état actuel des anciennes métadonnées Samba (xattr.tdb) avant la migration.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Copie des anciennes métadonnées Samba vers les attributs étendus HFS natifs, puis vérification de la copie.";
 "timeline.deploy.detail.wait_for_previous_migration" = "Attente d’une migration des métadonnées qu’une installation interrompue a laissée en cours sur l’appareil.";
+"timeline.progress.migration_files" = "Fichiers vérifiés : %lld";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Nouvelle vérification des métadonnées HFS natives, puis suppression des anciennes métadonnées Samba migrées.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Recherche, sur chaque disque, des installations précédentes et des anciennes métadonnées Samba (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Suppression des fichiers logiciels déjà installés dans la mémoire flash et sur les disques. Les métadonnées et les journaux sont conservés.";

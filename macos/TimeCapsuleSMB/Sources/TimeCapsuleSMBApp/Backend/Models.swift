@@ -94,6 +94,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
     public let risk: String?
     public let cancellable: Bool?
     public let description: String?
+    // A "progress" event: how many files a metadata migration has checked.
+    public let entries: Int64?
 
     public init(
         schemaVersion: Int? = 1,
@@ -114,7 +116,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         recovery: JSONValue? = nil,
         risk: String? = nil,
         cancellable: Bool? = nil,
-        description: String? = nil
+        description: String? = nil,
+        entries: Int64? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.requestId = requestId
@@ -135,6 +138,7 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         self.risk = risk
         self.cancellable = cancellable
         self.description = description
+        self.entries = entries
     }
 
     public static func error(
@@ -174,7 +178,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
             recovery: recovery,
             risk: risk,
             cancellable: cancellable,
-            description: description
+            description: description,
+            entries: entries
         )
     }
 
@@ -198,6 +203,7 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         case risk
         case cancellable
         case description
+        case entries
     }
 
     public var summary: String {
@@ -224,6 +230,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
                 operation,
                 message ?? L10n.string("event.summary.error.default_message")
             )
+        case "progress":
+            return OperationTimelineBuilder.progressDetail(for: self) ?? stage ?? operation
         default:
             return message ?? stage ?? operation
         }

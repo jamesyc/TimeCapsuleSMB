@@ -979,6 +979,7 @@
 "timeline.deploy.detail.inspect_migration_sources" = "正在迁移前记录旧版 Samba 元数据（xattr.tdb）的当前状态。";
 "timeline.deploy.detail.migrate_xattrs_copy" = "正在将旧版 Samba 元数据复制到 HFS 原生扩展属性并验证副本。";
 "timeline.deploy.detail.wait_for_previous_migration" = "正在等待一次中断的安装留在设备上继续运行的元数据迁移。";
+"timeline.progress.migration_files" = "已检查文件：%lld";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "正在重新验证 HFS 原生元数据，然后移除已迁移的旧版 Samba 元数据。";
 "timeline.deploy.detail.inventory_legacy_metadata" = "正在每个磁盘上查找以前的安装和旧版 Samba 元数据（xattr.tdb）。";
 "timeline.deploy.detail.replace_software" = "正在从闪存和磁盘中移除以前安装的软件文件。元数据和日志会保留。";

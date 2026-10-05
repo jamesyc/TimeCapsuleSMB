@@ -3009,3 +3009,43 @@ With the stand-in running, doctor reported it on NetBSD 6 ("(copy phase)")
 and NetBSD 4, whose `ps` cannot read the migrator's arguments and shows
 `(tc-xattr-hfs-mig)`; there the message leaves the phase out. With nothing
 running, doctor reported the outdated version as before.
+
+## Metadata migration progress in the app and the CLI (2026-10-05)
+
+A migration of a large legacy `xattr.tdb` can run 10-20 minutes (`af6becb9`
+on v3.2.0-2: 561 s copy, 620 s cleanup) while the app showed only "Migrate
+metadata", and v3.2.0-2's interrupted deploys left during such stretches. The
+migrator now logs `progress phase= volume= entries= matched= total=` at a
+volume's start and end and at most every 5 s between (it reads the clock once
+per 256 entries, and a clock stepped backwards counts as time passed). While a
+phase runs, deploy reads the log's end every 5 s over a second SSH session
+and sends a `progress` event with the file count; the app shows "Files
+checked: N" in the stage's row and the install overlay (ten languages),
+keeping only the latest of a run of progress events, and the CLI prints a
+line at most every 30 s per stage (a new stage prints at once). The app's
+workflow stores see a replaced progress event because the event observer also
+compares the last event's id, not only the count; before that the overlay
+stayed at the first count of each run. The helper writes one event at a time
+under a lock, since the poller thread sends events beside the main thread.
+The count restarts on each disk, which is what the migrator counts. Deploy's
+wait for an earlier migration reports the same count. Only files are shown: `matched` stays below `total` when rows
+belong to other volumes or to deleted files, so the record counts stay in the
+log for diagnosis.
+
+Clean lane builds on main @ 6547050d changed only the migrators (stripped:
+NetBSD 6 2,157,696 bytes, NetBSD 4 LE 2,171,588, NetBSD 4 BE 2,171,148, each
+about 400 bytes more); smbd was unchanged.
+
+Validation: full pytest (3,669 passed), ruff, `swift test` (676 passed), the
+host regression in Docker with sanitizers (the new `tc_xattr_migrate_test
+multi` case checks the start, end, rate-limited and backwards-clock lines
+against a fake clock).
+Deployed with the rebuilt migrators to NetBSD 6 and NetBSD 4 (neither had
+legacy metadata left, so no migration ran); doctor passed on both.
+On NetBSD 6, a legacy `xattr.tdb` from a v2.2.9 deploy (60 files given an
+attribute over SMB) migrated with progress lines at each volume's start and
+end: dk2 `entries=6427 matched=61 total=61`, dk4 112 entries and `matched=0`
+(its rows belong to dk2). The walks took under 5 s, so no interval lines and
+no CLI progress line. NetBSD 4's `ps` shows no migrator arguments, so there
+deploy's wait for an earlier migration cannot find its log and shows no
+counters; it still sees progress through the migrator's CPU time.

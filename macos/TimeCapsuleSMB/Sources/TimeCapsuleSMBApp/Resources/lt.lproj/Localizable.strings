@@ -979,6 +979,7 @@
 "timeline.deploy.detail.inspect_migration_sources" = "Prieš perkėlimą užfiksuojama dabartinė senų Samba metaduomenų (xattr.tdb) būsena.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Seni Samba metaduomenys kopijuojami į savuosius HFS išplėstinius atributus ir kopija patikrinama.";
 "timeline.deploy.detail.wait_for_previous_migration" = "Laukiama metaduomenų perkėlimo, kurį nutrauktas diegimas paliko veikti įrenginyje.";
+"timeline.progress.migration_files" = "Patikrinta failų: %lld";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Savieji HFS metaduomenys dar kartą patikrinami, tada pašalinami perkelti seni Samba metaduomenys.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Kiekviename diske ieškoma ankstesnių diegimų ir senų Samba metaduomenų (xattr.tdb).";
 "timeline.deploy.detail.replace_software" = "Iš flash atminties ir diskų šalinami anksčiau įdiegti programinės įrangos failai. Metaduomenys ir žurnalai išsaugomi.";

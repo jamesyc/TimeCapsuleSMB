@@ -99,6 +99,9 @@ class AppOperationContext:
     def log_summary(self, summary: Summary) -> None:
         self.sink.log(self.operation, summary.text, summary=summary)
 
+    def progress(self, stage: str, **fields: object) -> None:
+        self.sink.progress(self.operation, stage, **fields)
+
     def check(self, *, status: str, message: str, details: dict[str, object] | None = None) -> None:
         self.sink.check(self.operation, status=status, message=message, details=details)
 
@@ -114,6 +117,7 @@ class AppOperationContext:
             update_fields=self.update_fields,
             record_execution_measurement=self.record_execution_measurement,
             checkpoint=self.stop_if_disconnected,
+            report_progress=self.progress,
         )
 
     def update_fields(self, **fields: object) -> None:

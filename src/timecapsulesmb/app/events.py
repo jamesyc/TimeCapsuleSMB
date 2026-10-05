@@ -137,6 +137,10 @@ class EventSink:
             fields.update(summary.message_fields())
         self.emit(AppEvent("log", operation, fields))
 
+    def progress(self, operation: str, stage: str, **fields: object) -> None:
+        """How far a long stage has got; the app shows it in that stage's row."""
+        self.emit(AppEvent("progress", operation, {"stage": stage, **fields}))
+
     def check(
         self,
         operation: str,

@@ -6,19 +6,36 @@ struct OperationStageState: Equatable {
     let risk: String?
     let cancellable: Bool?
     let description: String?
+    /// The latest "progress" event's text, shown instead of the stage's detail.
+    let progressDetail: String?
 
     init(
         operation: String,
         stage: String,
         risk: String? = nil,
         cancellable: Bool? = nil,
-        description: String? = nil
+        description: String? = nil,
+        progressDetail: String? = nil
     ) {
         self.operation = operation
         self.stage = stage
         self.risk = risk
         self.cancellable = cancellable
         self.description = description
+        self.progressDetail = progressDetail
+    }
+
+    /// This stage with a progress event's text, or nil when the event is not
+    /// about this stage.
+    func updated(by event: BackendEvent) -> OperationStageState? {
+        guard event.type == "progress", event.operation == operation, event.stage == stage,
+              let detail = OperationTimelineBuilder.progressDetail(for: event) else {
+            return nil
+        }
+        return OperationStageState(
+            operation: operation, stage: stage, risk: risk, cancellable: cancellable,
+            description: description, progressDetail: detail
+        )
     }
 
     init?(event: BackendEvent) {
@@ -30,6 +47,7 @@ struct OperationStageState: Equatable {
         self.risk = event.risk
         self.cancellable = event.cancellable
         self.description = event.description
+        self.progressDetail = nil
     }
 }
 

@@ -90,7 +90,8 @@ enum OperationTimelineBuilder {
                     id: "\(index):\(event.operation):\(event.stage ?? "stage")",
                     operation: event.operation,
                     title: stageTitle(for: event.operation, stage: event.stage),
-                    detail: stageDetail(for: event.operation, stage: event.stage, fallback: event.description),
+                    detail: latestProgressDetail(forStageAt: index, in: events)
+                        ?? stageDetail(for: event.operation, stage: event.stage, fallback: event.description),
                     state: stageState(forEventAt: index, in: events),
                     risk: event.risk,
                     cancellable: event.cancellable
@@ -134,11 +135,34 @@ enum OperationTimelineBuilder {
             id: "current:\(stage.operation):\(stage.stage)",
             operation: stage.operation,
             title: stageTitle(for: stage.operation, stage: stage.stage),
-            detail: stageDetail(for: stage.operation, stage: stage.stage, fallback: fallback),
+            detail: stage.progressDetail ?? stageDetail(for: stage.operation, stage: stage.stage, fallback: fallback),
             state: state,
             risk: stage.risk,
             cancellable: stage.cancellable
         )
+    }
+
+    /// "Files checked: N" for a migration's progress event.
+    static func progressDetail(for event: BackendEvent) -> String? {
+        guard event.type == "progress", let entries = event.entries else {
+            return nil
+        }
+        return L10n.format("timeline.progress.migration_files", entries)
+    }
+
+    /// The last progress reported for a stage before the operation moved on.
+    private static func latestProgressDetail(forStageAt index: Int, in events: [BackendEvent]) -> String? {
+        let event = events[index]
+        var detail: String?
+        for later in events.dropFirst(index + 1) where later.operation == event.operation {
+            if later.type == "stage" {
+                break
+            }
+            if later.stage == event.stage, let text = progressDetail(for: later) {
+                detail = text
+            }
+        }
+        return detail
     }
 
     private static func stageState(forEventAt index: Int, in events: [BackendEvent]) -> OperationTimelineItem.State {

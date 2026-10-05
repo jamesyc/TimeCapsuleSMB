@@ -979,6 +979,7 @@
 "timeline.deploy.detail.inspect_migration_sources" = "Der aktuelle Zustand der alten Samba-Metadaten (xattr.tdb) wird vor der Migration erfasst.";
 "timeline.deploy.detail.migrate_xattrs_copy" = "Alte Samba-Metadaten werden in native erweiterte HFS-Attribute kopiert und die Kopie wird überprüft.";
 "timeline.deploy.detail.wait_for_previous_migration" = "Es wird auf eine Metadaten-Migration gewartet, die eine unterbrochene Installation auf dem Gerät weiterlaufen ließ.";
+"timeline.progress.migration_files" = "Geprüfte Dateien: %lld";
 "timeline.deploy.detail.migrate_xattrs_cleanup" = "Die nativen HFS-Metadaten werden erneut überprüft, danach werden die migrierten alten Samba-Metadaten entfernt.";
 "timeline.deploy.detail.inventory_legacy_metadata" = "Auf jedem Datenträger wird nach früheren Installationen und alten Samba-Metadaten (xattr.tdb) gesucht.";
 "timeline.deploy.detail.replace_software" = "Früher installierte Softwaredateien werden aus dem Flash-Speicher und von den Datenträgern entfernt. Metadaten und Protokolle bleiben erhalten.";
