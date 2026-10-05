@@ -207,19 +207,7 @@ struct CheckupPresentation: Equatable {
             .filter { $0.operation == "doctor" }
         if items.isEmpty, let currentStage {
             items = [
-                OperationTimelineItem(
-                    id: "current:\(currentStage.operation):\(currentStage.stage)",
-                    operation: currentStage.operation,
-                    title: OperationTimelineBuilder.stageTitle(for: currentStage.operation, stage: currentStage.stage),
-                    detail: OperationTimelineBuilder.stageDetail(
-                        for: currentStage.operation,
-                        stage: currentStage.stage,
-                        fallback: nil
-                    ),
-                    state: .running,
-                    risk: currentStage.risk,
-                    cancellable: currentStage.cancellable
-                )
+                OperationTimelineBuilder.currentStageItem(currentStage)
             ]
         }
         return items

@@ -97,18 +97,10 @@ struct InstallTimelinePresentation: Equatable {
             .filter { $0.operation == "deploy" }
         if items.isEmpty, let currentStage {
             items = [
-                OperationTimelineItem(
-                    id: "current:\(currentStage.operation):\(currentStage.stage)",
-                    operation: currentStage.operation,
-                    title: OperationTimelineBuilder.stageTitle(for: currentStage.operation, stage: currentStage.stage),
-                    detail: OperationTimelineBuilder.stageDetail(
-                        for: currentStage.operation,
-                        stage: currentStage.stage,
-                        fallback: currentStage.description
-                    ),
-                    state: fallbackState,
-                    risk: currentStage.risk,
-                    cancellable: currentStage.cancellable
+                OperationTimelineBuilder.currentStageItem(
+                    currentStage,
+                    fallback: currentStage.description,
+                    state: fallbackState
                 )
             ]
         }

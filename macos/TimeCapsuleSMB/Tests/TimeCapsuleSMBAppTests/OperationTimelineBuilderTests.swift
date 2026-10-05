@@ -79,6 +79,38 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.state), [.failed, .failed])
     }
 
+    func testCurrentStageItemCarriesTheStageAndRunsByDefault() {
+        let stage = OperationStageState(
+            operation: "activate",
+            stage: "probe_runtime",
+            risk: "low",
+            cancellable: true,
+            description: "Backend text"
+        )
+
+        let item = OperationTimelineBuilder.currentStageItem(stage, fallback: stage.description)
+
+        XCTAssertEqual(item, OperationTimelineItem(
+            id: "current:activate:probe_runtime",
+            operation: "activate",
+            title: "Check Existing Runtime",
+            detail: "Checking whether TimeCapsuleSMB is already running before activating it.",
+            state: .running,
+            risk: "low",
+            cancellable: true
+        ))
+    }
+
+    func testCurrentStageItemFallsBackOnlyWhenTheStageHasNoLocalizedDetail() {
+        let stage = OperationStageState(operation: "deploy", stage: "unlisted_stage", description: "Backend text")
+
+        XCTAssertNil(OperationTimelineBuilder.currentStageItem(stage).detail)
+        let item = OperationTimelineBuilder.currentStageItem(stage, fallback: stage.description, state: .failed)
+        XCTAssertEqual(item.detail, "Backend text")
+        XCTAssertEqual(item.state, .failed)
+        XCTAssertEqual(item.title, "Unlisted Stage")
+    }
+
     func testOperationTitlesAreUserFacing() {
         XCTAssertEqual(OperationTimelineBuilder.operationTitle("deploy"), "Install / Update")
         XCTAssertEqual(OperationTimelineBuilder.operationTitle("doctor"), "Checkup")

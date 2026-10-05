@@ -122,6 +122,24 @@ enum OperationTimelineBuilder {
         }
     }
 
+    /// The item a timeline shows for the stage in progress before any of its
+    /// stage events has arrived.
+    static func currentStageItem(
+        _ stage: OperationStageState,
+        fallback: String? = nil,
+        state: OperationTimelineItem.State = .running
+    ) -> OperationTimelineItem {
+        OperationTimelineItem(
+            id: "current:\(stage.operation):\(stage.stage)",
+            operation: stage.operation,
+            title: stageTitle(for: stage.operation, stage: stage.stage),
+            detail: stageDetail(for: stage.operation, stage: stage.stage, fallback: fallback),
+            state: state,
+            risk: stage.risk,
+            cancellable: stage.cancellable
+        )
+    }
+
     private static func stageState(forEventAt index: Int, in events: [BackendEvent]) -> OperationTimelineItem.State {
         let event = events[index]
         let laterEvents = events.dropFirst(index + 1).filter { $0.operation == event.operation }
