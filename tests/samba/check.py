@@ -30,6 +30,7 @@ import argparse
 import functools
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
@@ -308,7 +309,7 @@ def run_phases(phases: list[Phase], out: Path, stop_on_failure: bool, holder: st
     for phase in phases:
         per_device = phase.per_device
         print(f"== {phase.name}", flush=True)
-        with locks_cls(phase.locks, holder, f"check {phase.name}") if phase.locks else _null():
+        with locks_cls(phase.locks, holder, f"check {phase.name}") if phase.locks else contextlib.nullcontext():
             if per_device:
                 def device_run(steps: list[Step]) -> list[Outcome]:
                     done = []
@@ -338,14 +339,6 @@ def run_phases(phases: list[Phase], out: Path, stop_on_failure: bool, holder: st
         if stop_on_failure and not all(r.ok for r in results):
             break
     return outcomes
-
-
-class _null:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
 
 
 def describe(phases: list[Phase]) -> str:

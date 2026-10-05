@@ -152,7 +152,7 @@ class Device:
         assert not self.path('/mnt/Flash/rc.local').exists()
         if self.failure == phase:
             raise RuntimeError('injected migration ' + phase)
-        return 'migration complete'
+        return executor.XattrMigrationResult('migration complete', ())
 
     def flush(self, connection):
         self.events.append('flush')

@@ -614,7 +614,7 @@ class DeployModuleTests(unittest.TestCase):
             callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
             run_remote_actions_func=mock.Mock(),
             upload_payload_func=fake_upload,
-            migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
+            migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
             probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             flush_remote_writes=mock.Mock(),
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
@@ -635,7 +635,7 @@ class DeployModuleTests(unittest.TestCase):
         for saved, override, expected in (("true", None, "netatalk"), ("false", None, "stream"),
                                           ("true", False, "stream"), ("false", True, "netatalk")):
             with self.subTest(saved=saved, override=override):
-                migrate = mock.Mock(return_value="migration=complete")
+                migrate = mock.Mock(return_value=XattrMigrationResult("migration=complete", ()))
                 upload_and_verify_deployment_payload(
                     AppConfig.from_values({"TC_FRUIT_METADATA_NETATALK": saved}),
                     SshConnection("host", "pw", ""),
@@ -679,6 +679,32 @@ class DeployModuleTests(unittest.TestCase):
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
         )
         return messages, [fields for kind, fields in measurements if kind == "xattr_migration"]
+
+    def test_each_migration_phase_records_its_output_and_unavailable_roots(self) -> None:
+        debug: dict[str, object] = {}
+        unavailable = {"copy": ("/Volumes/dk3",), "cleanup": ()}
+
+        def migrate(_connection, _plan, *, phase, inventory):
+            return XattrMigrationResult(f"\nmigration={phase}\n", (self._mast_volume(),), unavailable[phase])
+
+        upload_and_verify_deployment_payload(
+            AppConfig.from_values({}),
+            SshConnection("host", "pw", ""),
+            self._prepared_deploy_plan(),
+            DeployRuntimeConfig(),
+            callbacks=OperationCallbacks(add_debug_fields=lambda **fields: debug.update(fields)),
+            run_remote_actions_func=mock.Mock(),
+            upload_payload_func=mock.Mock(),
+            migrate_xattrs_func=migrate,
+            probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            flush_remote_writes=mock.Mock(),
+            verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+        )
+
+        self.assertEqual(debug["xattr_migration_copy"], "migration=copy")
+        self.assertEqual(debug["xattr_migration_copy_unavailable_roots"], ["/Volumes/dk3"])
+        self.assertEqual(debug["xattr_migration_cleanup"], "migration=cleanup")
+        self.assertEqual(debug["xattr_migration_cleanup_unavailable_roots"], [])
 
     def _kept_lines(self, messages: list[str]) -> list[str]:
         """The kept-values report: its lines are consecutive log messages."""
@@ -965,7 +991,7 @@ class DeployModuleTests(unittest.TestCase):
 
         def migrate(_connection, _plan, *, phase, inventory):
             migration_states.append((phase, afp_running))
-            return "migration=complete"
+            return XattrMigrationResult("migration=complete", ())
 
         upload_and_verify_deployment_payload(
             AppConfig.from_values({}),
@@ -1019,7 +1045,7 @@ class DeployModuleTests(unittest.TestCase):
                 callbacks=OperationCallbacks(),
                 run_remote_actions_func=mock.Mock(side_effect=SshError("process manager did not stop")),
                 upload_payload_func=mock.Mock(),
-                migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
+                migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             )
 
@@ -1047,7 +1073,7 @@ class DeployModuleTests(unittest.TestCase):
                 callbacks=OperationCallbacks(),
                 run_remote_actions_func=mock.Mock(),
                 upload_payload_func=timeout_upload,
-                migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
+                migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
                 probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             )
 

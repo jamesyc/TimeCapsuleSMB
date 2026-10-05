@@ -57,6 +57,7 @@ from timecapsulesmb.device.storage import (
     VolumeMountResult,
     build_dry_run_payload_home,
 )
+from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourFamilyDiscoveryAttempt, BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
@@ -268,7 +269,7 @@ class AppApiTests(unittest.TestCase):
         self._xattr_migration = self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.services.deploy.migrate_xattr_tdb_to_hfs",
-                return_value="migration=complete",
+                return_value=XattrMigrationResult("migration=complete", ()),
             )
         )
 

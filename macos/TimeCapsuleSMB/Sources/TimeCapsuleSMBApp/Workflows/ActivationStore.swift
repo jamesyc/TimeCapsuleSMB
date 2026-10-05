@@ -171,13 +171,6 @@ final class ActivationStore: ObservableObject {
         operation.finishObserver()
     }
 
-    private func failLocally(_ localError: WorkflowLocalError) {
-        error = operation.localError(localError)
-        currentStage = nil
-        state = .failed
-        operation.finishObserver()
-    }
-
     private func rejectRun(_ localError: WorkflowLocalError) {
         error = operation.localError(localError)
         currentStage = nil

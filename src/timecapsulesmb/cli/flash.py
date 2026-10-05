@@ -644,7 +644,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     emit_progress(log, "Loading configuration and install identity...")
     ensure_install_id()
     config = load_env_config(env_path=args.config)
-    telemetry = TelemetryClient.from_config(config, include_device_identity=False)
+    telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "flash", "flash_started", "flash_finished", config=config, args=args) as command_context:
         return _run_flash(command_context, args=args, operation=operation, log=log)
     return 1

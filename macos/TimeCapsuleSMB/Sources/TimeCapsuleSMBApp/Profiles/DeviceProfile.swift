@@ -292,40 +292,6 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
             return L10n.string("install.state.awaiting_confirmation")
         }
     }
-
-    init(
-        operationID: String?,
-        startedAt: Date,
-        updatedAt: Date,
-        finishedAt: Date?,
-        status: DeviceDeployStateStatus,
-        stage: String?,
-        payloadFamily: String?,
-        rebootRequested: Bool?,
-        verified: Bool?,
-        summary: String,
-        summaryRef: BackendSummary? = nil,
-        errorCode: String?,
-        errorMessage: String?,
-        recovery: DeviceRecoverySnapshot?,
-        diagnosticText: String? = nil
-    ) {
-        self.operationID = operationID
-        self.startedAt = startedAt
-        self.updatedAt = updatedAt
-        self.finishedAt = finishedAt
-        self.status = status
-        self.stage = stage
-        self.payloadFamily = payloadFamily
-        self.rebootRequested = rebootRequested
-        self.verified = verified
-        self.summary = summary
-        self.summaryRef = summaryRef
-        self.errorCode = errorCode
-        self.errorMessage = errorMessage
-        self.recovery = recovery
-        self.diagnosticText = diagnosticText
-    }
 }
 
 enum DeviceRuntimeState: String, Codable, Equatable, CaseIterable {
@@ -411,30 +377,6 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
             }
             return BackendSummary.saved(summaryRef, text: summary)?.localized ?? L10n.string("runtime.state.unhealthy")
         }
-    }
-
-    init(
-        state: DeviceRuntimeState,
-        source: DeviceRuntimeEvidenceSource,
-        stage: String?,
-        payloadFamily: String?,
-        verified: Bool?,
-        summary: String,
-        summaryRef: BackendSummary? = nil,
-        errorCode: String?,
-        errorMessage: String?,
-        recovery: DeviceRecoverySnapshot?
-    ) {
-        self.state = state
-        self.source = source
-        self.stage = stage
-        self.payloadFamily = payloadFamily
-        self.verified = verified
-        self.summary = summary
-        self.summaryRef = summaryRef
-        self.errorCode = errorCode
-        self.errorMessage = errorMessage
-        self.recovery = recovery
     }
 }
 

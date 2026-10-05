@@ -34,7 +34,6 @@ class ExecutionTelemetryRecorder:
         self._current_stage: dict[str, object] | None = None
         self._stages: list[dict[str, object]] = []
         self._measurements: dict[str, list[dict[str, object]]] = {}
-        self._slow_flags: list[str] = []
 
     def set_stage(self, name: str) -> None:
         clean_name = str(name).strip()
@@ -61,11 +60,6 @@ class ExecutionTelemetryRecorder:
             return
         values.append(_jsonable_mapping(fields))
 
-    def add_slow_flag(self, name: str) -> None:
-        clean_name = str(name).strip()
-        if clean_name and clean_name not in self._slow_flags:
-            self._slow_flags.append(clean_name)
-
     def to_jsonable(self, *, result: str, duration_sec: float | None = None) -> dict[str, object]:
         now = self._monotonic()
         wall_now = self._wall_clock()
@@ -90,8 +84,6 @@ class ExecutionTelemetryRecorder:
                 for kind, values in sorted(self._measurements.items())
                 if values
             }
-        if self._slow_flags:
-            output["slow_flags"] = list(self._slow_flags)
         return output
 
     def _close_current_stage(self, now: float, wall_now: float, *, result: str) -> None:

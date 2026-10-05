@@ -35,8 +35,6 @@ class TelemetryContext:
     host_os: str
     host_os_version: str
     configure_id: str | None = None
-    device_model: str | None = None
-    device_syap: str | None = None
 
 
 class TelemetryClient:
@@ -52,7 +50,6 @@ class TelemetryClient:
         config: AppConfig,
         *,
         bootstrap_path: Path | None = None,
-        include_device_identity: bool = True,
     ) -> "TelemetryClient":
         identity = load_install_identity(bootstrap_path)
         endpoint = os.getenv(TELEMETRY_URL_ENV, DEFAULT_TELEMETRY_URL)
@@ -67,8 +64,6 @@ class TelemetryClient:
             host_os=detect_host_os(),
             host_os_version=detect_host_os_version(),
             configure_id=config.get("TC_CONFIGURE_ID") or None,
-            device_model=None,
-            device_syap=None,
         )
         return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)
 
@@ -116,10 +111,6 @@ class TelemetryClient:
                 payload["client"] = client
             if self.context.configure_id:
                 payload["configure_id"] = self.context.configure_id
-            if self.context.device_model:
-                payload["device_model"] = self.context.device_model
-            if self.context.device_syap:
-                payload["device_syap"] = self.context.device_syap
             if options is not None:
                 payload["options"] = options
             if details is not None:

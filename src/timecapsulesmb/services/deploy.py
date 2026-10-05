@@ -38,7 +38,6 @@ from timecapsulesmb.deploy.dry_run import (
     format_deployment_plan as _format_deployment_plan,
 )
 from timecapsulesmb.deploy.executor import (
-    XattrMigrationResult,
     flush_remote_filesystem_writes,
     migrate_xattr_tdb_to_hfs,
     run_remote_actions,
@@ -957,11 +956,11 @@ def upload_and_verify_deployment_payload(
             )
         except Exception as exc:
             raise_migration_failure(phase, migration_started, migration_log, exc)
-        oversized = migration_result.oversized if isinstance(migration_result, XattrMigrationResult) else None
+        oversized = migration_result.oversized
         # Only cleanup's retirement drops verified rows from a lone database.
         dropped: dict[str, object] = (
             {"dropped_rows": migration_result.dropped_rows, "backup": migration_result.backup}
-            if phase == "cleanup" and isinstance(migration_result, XattrMigrationResult) else {}
+            if phase == "cleanup" else {}
         )
         callbacks.measurement(
             "xattr_migration",
@@ -979,20 +978,12 @@ def upload_and_verify_deployment_payload(
         if phase == "cleanup" and oversized is not None and oversized.total:
             for line in _oversized_summaries(oversized):
                 callbacks.message(line)
-        if isinstance(migration_result, XattrMigrationResult):
-            migration_output = migration_result.output
-            callbacks.debug(
-                **{
-                    f"xattr_migration_{phase}": migration_output.strip(),
-                    f"xattr_migration_{phase}_unavailable_roots": list(
-                        migration_result.unavailable_roots
-                    ),
-                }
-            )
-        else:
-            # Test or injected implementations may retain the original string
-            # result while the production executor carries the selected roots.
-            callbacks.debug(**{f"xattr_migration_{phase}": str(migration_result).strip()})
+        callbacks.debug(
+            **{
+                f"xattr_migration_{phase}": migration_result.output.strip(),
+                f"xattr_migration_{phase}_unavailable_roots": list(migration_result.unavailable_roots),
+            }
+        )
 
     callbacks.stage("prepare_deployment_files")
     callbacks.update(upload_transport="ssh_pipe")

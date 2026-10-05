@@ -13,6 +13,7 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
@@ -302,7 +303,7 @@ class CliTestCase(unittest.TestCase):
         self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.services.deploy.migrate_xattr_tdb_to_hfs",
-                return_value="migration=complete",
+                return_value=XattrMigrationResult("migration=complete", ()),
             )
         )
 
