@@ -13,6 +13,7 @@ from timecapsulesmb.cli.runtime import (
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.services.activation import installed_netbsd4_autostart
 from timecapsulesmb.services.maintenance import (
     format_fsck_targets,
     fsck_target_from_volume,
@@ -113,6 +114,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at fsck confirmation prompt.")
                 return 0
 
+        netbsd4_autostart = None
+        if not args.no_reboot:
+            # Whether file sharing must be started after the reboot, read
+            # before the reboot as deploy does.
+            command_context.require_compatibility()
+            netbsd4_autostart = installed_netbsd4_autostart(
+                connection, command_context.probe_state, command_context.to_operation_callbacks(),
+            )
         try:
             outcome = run_fsck(
                 connection,
@@ -120,6 +129,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 reboot=not args.no_reboot,
                 wait=not args.no_wait,
                 callbacks=command_context.to_operation_callbacks(),
+                netbsd4_autostart=netbsd4_autostart,
             )
         except RebootFlowError as exc:
             print(str(exc))

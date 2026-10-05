@@ -142,7 +142,7 @@ Run:
 This step installs (or updates) Samba onto the device. It validates the checked-in binaries and copies the payload and boot files to the Time Capsule. Samba password files are generated on the device in RAM each time the managed runtime stages. You can run `deploy` for a new version to update.
 
 On Gen 5 NetBSD 6 devices, `deploy` reboots the device so the new runtime comes up cleanly.
-On older Gen 1-4 NetBSD 4 devices, `deploy` also reboots to clear the RAM disk, waits for SSH to return, and then runs `/mnt/Flash/rc.local`. The older devices still need `tcapsule activate` after later reboots that are not part of `deploy`.
+On older Gen 1-4 NetBSD 4 devices, `deploy` also reboots to clear the RAM disk, waits for SSH to return, and then runs `/mnt/Flash/rc.local`. `fsck` starts Samba the same way after its own reboot. The older devices still need `tcapsule activate` after other reboots, such as a power cut or a restart from AirPort Utility.
 
 `tcapsule deploy` always reboots after installation and normally waits for the device to come back. If you want to skip the reboot confirmation prompt, you can run:
 

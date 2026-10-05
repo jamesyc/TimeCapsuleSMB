@@ -440,7 +440,8 @@ class ProbeTests(unittest.TestCase):
 
         def fake_run_ssh(_connection: SshConnection, remote_cmd: str, **_kwargs: object) -> subprocess.CompletedProcess[str]:
             if "uname -s" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="NetBSD\n6.0\nearmv4\n")
+                return subprocess.CompletedProcess(
+                    args=["ssh"], returncode=0, stdout="NetBSD\n6.0\nearmv4\nno-rc.local-autostart\n")
             if "bs=1 skip=5" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="little\n")
             if "/usr/bin/acp -q syAP" in remote_cmd:
@@ -456,6 +457,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result.elf_endianness, "little")
         self.assertEqual(result.airport_model, "TimeCapsule8,119")
         self.assertEqual(result.airport_mac, "02:aa:bb:cc:dd:ee")
+        self.assertFalse(result.rc_local_autostart)
         self.assertEqual(run_ssh_mock.call_count, 3)
         for call in run_ssh_mock.call_args_list:
             args, _kwargs = call
@@ -554,13 +556,54 @@ class ProbeTests(unittest.TestCase):
                 "NetBSD\n"
                 "4.0_STABLE\n"
                 "earmv4\n"
+                "rc.local-autostart\n"
             ),
         )
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe._probe_remote_os_info_conn(connection)
 
-        self.assertEqual(result, ("NetBSD", "4.0_STABLE", "earmv4"))
+        self.assertEqual(result, ("NetBSD", "4.0_STABLE", "earmv4", True))
+
+    def test_probe_remote_os_info_conn_reads_the_boot_hook_from_login_in_the_same_command(self) -> None:
+        # Run the probe's own shell command here, against a stand-in LOGIN:
+        # deploy and fsck learn the NetBSD4 boot hook from it before rebooting.
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        captured: list[str] = []
+
+        def capture(_connection, remote_cmd, **_kwargs):
+            captured.append(remote_cmd)
+            return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="NetBSD\n4.0\nevbarm\nno-rc.local-autostart\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=capture):
+            probe._probe_remote_os_info_conn(connection)
+        command = captured[0]
+        # The device has no grep, awk, wc or head.
+        for tool in ("grep", "awk", "wc ", "head", "tr "):
+            self.assertNotIn(tool, command)
+
+        cases = {
+            "patched": ("#!/bin/sh\nif [ -x /mnt/Flash/rc.local ]; then\n    /mnt/Flash/rc.local\nfi\n", "rc.local-autostart"),
+            "stock": ("#!/bin/sh\n# LOGIN\nexit 0\n", "no-rc.local-autostart"),
+            "missing": (None, "no-rc.local-autostart"),
+        }
+        for name, (content, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                login = Path(tmp) / "LOGIN"
+                if content is not None:
+                    login.write_text(content)
+                local = command.replace(probe.NETBSD4_LOGIN_PATH, str(login))
+                out = subprocess.run(local, shell=True, capture_output=True, text=True, check=True).stdout
+                self.assertEqual(out.splitlines()[-1], expected)
+                self.assertEqual(len(out.splitlines()), 4)
+
+    def test_probe_remote_os_info_conn_rejects_output_without_the_boot_hook_line(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="NetBSD\n4.0\nevbarm\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            with self.assertRaises(DeviceError):
+                probe._probe_remote_os_info_conn(connection)
 
     def test_probe_remote_elf_endianness_uses_dd_and_sed_only(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")

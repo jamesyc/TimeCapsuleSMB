@@ -44,8 +44,8 @@ def _startup_description(plan: DeploymentPlan) -> str:
         if not plan.wait_after_reboot:
             return "request reboot and return without post-reboot activation or verification"
         return (
-            f"reboot, wait for SSH, probe {NETBSD4_LOGIN_PATH} for {NETBSD4_AUTOSTART_MARKER}; "
-            "if present wait for managed runtime, otherwise run /mnt/Flash/rc.local and verify managed runtime"
+            f"reboot, wait for SSH; if the device probe found {NETBSD4_AUTOSTART_MARKER} in {NETBSD4_LOGIN_PATH} "
+            "wait for managed runtime, otherwise run /mnt/Flash/rc.local and verify managed runtime"
         )
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
         if not plan.wait_after_reboot:
@@ -57,6 +57,8 @@ def _startup_description(plan: DeploymentPlan) -> str:
 def _post_reboot_activation_probe_json() -> dict[str, object]:
     return {
         "kind": "netbsd4_rc_local_autostart",
+        # Read by the device probe before the deploy, not after the reboot.
+        "when": "before_reboot",
         "path": NETBSD4_LOGIN_PATH,
         "marker": NETBSD4_AUTOSTART_MARKER,
         "if_present": ["skip_post_reboot_start_actions", "verify_managed_runtime"],
@@ -157,7 +159,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     _append_reboot_request(lines, plan.reboot_required, wait_after_reboot=plan.wait_after_reboot)
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-            lines.append(f"  follow-up: probe {NETBSD4_LOGIN_PATH} for {NETBSD4_AUTOSTART_MARKER}")
+            lines.append(f"  follow-up: the device probe read {NETBSD4_LOGIN_PATH} for {NETBSD4_AUTOSTART_MARKER} before the reboot")
             lines.append("  if present: wait for managed runtime")
             lines.append("  if missing: run /mnt/Flash/rc.local, then wait for managed runtime")
         else:

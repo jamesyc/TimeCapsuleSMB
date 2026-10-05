@@ -15,6 +15,7 @@ from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services import maintenance as maintenance_service
 from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
+from timecapsulesmb.device.probe import ProbeResult, SshAccessStatus
 from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
@@ -26,9 +27,23 @@ from timecapsulesmb.deploy.commands import (
 from timecapsulesmb.deploy.verify import VerificationResult
 
 from tests.cli_support import CliTestCase, FakeCommandContext
+from tests.reboot_support import FakeInstalledRuntime
 
 
 class CliMaintenanceTests(CliTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # Before rebooting, fsck probes the device like deploy does; a test may
+        # swap in a NetBSD4 answer. Tests that patch the probe themselves win.
+        self.fsck_probe_state = self.make_logged_in_probe_state(self.make_supported_compatibility())
+        self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.services.runtime.probe_managed_connection_state",
+            side_effect=lambda *_args, **_kwargs: self.fsck_probe_state,
+        ))
+
+    def use_stock_netbsd4(self) -> None:
+        self.fsck_probe_state = self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())
+
     def _patch_mast_volume_flow(
         self,
         stack: ExitStack,
@@ -775,6 +790,7 @@ class CliMaintenanceTests(CliTestCase):
                 rc = fsck.main(["--yes", "--no-wait"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.device.calls, ["request"])
+        self.assertNotIn("File sharing will not start by itself", output.getvalue())
 
     def test_fsck_no_reboot_omits_reboot_and_waits(self) -> None:
         output = io.StringIO()
@@ -998,6 +1014,68 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(finished["reboot_was_attempted"], True)
         self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertIn("fsck_hfs exited with status 8", finished["error"])
+
+    def test_fsck_on_netbsd4_starts_file_sharing_after_the_reboot(self) -> None:
+        self.use_stock_netbsd4()
+        runtime = FakeInstalledRuntime()
+        with runtime.patched():
+            rc, text, _device = self._run_fsck_with_remote_output("tcapsule-fsck: fsck_hfs exit status 0\n", 0, ["--yes"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("run /mnt/Flash/rc.local", runtime.calls)
+        self.assertIn("File sharing is running again after the reboot.", text)
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["runtime_start_after_reboot"], "rc_local")
+        self.assertEqual(finished["runtime_restarted"], True)
+        # The probe before the reboot gives fsck telemetry the device family too.
+        self.assertEqual(finished["device_family"], "netbsd4le_samba4")
+
+    def test_fsck_no_wait_on_stock_netbsd4_says_to_activate_once_it_is_back(self) -> None:
+        self.use_stock_netbsd4()
+        with FakeInstalledRuntime().patched():
+            rc, text, device = self._run_fsck_with_remote_output("tcapsule-fsck: fsck_hfs exit status 0\n", 0, ["--yes", "--no-wait"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(device.calls, ["request"])
+        self.assertIn("File sharing will not start by itself after this restart.", text)
+        self.assertIn("tcapsule activate", text)
+
+    def test_fsck_on_netbsd4_fails_when_file_sharing_does_not_restart(self) -> None:
+        self.use_stock_netbsd4()
+        with FakeInstalledRuntime(becomes_ready=False).patched():
+            rc, text, _device = self._run_fsck_with_remote_output("tcapsule-fsck: fsck_hfs exit status 0\n", 0, ["--yes"])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Disk repair completed. File sharing did not restart after the reboot.", text)
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("stage=verify_runtime_activation", finished["error"])
+
+    def test_fsck_that_cannot_probe_the_device_stops_before_touching_the_disk(self) -> None:
+        # Without the probe fsck cannot know whether file sharing must be
+        # started after the reboot; it fails before the repair, not after.
+        self.fsck_probe_state = self.make_probe_state(ProbeResult(
+            ssh_status=SshAccessStatus.AUTH_REJECTED,
+            error="SSH authentication failed.",
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        ))
+        output = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch(
+                "timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(self.make_valid_env())))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+                fsck.main(["--yes"])
+
+        self.assertEqual(str(raised.exception), "SSH authentication failed.")
+        run_ssh.assert_not_called()
+        self.assertNotIn("request", self.device.calls)
+        self.assertEqual(self.telemetry_payload("fsck_finished")["result"], "failure")
 
     def test_fsck_failed_status_fails_without_reboot_or_wait(self) -> None:
         for argv, requested in ((["--yes", "--no-reboot"], False), (["--yes", "--no-wait"], True)):

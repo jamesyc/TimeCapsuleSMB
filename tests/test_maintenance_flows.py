@@ -11,10 +11,13 @@ from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOL
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.probe import DeployedVersionProbeResult
 from timecapsulesmb.services.activation import (
+    MANUAL_START_AFTER_REBOOT_MESSAGE,
     OLDEST_ACTIVATABLE_RELEASE_TAG,
     OLDEST_ACTIVATABLE_VERSION_CODE,
+    RUNTIME_RESTART_FAILURE_MESSAGE,
     ActivationInstallError,
     activate_runtime,
+    installed_netbsd4_autostart,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.maintenance import (
@@ -31,8 +34,9 @@ from timecapsulesmb.services.maintenance import (
 )
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.reboot import REBOOT_NO_DOWN_MESSAGE, REBOOT_UP_TIMEOUT_MESSAGE, RebootFlowError
+from timecapsulesmb.transport.errors import SshNetworkError
 from timecapsulesmb.transport.ssh import SshConnection
-from tests.reboot_support import FakeAcpDevice
+from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
 
 
 class RecordingCallbacks:
@@ -53,7 +57,7 @@ CONNECTION = SshConnection("root@10.0.0.2", "pw", "-o foo")
 FSCK_TARGET = FsckTarget(device="/dev/dk2", mountpoint="/Volumes/dk2", name="Data", builtin=True)
 
 
-class RunFsckTests(unittest.TestCase):
+class FsckHarness:
     """run_fsck against a fake SSH session and a simulated device.
 
     Only the transport is faked: the SSH session and the device's ACP, so the
@@ -61,9 +65,11 @@ class RunFsckTests(unittest.TestCase):
     """
 
     def run_fsck(self, stdout: str, *, reboot: bool = True, wait: bool = True, returncode: int = 0,
-                 device: FakeAcpDevice | None = None):
+                 device: FakeAcpDevice | None = None, runtime: FakeInstalledRuntime | None = None,
+                 netbsd4_autostart: bool | None = None):
         recorder = RecordingCallbacks()
         device = device or FakeAcpDevice()
+        runtime = runtime or FakeInstalledRuntime()
         proc = SimpleNamespace(stdout=stdout, returncode=returncode)
 
         def remote(*_args, **_kwargs):
@@ -71,19 +77,28 @@ class RunFsckTests(unittest.TestCase):
             return proc
 
         with mock.patch("timecapsulesmb.services.maintenance.run_ssh", side_effect=remote) as run_ssh:
-            with device.patched():
+            with device.patched(), runtime.patched():
                 try:
-                    outcome = run_fsck(CONNECTION, FSCK_TARGET, reboot=reboot, wait=wait, callbacks=recorder.callbacks)
+                    outcome = run_fsck(
+                        CONNECTION, FSCK_TARGET, reboot=reboot, wait=wait, callbacks=recorder.callbacks,
+                        netbsd4_autostart=netbsd4_autostart,
+                    )
                 except RebootFlowError as exc:
                     outcome = exc
         return outcome, recorder, run_ssh, device
 
+
+class RunFsckTests(FsckHarness, unittest.TestCase):
     def test_clean_fsck_then_requests_the_reboot_and_waits(self) -> None:
         outcome, recorder, run_ssh, device = self.run_fsck(
             "--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n")
 
         self.assertEqual((outcome.status, outcome.failure, outcome.reboot_requested, outcome.waited), (0, None, True, True))
+        # Nothing to start afterwards (NetBSD6 starts file sharing at boot), so
+        # nothing is asked of the device once SSH is back.
         self.assertEqual(recorder.stages, ["run_fsck", "reboot", "wait_for_reboot_down", "wait_for_reboot_up"])
+        self.assertIsNone(outcome.runtime_restart_error)
+        self.assertNotIn("runtime_restarted", recorder.fields)
         self.assertEqual(recorder.messages[:3], ["--- fsck_hfs /dev/dk2 ---", "OK", "tcapsule-fsck: fsck_hfs exit status 0"])
         self.assertEqual(recorder.fields["returncode"], 0)
         self.assertTrue(recorder.fields["reboot_was_attempted"])
@@ -114,6 +129,9 @@ class RunFsckTests(unittest.TestCase):
         self.assertTrue(outcome.waited)
         self.assertEqual(recorder.fields["returncode"], 8)
         self.assertEqual(device.calls.count("request"), 1)
+        # The app marks the last step failed and telemetry records it: that is
+        # the repair, not the reboot that followed it.
+        self.assertEqual(recorder.stages[-1], "run_fsck")
 
     def test_no_reboot_requests_nothing_and_does_not_wait(self) -> None:
         outcome, recorder, _run_ssh, device = self.run_fsck(
@@ -216,6 +234,196 @@ class RunFsckTests(unittest.TestCase):
             str(outcome),
             f"{REBOOT_UP_TIMEOUT_MESSAGE}\nfsck_hfs exited with status 8; the disk may still need repair.",
         )
+
+
+class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
+    """fsck's reboot stops file sharing on NetBSD4 without the autostart patch;
+    run_fsck starts it again, as Apple's own reboot brings sharing back.
+
+    `netbsd4_autostart` is what installed_netbsd4_autostart read before the
+    repair; after the reboot nothing is asked, only started and waited for.
+    """
+
+    def netbsd4(self, stdout: str = "tcapsule-fsck: fsck_hfs exit status 0\n", *, autostart: bool = False,
+                runtime=None, **kwargs):
+        runtime = runtime or FakeInstalledRuntime()
+        outcome, recorder, _run_ssh, device = self.run_fsck(
+            stdout, runtime=runtime, netbsd4_autostart=autostart, **kwargs)
+        return outcome, recorder, device, runtime
+
+    def test_repair_then_reboot_then_starts_file_sharing_again(self) -> None:
+        outcome, recorder, device, runtime = self.netbsd4()
+
+        self.assertIsNone(outcome.failure)
+        self.assertIsNone(outcome.runtime_restart_error)
+        self.assertTrue(device.served_new_boot)
+        self.assertEqual(runtime.calls, ["run /mnt/Flash/rc.local", "verify 200s"])
+        self.assertEqual(recorder.stages[-3:], [
+            "wait_for_reboot_up", "post_reboot_activation", "verify_runtime_activation",
+        ])
+        self.assertTrue(recorder.fields["runtime_restarted"])
+        self.assertEqual(recorder.debug["activation_decision"], "firmware_autostart_missing")
+        self.assertIn("File sharing is running again after the reboot.", recorder.messages)
+
+    def test_firmware_autostart_only_waits_for_the_runtime(self) -> None:
+        outcome, recorder, _device, runtime = self.netbsd4(autostart=True)
+
+        self.assertIsNone(outcome.failure)
+        self.assertEqual(runtime.calls, ["verify 200s"])
+        self.assertEqual(recorder.debug["activation_decision"], "firmware_autostart_enabled")
+
+    def test_runtime_that_does_not_start_fails_the_repair_after_saying_it_completed(self) -> None:
+        outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(becomes_ready=False))
+
+        self.assertEqual(outcome.status, 0)
+        error = f"{RUNTIME_RESTART_FAILURE_MESSAGE} {FakeInstalledRuntime.NOT_READY_DETAIL}"
+        self.assertEqual(outcome.runtime_restart_error, error)
+        self.assertEqual(outcome.failure, f"Disk repair completed. {error}")
+        self.assertFalse(recorder.fields["runtime_restarted"])
+
+    def test_lost_ssh_after_the_reboot_is_reported_not_skipped(self) -> None:
+        # The device was known to need starting before the reboot, so an SSH
+        # failure afterwards cannot leave file sharing silently off.
+        runtime = FakeInstalledRuntime()
+        with mock.patch.object(runtime, "_run_actions", side_effect=SshNetworkError("Connection timed out")):
+            outcome, _recorder, _device, _runtime = self.netbsd4(runtime=runtime)
+
+        self.assertEqual(
+            outcome.failure, f"Disk repair completed. {RUNTIME_RESTART_FAILURE_MESSAGE} Connection timed out")
+
+    def test_failed_repair_still_starts_file_sharing_and_keeps_its_own_error(self) -> None:
+        outcome, _recorder, _device, runtime = self.netbsd4("tcapsule-fsck: fsck_hfs exit status 8\n")
+
+        self.assertEqual(outcome.failure, "fsck_hfs exited with status 8; the disk may still need repair.")
+        self.assertIsNone(outcome.runtime_restart_error)
+        self.assertIn("run /mnt/Flash/rc.local", runtime.calls)
+
+    def test_failed_repair_and_failed_start_report_the_repair_first(self) -> None:
+        outcome, _recorder, _device, _runtime = self.netbsd4(
+            "tcapsule-fsck: fsck_hfs exit status 8\n", runtime=FakeInstalledRuntime(becomes_ready=False))
+
+        self.assertEqual(
+            outcome.failure,
+            "fsck_hfs exited with status 8; the disk may still need repair.\n"
+            f"{RUNTIME_RESTART_FAILURE_MESSAGE} {FakeInstalledRuntime.NOT_READY_DETAIL}",
+        )
+
+    def test_failed_repair_is_reported_at_the_repair_step_after_a_good_restart(self) -> None:
+        # Not at "Verify SMB Startup", which worked.
+        _outcome, recorder, _device, _runtime = self.netbsd4("tcapsule-fsck: fsck_hfs exit status 8\n")
+
+        self.assertEqual(recorder.stages[-3:], ["post_reboot_activation", "verify_runtime_activation", "run_fsck"])
+
+    def test_failed_repair_and_failed_start_stay_at_the_start_step(self) -> None:
+        # The app offers Activate for this step; the error text leads with the repair.
+        _outcome, recorder, _device, _runtime = self.netbsd4(
+            "tcapsule-fsck: fsck_hfs exit status 8\n", runtime=FakeInstalledRuntime(becomes_ready=False))
+
+        self.assertEqual(recorder.stages[-1], "verify_runtime_activation")
+
+    def test_clean_repair_ends_at_the_start(self) -> None:
+        _outcome, recorder, _device, _runtime = self.netbsd4()
+
+        self.assertEqual(recorder.stages.count("run_fsck"), 1)
+
+    def test_no_wait_on_stock_netbsd4_says_file_sharing_will_stay_off(self) -> None:
+        outcome, recorder, device, runtime = self.netbsd4(wait=False)
+
+        self.assertIn(MANUAL_START_AFTER_REBOOT_MESSAGE, recorder.messages)
+        self.assertEqual(device.calls, ["run_ssh", "request"])
+        self.assertEqual(runtime.calls, [])
+        self.assertIsNone(outcome.runtime_restart_error)
+
+    def test_no_wait_says_nothing_where_file_sharing_starts_by_itself(self) -> None:
+        for autostart in (True, None):
+            with self.subTest(autostart=autostart):
+                _outcome, recorder, _run_ssh, _device = self.run_fsck(
+                    "tcapsule-fsck: fsck_hfs exit status 0\n", wait=False, netbsd4_autostart=autostart)
+
+                self.assertNotIn(MANUAL_START_AFTER_REBOOT_MESSAGE, recorder.messages)
+
+    def test_no_reboot_and_failed_reboots_never_start_the_runtime(self) -> None:
+        cases = {
+            "no reboot": dict(reboot=False),
+            "never restarts": dict(device=FakeAcpDevice(reboots=False)),
+            "never returns": dict(device=FakeAcpDevice(kernel_after=10_000)),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                outcome, recorder, _device, runtime = self.netbsd4(**kwargs)
+
+                self.assertEqual(runtime.calls, [])
+                self.assertNotIn("post_reboot_activation", recorder.stages)
+                if not isinstance(outcome, RebootFlowError):
+                    self.assertIsNone(outcome.runtime_restart_error)
+
+    def test_fsck_that_never_ran_never_touches_the_runtime(self) -> None:
+        outcome, _recorder, _device, runtime = self.netbsd4("stopping file sharing failed\n", returncode=1)
+
+        self.assertEqual(runtime.calls, [])
+        self.assertFalse(outcome.reboot_requested)
+
+
+class InstalledNetbsd4AutostartTests(unittest.TestCase):
+    """What fsck learns before its reboot: does file sharing need starting after it?"""
+
+    def plan(self, *, payload_family: str | None = "netbsd4le_samba4", autostart: bool = False,
+             runtime: FakeInstalledRuntime | None = None):
+        recorder = RecordingCallbacks()
+        runtime = runtime or FakeInstalledRuntime()
+        compatibility = None if payload_family is None else SimpleNamespace(payload_family=payload_family)
+        state = SimpleNamespace(
+            compatibility=compatibility,
+            probe_result=SimpleNamespace(rc_local_autostart=autostart),
+        )
+        with runtime.patched():
+            answer = installed_netbsd4_autostart(CONNECTION, state, recorder.callbacks)
+        return answer, recorder, runtime
+
+    def test_netbsd6_needs_nothing_and_is_not_asked_about_an_install(self) -> None:
+        answer, recorder, runtime = self.plan(payload_family="netbsd6_samba4")
+
+        self.assertIsNone(answer)
+        self.assertEqual(runtime.calls, [])
+        self.assertEqual(recorder.fields, {"runtime_start_after_reboot": "not_netbsd4"})
+
+    def test_stock_netbsd4_with_an_install_needs_starting(self) -> None:
+        for family in ("netbsd4le_samba4", "netbsd4be_samba4"):
+            with self.subTest(family=family):
+                answer, recorder, runtime = self.plan(payload_family=family)
+
+                self.assertIs(answer, False)
+                self.assertEqual(runtime.calls, ["read config", "read version"])
+                self.assertEqual(recorder.fields["runtime_start_after_reboot"], "rc_local")
+
+    def test_netbsd4_with_the_boot_hook_starts_by_itself(self) -> None:
+        answer, recorder, _runtime = self.plan(autostart=True)
+
+        self.assertIs(answer, True)
+        self.assertEqual(recorder.fields["runtime_start_after_reboot"], "firmware_autostart")
+
+    def test_netbsd4_without_an_install_needs_nothing_and_says_nothing(self) -> None:
+        # fsck before the first deploy is normal; no install advice.
+        answer, recorder, runtime = self.plan(runtime=FakeInstalledRuntime(installed=False))
+
+        self.assertIsNone(answer)
+        self.assertEqual(runtime.calls, ["read config"])
+        self.assertEqual(recorder.messages, [])
+        self.assertEqual(recorder.fields["runtime_start_after_reboot"], "runtime_not_installed")
+
+    def test_netbsd4_install_this_version_cannot_start_is_left_off_with_the_reason(self) -> None:
+        newer_major = (release_major(CLI_VERSION_CODE) + 1) * 10000
+        cases = (
+            ("v2.2.9", 20209, "runtime_outdated", "v2.2.9 is older than"),
+            ("v9.0.0", newer_major, "client_outdated", "v9.0.0 is from a newer major version"),
+        )
+        for tag, code, reason, message in cases:
+            with self.subTest(tag=tag):
+                answer, recorder, _runtime = self.plan(runtime=FakeInstalledRuntime(release_tag=tag, version_code=code))
+
+                self.assertIsNone(answer)
+                self.assertEqual(recorder.fields["runtime_start_after_reboot"], reason)
+                self.assertTrue(any(message in line for line in recorder.messages), recorder.messages)
 
 
 class UninstallTests(unittest.TestCase):

@@ -662,6 +662,7 @@
 "backend.error.reboot_not_started" = "Устройство не перезагрузилось после запроса перезагрузки.";
 "backend.error.reboot_not_finished" = "Устройство не вернулось в сеть после перезагрузки.";
 "backend.error.ssh_still_enabled" = "SSH по-прежнему включен после перезагрузки, поэтому отключение не вступило в силу.";
+"backend.error.fsck.runtime_not_restarted" = "Исправление диска завершено, но общий доступ к файлам не возобновился после перезагрузки устройства.";
 "backend.recovery.auth_failed.title" = "Ошибка аутентификации";
 "backend.recovery.auth_failed.message" = "Устройство отклонило указанный пароль или учетные данные SSH.";
 "backend.recovery.auth_failed.action.1" = "Введите пароль администратора AirPort еще раз.";
@@ -854,6 +855,10 @@
 "backend.recovery.reboot_not_finished.action.1" = "Подождите еще несколько минут.";
 "backend.recovery.reboot_not_finished.action.2" = "У устройства может быть новый IP-адрес. Повторите поиск устройств и выберите его снова.";
 "backend.recovery.reboot_not_finished.action.3" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
+"backend.recovery.runtime_not_restarted.title" = "Общий доступ к файлам не возобновился";
+"backend.recovery.runtime_not_restarted.message" = "Устройство перезагрузилось, но установленные службы TimeCapsuleSMB не запустились.";
+"backend.recovery.runtime_not_restarted.action.1" = "Запустите «Активировать».";
+"backend.recovery.runtime_not_restarted.action.2" = "Выполните проверку, чтобы узнать подробности.";
 "backend.recovery.ssh_still_enabled.title" = "SSH по-прежнему включен";
 "backend.recovery.ssh_still_enabled.message" = "Устройство перезагрузилось, но SSH после этого оставался включен.";
 "backend.recovery.ssh_still_enabled.action.1" = "Снова отключите SSH в разделе «Доступ SSH».";
@@ -959,7 +964,6 @@
 "timeline.deploy.detail.pre_upload_actions" = "Остановка управляемых служб и удаление старых файлов установки.";
 "timeline.deploy.detail.prepare_deployment_files" = "Создание конфигурации служб.";
 "timeline.activate.detail.probe_runtime" = "Проверка того, запущен ли TimeCapsuleSMB, перед его активацией.";
-"timeline.deploy.detail.probe_runtime" = "Проверка автоматического запуска TimeCapsuleSMB на устройстве.";
 "timeline.deploy.detail.read_mast" = "Поиск смонтированных томов HFS для файлов установки.";
 "timeline.deploy.detail.reboot" = "Отправка запроса перезагрузки через AirPort ACP.";
 "timeline.deploy.detail.resolve_managed_target" = "Определение устройства для установки и проверка SSH.";
@@ -991,7 +995,6 @@
 "timeline.deploy.title.pre_upload_actions" = "Остановить работающие службы";
 "timeline.deploy.title.prepare_deployment_files" = "Создать конфигурацию служб";
 "timeline.activate.title.probe_runtime" = "Проверить работающие службы";
-"timeline.deploy.title.probe_runtime" = "Проверить автоматический запуск";
 "timeline.deploy.title.read_mast" = "Найти том установки";
 "timeline.deploy.title.reboot" = "Запросить перезагрузку";
 "timeline.deploy.title.resolve_managed_target" = "Подключиться к устройству";

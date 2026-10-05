@@ -89,20 +89,15 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
     func testDeployStartupStagesAreUserFacing() {
         let timeline = OperationTimelineBuilder.timeline(from: [
-            BackendEvent(type: "stage", operation: "deploy", stage: "probe_runtime"),
             BackendEvent(type: "stage", operation: "deploy", stage: "post_reboot_activation"),
             BackendEvent(type: "stage", operation: "deploy", stage: "verify_runtime_activation")
         ])
 
         XCTAssertEqual(timeline.map(\.title), [
-            "Check Boot Startup",
             "Start SMB After Reboot",
             "Verify SMB Startup"
         ])
-        XCTAssertEqual(
-            timeline.first?.detail,
-            "Checking whether the device will start TimeCapsuleSMB automatically."
-        )
+        XCTAssertEqual(timeline.first?.detail, "Starting SMB after SSH returns.")
     }
 
     func testConfigureAcpPortProbeStageIsUserFacing() {
@@ -197,6 +192,20 @@ final class OperationTimelineBuilderTests: XCTestCase {
         }
     }
 
+    func testFsckRestartingFileSharingAfterItsRebootShowsDeploysStartStages() {
+        // fsck starts a NetBSD4 runtime after its reboot as deploy does.
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "fsck", stage: "post_reboot_activation"), "Start SMB After Reboot")
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "fsck", stage: "verify_runtime_activation"), "Verify SMB Startup")
+        XCTAssertEqual(
+            OperationTimelineBuilder.stageDetail(for: "fsck", stage: "post_reboot_activation", fallback: "raw backend detail"),
+            "Starting SMB after SSH returns."
+        )
+        // The other rebooting operations leave file sharing as the reboot left it.
+        for operation in ["uninstall", "flash", "set-ssh"] {
+            XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: operation, stage: "post_reboot_activation"), "Post Reboot Activation", operation)
+        }
+    }
+
     func testAllKnownDeployStagesHaveLocalizedTitlesAndDetails() {
         let deployStages = [
             "load_config",
@@ -230,7 +239,6 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "reboot",
             "wait_for_reboot_down",
             "wait_for_reboot_up",
-            "probe_runtime",
             "post_reboot_activation",
             "verify_runtime_activation",
             "verify_runtime_reboot"

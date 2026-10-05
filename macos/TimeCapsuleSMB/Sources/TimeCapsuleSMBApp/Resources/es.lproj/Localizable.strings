@@ -662,6 +662,7 @@
 "backend.error.reboot_not_started" = "El dispositivo no se reinició tras la solicitud de reinicio.";
 "backend.error.reboot_not_finished" = "El dispositivo no volvió a estar disponible tras reiniciarse.";
 "backend.error.ssh_still_enabled" = "SSH sigue habilitado después del reinicio, por lo que deshabilitarlo no surtió efecto.";
+"backend.error.fsck.runtime_not_restarted" = "La reparación de disco terminó, pero el uso compartido de archivos no se reanudó después de reiniciar el dispositivo.";
 "backend.recovery.auth_failed.title" = "Error de autenticación";
 "backend.recovery.auth_failed.message" = "El dispositivo rechazó la contraseña o las credenciales SSH proporcionadas.";
 "backend.recovery.auth_failed.action.1" = "Vuelva a introducir la contraseña de administrador de AirPort.";
@@ -854,6 +855,10 @@
 "backend.recovery.reboot_not_finished.action.1" = "Espere unos minutos más.";
 "backend.recovery.reboot_not_finished.action.2" = "El dispositivo puede tener una nueva dirección IP. Busque dispositivos y vuelva a seleccionarlo.";
 "backend.recovery.reboot_not_finished.action.3" = "Asegúrese de estar conectado a la misma red o Wi-Fi que el dispositivo.";
+"backend.recovery.runtime_not_restarted.title" = "El uso compartido de archivos no se reanudó";
+"backend.recovery.runtime_not_restarted.message" = "El dispositivo se reinició, pero los servicios de TimeCapsuleSMB instalados no se iniciaron.";
+"backend.recovery.runtime_not_restarted.action.1" = "Ejecute «Activar».";
+"backend.recovery.runtime_not_restarted.action.2" = "Ejecute el Chequeo para ver los detalles.";
 "backend.recovery.ssh_still_enabled.title" = "SSH sigue habilitado";
 "backend.recovery.ssh_still_enabled.message" = "El dispositivo se reinició, pero SSH seguía habilitado después.";
 "backend.recovery.ssh_still_enabled.action.1" = "Vuelva a deshabilitar SSH en «Acceso SSH».";
@@ -959,7 +964,6 @@
 "timeline.deploy.detail.pre_upload_actions" = "Deteniendo los servicios administrados y eliminando archivos de instalaciones anteriores.";
 "timeline.deploy.detail.prepare_deployment_files" = "Generando la configuración de los servicios.";
 "timeline.activate.detail.probe_runtime" = "Comprobando si TimeCapsuleSMB ya se está ejecutando antes de activarlo.";
-"timeline.deploy.detail.probe_runtime" = "Comprobando si el dispositivo iniciará TimeCapsuleSMB automáticamente.";
 "timeline.deploy.detail.read_mast" = "Buscando volúmenes HFS montados para los archivos de instalación.";
 "timeline.deploy.detail.reboot" = "Enviando la solicitud de reinicio a través de AirPort ACP.";
 "timeline.deploy.detail.resolve_managed_target" = "Identificando el destino de instalación y comprobando SSH.";
@@ -991,7 +995,6 @@
 "timeline.deploy.title.pre_upload_actions" = "Detener servicios existentes";
 "timeline.deploy.title.prepare_deployment_files" = "Crear configuración de servicios";
 "timeline.activate.title.probe_runtime" = "Comprobar servicios existentes";
-"timeline.deploy.title.probe_runtime" = "Comprobar inicio de arranque";
 "timeline.deploy.title.read_mast" = "Buscar volumen de instalación";
 "timeline.deploy.title.reboot" = "Solicitar reinicio";
 "timeline.deploy.title.resolve_managed_target" = "Conectar al dispositivo";

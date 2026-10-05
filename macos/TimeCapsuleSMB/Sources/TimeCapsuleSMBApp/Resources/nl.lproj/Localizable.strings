@@ -662,6 +662,7 @@
 "backend.error.reboot_not_started" = "Het apparaat is na het herstartverzoek niet opnieuw opgestart.";
 "backend.error.reboot_not_finished" = "Het apparaat is na het opnieuw opstarten niet teruggekomen.";
 "backend.error.ssh_still_enabled" = "SSH is na het opnieuw opstarten nog steeds ingeschakeld; het uitschakelen is niet doorgevoerd.";
+"backend.error.fsck.runtime_not_restarted" = "Schijfreparatie is voltooid, maar bestandsdeling is na het opnieuw opstarten van het apparaat niet opnieuw gestart.";
 "backend.recovery.auth_failed.title" = "Authenticatie mislukt";
 "backend.recovery.auth_failed.message" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
 "backend.recovery.auth_failed.action.1" = "Voer het AirPort-beheerderswachtwoord opnieuw in.";
@@ -854,6 +855,10 @@
 "backend.recovery.reboot_not_finished.action.1" = "Wacht nog een paar minuten.";
 "backend.recovery.reboot_not_finished.action.2" = "Het apparaat heeft mogelijk een nieuw IP-adres. Zoek opnieuw naar apparaten en selecteer het opnieuw.";
 "backend.recovery.reboot_not_finished.action.3" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
+"backend.recovery.runtime_not_restarted.title" = "Bestandsdeling niet opnieuw gestart";
+"backend.recovery.runtime_not_restarted.message" = "Het apparaat is opnieuw opgestart, maar de geïnstalleerde TimeCapsuleSMB-services zijn niet gestart.";
+"backend.recovery.runtime_not_restarted.action.1" = "Voer ‘Activeren’ uit.";
+"backend.recovery.runtime_not_restarted.action.2" = "Voer de controle uit voor details.";
 "backend.recovery.ssh_still_enabled.title" = "SSH is nog steeds ingeschakeld";
 "backend.recovery.ssh_still_enabled.message" = "Het apparaat is opnieuw opgestart, maar SSH was daarna nog steeds ingeschakeld.";
 "backend.recovery.ssh_still_enabled.action.1" = "Schakel SSH opnieuw uit via ‘SSH-toegang’.";
@@ -959,7 +964,6 @@
 "timeline.deploy.detail.pre_upload_actions" = "Beheerde services stoppen en oude installatiebestanden verwijderen.";
 "timeline.deploy.detail.prepare_deployment_files" = "Serviceconfiguratie maken.";
 "timeline.activate.detail.probe_runtime" = "Controleren of TimeCapsuleSMB al actief is voordat u deze activeert.";
-"timeline.deploy.detail.probe_runtime" = "Controleren of het apparaat TimeCapsuleSMB automatisch start.";
 "timeline.deploy.detail.read_mast" = "Gekoppelde HFS-volumes voor installatiebestanden zoeken.";
 "timeline.deploy.detail.reboot" = "Het herstartverzoek via AirPort ACP verzenden.";
 "timeline.deploy.detail.resolve_managed_target" = "Het installatiedoel bepalen en SSH controleren.";
@@ -991,7 +995,6 @@
 "timeline.deploy.title.pre_upload_actions" = "Bestaande services stoppen";
 "timeline.deploy.title.prepare_deployment_files" = "Serviceconfiguratie maken";
 "timeline.activate.title.probe_runtime" = "Bestaande services controleren";
-"timeline.deploy.title.probe_runtime" = "Automatisch opstarten controleren";
 "timeline.deploy.title.read_mast" = "Volume voor installatiebestanden zoeken";
 "timeline.deploy.title.reboot" = "Verzoek om opnieuw opstarten";
 "timeline.deploy.title.resolve_managed_target" = "Verbinden met apparaat";

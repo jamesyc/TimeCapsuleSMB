@@ -164,3 +164,60 @@ class RecordingCallbacks:
         matches = [fields for name, fields in self.measurements if name == kind]
         assert len(matches) == 1, (kind, self.measurements)
         return matches[0]
+
+
+@dataclass
+class FakeInstalledRuntime:
+    """The TimeCapsuleSMB install on a NetBSD4 device around an fsck reboot.
+
+    Before the reboot, services.activation.installed_netbsd4_autostart reads
+    the install (config and version); after it, run_fsck runs rc.local when
+    the firmware does not and waits for the runtime. The device's answers come
+    from these fields; calls records what ran.
+    """
+
+    installed: bool = True
+    # Release tag and version code of the install; defaults to this release.
+    release_tag: str | None = None
+    version_code: int | None = None
+    # Whether the runtime becomes ready once started.
+    becomes_ready: bool = True
+    calls: list[str] = field(default_factory=list)
+
+    NOT_READY_DETAIL = "managed smbd parent process is not running"
+
+    def _version(self, connection):
+        from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
+        from timecapsulesmb.device.probe import DeployedVersionProbeResult
+
+        self.calls.append("read version")
+        return DeployedVersionProbeResult(
+            self.release_tag or RELEASE_TAG,
+            self.version_code or CLI_VERSION_CODE,
+            "ok",
+        )
+
+    def _run_actions(self, connection, actions, **_kwargs):
+        self.calls.append("run " + ", ".join(getattr(action, "path", repr(action)) for action in actions))
+
+    def _verify(self, connection, *, callbacks, stage, timeout_seconds, heading, failure_message):
+        from timecapsulesmb.device.errors import DeviceError
+
+        callbacks.stage(stage)
+        self.calls.append(f"verify {timeout_seconds}s")
+        if not self.becomes_ready:
+            raise DeviceError(f"{failure_message} {self.NOT_READY_DETAIL}")
+
+    @contextlib.contextmanager
+    def patched(self):
+        def config_present(connection):
+            self.calls.append("read config")
+            return self.installed
+
+        with (
+            mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", side_effect=config_present),
+            mock.patch("timecapsulesmb.services.activation.read_deployed_version_conn", side_effect=self._version),
+            mock.patch("timecapsulesmb.services.activation.run_remote_actions", side_effect=self._run_actions),
+            mock.patch("timecapsulesmb.services.activation.verify_managed_runtime_ready", side_effect=self._verify),
+        ):
+            yield self

@@ -59,6 +59,18 @@ class AppRecoveryTests(unittest.TestCase):
                 self.assertTrue(recovery["retryable"])
                 self.assertEqual(recovery["actions"][0], "Wait a few minutes, then try again.")
 
+    def test_file_sharing_that_did_not_restart_offers_activate_at_every_restart_stage(self) -> None:
+        # fsck fails with this code once its reboot is done, whether starting
+        # the runtime or waiting for it failed.
+        for stage in ("post_reboot_activation", "verify_runtime_activation"):
+            with self.subTest(stage=stage):
+                recovery = recovery_for("fsck", "runtime_not_restarted", stage=stage)
+                self.assertEqual(recovery["localization_key"], "runtime_not_restarted")
+                self.assertEqual(recovery["title"], "File sharing did not restart")
+                self.assertEqual(recovery["suggested_operation"], "activate")
+                self.assertEqual(recovery["action_ids"], ["start_smb", "run_checkup"])
+                self.assertTrue(recovery["retryable"])
+
     def test_every_rebooting_operation_gets_the_shared_reboot_guidance(self) -> None:
         # One reboot path, so one entry per failure for every operation that
         # reboots; only deploy adds its NetBSD 4 and issue-177 steps.

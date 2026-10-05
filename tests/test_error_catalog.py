@@ -163,6 +163,15 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                     with self.subTest(language=language):
                         self.assertTrue(app_error_text(catalog(language), "activate", code))
 
+    def test_file_sharing_that_did_not_restart_after_fsck_has_its_own_text(self) -> None:
+        # The error line says what did succeed: the disk repair.
+        for language in LANGUAGES:
+            with self.subTest(language=language):
+                strings = catalog(language)
+                self.assertTrue(strings.get("backend.error.fsck.runtime_not_restarted"))
+                # Only fsck restarts file sharing after its reboot.
+                self.assertIsNone(strings.get("backend.error.set-ssh.runtime_not_restarted"))
+
     def test_current_release_is_accepted_without_an_error(self) -> None:
         version = DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok")
         with mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", return_value=True):

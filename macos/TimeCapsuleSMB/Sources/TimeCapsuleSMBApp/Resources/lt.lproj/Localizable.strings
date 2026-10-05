@@ -662,6 +662,7 @@
 "backend.error.reboot_not_started" = "Įrenginys nebuvo paleistas iš naujo po paleidimo iš naujo užklausos.";
 "backend.error.reboot_not_finished" = "Įrenginys negrįžo po paleidimo iš naujo.";
 "backend.error.ssh_still_enabled" = "SSH po paleidimo iš naujo vis dar įjungta, todėl išjungimas neįsigaliojo.";
+"backend.error.fsck.runtime_not_restarted" = "Disko taisymas baigtas, bet paleidus įrenginį iš naujo failų bendrinimas vėl neįsijungė.";
 "backend.recovery.auth_failed.title" = "Autentifikacija nepavyko";
 "backend.recovery.auth_failed.message" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.recovery.auth_failed.action.1" = "Pakartotinai įveskite AirPort administratoriaus slaptažodį.";
@@ -854,6 +855,10 @@
 "backend.recovery.reboot_not_finished.action.1" = "Palaukite dar kelias minutes.";
 "backend.recovery.reboot_not_finished.action.2" = "Įrenginys gali turėti naują IP adresą. Paleiskite Discover ir pasirinkite jį iš naujo.";
 "backend.recovery.reboot_not_finished.action.3" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
+"backend.recovery.runtime_not_restarted.title" = "Failų bendrinimas vėl neįsijungė";
+"backend.recovery.runtime_not_restarted.message" = "Įrenginys paleistas iš naujo, bet įdiegtos TimeCapsuleSMB paslaugos nepasileido.";
+"backend.recovery.runtime_not_restarted.action.1" = "Paleiskite „Aktyvuoti“.";
+"backend.recovery.runtime_not_restarted.action.2" = "Atlikite patikrinimą, kad pamatytumėte išsamią informaciją.";
 "backend.recovery.ssh_still_enabled.title" = "SSH vis dar įjungta";
 "backend.recovery.ssh_still_enabled.message" = "Įrenginys buvo paleistas iš naujo, bet SSH po to vis dar buvo įjungta.";
 "backend.recovery.ssh_still_enabled.action.1" = "Dar kartą išjunkite SSH skiltyje „SSH prieiga“.";
@@ -959,7 +964,6 @@
 "timeline.deploy.detail.pre_upload_actions" = "Sustabdomos valdomos paslaugos ir šalinami pasenę diegimo failai.";
 "timeline.deploy.detail.prepare_deployment_files" = "Generuojama aplinkos konfigūracija.";
 "timeline.activate.detail.probe_runtime" = "Tikrinama, ar TimeCapsuleSMB jau veikia prieš ją aktyvuojant.";
-"timeline.deploy.detail.probe_runtime" = "Tikrinama, ar įrenginys paleis TimeCapsuleSMB automatiškai.";
 "timeline.deploy.detail.read_mast" = "Ieškoma prijungtų HFS tomų diegimo failams.";
 "timeline.deploy.detail.reboot" = "Siunčiama paleidimo iš naujo užklausa per AirPort ACP.";
 "timeline.deploy.detail.resolve_managed_target" = "Nustatomas diegimo tikslas ir tikrinamas SSH.";
@@ -991,7 +995,6 @@
 "timeline.deploy.title.pre_upload_actions" = "Sustabdyti esamą aplinką";
 "timeline.deploy.title.prepare_deployment_files" = "Kurti aplinkos konfigūraciją";
 "timeline.activate.title.probe_runtime" = "Tikrinti esamą aplinką";
-"timeline.deploy.title.probe_runtime" = "Tikrinti paleisties paleidimą";
 "timeline.deploy.title.read_mast" = "Rasti diegimo tomą";
 "timeline.deploy.title.reboot" = "Prašyti paleisti iš naujo";
 "timeline.deploy.title.resolve_managed_target" = "Prisijungti prie įrenginio";

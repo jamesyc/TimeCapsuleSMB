@@ -42,7 +42,7 @@ from timecapsulesmb.services.app import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.activation import activate_runtime
+from timecapsulesmb.services.activation import RUNTIME_NOT_RESTARTED_CODE, activate_runtime, installed_netbsd4_autostart
 from timecapsulesmb.services.maintenance import (
     FSCK_DID_NOT_RUN_MESSAGE,
     format_fsck_plan,
@@ -61,6 +61,8 @@ from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.runtime import (
     load_env_config,
     load_optional_env_config,
+    probe_failure_error,
+    probe_managed_connection_state,
     resolve_env_connection,
 )
 
@@ -261,6 +263,15 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             wait=not no_wait,
         )))
 
+    netbsd4_autostart = None
+    if not no_reboot:
+        # Whether file sharing must be started after the reboot, read before
+        # the reboot as deploy does.
+        probe_state = probe_managed_connection_state(connection)
+        context.apply_probe_state(probe_state)
+        if probe_state.compatibility is None:
+            raise device_operation_error(context, probe_failure_error(probe_state.probe_result, connection.host))
+        netbsd4_autostart = installed_netbsd4_autostart(connection, probe_state, context.to_operation_callbacks())
     try:
         outcome = run_fsck(
             connection,
@@ -268,11 +279,14 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             reboot=not no_reboot,
             wait=not no_wait,
             callbacks=context.to_operation_callbacks(),
+            netbsd4_autostart=netbsd4_autostart,
         )
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc
     if outcome.status is None:
         raise AppOperationError(outcome.failure or FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
+    if outcome.runtime_restart_error is not None:
+        raise AppOperationError(outcome.failure or outcome.runtime_restart_error, code=RUNTIME_NOT_RESTARTED_CODE)
     if outcome.failure is not None:
         context.set_error(outcome.failure)
     return OperationResult(outcome.failure is None, fsck_result_payload(

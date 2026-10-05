@@ -57,7 +57,6 @@ enum OperationTimelineBuilder {
         "enable_boot": .init(titleKey: "timeline.deploy.title.upload_boot_files", detailKey: "timeline.deploy.detail.upload_boot_files"),
         "flush_boot_hook": .init(titleKey: "timeline.deploy.title.flush_payload_upload", detailKey: "timeline.deploy.detail.flush_payload_upload"),
         "verify_payload_upload_after_sync": .init(titleKey: "timeline.deploy.title.verify_payload_upload_after_sync", detailKey: "timeline.deploy.detail.verify_payload_upload_after_sync"),
-        "probe_runtime": .init(titleKey: "timeline.deploy.title.probe_runtime", detailKey: "timeline.deploy.detail.probe_runtime"),
         "post_reboot_activation": .init(titleKey: "timeline.deploy.title.post_reboot_activation", detailKey: "timeline.deploy.detail.post_reboot_activation"),
         "verify_runtime_activation": .init(titleKey: "timeline.deploy.title.verify_runtime_activation", detailKey: "timeline.deploy.detail.verify_runtime_activation"),
         "verify_runtime_reboot": .init(titleKey: "timeline.deploy.title.verify_runtime_reboot", detailKey: "timeline.deploy.detail.verify_runtime_reboot")
@@ -71,9 +70,15 @@ enum OperationTimelineBuilder {
         "wait_for_reboot_up": .init(titleKey: "timeline.deploy.title.wait_for_reboot_up", detailKey: "timeline.deploy.detail.wait_for_reboot_up")
     ]
 
+    // fsck starts file sharing again after its reboot the way deploy does, so
+    // these stages read as deploy's.
+    private static let postRebootStartStageLocalizations: [String: OperationStageLocalization] =
+        deployStageLocalizations.filter { ["post_reboot_activation", "verify_runtime_activation"].contains($0.key) }
+
     private static let stageLocalizations: [String: [String: OperationStageLocalization]] = [
         "activate": activateStageLocalizations,
-        "deploy": deployStageLocalizations
+        "deploy": deployStageLocalizations,
+        "fsck": postRebootStartStageLocalizations
     ]
 
     static func timeline(from events: [BackendEvent]) -> [OperationTimelineItem] {

@@ -79,14 +79,12 @@ from timecapsulesmb.device.probe import (
     ProbeStepResult,
     ReadinessProbeResult,
     SMBD_STATUS_HELPERS,
-    RcLocalAutostartProbeResult,
     apple_bonjour_host_label,
     derive_runtime_naming_identity,
     extract_airport_identity_from_acp_output,
     extract_airport_identity_from_text,
     probe_remote_runtime_naming_identity_conn,
     probe_device_conn,
-    probe_netbsd4_rc_local_autostart_conn,
     probe_managed_runtime_conn,
     probe_managed_runtime_once_conn,
     probe_managed_mdns_conn,
@@ -101,7 +99,7 @@ from timecapsulesmb.device.storage import (
     PayloadVerificationResult,
     mounted_mast_volumes_conn,
 )
-from timecapsulesmb.services.activation import ActivationDecision, decide_manual_activation, decide_netbsd4_post_reboot_activation
+from timecapsulesmb.services.activation import decide_manual_activation
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
@@ -192,6 +190,7 @@ class DeployModuleTests(unittest.TestCase):
         payload_family: str = "netbsd6_samba4",
         is_netbsd4: bool = False,
         wait_after_reboot: bool = True,
+        rc_local_autostart: bool = False,
     ) -> PreparedDeployPlan:
         payload_home = self._payload_home()
         plan = build_deployment_plan(
@@ -210,6 +209,7 @@ class DeployModuleTests(unittest.TestCase):
                 payload_family=payload_family,
                 is_netbsd4=is_netbsd4,
                 startup_mode=startup_mode,
+                rc_local_autostart=rc_local_autostart,
             ),
             artifacts=DeployArtifactPaths(
                 smbd=Path("bin/smbd"),
@@ -1945,26 +1945,6 @@ describe_managed_smbd_status "" ""
         self.assertEqual(result.detail, f"mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s")
         self.assertIn(f"FAIL:mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s", result.lines)
 
-    def test_probe_netbsd4_rc_local_autostart_detects_login_marker(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        login = b"#!/bin/sh\nif [ -x /mnt/Flash/rc.local ]; then /mnt/Flash/rc.local; fi\n"
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_capture_bytes", return_value=login) as run_mock:
-            result = probe_netbsd4_rc_local_autostart_conn(connection, timeout_seconds=7)
-
-        self.assertTrue(result.enabled)
-        self.assertEqual(result.login_size, len(login))
-        self.assertEqual(result.detail, "/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local")
-        run_mock.assert_called_once()
-        self.assertEqual(run_mock.call_args.args[:2], (connection, "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null"))
-        self.assertEqual(run_mock.call_args.kwargs["timeout"], 7)
-
-    def test_probe_netbsd4_rc_local_autostart_reports_missing_marker(self) -> None:
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_capture_bytes", return_value=b"#!/bin/sh\nexit 0\n"):
-            result = probe_netbsd4_rc_local_autostart_conn(SshConnection("host", "pw", "-o foo"))
-
-        self.assertFalse(result.enabled)
-        self.assertEqual(result.detail, "/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local")
-
     def test_decide_manual_activation_skips_ready_runtime(self) -> None:
         runtime_ready = ManagedRuntimeProbeResult(
             ready=True,
@@ -1980,20 +1960,6 @@ describe_managed_smbd_status "" ""
         self.assertEqual(decision.reason, "runtime_already_ready")
         self.assertIs(decision.runtime, runtime_ready)
         runtime_mock.assert_called_once_with(SshConnection("host", "pw", "-o foo"), timeout_seconds=9)
-
-    def test_decide_netbsd4_post_reboot_activation_uses_live_login_autostart(self) -> None:
-        autostart = RcLocalAutostartProbeResult(
-            enabled=True,
-            detail="/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local",
-            login_size=128,
-        )
-        with mock.patch("timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn", return_value=autostart):
-            decision = decide_netbsd4_post_reboot_activation(SshConnection("host", "pw", "-o foo"))
-
-        self.assertFalse(decision.run_actions)
-        self.assertTrue(decision.verify_runtime)
-        self.assertEqual(decision.reason, "firmware_autostart_enabled")
-        self.assertIs(decision.autostart, autostart)
 
     def test_complete_deployment_no_wait_requests_reboot_without_verifying_runtime(self) -> None:
         prepared_plan = self._prepared_deploy_plan(
@@ -2033,12 +1999,6 @@ describe_managed_smbd_status "" ""
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         run_actions = mock.Mock()
         verify_runtime = mock.Mock()
-        activation_decision = ActivationDecision(
-            run_actions=True,
-            verify_runtime=True,
-            reason="firmware_autostart_missing",
-            detail="/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local",
-        )
         order = mock.Mock()
         with mock.patch("time.sleep") as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
             order.attach_mock(reboot, "reboot")
@@ -2050,7 +2010,6 @@ describe_managed_smbd_status "" ""
                 no_wait=False,
                 callbacks=callbacks,
                 run_remote_actions_func=run_actions,
-                decide_post_reboot_activation=mock.Mock(return_value=activation_decision),
                 verify_runtime_func=verify_runtime,
             )
 
@@ -2060,7 +2019,9 @@ describe_managed_smbd_status "" ""
         sleep_mock.assert_not_called()
         self.assertEqual([call[0] for call in order.mock_calls], ["reboot", "run_actions", "verify_runtime"])
         run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
-        self.assertEqual(stages, ["probe_runtime", "post_reboot_activation"])
+        # The boot hook answer came from the probe before the deploy: nothing
+        # is read between the reboot and the start.
+        self.assertEqual(stages, ["post_reboot_activation"])
         self.assertEqual(debug_fields["activation_decision"], "firmware_autostart_missing")
         self.assertTrue(debug_fields["manual_activation_required"])
         self.assertIn("Activating deployed runtime after reboot.", logs)
@@ -2069,6 +2030,35 @@ describe_managed_smbd_status "" ""
         # The app translates the follow-up through this key, so the service owns it.
         self.assertEqual(result.summary, netbsd4_activation_summary())
         self.assertEqual(result.message, NETBSD4_ACTIVATION_COMPLETED)
+
+    def test_complete_deployment_netbsd4_with_the_boot_hook_only_waits_after_reboot(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            payload_family="netbsd4le_samba4",
+            is_netbsd4=True,
+            rc_local_autostart=True,
+        )
+        callbacks, stages, logs, debug_fields, _finish_fields = self._operation_callbacks()
+        run_actions = mock.Mock()
+        verify_runtime = mock.Mock()
+        with mock.patch("timecapsulesmb.services.deploy.reboot_device"):
+            result = complete_deployment_after_upload(
+                SshConnection("root@10.0.0.2", "pw", "-o foo"),
+                prepared_plan,
+                no_wait=False,
+                callbacks=callbacks,
+                run_remote_actions_func=run_actions,
+                verify_runtime_func=verify_runtime,
+            )
+
+        run_actions.assert_not_called()
+        verify_runtime.assert_called_once()
+        self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_activation")
+        self.assertEqual(stages, [])
+        self.assertEqual(debug_fields["activation_decision"], "firmware_autostart_enabled")
+        self.assertFalse(debug_fields["manual_activation_required"])
+        self.assertIn("NetBSD4 firmware autostart is enabled; waiting for managed runtime.", logs)
+        self.assertTrue(result.verified)
 
     def test_complete_deployment_netbsd6_reboot_waits_for_runtime(self) -> None:
         prepared_plan = self._prepared_deploy_plan(startup_mode=DEPLOY_STARTUP_REBOOT_THEN_VERIFY)
@@ -2280,7 +2270,7 @@ describe_managed_smbd_status "" ""
         self.assertIn("Remote actions (post-reboot runtime start if firmware autostart is missing):", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("mode: reboot_then_activate", text)
-        self.assertIn("probe /etc/rc.d/LOGIN for /mnt/Flash/rc.local", text)
+        self.assertIn("the device probe read /etc/rc.d/LOGIN for /mnt/Flash/rc.local before the reboot", text)
         self.assertIn("if present: wait for managed runtime", text)
         self.assertIn("if missing: run /mnt/Flash/rc.local, then wait for managed runtime", text)
         self.assertIn("managed runtime smb.conf is present", text)

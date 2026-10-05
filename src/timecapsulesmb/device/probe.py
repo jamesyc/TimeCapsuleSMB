@@ -21,7 +21,7 @@ from timecapsulesmb.transport.errors import (
     SshAuthenticationError,
     TransportError,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_MODEL,
     AIRPORT_IDENTITIES_BY_SYAP,
@@ -310,6 +310,9 @@ class ProbeResult:
     airport_syap: str | None = None
     elf_endianness_detail: str | None = None
     airport_mac: str | None = None
+    # Whether /etc/rc.d/LOGIN runs /mnt/Flash/rc.local at boot: the NetBSD4
+    # firmware autostart patch. Stock NetBSD4 firmware does not.
+    rc_local_autostart: bool = False
 
     @property
     def ssh_port_reachable(self) -> bool:
@@ -419,13 +422,6 @@ class ManagedRuntimeProbeResult:
 
 
 @dataclass(frozen=True)
-class RcLocalAutostartProbeResult:
-    enabled: bool
-    detail: str
-    login_size: int
-
-
-@dataclass(frozen=True)
 class AirportIdentityProbeResult:
     model: str | None
     syap: str | None
@@ -456,7 +452,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         )
 
     try:
-        os_name, os_release, arch = _probe_remote_os_info_conn(connection)
+        os_name, os_release, arch, rc_local_autostart = _probe_remote_os_info_conn(connection)
         elf_endianness_probe = _probe_remote_elf_endianness_result_conn(connection)
         airport_identity = probe_remote_airport_identity_conn(connection)
     except SshAuthenticationError as exc:
@@ -507,6 +503,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         airport_syap=airport_identity.syap,
         elf_endianness_detail=elf_endianness_probe.detail,
         airport_mac=airport_identity.airport_mac,
+        rc_local_autostart=rc_local_autostart,
     )
 
 
@@ -535,15 +532,27 @@ def probe_ssh_command_conn(
     return SshCommandProbeResult(ok=False, detail=detail)
 
 
-def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str]:
-    script = "printf '%s\\n%s\\n%s\\n' \"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\""
+NETBSD4_AUTOSTART_YES = "rc.local-autostart"
+NETBSD4_AUTOSTART_NO = "no-rc.local-autostart"
+
+
+def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str, bool]:
+    # The uname triplet, then whether /etc/rc.d/LOGIN runs /mnt/Flash/rc.local.
+    # Deploy and fsck reboot a NetBSD4 device; whether its firmware starts the
+    # runtime afterwards is read here, before the reboot, in the same command.
+    marker = NETBSD4_LOGIN_RC_LOCAL_MARKER.decode("ascii")
+    script = (
+        "printf '%s\\n%s\\n%s\\n' \"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\"; "
+        f"case \"$(/bin/dd if={NETBSD4_LOGIN_PATH} bs=4096 2>/dev/null)\" in "
+        f"*{marker}*) echo {NETBSD4_AUTOSTART_YES} ;; *) echo {NETBSD4_AUTOSTART_NO} ;; esac"
+    )
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}")
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    if len(lines) < 3:
+    if len(lines) < 4 or lines[-1] not in (NETBSD4_AUTOSTART_YES, NETBSD4_AUTOSTART_NO):
         raise DeviceError("Failed to determine remote device OS compatibility.")
     # SSH client warnings from user config can be emitted before command stdout.
-    # The probe command's own output is the trailing uname triplet.
-    return lines[-3], lines[-2], lines[-1]
+    # The probe command's own output is the trailing four lines.
+    return lines[-4], lines[-3], lines[-2], lines[-1] == NETBSD4_AUTOSTART_YES
 
 
 def _probe_remote_elf_endianness_result_conn(connection: SshConnection, path: str = "/bin/sh") -> ElfEndiannessProbeResult:
@@ -1531,29 +1540,6 @@ def probe_usb_printer_conn(connection: SshConnection, *, timeout_seconds: int = 
     if proc.returncode != 0:
         return UsbPrinterProbeResult(present=False, name=None, error=f"acp -A prni exited {proc.returncode}")
     return parse_prni_printers(proc.stdout or "")
-
-
-def probe_netbsd4_rc_local_autostart_conn(
-    connection: SshConnection,
-    *,
-    timeout_seconds: int = 30,
-) -> RcLocalAutostartProbeResult:
-    login = run_ssh_capture_bytes(
-        connection,
-        f"/bin/dd if={NETBSD4_LOGIN_PATH} bs=4096 2>/dev/null",
-        timeout=timeout_seconds,
-        missing_tool_message=(
-            "Reading NetBSD4 boot autostart state requires local sshpass. "
-            "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."
-        ),
-    )
-    enabled = NETBSD4_LOGIN_RC_LOCAL_MARKER in login
-    detail = (
-        f"{NETBSD4_LOGIN_PATH} invokes /mnt/Flash/rc.local"
-        if enabled
-        else f"{NETBSD4_LOGIN_PATH} does not invoke /mnt/Flash/rc.local"
-    )
-    return RcLocalAutostartProbeResult(enabled=enabled, detail=detail, login_size=len(login))
 
 
 def _managed_runtime_detail(

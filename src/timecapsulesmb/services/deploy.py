@@ -88,7 +88,7 @@ from timecapsulesmb.device.storage import (
     verify_payload_home_conn,
 )
 from timecapsulesmb.services import storage as storage_service
-from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation, run_activation_actions_and_verify
+from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbsd4_runtime_after_reboot
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import reboot_device
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error
@@ -237,6 +237,9 @@ class DeployPayloadContext:
     payload_family: str
     is_netbsd4: bool
     startup_mode: DeploymentStartupMode
+    # From the device probe before the reboot: whether /etc/rc.d/LOGIN runs
+    # /mnt/Flash/rc.local (the NetBSD4 firmware autostart patch).
+    rc_local_autostart: bool
 
 
 @dataclass(frozen=True)
@@ -621,6 +624,7 @@ def prepare_deploy_preflight(
     payload_context = prepare_deploy_payload_context(
         connection,
         compatibility,
+        rc_local_autostart=target.probe_state.probe_result.rc_local_autostart,
     )
     callbacks.update(deploy_startup_mode=payload_context.startup_mode)
     artifacts = resolve_deploy_artifact_paths(
@@ -675,6 +679,8 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
 def prepare_deploy_payload_context(
     connection: SshConnection,
     compatibility: DeviceCompatibility,
+    *,
+    rc_local_autostart: bool,
 ) -> DeployPayloadContext:
     if not compatibility.payload_family:
         raise DeployDeviceError("No deployable payload is available for this detected device.", code="unsupported_device")
@@ -685,6 +691,7 @@ def prepare_deploy_payload_context(
         payload_family=payload_family,
         is_netbsd4=is_netbsd4,
         startup_mode=startup_mode_for_deploy(is_netbsd4=is_netbsd4),
+        rc_local_autostart=rc_local_autostart,
     )
 
 
@@ -1268,15 +1275,12 @@ def complete_deployment_after_upload(
     callbacks: OperationCallbacks | None = None,
     messages: DeployCompletionMessages | None = None,
     run_remote_actions_func=None,
-    decide_post_reboot_activation=None,
     verify_runtime_func=None,
 ) -> DeployCompletionResult:
     callbacks = callbacks or OperationCallbacks()
     messages = messages or DeployCompletionMessages()
     if run_remote_actions_func is None:
         run_remote_actions_func = run_remote_actions
-    if decide_post_reboot_activation is None:
-        decide_post_reboot_activation = decide_netbsd4_post_reboot_activation
     if verify_runtime_func is None:
         verify_runtime_func = verify_managed_runtime_ready
     plan = prepared_plan.plan
@@ -1311,37 +1315,20 @@ def complete_deployment_after_upload(
     )
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-        callbacks.stage("probe_runtime")
-        decision = decide_post_reboot_activation(connection)
-        callbacks.debug(
-            activation_decision=decision.reason,
-            manual_activation_required=decision.run_actions,
-        )
-        callbacks.message(decision.detail)
-        if decision.run_actions:
-            run_activation_actions_and_verify(
-                connection,
-                plan.activation_actions,
-                callbacks=callbacks,
+        start_netbsd4_runtime_after_reboot(
+            connection,
+            plan.activation_actions,
+            rc_local_autostart=payload_context.rc_local_autostart,
+            callbacks=callbacks,
+            messages=Netbsd4StartMessages(
                 activation_message=messages.post_reboot_activation_message,
-                activation_stage="post_reboot_activation",
-                verification_stage="verify_runtime_activation",
-                verification_timeout_seconds=200,
-                verification_heading=messages.netbsd4_heading,
-                failure_message=messages.netbsd4_failure,
-                run_remote_actions_func=run_remote_actions_func,
-                verify_runtime_func=verify_runtime_func,
-            )
-        else:
-            callbacks.message(messages.netbsd4_autostart_message)
-            verify_runtime_func(
-                connection,
-                callbacks=callbacks,
-                stage="verify_runtime_activation",
-                timeout_seconds=200,
+                autostart_message=messages.netbsd4_autostart_message,
                 heading=messages.netbsd4_heading,
                 failure_message=messages.netbsd4_failure,
-            )
+            ),
+            run_remote_actions_func=run_remote_actions_func,
+            verify_runtime_func=verify_runtime_func,
+        )
         return DeployCompletionResult(
             payload_dir=plan.payload_dir,
             payload_family=payload_family,

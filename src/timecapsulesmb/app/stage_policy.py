@@ -86,7 +86,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "migrate_xattrs_cleanup"): StagePolicy(DESTRUCTIVE, False, "Reverify native HFS metadata and remove migrated legacy storage."),
     ("deploy", "replace_software"): StagePolicy(REMOTE_WRITE, False, "Remove previously installed software files; metadata and logs are kept."),
     ("deploy", "install_runtime_config"): StagePolicy(REMOTE_WRITE, False, "Write service settings (tcapsulesmb.conf) to /mnt/Flash."),
-    ("deploy", "probe_runtime"): StagePolicy(REMOTE_READ, True, "Checking whether the device will start TimeCapsuleSMB automatically."),
     ("deploy", "post_reboot_activation"): StagePolicy(REMOTE_WRITE, False, "Start the deployed runtime after reboot."),
     ("deploy", "verify_runtime_activation"): StagePolicy(REMOTE_READ, True, "Wait for the activated runtime to become ready."),
     ("deploy", "verify_runtime_reboot"): StagePolicy(REMOTE_READ, True, "Wait for the managed runtime after reboot."),
@@ -135,6 +134,10 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("flash", "write_active_bank"): StagePolicy(DESTRUCTIVE, False, "Write the active firmware bank."),
     ("flash", "post_write_validation"): StagePolicy(REMOTE_READ, True, "Read back and validate the written firmware bank."),
 }
+# After its reboot, fsck starts file sharing again where it does not start by
+# itself, as deploy does (services.activation.start_netbsd4_runtime_after_reboot).
+_POLICIES[("fsck", "post_reboot_activation")] = StagePolicy(REMOTE_WRITE, False, "Start the installed runtime after reboot.")
+_POLICIES[("fsck", "verify_runtime_activation")] = StagePolicy(REMOTE_READ, True, "Wait for the started runtime to become ready.")
 # Every reboot goes through services.reboot.reboot_device.
 for _operation in ("configure", "set-ssh", "deploy", "uninstall", "fsck", "flash"):
     _POLICIES[(_operation, "reboot")] = StagePolicy(REBOOT, False, "Ask AirPort ACP to reboot the device.")

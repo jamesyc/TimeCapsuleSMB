@@ -185,6 +185,16 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
+    # fsck: the reboot finished, but the installed runtime did not start again
+    # (services.activation.start_netbsd4_runtime_after_reboot).
+    "runtime_not_restarted": RecoveryInfo(
+        "File sharing did not restart",
+        "The device restarted, but the installed TimeCapsuleSMB services did not start.",
+        ("Run Activate.", "Run Checkup for details."),
+        retryable=True,
+        suggested_operation="activate",
+        action_ids=("start_smb", "run_checkup"),
+    ),
     "ssh_still_enabled": RecoveryInfo(
         "SSH is still enabled",
         "The device restarted, but SSH was still enabled afterwards.",

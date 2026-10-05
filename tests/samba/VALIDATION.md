@@ -2743,3 +2743,55 @@ Validation:
   (fails without the fix); the build key changes with each compiler setting,
   with the compiler behind an unchanged `CC`, and with `gcc` (not `cc`) when
   `CC` is unset, but not with `ASAN_OPTIONS`.
+
+## fsck restarts file sharing on NetBSD 4, from a boot-hook check before the reboot (2026-10-05)
+
+Telemetry for v3.2.0-2 showed a TimeCapsule6,116 on stock firmware whose
+runtime stayed off after `fsck`: its reboot stops file sharing, and stock
+NetBSD 4 firmware does not run `/mnt/Flash/rc.local` at boot. Apple's own file
+sharing comes back after any reboot. fsck now brings ours back the way deploy
+does.
+
+The device probe's first SSH command (`uname`) also reports whether
+`/etc/rc.d/LOGIN` runs `/mnt/Flash/rc.local`, the NetBSD 4 firmware autostart
+patch. Deploy already probes before anything else, so it learns the boot hook
+there and no longer reads `LOGIN` after its reboot. fsck now runs the same
+probe before the repair, and checks for an install this version can start.
+After the reboot, both call `start_netbsd4_runtime_after_reboot` with the
+answer they already have: run `rc.local` unless the boot hook already did,
+then wait up to 200 s for the runtime. Nothing is asked of the device after
+the reboot, so no failed check there can skip the start: every failure is
+reported. If the runtime does not become ready, fsck fails with
+`runtime_not_restarted` and the app offers Activate and Checkup. A probe that
+fails before the repair stops fsck before it touches the disk. NetBSD 6, a
+device with no install, or an install older than v3.1.0 is left alone, and
+fsck still succeeds.
+
+- A failed repair still restarts file sharing and keeps its own error first.
+  After a reboot it is reported at the `run_fsck` step, not at the reboot or
+  SMB startup that followed it.
+- `fsck --no-wait` on stock NetBSD 4 says file sharing will stay off until
+  Activate.
+- `set-ssh` enable, `set-ssh` disable, flash restore and uninstall still leave
+  the runtime off after their reboot. SSH is only closed on an installed
+  device after `set-ssh` disable, whose reboot already left stock NetBSD 4
+  file sharing off.
+- Deploy's post-reboot `probe_runtime` step is gone, with its two timeline
+  strings in each language.
+
+Validation:
+- Full pytest (3,599 passed), ruff, native host checks, and `swift test` (667
+  passed). The probe's shell command runs on the host against stand-in
+  `LOGIN` files (patched, stock, missing).
+- Probe on both devices: NetBSD 4 LE (192.168.1.10) `rc_local_autostart=True`
+  (patched firmware), NetBSD 6 (192.168.1.218) `False`. Doctor passed on both.
+- NetBSD 4 LE: `fsck --yes`, exit 0 in 1 min 47 s; after the reboot it went
+  straight to "NetBSD4 firmware autostart is enabled; waiting for managed
+  runtime." and every runtime check passed. Deploy `--yes`, exit 0 in 4 min
+  24 s, the same autostart path. Doctor right after the deploy flagged the
+  startup grace (services 23 s old); it passed when rerun a minute later.
+- NetBSD 6: `fsck --yes --volume dk2`, exit 0 in 12 min 39 s, on the earlier
+  revision that asked the device after the reboot; nothing restarts on
+  NetBSD 6 in either revision, and doctor passed. Not rerun on this one.
+- The `rc.local` start path is covered by unit tests and by deploy: both test
+  devices start file sharing by themselves.

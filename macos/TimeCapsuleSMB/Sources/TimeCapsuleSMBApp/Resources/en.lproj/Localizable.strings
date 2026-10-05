@@ -660,6 +660,7 @@
 "backend.error.reboot_not_started" = "The device did not restart after the reboot request.";
 "backend.error.reboot_not_finished" = "The device did not come back after restarting.";
 "backend.error.ssh_still_enabled" = "SSH is still enabled after the restart, so disabling it did not take effect.";
+"backend.error.fsck.runtime_not_restarted" = "Disk repair finished, but file sharing did not start again after the device restarted.";
 "backend.recovery.auth_failed.title" = "Authentication failed";
 "backend.recovery.auth_failed.message" = "The device rejected the supplied password or SSH credentials.";
 "backend.recovery.auth_failed.action.1" = "Re-enter the AirPort admin password.";
@@ -852,6 +853,10 @@
 "backend.recovery.reboot_not_finished.action.1" = "Wait a few more minutes.";
 "backend.recovery.reboot_not_finished.action.2" = "The device may have a new IP address. Run Discover and reselect it.";
 "backend.recovery.reboot_not_finished.action.3" = "Make sure you are connected to the same network or Wi-Fi as the device.";
+"backend.recovery.runtime_not_restarted.title" = "File sharing did not restart";
+"backend.recovery.runtime_not_restarted.message" = "The device restarted, but the installed TimeCapsuleSMB services did not start.";
+"backend.recovery.runtime_not_restarted.action.1" = "Run Activate.";
+"backend.recovery.runtime_not_restarted.action.2" = "Run Checkup for details.";
 "backend.recovery.ssh_still_enabled.title" = "SSH is still enabled";
 "backend.recovery.ssh_still_enabled.message" = "The device restarted, but SSH was still enabled afterwards.";
 "backend.recovery.ssh_still_enabled.action.1" = "Disable SSH again in SSH Access.";
@@ -958,7 +963,6 @@
 "timeline.deploy.detail.prepare_deployment_files" = "Generating runtime config.";
 "timeline.deploy.detail.check_flash_capacity" = "Checking free Flash space for the replacement software.";
 "timeline.activate.detail.probe_runtime" = "Checking whether TimeCapsuleSMB is already running before activating it.";
-"timeline.deploy.detail.probe_runtime" = "Checking whether the device will start TimeCapsuleSMB automatically.";
 "timeline.deploy.detail.read_mast" = "Looking for mounted HFS payload volumes.";
 "timeline.deploy.detail.reboot" = "Sending the reboot request through AirPort ACP.";
 "timeline.deploy.detail.resolve_managed_target" = "Resolving the installation target and probing SSH.";
@@ -991,7 +995,6 @@
 "timeline.deploy.title.prepare_deployment_files" = "Build Runtime Config";
 "timeline.deploy.title.check_flash_capacity" = "Check Flash Capacity";
 "timeline.activate.title.probe_runtime" = "Check Existing Runtime";
-"timeline.deploy.title.probe_runtime" = "Check Boot Startup";
 "timeline.deploy.title.read_mast" = "Find Payload Volume";
 "timeline.deploy.title.reboot" = "Request Reboot";
 "timeline.deploy.title.resolve_managed_target" = "Connect to Device";

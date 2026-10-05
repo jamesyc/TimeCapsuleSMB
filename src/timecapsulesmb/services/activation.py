@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from typing import Literal
 
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
+from timecapsulesmb.device.compat import is_netbsd4_payload_family
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
-    RcLocalAutostartProbeResult,
+    ProbedDeviceState,
     flash_runtime_config_present_conn,
     probe_managed_runtime_conn,
-    probe_netbsd4_rc_local_autostart_conn,
     read_deployed_version_conn,
 )
 from timecapsulesmb.deploy.commands import RemoteAction
@@ -23,8 +23,6 @@ from timecapsulesmb.transport.ssh import SshConnection
 ActivationDecisionReason = Literal[
     "runtime_already_ready",
     "runtime_not_ready",
-    "firmware_autostart_enabled",
-    "firmware_autostart_missing",
 ]
 
 
@@ -35,7 +33,6 @@ class ActivationDecision:
     reason: ActivationDecisionReason
     detail: str
     runtime: ManagedRuntimeProbeResult | None = None
-    autostart: RcLocalAutostartProbeResult | None = None
 
 
 INSTALL_UPDATE_HINT = (
@@ -123,27 +120,110 @@ def decide_manual_activation(
     )
 
 
-def decide_netbsd4_post_reboot_activation(
+@dataclass(frozen=True)
+class Netbsd4StartMessages:
+    activation_message: str
+    autostart_message: str
+    heading: str
+    failure_message: str
+
+
+def start_netbsd4_runtime_after_reboot(
     connection: SshConnection,
+    activation_actions: list[RemoteAction],
     *,
-    autostart_probe_timeout_seconds: int = 30,
-) -> ActivationDecision:
-    autostart = probe_netbsd4_rc_local_autostart_conn(connection, timeout_seconds=autostart_probe_timeout_seconds)
-    if autostart.enabled:
-        return ActivationDecision(
-            run_actions=False,
-            verify_runtime=True,
-            reason="firmware_autostart_enabled",
-            detail=autostart.detail,
-            autostart=autostart,
-        )
-    return ActivationDecision(
-        run_actions=True,
-        verify_runtime=True,
-        reason="firmware_autostart_missing",
-        detail=autostart.detail,
-        autostart=autostart,
+    rc_local_autostart: bool,
+    callbacks: OperationCallbacks,
+    messages: Netbsd4StartMessages,
+    run_remote_actions_func=None,
+    verify_runtime_func=None,
+) -> None:
+    """Start the installed NetBSD4 runtime on a device that just rebooted.
+
+    `rc_local_autostart` is the device probe's answer from before the reboot
+    (ProbeResult.rc_local_autostart). Stock NetBSD4 firmware does not run
+    /mnt/Flash/rc.local at boot, so the runtime is started here; with the
+    firmware autostart patch the boot already started it. Either way the
+    runtime must become ready. Raises DeviceError when it does not.
+    """
+    if verify_runtime_func is None:
+        verify_runtime_func = verify_managed_runtime_ready
+    callbacks.debug(
+        activation_decision="firmware_autostart_enabled" if rc_local_autostart else "firmware_autostart_missing",
+        manual_activation_required=not rc_local_autostart,
     )
+    if not rc_local_autostart:
+        run_activation_actions_and_verify(
+            connection,
+            activation_actions,
+            callbacks=callbacks,
+            activation_message=messages.activation_message,
+            activation_stage="post_reboot_activation",
+            verification_stage="verify_runtime_activation",
+            verification_timeout_seconds=200,
+            verification_heading=messages.heading,
+            failure_message=messages.failure_message,
+            run_remote_actions_func=run_remote_actions_func,
+            verify_runtime_func=verify_runtime_func,
+        )
+        return
+    callbacks.message(messages.autostart_message)
+    verify_runtime_func(
+        connection,
+        callbacks=callbacks,
+        stage="verify_runtime_activation",
+        timeout_seconds=200,
+        heading=messages.heading,
+        failure_message=messages.failure_message,
+    )
+
+
+# The app error code for an fsck reboot after which file sharing did not start again.
+RUNTIME_NOT_RESTARTED_CODE = "runtime_not_restarted"
+RUNTIME_RESTART_FAILURE_MESSAGE = (
+    "File sharing did not restart after the reboot. Run Activate in the macOS app, or "
+    "tcapsule activate from the command line."
+)
+RESTART_AFTER_REBOOT_MESSAGES = Netbsd4StartMessages(
+    activation_message="Starting the installed runtime after reboot.",
+    autostart_message="NetBSD4 firmware autostart is enabled; waiting for managed runtime.",
+    heading="Waiting for managed runtime to finish starting...",
+    failure_message=RUNTIME_RESTART_FAILURE_MESSAGE,
+)
+MANUAL_START_AFTER_REBOOT_MESSAGE = (
+    "File sharing will not start by itself after this restart. Once the device is back, run "
+    "Activate in the macOS app, or tcapsule activate from the command line."
+)
+
+
+def installed_netbsd4_autostart(
+    connection: SshConnection,
+    probe_state: ProbedDeviceState,
+    callbacks: OperationCallbacks,
+) -> bool | None:
+    """Before a reboot that is not a deploy: what file sharing needs afterwards.
+
+    None when nothing is to be started: the device is not NetBSD4 (NetBSD6
+    starts the runtime at boot), or it has no install this version can start.
+    Otherwise whether the firmware autostart patch starts it (True) or it must
+    be started after the reboot (False). Apple's file sharing returns after any
+    reboot; ours should too.
+    """
+    compatibility = probe_state.compatibility
+    if compatibility is None or not is_netbsd4_payload_family(compatibility.payload_family):
+        callbacks.update(runtime_start_after_reboot="not_netbsd4")
+        return None
+    try:
+        require_compatible_install(connection, callbacks)
+    except ActivationInstallError as exc:
+        callbacks.update(runtime_start_after_reboot=exc.code)
+        if exc.code != "runtime_not_installed":
+            # An install that cannot be started stays off after the reboot; say why.
+            callbacks.message(str(exc))
+        return None
+    autostart = probe_state.probe_result.rc_local_autostart
+    callbacks.update(runtime_start_after_reboot="firmware_autostart" if autostart else "rc_local")
+    return autostart
 
 
 def run_activation_actions_and_verify(

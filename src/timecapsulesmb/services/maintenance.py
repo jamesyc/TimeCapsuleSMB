@@ -5,13 +5,20 @@ import shlex
 
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
-from timecapsulesmb.deploy.planner import UninstallPlan, build_uninstall_plan
+from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_actions, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
 from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.services.activation import (
+    MANUAL_START_AFTER_REBOOT_MESSAGE,
+    RESTART_AFTER_REBOOT_MESSAGES,
+    RUNTIME_RESTART_FAILURE_MESSAGE,
+    start_netbsd4_runtime_after_reboot,
+)
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
+from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
@@ -189,6 +196,8 @@ class FsckOutcome:
     failure: str | None
     reboot_requested: bool
     waited: bool
+    # Set when file sharing was to be started after the reboot and did not start.
+    runtime_restart_error: str | None = None
 
 
 def run_fsck(
@@ -198,11 +207,16 @@ def run_fsck(
     reboot: bool,
     wait: bool,
     callbacks: OperationCallbacks,
+    netbsd4_autostart: bool | None = None,
 ) -> FsckOutcome:
     """Run the remote fsck script, log its output, then reboot if asked.
 
-    Raises RebootFlowError when the reboot request fails or the device does
-    not restart or come back.
+    `netbsd4_autostart` is services.activation.installed_netbsd4_autostart,
+    read before the repair: None when nothing needs starting after the reboot.
+    Otherwise file sharing is started after a waited reboot as deploy starts
+    it, so the repair leaves sharing on as Apple's own reboot does. Raises
+    RebootFlowError when the reboot request fails or the device does not
+    restart or come back.
     """
     callbacks.stage("run_fsck")
     script = build_remote_fsck_script(target.device, target.mountpoint)
@@ -221,6 +235,9 @@ def run_fsck(
     failure = fsck_failure_message(status, output)
     try:
         if rebooting:
+            if not wait and netbsd4_autostart is False:
+                # Without the wait nothing starts file sharing after the reboot.
+                callbacks.message(MANUAL_START_AFTER_REBOOT_MESSAGE)
             reboot_device(
                 connection.host,
                 connection.password,
@@ -235,11 +252,41 @@ def run_fsck(
         # A failed reboot must not hide a failed repair. The reboot error
         # stays first so its known message prefixes still match.
         raise RebootFlowError(f"{exc}\n{failure}", exc.code) from exc
+    runtime_restart_error = None
+    if rebooting and wait and netbsd4_autostart is not None:
+        # A failed repair still starts file sharing: the reboot does on every
+        # device that starts it by itself.
+        try:
+            start_netbsd4_runtime_after_reboot(
+                connection,
+                build_runtime_start_actions(),
+                rc_local_autostart=netbsd4_autostart,
+                callbacks=callbacks,
+                messages=RESTART_AFTER_REBOOT_MESSAGES,
+            )
+        except DeviceError as exc:
+            runtime_restart_error = str(exc)
+        except TransportError as exc:
+            runtime_restart_error = f"{RUNTIME_RESTART_FAILURE_MESSAGE} {exc}"
+        else:
+            callbacks.message("File sharing is running again after the reboot.")
+        callbacks.update(runtime_restarted=runtime_restart_error is None)
+    if runtime_restart_error is not None:
+        failure = (
+            f"{failure}\n{runtime_restart_error}"
+            if failure is not None
+            else f"Disk repair completed. {runtime_restart_error}"
+        )
+    elif failure is not None and rebooting:
+        # The repair's failure is what this run reports, not the reboot or
+        # the start that followed it.
+        callbacks.stage("run_fsck")
     return FsckOutcome(
         status=status,
         failure=failure,
         reboot_requested=rebooting,
         waited=rebooting and wait,
+        runtime_restart_error=runtime_restart_error,
     )
 
 

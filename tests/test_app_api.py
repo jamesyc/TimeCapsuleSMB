@@ -70,7 +70,7 @@ from timecapsulesmb.services.flash import (
 )
 from timecapsulesmb.services.maintenance import FSCK_NOT_UNMOUNTED_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
-from tests.reboot_support import FakeAcpDevice
+from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
 from timecapsulesmb.services.repair_xattrs import RepairRunResult, RepairXattrsRequest
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError, ssh_timeout_slow_device_message
@@ -415,6 +415,16 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(stages[4]["risk"], "remote_read")
         self.assertTrue(stages[4]["cancellable"])
         self.assertIn("description", stages[4])
+
+    def test_restart_stages_after_the_fsck_reboot_include_policy_metadata(self) -> None:
+        collector = CollectingSink()
+        for stage in ("post_reboot_activation", "verify_runtime_activation"):
+            collector.sink.stage("fsck", stage)
+
+        stages = collector.events_of_type("stage")
+        self.assertEqual([stage["risk"] for stage in stages], ["remote_write", "remote_read"])
+        self.assertEqual([stage["cancellable"] for stage in stages], [False, True])
+        self.assertTrue(all(stage.get("description") for stage in stages))
 
     def test_legacy_metadata_and_software_replacement_stages_include_policy_metadata(self) -> None:
         collector = CollectingSink()
@@ -4419,7 +4429,7 @@ class AppApiTests(unittest.TestCase):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"):
                                                     with mock.patch("timecapsulesmb.services.deploy.reboot_device", side_effect=self.fake_reboot_request) as reboot:
-                                                        with mock.patch("timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn") as autostart_probe:
+                                                        with mock.patch("timecapsulesmb.services.deploy.start_netbsd4_runtime_after_reboot") as start_runtime:
                                                             rc = service.run_api_request(
                                                                 {
                                                                     "operation": "deploy",
@@ -4431,7 +4441,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(set(vars(connection)), {"host", "password", "ssh_opts"})
         reboot.assert_called_once()
-        autostart_probe.assert_not_called()
+        start_runtime.assert_not_called()
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertEqual(payload["reboot_requested"], True)
         self.assertEqual(payload["waited"], False)
@@ -5574,7 +5584,9 @@ MaSt = (
         self.assertEqual(payload["device"], "/dev/dk2")
         self.assertEqual(payload["wait_after_reboot"], False)
 
-    def _run_confirmed_fsck(self, stdout: str, *, ssh_returncode: int, **flags: bool):
+    def _run_confirmed_fsck(self, stdout: str, *, ssh_returncode: int, device: FakeAcpDevice | None = None,
+                            runtime: FakeInstalledRuntime | None = None,
+                            probe_state: ProbedDeviceState | None = None, fsck_runs: bool = True, **flags: bool):
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -5599,9 +5611,15 @@ MaSt = (
                 "timecapsulesmb.services.maintenance.run_ssh",
                 return_value=subprocess.CompletedProcess(["ssh"], ssh_returncode, stdout=stdout, stderr=""),
             ))
-            reboot = stack.enter_context(FakeAcpDevice().patched())
+            # Before rebooting, fsck probes the device like deploy does.
+            stack.enter_context(mock.patch(
+                "timecapsulesmb.app.ops.maintenance.probe_managed_connection_state",
+                return_value=probe_state or probed_state(),
+            ))
+            reboot = stack.enter_context((device or FakeAcpDevice()).patched())
+            stack.enter_context((runtime or FakeInstalledRuntime()).patched())
             rc = service.run_api_request({"operation": "fsck", "params": params}, collector.sink)
-        run_ssh.assert_called_once()
+        self.assertEqual(run_ssh.call_count, 1 if fsck_runs else 0)
         return rc, collector, reboot
 
     def test_fsck_clean_status_reboots_waits_and_succeeds(self) -> None:
@@ -5618,6 +5636,69 @@ MaSt = (
         self.assertEqual(payload["summary"], "Disk repair completed with fsck.")
         self.assertNotIn("error", payload)
         self.assertTrue(payload["verified"])
+
+    def test_fsck_on_netbsd4_starts_file_sharing_after_the_reboot(self) -> None:
+        runtime = FakeInstalledRuntime()
+        rc, collector, _reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            ssh_returncode=0,
+            probe_state=netbsd4_probed_state(),
+            runtime=runtime,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("run /mnt/Flash/rc.local", runtime.calls)
+        stages = [event["stage"] for event in collector.events if event.get("type") == "stage"]
+        self.assertEqual(stages[-3:], ["wait_for_reboot_up", "post_reboot_activation", "verify_runtime_activation"])
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertEqual(payload["summary"], "Disk repair completed with fsck.")
+
+    def test_fsck_on_netbsd4_whose_file_sharing_does_not_restart_offers_activate(self) -> None:
+        rc, collector, _reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            ssh_returncode=0,
+            probe_state=netbsd4_probed_state(),
+            runtime=FakeInstalledRuntime(becomes_ready=False),
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "runtime_not_restarted")
+        self.assertTrue(error["message"].startswith("Disk repair completed. File sharing did not restart"))
+        self.assertEqual(error["recovery"]["localization_key"], "runtime_not_restarted")
+        self.assertEqual(error["recovery"]["suggested_operation"], "activate")
+        self.assertEqual(error["recovery"]["action_ids"], ["start_smb", "run_checkup"])
+
+    def test_fsck_whose_device_probe_fails_stops_before_touching_the_disk(self) -> None:
+        # Without the probe fsck cannot know whether file sharing must be
+        # started after the reboot; it fails before the repair, not after.
+        runtime = FakeInstalledRuntime()
+        rc, collector, reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            ssh_returncode=0,
+            probe_state=failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR),
+            runtime=runtime,
+            fsck_runs=False,
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertNotIn("request", reboot.calls)
+        self.assertEqual(runtime.calls, [])
+
+    def test_fsck_without_reboot_does_not_probe_the_device(self) -> None:
+        # Nothing restarts after a repair without a reboot, so a probe that
+        # would fail does not stop it.
+        rc, collector, _reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            ssh_returncode=0,
+            probe_state=failed_probe_state(SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR),
+            no_reboot=True,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(self.assert_single_terminal_event(collector, "result")["ok"])
 
     def test_fsck_failed_status_still_waits_for_reboot_then_fails(self) -> None:
         rc, collector, reboot = self._run_confirmed_fsck(

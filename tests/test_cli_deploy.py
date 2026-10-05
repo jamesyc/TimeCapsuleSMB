@@ -130,6 +130,8 @@ class CliDeployTests(CliTestCase):
                 elf_endianness=deploy_compatibility.elf_endianness,
                 airport_model=config_values.get("TC_MDNS_DEVICE_MODEL"),
                 airport_syap=config_values.get("TC_AIRPORT_SYAP"),
+                # The device probe reads /etc/rc.d/LOGIN before the deploy.
+                rc_local_autostart=login_autostart_enabled,
             )
             deploy_probe_state = ProbedDeviceState(
                 probe_result=deploy_probe_result,
@@ -180,20 +182,6 @@ class CliDeployTests(CliTestCase):
                 mock.patch(
                     "timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn",
                     return_value=verify_runtime or self.managed_runtime_probe(True),
-                )
-            )
-            mocks.probe_netbsd4_rc_local_autostart_conn = stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn",
-                    return_value=SimpleNamespace(
-                        enabled=login_autostart_enabled,
-                        detail=(
-                            "/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local"
-                            if login_autostart_enabled
-                            else "/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local"
-                        ),
-                        login_size=128,
-                    ),
                 )
             )
             # The reboot goes to the simulated device's ACP; nothing else on
@@ -1074,6 +1062,7 @@ class CliDeployTests(CliTestCase):
             payload["runtime_startup"]["post_reboot_probe"],
             {
                 "kind": "netbsd4_rc_local_autostart",
+                "when": "before_reboot",
                 "path": "/etc/rc.d/LOGIN",
                 "marker": "/mnt/Flash/rc.local",
                 "if_present": ["skip_post_reboot_start_actions", "verify_managed_runtime"],
@@ -1174,7 +1163,7 @@ class CliDeployTests(CliTestCase):
         self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertEqual(result.mocks.device.calls.count("request"), 1)
         result.mocks.verify_managed_runtime.assert_called_once()
-        self.assertIn("/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local", result.text)
+        self.assertIn("NetBSD4 firmware autostart is enabled; waiting for managed runtime.", result.text)
         self.assertIn("NetBSD4 firmware autostart is enabled", result.text)
         self.assertNotIn("Activating deployed runtime after reboot.", result.text)
         self.assertIn("NetBSD4 activation completed.", result.text)
