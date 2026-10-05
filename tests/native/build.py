@@ -78,7 +78,7 @@ def compile_program(output, *arguments, shared=True):
 
 
 def _compiler_flags(flags, instrumentation):
-    return ('cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-DTC_SERVICE_MULTICALL', '-D_DNS_SD_LIBDISPATCH=0',
+    return ('cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-D_DNS_SD_LIBDISPATCH=0',
             '-Wall', '-Wextra', '-Werror', '-Wno-sign-compare', '-Wno-unterminated-string-initialization',
             *instrumentation, *flags)
 

@@ -15,7 +15,7 @@ while IFS= read -r source; do set -- "$@" "$build_dir/$source"; done <"$build_di
 # Compile the one production image. Target ELF/ABI verification belongs to the
 # VM build, not the host compiler. The vendored Apple dns_sd stub is unchanged.
 # shellcheck disable=SC2086
-cc -D_GNU_SOURCE -DTC_SERVICE_MULTICALL -D_DNS_SD_LIBDISPATCH=0 $stub_flags \
+cc -D_GNU_SOURCE -D_DNS_SD_LIBDISPATCH=0 $stub_flags \
     -Wall -Wextra -Werror -Wno-sign-compare -Wno-unterminated-string-initialization \
     -Wno-unused-but-set-variable "$@" -o "$work/service"
 # Run each entry point on the host: the top-level helper on a known NT hash

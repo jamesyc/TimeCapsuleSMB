@@ -508,36 +508,18 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func forwardChildChanges() {
-        deployStore.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-        doctorStore.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-        maintenanceStore.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-        flashStore.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-        profileEditorStore.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-        appStore.deviceDiscovery.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
+        Publishers.MergeMany(
+            deployStore.objectWillChange,
+            doctorStore.objectWillChange,
+            maintenanceStore.objectWillChange,
+            flashStore.objectWillChange,
+            profileEditorStore.objectWillChange,
+            appStore.deviceDiscovery.objectWillChange
+        )
+        .sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        .store(in: &cancellables)
     }
 
     private func forwardLaneEvents() {

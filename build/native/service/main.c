@@ -1,7 +1,4 @@
 #include "service.h"
-#ifdef TC_SERVICE_MULTICALL
-#define main tc_service_helper_main
-#endif
 static void stop_acp(int signo) { (void)signo; acp_stop_requested = 1; }
 
 static int print_acp_mast(FILE *stream, long long timeout_ms) {
@@ -97,7 +94,7 @@ static int print_samba_identity(void) {
 static void usage(void) {
     fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-mast [--timeout-seconds N]\n", stderr);
 }
-int main(int argc, char **argv) {
+int tc_service_helper_main(int argc, char **argv) {
     const char *facts_file = NULL;
     const char *command = NULL;
     struct device_plan plan;

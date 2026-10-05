@@ -30,20 +30,4 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifndef TC_UNUSED
-#if defined(__GNUC__)
-#define TC_UNUSED __attribute__((unused))
-#else
-#define TC_UNUSED
-#endif
-#endif
-
-/* Tests link internal helpers as separate objects; device builds keep them
- * private so NetBSD 4's linker need not garbage-collect unreferenced code. */
-#ifdef TC_NATIVE_TEST
-#define TC_LOCAL
-#else
-#define TC_LOCAL static TC_UNUSED
-#endif
-
 #endif

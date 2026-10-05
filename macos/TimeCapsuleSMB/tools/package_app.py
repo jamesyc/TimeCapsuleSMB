@@ -656,10 +656,6 @@ def read_cache_manifest(entry: Path) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
-def cache_manifest_inputs_current(entry: Path) -> bool:
-    return cache_manifest_inputs_miss_reason(entry) is None
-
-
 def cache_manifest_inputs_miss_reason(entry: Path) -> str | None:
     manifest = read_cache_manifest(entry)
     if manifest is None:
@@ -681,10 +677,6 @@ def cache_manifest_inputs_miss_reason(entry: Path) -> str | None:
         if current_sha256 != sha256_value:
             return f"cached input changed: {path}"
     return None
-
-
-def cache_manifest_output_current(entry: Path, output_root: Path) -> bool:
-    return cache_manifest_output_miss_reason(entry, output_root) is None
 
 
 def cache_manifest_output_miss_reason(entry: Path, output_root: Path) -> str | None:
@@ -1988,10 +1980,6 @@ def native_tools_cache_entry(architectures: tuple[str, ...], bottles: HomebrewBo
         "bottles": {architecture: bottles.records[architecture] for architecture in architectures},
     })
     return evict_stale_cache_entries(package_cache_dir("native-tools") / key)
-
-
-def native_tools_cache_is_complete(entry: Path) -> bool:
-    return native_tools_cache_miss_reason(entry) is None
 
 
 @timed_step("Checking native tool cache fingerprints")

@@ -96,10 +96,6 @@ final class AppStore: ObservableObject {
         route == .activity
     }
 
-    var showingAppSettings: Bool {
-        route == .appSettings
-    }
-
     var backend: BackendClient {
         operationCoordinator.appLane.backend
     }
@@ -143,18 +139,6 @@ final class AppStore: ObservableObject {
 
     func showAddDevice() {
         navigate(to: .addDevice)
-    }
-
-    func showActivity() {
-        navigate(to: .activity)
-    }
-
-    func showAppSettings() {
-        navigate(to: .appSettings)
-    }
-
-    func showAllDevices() {
-        navigate(to: .allDevices)
     }
 
     func dashboardSummary(for profile: DeviceProfile) -> DeviceDashboardSummary {

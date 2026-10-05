@@ -4199,7 +4199,7 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        def fake_upload(plan, *, connection, source_resolver, on_uploading=None):
+        def fake_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             for transfer in plan.uploads:
                 if on_uploading is not None:
                     on_uploading(transfer)

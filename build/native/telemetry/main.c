@@ -1,9 +1,6 @@
 #include "telemetry.h"
 #include "../common/acp.h"
 #include "../common/parent.h"
-#ifdef TC_SERVICE_MULTICALL
-#define main tc_telemetry_main
-#endif
 volatile sig_atomic_t telemetry_stop = 0;
 static int parent_fd = -1;
 static int collect_cancelled(void) { return telemetry_stop || !tc_parent_alive(parent_fd); }
@@ -15,7 +12,7 @@ static time_t monotonic_seconds(void) {
     return ms < 0 ? -1 : (time_t)(ms / 1000);
 }
 
-int main(int argc, char **argv) {
+int tc_telemetry_main(int argc, char **argv) {
     int rc = 0, daemon = 0, cleanup_only = 0, report_only = 0;
     const char *reason = "manual";
     struct telemetry_schedule schedule;

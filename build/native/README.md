@@ -61,11 +61,11 @@ rereads retain permissions only on unchanged interfaces. Each discovery or
 telemetry process owns its history directly in C; no process serializes or
 transfers retained policy.
 
-Module headers declare cross-module functions. `TC_LOCAL` keeps internal
-helpers static in device builds; only host regression tests define
-`TC_NATIVE_TEST` to link selected internal functions. This matters on NetBSD 4,
-where the linker deliberately does not use section garbage collection because
-it can discard required ELF notes. Do not include implementation `.c` files.
+Module headers declare cross-module functions; every other function is
+`static`. This matters on NetBSD 4, where the linker deliberately does not use
+section garbage collection because it can discard required ELF notes, so an
+unused external function would stay in the binary. Do not include
+implementation `.c` files.
 
 The manager owns foreground Samba in a separate process group and waits for the
 whole group before replacing executables or clearing locks. Anonymous stdin

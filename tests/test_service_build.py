@@ -20,7 +20,6 @@ class ServiceBuildWrapperTests(unittest.TestCase):
             args = gcc_args.read_text().splitlines()
             self.assertIn(f"--sysroot={root / 'out' / 'obj' / 'destdir.evbarm'}", args)
             self.assertIn("-Wl,--gc-sections", args)
-            self.assertIn("-DTC_SERVICE_MULTICALL", args)
             self.assertIn("--strip-unneeded", strip_args.read_text())
             self.assertTrue((root / "stage" / "service.stripped").exists())
             self.assertIn("service.sources", log.read_text())

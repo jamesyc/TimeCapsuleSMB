@@ -28,12 +28,6 @@ extension BackendEvent {
         }
         do {
             return try payload.decode(type)
-        } catch let error as DecodingError {
-            throw BackendContractError.payloadDecodeFailed(
-                operation: operation,
-                payloadType: String(describing: type),
-                message: error.localizedDescription
-            )
         } catch {
             throw BackendContractError.payloadDecodeFailed(
                 operation: operation,

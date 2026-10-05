@@ -75,3 +75,38 @@ def test_a_use_keeps_a_copy_from_being_pruned(cache, tmp_path):
     executables.write_executable(tmp_path / "again", "#!/bin/sh\nexit 0\n")
     executables.prune()
     assert copy.exists()
+
+
+def vanishing_copies(monkeypatch, times):
+    """Delete the shared copy the first `times` uses return, as another run's
+    prune does when it read the copy's time before the use refreshed it."""
+    real_shared_copy = executables.shared_copy
+    deleted = []
+
+    def shared_copy(data):
+        copy = real_shared_copy(data)
+        if len(deleted) < times:
+            copy.unlink()
+            deleted.append(copy)
+        return copy
+
+    monkeypatch.setattr(executables, "shared_copy", shared_copy)
+    return deleted
+
+
+def test_a_copy_pruned_before_its_link_is_written_again(cache, tmp_path, monkeypatch):
+    deleted = vanishing_copies(monkeypatch, times=1)
+    path = executables.write_executable(tmp_path / "tool", "#!/bin/sh\nexit 5\n")
+    assert len(deleted) == 1
+    assert subprocess.run([str(path)]).returncode == 5
+    # The new copy is shared again, not a private file.
+    assert path.stat().st_ino == deleted[0].stat().st_ino
+    assert executables.write_executable(tmp_path / "again", "#!/bin/sh\nexit 5\n").stat().st_ino == path.stat().st_ino
+
+
+def test_a_copy_that_keeps_vanishing_fails_instead_of_retrying_forever(cache, tmp_path, monkeypatch):
+    deleted = vanishing_copies(monkeypatch, times=3)
+    with pytest.raises(FileNotFoundError):
+        executables.write_executable(tmp_path / "tool", "#!/bin/sh\nexit 0\n")
+    assert len(deleted) == 2
+    assert not (tmp_path / "tool").exists()

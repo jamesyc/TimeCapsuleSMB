@@ -55,7 +55,7 @@ from timecapsulesmb.checks.smb import (
     check_authenticated_smb_listing,
     check_authenticated_smb_file_ops_detailed,
 )
-from timecapsulesmb.checks.smb_config import (
+from timecapsulesmb.core.smb_config import (
     parse_active_netbios_name,
     parse_active_share_names,
     parse_xattr_tdb_paths,

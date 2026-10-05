@@ -65,7 +65,12 @@ def link_shared(source: Path, path: Path) -> Path:
 def write_executable(path: Path, content: str | bytes) -> Path:
     """Make path an executable holding content."""
     data = content.encode() if isinstance(content, str) else content
-    return link_shared(shared_copy(data), path)
+    try:
+        return link_shared(shared_copy(data), path)
+    except FileNotFoundError:
+        # Another run's prune can read a copy's old time before this use
+        # refreshes it and delete it before the link; this writes it again.
+        return link_shared(shared_copy(data), path)
 
 
 def prune(now: float | None = None) -> None:

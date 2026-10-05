@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
@@ -580,24 +579,6 @@ def _upload_destination_kind(transfer: FileTransfer, plan: DeploymentPlan) -> st
     return "other"
 
 
-def _upload_payload_kwargs_for_func(upload_payload_func: Callable[..., object], kwargs: dict[str, object]) -> dict[str, object]:
-    signature_target = upload_payload_func
-    side_effect = getattr(upload_payload_func, "side_effect", None)
-    if callable(side_effect):
-        signature_target = side_effect
-    try:
-        signature = inspect.signature(signature_target)
-    except (TypeError, ValueError):
-        return kwargs
-    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
-        return kwargs
-    return {
-        key: value
-        for key, value in kwargs.items()
-        if key in signature.parameters
-    }
-
-
 def pre_upload_action_message(action: RemoteAction) -> str | None:
     if isinstance(action, StopProcessAction) and action.name == "discoveryd":
         return "Cleaning up previous deployment files..."
@@ -1101,12 +1082,7 @@ def upload_and_verify_deployment_payload(
                     "connection": connection,
                     "source_resolver": upload_sources,
                 }
-                upload_payload_func(
-                    migration_plan,
-                    **_upload_payload_kwargs_for_func(
-                        upload_payload_func, migration_upload_kwargs
-                    ),
-                )
+                upload_payload_func(migration_plan, **migration_upload_kwargs)
             except Exception as exc:
                 started = upload_starts.get(migration_transfer.source_id)
                 callbacks.measurement(
@@ -1209,7 +1185,7 @@ def upload_and_verify_deployment_payload(
             "on_uploading": record_uploading,
         }
         try:
-            upload_payload_func(plan, **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs))
+            upload_payload_func(plan, **upload_kwargs)
         except Exception as exc:
             upload_batch_result = "failure"
             if active_upload is not None:
@@ -1274,7 +1250,7 @@ def upload_and_verify_deployment_payload(
         if config_uploads:
             upload_payload_func(
                 replace(plan, uploads=config_uploads),
-                **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs),
+                **upload_kwargs,
             )
         # A kept config also gets its mode, like the kept software files.
         run_remote_actions_func(connection, [
@@ -1283,7 +1259,7 @@ def upload_and_verify_deployment_payload(
         callbacks.stage("enable_boot")
         upload_payload_func(
             replace(plan, uploads=[plan.boot_upload]),
-            **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs),
+            **upload_kwargs,
         )
         run_remote_actions_func(connection, [
             InstallPermissionsAction((RemotePermission(plan.boot_upload.destination, "755"),)),

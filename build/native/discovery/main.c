@@ -2,9 +2,6 @@
 #include "wcifsnd.h"
 #include "../common/loop.h"
 #include "../common/parent.h"
-#ifdef TC_SERVICE_MULTICALL
-#define main tc_discovery_main
-#endif
 
 volatile sig_atomic_t g_stop = 0;
 static int parent_fd = -1;
@@ -41,7 +38,7 @@ static void usage(const char *prog) {
             prog, prog);
 }
 
-int main(int argc, char **argv) {
+int tc_discovery_main(int argc, char **argv) {
     struct config cfg;
     struct plan_options options;
     struct plan_loop loop;

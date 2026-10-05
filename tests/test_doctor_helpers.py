@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget  # noqa: E402
-from timecapsulesmb.checks.smb_config import (  # noqa: E402
+from timecapsulesmb.core.smb_config import (  # noqa: E402
     SmbShare,
     parse_active_netbios_name,
     parse_active_payload_dir,

@@ -11,9 +11,9 @@ TRIPLE="$(select_tool_triple)"
 SERVICE_SRC="$SCRIPT_DIR/native/service.sources"
 SERVICE_CFLAGS="${SERVICE_CFLAGS:--Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident}"
 SERVICE_LDFLAGS="${SERVICE_LDFLAGS:--static -Wl,--gc-sections}"
-# Compile the role entrypoints into one image; Apple's DNS-SD stub uses its
-# socket API without libdispatch. Debug downloads still select the device ABI.
-SERVICE_CFLAGS="$SERVICE_CFLAGS -DTC_SERVICE_MULTICALL -D_DNS_SD_LIBDISPATCH=0"
+# Apple's DNS-SD stub uses its socket API without libdispatch. Debug downloads
+# still select the device ABI.
+SERVICE_CFLAGS="$SERVICE_CFLAGS -D_DNS_SD_LIBDISPATCH=0"
 case "$SDK_FAMILY:$NETBSD4_ABI" in
     netbsd4:be) SERVICE_CFLAGS="$SERVICE_CFLAGS -DTC_TELEMETRY_LANE=\"4be\"" ;;
     netbsd4:*) SERVICE_CFLAGS="$SERVICE_CFLAGS -DTC_TELEMETRY_LANE=\"4le\"" ;;

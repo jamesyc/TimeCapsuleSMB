@@ -37,7 +37,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_validate_config,
 )
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.smb_config import parse_active_share_names
+from timecapsulesmb.core.smb_config import parse_active_share_names
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import ProbedDeviceState
 from timecapsulesmb.transport.ssh import SshConnection

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import sys
 import uuid
 
 from timecapsulesmb.app.context import AppOperationContext
@@ -28,6 +26,7 @@ from timecapsulesmb.services.app import (
     string_param,
 )
 from timecapsulesmb.services import configure as configure_service
+from timecapsulesmb.services.acp_ssh import is_macos_gui_local_network_privacy_signal
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     build_managed_config_env_values,
@@ -64,15 +63,6 @@ def add_local_network_preflight_debug_fields(params: dict[str, object], context:
 
 def local_network_preflight_denied(params: dict[str, object]) -> bool:
     return str(params.get("macos_local_network_preflight_result") or "").strip().lower() == "denied"
-
-
-def is_macos_gui_local_network_privacy_signal(error: object) -> bool:
-    if sys.platform != "darwin":
-        return False
-    if os.getenv("TCAPSULE_CLIENT") != "macos_gui":
-        return False
-    text = str(error)
-    return "[Errno 65]" in text or "No route to host" in text
 
 
 def selected_record_name(params: dict[str, object]) -> str:

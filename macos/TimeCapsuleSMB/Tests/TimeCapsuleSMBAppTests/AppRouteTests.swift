@@ -18,31 +18,29 @@ final class AppRouteTests: XCTestCase {
         XCTAssertEqual(fixture.appStore.selectedDeviceID, profile.id)
         XCTAssertFalse(fixture.appStore.showingAddDevice)
         XCTAssertFalse(fixture.appStore.showingActivity)
-        XCTAssertFalse(fixture.appStore.showingAppSettings)
 
         fixture.appStore.showAddDevice()
         XCTAssertEqual(fixture.appStore.route, .addDevice)
         XCTAssertNil(fixture.appStore.selectedDeviceID)
         XCTAssertTrue(fixture.appStore.showingAddDevice)
 
-        fixture.appStore.showActivity()
+        fixture.appStore.navigate(to: .activity)
         XCTAssertEqual(fixture.appStore.route, .activity)
         XCTAssertTrue(fixture.appStore.showingActivity)
         XCTAssertFalse(fixture.appStore.showingAddDevice)
 
-        fixture.appStore.showAppSettings()
+        fixture.appStore.navigate(to: .appSettings)
         XCTAssertEqual(fixture.appStore.route, .appSettings)
-        XCTAssertTrue(fixture.appStore.showingAppSettings)
         XCTAssertFalse(fixture.appStore.showingActivity)
 
-        fixture.appStore.showAllDevices()
+        fixture.appStore.navigate(to: .allDevices)
         XCTAssertEqual(fixture.appStore.route, .allDevices)
         XCTAssertNil(fixture.appStore.selectedDeviceID)
     }
 
     func testAllDevicesRouteDoesNotAutoSelectWhenProfilesChange() async throws {
         let fixture = try await makeFixture()
-        fixture.appStore.showAllDevices()
+        fixture.appStore.navigate(to: .allDevices)
 
         _ = try await fixture.registry.storeTestProfile(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -142,7 +140,7 @@ final class AppRouteTests: XCTestCase {
         fixture.appStore.select(profile)
         XCTAssertEqual(fixture.appStore.diagnosticsExportContext().selectedProfile?.id, profile.id)
 
-        fixture.appStore.showAllDevices()
+        fixture.appStore.navigate(to: .allDevices)
         XCTAssertNil(fixture.appStore.diagnosticsExportContext().selectedProfile)
     }
 
@@ -177,7 +175,7 @@ final class AppRouteTests: XCTestCase {
         try await waitUntilStoreState {
             !fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(recentlyUpdatedProfile.id, .doctor)).backend.events.isEmpty
         }
-        fixture.appStore.showAllDevices()
+        fixture.appStore.navigate(to: .allDevices)
 
         let context = fixture.appStore.diagnosticsExportContext()
 
@@ -202,7 +200,7 @@ final class AppRouteTests: XCTestCase {
             }
             .store(in: &cancellables)
 
-        fixture.appStore.showActivity()
+        fixture.appStore.navigate(to: .activity)
 
         await fulfillment(of: [published], timeout: 1)
         XCTAssertEqual(fixture.appStore.route, .activity)

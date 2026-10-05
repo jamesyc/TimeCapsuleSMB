@@ -343,17 +343,6 @@ def build_deployment_plan(
     )
 
 
-def _dedupe_ordered(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        deduped.append(value)
-    return deduped
-
-
 def build_uninstall_plan(
     host: str,
     volume_roots: list[str],
@@ -362,8 +351,8 @@ def build_uninstall_plan(
     reboot_after_uninstall: bool = True,
     wait_after_reboot: bool = True,
 ) -> UninstallPlan:
-    volume_roots = _dedupe_ordered(volume_roots)
-    payload_dirs = _dedupe_ordered(payload_dirs)
+    volume_roots = list(dict.fromkeys(volume_roots))
+    payload_dirs = list(dict.fromkeys(payload_dirs))
     wait_after_reboot = wait_after_reboot if reboot_after_uninstall else False
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",

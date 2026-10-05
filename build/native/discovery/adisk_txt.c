@@ -4,7 +4,7 @@
  *   sys=waMA=<XX:XX:XX:XX:XX:XX>,adVF=0x1010
  *   <disk_key>=adVF=<advf>,adVN=<share>,adVU=<uuid>
  */
-TC_LOCAL int validate_adisk_disk_advf(const char *value);
+static int validate_adisk_disk_advf(const char *value);
 
 int validate_single_dns_label(const char *value, const char *field_name) {
     size_t len;
@@ -53,7 +53,7 @@ int build_adisk_system_txt(char *out, size_t out_len, const char *wama) {
     return 0;
 }
 
-TC_LOCAL int validate_adisk_disk_advf(const char *value) {
+static int validate_adisk_disk_advf(const char *value) {
     const unsigned char *p;
 
     if (value == NULL || value[0] == '\0') {

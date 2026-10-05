@@ -23,11 +23,11 @@ int tc_log_trim(const char *path) {
     close(fd);
     return result;
 }
-TC_LOCAL void log_timestamp_prefix(FILE *stream);
-TC_LOCAL int timestamped_write_message(FILE *stream, const char *message);
-TC_LOCAL int timestamped_vfprintf(FILE *stream, const char *format, va_list ap);
+static void log_timestamp_prefix(FILE *stream);
+static int timestamped_write_message(FILE *stream, const char *message);
+static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap);
 void timestamped_perror(const char *message);
-TC_LOCAL void log_timestamp_prefix(FILE *stream) {
+static void log_timestamp_prefix(FILE *stream) {
     time_t now;
     struct tm *tm_info;
     char stamp[32];
@@ -40,7 +40,7 @@ TC_LOCAL void log_timestamp_prefix(FILE *stream) {
     }
 }
 
-TC_LOCAL int timestamped_write_message(FILE *stream, const char *message) {
+static int timestamped_write_message(FILE *stream, const char *message) {
     const char *cursor;
 
     cursor = message;
@@ -59,7 +59,7 @@ TC_LOCAL int timestamped_write_message(FILE *stream, const char *message) {
     return 0;
 }
 
-TC_LOCAL int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {
+static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {
     char stack_message[4096];
     int result;
 
