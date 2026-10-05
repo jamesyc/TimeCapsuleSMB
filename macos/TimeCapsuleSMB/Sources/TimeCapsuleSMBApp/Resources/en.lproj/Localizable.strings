@@ -285,6 +285,7 @@
 "dialog.forget.title" = "Forget This Device?";
 "doctor.check.device_starting_up" = "The device is still starting up. Wait a few minutes, then run Checkup again.";
 "doctor.check.payload_missing_from_disk" = "The Samba folder is missing from the data disk; the disk may have been erased. Run “Install / Update Samba” to reinstall.";
+"doctor.check.metadata_migration_in_progress" = "A metadata migration is still running on the device. “Install / Update Samba” waits for it to finish before installing.";
 "doctor.domain.general" = "General";
 "doctor.domain.runtime" = "Runtime";
 "event.summary.check" = "%@ %@";

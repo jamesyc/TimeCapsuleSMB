@@ -92,6 +92,31 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(row.message.contains("xattr_tdb"))
     }
 
+    func testCheckupPresentationLocalizesMetadataMigrationInProgressCheck() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "a metadata migration is still running (copy phase, 120000 files checked); run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line: it waits for the migration to finish",
+                domain: "General",
+                code: "metadata_migration_in_progress"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        let presentation = CheckupPresentation(summary: summary, state: .failed)
+        let row = try XCTUnwrap(presentation.domains.first?.rows.first)
+
+        XCTAssertEqual(
+            row.message,
+            "A metadata migration is still running on the device. “Install / Update Samba” waits for it to finish before installing."
+        )
+        XCTAssertFalse(row.message.contains("tcapsule deploy"))
+    }
+
     func testInstallActionsUseDownloadBoxIconExceptReinstall() {
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.title, "Refresh Status")
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.systemImage, "arrow.clockwise")

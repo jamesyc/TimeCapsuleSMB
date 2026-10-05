@@ -245,6 +245,8 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.device_starting_up")
         case "payload_missing_from_disk":
             return L10n.string("doctor.check.payload_missing_from_disk")
+        case "metadata_migration_in_progress":
+            return L10n.string("doctor.check.metadata_migration_in_progress")
         default:
             return message
         }

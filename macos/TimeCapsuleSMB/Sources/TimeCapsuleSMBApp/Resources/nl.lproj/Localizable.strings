@@ -287,6 +287,7 @@
 "dialog.forget.title" = "Dit apparaat vergeten?";
 "doctor.check.device_starting_up" = "Het apparaat start nog op. Wacht enkele minuten en voer de controle opnieuw uit.";
 "doctor.check.payload_missing_from_disk" = "De Samba-map ontbreekt op de gegevensschijf; de schijf is mogelijk gewist. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
+"doctor.check.metadata_migration_in_progress" = "Op het apparaat loopt nog een metadatamigratie. ‘Samba installeren / bijwerken’ wacht tot die klaar is en installeert pas daarna.";
 "doctor.domain.general" = "Algemeen";
 "doctor.domain.runtime" = "Servicestatus";
 "event.summary.check" = "%@ %@";

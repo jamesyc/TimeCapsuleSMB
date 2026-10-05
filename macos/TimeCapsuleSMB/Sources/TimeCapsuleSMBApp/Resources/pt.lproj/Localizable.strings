@@ -287,6 +287,7 @@
 "dialog.forget.title" = "Esquecer este dispositivo?";
 "doctor.check.device_starting_up" = "O dispositivo ainda está iniciando. Aguarde alguns minutos e execute a verificação novamente.";
 "doctor.check.payload_missing_from_disk" = "A pasta Samba está ausente do disco de dados; o disco pode ter sido apagado. Execute “Instalar/atualizar Samba” para reinstalar.";
+"doctor.check.metadata_migration_in_progress" = "Uma migração de metadados ainda está em andamento no dispositivo. “Instalar/atualizar Samba” aguarda a conclusão antes de instalar.";
 "doctor.domain.general" = "Geral";
 "doctor.domain.runtime" = "Status dos serviços";
 "event.summary.check" = "%@ %@";

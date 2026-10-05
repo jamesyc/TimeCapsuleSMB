@@ -71,6 +71,7 @@ from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
+from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.device.probe import (
     DeviceIpv4Entry,
     DeviceIpv4SubnetsProbeResult,
@@ -259,6 +260,7 @@ class CheckTests(unittest.TestCase):
         on_result=None,
         runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
         deployed_config_present: bool = True,
+        migration_activity: MigrationActivity | Exception | None = None,
         deployed_version: DeployedVersionProbeResult | None = None,
         runtime_ram_root_present: bool = True,
         client_source: str | None = None,
@@ -333,6 +335,13 @@ class CheckTests(unittest.TestCase):
                 mock.patch(
                     "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn",
                     return_value=runtime_naming_identity or self.runtime_identity_from_values(resolved_values),
+                )
+            )
+            mocks.probe_migration_activity = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.checks.doctor_steps.probe_migration_activity",
+                    **({"side_effect": migration_activity} if isinstance(migration_activity, Exception)
+                       else {"return_value": migration_activity or MigrationActivity(())}),
                 )
             )
             mocks.flash_runtime_config_present_conn = stack.enter_context(
@@ -773,6 +782,64 @@ class CheckTests(unittest.TestCase):
             "run \"Install / Update Samba\" in the macOS app, or run tcapsule deploy from the command line",
         )
         managed_smbd.assert_not_called()
+
+    def test_run_doctor_checks_reports_a_running_migration_instead_of_the_old_version(self) -> None:
+        managed_smbd = mock.Mock()
+        activity = MigrationActivity(
+            (RunningMigration(412, "copy", "/Volumes/dk2/.samba4/logs/xattr-migration-copy.log", "1:02.50"),),
+            48213, "Oct 5 00:20:15 2026", MigrationProgress("copy", "u1", 120000),
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            migration_activity=activity,
+            deployed_version=DeployedVersionProbeResult("v2.2.9", CLI_VERSION_CODE - 1, "ok"),
+            extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": managed_smbd},
+        )
+
+        self.assertTrue(run.fatal)
+        last = run.results[-1]
+        self.assertEqual(last.status, "FAIL")
+        self.assertEqual(
+            last.message,
+            "a metadata migration is still running (copy phase, 120000 files checked); "
+            "run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line: "
+            "it waits for the migration to finish",
+        )
+        self.assertEqual(last.details, {"code": "metadata_migration_in_progress", "phase": "copy", "entries": 120000})
+        self.assertFalse(any("older than current" in result.message for result in run.results))
+        run.mocks.flash_runtime_config_present_conn.assert_not_called()
+        run.mocks.read_deployed_version_conn.assert_not_called()
+        managed_smbd.assert_not_called()
+
+    def test_run_doctor_checks_names_a_legacy_migration_without_a_position(self) -> None:
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            migration_activity=MigrationActivity((RunningMigration(20, "legacy", None, "0:00.02"),)),
+        )
+        self.assertTrue(run.fatal)
+        self.assertIn("still running (legacy phase); run", run.results[-1].message)
+
+    def test_run_doctor_checks_omits_an_unknown_phase(self) -> None:
+        # NetBSD 4's ps shows "(tc-xattr-hfs-mig)" instead of the migrator's arguments.
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            migration_activity=MigrationActivity((RunningMigration(1504, "unknown", None, "0:00.01"),)),
+        )
+        self.assertTrue(run.fatal)
+        self.assertTrue(run.results[-1].message.startswith(
+            "a metadata migration is still running; run \"Install / Update Samba\""))
+
+    def test_run_doctor_checks_continues_when_the_migration_probe_fails_or_finds_none(self) -> None:
+        for activity in (SshError("ps failed"), MigrationActivity(())):
+            with self.subTest(activity=activity):
+                run = self.run_doctor_with_mocks(
+                    ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                    migration_activity=activity,
+                    deployed_version=DeployedVersionProbeResult("v2.1.0-rc3", CLI_VERSION_CODE - 1, "ok"),
+                )
+                self.assertTrue(run.fatal)
+                self.assertIn("is older than current", run.results[-1].message)
+                self.assertFalse(any(r.details.get("code") == "metadata_migration_in_progress" for r in run.results))
 
     def test_run_doctor_checks_stops_when_deployed_version_is_newer(self) -> None:
         managed_smbd = mock.Mock()
@@ -3946,7 +4013,8 @@ class CheckTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result("james-s-airport-time-capsule.local")):
                                     with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn", return_value=probed_identity):
-                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=active_smb_conf)):
+                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=active_smb_conf)), \
+                                                    mock.patch("timecapsulesmb.checks.doctor_steps.probe_migration_activity", return_value=MigrationActivity(())):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution",
                                                                 return_value=CheckResult("PASS", "native NBNS resolved")):
                                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)

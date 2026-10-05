@@ -287,6 +287,7 @@
 "dialog.forget.title" = "Oublier cet appareil ?";
 "doctor.check.device_starting_up" = "L’appareil est encore en cours de démarrage. Patientez quelques minutes, puis relancez la vérification.";
 "doctor.check.payload_missing_from_disk" = "Le dossier Samba est absent du disque de données ; le disque a peut-être été effacé. Exécutez « Installer / mettre à jour Samba » pour réinstaller.";
+"doctor.check.metadata_migration_in_progress" = "Une migration des métadonnées est encore en cours sur l’appareil. « Installer / mettre à jour Samba » attend qu’elle se termine avant d’installer.";
 "doctor.domain.general" = "Général";
 "doctor.domain.runtime" = "État des services";
 "event.summary.check" = "%@ %@";

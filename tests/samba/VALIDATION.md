@@ -2988,3 +2988,24 @@ finished; doctor passed. A NetBSD 4 deploy with nothing running added no
 wait stage. The wait and stop scripts ran on both devices' `/bin/sh`: the
 wait reported the stand-in busy, the stop ended it (and the runtime's
 telemetry daemon, which the manager restarted), and the wait then passed.
+
+## Doctor reports a running metadata migration (2026-10-05)
+
+While a migration an interrupted deploy left running was still working,
+doctor reported "installed Samba version v2.2.9 is older than current" and
+sent the user to Install / Update, which then failed with "migration or
+diagnostic work is still active". Doctor now probes for a running migrator
+first (`device.migration_jobs`, one `ps` plus the migrator's log) and, if one
+runs, stops with a FAIL tagged `metadata_migration_in_progress` that names the
+phase and how many files it has checked; the app shows "A metadata migration
+is still running on the device. “Install / Update Samba” waits for it to
+finish before installing." in ten languages, since deploy waits for such a
+migration itself. It does not say whose: a live deploy's
+migrator looks the same as one an interrupted deploy left. A failed
+probe adds nothing and doctor goes on as before.
+
+Validation: full pytest (3,649 passed), ruff, `swift test` (673 passed).
+With the stand-in running, doctor reported it on NetBSD 6 ("(copy phase)")
+and NetBSD 4, whose `ps` cannot read the migrator's arguments and shows
+`(tc-xattr-hfs-mig)`; there the message leaves the phase out. With nothing
+running, doctor reported the outdated version as before.

@@ -287,6 +287,7 @@
 "dialog.forget.title" = "Pamiršti šį įrenginį?";
 "doctor.check.device_starting_up" = "Įrenginys vis dar paleidžiamas. Palaukite kelias minutes ir paleiskite patikrinimą iš naujo.";
 "doctor.check.payload_missing_from_disk" = "Duomenų diske trūksta Samba aplanko; diskas galėjo būti ištrintas. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
+"doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
 "doctor.domain.general" = "Bendrieji";
 "doctor.domain.runtime" = "Aplinka";
 "event.summary.check" = "%@ %@";

@@ -287,6 +287,7 @@
 "dialog.forget.title" = "Забыть это устройство?";
 "doctor.check.device_starting_up" = "Устройство еще запускается. Подождите несколько минут и запустите проверку снова.";
 "doctor.check.payload_missing_from_disk" = "Папка Samba отсутствует на диске данных; возможно, диск был стерт. Запустите «Установить/обновить Samba», чтобы установить заново.";
+"doctor.check.metadata_migration_in_progress" = "На устройстве все еще выполняется перенос метаданных. «Установить/обновить Samba» дождется его завершения перед установкой.";
 "doctor.domain.general" = "Общие сведения";
 "doctor.domain.runtime" = "Состояние служб";
 "event.summary.check" = "%@ %@";

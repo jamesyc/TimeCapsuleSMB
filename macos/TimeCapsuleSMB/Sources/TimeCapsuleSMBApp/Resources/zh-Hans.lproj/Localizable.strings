@@ -287,6 +287,7 @@
 "dialog.forget.title" = "忘记此设备？";
 "doctor.check.device_starting_up" = "设备仍在启动中。请等待几分钟，然后再次运行检查。";
 "doctor.check.payload_missing_from_disk" = "数据磁盘上缺少 Samba 文件夹；磁盘可能已被抹掉。请运行“安装 / 更新 Samba”以重新安装。";
+"doctor.check.metadata_migration_in_progress" = "设备上仍在运行元数据迁移。“安装 / 更新 Samba”会等待其完成后再安装。";
 "doctor.domain.general" = "常规";
 "doctor.domain.runtime" = "服务状态";
 "event.summary.check" = "%@ %@";

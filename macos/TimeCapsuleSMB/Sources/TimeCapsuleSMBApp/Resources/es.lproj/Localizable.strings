@@ -287,6 +287,7 @@
 "dialog.forget.title" = "¿Olvidar este dispositivo?";
 "doctor.check.device_starting_up" = "El dispositivo aún se está iniciando. Espere unos minutos y repita la comprobación.";
 "doctor.check.payload_missing_from_disk" = "Falta la carpeta Samba en el disco de datos; puede que se haya borrado el disco. Ejecute «Instalar / actualizar Samba» para reinstalar.";
+"doctor.check.metadata_migration_in_progress" = "Una migración de metadatos sigue en curso en el dispositivo. «Instalar / actualizar Samba» espera a que termine antes de instalar.";
 "doctor.domain.general" = "General";
 "doctor.domain.runtime" = "Estado de los servicios";
 "event.summary.check" = "%@ %@";

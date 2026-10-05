@@ -287,6 +287,7 @@
 "dialog.forget.title" = "Dieses Gerät vergessen?";
 "doctor.check.device_starting_up" = "Das Gerät startet noch. Warten Sie einige Minuten und führen Sie die Überprüfung erneut aus.";
 "doctor.check.payload_missing_from_disk" = "Der Samba-Ordner fehlt auf dem Datenträger; dieser wurde möglicherweise gelöscht. Führen Sie „Samba installieren / aktualisieren“ zur Neuinstallation aus.";
+"doctor.check.metadata_migration_in_progress" = "Auf dem Gerät läuft noch eine Metadaten-Migration. „Samba installieren / aktualisieren“ wartet, bis sie abgeschlossen ist, und installiert erst dann.";
 "doctor.domain.general" = "Allgemein";
 "doctor.domain.runtime" = "Dienststatus";
 "event.summary.check" = "%@ %@";

@@ -74,6 +74,7 @@ from timecapsulesmb.core.net import (
 )
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.storage import diskd_rpc_status_conn
+from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device.probe import (
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
@@ -141,6 +142,9 @@ DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 # offers Activate for it: stock firmware does not start Samba at boot.
 DOCTOR_CODE_RUNTIME_NOT_STARTED = "runtime_not_started"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
+# A migration an interrupted deploy left running; the installed version and
+# runtime are whatever that deploy had reached, so nothing after it applies.
+DOCTOR_CODE_METADATA_MIGRATION_IN_PROGRESS = "metadata_migration_in_progress"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
 DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
@@ -1718,6 +1722,42 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         remote_checks_enabled=ssh_ok,
         active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
     )
+
+
+def _doctor_check_running_migration(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
+    if not remote.remote_checks_enabled:
+        return StepDecision()
+    try:
+        activity = probe_migration_activity(target.connection)
+    except Exception:
+        # The checks after this one still diagnose the device.
+        return StepDecision()
+    if not activity.migrations:
+        return StepDecision()
+    phase = activity.phase or "unknown"
+    progress = activity.progress
+    # NetBSD 4's ps cannot read the migrator's arguments, so its phase may be
+    # unknown; say only what is known.
+    known = [f"{phase} phase"] if phase != "unknown" else []
+    if progress.entries is not None:
+        known.append(f"{progress.entries} files checked")
+    position = f" ({', '.join(known)})" if known else ""
+    if sink.debug_fields is not None:
+        sink.debug_fields["running_migration_pids"] = [migration.pid for migration in activity.migrations]
+    sink.add(
+        CheckResult(
+            "FAIL",
+            f"a metadata migration is still running{position}; "
+            "run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line: "
+            "it waits for the migration to finish",
+            details={
+                "code": DOCTOR_CODE_METADATA_MIGRATION_IN_PROGRESS,
+                "phase": phase,
+                "entries": progress.entries,
+            },
+        )
+    )
+    return StepDecision(stop=True)
 
 
 def _doctor_check_deployed_config(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
