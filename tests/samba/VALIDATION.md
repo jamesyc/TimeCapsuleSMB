@@ -2922,3 +2922,43 @@ dir_device with the Mac case, growth_device with and without aio,
 durable_device, links_device). NetBSD 6 ran on its internal `AirPort Disk`
 share. smbtorture's full list: 78 passed and 52 known failures on each
 device, nothing new either way.
+
+## A helper whose app went away stops where Cancel would have, and reports it (2026-10-05)
+
+v3.2.0-2 telemetry showed a GUI deploy reach `migrate_xattrs_copy` and vanish
+with no `deploy_finished`, twice for one user, while the device migrator kept
+running; earlier releases left 10-52 started deploys per release without a
+result. Nothing stopped the helper when the app quit, and its first write to
+the closed pipe raised `BrokenPipeError` from `sink.error()`, before the
+finished telemetry. The event sink now treats a broken pipe as the app being
+gone: it sends nothing more and points stdout and stderr at `/dev/null`. Every
+stage starts with a write, so the helper learns of it at the next stage at the
+latest. It then stops where the app's Cancel button would have let the user
+stop it: on entering a stage whose policy allows cancelling (or that has no
+policy, which the app treats the same). The stage in progress and any later
+ones the app offers no Cancel for run to their end, so a Flash write reaches
+its flush (`enable_boot`, then `flush_boot_hook` and the reboot request) and
+flash writes both banks. A lost copy phase still removes the old software
+(`replace_software`) and stops before `check_flash_capacity`; a lost cleanup
+phase finishes the installation and requests the reboot, stopping before
+`wait_for_reboot_down`, so NetBSD 4 then needs Activate. Long waits check
+between polls under the same rule. Telemetry says `cancelled` /
+`client_disconnected` with `stopped_before_stage` and
+`disconnected_during_stage` (the stage running when the write failed; a stage
+event is sent before its stage becomes current).
+
+Validation: full pytest, ruff, `swift test`. `tests/test_helper_disconnect.py`
+runs the real helper with a stand-in deploy and a local telemetry server and
+closes its stdout during the first stage: during `migrate_xattrs_copy`, the
+copy and `replace_software` finish and `check_flash_capacity` never starts;
+during `enable_boot`, `flush_boot_hook` still runs. Each time the helper exits
+130 with an empty stderr and the server gets the finished event with both
+stage names. With the broken-pipe handling reverted the helper exits 120 and
+sends nothing.
+On NetBSD 6 the real API helper's deploy, with its stdout closed as
+`pre_upload_actions` began (a stage the app offers no Cancel for), ran on
+through `replace_software`, exited 130 after 22 s with an empty stderr and
+posted `client_disconnected` with `stopped_before_stage: check_flash_capacity`
+and `disconnected_during_stage: pre_upload_actions`; the runtime was stopped
+and the boot hook gone, as that stage leaves them. A deploy right after it
+finished and doctor passed.

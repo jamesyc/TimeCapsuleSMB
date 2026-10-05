@@ -25,7 +25,7 @@ from timecapsulesmb.checks.network import LocalInterfaceNetwork
 from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import Summary
-from timecapsulesmb.app.events import AppEvent, EventSink
+from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
@@ -1682,6 +1682,195 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["result"], "cancelled")
         self.assertEqual(finished["stage"], "run_fsck")
         self.assertIn("Cancelled by user", finished["error"])
+
+    def _run_disconnecting(self, operation: str, run, *, break_on: str) -> tuple[int, list[dict[str, object]]]:
+        """Run `run` as `operation` through an app whose pipe breaks at the first
+        event of type `break_on`, or at `stage` events naming that stage."""
+        delivered: list[dict[str, object]] = []
+
+        def emit(event: AppEvent) -> None:
+            data = event.to_jsonable()
+            if data["type"] == break_on or data.get("stage") == break_on:
+                raise BrokenPipeError(32, "Broken pipe")
+            delivered.append(data)
+
+        with mock.patch.dict(service.OPERATIONS, {operation: run}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": operation, "params": {}}, EventSink(emit))
+        return rc, delivered
+
+    def test_lost_app_stops_where_the_cancel_button_would_have(self) -> None:
+        # Each case: the operation, its stages, the event the pipe breaks at,
+        # the stages that still run, and where it stops. Stages the app cannot
+        # cancel run to the next one it can: a Flash write reaches its flush,
+        # the second firmware bank is written.
+        cases = (
+            ("deploy", ("migrate_xattrs_copy", "replace_software", "check_flash_capacity", "upload_payload"),
+             "log", ("migrate_xattrs_copy", "replace_software"), "check_flash_capacity", "migrate_xattrs_copy"),
+            ("deploy", ("upload_payload", "upload_smbd", "post_upload_actions", "verify_payload_upload", "flush_payload_upload"),
+             "log", ("upload_payload", "upload_smbd", "post_upload_actions"), "verify_payload_upload", "upload_payload"),
+            ("deploy", ("migrate_xattrs_cleanup", "install_runtime_config", "enable_boot", "flush_boot_hook", "reboot",
+                        "wait_for_reboot_down", "post_reboot_activation"),
+             "log", ("migrate_xattrs_cleanup", "install_runtime_config", "enable_boot", "flush_boot_hook", "reboot"),
+             "wait_for_reboot_down", "migrate_xattrs_cleanup"),
+            ("flash", ("write_primary_bank", "write_active_bank", "post_write_validation"),
+             "log", ("write_primary_bank", "write_active_bank"), "post_write_validation", "write_primary_bank"),
+            # A stage without a policy can be cancelled in the app.
+            ("deploy", ("migrate_xattrs_copy", "unlisted_stage"),
+             "log", ("migrate_xattrs_copy",), "unlisted_stage", "migrate_xattrs_copy"),
+            # The pipe breaks at a stage event: the stage that was running then
+            # is the one the app was lost during.
+            ("deploy", ("migrate_xattrs_copy", "replace_software", "check_flash_capacity"),
+             "replace_software", ("migrate_xattrs_copy", "replace_software"), "check_flash_capacity", "migrate_xattrs_copy"),
+        )
+        for operation, stages, break_on, ran, stopped_before, during in cases:
+            with self.subTest(operation=operation, during=during, break_on=break_on):
+                self._telemetry_client.emit.reset_mock()
+                reached: list[str] = []
+
+                def run(_params, context, stages=stages):
+                    for stage in stages:
+                        context.stage(stage)
+                        reached.append(stage)
+                        context.log(f"{stage} done")
+                    return service.OperationResult(True, {})
+
+                rc, delivered = self._run_disconnecting(operation, run, break_on=break_on)
+
+                self.assertEqual(rc, 130)
+                self.assertEqual(tuple(reached), ran)
+                # Nothing reaches the app after the pipe broke.
+                self.assertEqual([event["type"] for event in delivered],
+                                 ["stage"] if break_on == "log" else ["stage", "log"])
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(finished["phase"], "finished")
+                self.assertEqual(finished["result"], "cancelled")
+                self.assertEqual(finished["error_code"], "client_disconnected")
+                self.assertEqual(finished["details"], {"stopped_before_stage": stopped_before,
+                                                       "disconnected_during_stage": during})
+
+    def test_lost_app_during_stages_that_cannot_be_cancelled_lets_the_operation_finish(self) -> None:
+        def run_deploy(_params, context):
+            for stage in ("enable_boot", "flush_boot_hook"):
+                context.stage(stage)
+                context.log(f"{stage} done")
+                context.to_operation_callbacks().stop_if_disconnected()
+            return service.OperationResult(True, {"summary": "Deployment completed."})
+
+        rc, _delivered = self._run_disconnecting("deploy", run_deploy, break_on="log")
+
+        self.assertEqual(rc, 0)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "success")
+
+    def test_lost_app_ends_a_long_wait_at_its_next_checkpoint(self) -> None:
+        polls: list[int] = []
+
+        def run_deploy(_params, context):
+            context.stage("wait_for_previous_migration")
+            callbacks = context.to_operation_callbacks()
+            for attempt in range(3):
+                polls.append(attempt)
+                context.log("still waiting")
+                callbacks.stop_if_disconnected()
+            return service.OperationResult(True, {})
+
+        rc, _delivered = self._run_disconnecting("deploy", run_deploy, break_on="log")
+
+        self.assertEqual(rc, 130)
+        self.assertEqual(polls, [0])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["error_code"], "client_disconnected")
+        # It stopped inside the wait, not before a stage.
+        self.assertEqual(finished["details"], {"disconnected_during_stage": "wait_for_previous_migration"})
+
+    def test_lost_app_before_any_stage_reports_no_stage_names(self) -> None:
+        def run_deploy(_params, context):
+            context.log("starting")
+            context.to_operation_callbacks().stop_if_disconnected()
+            return service.OperationResult(True, {})
+
+        rc, _delivered = self._run_disconnecting("deploy", run_deploy, break_on="log")
+
+        self.assertEqual(rc, 130)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertIsNone(finished["details"])
+
+    def test_lost_app_still_gets_finished_telemetry_for_every_outcome(self) -> None:
+        def succeed(_params, context):
+            context.stage("run_fsck")
+            return service.OperationResult(True, {"summary": "Disk repair completed."})
+
+        def fail(_params, context):
+            context.stage("run_fsck")
+            raise AppOperationError("fsck failed", code="operation_failed")
+
+        def interrupt(_params, context):
+            context.stage("run_fsck")
+            raise KeyboardInterrupt
+
+        cases = (
+            ("result", succeed, 0, "success"),
+            ("error", fail, 1, "failure"),
+            ("error", interrupt, 130, "cancelled"),
+        )
+        for break_on, run, expected_rc, expected_result in cases:
+            with self.subTest(break_on=break_on, result=expected_result):
+                self._telemetry_client.emit.reset_mock()
+                rc, _delivered = self._run_disconnecting("fsck", run, break_on=break_on)
+                self.assertEqual(rc, expected_rc)
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(finished["phase"], "finished")
+                self.assertEqual(finished["result"], expected_result)
+
+    def test_event_sink_copies_share_the_app_connection(self) -> None:
+        attempts: list[str] = []
+        lost: list[bool] = []
+
+        def emit(event: AppEvent) -> None:
+            attempts.append(event.type)
+            raise BrokenPipeError(32, "Broken pipe")
+
+        sink = EventSink(emit, client=AppClient(on_disconnect=lambda: lost.append(True)))
+        copy = sink.with_request_id("request")
+        copy.log("deploy", "first")
+        sink.log("deploy", "second")
+        copy.log("deploy", "third")
+
+        self.assertIs(copy.client, sink.client)
+        self.assertTrue(sink.client.disconnected)
+        self.assertEqual(attempts, ["log"])
+        self.assertEqual(lost, [True])
+
+    def test_event_sink_lets_other_write_errors_through(self) -> None:
+        def emit(_event: AppEvent) -> None:
+            raise OSError(28, "No space left on device")
+
+        sink = EventSink(emit)
+        with self.assertRaises(OSError):
+            sink.log("deploy", "message")
+        self.assertFalse(sink.client.disconnected)
+
+    def test_discarded_output_swallows_later_writes(self) -> None:
+        saved = [os.dup(1), os.dup(2)]
+
+        def restore() -> None:
+            for fd, copy in zip((1, 2), saved):
+                os.dup2(copy, fd)
+                os.close(copy)
+
+        self.addCleanup(restore)
+        read_end, write_end = os.pipe()
+        os.dup2(write_end, 1)
+        os.close(write_end)
+        os.close(read_end)
+        with self.assertRaises(BrokenPipeError):
+            os.write(1, b"x")
+        helper._discard_output()
+        self.assertEqual(os.write(1, b"event\n"), 6)
+        self.assertEqual(os.write(2, b"warning\n"), 8)
 
     def test_dispatcher_emits_failure_telemetry_on_system_exit(self) -> None:
         collector = CollectingSink()

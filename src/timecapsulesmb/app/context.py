@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.events import EventSink
+from timecapsulesmb.app.stage_policy import stage_policy
 from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.core.redaction import SENSITIVE_KEY_PARTS, redact_sensitive_fields
 from timecapsulesmb.core.summaries import Summary
@@ -76,6 +77,21 @@ class AppOperationContext:
     def stage(self, stage: str) -> None:
         self.diagnostics.set_stage(stage)
         self.sink.stage(self.operation, stage)
+        self.stop_if_disconnected(stage)
+
+    def stop_if_disconnected(self, stage: str | None = None) -> None:
+        """Stop for a lost app only where its Cancel button would have worked.
+
+        The app offers Cancel unless the stage's policy says otherwise, so a
+        stage that must not be interrupted (a Flash write before its flush,
+        the second firmware bank) runs to its end and the operation stops at
+        the next one that can be cancelled. `stage` is the stage about to
+        start; without it, this is a checkpoint inside the current stage.
+        """
+        current = stage or self.sink.current_stage(self.operation)
+        policy = stage_policy(self.operation, current) if current else None
+        if policy is None or policy.cancellable:
+            self.sink.client.stop_if_disconnected(stage)
 
     def log(self, message: str, *, level: str = "info") -> None:
         self.sink.log(self.operation, message, level=level)
@@ -97,6 +113,7 @@ class AppOperationContext:
             add_debug_fields=self.add_debug_fields,
             update_fields=self.update_fields,
             record_execution_measurement=self.record_execution_measurement,
+            checkpoint=self.stop_if_disconnected,
         )
 
     def update_fields(self, **fields: object) -> None:

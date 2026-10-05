@@ -4,7 +4,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.app.events import EventSink
+from timecapsulesmb.app.events import ClientDisconnected, EventSink
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS, OPERATION_PARAMS, OPERATIONS, TELEMETRY_OPERATIONS, unknown_params
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
 from timecapsulesmb.app.requests import parse_api_request
@@ -158,6 +158,22 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             error_code="remote_error",
         )
         return 1
+    except ClientDisconnected as exc:
+        # The app is gone: nobody reads an error event, but telemetry still
+        # records where the operation stopped.
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="cancelled",
+            error=context.diagnostic_error("App disconnected") or "App disconnected",
+            details={
+                key: value
+                for key, value in (("stopped_before_stage", exc.stage), ("disconnected_during_stage", exc.during))
+                if value
+            } or None,
+            error_code="client_disconnected",
+        )
+        return 130
     except KeyboardInterrupt:
         message = "Operation cancelled."
         sink.error(

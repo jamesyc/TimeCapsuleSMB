@@ -17,6 +17,9 @@ class OperationCallbacks:
     add_debug_fields: Callable[..., None] | None = None
     update_fields: Callable[..., None] | None = None
     record_execution_measurement: Callable[..., None] | None = None
+    # Raises when the app has gone away and the current stage can be
+    # cancelled, so a long wait can end early.
+    checkpoint: Callable[[], None] | None = None
 
     def stage(self, stage: str) -> None:
         if self.set_stage is not None:
@@ -43,3 +46,8 @@ class OperationCallbacks:
     def measurement(self, kind: str, **fields: object) -> None:
         if self.record_execution_measurement is not None:
             self.record_execution_measurement(kind, **fields)
+
+    def stop_if_disconnected(self) -> None:
+        """Let a long wait end early once the app has gone away, where cancelling is allowed."""
+        if self.checkpoint is not None:
+            self.checkpoint()

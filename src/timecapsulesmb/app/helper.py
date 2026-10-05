@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import uuid
 from typing import Optional, TextIO
 
-from timecapsulesmb.app.events import AppEvent, EventSink
+from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.recovery import recovery_for
 from timecapsulesmb.app.service import run_api_request
 
@@ -20,7 +21,18 @@ def _sink_for_stream(stream: TextIO) -> EventSink:
         stream.write(event.to_json_line())
         stream.flush()
 
-    return EventSink(emit)
+    return EventSink(emit, client=AppClient(on_disconnect=_discard_output))
+
+
+def _discard_output() -> None:
+    # Nobody reads our pipes any more. Writes to them, including Python's
+    # final flush of the unwritten event and stray warnings, would raise.
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        for fd in (1, 2):
+            os.dup2(devnull, fd)
+    finally:
+        os.close(devnull)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
