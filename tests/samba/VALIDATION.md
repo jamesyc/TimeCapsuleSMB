@@ -2891,3 +2891,34 @@ with the helper still in `loop.c`, passed the full tier on both LAN devices;
 this build passed deploy and doctor on both. On NetBSD 4 LE, doctor run
 17 s after the deploy's reboot failed its NBNS query (the name it asked for
 was not yet settled) and passed when run again 70 s after boot.
+
+
+## One xattr-list normalization; configure's interface probes left alone (2026-10-05)
+
+`tc_airport_flistxattr()` and `tc_airport_llistxattr()` repeated the same
+handling of the kernel's reply (duplicates dropped, EIO for an unterminated
+entry, the size probe and ERANGE answered for the deduplicated list).
+`tc_airport_xattr_list_finish()` now does it once; each keeps its own
+syscall. The new `list_normalization` case of `tc_native_metadata_test`
+covers both calls, including the descriptor call's duplicates and the EIO,
+empty-list and errno paths no case reached before.
+
+`_samba4x.sh` no longer clears configure's getifaddrs results or forces the
+IFCONF backend: patch 0043 reads smbd's interfaces from routing messages.
+Configure finds libc `getifaddrs()` on all three lanes, so Heimdal's krb5
+address lookup (`get_addrs.c`), the one remaining caller and used only for
+Kerberos client logins a standalone smbd never makes, links libc's
+`getifaddrs()`/`freeifaddrs()` instead of libreplace's IFCONF backend; per
+0043 neither parses Apple's NetBSD 4 interface list. smbd shrank from
+10,240,592 to 10,239,720 bytes on NetBSD 6, 10,260,104 to 10,259,232 on
+NetBSD 4 LE and 10,258,992 to 10,258,156 on NetBSD 4 BE. The NetBSD 6
+migrator's hash changed with the same size and the same strings in another
+order (the committed one came from an incremental build); the NetBSD 4
+migrators are byte-identical.
+
+Clean builds of all three lanes, the host regression with sanitizers, and
+the full tier on both LAN devices passed (deploy, every driver case, doctor,
+dir_device with the Mac case, growth_device with and without aio,
+durable_device, links_device). NetBSD 6 ran on its internal `AirPort Disk`
+share. smbtorture's full list: 78 passed and 52 known failures on each
+device, nothing new either way.

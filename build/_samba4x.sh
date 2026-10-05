@@ -169,34 +169,6 @@ undef_config_symbol() {
     fi
 }
 
-define_config_symbol() {
-    config_header="$1"
-    symbol="$2"
-    value="$3"
-    desc="Samba 4.x config header define $symbol"
-
-    if grep -Fqx "#define $symbol $value" "$config_header"; then
-        return 0
-    fi
-    if grep -E -q "^/[*][[:space:]]+#undef[[:space:]]+$symbol[[:space:]]+[*]/$" "$config_header"; then
-        patch_perl "$desc" "s|^/\\* #undef $symbol \\*/\$|#define $symbol $value|m" "$config_header"
-    elif grep -E -q "^#define[[:space:]]+$symbol([[:space:]]|$)" "$config_header"; then
-        patch_perl "$desc" "s|^#define[ \t]+$symbol([ \t]+[^\n]*)?\$|#define $symbol $value|m" "$config_header"
-    else
-        printf '#define %s %s\n' "$symbol" "$value" >>"$config_header"
-    fi
-    patch_require_fixed "$desc" "#define $symbol $value" "$config_header"
-}
-
-require_config_symbol_defined() {
-    config_header="$1"
-    symbol="$2"
-
-    if ! grep -E -q "^#define[[:space:]]+$symbol([[:space:]]|$)" "$config_header"; then
-        patch_fail "Samba 4.x config header expected $symbol in $config_header"
-    fi
-}
-
 set_waf_cache_empty_values() {
     cache_file="$1"
     shift
@@ -230,21 +202,17 @@ apply_samba4x_runtime_waf_cache() {
     set_waf_cache_empty_values "$cache_file" \
         HAVE_POSIX_FALLOCATE \
         _POSIX_FALLOCATE_CAPABLE_LIBC \
-        HAVE_GETIFADDRS \
-        HAVE_FREEIFADDRS \
-        HAVE_IFACE_GETIFADDRS \
         HAVE_BACKTRACE \
         HAVE_BACKTRACE_SYMBOLS \
         HAVE_EXECINFO_H \
         HAVE_SETPROCTITLE \
         HAVE_SETPROCTITLE_INIT
-    # Patch 0043 reads NetBSD interfaces from sysctl(NET_RT_IFLIST), so smbd no
-    # longer calls getifaddrs() or libreplace's rep_getifaddrs() backends.
-    # Clearing configure's getifaddrs results and forcing the IFCONF backend
-    # (after configure, which runs its interface probes either way) is left
-    # over from before that patch and harmless; removing it also means
-    # dropping verify_samba4x_runtime_config's check and its test.
-    set_waf_cache_value "$cache_file" "HAVE_IFACE_IFCONF" "1"
+    # Configure's interface probes (getifaddrs, IFCONF and the rest) stay as
+    # detected: patch 0043 reads smbd's interfaces from sysctl(NET_RT_IFLIST).
+    # The one other caller, Heimdal's krb5 address lookup (get_addrs.c), runs
+    # only for Kerberos client logins, which a standalone smbd never makes. It
+    # links libc getifaddrs(); forcing libreplace's IFCONF backend instead
+    # would not help, since neither parses Apple's NetBSD 4 interface list.
 }
 
 apply_samba4x_waf_cache_overrides() {
@@ -272,9 +240,6 @@ sync_samba4x_config_header() {
     for symbol in \
         HAVE_POSIX_FALLOCATE \
         _POSIX_FALLOCATE_CAPABLE_LIBC \
-        HAVE_GETIFADDRS \
-        HAVE_FREEIFADDRS \
-        HAVE_IFACE_GETIFADDRS \
         HAVE_EXECINFO_H \
         HAVE_BACKTRACE \
         HAVE_BACKTRACE_SYMBOLS \
@@ -283,7 +248,6 @@ sync_samba4x_config_header() {
     do
         undef_config_symbol "$config_header" "$symbol"
     done
-    define_config_symbol "$config_header" "HAVE_IFACE_IFCONF" "1"
 }
 
 verify_samba4x_no_pthread_config() {
@@ -369,17 +333,6 @@ samba4x_max_stripped_bytes() {
         netbsd7:*|netbsd4:le|netbsd4:be) printf '%s\n' 10485760 ;;
         *) patch_fail "No Samba 4.x binary-size ceiling for $SDK_FAMILY/$NETBSD4_ABI" ;;
     esac
-}
-
-verify_samba4x_runtime_config() {
-    config_header="$1"
-
-    # apply_samba4x_runtime_waf_cache and the config header edits clear
-    # configure's getifaddrs results and select libreplace's ioctl-based
-    # IFCONF backend. Since patch 0043 smbd reads NetBSD interfaces from
-    # routing messages (libc getifaddrs() misparses Apple's NetBSD 4
-    # if_msghdr) and calls neither backend, so this check is vestigial.
-    require_config_symbol_defined "$config_header" "HAVE_IFACE_IFCONF"
 }
 
 samba4x_cross_answer_lane() {
@@ -1220,7 +1173,6 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         [ -f "$config_header" ] || continue
         sync_samba4x_config_header "$config_header"
     done
-    verify_samba4x_runtime_config "$SAMBA4X_SRC_DIR/bin/default/include/config.h"
 
     if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
         export LDFLAGS="$SAMBA4X_NETBSD4_FINAL_LDFLAGS"

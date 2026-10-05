@@ -133,10 +133,9 @@
 # lib/socket/tc_netbsd_iflist.c). libc getifaddrs() misparses Apple's NetBSD 4
 # if_msghdr (152 bytes against the SDK's 144), and Samba's SIOCGIFCONF
 # replacement assumes fixed-size ifreq rows, which that kernel does not return.
-# Nothing in smbd calls getifaddrs() afterwards. _samba4x.sh still clears
-# configure's getifaddrs results and forces the IFCONF backend after configure
-# (which runs its interface probes either way); that is left over from before
-# this patch and harmless.
+# Only Heimdal's krb5 address lookup still calls getifaddrs(), for Kerberos
+# client logins a standalone smbd never makes, so _samba4x.sh leaves
+# configure's interface probe results as detected.
 0043-interfaces-netbsd-route-iflist.patch|parse Time Capsule interfaces from routing messages
 
 # No-pthread build.

@@ -140,27 +140,21 @@ static inline bool tc_airport_xattr_list_contains(const char *list,
 	return false;
 }
 
-static inline ssize_t tc_airport_flistxattr(int fd, char *list, size_t size)
+/*
+ * Finish a list*xattr() call whose second syscall returned ret bytes into raw
+ * (ret < 0 is its failure, with errno set), and free raw. Apple's NetBSD 6
+ * kernel can list the same HFS attribute twice (see
+ * tests/samba/tc_native_metadata_test.c); keep each name once, then size or
+ * copy the list as listxattr(2) does.
+ */
+static inline ssize_t tc_airport_xattr_list_finish(char *raw,
+						   ssize_t ret,
+						   char *list,
+						   size_t size)
 {
-#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
-	char *raw = NULL;
-	ssize_t raw_size;
-	ssize_t ret;
 	size_t in_offset = 0;
 	size_t out_size = 0;
 
-	raw_size = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
-		TC_AIRPORT_SYS_FLISTXATTR, fd, NULL, 0);
-	if (raw_size <= 0) {
-		return raw_size;
-	}
-	raw = malloc(raw_size);
-	if (raw == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	ret = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
-		TC_AIRPORT_SYS_FLISTXATTR, fd, raw, raw_size);
 	if (ret < 0) {
 		int error = errno;
 
@@ -168,10 +162,6 @@ static inline ssize_t tc_airport_flistxattr(int fd, char *list, size_t size)
 		errno = error;
 		return -1;
 	}
-	/*
-	 * Apple's NetBSD 6 kernel can list the same HFS attribute twice (see
-	 * tests/samba/tc_native_metadata_test.c); keep each name once.
-	 */
 	while (in_offset < (size_t)ret) {
 		size_t entry_size = strnlen(
 			raw + in_offset, (size_t)ret - in_offset) + 1;
@@ -201,6 +191,28 @@ static inline ssize_t tc_airport_flistxattr(int fd, char *list, size_t size)
 	memcpy(list, raw, out_size);
 	free(raw);
 	return out_size;
+}
+
+static inline ssize_t tc_airport_flistxattr(int fd, char *list, size_t size)
+{
+#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
+	char *raw = NULL;
+	ssize_t raw_size;
+	ssize_t ret;
+
+	raw_size = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
+		TC_AIRPORT_SYS_FLISTXATTR, fd, NULL, 0);
+	if (raw_size <= 0) {
+		return raw_size;
+	}
+	raw = malloc(raw_size);
+	if (raw == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
+	ret = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
+		TC_AIRPORT_SYS_FLISTXATTR, fd, raw, raw_size);
+	return tc_airport_xattr_list_finish(raw, ret, list, size);
 #else
 	errno = ENOSYS;
 	return -1;
@@ -301,8 +313,6 @@ static inline ssize_t tc_airport_llistxattr(const char *path,
 	char *raw = NULL;
 	ssize_t raw_size;
 	ssize_t ret;
-	size_t in_offset = 0;
-	size_t out_size = 0;
 
 	raw_size = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
 		TC_AIRPORT_SYS_LLISTXATTR, path, NULL, 0);
@@ -316,43 +326,7 @@ static inline ssize_t tc_airport_llistxattr(const char *path,
 	}
 	ret = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
 		TC_AIRPORT_SYS_LLISTXATTR, path, raw, raw_size);
-	if (ret < 0) {
-		int error = errno;
-
-		free(raw);
-		errno = error;
-		return -1;
-	}
-	/* Keep each name once, as tc_airport_flistxattr explains. */
-	while (in_offset < (size_t)ret) {
-		size_t entry_size = strnlen(
-			raw + in_offset, (size_t)ret - in_offset) + 1;
-
-		if (entry_size > (size_t)ret - in_offset) {
-			free(raw);
-			errno = EIO;
-			return -1;
-		}
-		if (!tc_airport_xattr_list_contains(
-				raw, out_size, raw + in_offset, entry_size))
-		{
-			memmove(raw + out_size, raw + in_offset, entry_size);
-			out_size += entry_size;
-		}
-		in_offset += entry_size;
-	}
-	if (list == NULL || size == 0) {
-		free(raw);
-		return out_size;
-	}
-	if (size < out_size) {
-		free(raw);
-		errno = ERANGE;
-		return -1;
-	}
-	memcpy(list, raw, out_size);
-	free(raw);
-	return out_size;
+	return tc_airport_xattr_list_finish(raw, ret, list, size);
 #else
 	errno = ENOSYS;
 	return -1;

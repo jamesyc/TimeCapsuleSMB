@@ -186,7 +186,6 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     mkdir -p bin/default/include bin/default/source3/include bin/default/source4/include
                     for header in bin/default/include/config.h bin/default/source3/include/config.h bin/default/source4/include/config.h; do
                         cat > "$header" <<EOF
-                /* #undef HAVE_IFACE_IFCONF */
                 ${TEST_CONFIGURE_DEFINE:-}
                 EOF
                     done
@@ -647,6 +646,33 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
             self.assertIn("generated no config.h files", log)
             self.assertFalse(targets.exists())
+
+    def test_target_unsafe_probes_are_cleared_and_interface_probes_kept(self) -> None:
+        # The VM's libc process-title, backtrace and fallocate must not reach
+        # the appliance build. Interface probes stay as configure found them:
+        # patch 0043 reads interfaces from routing messages on every lane.
+        cleared = ("HAVE_POSIX_FALLOCATE", "HAVE_SETPROCTITLE", "HAVE_BACKTRACE")
+        kept = ("HAVE_GETIFADDRS", "HAVE_FREEIFADDRS", "HAVE_IFACE_GETIFADDRS")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt")
+            env["TEST_CONFIGURE_DEFINE"] = "\n".join(f"#define {symbol} 1" for symbol in cleared + kept)
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            src = Path(env["SAMBA4X_NETBSD7_SRC_DIR"]) / "bin"
+            cache = (src / "c4che" / "default.py").read_text()
+            for header in ("include", "source3/include", "source4/include"):
+                lines = (src / "default" / header / "config.h").read_text().splitlines()
+                for symbol in cleared:
+                    self.assertIn(f"/* #undef {symbol} */", lines)
+                for symbol in kept:
+                    self.assertIn(f"#define {symbol} 1", lines)
+            for symbol in cleared:
+                self.assertIn(f"{symbol} = ()", cache)
+            for symbol in kept + ("HAVE_IFACE_IFCONF",):
+                self.assertNotIn(symbol, cache)
 
     def test_smbd_map_must_be_present_identify_smbd_and_omit_pthread(self) -> None:
         cases = (

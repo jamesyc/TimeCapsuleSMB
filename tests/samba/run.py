@@ -47,7 +47,7 @@ STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_
 NATIVE_METADATA_CASES = (
     "syscall_abi", "native_xattrs", "native_xattr_list", "non_hfs_tdb",
     "finderinfo", "finderinfo_views", "resource_backend", "resource_views", "stream_boundary",
-    "link_xattrs",
+    "link_xattrs", "list_normalization",
 )
 XATTR_MIGRATE_CASES = (
     "guard", "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",

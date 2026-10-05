@@ -28,6 +28,13 @@ static struct test_store native_store;
 static struct test_store link_store;
 static const char *link_store_path = "/share/link";
 static bool link_list_duplicates;
+/* A raw list*xattr() reply both list syscalls return when set: what the
+ * kernel hands back before tc_airport_xattr_list_finish normalizes it. */
+static const char *raw_list;
+static size_t raw_list_size;
+static int raw_list_probe_error;
+static int raw_list_read_error;
+static unsigned fd_list_ops;
 static unsigned link_ops;
 static struct test_store fake_tdb;
 static unsigned native_gets;
@@ -140,6 +147,11 @@ static void reset_stores(void)
 	test_fstatat_dirfsp = NULL;
 	ZERO_STRUCT(link_store);
 	link_list_duplicates = false;
+	raw_list = NULL;
+	raw_list_size = 0;
+	raw_list_probe_error = 0;
+	raw_list_read_error = 0;
+	fd_list_ops = 0;
 	link_ops = 0;
 	mutation_count = 0;
 	mutation_order[0] = '\0';
@@ -200,6 +212,24 @@ static long test_native_syscall_379(const char *path,
 	return link_store.size;
 }
 
+static long test_raw_list_reply(char *list, size_t size)
+{
+	if (list == NULL) {
+		if (raw_list_probe_error != 0) {
+			errno = raw_list_probe_error;
+			return -1;
+		}
+		return raw_list_size;
+	}
+	if (raw_list_read_error != 0) {
+		errno = raw_list_read_error;
+		return -1;
+	}
+	CHECK(size >= raw_list_size);
+	memcpy(list, raw_list, raw_list_size);
+	return raw_list_size;
+}
+
 static long test_native_syscall_382(const char *path, char *list, size_t size)
 {
 	size_t one, required;
@@ -208,6 +238,9 @@ static long test_native_syscall_382(const char *path, char *list, size_t size)
 	if (strcmp(path, link_store_path) != 0) {
 		errno = ENOENT;
 		return -1;
+	}
+	if (raw_list != NULL) {
+		return test_raw_list_reply(list, size);
 	}
 	if (!link_store.exists) {
 		return 0;
@@ -311,9 +344,13 @@ static long test_native_syscall_383(int fd, char *list, size_t size)
 {
 	size_t required;
 
+	fd_list_ops++;
 	if (fd != 42) {
 		errno = EBADF;
 		return -1;
+	}
+	if (raw_list != NULL) {
+		return test_raw_list_reply(list, size);
 	}
 	if (!native_store.exists) {
 		return 0;
@@ -939,6 +976,79 @@ static void test_syscall_abi(void)
 	CHECK(native_sets == 1);
 	CHECK(native_locks == 2 && native_unlocks == 2 && native_lock_depth == 0);
 	require_native_lock = false;
+}
+
+/* Each lane reaches only its own list syscall, as often as expected. */
+static void check_list_calls(bool by_path, unsigned calls)
+{
+	CHECK(link_ops == (by_path ? calls : 0));
+	CHECK(fd_list_ops == (by_path ? 0 : calls));
+}
+
+static ssize_t list_by(bool by_path, char *list, size_t size)
+{
+	return by_path ? tc_airport_llistxattr(link_store_path, list, size)
+		       : tc_airport_flistxattr(42, list, size);
+}
+
+/* The descriptor and path list calls share one normalization of the
+ * kernel's reply: duplicates dropped, a malformed list refused, the size
+ * probe and ERANGE answered for the normalized list, errors passed on. */
+static void test_list_normalization(void)
+{
+	static const char duplicates[] = "user.a\0user.b\0user.a\0user.b";
+	static const char normalized[] = "user.a\0user.b";
+	static const char unterminated[] = {'u', 's', 'e', 'r', '.', 'a', 0, 'u', 's'};
+	char list[64];
+	int lane;
+
+	for (lane = 0; lane < 2; lane++) {
+		bool by_path = lane == 1;
+
+		reset_stores();
+		raw_list = duplicates;
+		raw_list_size = sizeof(duplicates);
+		CHECK(list_by(by_path, NULL, 0) == sizeof(normalized));
+		memset(list, 'x', sizeof(list));
+		CHECK(list_by(by_path, list, sizeof(normalized)) == sizeof(normalized));
+		CHECK(memcmp(list, normalized, sizeof(normalized)) == 0);
+		CHECK(list[sizeof(normalized)] == 'x');
+		errno = 0;
+		CHECK(list_by(by_path, list, sizeof(normalized) - 1) == -1 && errno == ERANGE);
+		/* A size probe and a read per call. */
+		check_list_calls(by_path, 6);
+
+		reset_stores();
+		raw_list = unterminated;
+		raw_list_size = sizeof(unterminated);
+		errno = 0;
+		CHECK(list_by(by_path, NULL, 0) == -1 && errno == EIO);
+		errno = 0;
+		CHECK(list_by(by_path, list, sizeof(list)) == -1 && errno == EIO);
+		check_list_calls(by_path, 4);
+
+		reset_stores();
+		raw_list = "";
+		raw_list_size = 0;
+		CHECK(list_by(by_path, NULL, 0) == 0);
+		CHECK(list_by(by_path, list, sizeof(list)) == 0);
+		/* An empty list ends at the probe. */
+		check_list_calls(by_path, 2);
+
+		reset_stores();
+		raw_list = duplicates;
+		raw_list_size = sizeof(duplicates);
+		raw_list_probe_error = EACCES;
+		errno = 0;
+		CHECK(list_by(by_path, list, sizeof(list)) == -1 && errno == EACCES);
+
+		raw_list_probe_error = 0;
+		raw_list_read_error = EPERM;
+		errno = 0;
+		CHECK(list_by(by_path, list, sizeof(list)) == -1 && errno == EPERM);
+		/* A failed probe stops there; a failed read follows a probe. */
+		check_list_calls(by_path, 3);
+	}
 }
 
 static void test_native_xattrs(struct vfs_handle_struct *handle,
@@ -1663,10 +1773,13 @@ int main(int argc, char **argv)
 		test_resource_views(&handle, &file, &smb_fname, frame);
 		test_native_stream_boundary(&file);
 		test_link_xattrs(&handle, conn, frame);
+		test_list_normalization();
 	} else if (strcmp(argv[1], "link_xattrs") == 0) {
 		test_link_xattrs(&handle, conn, frame);
 	} else if (strcmp(argv[1], "native_xattrs") == 0) {
 		test_native_xattrs(&handle, &file, frame);
+	} else if (strcmp(argv[1], "list_normalization") == 0) {
+		test_list_normalization();
 	} else if (strcmp(argv[1], "native_xattr_list") == 0) {
 		test_native_xattr_list(&handle, &file);
 	} else if (strcmp(argv[1], "non_hfs_tdb") == 0) {
