@@ -7,7 +7,8 @@
 enum token_kind { END, DICT, ARRAY, END_DICT, END_ARRAY, STRING, DATA, EQUAL, BAD };
 struct parser {
     const char *p, *end;
-    int xml, depth;
+    /* native: acp -A's own text form, an array opened with '['. */
+    int xml, native, depth;
     enum token_kind token;
     enum token_kind pending;
     char value[1024];
@@ -202,6 +203,36 @@ static void next(struct parser *p) {
         p->token = EQUAL;
         return;
     case '"':
+        if (p->native) {
+            /* acp -A (Apple's PrintFUtils) writes a string value as its raw
+             * UTF-8 between quotes and then ends the line. Nothing is
+             * escaped, so a name may itself hold quotes, backslashes or line
+             * breaks: the value runs to the first quote that only spaces
+             * separate from a line break or the end of the text. */
+            const char *q = p->p;
+            for (;;) {
+                const char *e;
+                q = memchr(q, '"', (size_t)(p->end - q));
+                if (!q) {
+                    p->token = BAD;
+                    return;
+                }
+                for (e = q + 1; e < p->end && (*e == ' ' || *e == '\t' || *e == '\r'); e++)
+                    ;
+                if (e == p->end || *e == '\n')
+                    break;
+                q++;
+            }
+            while (p->p < q)
+                if (put(p->value, &n, (unsigned char)*p->p++)) {
+                    p->token = BAD;
+                    return;
+                }
+            p->p = q + 1;
+            p->token = STRING;
+            return;
+        }
+        /* The OpenStep form escapes quotes and backslashes. */
         while (p->p < p->end && *p->p != '"') {
             ch = *p->p++;
             if (ch == '\\') {
@@ -246,8 +277,9 @@ static void next(struct parser *p) {
         p->p--;
     }
     while (p->p < p->end && !strchr("=;,\r\n{}[]()", *p->p)) {
-        /* Native ACP's binary annotation contains braces/parentheses and
-         * printable bytes. None of that annotation is part of a UUID. */
+        /* acp -A prints data as hex, then " |", the same bytes as text
+         * (0x20-0x7e as themselves, so braces and brackets too, anything
+         * else as '^') and "| (N bytes)". None of that is part of a UUID. */
         if (*p->p == '|') {
             while (p->p < p->end && *p->p != '\n')
                 p->p++;
@@ -494,7 +526,8 @@ int tc_mast_parse(struct tc_inventory *out, const char *text, size_t length) {
         if (p.p == p.end)
             goto done;
         p.p++;
-    }
+    } else
+        p.native = at(&p, "[");
     next(&p);
     if (p.token != ARRAY || value(&p, DISKS, out, NULL, NULL))
         goto done;

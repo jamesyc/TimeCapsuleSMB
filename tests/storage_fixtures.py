@@ -243,6 +243,9 @@ MaSt = (
 """,
         expected=(INTERNAL_DATA, EXTERNAL_UNTITLED),
     ),
+    # `acp -A MaSt` as Apple's printer writes it: data as hex, " |", the same
+    # bytes as text (0x20-0x7e as themselves, anything else as "^"), then
+    # "| (N bytes)"; acp prints its "MaSt=" label after the value.
     MaStFixture(
         name="native_acp_array_internal_external",
         raw="""\
@@ -255,7 +258,7 @@ MaSt = (
                 deviceName="dk2"
                 name="Data"
                 format="hfs"
-                uuid=f42bdb83 c2655522 a0872560 6a4d0abf |binary| (16 bytes)
+                uuid=f42bdb83 c2655522 a0872560 6a4d0abf |^+^^^eU"^^%`jM^^| (16 bytes)
             }
         ]
         builtin=true
@@ -268,7 +271,7 @@ MaSt = (
                 deviceName="dk3"
                 name="Untitled"
                 format="hfs"
-                uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |binary| (16 bytes)
+                uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |Q^>o^iRM^m^^^^5s| (16 bytes)
             }
         ]
     }

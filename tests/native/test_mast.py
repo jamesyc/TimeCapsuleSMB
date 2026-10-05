@@ -72,21 +72,76 @@ def test_overflow_duplicate_devices_and_unsafe_names_reject_whole_observation(pa
         assert result.returncode == 2
 
 
-def test_native_annotation_and_quoted_structural_names_are_data(parser):
-    text = '''[
- { deviceName="sd1";
-   partitions=[{ deviceName="dk3"; name="partitions = [ ] builtin=true";
-   format="hfs"; users=0;
-   uuid=01234567 89abcdef 01234567 89abcdef |[{}](binary)| (16 bytes)
-   }]; builtin=false;
- }
-]'''
-    result = run(parser, text)
+# What `acp -A MaSt` prints, from disassembling acp's PrintFUtils printer
+# (NetBSD 6 7.9.1 and NetBSD 4 7.8.1 alike); plain `acp MaSt` prints XML.
+# "{", "}", "[" and "]" stand alone on their lines, four spaces per level;
+# entries are `key=value` in CFDictionary order; an empty array or dictionary
+# is inline (`key=[]`, `key={}`). Data up to 16 bytes is hex, " |", the same
+# bytes as text (0x20-0x7e as themselves, anything else as "^") and
+# "| (N bytes)". A string value is its raw UTF-8 between quotes with nothing
+# escaped. acp prints its "MaSt=" label after the value.
+APPLE_ALTERNATE_FORM = (
+    '\n[\n'
+    '    {\n'
+    '        partitions=\n'
+    '        [\n'
+    '            {\n'
+    '                deviceName="dk3"\n'
+    '                name="partitions=[ ] builtin=true "q" \\" \\\\ C:\\new\ttab  "\n'
+    '                format="hfs"\n'
+    '                users=0\n'
+    '                uuid=7b7d5b5d 7c220a0d 3d28293b 2c2041ff |{}[]|"^^=();, A^| (16 bytes)\n'
+    '                tags=[]\n'
+    '                options={}\n'
+    '            }\n'
+    '            {\n'
+    '                deviceName="dk4"\n'
+    '                name="two\nlines"\n'
+    '                format="hfs"\n'
+    '                users=2\n'
+    '                uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |Q^>o^iRM^m^^^^5s| (16 bytes)\n'
+    '            }\n'
+    '        ]\n'
+    '        builtin=false\n'
+    '        deviceName="sd1"\n'
+    '    }\n'
+    ']\n'
+    '\n'
+    'MaSt=\n'
+)
+
+
+def volumes(result):
     assert result.returncode == 0, result.stderr
-    fields = result.stdout.splitlines()[1].split()
-    assert fields[2] == b"01234567-89ab-cdef-0123-456789abcdef"
-    assert fields[3:5] == [b"0", b"0"]
-    assert bytes.fromhex(fields[5].decode()).decode() == "partitions = [ ] builtin=true"
+    return [(f[1].decode(), f[2].decode(), f[3:5], bytes.fromhex(f[5].decode()).decode())
+            for f in (line.split() for line in result.stdout.splitlines()[1:])]
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_alternate_form_strings_are_read_as_apple_writes_them(parser, newline):
+    # The quotes, backslashes, tab, trailing spaces and line break in the
+    # names are Apple's raw text, not escapes; the data's text column holds
+    # braces, bars and a quote that are not structure. CRLF is the same text
+    # read through ssh's terminal.
+    result = run(parser, APPLE_ALTERNATE_FORM.replace("\n", newline))
+    assert volumes(result) == [
+        ("dk3", "7b7d5b5d-7c22-0a0d-3d28-293b2c2041ff", [b"0", b"0"],
+         'partitions=[ ] builtin=true "q" \\" \\\\ C:\\new\ttab  '),
+        ("dk4", "51f93e6f-dc69-524d-986d-cee4d7cb3573", [b"0", b"2"], "two" + newline + "lines"),
+    ]
+
+
+def test_alternate_form_cut_inside_a_name_is_not_an_inventory(parser):
+    # A read that ends before a name's closing quote has no complete value.
+    cut = APPLE_ALTERNATE_FORM.split('name="two')[0] + 'name="two\nli'
+    assert run(parser, cut).returncode == 2
+
+
+def test_openstep_form_still_unescapes_its_strings(parser):
+    text = ('MaSt = ({ deviceName = "sd1"; builtin = false; partitions = ({ deviceName = "dk3";'
+            ' name = "Say \\"hi\\" \\\\ x"; format = "hfs";'
+            ' uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>; }); });')
+    assert volumes(run(parser, text))[0][3] == 'Say "hi" \\ x'
 
 
 def spaced_empty_elements_mast():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import shlex
 import subprocess
 import sys
@@ -19,6 +20,8 @@ from timecapsulesmb.deploy.planner import (
     build_deployment_plan,
 )
 from timecapsulesmb.device.storage import (
+    MaStDiskSnapshot,
+    MaStPartitionSnapshot,
     MAST_PROBE_COMMAND,
     PayloadVerificationResult,
     StorageDeviceError,
@@ -97,6 +100,198 @@ MaSt = (
                 MaStVolume("sd0", "dk3", "/Volumes/dk3", "uuid = fake", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs"),
             ),
         )
+
+    # One disk object and one partition object per brace pair, whichever
+    # keys they have. The XML plist and acp's text forms give the same answer.
+    TEXT_PARTITION_WITHOUT_DEVICE = """\
+MaSt = (
+    {
+        deviceName = "wd0";
+        builtin = true;
+        partitions = (
+            {
+                name = "Free";
+            },
+            {
+                deviceName = "dk2";
+                name = "Data";
+                format = "hfs";
+                uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
+            }
+        );
+    },
+    {
+        deviceName = "sd0";
+        builtin = false;
+        partitions = ();
+    }
+);
+"""
+    XML_PARTITION_WITHOUT_DEVICE = plistlib.dumps([
+        {"deviceName": "wd0", "builtin": True, "partitions": [
+            {"name": "Free"},
+            {"deviceName": "dk2", "name": "Data", "format": "hfs",
+             "uuid": "f42bdb83-c265-5522-a087-25606a4d0abf"},
+        ]},
+        {"deviceName": "sd0", "builtin": False, "partitions": []},
+    ])
+
+    def test_a_partition_without_a_device_keeps_later_partitions_on_its_disk(self) -> None:
+        data = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
+        inventory = (
+            MaStDiskSnapshot("wd0", "", None, True, (
+                MaStPartitionSnapshot("", "Free", ""),
+                MaStPartitionSnapshot("dk2", "Data", "hfs"),
+            )),
+            MaStDiskSnapshot("sd0", "", None, False, ()),
+        )
+        for form, raw in (("text", self.TEXT_PARTITION_WITHOUT_DEVICE), ("xml", self.XML_PARTITION_WITHOUT_DEVICE)):
+            with self.subTest(form=form):
+                self.assertEqual(parse_mast_plist(raw), (data,))
+                self.assertEqual(parse_mast_inventory(raw), inventory)
+
+    def test_an_unnamed_hfs_partition_is_named_after_its_device_in_both_forms(self) -> None:
+        text = """\
+MaSt = (
+    {
+        deviceName = "sd0";
+        builtin = false;
+        partitions = (
+            {
+                deviceName = "dk3";
+                format = "hfs";
+                uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
+            }
+        );
+    }
+);
+"""
+        xml = plistlib.dumps([{"deviceName": "sd0", "builtin": False, "partitions": [
+            {"deviceName": "dk3", "format": "hfs", "uuid": "51f93e6f-dc69-524d-986d-cee4d7cb3573"}]}])
+        expected = (MaStVolume("sd0", "dk3", "/Volumes/dk3", "dk3", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs"),)
+        self.assertEqual(parse_mast_plist(text), expected)
+        self.assertEqual(parse_mast_plist(xml), expected)
+
+    def test_inventory_keeps_every_disk_and_partition_with_typed_values(self) -> None:
+        # Diagnostics report what MaSt lists, usable or not: an empty object,
+        # a non-HFS partition and one with no uuid all stay. builtin is a
+        # real boolean and size keeps acp's text.
+        text = """\
+MaSt = (
+    {
+    },
+    {
+        deviceName = "sd0";
+        model = "USB Disk";
+        capacity = 1000;
+        size = 2000;
+        builtin = false;
+        partitions = (
+            {
+                deviceName = "dk1";
+                name = "APconfig";
+                format = "MSDOS";
+            },
+            {
+                deviceName = "dk2";
+                format = "hfs";
+            }
+        );
+    }
+);
+"""
+        self.assertEqual(parse_mast_inventory(text), (
+            MaStDiskSnapshot("", "", None, False, ()),
+            MaStDiskSnapshot("sd0", "USB Disk", "2000", False, (
+                MaStPartitionSnapshot("dk1", "APconfig", "msdos"),
+                MaStPartitionSnapshot("dk2", "", "hfs"),
+            )),
+        ))
+        self.assertEqual(parse_mast_plist(text), ())
+
+    # What `acp -A MaSt` prints, from disassembling acp's PrintFUtils printer
+    # (NetBSD 6 7.9.1 and NetBSD 4 7.8.1 alike). Plain `acp MaSt` prints XML.
+    # - A blank line, the array, a blank line, then acp's trailing "MaSt=".
+    # - Four spaces per level; "{", "}", "[" and "]" each alone on a line;
+    #   an empty array or dictionary inline as `key=[]` or `key={}`.
+    # - Entries as `key=value` in CFDictionary order, so a disk's deviceName
+    #   and builtin may follow its partitions.
+    # - Numbers as `%lld`, booleans as true/false.
+    # - Data up to 16 bytes inline: hex in groups of four bytes, " |", the
+    #   same bytes as text (0x20-0x7e as themselves, so braces, brackets,
+    #   bars and quotes too; anything else as "^"), "| (N bytes)".
+    # - A string value as its raw UTF-8 between quotes, nothing escaped:
+    #   quotes, backslashes and line breaks in a name appear as they are.
+    APPLE_ALTERNATE_FORM = (
+        '\n[\n'
+        '    {\n'
+        '        partitions=\n'
+        '        [\n'
+        '            {\n'
+        '                format="hfs"\n'
+        '                deviceName="dk2"\n'
+        '                size=1905681\n'
+        '                name="Say "hi" \\"q\\" \\\\ C:\\new\ttab  "\n'
+        '                uuid=105b5aa0 ebe65928 84d09b3f 959fe903 |^[Z^^^Y(^^^?^^^^| (16 bytes)\n'
+        '            }\n'
+        '            {\n'
+        '                deviceName="dk3"\n'
+        '                format="hfs"\n'
+        '                name="two\nlines"\n'
+        '                uuid=7b7d5b5d 7c220a0d 3d28293b 2c2041ff |{}[]|"^^=();, A^| (16 bytes)\n'
+        '                tags=[]\n'
+        '                options={}\n'
+        '            }\n'
+        '        ]\n'
+        '        size=1907729\n'
+        '        deviceName="wd0"\n'
+        '        builtin=true\n'
+        '    }\n'
+        ']\n'
+        '\n'
+        'MaSt=\n'
+    )
+
+    def test_acp_alternate_form_strings_are_read_as_apple_writes_them(self) -> None:
+        # Kept as printed: \" and \\ are not escapes, the tab and the
+        # trailing spaces are part of the name.
+        first = 'Say "hi" \\"q\\" \\\\ C:\\new\ttab  '
+        self.assertEqual(parse_mast_plist(self.APPLE_ALTERNATE_FORM), (
+            MaStVolume("wd0", "dk2", "/Volumes/dk2", first, "105b5aa0-ebe6-5928-84d0-9b3f959fe903", True, "hfs"),
+            MaStVolume("wd0", "dk3", "/Volumes/dk3", "two\nlines", "7b7d5b5d-7c22-0a0d-3d28-293b2c2041ff", True, "hfs"),
+        ))
+        self.assertEqual(parse_mast_inventory(self.APPLE_ALTERNATE_FORM), (
+            MaStDiskSnapshot("wd0", "", "1907729", True, (
+                MaStPartitionSnapshot("dk2", first, "hfs"),
+                MaStPartitionSnapshot("dk3", "two\nlines", "hfs"),
+            )),
+        ))
+        # The same text through ssh's terminal, with CRLF line ends.
+        crlf = self.APPLE_ALTERNATE_FORM.replace("\n", "\r\n")
+        self.assertEqual(parse_mast_plist(crlf), parse_mast_plist(self.APPLE_ALTERNATE_FORM))
+
+    def test_openstep_form_still_unescapes_its_strings(self) -> None:
+        text = (
+            'MaSt = (\n    {\n        deviceName = "sd0";\n        builtin = false;\n'
+            '        partitions = (\n            {\n                deviceName = "dk3";\n'
+            '                name = "Say \\"hi\\" \\\\ x";\n                format = "hfs";\n'
+            '                uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;\n            }\n        );\n    }\n);\n'
+        )
+        self.assertEqual(parse_mast_plist(text)[0].name, 'Say "hi" \\ x')
+
+    def test_an_unterminated_alternate_form_string_is_not_a_value(self) -> None:
+        # A cut-off read ends inside a name. The rest of the text is taken
+        # as that name until a line ends with a quote, so the partition gets
+        # no name and no uuid and is left out; the complete volume stays.
+        cut = self.APPLE_ALTERNATE_FORM.split('name="two')[0] + 'name="two\nli'
+        self.assertEqual([v.partition_device for v in parse_mast_plist(cut)], ["dk2"])
+
+    def test_inventory_reads_acps_native_text_form(self) -> None:
+        fixture = next(f for f in MAST_FIXTURES if f.name == "native_acp_array_internal_external")
+        self.assertEqual(parse_mast_inventory(fixture.raw), (
+            MaStDiskSnapshot("wd0", "", None, True, (MaStPartitionSnapshot("dk2", "Data", "hfs"),)),
+            MaStDiskSnapshot("sd0", "", None, False, (MaStPartitionSnapshot("dk3", "Untitled", "hfs"),)),
+        ))
 
     def test_wait_for_mast_volumes_retries_until_available(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")

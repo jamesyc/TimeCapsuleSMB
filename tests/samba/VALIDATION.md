@@ -2839,3 +2839,35 @@ Validation:
 - `tests/test_xattr_migration.py` (89 passed) and ruff on the changed files.
 - No device run: the LAN devices hold no legacy database, so deploy skips
   migration there, and renumbering cannot be staged on them.
+
+## MaSt text read as acp prints it (2026-10-05)
+
+Plain `acp MaSt`, which deploy, migration and the storage service read,
+prints XML. `acp -A MaSt` prints Apple's own text form, from acp's
+PrintFUtils printer (disassembled from the NetBSD 6 7.9.1 and NetBSD 4 7.8.1
+acp): `{`, `}`, `[` and `]` alone on their lines, `key=value` entries in
+CFDictionary order, data up to 16 bytes as hex, ` |`, the same bytes as text
+(0x20-0x7e as themselves, anything else as `^`) and `| (N bytes)`, and a
+string value as its raw UTF-8 between quotes with nothing escaped. Doctor's
+MaSt probe and the native service's inventory (`build/native/storage/mast.c`)
+read that form.
+
+The Python volume and inventory parsers each walked the text with their own
+line state machine. The volume parser took a partition's closing brace for
+its disk's when the partition had no `deviceName`, so later partitions were
+credited to the next disk, and it dropped an unnamed HFS partition that the
+XML path names after its device. One decoder now turns the text into the
+dictionaries the XML plist gives, following the braces, so both forms go
+through the same converters; the text form now also keeps empty disk and
+partition objects in the inventory and prefers `size` to `capacity`, as the
+XML path always did. Both the Python decoder and the native parser
+unescaped quoted strings, and the native one ended a string at its first
+quote, so a disk named with a quote or a backslash was misread (the native
+parser then rejected the whole MaSt read). In acp's form both now take a
+value as written, up to the quote that ends its line; the OpenStep form
+still unescapes. The service grew by about 190 bytes.
+
+`acp -A MaSt` read on both LAN devices (NetBSD 6: `AirPort Disk` on the
+internal wd0 and a 4 TB external `4TB` on sd0; NetBSD 4 LE: `Data` on sd0,
+CRLF lines) gave the same volumes and inventory, sizes included, with the
+old and the new Python code, and deploy passed on both.
