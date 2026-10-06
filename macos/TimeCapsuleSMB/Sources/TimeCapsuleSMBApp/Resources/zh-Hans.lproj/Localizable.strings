@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "卸载";
 "recovery.guidance.next_steps" = "下一步";
 "backend.recovery.deploy.reboot_not_finished.title" = "重启未完成";
-"backend.recovery.deploy.reboot_not_finished.message" = "安装文件已上传，重启请求也已成功发送，但设备未能在 4 分钟内恢复 SSH 连接。它可能仍在启动，也可能已使用新的 IP 地址重新上线。";
+"backend.recovery.deploy.reboot_not_finished.message" = "安装文件已上传，重启请求也已成功发送，但设备未能及时恢复 SSH 连接。它可能仍在启动，也可能已使用新的 IP 地址重新上线。";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "再等待几分钟。";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "设备可能获得了新的 IP 地址。请重新发现设备并选择它。";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";

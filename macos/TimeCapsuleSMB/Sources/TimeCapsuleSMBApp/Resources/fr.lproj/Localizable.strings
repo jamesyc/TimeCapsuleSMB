@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "Désinstaller";
 "recovery.guidance.next_steps" = "Prochaines étapes";
 "backend.recovery.deploy.reboot_not_finished.title" = "Le redémarrage ne s’est pas terminé";
-"backend.recovery.deploy.reboot_not_finished.message" = "Les fichiers d’installation ont été envoyés et le redémarrage demandé, mais SSH n’était toujours pas accessible au bout de 4 minutes. L’appareil démarre peut-être encore ou utilise une nouvelle adresse IP.";
+"backend.recovery.deploy.reboot_not_finished.message" = "Les fichiers d’installation ont été envoyés et le redémarrage demandé, mais SSH n’est pas redevenu accessible à temps. L’appareil démarre peut-être encore ou utilise une nouvelle adresse IP.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Attendez encore quelques minutes.";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "L’appareil a peut-être une nouvelle adresse IP. Relancez la découverte et sélectionnez-le à nouveau.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "Assurez-vous que vous êtes connecté au même réseau ou Wi-Fi que l’appareil.";

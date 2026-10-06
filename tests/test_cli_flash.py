@@ -1207,7 +1207,7 @@ class CliFlashTests(CliTestCase):
         self.assertTrue(device.served_new_boot)
         network_acp_set_mock.assert_not_called()
         self.assertTrue(reboot_spy.call_args.kwargs["wait"])
-        # The default limits: 90 s to start the reboot, 240 s to come back.
+        # The default limits: 90 s to start the reboot, 600 s to come back.
         self.assertNotIn("start_timeout_seconds", reboot_spy.call_args.kwargs)
         self.assertNotIn("up_timeout_seconds", reboot_spy.call_args.kwargs)
         text = output.getvalue()

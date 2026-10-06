@@ -10,6 +10,9 @@ from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from tests.reboot_support import FakeAcpDevice, RecordingCallbacks
 
+UP_LIMIT = reboot_service.REBOOT_UP_TIMEOUT_SECONDS
+SSH_LIMIT = reboot_service.REBOOT_SSH_TIMEOUT_SECONDS
+
 
 def run(device: FakeAcpDevice, **kwargs):
     recorder = RecordingCallbacks()
@@ -35,7 +38,8 @@ class RebootDeviceTests(unittest.TestCase):
         self.assertEqual(cycle["result"], "success")
         self.assertEqual(cycle["u0_sec"], 3600)
         self.assertEqual(cycle["start_timeout_sec"], 90)
-        self.assertEqual(cycle["up_timeout_sec"], 240)
+        self.assertEqual(cycle["up_timeout_sec"], UP_LIMIT)
+        self.assertEqual(cycle["ssh_timeout_sec"], SSH_LIMIT)
         self.assertTrue(cycle["expect_ssh"])
         # The first read after the new kernel's ACP came up, 45 s after the request.
         self.assertLess(cycle["uptime_at_return_sec"], 15)
@@ -104,8 +108,9 @@ class RebootDeviceTests(unittest.TestCase):
 
     def test_up_limit_restarts_when_an_early_failure_was_transient(self) -> None:
         # A blip 5-12 s in must not start the up clock: the device really goes
-        # down at 60 s and opens SSH at 260 s, inside 240 s of that.
-        device = FakeAcpDevice(shutdown_after=60.0, kernel_after=250.0)
+        # down at 60 s and its new boot answers ACP inside the up limit of
+        # that, but after the limit counted from the blip.
+        device = FakeAcpDevice(shutdown_after=60.0, kernel_after=UP_LIMIT + 10)
         device.flaky_reads_at = ((device.now + 5, device.now + 12),)
         error, recorder = run(device)
 
@@ -122,13 +127,15 @@ class RebootDeviceTests(unittest.TestCase):
         cycle = recorder.measurement("reboot_cycle")
         self.assertEqual(cycle["result"], "did_not_come_back_up")
         # The up limit counts from the first unanswered read, not the request.
-        self.assertGreaterEqual(device.now - started, cycle["down_seen_after_sec"] + 240)
+        self.assertGreaterEqual(device.now - started, cycle["down_seen_after_sec"] + UP_LIMIT)
         self.assertIn("timed out", cycle["last_read_error"])
         self.assertEqual(recorder.stages, ["reboot", "wait_for_reboot_down", "wait_for_reboot_up"])
 
     def test_return_just_inside_and_just_outside_the_up_limit(self) -> None:
-        # Down is seen at the 10 s read (ACP stops at 9 s). SSH opens at kernel + 10.
-        for kernel_after, ok in ((215.0, True), (245.0, False)):
+        # Down is seen at the 10 s read (ACP stops at 9 s), so the last read
+        # allowed to find the new boot is at 10 s + the up limit. The new
+        # boot's ACP answers at kernel + 5; SSH, with its own limit, at kernel + 10.
+        for kernel_after, ok in ((UP_LIMIT - 5, True), (UP_LIMIT + 10, False)):
             with self.subTest(kernel_after=kernel_after):
                 device = FakeAcpDevice(shutdown_after=9.0, kernel_after=kernel_after)
                 error, _recorder = run(device)
@@ -136,21 +143,39 @@ class RebootDeviceTests(unittest.TestCase):
 
     def test_restart_with_ssh_that_never_opens(self) -> None:
         device = FakeAcpDevice(ssh_up_after_boot=None)
+        started = device.now
         error, recorder = run(device, up_timeout_message="SSH did not open after enabling via ACP.")
 
         self.assertEqual(error.code, "reboot_not_finished")
         self.assertEqual(str(error), "SSH did not open after enabling via ACP.")
         cycle = recorder.measurement("reboot_cycle")
         self.assertEqual(cycle["result"], "ssh_not_open")
-        self.assertIn("reset_seen_after_sec", cycle)
+        self.assertEqual(cycle["ssh_timeout_sec"], SSH_LIMIT)
+        # The SSH limit counts from the new boot, not from going down: a
+        # device back in 45 s with SSH closed fails minutes before the up limit.
+        waited = device.now - started
+        self.assertGreaterEqual(waited, cycle["reset_seen_after_sec"] + SSH_LIMIT)
+        self.assertLess(waited, cycle["reset_seen_after_sec"] + SSH_LIMIT + reboot_service.REBOOT_POLL_SECONDS)
+        self.assertLess(waited, cycle["down_seen_after_sec"] + UP_LIMIT)
 
     def test_slow_ssh_after_enabling_it_is_waited_for(self) -> None:
         # The first boot with SSH on can take minutes before sshd listens.
-        for ssh_up_after_boot, ok in ((150.0, True), (260.0, False)):
+        # The new boot is seen at kernel + 5; the SSH limit counts from there.
+        for ssh_up_after_boot, ok in ((SSH_LIMIT - 10, True), (SSH_LIMIT + 20, False)):
             with self.subTest(ssh_up_after_boot=ssh_up_after_boot):
                 device = FakeAcpDevice(ssh_open=False, ssh_up_after_boot=ssh_up_after_boot)
                 error, _recorder = run(device)
                 self.assertEqual(error is None, ok)
+
+    def test_slow_restart_still_gets_the_whole_ssh_limit(self) -> None:
+        # A new boot just inside the up limit, then SSH just inside its own
+        # limit: together longer than the up limit from going down.
+        device = FakeAcpDevice(kernel_after=UP_LIMIT - 50, ssh_up_after_boot=SSH_LIMIT - 30)
+        error, recorder = run(device)
+
+        self.assertIsNone(error)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertGreater(cycle["ssh_ready_after_sec"], cycle["down_seen_after_sec"] + UP_LIMIT)
 
     def test_ssh_kept_closed_passes_at_sixty_seconds_uptime(self) -> None:
         device = FakeAcpDevice(ssh_up_after_boot=None)
@@ -162,6 +187,8 @@ class RebootDeviceTests(unittest.TestCase):
         self.assertGreaterEqual(device.device_uptime(), 65)
         self.assertLess(device.device_uptime(), 66)
         self.assertFalse(recorder.measurement("reboot_cycle")["expect_ssh"])
+        # Disabling never waits for SSH, so it has no SSH limit.
+        self.assertNotIn("ssh_timeout_sec", recorder.measurement("reboot_cycle"))
 
     def test_one_missed_check_does_not_hide_ssh_that_stayed_open(self) -> None:
         # A lost connection attempt reads as a closed port; the second check
@@ -314,7 +341,7 @@ class RandomTimelineTests(unittest.TestCase):
                 uptime=rng.choice([20, 60, 600, 86_400]),
                 reboots=reboots,
                 shutdown_after=rng.uniform(0.5, 30),
-                kernel_after=rng.uniform(31, 400),
+                kernel_after=rng.uniform(31, UP_LIMIT + 200),
                 acp_up_after_boot=rng.uniform(1, 8),
                 ssh_up_after_boot=rng.choice([None, rng.uniform(5, 300)]),
                 read_latency=rng.choice([0.0, 0.5, 4.9]),

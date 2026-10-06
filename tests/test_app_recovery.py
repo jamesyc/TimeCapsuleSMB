@@ -101,7 +101,7 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertEqual(recovery["suggested_operation"], "doctor")
         self.assertEqual(recovery["action_ids"], ["run_checkup"])
         self.assertIn("payload was uploaded", recovery["message"])
-        self.assertIn("4 minute timeout", recovery["message"])
+        self.assertIn("did not accept SSH again in time", recovery["message"])
         self.assertEqual(
             recovery["actions"],
             [

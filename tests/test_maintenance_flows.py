@@ -33,7 +33,7 @@ from timecapsulesmb.services.maintenance import (
     run_fsck,
 )
 from timecapsulesmb.integrations.acp import ACPConnectionError
-from timecapsulesmb.services.reboot import REBOOT_NO_DOWN_MESSAGE, REBOOT_UP_TIMEOUT_MESSAGE, RebootFlowError
+from timecapsulesmb.services.reboot import REBOOT_NO_DOWN_MESSAGE, REBOOT_UP_TIMEOUT_MESSAGE, REBOOT_UP_TIMEOUT_SECONDS, RebootFlowError
 from timecapsulesmb.transport.errors import SshNetworkError
 from timecapsulesmb.transport.ssh import SshConnection
 from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
@@ -109,7 +109,7 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
         self.assertEqual(device.calls.count("request"), 1)
         self.assertTrue(device.served_new_boot)
 
-    def test_reboot_gets_two_minutes_to_start_and_seven_to_return(self) -> None:
+    def test_reboot_gets_two_minutes_to_start_and_the_default_limit_to_return(self) -> None:
         for kernel_after, ok in ((110.0, True), (10_000.0, False)):
             with self.subTest(kernel_after=kernel_after):
                 device = FakeAcpDevice(shutdown_after=100.0, kernel_after=kernel_after)
@@ -119,7 +119,7 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
                     self.assertTrue(outcome.waited)
                 else:
                     self.assertEqual(outcome.code, "reboot_not_finished")
-                    self.assertGreaterEqual(device.now - 1000.0, 100 + 420)
+                    self.assertGreaterEqual(device.now - 1000.0, 100 + REBOOT_UP_TIMEOUT_SECONDS)
 
     def test_failed_fsck_still_reboots_and_reports_the_failure(self) -> None:
         outcome, recorder, _run_ssh, device = self.run_fsck("tcapsule-fsck: fsck_hfs exit status 8\n")

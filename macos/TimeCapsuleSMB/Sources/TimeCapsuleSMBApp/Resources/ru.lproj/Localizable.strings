@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "Удалить";
 "recovery.guidance.next_steps" = "Следующие шаги";
 "backend.recovery.deploy.reboot_not_finished.title" = "Перезагрузка не завершилась";
-"backend.recovery.deploy.reboot_not_finished.message" = "Файлы установки отправлены, запрос перезагрузки выполнен, но за 4 минуты доступ по SSH не восстановился. Устройство может еще запускаться или использовать другой IP-адрес.";
+"backend.recovery.deploy.reboot_not_finished.message" = "Файлы установки отправлены, запрос перезагрузки выполнен, но доступ по SSH не восстановился вовремя. Устройство может еще запускаться или использовать другой IP-адрес.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Подождите еще несколько минут.";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "У устройства может быть новый IP-адрес. Повторите поиск устройств и выберите его снова.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";

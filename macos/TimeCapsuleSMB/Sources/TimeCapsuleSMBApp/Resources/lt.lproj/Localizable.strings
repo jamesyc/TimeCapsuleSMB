@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "Pašalinti";
 "recovery.guidance.next_steps" = "Kiti žingsniai";
 "backend.recovery.deploy.reboot_not_finished.title" = "Paleidimas iš naujo nebaigtas";
-"backend.recovery.deploy.reboot_not_finished.message" = "Diegimo failai buvo įkelti ir paleidimo iš naujo užklausa pavyko, tačiau įrenginys nepriėmė SSH iš naujo iki 4 minučių skirtojo laiko. Gali būti, kad jis vis dar kraunasi arba grįžo su kitu IP adresu.";
+"backend.recovery.deploy.reboot_not_finished.message" = "Diegimo failai buvo įkelti ir paleidimo iš naujo užklausa pavyko, tačiau įrenginys laiku nepriėmė SSH iš naujo. Gali būti, kad jis vis dar kraunasi arba grįžo su kitu IP adresu.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Palaukite dar kelias minutes.";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "Įrenginys gali turėti naują IP adresą. Paleiskite Discover ir pasirinkite jį iš naujo.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";

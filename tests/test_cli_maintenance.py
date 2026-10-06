@@ -500,7 +500,7 @@ class CliMaintenanceTests(CliTestCase):
         self.assertEqual(reboot_spy.call_args.args, ("root@10.0.0.2", "pw"))
         self.assertTrue(reboot_spy.call_args.kwargs["wait"])
         self.assertNotIn("start_timeout_seconds", reboot_spy.call_args.kwargs)  # the 90 s default
-        self.assertNotIn("up_timeout_seconds", reboot_spy.call_args.kwargs)  # the 240 s default
+        self.assertNotIn("up_timeout_seconds", reboot_spy.call_args.kwargs)  # the 600 s default
         self.assertEqual(self.device.calls[:3], ["read", "sleep 1", "request"])
         verify_mock.assert_called_once()
         self.assertIn("Device is back online.", output.getvalue())
@@ -723,7 +723,7 @@ class CliMaintenanceTests(CliTestCase):
         # The host sends the one ACP reboot request after fsck has reported.
         self.assertEqual(reboot_spy.call_args.args, ("root@10.0.0.2", "pw"))
         self.assertEqual(reboot_spy.call_args.kwargs["start_timeout_seconds"], 120)
-        self.assertEqual(reboot_spy.call_args.kwargs["up_timeout_seconds"], 420)
+        self.assertNotIn("up_timeout_seconds", reboot_spy.call_args.kwargs)  # the 600 s default
         self.assertEqual(self.device.calls.count("request"), 1)
         text = output.getvalue()
         self.assertIn("Mounted HFS volume: /dev/dk2 on /Volumes/dk2", text)

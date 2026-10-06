@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "Deinstallieren";
 "recovery.guidance.next_steps" = "Nächste Schritte";
 "backend.recovery.deploy.reboot_not_finished.title" = "Neustart wurde nicht abgeschlossen";
-"backend.recovery.deploy.reboot_not_finished.message" = "Die Installationsdateien wurden hochgeladen und der Neustart angefordert, aber das Gerät war nach 4 Minuten noch nicht über SSH erreichbar. Es startet möglicherweise noch oder hat eine neue IP-Adresse.";
+"backend.recovery.deploy.reboot_not_finished.message" = "Die Installationsdateien wurden hochgeladen und der Neustart angefordert, aber das Gerät war nicht rechtzeitig wieder über SSH erreichbar. Es startet möglicherweise noch oder hat eine neue IP-Adresse.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Warten Sie noch ein paar Minuten.";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "Das Gerät hat möglicherweise eine neue IP-Adresse. Starten Sie die Gerätesuche und wählen Sie es erneut aus.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "Stellen Sie sicher, dass Sie mit demselben Netzwerk oder Wi-Fi wie das Gerät verbunden sind.";

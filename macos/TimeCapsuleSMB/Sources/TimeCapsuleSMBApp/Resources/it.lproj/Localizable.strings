@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "Disinstalla";
 "recovery.guidance.next_steps" = "Passi successivi";
 "backend.recovery.deploy.reboot_not_finished.title" = "Il riavvio non è stato completato";
-"backend.recovery.deploy.reboot_not_finished.message" = "I file di installazione sono stati inviati e il riavvio richiesto, ma SSH non era ancora disponibile dopo 4 minuti. Il dispositivo potrebbe essere ancora in avvio o usare un nuovo indirizzo IP.";
+"backend.recovery.deploy.reboot_not_finished.message" = "I file di installazione sono stati inviati e il riavvio richiesto, ma SSH non è tornato raggiungibile in tempo. Il dispositivo potrebbe essere ancora in avvio o usare un nuovo indirizzo IP.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Aspetta ancora qualche minuto.";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "Il dispositivo potrebbe avere un nuovo indirizzo IP. Ripeti il rilevamento e selezionalo di nuovo.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "Assicurati di essere connesso alla stessa rete o Wi-Fi del dispositivo.";

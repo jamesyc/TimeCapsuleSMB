@@ -16,10 +16,18 @@ from timecapsulesmb.transport.ssh import close_ssh_masters
 # since the request can only come from a new boot.
 REBOOT_STRATEGY = "network_acp"
 REBOOT_START_TIMEOUT_SECONDS = 90
-# Turning on SSH can take minutes: in v3.1.x telemetry, successful enable waits
-# had a p99 of 163 s, and 17 of 57 timeouts at 180 s found SSH open when the
-# user retried 1.4-5.8 minutes later.
-REBOOT_UP_TIMEOUT_SECONDS = 240
+# The new boot can take minutes to start: 122 network ACP reboots of
+# TimeCapsule6,116 in v3.2.0-2 to v3.3.0 telemetry reached the new kernel
+# 47-175 s after the request, but one device took 413 and 488 s, after ACP had
+# stopped answering at 11 s. Counted from the first unanswered read.
+REBOOT_UP_TIMEOUT_SECONDS = 600
+# SSH gets its own limit from the new boot, so a slow restart does not use it
+# up. In 456 network ACP reboots since v3.2.0-1, SSH was open within 1 s of the
+# new boot being seen, but only one of them turned SSH on, which is slower: in
+# v3.1.x telemetry, successful enable waits had a p99 of 163 s from the
+# request, and 17 of 57 timeouts at 180 s found SSH open when the user retried
+# 1.4-5.8 minutes later.
+REBOOT_SSH_TIMEOUT_SECONDS = 240
 REBOOT_POLL_SECONDS = 5
 ACP_REQUEST_TIMEOUT_SECONDS = 25
 UPTIME_READ_TIMEOUT_SECONDS = 5
@@ -59,7 +67,9 @@ def reboot_device(
 ) -> None:
     """Reboot the device through ACP and, with `wait`, prove it rebooted.
 
-    After the reboot SSH must be open (`expect_ssh`) or must stay closed.
+    The new boot must answer ACP within `up_timeout_seconds` of the first
+    unanswered read. Then SSH must open within REBOOT_SSH_TIMEOUT_SECONDS of
+    the new boot being seen (`expect_ssh`), or must stay closed.
     Raises RebootFlowError.
     """
     callbacks = callbacks or OperationCallbacks()
@@ -187,8 +197,9 @@ def _wait(
     fields["uptime_at_return_sec"] = uptime
     if not up_stage:
         callbacks.stage("wait_for_reboot_up")
-    deadline = (down_since if down_since is not None else now) + up_timeout_seconds
     if expect_ssh:
+        fields["ssh_timeout_sec"] = REBOOT_SSH_TIMEOUT_SECONDS
+        deadline = now + REBOOT_SSH_TIMEOUT_SECONDS
         while not tcp_open(host, SSH_PORT):
             if time.monotonic() >= deadline:
                 finish("ssh_not_open", "reboot_not_finished", up_timeout_message)

@@ -236,7 +236,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "Reboot did not finish",
         (
             "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH "
-            "again before the 4 minute timeout. It may still be booting, or it may have come back with a "
+            "again in time. It may still be booting, or it may have come back with a "
             "different IP address."
         ),
         (

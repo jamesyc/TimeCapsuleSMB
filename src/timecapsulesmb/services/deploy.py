@@ -112,7 +112,7 @@ from timecapsulesmb.transport.errors import SshError, TransportError, is_ssh_tim
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
     "Timed out waiting for SSH after reboot.\n\n"
     "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again "
-    "before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address.\n\n"
+    "in time. It may still be booting, or it may have come back with a different IP address.\n\n"
     "Next steps:\n"
     "  1. Wait a few more minutes.\n"
     "  2. If the device is reachable at a new IP, update TC_HOST or rerun configure.\n"

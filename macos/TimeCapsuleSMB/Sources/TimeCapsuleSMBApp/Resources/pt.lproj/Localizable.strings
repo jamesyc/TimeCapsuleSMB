@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "Desinstalar";
 "recovery.guidance.next_steps" = "Próximas etapas";
 "backend.recovery.deploy.reboot_not_finished.title" = "A reinicialização não foi concluída";
-"backend.recovery.deploy.reboot_not_finished.message" = "Os arquivos de instalação foram enviados e a reinicialização foi solicitada, mas SSH não ficou disponível antes do limite de 4 minutos. O dispositivo pode ainda estar iniciando ou usar outro endereço IP.";
+"backend.recovery.deploy.reboot_not_finished.message" = "Os arquivos de instalação foram enviados e a reinicialização foi solicitada, mas SSH não voltou a ficar acessível a tempo. O dispositivo pode ainda estar iniciando ou usar outro endereço IP.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Aguarde mais alguns minutos.";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "O dispositivo pode ter um novo endereço IP. Busque dispositivos e selecione-o novamente.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "Certifique-se de estar conectado à mesma rede ou Wi-Fi do dispositivo.";

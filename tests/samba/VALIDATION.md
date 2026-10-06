@@ -1,3 +1,44 @@
+# A rebooted device gets 10 minutes to start again, then 4 for SSH (2026-10-06)
+
+One TimeCapsule6,116 (NetBSD 4 LE) failed three deploys on v3.2.0-3 and
+v3.3.0 with "Timed out waiting for SSH after reboot". ACP stopped answering
+11 s after each request, as usual, but its new kernel started 488 s and 413 s
+after the request (boot heartbeat uptime, matching the next deploy's `syUT`);
+the deploy's 240 s wait gave up first, and the user's retry rebooted it again.
+The other 122 network ACP reboots of TimeCapsule6,116 in v3.2.0-2 to v3.3.0
+telemetry reached the new kernel 47-175 s after the request (median 56 s). The
+amount of Flash written before the request did not matter: 488 s followed a
+111-byte write. The same device's last on-device `acp acRB` reboot (v3.2.0)
+took 57 s, but across the fleet that route and network ACP took the same time
+(TimeCapsule6,116 median 79 s and 82 s to SSH, 104 and 122 reboots), so the
+route was kept.
+
+The wait for the new boot (`REBOOT_UP_TIMEOUT_SECONDS`) is now 600 s, counted
+as before from the first unanswered read; fsck's own 420 s limit went. SSH no
+longer shares that deadline: it has `REBOOT_SSH_TIMEOUT_SECONDS` (240 s) from
+the new boot being seen, at least the budget v3.3.0 left it (240 s minus the
+time from going down to the new boot), so a device back in 80 s with SSH that
+never opens still fails after about 4 minutes, not 10. Telemetry had three
+such deploys (two TimeCapsule8,119, one TimeCapsule6,116), each failing
+`ssh_not_open` 120-190 s after its new boot; in 456 network ACP reboots since
+v3.2.0-1, SSH was open within 1 s of the new boot being seen. The
+`reboot_cycle` measurement records the SSH limit as `ssh_timeout_sec`.
+Disabling SSH never waits for SSH, so it has no SSH limit. The deploy recovery
+text now says SSH did not return "in time" in every language, since no single
+number fits both limits; Spanish and Portuguese also say reachable
+(*accesible*, *acessível*) instead of available, as the glossary asks.
+
+Validation:
+- pytest: the reboot, maintenance, flash, recovery, app API, configure, error
+  catalog, summaries, localization, set-ssh and deploy suites pass (622). The
+  reboot tests derive their timings from the two constants and cover: a slow
+  restart followed by slow SSH succeeding past a combined deadline; SSH that
+  never opens on a fast reboot failing at the new boot plus the SSH limit,
+  well before the up limit; both sides of each limit. Restoring the shared
+  deadline fails three of them.
+- `swift test` (`RecoveryActionMapperTests`, localization tests) passes.
+- No device run: host-side waits only.
+
 # The manager names processes stuck in the kernel, from one process-table read per pass; the audit no longer runs ps (2026-10-06)
 
 Doctor's ps snapshot (next entry) misses a wait that wakes on a timeout to

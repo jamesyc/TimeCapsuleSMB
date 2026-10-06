@@ -244,7 +244,6 @@ def run_fsck(
                 wait=wait,
                 callbacks=callbacks,
                 start_timeout_seconds=120,
-                up_timeout_seconds=420,
             )
     except RebootFlowError as exc:
         if failure is None:

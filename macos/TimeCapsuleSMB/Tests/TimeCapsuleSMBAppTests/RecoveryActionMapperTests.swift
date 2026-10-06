@@ -381,7 +381,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(english.title, "Reboot did not finish")
         XCTAssertEqual(
             english.detail,
-            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address."
+            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again in time. It may still be booting, or it may have come back with a different IP address."
         )
         XCTAssertEqual(english.steps.count, 5)
         XCTAssertEqual(english.steps[1], "The device may have a new IP address. Run Discover and reselect it.")

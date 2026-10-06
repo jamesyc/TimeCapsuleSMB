@@ -601,7 +601,7 @@
 "recovery.action.uninstall" = "Verwijderen";
 "recovery.guidance.next_steps" = "Volgende stappen";
 "backend.recovery.deploy.reboot_not_finished.title" = "Het opnieuw opstarten is niet voltooid";
-"backend.recovery.deploy.reboot_not_finished.message" = "De installatiebestanden zijn geüpload en de herstart is aangevraagd, maar het apparaat was na 4 minuten nog niet bereikbaar via SSH. Het start mogelijk nog op of heeft een nieuw IP-adres.";
+"backend.recovery.deploy.reboot_not_finished.message" = "De installatiebestanden zijn geüpload en de herstart is aangevraagd, maar het apparaat was niet op tijd weer bereikbaar via SSH. Het start mogelijk nog op of heeft een nieuw IP-adres.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Wacht nog een paar minuten.";
 "backend.recovery.deploy.reboot_not_finished.action.2" = "Het apparaat heeft mogelijk een nieuw IP-adres. Zoek opnieuw naar apparaten en selecteer het opnieuw.";
 "backend.recovery.deploy.reboot_not_finished.action.3" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
