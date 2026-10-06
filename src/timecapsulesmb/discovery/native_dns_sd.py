@@ -313,7 +313,10 @@ def _run_dns_sd_command(args: list[str], *, timeout_sec: float,
                 break
             io.read(min(0.05, remaining))
         io.read()
-        if not io.selector.get_map() and io.proc.poll() is None:
+        # Both pipes closed, so the child is exiting; a loaded host may take a while to reap it.
+        while not io.selector.get_map() and io.proc.poll() is None and time.monotonic() < end:
+            if owner.cancel.is_set():
+                raise KeyboardInterrupt
             try:
                 io.proc.wait(timeout=min(0.05, max(0.0, end - time.monotonic())))
             except subprocess.TimeoutExpired:
@@ -526,8 +529,13 @@ def _resolve(instance: BonjourServiceInstance, previous: BonjourResolvedService 
                                          interface_index=instance.interface_index or index)
     protocol = {"ipv4": "v4", "ipv6": "v6"}.get(family, "v4v6")
     if budget() > 0:
+        # -m ends a one-off single-family query after its first complete batch. v4v6 keeps
+        # the budget so a family that answers later is still collected, and browse retries
+        # keep theirs so a negative answer cannot turn the retry loop into a respawn loop.
+        one_batch = ["-m"] if family and attempt_sec is None else []
         stdout, stderr, code, stopped, error = _run_dns_sd_command(
-            ["dns-sd", *_interface_args(record.interface_index), "-G", protocol, record.hostname],
+            ["dns-sd", *one_batch, *_interface_args(record.interface_index),
+             "-G", protocol, record.hostname],
             timeout_sec=budget(), owner=owner,
         )
         addresses = _parse_dns_sd_address_output(stdout, [*record.ipv4, *record.ipv6])

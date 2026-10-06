@@ -118,6 +118,18 @@ def test_native_retry_replaces_answers_and_preserves_unanswered_families(next_ou
     assert candidate.host == (expected_ipv4[0] if expected_ipv4 else "example.local")
 
 
+@pytest.mark.parametrize("attempt_sec,one_batch", [(None, ["-m"]), (.5, [])])
+def test_only_one_off_single_family_address_queries_end_on_first_batch(attempt_sec, one_batch):
+    import time
+    from timecapsulesmb.discovery.models import BonjourResolvedService
+    instance = BonjourServiceInstance("_airport._tcp.local.", "Example", "Example._airport._tcp.local.", 14)
+    previous = BonjourResolvedService("Example", "example.local", instance.service_type, interface_index=14)
+    with mock.patch.object(native, "_run_dns_sd_command", return_value=("", "", 0, False, "")) as command:
+        native._resolve(instance, previous, time.monotonic() + 3, "ipv4",
+                        native._ProcessOwner(threading.Event()), attempt_sec)
+    assert command.call_args.args[0] == ["dns-sd", *one_batch, "-i", "14", "-G", "v4", "example.local"]
+
+
 def test_native_retry_with_expired_budget_preserves_previous_observation():
     import time
     from timecapsulesmb.discovery.models import BonjourResolvedService
@@ -161,6 +173,14 @@ def test_command_drains_fragmented_stdout_and_large_stderr_then_reaps():
     assert code == 0 and not stopped and not error
 
 
+def test_command_that_closed_its_output_is_complete_even_when_slow_to_exit():
+    # Models a loaded host, where exit finishes well after the kernel closed the pipes.
+    script = "import os,time; print('done',flush=True); os.close(1); os.close(2); time.sleep(.3)"
+    out, err, code, stopped, error = native._run_dns_sd_command([sys.executable, "-u", "-c", script], timeout_sec=10)
+    assert out == "done\n" and err == ""
+    assert code == 0 and not stopped and not error
+
+
 def test_normal_command_deadline_is_not_failure_and_ignoring_terminate_is_killed():
     import selectors
     owner = native._ProcessOwner(threading.Event())
@@ -183,7 +203,11 @@ def test_normal_command_deadline_is_not_failure_and_ignoring_terminate_is_killed
     assert not owner.children
 
 
-def test_cancellation_reaps_running_child():
+@pytest.mark.parametrize("script", [
+    "import time; time.sleep(30)",
+    "import os,time; os.close(1); os.close(2); time.sleep(30)",  # Pipes closed, exit pending.
+])
+def test_cancellation_reaps_running_child(script):
     owner = native._ProcessOwner(threading.Event())
     launched = []
     original = owner.launch
@@ -194,7 +218,7 @@ def test_cancellation_reaps_running_child():
         return proc
     with mock.patch.object(owner, "launch", side_effect=launch):
         with pytest.raises(KeyboardInterrupt):
-            native._run_dns_sd_command([sys.executable, "-u", "-c", "import time; time.sleep(30)"], timeout_sec=10, owner=owner)
+            native._run_dns_sd_command([sys.executable, "-u", "-c", script], timeout_sec=10, owner=owner)
     assert launched and all(p.poll() is not None for p in launched)
     assert not owner.children
 

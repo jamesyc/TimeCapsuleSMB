@@ -154,8 +154,12 @@ elif '-G' in args:
         for family in (('ipv4','ipv6') if delayed=='ipv6' else ('ipv6','ipv4')):
             if protocol != 'v4v6' and protocol != ('v4' if family=='ipv4' else 'v6'): continue
             if family==delayed: time.sleep(max(0,epoch+delay-time.clock_gettime(time.CLOCK_MONOTONIC)))
-            for address in r.get(family,[]):
-                print(' 9:20:00.123  Add 2 %d %s. %s 120' % (r.get('interface_index',14),host,address),flush=True)
+            addresses=r.get(family,[])
+            for i,address in enumerate(addresses):
+                # Flag 1 (MoreComing) marks all but a batch's last answer; -m exits after the batch.
+                flags=3 if i<len(addresses)-1 else 2
+                print(' 9:20:00.123  Add %d %d %s. %s 120' % (flags,r.get('interface_index',14),host,address),flush=True)
+            if addresses and '-m' in args: sys.exit()
     time.sleep(30)
 ''')
     children = []

@@ -159,9 +159,12 @@ def test_native_address_replacement_between_children_reaches_api_selection(monke
 def test_native_targeted_query_requests_only_selected_record_types(monkeypatch, tmp_path, family, expected_v4, expected_v6):
     children = install_native(monkeypatch, tmp_path, records()[:1])
     instance = bonjour.BonjourServiceInstance("_airport._tcp.local.", "Office", "Office._airport._tcp.local.", 14)
-    record, diagnostics = bonjour.BonjourQuery().resolve_detailed(instance, 500, family=family)
+    # The fake -G child exits early only for -m, so returning before the budget
+    # proves the selected family's answer ended the query rather than the deadline.
+    record, diagnostics = bonjour.BonjourQuery().resolve_detailed(instance, 20000, family=family)
     assert record.ipv4 == expected_v4 and record.ipv6 == expected_v6
     assert diagnostics.provider == "dns-sd" and diagnostics.errors == {}
+    assert diagnostics.elapsed_sec < 20
     assert all(p.poll() is not None for p in children)
 
 
