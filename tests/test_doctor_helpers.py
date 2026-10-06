@@ -40,7 +40,8 @@ from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourRe
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("case, failure", [
     ("healthy", None), ("port", "port is 1445"), ("missing_adisk", "Time Machine service missing"),
-    ("bad_txt", "missing Time Machine system flags"), ("afp", "Advertise AFP"),
+    ("bad_txt", "missing Time Machine system flags"),
+    ("afp", "advertises AFP (dk0 adVF=0x83) although Advertise AFP over Bonjour is off"), ("cached_afp_ptr", None),
     ("conflict", "conflicting target, port or TXT"), ("other_link", None), ("partial_adisk", None),
 ])
 def test_selected_record_validation_is_shared_by_name_and_ip_paths(hint, reverse, case, failure):
@@ -48,12 +49,14 @@ def test_selected_record_validation_is_shared_by_name_and_ip_paths(hint, reverse
         return BonjourResolvedService("Home", "home.local", f"{service}._tcp.local.", port=port,
             ipv4=["192.0.2.10"], properties=properties or {}, fullname=f"Home.{service}._tcp.local.", interface_index=14)
     smb = record("_smb", 445)
-    adisk = record("_adisk", 9, {"sys": "adVF=0x1010", "dk0": "adVF=0x83,adVN=Data,adVU=volume-id"})
+    adisk = record("_adisk", 9, {"sys": "adVF=0x1010", "dk0": "adVF=0x82,adVN=Data,adVU=volume-id"})
     evidence = [smb, adisk, record("_device-info", 0, {"model": "TimeCapsule8,119"})]
     if case == "port": evidence[0] = replace(smb, port=1445)
     if case == "missing_adisk": evidence.remove(adisk)
     if case == "bad_txt": evidence[1] = replace(adisk, properties={"dk0": adisk.properties["dk0"]})
-    if case == "afp": evidence.append(record("_afpovertcp", 548))
+    if case == "afp": evidence[1] = replace(adisk, properties={**adisk.properties, "dk0": "adVF=0x83,adVN=Data,adVU=volume-id"})
+    # A deploy reboot sends no goodbye, so the Mac can still list the old AFP service.
+    if case == "cached_afp_ptr": evidence.append(record("_afpovertcp", 548))
     if case == "conflict": evidence.append(replace(adisk, port=10))
     if case == "other_link": evidence.append(replace(smb, hostname="peer.local", port=1445, ipv4=["192.0.2.20"], interface_index=18))
     if case == "partial_adisk": evidence[1] = replace(adisk, ipv4=[], ipv6=["fd00::10"])
@@ -72,6 +75,39 @@ def test_selected_record_validation_is_shared_by_name_and_ip_paths(hint, reverse
         assert failures == []
     assert outcome.instance == "Home"
     assert outcome.addresses == ("192.0.2.10",)
+
+
+@pytest.mark.parametrize("disks, advertise_afp, failure, passed", [
+    ({"dk0": "0x82", "dk1": "0x82"}, False, None, "advertises SMB only as configured"),
+    ({"dk0": "0x83", "dk1": "0x83"}, True, None, "advertises AFP and SMB as configured"),
+    ({"dk0": "0x82", "dk1": "0x83"}, False,
+     "advertises AFP (dk1 adVF=0x83) although Advertise AFP over Bonjour is off; macOS 26.x/27 hides", None),
+    ({"dk0": "0x81"}, False, "advertises AFP (dk0 adVF=0x81) although Advertise AFP over Bonjour is off; macOS 26.x/27 hides", None),
+    ({"dk0": "0x83", "dk1": "0x82"}, True, "advertises SMB only (dk1 adVF=0x82) although Advertise AFP over Bonjour is on", None),
+    ({"dk0": "0x8g", "dk1": "0x82"}, False, "disk dk0 adVF '0x8g' is not hexadecimal", "advertises SMB only as configured"),
+    ({"dk0": "zz"}, True, "disk dk0 adVF 'zz' is not hexadecimal", None),
+])
+def test_adisk_afp_flag_must_match_the_setting_on_every_disk(disks, advertise_afp, failure, passed):
+    properties = {"sys": "adVF=0x1010"}
+    properties.update({key: f"adVF={advf},adVN=Data{key},adVU=uuid-{key}" for key, advf in disks.items()})
+    adisk = BonjourResolvedService("Home", "home.local", "_adisk._tcp.local.", port=9, properties=properties)
+    results: list[CheckResult] = []
+    failed = doctor_steps._add_time_machine_adisk_results(
+        [adisk], instance_name="Home", smb_hostname="home.local", active_share_names=[f"Data{key}" for key in disks],
+        advertise_afp=advertise_afp, add_result=results.append)
+    failures = [r.message for r in results if r.status == "FAIL"]
+    passes = [r.message for r in results if r.status == "PASS"]
+    assert failed is (failure is not None)
+    if failure:
+        assert any(failure in message for message in failures), failures
+    else:
+        assert failures == []
+    if passed:
+        assert any(passed in message for message in passes), passes
+    else:
+        assert not any("as configured" in message for message in passes), passes
+    # A bad flag does not hide the disk's share from the share comparison.
+    assert not any("does not advertise active Samba share" in message for message in failures)
 
 
 class DoctorHelperTests(unittest.TestCase):

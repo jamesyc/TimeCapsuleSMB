@@ -433,7 +433,7 @@ class CheckTests(unittest.TestCase):
             properties={
                 "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
                 "adVF": "0x1010",
-                "dk2": "adVF=0x83,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
+                "dk2": "adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
             },
         )
         default_bonjour_snapshot = BonjourDiscoverySnapshot(
@@ -1088,7 +1088,7 @@ class CheckTests(unittest.TestCase):
             BonjourResolvedService(name, host, "_smb._tcp.local.", port=port, ipv4=ipv4, ipv6=ipv6, fullname=f"{name}._smb._tcp.local."),
             BonjourResolvedService(name, host, "_airport._tcp.local.", port=5009, ipv4=ipv4, ipv6=ipv6, properties={"syAP": "119"}, fullname=f"{name}._airport._tcp.local."),
             BonjourResolvedService(name, host, "_adisk._tcp.local.", port=9, ipv4=ipv4, ipv6=ipv6,
-                properties={"sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010", "dk2": "adVF=0x83,adVN=Data,adVU=12345678-1234-1234-1234-123456789012"}, fullname=f"{name}._adisk._tcp.local."),
+                properties={"sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010", "dk2": "adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012"}, fullname=f"{name}._adisk._tcp.local."),
         ]
         return BonjourDiscoverySnapshot([BonjourServiceInstance(r.service_type, r.name, r.fullname) for r in records], records)
 
@@ -1139,7 +1139,7 @@ class CheckTests(unittest.TestCase):
                     if change == "port":
                         conflicting.port = 1445
                     else:
-                        conflicting.properties["dk2"] = "adVF=0x83,adVN=Wrong,adVU=another-volume"
+                        conflicting.properties["dk2"] = "adVF=0x82,adVN=Wrong,adVU=another-volume"
                     snapshot.resolved.append(conflicting)
                     if reverse:
                         snapshot.resolved.reverse()
@@ -1185,7 +1185,7 @@ class CheckTests(unittest.TestCase):
                             snapshot.resolved.remove(adisk)
                             snapshot.instances = [i for i in snapshot.instances if not i.service_type.startswith("_adisk.")]
                         elif problem == "txt":
-                            adisk.properties["dk2"] = "adVF=0x83,adVN=Wrong,adVU=another-volume"
+                            adisk.properties["dk2"] = "adVF=0x82,adVN=Wrong,adVU=another-volume"
                         elif problem == "target":
                             adisk.hostname = "wrong.local"
                         if reverse:
@@ -1219,6 +1219,35 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any(r.status == "PASS" and "Bonjour IPv4:" in r.message for r in run.results))
         self.assertTrue(any(r.status == "PASS" and "Bonjour IPv6:" in r.message for r in run.results))
 
+    def test_run_doctor_checks_reads_afp_from_adisk_flags_not_afp_browse(self):
+        for advf, advertise_afp, cached_afp_ptr, failure in (
+            # A deploy reboot sends no goodbye, so the Mac can still list the old AFP service.
+            ("0x82", False, True, None),
+            ("0x83", True, False, None),
+            ("0x83", False, False, "advertises AFP (dk2 adVF=0x83) although Advertise AFP over Bonjour is off"),
+            ("0x82", True, True, "advertises SMB only (dk2 adVF=0x82) although Advertise AFP over Bonjour is on"),
+        ):
+            with self.subTest(advf=advf, advertise_afp=advertise_afp, cached_afp_ptr=cached_afp_ptr):
+                snapshot = self.selected_snapshot()
+                adisk = next(r for r in snapshot.resolved if r.service_type.startswith("_adisk."))
+                adisk.properties["dk2"] = f"adVF={advf},adVN=Data,adVU=12345678-1234-1234-1234-123456789012"
+                if cached_afp_ptr:
+                    snapshot.instances.append(BonjourServiceInstance("_afpovertcp._tcp.local.", "Home", "Home._afpovertcp._tcp.local."))
+                values = self.valid_doctor_values(TC_MDNS_INSTANCE_NAME="Home", TC_MDNS_HOST_LABEL="home",
+                                                  TC_MDNS_ADVERTISE_AFP="true" if advertise_afp else "false")
+                run, debug, _browse, diagnostics = self.run_selected_bonjour(snapshot, values=values)
+                failures = [r.message for r in run.results if r.status == "FAIL"]
+                if failure is None:
+                    mode = "AFP and SMB" if advertise_afp else "SMB only"
+                    self.assertFalse(run.fatal, failures)
+                    self.assertNotIn("bonjour_discovery", debug)
+                    self.assertTrue(any(r.status == "PASS" and f"_adisk._tcp TXT advertises {mode} as configured" in r.message
+                                        for r in run.results))
+                else:
+                    self.assertTrue(run.fatal)
+                    self.assertTrue(any(failure in m for m in failures), failures)
+                    self.assertIs(debug["bonjour_discovery"], diagnostics)
+
     def test_run_doctor_checks_resolves_expected_smb_when_browse_misses_instance(self) -> None:
         values = self.valid_doctor_values(
             TC_HOST="root@10.0.0.2",
@@ -1243,7 +1272,7 @@ class CheckTests(unittest.TestCase):
             properties={
                 "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
                 "adVF": "0x1010",
-                "dk2": "adVF=0x83,adVN=Data,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                "dk2": "adVF=0x82,adVN=Data,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
             },
         )
         diagnostics = BonjourDiscoveryDiagnostics(
@@ -4219,7 +4248,7 @@ class CheckTests(unittest.TestCase):
                 properties={
                     "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
                     "adVF": "0x1010",
-                    "dk2": "adVF=0x83,adVN=AirPort Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                    "dk2": "adVF=0x82,adVN=AirPort Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
                 },
             ),
         ]
@@ -4285,7 +4314,7 @@ class CheckTests(unittest.TestCase):
                 properties={
                     "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
                     "adVF": "0x1010",
-                    "dk2": "adVF=0x83,adVN=AirPort Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                    "dk2": "adVF=0x82,adVN=AirPort Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
                 },
             ),
         ]
@@ -4354,7 +4383,7 @@ class CheckTests(unittest.TestCase):
                 properties={
                     "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
                     "adVF": "0x1010",
-                    "dk2": "adVF=0x83,adVN=Backup,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                    "dk2": "adVF=0x82,adVN=Backup,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
                 },
             ),
         ]
@@ -4403,7 +4432,7 @@ class CheckTests(unittest.TestCase):
                 properties={
                     "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
                     "adVF": "0x1010",
-                    "dk2": "adVF=0x83,adVN=Home  Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                    "dk2": "adVF=0x82,adVN=Home  Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
                 },
             ),
         ]
@@ -4479,17 +4508,16 @@ class CheckTests(unittest.TestCase):
         ]
         run = self._apple_responder_doctor_run(instances, self._apple_responder_records())
         messages = [result.message for result in run.results]
-        self.assertIn("Bonjour IPv4: no _afpovertcp._tcp advertised for 'Home'", messages)
+        self.assertIn("Bonjour IPv4: _adisk._tcp TXT advertises SMB only as configured", messages)
         self.assertIn("Bonjour IPv4: no duplicate SMB/ADisk registrations for device home.local", messages)
         self.assertIn("Bonjour IPv4: _device-info._tcp model is Apple's: TimeCapsule6,116", messages)
         self.assertFalse(any(result.status == "FAIL" and "Apple" in result.message for result in run.results), messages)
 
-    def test_run_doctor_checks_fails_on_uninvited_afp_duplicate_device_services_and_foreign_model(self) -> None:
+    def test_run_doctor_checks_fails_on_duplicate_device_services_and_foreign_model(self) -> None:
         instances = [
             BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local."),
             BonjourServiceInstance("_smb._tcp.local.", "Home (2)", "Home (2)._smb._tcp.local."),
             BonjourServiceInstance("_adisk._tcp.local.", "Home (2)", "Home (2)._adisk._tcp.local."),
-            BonjourServiceInstance("_afpovertcp._tcp.local.", "Home", "Home._afpovertcp._tcp.local."),
             BonjourServiceInstance("_device-info._tcp.local.", "Home", "Home._device-info._tcp.local."),
         ]
         records = self._apple_responder_records(model="Macmini9,1")
@@ -4497,7 +4525,6 @@ class CheckTests(unittest.TestCase):
         run = self._apple_responder_doctor_run(instances, records)
         self.assertTrue(run.fatal)
         failures = [result.message for result in run.results if result.status == "FAIL"]
-        self.assertTrue(any("_afpovertcp._tcp is advertised for 'Home' although Advertise AFP over Bonjour is off" in m and "macOS 26.x/27" in m for m in failures), failures)
         self.assertTrue(any("duplicate Bonjour registrations for device home.local" in m
                             and "_smb: Home, Home (2)" in m and "_adisk: Home, Home (2)" in m for m in failures), failures)
         self.assertTrue(any("_device-info._tcp model for 'Home' is Macmini9,1" in m for m in failures), failures)
@@ -4561,16 +4588,11 @@ class CheckTests(unittest.TestCase):
                                             target_ip="fe80::1234%2", resolver=resolver)
         self.assertIs(right.record, record)
 
-    def test_run_doctor_checks_accepts_afp_when_advertising_is_enabled(self) -> None:
-        instances = [
-            BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local."),
-            BonjourServiceInstance("_afpovertcp._tcp.local.", "Home", "Home._afpovertcp._tcp.local."),
-        ]
-        run = self._apple_responder_doctor_run(instances, self._apple_responder_records(model=None), advertise_afp=True)
+    def test_run_doctor_checks_gives_no_model_verdict_without_device_info(self) -> None:
+        instances = [BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")]
+        run = self._apple_responder_doctor_run(instances, self._apple_responder_records(model=None))
         messages = [result.message for result in run.results]
-        self.assertIn("Bonjour IPv4: _afpovertcp._tcp advertised for 'Home' as configured", messages)
         self.assertFalse(any("_device-info._tcp model" in m for m in messages))   # nothing resolved: no verdict
-        self.assertFalse(any(result.status == "FAIL" and "_afpovertcp" in result.message for result in run.results))
 
     def test_run_doctor_checks_fails_when_adisk_service_is_missing_for_active_shares(self) -> None:
         instance_name = "Home"

@@ -577,6 +577,7 @@ def _add_time_machine_adisk_results(
     instance_name: str | None,
     smb_hostname: str | None,
     active_share_names: list[str],
+    advertise_afp: bool,
     add_result: Callable[[CheckResult], None],
 ) -> bool:
     if instance_name is None:
@@ -631,15 +632,50 @@ def _add_time_machine_adisk_results(
         return failed
 
     advertised_shares: list[str] = []
+    # Read AFP from each disk's adVF bit 0x01, not an _afpovertcp browse: a
+    # deploy reboot sends no goodbye, so the Mac can keep a stale AFP PTR.
+    afp_mismatches: list[str] = []
+    afp_checked = False
     for disk_key, fields in sorted(disk_fields.items()):
         missing_fields = [field for field in ("adVF", "adVN", "adVU") if not fields.get(field)]
         if missing_fields:
             failed = True
             add_result(CheckResult("FAIL", f"_adisk._tcp TXT disk {disk_key} is missing fields: {', '.join(missing_fields)}"))
             continue
+        try:
+            disk_afp = bool(int(fields["adVF"], 16) & 0x01)
+        except ValueError:
+            failed = True
+            add_result(CheckResult("FAIL", f"_adisk._tcp TXT disk {disk_key} adVF {fields['adVF']!r} is not hexadecimal"))
+        else:
+            afp_checked = True
+            if disk_afp != advertise_afp:
+                afp_mismatches.append(f"{disk_key} adVF={fields['adVF']}")
         share_name = fields["adVN"]
         if share_name not in advertised_shares:
             advertised_shares.append(share_name)
+
+    if afp_mismatches and not advertise_afp:
+        failed = True
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"_adisk._tcp TXT advertises AFP ({', '.join(afp_mismatches)}) although Advertise AFP over Bonjour is off; "
+                "macOS 26.x/27 hides Time Capsules that advertise AFP; run Install / Update Samba",
+            )
+        )
+    elif afp_mismatches:
+        failed = True
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"_adisk._tcp TXT advertises SMB only ({', '.join(afp_mismatches)}) although Advertise AFP over Bonjour is on; "
+                "run Install / Update Samba",
+            )
+        )
+    elif afp_checked:
+        mode = "AFP and SMB" if advertise_afp else "SMB only"
+        add_result(CheckResult("PASS", f"_adisk._tcp TXT advertises {mode} as configured"))
 
     if active_share_names:
         active_set = set(active_share_names)
@@ -673,7 +709,6 @@ def _add_apple_responder_results(
     *,
     instance_name: str | None,
     smb_hostname: str | None,
-    advertise_afp: bool,
     add_result: Callable[[CheckResult], None],
 ) -> bool:
     """Check the selected device's registrations, including real duplicates.
@@ -684,25 +719,6 @@ def _add_apple_responder_results(
     if instance_name is None:
         return False
     failed = False
-    afp_instances = [
-        instance for instance in snapshot.instances
-        if instance.name == instance_name and _bonjour_service_label(instance.service_type) == "_afpovertcp"
-    ]
-    if afp_instances and not advertise_afp:
-        add_result(
-            CheckResult(
-                "FAIL",
-                f"_afpovertcp._tcp is advertised for {instance_name!r} although Advertise AFP over Bonjour is off; "
-                "macOS 26.x/27 hides Time Capsules that advertise AFP (Apple's diskd may be advertising on the LAN; "
-                "run Install / Update Samba or reboot the device)",
-            )
-        )
-        failed = True
-    elif afp_instances:
-        add_result(CheckResult("PASS", f"_afpovertcp._tcp advertised for {instance_name!r} as configured"))
-    else:
-        add_result(CheckResult("PASS", f"no _afpovertcp._tcp advertised for {instance_name!r}"))
-
     if smb_hostname:
         duplicates = []
         for service in ("_smb", "_adisk"):
@@ -995,6 +1011,7 @@ def _evaluate_bonjour_snapshot(
         instance_name=resolved_record.name,
         smb_hostname=target.hostname,
         active_share_names=active_share_names,
+        advertise_afp=bonjour_expected.advertise_afp,
         add_result=add,
     ):
         outcome.debug_needed = True
@@ -1002,7 +1019,6 @@ def _evaluate_bonjour_snapshot(
         smb_snapshot,
         instance_name=resolved_record.name,
         smb_hostname=target.hostname,
-        advertise_afp=bonjour_expected.advertise_afp,
         add_result=add,
     ):
         outcome.debug_needed = True
