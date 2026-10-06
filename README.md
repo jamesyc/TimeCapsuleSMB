@@ -43,6 +43,7 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 
 ## Quick Start (macOS app)
 
+0. Connect over ethernet, not Wi-Fi, if you are connected directly to the device. A Wi-Fi connection will disconnect you every time the device reboots. (This actually isn't a problem and it will still install correctly since a reboot is the last step, the app will just think an install failed.)
 1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
 2. Unzip the app and run it. 
 3. Make sure *Local Network* permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
