@@ -1,3 +1,62 @@
+# The device hostname always fits /etc/hosts; its guard is gone (2026-10-05)
+
+The manager refused to map a hostname outside 1-255 of `A-Z a-z 0-9 . _ -`
+(`tc_hostname_plain()`), logged it and started Samba unmapped, and doctor
+reported it as `hostname_invalid`. Nothing on the devices can produce such a
+name:
+
+- Every ACPd checked (products 106 and 116 at 7.5.2-7.8.1, 119 and 120 at
+  7.7.3-7.9.1; see "Doctor reads syDN") sets the kernel hostname by
+  converting `syDN`, else `syNm`, to `[A-Za-z0-9-]`, at most 63 bytes, else
+  formatting `Base-Station-%02x%02x%02x`, then lowercasing it.
+- The only other setter is `/sbin/dhclient-script`, which ACPd's dhclient
+  runs in bridge mode (`/sbin/dhclient -q -d` on NetBSD 4). It sets the
+  hostname from a DHCP `host-name` only when the current one is empty or the
+  previous lease's, and first strips everything outside `[-.a-zA-Z0-9]`; ACPd
+  sends its own name as `host-name`, and the NetBSD 4 lease echoed
+  `airport-time-capsule`. `/etc/rc.d/network` has no `hostname` in `rc.conf`
+  and no `/etc/myname` on either device.
+
+Removed: `tc_hostname_plain()` and its uses in the manager's staging and in
+`tc_hosts_update()` (which no longer returns `EINVAL`), the
+`DeviceHostnameProbeResult.plain` rule that mirrored it, the `hostname_invalid`
+doctor check, and the tests of those paths. Waiting for an unset hostname,
+mapping it, removing our stale lines after a rename and doctor's waiting and
+unmapped checks stay.
+
+Doctor repeats the manager's reading of `/etc/hosts`, and the two had
+drifted: doctor's stale-line pattern still allowed only `[A-Za-z0-9._-]` and
+counted characters, its mapping check split words on any Unicode whitespace
+with no 1023-byte cut, and its probe parser split lines at CR and other
+separators. Doctor now reads a line as `our_line()` and `maps()` do, in
+bytes: our form is `127.0.0.1<TAB><n> <n>.local` with `<n>` up to the first
+space and at most 255 bytes; a mapping is any word after the address, before
+`#`, separated by space, tab or CR, within the first 1023 bytes; lines end
+only at LF; doctor no longer trims the hostname, which the manager uses as it
+is. Doctor decodes the probe's output as UTF-8 with replacement, so only valid
+UTF-8 lines are read byte for byte. `tests/native/test_hosts.py` runs the real `tc_hosts_update()` and
+doctor's rules on the same 33 lines (tab and UTF-8 names, 255/256-byte and
+254/256-UTF-8-byte names, CR, vertical tab, form feed, NBSP, the 1023-byte
+cut) and states each answer; against the previous doctor rules 9 of them
+disagreed.
+
+Lane builds (12 s for all three; `build/service.sh` compiles every source in
+one `gcc` call with no cached objects, so each build is from scratch) produced NetBSD 6 `f0d2e69c...`
+(376020 bytes, was 376324), NetBSD 4 LE `d2c1ea7c...` (333296, was 333608) and
+NetBSD 4 BE `bee2bd9d...` (332716, was 333028); both build checks passed
+(`disable_data_faultahead` on every lane, fork repair on NetBSD 6). The same
+VM rebuilt main's unchanged source to the committed hashes byte for byte. Comment-only edits
+to `hosts.c` and `service.h` afterwards rebuilt to the same three hashes.
+Deploy and doctor passed on NetBSD 6 and NetBSD 4 LE (NetBSD 6's first doctor,
+about 70 s after boot, failed only its NBNS query and passed a minute
+later). On NetBSD 4, `syDN` set to `Dn Test.Name’s` and a reboot gave
+`hostname found: dn-test-names` and `mapped dn-test-names`; `hostname
+dn-live-rename` while running gave `hostname changed`, `removed the stale
+mapping for dn-test-names` and one line for the new name, with smbd still
+running; clearing `syDN` and rebooting restored `airport-time-capsule`.
+`pytest -n auto` passed (3619 tests), and doctor passed again on both devices
+with the final code.
+
 # Doctor reads syDN before syNm for Apple's Bonjour host (2026-10-05)
 
 Telemetry from a TimeCapsule6,113 (NetBSD 4 LE) on v3.2.0-3 failed doctor

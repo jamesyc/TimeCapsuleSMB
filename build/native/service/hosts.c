@@ -34,13 +34,9 @@ void tc_hostname_read(char *out, size_t size) {
     out[size - 1] = 0;
 }
 
-int tc_hostname_plain(const char *name) {
-    size_t length = name ? strlen(name) : 0;
-    return length && length <= 255 &&
-           strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") == length;
-}
-
-/* The name in one of our own lines, or 0 when the line is not ours. */
+/* The name in one of our own lines, or 0 when the line is not ours. Doctor
+ * repeats this and maps() in Python (device/probe.py); tests/native/test_hosts.py
+ * checks that both read every line alike. */
 static int our_line(const char *line, size_t length, char *name, size_t size) {
     const char *start, *space;
     size_t n;
@@ -56,7 +52,7 @@ static int our_line(const char *line, size_t length, char *name, size_t size) {
         return 0;
     memcpy(name, start, n);
     name[n] = 0;
-    return tc_hostname_plain(name);
+    return 1;
 }
 
 /* Whether a line (comments ignored) maps hostname or hostname.local. */
@@ -98,10 +94,6 @@ int tc_hosts_update(const char *path, const char *hostname) {
     mode_t mode = 0644;
     int fd, mapped = 0, changed = 0, saved;
     struct stat st;
-    if (!tc_hostname_plain(hostname)) {
-        errno = EINVAL;
-        return -1;
-    }
     snprintf(local, sizeof(local), "%s.local", hostname);
     if (snprintf(temp, sizeof(temp), "%.*s.%s.tc", slash ? (int)(slash - path + 1) : 0, path,
                  slash ? slash + 1 : path) >= (int)sizeof(temp)) {

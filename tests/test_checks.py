@@ -2499,36 +2499,6 @@ class CheckTests(unittest.TestCase):
             "device hostname capsule is not mapped in /etc/hosts; Samba logins stall until it is (issue #54)",
         )
 
-    INVALID_MESSAGE = (
-        'device hostname "bad name" cannot be mapped in /etc/hosts because it is not a plain '
-        "host name (letters, digits, '.', '-', '_'); Samba logins may stall. "
-        "Rename the base station in AirPort Utility."
-    )
-
-    def test_doctor_names_a_hostname_that_cannot_be_mapped(self) -> None:
-        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("bad name", ("127.0.0.1\tlocalhost",)))
-
-        failure = next(result for result in run.results if result.details.get("code") == "hostname_invalid")
-        self.assertEqual((failure.status, failure.message), ("FAIL", self.INVALID_MESSAGE))
-        # Reported once, as invalid, not also as merely unmapped.
-        self.assertFalse(any(result.details.get("code") == "hostname_unmapped" for result in run.results))
-        self.assertTrue(run.fatal)
-
-    def test_doctor_keeps_an_invalid_hostname_failure_while_starting_up(self) -> None:
-        # Waiting cannot fix the name, so startup grace does not fold it away.
-        run = self.run_doctor_with_hostname(
-            DeviceHostnameProbeResult("bad name", ("127.0.0.1\tlocalhost",)), started_seconds_ago=20.0
-        )
-
-        failure = next(result for result in run.results if result.details.get("code") == "hostname_invalid")
-        self.assertEqual(failure.status, "FAIL")
-        self.assertNotIn("masked_by", failure.details)
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
-        self.assertTrue(any(
-            result.status == "INFO" and "some failures above may resolve once startup completes" in result.message
-            for result in run.results
-        ))
-
     def test_doctor_masks_hostname_failures_while_the_device_is_starting_up(self) -> None:
         for probe, code in (
             (DeviceHostnameProbeResult("", (), manager_waiting=True), "hostname_waiting"),

@@ -213,6 +213,21 @@ class ProbeTests(unittest.TestCase):
         # While the name is unset (ACPd cleared it) no mapping counts as earlier.
         self.assertEqual(probe.DeviceHostnameProbeResult("", ("127.0.0.1\tnew new.local",)).stale_names, ())
 
+    def test_device_hostname_probe_splits_lines_only_at_lf_like_the_manager(self) -> None:
+        # A CR or a vertical tab stays inside its /etc/hosts line, as it does
+        # for the manager, which splits only at LF and uses the kernel name as
+        # it is.
+        self.assertEqual(probe.parse_device_hostname_probe("hostname= new \n").hostname, " new ")
+        result = probe.parse_device_hostname_probe(
+            "hostname=new\n"
+            "hosts=127.0.0.1\told old.local\r\n"
+            "hosts=127.0.0.1\x0bnew\n"
+        )
+
+        self.assertEqual(result.hosts_lines, ("127.0.0.1\told old.local\r", "127.0.0.1\x0bnew"))
+        self.assertEqual(result.stale_names, ())
+        self.assertFalse(result.mapped)
+
     def test_device_hostname_probe_conn_reports_timeouts_and_failures(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshCommandTimeout("slow")):

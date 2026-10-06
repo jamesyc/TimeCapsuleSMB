@@ -369,31 +369,6 @@ def test_losing_the_hostname_keeps_samba_running_until_a_name_returns(manager,re
     assert [e['pid'] for e in smbd_starts(events())]==[first['pid']]
 
 
-def test_invalid_hostname_is_left_unmapped_and_samba_starts(manager):
-    # ACPd copies a user-set syDN; a name /etc/hosts cannot hold never becomes
-    # writable, so staging logs it once per run and starts Samba anyway.
-    root,start,events,wait,_,_=manager
-    (root/'hostname').write_text('bad name\n')
-    (root/'hosts').write_text('127.0.0.1\tlocalhost\n')
-    start()
-    rows=wait(lambda rows:smbd_starts(rows))
-    assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\tlocalhost\n'
-    log=runtime_log(root)
-    assert f'stage: not mapping hostname "bad name" in {root}/hosts: not a plain host name; Samba logins may stall' in log
-    assert 'staging failed' not in log
-
-
-def test_rename_to_an_invalid_hostname_reloads_samba_and_leaves_hosts_alone(manager):
-    root,start,events,wait,_,_=manager
-    start()
-    first=smbd_starts(wait(lambda rows:smbd_starts(rows)))[0]
-    (root/'hostname').write_text('bad name\n')
-    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
-    assert (root/'hosts').read_text()=='127.0.0.1\tcapsule capsule.local\n'
-    assert 'stage: not mapping hostname "bad name"' in runtime_log(root)
-    assert [e['pid'] for e in smbd_starts(events())]==[first['pid']]
-
-
 def test_stale_mapping_from_an_earlier_manager_this_boot_is_removed(manager):
     # /etc/hosts lives on the RAM root: only a manager earlier in this boot,
     # under another hostname, can have left one of our lines behind.

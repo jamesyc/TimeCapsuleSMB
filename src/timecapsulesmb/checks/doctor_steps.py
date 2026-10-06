@@ -148,7 +148,6 @@ DOCTOR_CODE_METADATA_MIGRATION_IN_PROGRESS = "metadata_migration_in_progress"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
 DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
-DOCTOR_CODE_HOSTNAME_INVALID = "hostname_invalid"
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_GRACE_SECONDS = 180
 STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
@@ -2026,19 +2025,6 @@ def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, si
             "Samba cannot start or restage until it is set, and the Samba and "
             "Time Machine checks below may fail because of it",
             {"code": DOCTOR_CODE_HOSTNAME_WAITING, "hostname": probe.hostname},
-        ))
-    elif not probe.plain:
-        # The manager never maps such a name, and waiting will not fix it.
-        sink.add(CheckResult(
-            "FAIL",
-            f'device hostname "{probe.hostname}" cannot be mapped in /etc/hosts because it is not a plain '
-            "host name (letters, digits, '.', '-', '_'); Samba logins may stall. "
-            "Rename the base station in AirPort Utility.",
-            {
-                "code": DOCTOR_CODE_HOSTNAME_INVALID,
-                "hostname": probe.hostname,
-                STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_PRESERVE,
-            },
         ))
     elif not probe.mapped:
         sink.add(_startup_transient_result(

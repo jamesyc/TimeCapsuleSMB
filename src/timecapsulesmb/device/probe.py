@@ -2067,10 +2067,36 @@ DEVICE_HOSTNAME_PROBE_COMMAND = (
     + RUNTIME_RAM_ROOT
     + "/var/runtime.log 2>/dev/null; true"
 )
-_OUR_HOSTS_LINE = re.compile(r"^127\.0\.0\.1\t([A-Za-z0-9._-]+) \1\.local$")
-# The manager's tc_hostname_plain(): what one /etc/hosts line can hold.
-# tests/native/test_hosts.py checks that both rules agree.
-_PLAIN_HOSTNAME = re.compile(r"^[A-Za-z0-9._-]{1,255}$")
+# What the manager's our_line() and maps() (build/native/service/hosts.c) read
+# in an /etc/hosts line, byte for byte; tests/native/test_hosts.py runs both on
+# the same lines. The probe's SSH output is decoded as UTF-8 with replacement,
+# so a line that is not valid UTF-8 reaches doctor with other bytes, and its
+# lengths can differ from the manager's.
+_OUR_HOSTS_LINE_PREFIX = b"127.0.0.1\t"
+_HOSTS_NAME_MAX_BYTES = 255
+_HOSTS_LINE_MAX_BYTES = 1023
+_HOSTS_SEPARATORS = re.compile(rb"[ \t\r]+")
+
+
+def _our_hosts_line_name(line: str) -> str | None:
+    """The name in a line of the manager's form, 127.0.0.1<TAB><n> <n>.local."""
+    data = line.encode("utf-8")
+    if not data.startswith(_OUR_HOSTS_LINE_PREFIX):
+        return None
+    rest = data[len(_OUR_HOSTS_LINE_PREFIX):]
+    length = rest.find(b" ")
+    if not 0 < length <= _HOSTS_NAME_MAX_BYTES:
+        return None
+    name = rest[:length]
+    if rest != name + b" " + name + b".local":
+        return None
+    return name.decode("utf-8")
+
+
+def _hosts_line_names(line: str) -> list[bytes]:
+    """The names a line maps: its words after the address, before any '#'."""
+    data = line.encode("utf-8")[:_HOSTS_LINE_MAX_BYTES].split(b"#", 1)[0]
+    return [word for word in _HOSTS_SEPARATORS.split(data) if word][1:]
 
 
 @dataclass(frozen=True)
@@ -2082,21 +2108,12 @@ class DeviceHostnameProbeResult:
     error: str | None = None
 
     @property
-    def plain(self) -> bool:
-        """Whether the manager can map this name: 1-255 of A-Z a-z 0-9 . _ -."""
-        return bool(_PLAIN_HOSTNAME.fullmatch(self.hostname))
-
-    @property
     def mapped(self) -> bool:
         """Whether any line (comments ignored) maps the hostname or hostname.local."""
         if not self.hostname:
             return False
-        names = {self.hostname, f"{self.hostname}.local"}
-        for line in self.hosts_lines:
-            words = line.split("#", 1)[0].split()
-            if any(word in names for word in words[1:]):
-                return True
-        return False
+        names = {self.hostname.encode("utf-8"), f"{self.hostname}.local".encode("utf-8")}
+        return any(name in names for line in self.hosts_lines for name in _hosts_line_names(line))
 
     @property
     def stale_names(self) -> tuple[str, ...]:
@@ -2105,9 +2122,9 @@ class DeviceHostnameProbeResult:
             return ()  # with no current name, no mapping is "earlier"
         stale = []
         for line in self.hosts_lines:
-            match = _OUR_HOSTS_LINE.match(line)
-            if match and match.group(1) != self.hostname:
-                stale.append(match.group(1))
+            name = _our_hosts_line_name(line)
+            if name is not None and name != self.hostname:
+                stale.append(name)
         return tuple(stale)
 
 
@@ -2116,10 +2133,12 @@ def parse_device_hostname_probe(stdout: str) -> DeviceHostnameProbeResult:
     ps_rows: list[str] = []
     hosts_lines: list[str] = []
     boot_wait_ms = None
-    for line in stdout.splitlines():
+    # Split only at LF, as the manager does: a CR or other line separator
+    # inside an /etc/hosts line belongs to that line.
+    for line in stdout.split("\n"):
         key, _, value = line.partition("=")
         if key == "hostname":
-            hostname = value.strip()
+            hostname = value  # the manager uses the kernel name as it is
         elif key == "ps":
             ps_rows.append(value)
         elif key == "hosts":

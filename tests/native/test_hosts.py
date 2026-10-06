@@ -1,6 +1,7 @@
 """Map the device hostname in Apple's /etc/hosts: once, byte-preserving, and
 without ever touching lines that are not ours."""
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -118,14 +119,6 @@ def test_leftover_temporary_file_is_replaced(hosts_tool, tmp_path):
     assert not (tmp_path/'.hosts.tc').exists()
 
 
-@pytest.mark.parametrize('name', ['', 'capsule\ninjected', 'café', 'two words', 'a' * 256])
-def test_invalid_name_is_refused_and_changes_nothing(hosts_tool, tmp_path, name):
-    path = tmp_path/'hosts'; path.write_text('preserve\n')
-    assert update(hosts_tool, path, name) == (-1, 'Invalid argument\n')
-    assert path.read_text() == 'preserve\n'
-    assert sorted(os.listdir(tmp_path)) == ['hosts']
-
-
 @pytest.mark.skipif(os.geteuid() == 0, reason='root bypasses file permissions')
 def test_unreadable_file_fails_without_changes(hosts_tool, tmp_path):
     path = tmp_path/'hosts'; path.write_text(APPLE); path.chmod(0)
@@ -171,25 +164,67 @@ def test_test_build_reports_an_unset_hostname_as_empty(hosts_tool, tmp_path):
     assert run.stdout == '\n'
 
 
-PLAIN_CASES = [('capsule', True), ('a.b-c_D9', True), ('a' * 255, True),
-               ('', False), ('bad name', False), ('capsule\ninjected', False), ('caf\u00e9', False),
-               ('a' * 256, False), ('tab\there', False), ('semi;colon', False)]
+# Doctor repeats the manager's reading of /etc/hosts in Python. Both run on the
+# same lines here: UTF-8 without NUL bytes, which is what the probe's SSH output
+# carries. Each case also states the answer, so both cannot agree on a wrong one.
+STALE_LINES = [
+    pytest.param('127.0.0.1\told old.local', 'old', id='ours'),
+    pytest.param('127.0.0.1\tOld.Name_9 Old.Name_9.local', 'Old.Name_9', id='case-dot-underscore'),
+    pytest.param('127.0.0.1\ta\tb a\tb.local', 'a\tb', id='tab-in-name'),
+    pytest.param('127.0.0.1\tcaf\u00e9 caf\u00e9.local', 'caf\u00e9', id='utf8-name'),
+    pytest.param('127.0.0.1\t' + 'x' * 255 + ' ' + 'x' * 255 + '.local', 'x' * 255, id='255-bytes'),
+    pytest.param('127.0.0.1\t' + 'x' * 256 + ' ' + 'x' * 256 + '.local', None, id='256-bytes'),  # longer than the manager's buffer
+    pytest.param('127.0.0.1\t' + '\u00e9' * 127 + ' ' + '\u00e9' * 127 + '.local', '\u00e9' * 127, id='254-utf8-bytes'),
+    pytest.param('127.0.0.1\t' + '\u00e9' * 128 + ' ' + '\u00e9' * 128 + '.local', None, id='256-utf8-bytes'),  # 128 characters, 256 bytes
+    pytest.param('127.0.0.1\told old.local\r', None, id='trailing-cr'),
+    pytest.param('127.0.0.1\told old.local ', None, id='trailing-space'),
+    pytest.param('127.0.0.1\told old', None, id='no-local'),
+    pytest.param('127.0.0.1\told new.local', None, id='names-differ'),
+    pytest.param('127.0.0.1 old old.local', None, id='space-not-tab'),
+    pytest.param('127.0.0.1\t old old.local', None, id='empty-name'),
+    pytest.param('127.0.0.1\tnewname newname.local', None, id='current-name'),
+    pytest.param('# 127.0.0.1\told old.local', None, id='comment'),
+    pytest.param('', None, id='empty-line'),
+]
 
 
-def plain(tool, name):
-    run = subprocess.run([str(tool), '--plain', name], capture_output=True, text=True, check=True)
-    return run.stdout == '1\n'
+@pytest.mark.parametrize(('line', 'stale'), STALE_LINES)
+def test_doctor_and_the_manager_agree_on_our_stale_lines(hosts_tool, tmp_path, line, stale):
+    path = tmp_path/'hosts'; path.write_bytes((APPLE + line + '\n').encode())
+    _, log = update(hosts_tool, path, 'newname')
+    removed = re.findall(r'^stage: removed the stale mapping for (.*)$', log, re.M)
+    assert removed == ([stale] if stale else [])
+    assert DeviceHostnameProbeResult('newname', (line,)).stale_names == ((stale,) if stale else ())
 
 
-@pytest.mark.parametrize(('name', 'expected'), PLAIN_CASES)
-def test_plain_hostname_is_what_one_hosts_line_can_hold(hosts_tool, name, expected):
-    assert plain(hosts_tool, name) is expected
+MAPPED_LINES = [
+    pytest.param('127.0.0.1 capsule', True, id='name'),
+    pytest.param('::1\tcapsule.local # Apple entry', True, id='local-name-and-comment'),
+    pytest.param('127.0.0.1\tlocalhost capsule', True, id='second-name'),
+    pytest.param('127.0.0.1 capsule\r', True, id='trailing-cr'),  # CR separates words
+    pytest.param('  127.0.0.1 \t capsule', True, id='leading-blanks'),
+    pytest.param('127.0.0.1 ' + 'x' * 1004 + ' capsule', True, id='ends-at-1022'),  # 1022 bytes: within the cut
+    pytest.param('127.0.0.1 ' + 'x' * 1006 + ' capsule', False, id='cut-at-1023'),  # the 1023-byte cut falls inside the name
+    pytest.param('capsule', False, id='address-only'),  # the address field is not a name
+    pytest.param('127.0.0.1 localhost # capsule', False, id='in-comment'),
+    pytest.param('# 127.0.0.1 capsule', False, id='commented-out'),
+    pytest.param('127.0.0.1 Capsule', False, id='case-differs'),
+    pytest.param('127.0.0.1 capsules', False, id='longer-word'),
+    pytest.param('127.0.0.1\x0bcapsule', False, id='vertical-tab'),  # only space, tab and CR separate
+    pytest.param('127.0.0.1\x0ccapsule', False, id='form-feed'),
+    pytest.param('127.0.0.1\x1ccapsule', False, id='file-separator'),
+    pytest.param('127.0.0.1\u00a0capsule', False, id='nbsp'),
+]
 
 
-def test_doctor_and_the_manager_agree_on_plain_hostnames(hosts_tool):
-    # Doctor repeats the manager's rule in Python; both must decide alike.
-    for name, _ in PLAIN_CASES + [('x' * 254 + '.', None), ('-', None), ('.local', None)]:
-        assert DeviceHostnameProbeResult(name).plain is plain(hosts_tool, name), name
+@pytest.mark.parametrize(('line', 'mapped'), MAPPED_LINES)
+def test_doctor_and_the_manager_agree_on_what_maps_the_hostname(hosts_tool, tmp_path, line, mapped):
+    path = tmp_path/'hosts'; path.write_bytes((line + '\n').encode())
+    result, _ = update(hosts_tool, path, 'capsule')
+    assert result in (0, 1)
+    # The manager leaves a mapped file alone and appends its line otherwise.
+    assert (result == 0) is mapped
+    assert DeviceHostnameProbeResult('capsule', (line,)).mapped is mapped
 
 
 def test_contents_arriving_in_pieces_are_kept_whole(hosts_tool, tmp_path):

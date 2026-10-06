@@ -257,12 +257,8 @@ static int stage_job(void *opaque) {
     struct manager *m = opaque;
     tc_worker_begin("stage");
     /* Samba logins stall without this mapping, so a failed write fails
-     * staging, which retries. A name /etc/hosts cannot hold (ACPd copies a
-     * user-set syDN) can never be written: log it and start Samba anyway. */
-    if (!tc_hostname_plain(m->hostname))
-        fprintf(stderr, "stage: not mapping hostname \"%s\" in %s: not a plain host name; Samba logins may stall\n",
-                m->hostname, TC_HOSTS_PATH);
-    else if (tc_hosts_update(TC_HOSTS_PATH, m->hostname) < 0) {
+     * staging, which retries. */
+    if (tc_hosts_update(TC_HOSTS_PATH, m->hostname) < 0) {
         fprintf(stderr, "stage: could not update %s for %s: %s\n", TC_HOSTS_PATH, m->hostname, strerror(errno));
         return tc_worker_finish(1);
     }
