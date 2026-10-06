@@ -57,6 +57,12 @@ def event(kind):
         # What smbd's own-name lookups would have found when it started.
         hosts=Path(os.environ['TC_TEST_ROOT'])/'hosts'
         row['hosts']=hosts.read_text() if hosts.is_file() else None
+    if role=='smbd' and kind in ('start','reload'):
+        # The NetBIOS name this smbd started or reloaded with.
+        conf=Path(os.environ['TC_TEST_ROOT'])/'ram/etc/smb.conf'
+        names=[line.split('=',1)[1].strip() for line in (conf.read_text().splitlines() if conf.is_file() else [])
+               if line.strip().startswith('netbios name')]
+        row['netbios']=names[0] if names else None
     with log.open('a') as f:f.write(json.dumps(row)+'\\n')
 # Like smbd still starting up: no signal handlers yet, so SIGHUP kills it.
 while role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-hold').exists():time.sleep(.05)
@@ -314,11 +320,48 @@ def test_samba_waits_for_the_hostname_and_starts_once_it_is_mapped(manager):
     wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
 
 
+def discovery_names(rows):
+    # The NetBIOS name of each payload discovery generation, in launch order.
+    return [e['args'][e['args'].index('--netbios-name')+1] for e in rows
+            if e['role']=='discovery' and e['kind']=='start' and '--netbios-name' in e['args']]
+
+
+def test_samba_and_discovery_never_use_the_name_read_before_the_hostname_was_set(manager):
+    # The first settings read runs before ACPd sets the hostname, so its
+    # NetBIOS name comes from syNm. On the device, Samba and discovery started
+    # under it and were renamed 30 s later, when the next read saw the
+    # hostname: a NetBIOS outage, a Bonjour re-registration and a Samba reload
+    # on every boot.
+    root,start,events,wait,_,_=manager
+    (root/'name').write_text("Kevin's AirPort Time Capsule")
+    (root/'hostname').write_text('')
+    (root/'config').write_text('TELEMETRY=0\n')
+    process=start()
+    wait(lambda rows:any(e['role']=='discovery' and '--diskless' in e['args'] for e in rows))
+    time.sleep(2) # The first settings read has finished without a hostname.
+    assert not smbd_starts(events())
+    (root/'hostname').write_text('kevins-airport-time-capsule\n')
+    rows=wait(lambda rows:smbd_starts(rows) and discovery_names(rows))
+    assert [e['netbios'] for e in smbd_starts(rows)]==['kevins-airport-']
+    assert discovery_names(rows)==['kevins-airport-']
+    # The next read now has the hostname. It must derive the same name and
+    # change nothing. Telemetry starting proves that read was applied (a
+    # telemetry change alone does not reload Samba).
+    (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
+    rows=wait(started('telemetry'))
+    assert not any(e['role']=='smbd' and e['kind'] in ('reload','stop') for e in rows)
+    assert len(smbd_starts(rows))==1
+    assert discovery_names(rows)==['kevins-airport-']
+    assert 'netbios name = kevins-airport-' in (root/'ram/etc/smb.conf').read_text()
+
+
 def test_hostname_set_at_start_is_found_without_waiting(manager):
     root,start,events,wait,_,_=manager
     start()
-    rows=wait(lambda rows:smbd_starts(rows))
+    rows=wait(lambda rows:smbd_starts(rows) and discovery_names(rows))
     assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\tcapsule capsule.local\n'
+    assert [e['netbios'] for e in smbd_starts(rows)]==['capsule']
+    assert discovery_names(rows)==['capsule']
     log=runtime_log(root)
     assert found_after_ms(log,'capsule')<1500
     assert 'waiting for the device hostname' not in log
@@ -337,9 +380,13 @@ def test_existing_mapping_is_left_as_it_is(manager):
 def test_rename_remaps_the_hostname_and_reloads_samba_without_restarting_it(manager):
     root,start,events,wait,_,_=manager
     start()
-    first=smbd_starts(wait(lambda rows:smbd_starts(rows)))[0]
+    first=smbd_starts(wait(lambda rows:smbd_starts(rows) and discovery_names(rows)))[0]
     (root/'hostname').write_text('renamed\n')
-    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
+    # One restage takes both the mapping and the NetBIOS name, within the
+    # wait, well before the 30 s settings refresh.
+    rows=wait(lambda rows:discovery_names(rows)==['capsule','renamed'])
+    reloads=[e for e in rows if e['role']=='smbd' and e['kind']=='reload']
+    assert [e['netbios'] for e in reloads]==['renamed']
     assert (root/'hosts').read_text()=='127.0.0.1\trenamed renamed.local\n'
     log=runtime_log(root)
     assert 'manager: hostname changed from capsule to renamed' in log
@@ -550,6 +597,32 @@ def test_failed_name_read_keeps_last_identity_without_renaming_samba(manager):
     wait(started('telemetry'))
     assert (root/'ram/etc/smb.conf').read_bytes()==before
     assert not any(e['role']=='smbd' and e['kind'] in ('reload','stop') for e in events())
+
+
+def test_rename_remaps_and_renames_samba_while_settings_reads_fail(manager):
+    # smbd resolves its own hostname at every login (issue #54): an unmapped
+    # new name stalls every login, so a rename must not wait for ACP.
+    root,start,events,wait,_,_=manager
+    start()
+    wait(lambda rows:discovery_names(rows)==['capsule'])
+    (root/'bad-auth').touch() # every settings read now fails
+    (root/'hostname').write_text('renamed\n')
+    rows=wait(lambda rows:discovery_names(rows)==['capsule','renamed'])
+    assert [e['netbios'] for e in rows if e['role']=='smbd' and e['kind']=='reload']==['renamed']
+    assert (root/'hosts').read_text()=='127.0.0.1\trenamed renamed.local\n'
+
+
+def test_failed_name_read_keeps_the_server_string_but_follows_a_hostname_rename(manager):
+    root,start,events,wait,_,_=manager
+    (root/'name').write_text('Capsule Server')
+    start()
+    wait(lambda rows:discovery_names(rows)==['capsule'])
+    (root/'bad-name').touch()
+    (root/'hostname').write_text('renamed\n')
+    wait(lambda rows:discovery_names(rows)==['capsule','renamed'])
+    conf=(root/'ram/etc/smb.conf').read_text()
+    assert 'netbios name = renamed' in conf
+    assert 'server string = Capsule Server' in conf
 
 
 def test_diskless_discovery_does_not_wait_for_authentication(manager):

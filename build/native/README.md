@@ -48,7 +48,10 @@ passing plaintext through the shell or temporary files. Its raw capture is
 limited to 8 KiB; the existing hash-input limit remains 4096 bytes.
 `service --print-samba-identity` returns a versioned four-line response with
 NetBIOS name, server string and observed fruit model. Legacy name/model overrides
-are rejected; deploy no longer forwards them.
+are rejected; deploy no longer forwards them. The manager stages Samba, and so
+discovery, under the NetBIOS name of the hostname it maps in `/etc/hosts`, not
+the one its settings read derived: the first read at boot runs before ACPd sets
+the hostname and falls back to `syNm`.
 
 `service --print-mast [--timeout-seconds N]` performs a bounded `acp -A MaSt`
 read without starting a daemon. The manager uses the same collector asynchronously,

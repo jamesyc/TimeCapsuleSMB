@@ -26,5 +26,7 @@ struct tc_samba_identity {
     char netbios[16], server[256], model[48];
     int name_observed;
 };
-int tc_samba_identity_read(struct tc_samba_identity *out);
+/* hostname is the caller's ("" while unset): the manager passes the one it
+ * maps, so the NetBIOS name never comes from a second, disagreeing read. */
+int tc_samba_identity_read(struct tc_samba_identity *out, const char *hostname);
 #endif

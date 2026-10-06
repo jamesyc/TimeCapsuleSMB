@@ -1,3 +1,52 @@
+# Samba and discovery start under the hostname's NetBIOS name (2026-10-06)
+
+Doctor on v3.2.0-2/-3 failed only "NBNS query for '<name>' timed out" when it
+ran 26-29 s after the manager started, and passed when rerun about 35 s later:
+a user's TimeCapsule6,116 right after a flash power cycle, and three times on
+our own NetBSD 6 and NetBSD 4 devices. Their discovery logs show why. The
+manager's first settings read runs before ACPd sets the hostname, so
+`identity_derive()` fell back to a NetBIOS name from syNm (`JAMESSAIRPORTTI`),
+and Samba and discovery started under it. The next read, `SETTINGS_MS` (30 s)
+later, saw the hostname and derived `JAMESS-AIRPORT-`; the manager restaged
+and reloaded Samba and restarted discovery, replacing the wcifsnd child, so
+for several seconds no name answered and Bonjour re-registered (12:57:31 ->
+12:58:01, 14:19:07 -> 14:19:37, 22:39:48 -> 22:40:18). It happens on every
+boot where the two names differ, even only in case: another user's log shows
+`TMC` (syNm) and `tmc` (hostname), manager start 19:12:09 and the discovery
+restart 19:12:39. Doctor's startup grace did not cover it because native NBNS
+reported ready, and a timeout after ready is deliberately not maskable.
+
+Staging now sets the NetBIOS name from the hostname it maps
+(`normalize_netbios_name(m->hostname)`, the same derivation `identity_derive()`
+tries first), keeping the settings read's name only if the hostname yields
+none, which no ACPd hostname does. The settings worker derives its identity
+from the manager's hostname rather than its own `gethostname()`, so the read
+after the hostname is set produces the same name and changes nothing.
+`--print-samba-identity` passes `tc_hostname_read()`. A rename restages at
+once with both the new mapping and the new name even while settings reads
+fail; an earlier version of this fix waited for a fresh settings read, which
+left a rename unmapped (and Samba logins stalled, issue #54) while ACP reads
+failed. Host tests previously derived the name from the Mac's own hostname
+(`gethostname()` ignored `TC_TEST_HOSTNAME`); they now use the rig's.
+
+`tests/native/test_manager.py` records the NetBIOS name each smbd start and
+reload read. A cold boot whose first read ran without a hostname starts smbd
+and discovery once, under `kevins-airport-` rather than `KevinsAirPortTi`,
+and the next read reloads nothing; a rename reloads once under the new name
+and restarts discovery once, also while every settings read fails; a failed
+name read keeps the server string and follows a rename. Removing the
+staging-time name fails four of these; letting the settings read ignore the
+manager's hostname fails the cold-boot one. `pytest -n auto` passed;
+`build/native/host-check.sh` passed under gcc 13.3 (Ubuntu 24.04).
+
+Lane builds produced NetBSD 6 `72a3a69c...` (376076 bytes, was 376020),
+NetBSD 4 LE `7cf35083...` (333372, was 333296) and NetBSD 4 BE `bd1d751e...`
+(332792, was 332716); `disable_data_faultahead` on every lane and the fork
+repair on NetBSD 6 passed. A comment-only edit to `pump_stage` afterwards
+rebuilt to the same three hashes. Device validation (one discovery start and one
+wcifsnd registration after boot, doctor passing NBNS about 30 s after the
+manager starts) is still to be done.
+
 # The device hostname always fits /etc/hosts; its guard is gone (2026-10-05)
 
 The manager refused to map a hostname outside 1-255 of `A-Z a-z 0-9 . _ -`

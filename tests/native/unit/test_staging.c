@@ -1,11 +1,12 @@
 #include "samba/staging.h"
 #include <assert.h>
 
-int tc_samba_identity_read(struct tc_samba_identity *identity) {
+int tc_samba_identity_read(struct tc_samba_identity *identity, const char *hostname) {
     memset(identity, 0, sizeof(*identity));
     strcpy(identity->netbios, "CAPSULE");
     strcpy(identity->server, "Time Capsule");
     strcpy(identity->model, "TimeCapsule6,116");
+    (void)hostname;
     return 0;
 }
 int device_nt_hash(char hash[33]) {
@@ -21,7 +22,7 @@ int main(int argc, char **argv) {
     size_t length = fread(text, 1, sizeof(text), stdin);
     assert(argc == 2);
     if (!strcmp(argv[1], "clear-locks")) return tc_samba_clear_locks() ? 5 : 0;
-    if (tc_samba_settings_read(&settings) || tc_mast_parse(&inventory, text, length))
+    if (tc_samba_settings_read(&settings, "capsule") || tc_mast_parse(&inventory, text, length))
         return 2;
     memset(&storage, 0, sizeof(storage));
     storage.inventory = inventory;

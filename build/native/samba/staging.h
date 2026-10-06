@@ -9,7 +9,7 @@ struct tc_samba_settings {
     struct tc_samba_identity identity;
     char nt_hash[33];
 };
-int tc_samba_settings_read(struct tc_samba_settings *);
+int tc_samba_settings_read(struct tc_samba_settings *, const char *hostname);
 int tc_samba_stage(const struct tc_storage_snapshot *, const struct tc_samba_settings *, int copy_smbd,
                    int copy_rsync);
 int tc_samba_publish(int rsync);

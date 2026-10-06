@@ -233,7 +233,9 @@ static int settings_job(void *opaque) {
     struct manager *m = opaque;
     struct tc_samba_settings result;
     tc_worker_begin("settings");
-    if (tc_samba_settings_read(&result))
+    /* The hostname staging maps, so a read after it is set derives the same
+     * NetBIOS name staging gave Samba (see pump_stage) and changes nothing. */
+    if (tc_samba_settings_read(&result, m->hostname))
         return tc_worker_finish(1);
     /* Hostname/model fallbacks are useful at cold boot. A later ACP failure
      * must not rename a working server or replace its known hardware model. */
@@ -743,6 +745,15 @@ static void pump_stage(struct manager *m, long long now) {
         return;
     if ((m->copy_smbd || m->copy_rsync) && m->rsync.child.group)
         return;
+    /* Samba and discovery take their NetBIOS name from the hostname staged
+     * here, not from the settings read: a read before ACPd sets the hostname
+     * (the first one at boot) falls back to syNm. Setting it in m->settings
+     * keeps the next read, derived from the same hostname, equal to it, and a
+     * rename takes its new name in this same restage even while ACP reads
+     * fail. Keep the read's name only if the hostname yields none. */
+    char netbios[sizeof(m->settings.identity.netbios)];
+    if (!normalize_netbios_name(netbios, sizeof(netbios), m->hostname))
+        strcpy(m->settings.identity.netbios, netbios);
     m->stage_revision = m->revision;
     /* Applied config can still describe the old generation after an aborted
      * replacement. Track the RAM images separately so reverting the desired

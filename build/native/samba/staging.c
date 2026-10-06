@@ -56,13 +56,13 @@ int tc_samba_clear_locks(void) {
 static const char *prepared[] = {TC_SMBD_CONF, TC_RAM_ROOT "/private/smbpasswd",
                                  TC_RAM_ROOT "/private/username.map", TC_RSYNC_CONF};
 
-int tc_samba_settings_read(struct tc_samba_settings *settings) {
+int tc_samba_settings_read(struct tc_samba_settings *settings, const char *hostname) {
     memset(settings, 0, sizeof(*settings));
     if (tc_runtime_config_load(&settings->config)) {
         fputs("settings: invalid or unavailable runtime configuration\n", stderr);
         return -1;
     }
-    if (tc_samba_identity_read(&settings->identity)) {
+    if (tc_samba_identity_read(&settings->identity, hostname)) {
         fputs("settings: device identity unavailable\n", stderr);
         return -1;
     }

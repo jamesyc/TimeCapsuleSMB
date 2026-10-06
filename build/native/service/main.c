@@ -40,7 +40,7 @@ static int print_mast_command(int argc, char **argv) {
 
 /* Model discovery belongs with Samba's native naming projection, not a second
  * set of shell normalization/ACP routines. No network policy is queried here. */
-int tc_samba_identity_read(struct tc_samba_identity *out) {
+int tc_samba_identity_read(struct tc_samba_identity *out, const char *hostname) {
     static const char *const models[] = {
         "AirPort5,104", "AirPort5,105", "TimeCapsule6,106", "AirPort5,108",
         "TimeCapsule6,109", "TimeCapsule6,113", "AirPort5,114", "TimeCapsule6,116",
@@ -64,8 +64,7 @@ int tc_samba_identity_read(struct tc_samba_identity *out) {
                         (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000) < 0) return 1;
     facts.acp[ACP_KEY_syNm].status = requests[0].status;
     syap.status = requests[1].status; syam.status = requests[2].status;
-    if (gethostname(facts.hostname, sizeof(facts.hostname)) != 0) facts.hostname[0] = '\0';
-    facts.hostname[sizeof(facts.hostname) - 1] = '\0';
+    snprintf(facts.hostname, sizeof(facts.hostname), "%s", hostname);
     identity_derive(&id, &facts);
     if (normalize_server_string(server, sizeof(server), facts.acp[ACP_KEY_syNm].text) != 0)
         strcpy(server, id.instance);
@@ -87,7 +86,9 @@ int tc_samba_identity_read(struct tc_samba_identity *out) {
 
 static int print_samba_identity(void) {
     struct tc_samba_identity identity;
-    if (tc_samba_identity_read(&identity)) return 1;
+    char hostname[MAXHOSTNAMELEN];
+    tc_hostname_read(hostname, sizeof(hostname));
+    if (tc_samba_identity_read(&identity, hostname)) return 1;
     return printf("samba-identity 1\n%s\n%s\n%s\n", identity.netbios, identity.server, identity.model) < 0 || fflush(stdout) != 0;
 }
 
