@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -30,7 +34,8 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.services.runtime import ManagedTargetState
-from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
+from timecapsulesmb import telemetry as telemetry_module
+from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient, TelemetryContext
 from timecapsulesmb.telemetry.debug import render_debug_mapping
 from timecapsulesmb.transport.ssh import SshConnection, SshError
 
@@ -40,6 +45,72 @@ def telemetry_client_from_values(
     **kwargs: object,
 ) -> TelemetryClient:
     return TelemetryClient.from_config(AppConfig.from_values(values or {}), **kwargs)
+
+
+# conftest blocks urlopen in every test; HeldStartedServer lets the client
+# reach it, and only it.
+_REAL_URLOPEN = urllib.request.urlopen
+
+
+class HeldStartedServer:
+    """A local telemetry endpoint that holds each started event until released."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+        self.started_arrived = threading.Event()
+        self.held_started = 0
+        self.release_started = threading.Event()
+        self.finished_arrived = threading.Event()
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                event = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if event.get("phase") == "started":
+                    server.held_started += 1
+                    server.started_arrived.set()
+                    server.release_started.wait(30)
+                server.events.append(event)
+                if event.get("phase") == "finished":
+                    server.finished_arrived.set()
+                self.send_response(202)
+                self.end_headers()
+
+            def log_message(self, *_args: object) -> None:
+                return
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self) -> "HeldStartedServer":
+        self.thread.start()
+        self.urlopen_patch = mock.patch("urllib.request.urlopen", self._loopback_urlopen)
+        self.urlopen_patch.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release_started.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.urlopen_patch.stop()
+
+    def _loopback_urlopen(self, request: urllib.request.Request, **kwargs: object) -> object:
+        port = self.server.server_address[1]
+        assert urllib.parse.urlsplit(request.full_url).netloc == f"127.0.0.1:{port}", request.full_url
+        return _REAL_URLOPEN(request, **kwargs)
+
+    def client(self) -> TelemetryClient:
+        context = TelemetryContext(
+            install_id="test-install",
+            cli_version="1",
+            release_tag="v1",
+            samba_version="4",
+            host_os="test",
+            host_os_version="1",
+        )
+        url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/events"
+        return TelemetryClient(endpoint=url, token="secret-token", context=context, enabled=True)
 
 
 class TelemetryTests(unittest.TestCase):
@@ -140,6 +211,48 @@ class TelemetryTests(unittest.TestCase):
                     client.emit("deploy_finished", synchronous=True, result="failure", error=NonJsonValue())
         request = urlopen_mock.call_args.args[0]
         self.assertIn(b"non-json-value", request.data)
+
+    def test_synchronous_emit_waits_for_a_background_send_still_in_flight(self) -> None:
+        # The process exits after the synchronous finished event; a started
+        # event still being sent then was cut off mid-request.
+        with HeldStartedServer() as server:
+            client = server.client()
+            client.emit("deploy_started", operation_id="op")
+            self.assertTrue(server.started_arrived.wait(10))
+            finisher = threading.Thread(
+                target=client.emit, args=("deploy_finished",), kwargs={"synchronous": True, "operation_id": "op"},
+            )
+            finisher.start()
+            self.assertFalse(server.finished_arrived.wait(0.3))
+            self.assertTrue(finisher.is_alive())
+            server.release_started.set()
+            finisher.join(10)
+            self.assertFalse(finisher.is_alive())
+            self.assertEqual([event["phase"] for event in server.events], ["started", "finished"])
+
+    def test_synchronous_emit_without_background_sends_does_not_wait(self) -> None:
+        with HeldStartedServer() as server:
+            client = server.client()
+            client.emit("doctor_finished", synchronous=True)
+            self.assertEqual([event["phase"] for event in server.events], ["finished"])
+
+    def test_synchronous_emit_sends_after_one_shared_limit_when_earlier_sends_are_stuck(self) -> None:
+        with HeldStartedServer() as server:
+            client = server.client()
+            for _ in range(3):
+                client.emit("deploy_started")
+            deadline = time.monotonic() + 10
+            while server.held_started < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(server.held_started, 3)
+            with mock.patch.object(telemetry_module, "PENDING_SEND_WAIT_SECONDS", 1.0):
+                started = time.monotonic()
+                client.emit("deploy_finished", synchronous=True)
+                waited = time.monotonic() - started
+            # One limit for all three, not one each.
+            self.assertGreaterEqual(waited, 1.0)
+            self.assertLess(waited, 2.5)
+            self.assertEqual([event["phase"] for event in server.events], ["finished"])
 
     def test_command_context_reuses_command_id_for_started_and_finished_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

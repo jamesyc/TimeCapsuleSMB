@@ -5,6 +5,7 @@ import os
 import platform
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -24,6 +25,9 @@ TELEMETRY_TOKEN_ENV = "TCAPSULE_TELEMETRY_TOKEN"
 DEFAULT_TELEMETRY_TOKEN = "d65373762e893ae18c8aaa95a8f1b3a3464611f33b30983909543535fa8b0733"
 REQUEST_TIMEOUT_SECONDS = 10.0
 MAX_SEND_ATTEMPTS = 2
+# How long a synchronous send waits for the background sends before it. One
+# send's attempts take at most this long unless the server trickles its reply.
+PENDING_SEND_WAIT_SECONDS = REQUEST_TIMEOUT_SECONDS * MAX_SEND_ATTEMPTS
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,8 @@ class TelemetryClient:
         self.token = token
         self.context = context
         self.enabled = enabled and context is not None and bool(token)
+        self._pending_lock = threading.Lock()
+        self._pending: list[threading.Thread] = []
 
     @classmethod
     def from_config(
@@ -119,6 +125,7 @@ class TelemetryClient:
                 if value is not None:
                     payload[key] = value
             if synchronous:
+                self._wait_for_pending_sends()
                 self._send_payload(payload)
                 return
             self._dispatch_payload_async(payload)
@@ -128,6 +135,24 @@ class TelemetryClient:
     def _dispatch_payload_async(self, payload: dict[str, object]) -> None:
         thread = threading.Thread(target=self._send_payload, args=(payload,), daemon=True)
         thread.start()
+        with self._pending_lock:
+            self._pending = [pending for pending in self._pending if pending.is_alive()]
+            self._pending.append(thread)
+
+    def _wait_for_pending_sends(self) -> None:
+        """Let the background sends finish before the synchronous one.
+
+        The synchronous send is an operation's last event, and the process
+        exits after it. A background send still running then is cut off
+        mid-request (the server gets headers and no body), and the
+        interpreter shuts down around its daemon thread. Waiting also keeps
+        an operation's started event ahead of its finished one.
+        """
+        with self._pending_lock:
+            pending, self._pending = self._pending, []
+        deadline = time.monotonic() + PENDING_SEND_WAIT_SECONDS
+        for thread in pending:
+            thread.join(max(0.0, deadline - time.monotonic()))
 
     def _send_payload(self, payload: dict[str, object]) -> None:
         try:

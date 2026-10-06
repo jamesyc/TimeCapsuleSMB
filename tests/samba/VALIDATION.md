@@ -3079,3 +3079,38 @@ Validation:
 - No build inputs, native runtime, deploy code or shipped artifacts changed;
   no VM build, device access or deployment was needed. `links_device.py` was
   not run against a device.
+
+## Finished telemetry waits for the started event still being sent (2026-10-05)
+
+CI for `5d980575` (Ubuntu, Python 3.14.7) failed
+`test_helper_disconnect.py[migration]`: the helper exited with SIGSEGV
+instead of 130. The helper sends an operation's started event from a daemon
+thread and its finished event in the foreground, then exits. A started event
+still being sent at that point was cut off: a stress run of the same scenario
+showed the server a request with headers and no body, and with the started
+reply held for 0.5 s the helper's started event never arrived at all. The
+interpreter then shut down around that daemon thread, the only other thread
+left, which is the likely way the helper crashed. The crash itself did not
+reproduce in about 2,800 runs of the scenario (official 3.14.7 and 3.14.8
+images, and GitHub's own 3.14.7 build in `ubuntu:24.04`, with and without CPU
+load) or in three passes of CI's full `pytest -n 4` on GitHub's build.
+
+`TelemetryClient` now keeps its background send threads, and a synchronous
+send first waits for those still running, sharing one limit
+(`PENDING_SEND_WAIT_SECONDS`, the 20 s one send's two attempts can take).
+Every operation's synchronous send is its finished event, so the CLI and the
+app helper no longer exit with a send in progress, and started now always
+reaches the server before finished. A started send that is still running
+when finished goes out is one to an unresponsive server, and finished costs
+the same 20 s there; offline sends fail at once.
+
+Validation:
+- New tests against a local server that holds started events: a finished
+  send waits for one still in flight and arrives after it; with nothing in
+  flight it does not wait; with three stuck it waits one shared limit, not
+  one each, and still sends. `test_helper_disconnect.py` holds the started
+  reply 0.5 s and requires started before finished. Without the fix the
+  in-flight and helper tests fail (the helper's started event is lost), and
+  a per-send limit fails the shared-limit test.
+- `make lint`, `make test-parallel` (3,601 passed) and `make test-swift` (677
+  passed). The new tests passed 12 times in a row with every CPU busy.
