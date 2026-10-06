@@ -43,9 +43,10 @@ PROCESS_SNAPSHOT_COMMAND = "/bin/ps axww -o pid= -o ppid= -o pgid= -o stat= -o s
 # ps shows D for an uninterruptible sleep. The kernel counts a sleeping
 # thread's seconds asleep (l_slptime) and resets the count at every wake-up,
 # so a process doing slow disk I/O never reaches this; one that does has
-# waited in a single sleep that long. Waits that wake on a timeout to retry,
-# such as NetBSD 6's needbuf, reset the count and are not seen here.
-STUCK_SLEEP_SECONDS = 60
+# waited in a single sleep that long. A wait that wakes on a timeout to retry,
+# such as NetBSD 6's needbuf, resets the count; the manager follows processes
+# across samples and names those in its process title (stuck.c).
+STUCK_SLEEP_SECONDS = 120
 # ps prints the sleep time capped at 127.
 PS_SLEEP_SECONDS_CAP = 127
 
@@ -56,23 +57,65 @@ class StuckProcess:
     name: str
     wchan: str
     sleep_seconds: int
+    # ps's sleep time stops at 127; the manager's count does not.
+    capped: bool = False
 
     def describe(self) -> str:
-        seconds = f"{self.sleep_seconds}+" if self.sleep_seconds >= PS_SLEEP_SECONDS_CAP else str(self.sleep_seconds)
+        seconds = f"{self.sleep_seconds}+" if self.capped else str(self.sleep_seconds)
         return f"{self.name} (pid {self.pid}) waiting on {self.wchan} for {seconds} s"
 
 
-def stuck_processes(ps_output: str) -> list[StuckProcess]:
-    """Processes in PROCESS_SNAPSHOT_COMMAND output asleep uninterruptibly for STUCK_SLEEP_SECONDS.
-
-    Kernel threads (state K) always sleep this way and are skipped.
-    """
+def _manager_title_stuck(command: str) -> tuple[list[StuckProcess], int]:
+    """Entries of the manager's "stuck=PID:COMM:WAIT:SECONDS,...[,+N]" title
+    word, and N, how many more it counts than it names."""
     stuck = []
+    unnamed = 0
+    for word in command.split():
+        if not word.startswith("stuck="):
+            continue
+        for item in word.removeprefix("stuck=").split(","):
+            parts = item.split(":")
+            try:
+                if len(parts) == 1 and item.startswith("+"):
+                    unnamed = int(item[1:])
+                elif len(parts) == 4:
+                    stuck.append(StuckProcess(int(parts[0]), parts[1], parts[2], int(parts[3])))
+            except ValueError:
+                continue
+    return stuck, unnamed
+
+
+def _manager_title_command(ps_output: str) -> str | None:
+    for line in ps_output.splitlines():
+        fields = line.split(None, 7)
+        if len(fields) == 8 and fields[6] == "service" and "role=manager" in fields[7].split():
+            return fields[7]
+    return None
+
+
+def manager_unnamed_stuck_count(ps_output: str) -> int:
+    """How many stuck processes the manager's title counts beyond the ones it names."""
+    command = _manager_title_command(ps_output)
+    return _manager_title_stuck(command)[1] if command is not None else 0
+
+
+def stuck_processes(ps_output: str) -> list[StuckProcess]:
+    """Stuck processes in PROCESS_SNAPSHOT_COMMAND output.
+
+    A row asleep uninterruptibly for STUCK_SLEEP_SECONDS, other than a kernel
+    thread (state K, which always sleeps this way), and whatever the manager's
+    title names, which takes precedence for the same PID.
+    """
+    by_pid: dict[int, StuckProcess] = {}
     for line in ps_output.splitlines():
         fields = line.split(None, 7)
         if len(fields) < 7:
             continue
         pid, _ppid, _pgid, state, sleep, wchan, name = fields[:7]
+        if name == "service" and len(fields) == 8 and "role=manager" in fields[7].split():
+            for process in _manager_title_stuck(fields[7])[0]:
+                by_pid[process.pid] = process
+            continue
         if not state.startswith("D") or "K" in state:
             continue
         try:
@@ -80,9 +123,11 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
             stuck_pid = int(pid)
         except ValueError:
             continue
-        if sleep_seconds >= STUCK_SLEEP_SECONDS:
-            stuck.append(StuckProcess(stuck_pid, name, wchan, sleep_seconds))
-    return stuck
+        if sleep_seconds >= STUCK_SLEEP_SECONDS and stuck_pid not in by_pid:
+            by_pid[stuck_pid] = StuckProcess(
+                stuck_pid, name, wchan, sleep_seconds, capped=sleep_seconds >= PS_SLEEP_SECONDS_CAP
+            )
+    return list(by_pid.values())
 
 
 def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = SUPERVISOR_STOP_SECONDS) -> str:

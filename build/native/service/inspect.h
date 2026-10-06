@@ -1,10 +1,9 @@
 #ifndef TC_SERVICE_INSPECT_H
 #define TC_SERVICE_INSPECT_H
-#include "../common/platform.h"
+#include "proctable.h"
 #ifndef TC_FSTAT_PATH
 #define TC_FSTAT_PATH "/usr/bin/fstat"
 #endif
-#define TC_PROCESS_MAX 128
 
 enum tc_process_role {
     TC_PROC_OTHER,
@@ -25,8 +24,14 @@ struct tc_process_table {
     struct tc_process_info processes[TC_PROCESS_MAX];
     size_t count;
 };
-int tc_process_table_parse(struct tc_process_table *, const char *text);
-int tc_process_table_read(struct tc_process_table *);
+/* Reads a command line like tc_proctable_argv(): 0, 1 when the process has
+ * exited, -1 on any other failure. */
+typedef int (*tc_argv_fn)(pid_t, char *out, size_t size);
+/* The managed-role processes in snapshot. Only roles that depend on the
+ * command line read it; one that exited since the snapshot is left out, and
+ * any other failure to read one fails the whole table (-1): an empty command
+ * line would make the loopback diskd look foreign. */
+int tc_process_table_build(struct tc_process_table *, const struct tc_proctable *snapshot, tc_argv_fn argv);
 int tc_listener_present(const char *text, unsigned port);
 /* Bit 1 = IPv4 wildcard, bit 2 = IPv6 wildcard. */
 unsigned tc_wildcard_listener_families(const char *text, unsigned port);

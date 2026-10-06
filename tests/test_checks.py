@@ -2401,8 +2401,32 @@ class CheckTests(unittest.TestCase):
         run.log_tails.assert_called_once()
         self.assertIsNone(run.log_tails.call_args.kwargs["skip_data_disk"])
 
+    def test_run_doctor_checks_reads_retrying_waits_from_the_manager_title(self) -> None:
+        # ps alone shows needbuf with a sleep time near 0: it wakes to retry.
+        snapshot = "\n".join(
+            [
+                "  146     1     2 S        1 select   service  service: role=manager stuck=3166:smbd:needbuf:600",
+                " 3166   457   457 D        0 needbuf  smbd     /mnt/Memory/samba4/sbin/smbd -F",
+            ]
+        )
+        run = self.run_doctor_with_process_snapshot(snapshot)
+
+        stuck = [result for result in run.results if "blocked in the kernel" in result.message]
+        self.assertEqual(len(stuck), 1)
+        self.assertIn("smbd (pid 3166) waiting on needbuf for 600 s", stuck[0].message)
+        run.mocks.check_authenticated_smb_listing.assert_not_called()
+
+    def test_run_doctor_checks_counts_stuck_processes_the_manager_title_does_not_name(self) -> None:
+        snapshot = "  146     1     2 S        1 select   service  service: role=manager stuck=3166:smbd:needbuf:600,+5"
+        run = self.run_doctor_with_process_snapshot(snapshot)
+
+        stuck = [result for result in run.results if "blocked in the kernel" in result.message]
+        self.assertEqual(len(stuck), 1)
+        self.assertIn("smbd (pid 3166) waiting on needbuf for 600 s; and 5 more", stuck[0].message)
+        self.assertEqual(stuck[0].details["stuck_processes_unnamed"], 5)
+
     def test_run_doctor_checks_reports_stuck_non_smbd_process_but_still_checks_smb(self) -> None:
-        stuck_mdns = "  359   119     2 D       90 tstile   mDNSResponder /sbin/mDNSResponder -d"
+        stuck_mdns = "  359   119     2 D      125 tstile   mDNSResponder /sbin/mDNSResponder -d"
         run = self.run_doctor_with_process_snapshot(
             "\n".join([self.HEALTHY_SMBD_ROW, stuck_mdns]),
             smb_listing=self.connection_shaped_smb_failure(),
@@ -2410,7 +2434,7 @@ class CheckTests(unittest.TestCase):
 
         stuck = [result for result in run.results if "blocked in the kernel" in result.message]
         self.assertEqual(len(stuck), 1)
-        self.assertIn("mDNSResponder (pid 359) waiting on tstile for 90 s", stuck[0].message)
+        self.assertIn("mDNSResponder (pid 359) waiting on tstile for 125 s", stuck[0].message)
         self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
         self.assertEqual([call.args[0] for call in run.sleep.call_args_list], [10, 15])
 
@@ -2418,7 +2442,7 @@ class CheckTests(unittest.TestCase):
         snapshot = "\n".join(
             [
                 self.HEALTHY_SMBD_ROW,
-                " 3166   457   457 D       30 biowait  smbd     /mnt/Memory/samba4/sbin/smbd -F",
+                " 3166   457   457 D      119 biowait  smbd     /mnt/Memory/samba4/sbin/smbd -F",
                 "    0     0     0 DKl    127 uvm      system   [system]",
             ]
         )

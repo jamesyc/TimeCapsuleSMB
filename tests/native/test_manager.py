@@ -42,6 +42,8 @@ TIMINGS=dict(
     TC_BUFSTALL_REPORT_RETRY_MS=1000, # device 60 s after failure
     # Outlasts a report held across a second episode (about 2 s).
     TC_BUFSTALL_REPORT_TIMEOUT_MS=5000, # device 180 s
+    TC_STUCK_MS=1000,            # device 120 s
+    TC_STUCK_REPORT_MS=3000,     # device 300 s
 )
 
 CHILD = '''
@@ -76,6 +78,14 @@ stuck=((role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-ignore-term').e
 if stuck:signal.signal(signal.SIGTERM,signal.SIG_IGN)
 signal.signal(signal.SIGHUP,lambda sig,frame:event('reload'))
 event('start')
+if role=='diskd':
+    # The process table the manager reads in place of the kernel's
+    # (proctable.h); dropped once this PID is gone.
+    procs=Path(os.environ['TC_TEST_ROOT'])/'procs'
+    command=' '.join(['/sbin/diskd',*sys.argv[1:]])
+    (procs/f'diskd-{os.getpid()}.new').write_text(
+        f'live {os.getpid()} {os.getppid()} {os.getpgrp()} 3 0x80 0 0 select diskd {command}\\n')
+    os.replace(procs/f'diskd-{os.getpid()}.new',procs/f'diskd-{os.getpid()}')
 if role=='telemetry' and '--report' in sys.argv and not stuck:
     root=Path(os.environ['TC_TEST_ROOT'])
     while (root/'report-hold').exists():time.sleep(.05)
@@ -140,27 +150,6 @@ if sys.argv[1:3]==['rpc','diskd.useVolume']:
     sys.exit(1 if failed.exists() and failed.read_text() in sys.argv[-1] else 0)
 print({'syNm':(root/'name').read_text() if (root/'name').exists() else 'Capsule','syAP':'116','syAM':'TimeCapsule6,116','syPW':'password'}[key])
 ''')
-    executable('ps','''
-import os,json
-from pathlib import Path
-root=Path(os.environ['TC_TEST_ROOT'])
-if (root/'record-ps').exists():
-    with (root/'events').open('a') as out:out.write(json.dumps(dict(kind='command',role='ps'))+'\\n')
-if not (root/'diskd-absent').exists():print('2 1 2 S diskd /sbin/diskd -i lo0 -d local.')
-else:
-    for line in (root/'events').read_text().splitlines():
-        row=json.loads(line)
-        if row['role']=='diskd' and row['kind']=='start':
-            try:os.kill(row['pid'],0)
-            except ProcessLookupError:continue
-            print(f"{row['pid']} {row['ppid']} {row['group']} S diskd /sbin/diskd -i lo0 -d local.")
-p=root/'external-processes'
-if p.exists():
-    for row in p.read_text().splitlines():
-        try:os.kill(int(row.split()[0]),0)
-        except ProcessLookupError:continue
-        print(row)
-''')
     executable('fstat','''
 import json,os,sys
 from pathlib import Path
@@ -183,7 +172,7 @@ if not (root/'no-listener').exists():
     binary=compile_service(root/'manager',flags=[
         f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
         f'-DTC_FLASH_CONFIG_PATH="{root}/config"',f'-DTC_VOLUMES_ROOT="{root}"',
-        f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_PS_PATH="{root}/ps"',f'-DTC_FSTAT_PATH="{root}/fstat"',
+        f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_FSTAT_PATH="{root}/fstat"',
         f'-DTC_BUFWAKE_DIR="{root}/wake"',
         *(f'-D{name}={value}' for name,value in TIMINGS.items()),
     ])
@@ -193,16 +182,17 @@ if not (root/'no-listener').exists():
 @pytest.fixture
 def manager(manager_tools):
     root,binary=manager_tools
-    for path in ('ram','dk2','dk3'):
+    for path in ('ram','dk2','dk3','procs'):
         shutil.rmtree(root/path,ignore_errors=True)
     hosts=root/'hosts'
     if hosts.is_dir():hosts.rmdir()
     else:hosts.unlink(missing_ok=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','record-ps','record-fstat','smbd-hold','hold-activation',
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
                  'report-hold','report-exit'):
         (root/name).unlink(missing_ok=True)
     (root/'wake').mkdir(exist_ok=True)
+    (root/'procs').mkdir()
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
     (root/'dk3').mkdir()
@@ -221,11 +211,15 @@ def manager(manager_tools):
     process=None
     def start():
         nonlocal process
+        # Apple's own diskd, unless the test has the manager start one.
+        if not (root/'diskd-absent').exists():
+            processes(root,'apple-diskd','2 1 2 S diskd /sbin/diskd -i lo0 -d local.\n')
         log=(root/'stderr').open('w')
         process=subprocess.Popen([str(binary),'manager'],
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
             env={**os.environ,'TC_TEST_ROOT':str(root),'TC_TEST_MOUNTS':str(root/'mounts'),
                  'TC_TEST_HOSTNAME':str(root/'hostname'),'TC_TEST_BUFCACHE':str(root/'bufcache'),
+                 'TC_TEST_PROCS':str(root/'procs'),
                  'TC_TEST_FORK_FAIL':str(root/'fork-fail')})
         log.close()
         return process
@@ -253,6 +247,27 @@ def manager(manager_tools):
 
 
 def started(role):return lambda events:any(e['kind']=='start' and e['role']==role for e in events)
+
+
+def processes(root,name,ps_lines,live=False):
+    """Process-table rows (proctable.h) from "PID PPID PGID STATE NAME COMMAND" lines as ps prints them."""
+    rows=[]
+    for line in ps_lines.splitlines():
+        pid,ppid,pgid,state,name_,command=line.split(None,5)
+        stat=5 if 'Z' in state else 3
+        rows.append(f"{'live ' if live else ''}{pid} {ppid} {pgid} {stat} 0x80 0 0 - {name_} {command}")
+    write_rows(root,name,rows)
+
+
+def write_rows(root,name,rows):
+    # Replace atomically: the manager may read the directory at any moment.
+    (root/'procs'/f'{name}.new').write_text(''.join(row+'\n' for row in rows))
+    os.replace(root/'procs'/f'{name}.new',root/'procs'/name)
+
+
+def external(root,ps_lines):
+    """Processes the manager did not start, listed while they are alive."""
+    processes(root,'external',ps_lines,live=True)
 
 
 def test_supervision_direct_smb_child_and_applied_discovery(manager):
@@ -578,7 +593,7 @@ def test_old_telemetry_draining_does_not_block_samba_start(manager):
                             stdout=subprocess.PIPE,text=True,start_new_session=True)
     assert child.stdout.readline().strip()=='ready'
     try:
-        (root/'external-processes').write_text(f'{child.pid} 1 {child.pid} S telemetry /old/telemetry --daemon\n')
+        external(root,f'{child.pid} 1 {child.pid} S telemetry /old/telemetry --daemon\n')
         (root/'config').write_text('TELEMETRY=1\n')
         start();wait(started('smbd'))
         assert child.poll() is None
@@ -704,14 +719,14 @@ def test_rsync_clients_and_ssh_servers_are_left_running(manager,enabled):
               'rsync --server --daemon .']
     users=[sleeper() for _ in commands]
     try:
-        (root/'external-processes').write_text(''.join(
+        external(root,''.join(
             f'{child.pid} 1 {child.pid} S rsync {command}\n' for child,command in zip(users,commands)))
-        (root/'record-ps').touch()
+        (root/'record-audit').touch()
         process=start()
         wait(started('rsync') if enabled else started('smbd'))
         for count in (2,3):
             process.send_signal(signal.SIGHUP)
-            wait(lambda rows:sum(e['role']=='ps' for e in rows)>=count)
+            wait(lambda rows:sum(e['role']=='audit' for e in rows)>=count)
         assert all(child.poll() is None for child in users)
         assert len(rsync_starts(events()))==(1 if enabled else 0)
         assert 'SIGKILL' not in runtime_log(root)
@@ -726,7 +741,7 @@ def test_foreign_rsync_daemon_is_stopped_before_the_managed_one_starts(manager):
     enable_rsync(root)
     foreign=sleeper()
     try:
-        (root/'external-processes').write_text(
+        external(root,
             f'{foreign.pid} 1 {foreign.pid} S rsync /mnt/Memory/samba4/sbin/rsync --daemon --no-detach\n')
         start()
         values=wait(lambda rows:foreign.poll() is not None and rsync_starts(rows))
@@ -744,17 +759,17 @@ def test_term_resistant_rsync_daemon_is_killed_and_logged_once(manager):
     enable_rsync(root)
     foreign=sleeper(ignore_term=True)
     try:
-        (root/'external-processes').write_text(
+        external(root,
             f'{foreign.pid} 1 {foreign.pid} S rsync /mnt/Memory/samba4/sbin/rsync --daemon --no-detach\n')
-        (root/'record-ps').touch()
+        (root/'record-audit').touch()
         start()
         log=wait_log(root,f'foreign rsync pid {foreign.pid} ',timeout=25)
         assert re.search(rf'foreign rsync pid {foreign.pid} \(group {foreign.pid}\) ignored SIGTERM for \d+ ms; sending SIGKILL',log)
         # Leave the killed child unreaped: the fake ps keeps listing it, as
         # Apple's ps would list a process stuck in the kernel. Later audits
         # resend SIGKILL without logging again, and rsync stays blocked.
-        audits=sum(e['role']=='ps' for e in events())
-        wait(lambda rows:sum(e['role']=='ps' for e in rows)>=audits+3)
+        audits=sum(e['role']=='audit' for e in events())
+        wait(lambda rows:sum(e['role']=='audit' for e in rows)>=audits+3)
         assert runtime_log(root).count(f'foreign rsync pid {foreign.pid} ')==1
         assert not rsync_starts(events())
         assert foreign.wait(timeout=5)==-signal.SIGKILL
@@ -818,7 +833,7 @@ def test_native_cifs_reappearance_keeps_discovery_and_samba(manager, apple_roles
                             stdout=subprocess.PIPE,text=True,start_new_session=True) for _ in apple_roles]
     try:
         for child in apple:assert child.stdout.readline().strip()=='ready'
-        (root/'external-processes').write_text(''.join(
+        external(root,''.join(
             f'{child.pid} 1 {child.pid} S {role} /sbin/{role}\n' for child,role in zip(apple,apple_roles)))
         process.send_signal(signal.SIGHUP)
         wait(lambda rows:all(child.poll() is not None for child in apple))
@@ -849,15 +864,15 @@ def test_native_nbns_audit_distinguishes_foreign_and_owned_children(manager, own
         # without a remaining live wcifsfs. A live controller alone must not
         # protect that foreign daemon, but its own child must remain untouched.
         parent=controller['pid'] if owned else 1
-        (root/'external-processes').write_text(
+        external(root,
             f"{controller['pid']} {process.pid} {controller['group']} S service service: role=discovery nbns=ready\n"
             f"{native.pid} {parent} {native.pid} S wcifsnd /sbin/wcifsnd\n")
-        (root/'record-ps').touch()
+        (root/'record-audit').touch()
         if owned:
             # A second audit can only start once the first result was applied.
             for count in (1, 2):
                 process.send_signal(signal.SIGHUP)
-                wait(lambda rows:sum(e['role']=='ps' for e in rows)>=count)
+                wait(lambda rows:sum(e['role']=='audit' for e in rows)>=count)
             assert native.poll() is None
             assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==before
         else:
@@ -883,10 +898,10 @@ def test_term_resistant_foreign_wcifsnd_does_not_reset_discovery(manager):
                             stdout=subprocess.PIPE,text=True,start_new_session=True)
     assert native.stdout.readline().strip()=='ready'
     try:
-        (root/'external-processes').write_text(f'{native.pid} 1 {native.pid} S wcifsnd /sbin/wcifsnd\n')
-        (root/'record-ps').touch()
+        external(root,f'{native.pid} 1 {native.pid} S wcifsnd /sbin/wcifsnd\n')
+        (root/'record-audit').touch()
         process.send_signal(signal.SIGHUP)
-        wait(lambda rows:sum(e['role']=='ps' for e in rows)>=2)
+        wait(lambda rows:sum(e['role']=='audit' for e in rows)>=2)
         assert native.poll() is None
         assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==starts
         # SIGKILL follows TC_STALE_KILL_MS after first sighting, via ~1 s
@@ -924,7 +939,7 @@ def test_controller_death_cleans_orphaned_native_nbns_before_replacement(manager
     assert orphan.stdout.readline().strip()=='ready'
     try:
         os.kill(controller['pid'],signal.SIGKILL)
-        (root/'external-processes').write_text(f'{orphan.pid} 1 {orphan.pid} S wcifsnd /sbin/wcifsnd\n')
+        external(root,f'{orphan.pid} 1 {orphan.pid} S wcifsnd /sbin/wcifsnd\n')
         process.send_signal(signal.SIGHUP)
         wait(lambda rows:orphan.poll() is not None and len([e for e in rows if e['role']=='discovery' and e['kind']=='start'])>before)
         assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
@@ -1186,8 +1201,9 @@ def test_internal_export_root_change_reloads_without_restarting(manager, initial
     assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
 
 
-# Buffer-cache stall recovery (kern/60584): the fixture file stands in for
-# vm.bufmem* and the processes' kernel wait messages (bufstall.c).
+# Buffer-cache stall recovery (kern/60584): the bufcache file stands in for
+# vm.bufmem* (bufstall.c), and process-table rows for the processes' kernel
+# wait messages, interruptible so stuck-process detection ignores them.
 HIWATER=40243200
 HOLD_S=TIMINGS['TC_BUFSTALL_HOLD_MS']//1000
 APPLE_LOWATER=HIWATER>>3
@@ -1195,10 +1211,11 @@ RAISED_LOWATER=HIWATER-16
 
 
 def kernel(root,*waits,bufmem=3000000,lowater=APPLE_LOWATER,readonly=False):
-    lines=[f'bufmem {bufmem}',f'lowater {lowater}',f'hiwater {HIWATER}',*(f'wait {pid} {wmesg}' for pid,wmesg in waits)]
+    lines=[f'bufmem {bufmem}',f'lowater {lowater}',f'hiwater {HIWATER}']
     # Replace atomically: the manager may read the file at any moment.
     (root/'bufcache.new').write_text('\n'.join(lines+(['readonly'] if readonly else []))+'\n')
     os.replace(root/'bufcache.new',root/'bufcache')
+    write_rows(root,'bufstall-waits',[f'{pid} 1 {pid} 3 0x80 0 0 {wmesg} waiter waiter' for pid,wmesg in waits])
 
 
 def lowater_writes(root):
@@ -1527,3 +1544,209 @@ def test_unchanged_kernel_and_no_waits_are_never_written(manager):
     time.sleep(2)
     assert lowater_writes(root)==[] and wakes(root)==[]
     assert 'vm.bufmem_lowater' not in stderr(root)
+
+
+# Processes stuck in the kernel (stuck.c), from process-table rows: one
+# (PID GROUP LID STAT FLAG SLEPT CPU_US WMESG COMM) tuple per sleeper; a
+# nonzero LID is a thread of a multi-threaded process.
+STUCK_S=TIMINGS['TC_STUCK_MS']/1000
+LSSLEEP=3
+
+
+def sleepers(root,*rows):
+    lines=[]
+    for pid,group,lid,stat,flag,slept,cpu,wmesg,comm in rows:
+        if lid:
+            # The process entry shows an idle representative thread.
+            lines+=[f'{pid} 1 {group} 3 0x80 0 {cpu} kqueue {comm} {comm}',f'lwp {pid} 1 3 0x80 0 kqueue',
+                    f'lwp {pid} {lid} {stat} {flag:#x} {slept} {wmesg}']
+        else:
+            lines.append(f'{pid} 1 {group} {stat} {flag:#x} {slept} {cpu} {wmesg} {comm} {comm}')
+    write_rows(root,'sleepers',lines)
+
+
+def smbd_ids(events):
+    start=next(e for e in events() if e['role']=='smbd' and e['kind']=='start')
+    return start['pid'],start['group']
+
+
+def stuck_reports(events):
+    return [reason for reason in reports(events) if reason.startswith('stuck')]
+
+
+def test_stuck_smbd_worker_is_logged_with_its_role_and_cleared(manager):
+    root,start,events,wait,_,_=manager
+    start();wait(started('smbd'))
+    pid,group=smbd_ids(events)
+    # A worker in smbd's group, seen waiting in every sample with no CPU.
+    worker=pid+100000
+    sleepers(root,(worker,group,0,LSSLEEP,0,0,1500,'biowait','smbd'))
+    until(root,lambda:re.search(rf'stuck: pid {worker} \(smbd, role smbd\) asleep uninterruptibly on biowait '
+                               r'for \d+ s without running',stderr(root)))
+    assert stderr(root).count(f'stuck: pid {worker} ')==1
+    sleepers(root)
+    until(root,lambda:re.search(rf'stuck: pid {worker} \(smbd, role smbd\) no longer stuck after \d+ s',stderr(root)))
+    # Telemetry is off: nothing is reported.
+    time.sleep(STUCK_S)
+    assert stuck_reports(events)==[]
+
+
+def test_stuck_process_outside_our_groups_is_logged_at_once_from_the_kernel_sleep_time(manager):
+    root,start,events,wait,_,_=manager
+    start();wait(started('smbd'))
+    began=time.monotonic()
+    # Asleep 90 s before the manager looked: no need to watch it for a minute.
+    sleepers(root,(4242,2,3,LSSLEEP,0,90,800,'tstile','mDNSResponder'))
+    until(root,lambda:'stuck: pid 4242 thread 3 (mDNSResponder) asleep uninterruptibly on tstile for 90 s' in stderr(root))
+    assert time.monotonic()-began<STUCK_S+2
+
+
+def test_interruptible_sleepers_kernel_threads_and_running_processes_are_never_stuck(manager):
+    root,start,events,wait,_,_=manager
+    start();wait(started('smbd'))
+    sleepers(root,
+             (5001,5001,0,LSSLEEP,0x80,127,0,'select','sshd'),   # interruptible
+             (0,0,12,LSSLEEP,0x200,127,0,'syncer','system'),     # kernel thread
+             (5002,5002,0,7,0,0,0,'-','dd'))                     # running
+    time.sleep(3*STUCK_S)
+    assert 'stuck:' not in stderr(root)
+
+
+def test_waiting_process_that_keeps_running_is_not_stuck(manager):
+    root,start,events,wait,_,_=manager
+    start();wait(started('smbd'))
+    began=time.monotonic()
+    # In a disk wait at every sample, but using CPU in between.
+    while time.monotonic()-began<3*STUCK_S:
+        cpu=int((time.monotonic()-began)*1_000_000)
+        sleepers(root,(5003,5003,0,LSSLEEP,0,0,cpu,'biowait','dd'))
+        time.sleep(.1)
+    assert 'stuck:' not in stderr(root)
+
+
+def test_long_stuck_episode_is_reported_then_its_end_is_reported(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    start();wait(started('smbd'))
+    pid,group=smbd_ids(events)
+    sleepers(root,(pid,group,0,LSSLEEP,0,0,2000,'needbuf','smbd'))
+    until(root,lambda:'stuck: pid' in stderr(root))
+    # Only once it has lasted TC_STUCK_REPORT_MS.
+    assert stuck_reports(events)==[]
+    wait(lambda rows:len(stuck_reports(events))==1)
+    assert re.fullmatch(r'stuck:smbd:needbuf:\d+',stuck_reports(events)[0])
+    assert int(stuck_reports(events)[0].rsplit(':',1)[1])>=TIMINGS['TC_STUCK_REPORT_MS']//1000
+    sleepers(root)
+    wait(lambda rows:len(stuck_reports(events))==2)
+    assert re.fullmatch(r'stuck-cleared:smbd:needbuf:\d+',stuck_reports(events)[1])
+
+
+def test_stuck_episode_shorter_than_the_report_time_is_not_reported(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    start();wait(started('smbd'))
+    sleepers(root,(6001,6001,0,LSSLEEP,0,0,0,'biowait','rsync'))
+    until(root,lambda:'stuck: pid 6001' in stderr(root))
+    sleepers(root)
+    until(root,lambda:'pid 6001 (rsync) no longer stuck' in stderr(root))
+    time.sleep(2*STUCK_S)
+    assert stuck_reports(events)==[]
+
+
+def test_failed_stuck_report_is_retried_and_keeps_its_order(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'report-exit').write_text('1')
+    start();wait(started('smbd'))
+    sleepers(root,(7001,7001,0,LSSLEEP,0,400,0,'biowait','smbd'))
+    wait(lambda rows:len(stuck_reports(events))==1)
+    sleepers(root)
+    until(root,lambda:'pid 7001 (smbd) no longer stuck' in stderr(root))
+    # The failed first report goes out again before the cleared one.
+    wait(lambda rows:len(stuck_reports(events))>=2)
+    (root/'report-exit').unlink()
+    wait(lambda rows:any(reason.startswith('stuck-cleared') for reason in stuck_reports(events)))
+    sent=stuck_reports(events)
+    first_cleared=next(i for i,reason in enumerate(sent) if reason.startswith('stuck-cleared'))
+    assert all(reason.startswith('stuck:smbd:biowait:') for reason in sent[:first_cleared])
+    assert first_cleared>=2
+
+
+def test_buffer_stall_and_stuck_reports_share_the_report_job(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root)
+    start();wait(started('smbd'))
+    # One process, waiting for a buffer without a kill being able to wake it.
+    sleepers(root,(4242,4242,0,LSSLEEP,0,400,0,'getnewbu','smbd'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    kernel(root,lowater=RAISED_LOWATER)
+    sleepers(root)
+    wait(lambda rows:any(r.startswith('bufstall:') for r in reports(events)) and
+                     any(r.startswith('stuck-cleared:') for r in reports(events)))
+    starts=[e for e in events() if e['role']=='telemetry' and e['kind']=='start' and '--report' in e['args']]
+    dones=[e for e in events() if e['role']=='telemetry' and e['kind']=='report-done']
+    # One at a time: each report finished before the next started.
+    for later,earlier in zip(starts[1:],dones):
+        assert later['at']>=earlier['at']
+
+
+
+def test_unreadable_process_table_is_logged_once_and_holds_audits_until_it_returns(manager):
+    root,start,events,wait,_,_=manager
+    (root/'record-audit').touch()
+    process=start();wait(started('smbd'))
+    wait(lambda rows:any(e['role']=='audit' for e in rows))
+    # A file where the fixture directory was: every read fails.
+    shutil.rmtree(root/'procs');(root/'procs').write_text('')
+    until(root,lambda:'cannot read the process table' in stderr(root))
+    audits=sum(e['role']=='audit' for e in events())
+    for _ in range(3):
+        process.send_signal(signal.SIGHUP);time.sleep(.5)
+    assert sum(e['role']=='audit' for e in events())==audits
+    assert stderr(root).count('cannot read the process table')==1
+    (root/'procs').unlink();(root/'procs').mkdir()
+    until(root,lambda:'process table readable again' in stderr(root))
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:sum(e['role']=='audit' for e in rows)>audits)
+
+
+def test_stuck_report_waits_for_a_buffer_stall_to_end(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    kernel(root)
+    start();wait(started('smbd'))
+    kernel(root,(5000,'getnewbuf'))
+    until(root,lambda:lowater_writes(root)==[RAISED_LOWATER])
+    # Stuck long enough to report at once, but a report would start a
+    # process during the buffer stall.
+    sleepers(root,(6001,6001,0,LSSLEEP,0,400,0,'biowait','smbd'))
+    until(root,lambda:'stuck: pid 6001' in stderr(root))
+    time.sleep(1.5)
+    assert reports(events)==[]
+    kernel(root,lowater=RAISED_LOWATER)
+    wait(lambda rows:any(r.startswith('stuck:smbd:biowait:') for r in reports(events)))
+    assert any(r.startswith('bufstall:') for r in reports(events))
+
+
+def test_failed_report_requeued_into_a_full_queue_drops_the_newest(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'report-hold').touch()
+    (root/'report-exit').write_text('1')
+    start();wait(started('smbd'))
+    first=[(8001+i,8001+i,0,LSSLEEP,0,400,0,'biowait',f'w{i+1}') for i in range(4)]
+    sleepers(root,*first)
+    # The first report is held in flight; three wait in the queue.
+    wait(lambda rows:len(reports(events))==1)
+    sleepers(root,*first,(8005,8005,0,LSSLEEP,0,400,0,'biowait','w5'))
+    until(root,lambda:'stuck: pid 8005' in stderr(root))
+    time.sleep(.5)
+    assert 'report queue full' not in stderr(root)
+    # It fails and goes back to the front of a queue now full: w5 is dropped.
+    (root/'report-hold').unlink()
+    until(root,lambda:re.search(r'report queue full; dropping stuck:w5:biowait:\d+',stderr(root)))
+    wait(lambda rows:len(reports(events))>=4)
+    sent=reports(events)
+    assert sent[1].startswith('stuck:w1:') and not any(r.startswith('stuck:w5:') for r in sent)
+    assert stderr(root).count('report queue full')==1

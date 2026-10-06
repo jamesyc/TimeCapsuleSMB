@@ -204,23 +204,12 @@ static int vm_read(int number, uint64_t *value, size_t *size) {
     return 0;
 }
 
-int tc_bufstall_read(struct tc_bufstall_sample *out) {
-    /* Room for every process: kern.maxproc is 84 on both kernels. Static,
-     * so a sample needs no memory when the device is short of it. */
-    static struct kinfo_proc2 procs[TC_PROCESS_MAX];
-    int mib[6] = {CTL_KERN, KERN_PROC2, KERN_PROC_ALL, 0, sizeof(procs[0]), TC_PROCESS_MAX};
-    size_t length = sizeof(procs), i;
-    memset(out, 0, sizeof(*out));
+int tc_bufstall_read_vm(struct tc_bufstall_sample *out) {
     if (vm_numbers() || vm_read(vm_mib[0], &out->bufmem, NULL) || vm_read(vm_mib[1], &out->lowater, NULL) ||
         vm_read(vm_mib[2], &out->hiwater, NULL)) {
         vm_mib[0] = 0; /* look the numbers up again next time */
         return -1;
     }
-    if (sysctl(mib, 6, procs, &length, NULL, 0) < 0)
-        return -1;
-    for (i = 0; i < length / sizeof(procs[0]) && out->count < TC_PROCESS_MAX; i++)
-        if (tc_bufstall_wmesg(procs[i].p_wmesg, sizeof(procs[i].p_wmesg)))
-            out->pids[out->count++] = (pid_t)procs[i].p_pid;
     return 0;
 }
 
@@ -238,8 +227,9 @@ int tc_bufstall_set_lowater(uint64_t value) {
     return sysctl(mib, 2, NULL, NULL, &value, sizeof(value));
 }
 #elif defined(TC_NATIVE_TEST)
-/* The fixture holds "bufmem N", "lowater N", "hiwater N" and "wait PID WMESG"
- * lines; "readonly" makes writes fail. Each write is appended to PATH.writes. */
+/* The fixture holds "bufmem N", "lowater N" and "hiwater N" lines; the waits
+ * come from the process table fixture. "readonly" makes writes fail. Each
+ * write is appended to PATH.writes. */
 static const char *fixture(void) {
     const char *path = getenv("TC_TEST_BUFCACHE");
     if (!path)
@@ -247,20 +237,15 @@ static const char *fixture(void) {
     return path;
 }
 
-int tc_bufstall_read(struct tc_bufstall_sample *out) {
+int tc_bufstall_read_vm(struct tc_bufstall_sample *out) {
     char line[128], word[32];
     unsigned long long value;
-    long pid;
     const char *path = fixture();
     FILE *stream;
-    memset(out, 0, sizeof(*out));
     if (!path || !(stream = fopen(path, "r")))
         return -1;
     while (fgets(line, sizeof(line), stream)) {
-        if (sscanf(line, "wait %ld %31s", &pid, word) == 2) {
-            if (tc_bufstall_wmesg(word, strlen(word)) && out->count < TC_PROCESS_MAX)
-                out->pids[out->count++] = (pid_t)pid;
-        } else if (sscanf(line, "%31s %llu", word, &value) == 2) {
+        if (sscanf(line, "%31s %llu", word, &value) == 2) {
             if (!strcmp(word, "bufmem"))
                 out->bufmem = value;
             else if (!strcmp(word, "lowater"))
@@ -280,7 +265,8 @@ int tc_bufstall_set_lowater(uint64_t value) {
     struct tc_bufstall_sample sample;
     const char *path = fixture();
     FILE *stream;
-    if (!path || tc_bufstall_read(&sample) || !(stream = fopen(path, "r")))
+    memset(&sample, 0, sizeof(sample));
+    if (!path || tc_bufstall_read_vm(&sample) || !(stream = fopen(path, "r")))
         return -1;
     while (fgets(line, sizeof(line), stream)) {
         if (!strncmp(line, "readonly", 8))
@@ -327,8 +313,8 @@ int tc_bufstall_set_lowater(uint64_t value) {
     return 0;
 }
 #else
-int tc_bufstall_read(struct tc_bufstall_sample *out) {
-    memset(out, 0, sizeof(*out));
+int tc_bufstall_read_vm(struct tc_bufstall_sample *out) {
+    (void)out;
     errno = ENOSYS;
     return -1;
 }
@@ -339,3 +325,14 @@ int tc_bufstall_set_lowater(uint64_t value) {
     return -1;
 }
 #endif
+
+int tc_bufstall_read(struct tc_bufstall_sample *out, const struct tc_proctable *table) {
+    size_t i;
+    memset(out, 0, sizeof(*out));
+    if (tc_bufstall_read_vm(out))
+        return -1;
+    for (i = 0; i < table->count && out->count < TC_PROCESS_MAX; i++)
+        if (tc_bufstall_wmesg(table->procs[i].wmesg, strlen(table->procs[i].wmesg)))
+            out->pids[out->count++] = table->procs[i].pid;
+    return 0;
+}

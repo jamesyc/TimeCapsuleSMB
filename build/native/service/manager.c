@@ -7,6 +7,8 @@
 #include "../storage/settle.h"
 #include "bufstall.h"
 #include "inspect.h"
+#include "proctable.h"
+#include "stuck.h"
 #include <sys/file.h>
 #include <sys/stat.h>
 
@@ -40,6 +42,11 @@
 #ifndef TC_BUFSTALL_REPORT_TIMEOUT_MS
 #define TC_BUFSTALL_REPORT_TIMEOUT_MS 180000
 #endif
+/* Stuck-process heartbeats waiting for the report job; each episode sends at
+ * most two, so a few cover several at once. */
+#define STUCK_REPORT_QUEUE 4
+/* Stuck processes named in the manager's process title, longest first. */
+#define STUCK_TITLE_MAX 4
 enum { BLOCK_SMB = 1, BLOCK_RSYNC = 2, BLOCK_DISCOVERY = 4, BLOCK_TELEMETRY = 8 };
 struct stale_process {
     pid_t pid;
@@ -98,10 +105,15 @@ struct manager {
     char hostname[256];
     int hostname_waiting;
     long long hostname_wait_since;
+    /* The process table, read once per pass (proctable.h) for buffer-stall
+     * recovery, stuck-process detection and the next audit. */
+    struct tc_proctable procs;
+    long long sample_at;
+    int procs_valid, procs_unreadable;
     /* Buffer-cache stall recovery (bufstall.h); process-local by design. */
     struct tc_bufstall bufstall;
     struct tc_child report_job;
-    long long bufstall_at, report_at;
+    long long report_at;
     int bufstall_unreadable, bufstall_write_failed, bufstall_wake_failed;
     /* Ended episodes not yet reported, merged: worst outcome, longest wait. */
     enum tc_bufstall_outcome report_outcome;
@@ -109,17 +121,58 @@ struct manager {
     /* The in-flight snapshot is separate from episodes ending during it. */
     enum tc_bufstall_outcome report_inflight_outcome;
     long long report_inflight_longest;
+    /* Processes stuck in the kernel (stuck.h); process-local by design. */
+    struct tc_stuck stuck;
+    long long stuck_report_at;
+    int stuck_truncated_logged, stuck_reports_dropped;
+    /* Heartbeat reasons not yet sent, oldest first, and the one in flight
+     * (empty when the in-flight report, if any, is a buffer-stall one). */
+    char stuck_reports[STUCK_REPORT_QUEUE][64];
+    size_t stuck_report_count;
+    char stuck_inflight[64];
 };
 
 static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-static void set_manager_title(int waiting) {
+/* Doctor reads stuck=PID:COMM:WAIT:SECONDS[,...] from the title (ps shows
+ * a sleep time of at most 127 s, and none for a wait that keeps waking). */
+static void set_manager_title(const struct manager *m) {
+    char title[256];
+    size_t used, i, shown = 0, more = 0;
+    const struct tc_stuck_entry *order[TC_STUCK_MAX];
+    long long now = acp_monotonic_ms();
+    used = (size_t)snprintf(title, sizeof(title), "role=manager%s", m->hostname_waiting ? " waiting=hostname" : "");
+    for (i = 0; i < m->stuck.count; i++)
+        if (m->stuck.entries[i].stuck)
+            order[shown++] = &m->stuck.entries[i];
+    if (shown) {
+        size_t a, b;
+        for (a = 1; a < shown; a++)
+            for (b = a; b > 0 && order[b]->since < order[b - 1]->since; b--) {
+                const struct tc_stuck_entry *swap = order[b];
+                order[b] = order[b - 1];
+                order[b - 1] = swap;
+            }
+        if (shown > STUCK_TITLE_MAX) {
+            more = shown - STUCK_TITLE_MAX;
+            shown = STUCK_TITLE_MAX;
+        }
+        for (i = 0; i < shown && used < sizeof(title); i++) {
+            char comm[TC_STUCK_COMM], wmesg[TC_STUCK_WMESG];
+            tc_stuck_word(comm, sizeof(comm), order[i]->thread.comm);
+            tc_stuck_word(wmesg, sizeof(wmesg), order[i]->thread.wmesg);
+            used += (size_t)snprintf(title + used, sizeof(title) - used, "%s%ld:%s:%s:%lld", i ? "," : " stuck=",
+                                     (long)order[i]->thread.pid, comm, wmesg, (now - order[i]->since) / 1000);
+        }
+        if (more && used < sizeof(title))
+            snprintf(title + used, sizeof(title) - used, ",+%lu", (unsigned long)more);
+    }
 #if defined(__NetBSD__)
-    setproctitle(waiting ? "role=manager waiting=hostname" : "role=manager");
+    setproctitle("%s", title);
 #else
-    (void)waiting;
+    (void)title;
 #endif
 }
 static void changed(struct manager *m, long long now);
@@ -138,7 +191,7 @@ static void observe_hostname(struct manager *m, long long now) {
                 timestamped_fprintf(stderr, "manager: waiting for the device hostname before starting Samba\n");
             m->hostname_waiting = 1;
             m->hostname_wait_since = now;
-            set_manager_title(1);
+            set_manager_title(m);
         }
         return;
     }
@@ -154,7 +207,7 @@ static void observe_hostname(struct manager *m, long long now) {
         strcpy(m->hostname, name);
     if (m->hostname_waiting) {
         m->hostname_waiting = 0;
-        set_manager_title(0);
+        set_manager_title(m);
     }
 }
 static void changed(struct manager *m, long long now) {
@@ -277,7 +330,22 @@ static int audit_job(void *opaque) {
     (void)tc_log_trim(TC_RAM_ROOT "/var/discovery.log");
     (void)tc_log_trim(TC_RAM_ROOT "/var/telemetry.log");
     (void)tc_log_trim(TC_RAM_ROOT "/var/rsync.log");
-    if (tc_process_table_read(&result.table))
+#ifdef TC_NATIVE_TEST
+    {
+        /* Host tests count audits. */
+        const char *root = getenv("TC_TEST_ROOT");
+        char path[1024];
+        FILE *events;
+        if (root && snprintf(path, sizeof(path), "%s/record-audit", root) < (int)sizeof(path) && !access(path, F_OK) &&
+            snprintf(path, sizeof(path), "%s/events", root) < (int)sizeof(path) && (events = fopen(path, "a"))) {
+            fputs("{\"kind\": \"command\", \"role\": \"audit\"}\n", events);
+            fclose(events);
+        }
+    }
+#endif
+    /* The manager's table for this pass, inherited by fork. Reading command
+     * lines can block on a process stuck on the disk, so only this job does. */
+    if (tc_process_table_build(&result.table, &m->procs, tc_proctable_argv))
         return tc_worker_finish(1);
     result.smb_pid = m->smb.child.pid;
     result.rsync_pid = m->rsync.child.pid;
@@ -449,6 +517,13 @@ static void apply_audit(struct manager *m, long long now) {
     size_t stale_count = 0;
     m->blocked = 0;
     const struct tc_process_table *table = &m->audit_result.table;
+#ifdef TC_AUDIT_TEST_LOG
+    /* Device validation builds only: the classified table, to compare with ps. */
+    for (i = 0; i < table->count; i++)
+        timestamped_fprintf(stderr, "audit: pid %ld parent %ld group %ld role %s\n", (long)table->processes[i].pid,
+                            (long)table->processes[i].parent, (long)table->processes[i].group,
+                            role_name(table->processes[i].role));
+#endif
     for (i = 0; i < table->count; i++) {
         const struct tc_process_info *p = &table->processes[i];
         /* Discovery verifies its own child's sockets before registering names.
@@ -548,6 +623,18 @@ static void pump_audit(struct manager *m, long long now) {
         tc_child_close(&m->audit_job);
     }
     if (!m->audit_job.group && now >= m->audit_at) {
+        /* The audit classifies a process table read in this pass, as ps ran
+         * at its start before: an audit asked for by an event must see what
+         * changed. An older table asks the next pass for a fresh read; an
+         * unreadable one waits rather than spinning on a past deadline. */
+        if (!m->procs_valid) {
+            m->audit_at = now + JOB_RETRY_MS;
+            return;
+        }
+        if (m->sample_at != now) {
+            m->sample_at = 0;
+            return;
+        }
         m->audit_at = now + AUDIT_MS;
         if (tc_child_fork(&m->audit_job, audit_job, m, MANAGER_LOG, &m->audit_result, sizeof(m->audit_result),
                           now + 20000))
@@ -558,7 +645,8 @@ static void pump_audit(struct manager *m, long long now) {
 static void bufstall_restore(void) {
     struct tc_bufstall_sample sample;
     uint64_t apple;
-    if (tc_bufstall_read(&sample))
+    memset(&sample, 0, sizeof(sample));
+    if (tc_bufstall_read_vm(&sample))
         return;
     apple = tc_bufstall_default_lowater(sample.hiwater);
     if (sample.lowater <= apple)
@@ -570,13 +658,51 @@ static void bufstall_restore(void) {
         timestamped_fprintf(stderr, "manager: restored vm.bufmem_lowater from %llu to %llu at stop\n",
                             (unsigned long long)sample.lowater, (unsigned long long)apple);
 }
-/* Reports run only after an episode ended, never during a stall, and never
- * while stopping: a report is the one step here that starts a process. */
-static void pump_bufstall_report(struct manager *m, long long now) {
+static void drop_stuck_report(struct manager *m, const char *reason) {
+    /* Logged once until a report fits again. */
+    if (!m->stuck_reports_dropped)
+        timestamped_fprintf(stderr, "manager: stuck: report queue full; dropping %s\n", reason);
+    m->stuck_reports_dropped = 1;
+}
+static void push_stuck_report(struct manager *m, const char *reason) {
+    if (m->stuck_report_count < STUCK_REPORT_QUEUE) {
+        snprintf(m->stuck_reports[m->stuck_report_count++], sizeof(m->stuck_reports[0]), "%s", reason);
+        m->stuck_reports_dropped = 0;
+    } else {
+        drop_stuck_report(m, reason);
+    }
+}
+static void pop_stuck_report(struct manager *m) {
+    if (!m->stuck_report_count)
+        return;
+    memmove(m->stuck_reports[0], m->stuck_reports[1], (m->stuck_report_count - 1) * sizeof(m->stuck_reports[0]));
+    m->stuck_report_count--;
+}
+/* Buffer-stall and stuck-process heartbeats share one report job, the one
+ * step here that starts a process, so never while stopping and never during a
+ * buffer stall, when the new process could itself wait for a buffer, hold the
+ * report slot and keep the manager from stopping. A stuck-process report goes
+ * out while the process is still stuck (that stall may end only with a power
+ * cycle), unless a buffer stall is in progress. */
+static void pump_reports(struct manager *m, long long now) {
     char reason[64];
     char *argv[] = {TC_SERVICE_BIN, "telemetry", "--report", reason, NULL};
+    int bufstall_due;
     if (m->report_job.group && tc_child_poll(&m->report_job, now)) {
-        if (tc_child_ok(&m->report_job) && !m->report_job.stopping) {
+        int delivered = tc_child_ok(&m->report_job) && !m->report_job.stopping;
+        if (m->stuck_inflight[0]) {
+            if (!delivered) {
+                /* Back to the front: reports go out in order. A queue that
+                 * filled meanwhile loses its newest. */
+                if (m->stuck_report_count == STUCK_REPORT_QUEUE)
+                    drop_stuck_report(m, m->stuck_reports[--m->stuck_report_count]);
+                memmove(m->stuck_reports[1], m->stuck_reports[0], m->stuck_report_count * sizeof(m->stuck_reports[0]));
+                memcpy(m->stuck_reports[0], m->stuck_inflight, sizeof(m->stuck_inflight));
+                m->stuck_report_count++;
+                m->stuck_report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+            }
+            m->stuck_inflight[0] = 0;
+        } else if (delivered) {
             m->report_at = now + TC_BUFSTALL_REPORT_MS;
         } else {
             if (m->report_outcome < m->report_inflight_outcome)
@@ -589,43 +715,115 @@ static void pump_bufstall_report(struct manager *m, long long now) {
         m->report_inflight_longest = 0;
         tc_child_close(&m->report_job);
     }
-    if (!m->report_outcome || m->stopping || acp_stop_requested || !m->have_settings || m->report_job.group ||
-        m->bufstall.outcome || now < m->report_at)
+    if (m->stopping || acp_stop_requested || !m->have_settings || m->report_job.group)
         return;
+    bufstall_due = m->report_outcome && !m->bufstall.outcome && now >= m->report_at;
     if (!m->settings.config.telemetry) {
-        m->report_outcome = TC_BUFSTALL_NO_EPISODE;
-        m->report_longest = 0;
+        if (bufstall_due) {
+            m->report_outcome = TC_BUFSTALL_NO_EPISODE;
+            m->report_longest = 0;
+        }
+        m->stuck_report_count = 0;
         return;
     }
-    snprintf(reason, sizeof(reason), "bufstall:%s:%lld", tc_bufstall_outcome_name(m->report_outcome),
-             m->report_longest / 1000);
+    if (bufstall_due)
+        snprintf(reason, sizeof(reason), "bufstall:%s:%lld", tc_bufstall_outcome_name(m->report_outcome),
+                 m->report_longest / 1000);
+    else if (m->stuck_report_count && !m->bufstall.outcome && now >= m->stuck_report_at)
+        snprintf(reason, sizeof(reason), "%s", m->stuck_reports[0]);
+    else
+        return;
     /* --report never starts signed jobs, so its whole group may be killed
      * after its deadline or at stop without interrupting a debug program. */
     if (!tc_child_exec(&m->report_job, argv, TC_RAM_ROOT "/var/telemetry.log")) {
         m->report_job.deadline = now + TC_BUFSTALL_REPORT_TIMEOUT_MS;
-        m->report_inflight_outcome = m->report_outcome;
-        m->report_inflight_longest = m->report_longest;
-        m->report_outcome = TC_BUFSTALL_NO_EPISODE;
-        m->report_longest = 0;
-    } else {
+        if (bufstall_due) {
+            m->report_inflight_outcome = m->report_outcome;
+            m->report_inflight_longest = m->report_longest;
+            m->report_outcome = TC_BUFSTALL_NO_EPISODE;
+            m->report_longest = 0;
+        } else {
+            memcpy(m->stuck_inflight, reason, sizeof(m->stuck_inflight));
+            pop_stuck_report(m);
+        }
+    } else if (bufstall_due) {
         m->report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+    } else {
+        m->stuck_report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
     }
+}
+static const char *group_role(const struct manager *m, pid_t group) {
+    const struct {
+        const struct tc_child *child;
+        const char *role;
+    } owners[] = {
+        {&m->smb.child, "smbd"},         {&m->discovery.child, "discovery"}, {&m->telemetry.child, "telemetry"},
+        {&m->rsync.child, "rsync"},      {&m->diskd.child, "diskd"},         {&m->storage_job, "storage"},
+        {&m->settings_job, "settings"},  {&m->stage_job, "stage"},           {&m->audit_job, "audit"},
+        {&m->mast_job, "inventory"},     {&m->report_job, "report"},
+    };
+    size_t i;
+    for (i = 0; group > 0 && i < sizeof(owners) / sizeof(owners[0]); i++)
+        if (owners[i].child->group == group)
+            return owners[i].role;
+    return NULL;
+}
+static void stuck_name(const struct manager *m, const struct tc_stuck_thread *t, char *out, size_t size) {
+    const char *role = group_role(m, t->group);
+    int n = snprintf(out, size, "pid %ld", (long)t->pid);
+    if (n > 0 && (size_t)n < size && t->lid)
+        n += snprintf(out + n, size - (size_t)n, " thread %d", t->lid);
+    if (n > 0 && (size_t)n < size)
+        snprintf(out + n, size - (size_t)n, " (%s%s%s)", t->comm, role ? ", role " : "", role ? role : "");
+}
+static void stuck_changed(const struct tc_stuck_event *e, void *context) {
+    struct manager *m = context;
+    char name[96], reason[64], comm[TC_STUCK_COMM], wmesg[TC_STUCK_WMESG];
+    long long seconds = e->duration_ms / 1000;
+    stuck_name(m, &e->entry.thread, name, sizeof(name));
+    tc_stuck_word(comm, sizeof(comm), e->entry.thread.comm);
+    tc_stuck_word(wmesg, sizeof(wmesg), e->entry.thread.wmesg);
+    if (e->change == TC_STUCK_STARTED) {
+        timestamped_fprintf(stderr, "manager: stuck: %s asleep uninterruptibly on %s for %lld s without "
+                                    "running\n", name, wmesg, seconds);
+    } else if (e->change == TC_STUCK_REPORT) {
+        snprintf(reason, sizeof(reason), "stuck:%s:%s:%lld", comm, wmesg, seconds);
+        push_stuck_report(m, reason);
+    } else {
+        timestamped_fprintf(stderr, "manager: stuck: %s no longer stuck after %lld s\n", name, seconds);
+        if (e->entry.reported) {
+            snprintf(reason, sizeof(reason), "stuck-cleared:%s:%s:%lld", comm, wmesg, seconds);
+            push_stuck_report(m, reason);
+        }
+    }
+}
+/* Reporting only: nothing in user space can wake or kill these (stuck.h). */
+static void sample_stuck(struct manager *m, long long now) {
+    static struct tc_stuck_sample sample;
+    size_t count, i, stuck = 0;
+    tc_stuck_read(&sample, &m->procs);
+    if (sample.truncated && !m->stuck_truncated_logged)
+        timestamped_fprintf(stderr, "manager: stuck: more than %d uninterruptible sleepers; following the first %d\n",
+                            TC_STUCK_MAX, TC_STUCK_MAX);
+    m->stuck_truncated_logged = sample.truncated;
+    count = tc_stuck_step(&m->stuck, &sample, now, stuck_changed, m);
+    for (i = 0; i < m->stuck.count; i++)
+        stuck += m->stuck.entries[i].stuck != 0;
+    /* While anything is stuck, every sample: the title shows seconds. */
+    if (count || stuck)
+        set_manager_title(m);
 }
 /* Detection, the raise, the wake and the restore are system calls in this
  * process: none of them forks, so they work with a full process table. They
  * also run while stopping, when stuck Samba workers would block the drain. */
-static void pump_bufstall(struct manager *m, long long now) {
+static void sample_bufstall(struct manager *m, long long now) {
     struct tc_bufstall_sample sample;
     enum tc_bufstall_action action;
     uint64_t lowater;
     long long longest = 0;
     int failed = 0, error = 0;
     size_t i;
-    pump_bufstall_report(m, now);
-    if (now - m->bufstall_at < TC_BUFSTALL_SAMPLE_MS && m->bufstall_at)
-        return;
-    m->bufstall_at = now;
-    if (tc_bufstall_read(&sample)) {
+    if (tc_bufstall_read(&sample, &m->procs)) {
         if (!m->bufstall_unreadable)
             timestamped_fprintf(stderr, "manager: cannot read buffer-cache state (%s); buffer-stall recovery "
                                         "waits until it can\n", strerror(errno));
@@ -706,6 +904,30 @@ static void pump_bufstall(struct manager *m, long long now) {
         if (m->report_longest < m->bufstall.ended_longest)
             m->report_longest = m->bufstall.ended_longest;
     }
+}
+/* One process-table read per pass (proctable.h), shared by buffer-stall
+ * recovery, stuck-process detection and the next audit. Reading is system
+ * calls in this process, no fork, so it works with a full process table; it
+ * runs while stopping too, when stuck Samba workers hold up the drain. */
+static void pump_sample(struct manager *m, long long now) {
+    pump_reports(m, now);
+    if (now - m->sample_at < TC_BUFSTALL_SAMPLE_MS && m->sample_at)
+        return;
+    m->sample_at = now;
+    if (tc_proctable_read(&m->procs)) {
+        if (!m->procs_unreadable)
+            timestamped_fprintf(stderr, "manager: cannot read the process table (%s); buffer-stall recovery, "
+                                        "stuck-process detection and audits wait until it can\n", strerror(errno));
+        m->procs_unreadable = 1;
+        m->procs_valid = 0;
+        return;
+    }
+    if (m->procs_unreadable)
+        timestamped_fprintf(stderr, "manager: process table readable again\n");
+    m->procs_unreadable = 0;
+    m->procs_valid = 1;
+    sample_bufstall(m, now);
+    sample_stuck(m, now);
 }
 static void pump_stage(struct manager *m, long long now) {
     if (m->stage_job.group && tc_child_poll(&m->stage_job, now)) {
@@ -899,7 +1121,7 @@ int tc_manager_main(int argc, char **argv) {
         close(lock);
         return 1;
     }
-    set_manager_title(0);
+    set_manager_title(m);
     m->hostname_wait_since = acp_monotonic_ms();
     m->storage_dirty = 1;
     timestamped_fprintf(stderr, "manager: starting native supervision\n");
@@ -914,7 +1136,7 @@ int tc_manager_main(int argc, char **argv) {
         poll_role(&m->rsync, "rsync", now, 1);
         poll_role(&m->discovery, "discovery", now, 1);
         poll_role(&m->telemetry, "telemetry", now, 0);
-        pump_bufstall(m, now);
+        pump_sample(m, now);
         if (m->stopping || acp_stop_requested) {
             if (!m->stopping)
                 m->stopping = 1;

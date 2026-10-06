@@ -234,27 +234,47 @@ static void write_text(const char *path, const char *text) {
     FILE *f = fopen(path, "w");
     assert(f && fputs(text, f) >= 0 && !fclose(f));
 }
+/* The manager's process table for the pass; wait messages as the kernel
+ * stores them, 8 bytes at most. */
+static struct tc_proctable table;
+static void wait_table(void) {
+    static const struct {
+        pid_t pid;
+        const char *wmesg;
+    } rows[] = {{10, "getnewbu"}, {11, "select"}, {12, "needbuf"}, {13, ""}};
+    size_t i;
+    memset(&table, 0, sizeof(table));
+    for (i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        table.procs[i].pid = rows[i].pid;
+        snprintf(table.procs[i].wmesg, sizeof(table.procs[i].wmesg), "%s", rows[i].wmesg);
+    }
+    table.count = i;
+}
 static void fixture(const char *dir) {
     char path[512], writes[600], wakes[600], line[64];
     struct tc_bufstall_sample in;
     FILE *f;
+    wait_table();
     unsetenv("TC_TEST_BUFCACHE");
     errno = 0;
-    assert(tc_bufstall_read(&in) == -1 && errno == ENOSYS);
+    assert(tc_bufstall_read(&in, &table) == -1 && errno == ENOSYS);
     snprintf(path, sizeof(path), "%s/bufcache", dir);
     snprintf(writes, sizeof(writes), "%s.writes", path);
     snprintf(wakes, sizeof(wakes), "%s.wakes", path);
     setenv("TC_TEST_BUFCACHE", path, 1);
-    write_text(path, "bufmem 3000000\nlowater 5030400\nhiwater 40243200\n"
-                     "wait 10 getnewbuf\nwait 11 select\nwait 12 needbuf\n");
-    assert(!tc_bufstall_read(&in));
+    write_text(path, "bufmem 3000000\nlowater 5030400\nhiwater 40243200\n");
+    assert(!tc_bufstall_read(&in, &table));
     assert(in.bufmem == 3000000 && in.lowater == 5030400 && in.hiwater == HI);
+    /* Only the buffer waits, in table order. */
     assert(in.count == 2 && in.pids[0] == 10 && in.pids[1] == 12);
+    /* The vm values alone. */
+    memset(&in, 0, sizeof(in));
+    assert(!tc_bufstall_read_vm(&in) && in.hiwater == HI && in.count == 0);
     /* The kernel refuses a mark within 16 bytes of the high-water mark. */
     errno = 0;
     assert(tc_bufstall_set_lowater(HI - TC_BUFSTALL_GAP + 1) == -1 && errno == EINVAL);
     assert(!tc_bufstall_set_lowater(HI - TC_BUFSTALL_GAP));
-    assert(!tc_bufstall_read(&in) && in.lowater == HI - TC_BUFSTALL_GAP && in.count == 2);
+    assert(!tc_bufstall_read(&in, &table) && in.lowater == HI - TC_BUFSTALL_GAP && in.count == 2);
     assert(!tc_bufstall_set_lowater(HI >> 3));
     f = fopen(writes, "r");
     assert(f);

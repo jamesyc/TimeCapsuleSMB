@@ -1,3 +1,108 @@
+# The manager names processes stuck in the kernel, from one process-table read per pass; the audit no longer runs ps (2026-10-06)
+
+Doctor's ps snapshot (next entry) misses a wait that wakes on a timeout to
+retry: NetBSD 6 waits for a free buffer with `cv_timedwait(..., hz / 4)`, so
+`sl` stays near 0, and it sees only the representative thread of a
+multi-threaded process. It also only runs when someone runs doctor.
+
+`service/proctable.c` reads `KERN_PROC2` once per manager pass into one
+static buffer and keeps compact records (pid, parent, group, state, flags,
+threads, sleep time, CPU time, wait message, name). Three users share them:
+
+- Stuck-process detection (`service/stuck.c`) follows each uninterruptible
+  sleeper (`LSSLEEP` without `L_SINTR`, not `P_SYSTEM`) across samples, using
+  `KERN_LWP` only for multi-threaded processes. A sleeper's start is the
+  earlier of its first sighting and now minus the kernel's sleep time; one
+  that uses more than 0.1 s of CPU within a 120 s window is making progress
+  and starts over. The budget is per window, not per episode: a wait that
+  wakes to retry uses a little CPU at every wake (50 us a second is 180 ms an
+  hour), so a per-episode budget would end a long stall every 15-80 minutes
+  and report it again. Asleep 120 s is stuck (doctor's `sl` threshold moved
+  to 120 s too), so a disk retrying one request for tens of seconds is not
+  reported. The manager logs it to `runtime.log` with its role when it is one
+  of ours, names the four longest in its process title (`role=manager
+  stuck=PID:COMM:WAIT:SECONDS,...,+N`; doctor reads it and adds "and N more"),
+  and sends a `stuck:` heartbeat at 5 minutes and a `stuck-cleared:` one when
+  a reported episode ends, through the buffer-stall report job (one at a time,
+  failed reports retried in order; a full queue drops and logs the newest).
+  Like buffer-stall reports, none starts during a buffer stall: the report
+  process could itself wait for a buffer, hold the report slot and keep the
+  manager from stopping. It reports only: nothing in user space can wake or
+  kill such a process.
+- Buffer-stall recovery takes its waiters from the table; its own 85 KB
+  `KERN_PROC2` buffer is gone and its `vm.bufmem*` reads are unchanged.
+- The audit job inherits the table by fork instead of running `/bin/ps`, which
+  cost 72 ms of CPU on NetBSD 4 every 30 s (17 ms on NetBSD 6; 20 runs timed
+  with `times`) because it reads every process's argv. It reads a command line
+  (`KERN_PROC_ARGS`, which reads the target's memory and can block on a
+  process stuck on the disk, so only the job calls it) only for rsync, diskd,
+  discoveryd, telemetry and service, whose roles depend on it. NetBSD 4's
+  `KERN_PROC_ARGS` reports a vanished pid, a zombie or a system process as
+  EINVAL and a dying one as EFAULT, so after a failure the job looks the pid
+  up (`KERN_PROC_PID`): gone or a zombie leaves the row out, anything else
+  fails the audit, which retries; an empty command line would make the
+  loopback diskd look foreign. A long command line (a user's rsync file
+  list) is cut to the buffer, not refused: `KERN_PROC_ARGS` truncates on both
+  kernels (NetBSD 4 `sysctl_kern_proc_args`, NetBSD 6/7 `copy_procargs`).
+  An audit uses a table read in the same pass, so one an event asks for sees
+  what changed (SIGHUP-driven host tests caught a table from the previous
+  pass).
+
+- Builds: NetBSD 6 381380 bytes (+5304 over the previous release), NetBSD 4
+  LE 341172 (+7800), NetBSD 4 BE 340600 (+7808); fault-ahead and fork-repair
+  checks passed; release builds were byte-identical when rebuilt after the
+  validation builds. gcc 13 with CI's `-Wall -Wextra -Werror -O2` compiled the
+  service sources and unit tests, test and production builds.
+- NetBSD 4's `kinfo_lwp` has no `l_rtime`, so threads use their process's
+  CPU time: a stuck thread of a daemon whose other threads run is not
+  reported. Every user-visible multi-threaded process is Apple's.
+- Validation builds ran from `/mnt/Memory` in place of the manager on both
+  devices, `sleep 400` started beside them; each device was restored by
+  stopping the validation manager and running `/mnt/Flash/rc.local`.
+  - Stuck (`TC_STUCK_TEST_WMESG "nanosl"`: `sleep`'s nanosleep counts as
+    uninterruptible). With an earlier build that read the table itself and
+    used 60 s: `sleep` logged at 61 s; `svscan`, which wakes every 5 s,
+    logged from across samples; NetBSD 4's `cron` from its kernel sleep time
+    on the manager's first minute; the telemetry child as `role telemetry`;
+    NetBSD 6 `sntpd`, `printd` and ACPd threads through `KERN_LWP` (the ACPd
+    threads cleared when ACPd used CPU, the limit above); the title read
+    `role=manager stuck=102:cron:nanoslee:107,127:svscan:nanoslee:83,
+    25963:sleep:nanoslee:79,26225:service:nanoslee:76`; doctor failed naming
+    them; the server received `stuck:` and `stuck-cleared:` heartbeats from
+    both (`stuck:sleep:nanoslp:301`, `stuck-cleared:sleep:nanoslp:401`,
+    `stuck:cron:nanoslee:300`, `stuck-cleared:sleep:nanoslee:401`, ...), the
+    first manager reports ever recorded from a device. With the shared-table
+    build (plus `TC_AUDIT_TEST_LOG`): the same processes logged at 120-121 s,
+    doctor failed naming them on both, and the server received
+    `stuck:sntpd:nanoslp:1339`. With the final build (per-window CPU budget,
+    report gating): logged at 120-121 s on both; the titles overflowed
+    (`...,604:printd:nanoslp:129,+4` on NetBSD 6, `+1` on NetBSD 4) and
+    NetBSD 6's doctor read "and 3 more the device's manager counts but does
+    not name"; the server received `stuck:sntpd:nanoslp:2147` with no buffer
+    stall in progress.
+  - Audit (`TC_AUDIT_TEST_LOG`): each audit's table equalled an independent
+    classification of `ps axww` taken at the same time (diskd on loopback,
+    smbd, Apple's wcifsnd, discovery, telemetry; pids, parents and groups),
+    and nothing was logged as foreign or killed.
+  - Buffer stall (`TC_BUFSTALL_EXTRA_WMESG` `nanoslp` on NetBSD 6, `nanoslee`
+    on NetBSD 4): 4 and 5 waiting processes found through the shared table,
+    `vm.bufmem_lowater` raised to hiwater - 16 (40263664, 40243184) and
+    restored to hiwater >> 3 at stop (5032960, 5030400), `sysctl` agreeing.
+- Final release build deployed to NetBSD 6, then NetBSD 4; doctor passed
+  after each; nothing stuck, foreign or unreadable logged. With the earlier
+  build, writing
+  then reading 2 GiB on each data disk, and both at once, logged nothing.
+- Cost over 600 s, `ps -S` (children included), the earlier build (second
+  table read, `ps` audit) against the shared-table build: NetBSD 4 manager
+  0.94 -> 0.67 s, with its jobs 5.14 -> 3.50 s (0.86% -> 0.58% CPU), RSS
+  752 -> 656 KB; NetBSD 6 0.90 -> 0.67 s, 3.17 -> 2.51 s (0.53% -> 0.42%),
+  RSS 716 -> 624 KB. NetBSD 4's shared-table window started 3 minutes after
+  its deploy reboot. The previous release's manager alone used about 0.085%
+  on NetBSD 4 (one snapshot including startup). The review fixes after it
+  change no per-pass work.
+- Not run: an overnight idle run and a Time Machine backup with the release
+  build, and a real kernel stall (none reproduced).
+
 # Doctor lists processes stuck in the kernel before touching the disk (2026-10-06)
 
 A user's TimeCapsule8,119 on v3.2.0-3 passed doctor after deploying, then

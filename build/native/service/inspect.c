@@ -1,9 +1,6 @@
 #include "inspect.h"
 #include "../common/worker.h"
 #include "../samba/runtime.h"
-#ifndef TC_PS_PATH
-#define TC_PS_PATH "/bin/ps"
-#endif
 
 static int argument(const char *command, const char *text) {
     size_t length = strlen(text);
@@ -54,53 +51,41 @@ static enum tc_process_role classify(const char *name, const char *command) {
      * AFP preference controls only discovery; killing either breaks OEM work. */
     return TC_PROC_OTHER;
 }
-int tc_process_table_parse(struct tc_process_table *table, const char *text) {
+/* The roles classify() decides from the command line, not the name alone. */
+static int needs_command(const char *name) {
+    return !strcmp(name, "rsync") || !strcmp(name, "diskd") || !strcmp(name, "discoveryd") ||
+           !strcmp(name, "telemetry") || !strcmp(name, "service");
+}
+int tc_process_table_build(struct tc_process_table *table, const struct tc_proctable *snapshot, tc_argv_fn argv) {
+    size_t i;
     memset(table, 0, sizeof(*table));
-    while (*text) {
-        char line[2048], state[32], name[64];
-        const char *end = strchr(text, '\n');
-        int pid, parent, group, offset = 0;
-        size_t length = end ? (size_t)(end - text) : strlen(text);
-        size_t kept = length < sizeof(line) ? length : sizeof(line) - 1;
+    for (i = 0; i < snapshot->count; i++) {
+        const struct tc_proc *p = &snapshot->procs[i];
         /* A user's command line can run to kilobytes (an rsync file list).
-         * Every role is decided by ucomm and the leading arguments, so parse
-         * the line's start; rejecting the table would stall every audit for
-         * as long as that command runs. */
-        memcpy(line, text, kept);
-        line[kept] = 0;
-        text += length + (end != NULL);
-        if (!length)
+         * Every role is decided by the name and the leading arguments. */
+        char command[2048] = "";
+        enum tc_process_role role;
+        if (p->pid <= 1 || tc_proc_exited(p))
             continue;
-        if (sscanf(line, "%d %d %d %31s %63s %n", &pid, &parent, &group, state, name, &offset) != 5 ||
-            !offset || pid < 0 || parent < 0 || group < 0)
-            return -1;
-        if (pid <= 1 || strchr(state, 'Z'))
-            continue;
-        enum tc_process_role role = classify(name, line + offset);
+        if (needs_command(p->comm)) {
+            int read = argv(p->pid, command, sizeof(command));
+            if (read > 0)
+                continue;
+            if (read < 0)
+                return -1;
+        }
+        role = classify(p->comm, command);
         if (role == TC_PROC_OTHER)
             continue;
         if (table->count == TC_PROCESS_MAX)
             return -1;
-        struct tc_process_info *p = &table->processes[table->count++];
-        p->pid = pid;
-        p->parent = parent;
-        p->group = group;
-        p->role = role;
+        table->processes[table->count].pid = p->pid;
+        table->processes[table->count].parent = p->parent;
+        table->processes[table->count].group = p->group;
+        table->processes[table->count].role = role;
+        table->count++;
     }
     return 0;
-}
-int tc_process_table_read(struct tc_process_table *table) {
-    char *buffer = malloc(65536);
-    char *argv[] = {TC_PS_PATH, "axww",  "-o", "pid=",   "-o", "ppid=",    "-o", "pgid=",
-                    "-o",       "stat=", "-o", "ucomm=", "-o", "command=", NULL};
-    int rc;
-    if (!buffer)
-        return -1;
-    rc = tc_command_capture(argv, buffer, 65536, 5);
-    if (!rc)
-        rc = tc_process_table_parse(table, buffer);
-    free(buffer);
-    return rc;
 }
 int tc_listener_present(const char *text, unsigned port) {
     while (*text) {

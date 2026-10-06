@@ -44,5 +44,7 @@ native/samba/staging.c
 native/service/inspect.c
 native/service/manager.c
 native/service/bufstall.c
+native/service/stuck.c
+native/service/proctable.c
 native/service/hosts.c
 patches/samba4x/overlay/lib/replace/tc_fork_repair.c

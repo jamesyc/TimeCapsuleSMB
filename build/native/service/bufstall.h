@@ -1,7 +1,7 @@
 #ifndef TC_BUFSTALL_H
 #define TC_BUFSTALL_H
 #include "../common/platform.h"
-#include "inspect.h"
+#include "proctable.h"
 
 /* Buffer-cache stall recovery (NetBSD kern/60584, fixed upstream in 2026 and
  * not in Apple's NetBSD 4 or 6 kernels). getnewbuf() asks buf_lotsfree()
@@ -107,9 +107,13 @@ enum tc_bufstall_action tc_bufstall_step(struct tc_bufstall *state, const struct
 /* The kernel refused the raise step() asked for. */
 void tc_bufstall_failed(struct tc_bufstall *state, long long now);
 const char *tc_bufstall_outcome_name(enum tc_bufstall_outcome outcome);
-/* Kernel access, all without fork or allocation. Host test builds use the
- * file named by TC_TEST_BUFCACHE instead; other builds report ENOSYS. */
-int tc_bufstall_read(struct tc_bufstall_sample *out);
+/* Kernel access, all without fork or allocation. The vm.bufmem* values come
+ * from sysctl, or in host test builds from the file named by
+ * TC_TEST_BUFCACHE; other builds report ENOSYS. The waiting processes come
+ * from the manager's process table for this pass. */
+int tc_bufstall_read(struct tc_bufstall_sample *out, const struct tc_proctable *table);
+/* The vm.bufmem* values alone; count stays 0. */
+int tc_bufstall_read_vm(struct tc_bufstall_sample *out);
 int tc_bufstall_set_lowater(uint64_t value);
 /* Read TC_BUFWAKE_DIR TC_BUFWAKE_PASSES times. */
 int tc_bufstall_wake(void);

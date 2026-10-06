@@ -76,7 +76,7 @@ from timecapsulesmb.core.net import (
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
-from timecapsulesmb.device.processes import stuck_processes
+from timecapsulesmb.device.processes import manager_unnamed_stuck_count, stuck_processes
 from timecapsulesmb.device.probe import (
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
@@ -1761,21 +1761,29 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
     if sink.debug_fields is not None:
         sink.debug_fields["remote_process_snapshot"] = limit_remote_log_tail(snapshot.rstrip() or "(empty)")
     stuck = tuple(stuck_processes(snapshot))
+    # The manager's title names the four longest and counts the rest.
+    unnamed = manager_unnamed_stuck_count(snapshot)
     if stuck:
+        details: dict[str, object] = {
+            "domain": "Runtime",
+            "stuck_processes": [
+                {"pid": p.pid, "name": p.name, "wchan": p.wchan, "sleep_seconds": p.sleep_seconds}
+                for p in stuck
+            ],
+        }
+        more = ""
+        if unnamed:
+            details["stuck_processes_unnamed"] = unnamed
+            more = f"; and {unnamed} more the device's manager counts but does not name"
         sink.add(
             CheckResult(
                 "FAIL",
                 "device processes are blocked in the kernel without making progress: "
                 + "; ".join(process.describe() for process in stuck)
+                + more
                 + ". A disk operation is not completing (a failing disk or a kernel I/O stall); "
                 "if this does not clear, power-cycle the device",
-                {
-                    "domain": "Runtime",
-                    "stuck_processes": [
-                        {"pid": p.pid, "name": p.name, "wchan": p.wchan, "sleep_seconds": p.sleep_seconds}
-                        for p in stuck
-                    ],
-                },
+                details,
             )
         )
     return ProcessSnapshotState(stuck=stuck)
