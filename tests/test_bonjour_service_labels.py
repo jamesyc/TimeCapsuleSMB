@@ -304,6 +304,28 @@ def test_doctor_blank_name_expects_apples_bonjour_host(radio_mac, host_failures)
     assert len(failures) == host_failures, outcome.results
 
 
+@pytest.mark.parametrize("system_dns_name, host_failures", [("Dn Test.Name\u2019s", 0), (None, 1)])
+def test_doctor_expects_the_bonjour_host_acpd_takes_from_syDN(system_dns_name, host_failures):
+    # NetBSD 4 LE with syDN "Dn Test.Name’s" and syNm "AirPort Time Capsule"
+    # advertised its services on Dn-Test-Names.local after a reboot. Without
+    # syDN the expectation comes from syNm, so the same record must still fail.
+    identity = derive_runtime_naming_identity("AirPort Time Capsule", "dn-test-names", system_dns_name=system_dns_name,
+                                              radio_mac="E8:8D:28:61:9B:7D")
+    smb = service("AirPort Time Capsule", hostname="Dn-Test-Names.local")
+    with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=[]):
+        outcome = _evaluate_bonjour_snapshot(BonjourDiscoverySnapshot([instance(smb)], [smb]),
+            BonjourExpectedIdentity(instance_name=identity.mdns_instance_name, host_label=identity.mdns_host_label,
+                                    target_ip="192.0.2.10", advertise_afp=False),
+            target_ip="192.0.2.10", family="ipv4", interfaces=None, active_share_names=["Data"],
+            resolver=mock.Mock(return_value=(None, CheckResult("FAIL", "no reply"))),
+            browse_miss_message="browse missed", targeted_resolve_pass_message="resolved")
+    assert outcome.instance == "AirPort Time Capsule"
+    failures = [r.message for r in outcome.results if r.status == "FAIL" and "host label" in r.message]
+    assert len(failures) == host_failures, outcome.results
+    passes = [r.message for r in outcome.results if r.status == "PASS" and "matches runtime mDNS host label" in r.message]
+    assert len(passes) == 1 - host_failures, outcome.results
+
+
 @pytest.mark.parametrize("label", ["AirPort Time\u00a0Capsule ", "   "])
 @pytest.mark.parametrize("family", ["ipv4", "ipv6"])
 @pytest.mark.parametrize("fault", [None, "address", "hostname", "port", "missing_adisk", "missing_adisk_without_related", "wrong_adisk"])

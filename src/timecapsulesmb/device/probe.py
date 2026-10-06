@@ -437,6 +437,7 @@ class RuntimeNamingIdentityProbeResult:
     mdns_host_label: str
     netbios_name: str
     detail: str
+    system_dns_name: str | None = None
 
 
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
@@ -792,17 +793,24 @@ def derive_runtime_naming_identity(
     system_name: str | None,
     hostname: str | None,
     *,
+    system_dns_name: str | None = None,
     radio_mac: str | None = None,
     airport_mac: str | None = None,
 ) -> RuntimeNamingIdentityProbeResult:
     raw_system_name = system_name or None
+    raw_system_dns_name = system_dns_name or None
     raw_hostname = (hostname or "").strip() or None
 
-    # Apple's mDNSResponder advertises ACPd's host label, not /bin/hostname:
-    # with no letters or digits in syNm, ACPd's kernel hostname reads raMA
-    # without checking the result and gets stack bytes (base-station-edffbf on
-    # NetBSD 4 LE), while the Bonjour host uses raMA, else waMA.
-    mdns_host_label = apple_bonjour_host_label(raw_system_name or "").lower()
+    # Apple's mDNSResponder advertises ACPd's host label, not /bin/hostname.
+    # Every ACPd checked (products 106 and 116 at 7.5.2-7.8.1, 119 and 120 at
+    # 7.7.3-7.9.1) builds it from syDN (ACPd's SYSDNSNAME), else syNm, else
+    # Base-Station-<raMA, else waMA> (LE 7.8.1 0x42e110, 7.9.1 0x4eebb8), and
+    # skips syDN when its converted label is empty. The kernel hostname
+    # routine tests syDN before converting it and fills its fallback from
+    # unchecked stack bytes (base-station-edffbf on NetBSD 4 LE), so
+    # /bin/hostname only stands in when nothing else names the host.
+    mdns_host_label = (apple_bonjour_host_label(raw_system_dns_name or "")
+                       or apple_bonjour_host_label(raw_system_name or "")).lower()
     if not mdns_host_label:
         mac = normalize_airport_mac(radio_mac) or normalize_airport_mac(airport_mac)
         if mac:
@@ -825,6 +833,7 @@ def derive_runtime_naming_identity(
     return RuntimeNamingIdentityProbeResult(
         system_name=raw_system_name,
         hostname=raw_hostname,
+        system_dns_name=raw_system_dns_name,
         mdns_instance_name=mdns_instance_name,
         mdns_host_label=mdns_host_label,
         netbios_name=netbios_name,
@@ -843,21 +852,26 @@ def _parse_runtime_naming_probe_output(text: str) -> RuntimeNamingIdentityProbeR
         if separator:
             values[key.strip()] = value
     return derive_runtime_naming_identity(values.get("system_name"), values.get("hostname"),
+                                          system_dns_name=values.get("system_dns_name"),
                                           radio_mac=values.get("radio_mac"), airport_mac=values.get("airport_mac"))
 
 
 def probe_remote_runtime_naming_identity_conn(connection: SshConnection) -> RuntimeNamingIdentityProbeResult:
     script = rf"""
 system_name=
+system_dns_name=
 radio_mac=
 airport_mac=
 if [ -x {DEVICE_ACP_PATH} ]; then
   system_name=$({DEVICE_ACP_PATH} -q syNm 2>/dev/null | /usr/bin/sed -n '1p')
+  # An unset syDN prints its failure on stderr and exits 0.
+  system_dns_name=$({DEVICE_ACP_PATH} -q syDN 2>/dev/null | /usr/bin/sed -n '1p')
   radio_mac=$({DEVICE_ACP_PATH} -q raMA 2>/dev/null | /usr/bin/sed -n '1p')
   airport_mac=$({DEVICE_ACP_PATH} -q waMA 2>/dev/null | /usr/bin/sed -n '1p')
 fi
 hostname=$(/bin/hostname 2>/dev/null | /usr/bin/sed -n '1p')
 printf 'system_name=%s\n' "$system_name"
+printf 'system_dns_name=%s\n' "$system_dns_name"
 printf 'radio_mac=%s\n' "$radio_mac"
 printf 'airport_mac=%s\n' "$airport_mac"
 printf 'hostname=%s\n' "$hostname"

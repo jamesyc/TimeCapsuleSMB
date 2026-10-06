@@ -1,3 +1,51 @@
+# Doctor reads syDN before syNm for Apple's Bonjour host (2026-10-05)
+
+Telemetry from a TimeCapsule6,113 (NetBSD 4 LE) on v3.2.0-3 failed doctor
+only on `_smb._tcp target host label 'Time-Capsule-dd5301' does not match
+runtime mDNS host label 'time-capsule-nm'`: `syNm` was "Time Capsule NM",
+while the kernel hostname and Apple's Bonjour host were
+`time-capsule-dd5301`. ACPd reads `syDN` before `syNm`, and the probe skipped
+`syDN`.
+
+Every ACPd checked (products 106 and 116 at 7.5.2-7.8.1, 119 and 120 at
+7.7.3-7.9.1) names the host the same way. The Bonjour host routine (LE 7.8.1 `0x42e110`, NetBSD 6 7.9.1 `0x4eebb8`) converts `syDN` and
+uses it when the converted label is not empty, else converts `syNm`, else
+formats `Base-Station-` with the last three `raMA` bytes, else `waMA`. The
+kernel hostname routine (`0x243ec4`, `0x270db8`) reads the same keys in the
+same order but tests `syDN` before converting it, fills its fallback from
+unchecked stack bytes, and lowercases the result. Both call the same
+conversion (`0x442194`, `0x501578`). Binaries checked: products 106 (BE) and
+116 (LE) at 7.5.2, 7.6, 7.6.1, 7.6.3, 7.6.4, 7.6.7, 7.6.8, 7.6.9 and 7.8.1,
+and products 119 and 120 at 7.7.3, 7.7.7, 7.7.8, 7.7.9 and 7.9.1, taken from
+Apple's firmware with the repo's basebinary keys and rebuilt from the FFS
+image through ACPd's indirect blocks; the three that also came off devices
+(116 7.8.1, 106 7.8.1, 119 7.9.1) matched byte for byte. The conversion is the
+same instruction sequence in every NetBSD 4 build and in every NetBSD 6
+build; the NetBSD 6 one, compiled differently, was checked by hand. `syDN`
+is a type 2 (raw string) property, like `syNm`.
+
+The probe now reads `syDN` (`acp -q syDN 2>/dev/null`) and derives the host
+label from it first, and doctor's debug context reports it as
+`system_dns_name` (ACPd calls the property `SYSDNSNAME`). Device
+evidence, NetBSD 4 LE, each value set with `acp syDN=...`, then Flash
+flushed and `acp acRB=00000000`:
+
+| `syDN` | kernel hostname | Bonjour host | main's doctor | this doctor |
+| --- | --- | --- | --- | --- |
+| unset | `airport-time-capsule` | `AirPort-Time-Capsule` | pass | pass |
+| `Dn Test.Name’s` | `dn-test-names` | `Dn-Test-Names` | host label FAIL (IPv4, IPv6) | pass |
+| `!!!` | `base-station-edffbf` | `AirPort-Time-Capsule` | not run | pass |
+| empty (cleared) | `airport-time-capsule` | `AirPort-Time-Capsule` | not run | pass |
+
+The instance name stayed `AirPort Time Capsule` in every row, and the manager
+mapped each kernel hostname in `/etc/hosts`. An unset `syDN` prints
+`### get 'syDN' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>` on stderr and
+exits 0 on both devices; a cleared one prints an empty line. The `!!!` row
+is why the kernel hostname cannot stand in for the Bonjour host. NetBSD 6
+(`syDN` unset) passed doctor with no FAIL or WARN, and `pytest -n auto` passed
+(3605 tests). The probe tests run the real probe shell with a stand-in `acp`
+that prints failures on stderr, as the devices do.
+
 # Manager loop pass as a build setting (2026-10-04)
 
 The manager's loop woke at least once a second through a literal 1000 ms;
@@ -79,9 +127,11 @@ last three `raMA` bytes, else `waMA`. The kernel hostname routine (`0x243ec4`,
 `sethostname`) makes the same conversion, but its fallback ignores the `raMA`
 read result and formats an uninitialized stack buffer: `base-station-edffbf`
 after three reboots, bytes that look like an ARM stack address. The probe
-reads `raMA` and `waMA` (an `acp -q` error line is not a MAC) and ports the
+reads `raMA` and `waMA` (an `acp -q` error line is not a MAC; on both devices
+`acp -q` prints a failure on stderr, which the probe drops) and ports the
 conversion; `/bin/hostname` is the last resort. `syDN`, which ACPd reads
-first, is unreadable on both test devices, so the probe skips it. The
+first, is unset on both test devices, so the probe skipped it (it reads it
+since 2026-10-05; see "Doctor reads syDN"). The
 `/etc/hosts` mapping keeps the kernel hostname, which smbd resolves.
 
 macOS SMB URLs escape a label's dots and backslashes as DNS does. With

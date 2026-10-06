@@ -678,6 +678,37 @@ class CheckTests(unittest.TestCase):
             any(result.status == "FAIL" and result.message == "device Samba version unavailable (exit code 1)" for result in run.results)
         )
 
+    def test_doctor_debug_context_records_the_naming_inputs_and_result(self) -> None:
+        # syDN goes to telemetry beside syNm (system_dns_name beside
+        # system_name), so a host label that follows it
+        # can be explained from the report alone.
+        debug_fields: dict[str, object] = {}
+        identity = RuntimeNamingIdentityProbeResult(
+            system_name="Time Capsule NM",
+            hostname="time-capsule-dd5301",
+            mdns_instance_name="Time Capsule NM",
+            mdns_host_label="time-capsule-dd5301",
+            netbios_name="time-capsule-dd",
+            detail="ok",
+            system_dns_name="Time Capsule dd5301",
+        )
+        self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+            debug_fields=debug_fields,
+            runtime_naming_identity=identity,
+        )
+
+        self.assertEqual(debug_fields["runtime_naming_identity"], {
+            "system_name": "Time Capsule NM",
+            "system_dns_name": "Time Capsule dd5301",
+            "hostname": "time-capsule-dd5301",
+            "mdns_instance_name": "Time Capsule NM",
+            "mdns_host_label": "time-capsule-dd5301",
+            "netbios_name": "time-capsule-dd",
+        })
+
     def test_run_doctor_checks_stops_when_deployed_config_is_missing(self) -> None:
         debug_fields: dict[str, object] = {}
         managed_smbd = mock.Mock()

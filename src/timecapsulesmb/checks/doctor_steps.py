@@ -1973,6 +1973,7 @@ def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAc
         if sink.debug_fields is not None:
             sink.debug_fields["runtime_naming_identity"] = {
                 "system_name": identity.system_name,
+                "system_dns_name": identity.system_dns_name,
                 "hostname": identity.hostname,
                 "mdns_instance_name": identity.mdns_instance_name,
                 "mdns_host_label": identity.mdns_host_label,

@@ -392,6 +392,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(result.netbios_name, "time-capsule")
         command = run_ssh_mock.call_args.args[1]
         self.assertIn("/usr/bin/acp -q syNm", command)
+        self.assertIn("/usr/bin/acp -q syDN", command)
         self.assertIn("/bin/hostname", command)
 
     def test_probe_remote_runtime_naming_identity_fails_on_remote_error(self) -> None:
@@ -445,7 +446,7 @@ class DeployModuleTests(unittest.TestCase):
         # only a last resort: ACPd fills it from unchecked stack bytes.
         cases = [
             ({"radio_mac": "E8:8D:28:61:9B:7D", "airport_mac": "E8:8D:28:58:F1:5C"}, "base-station-619b7d"),
-            ({"radio_mac": "### get 'raMA' failed", "airport_mac": "E8-8D-28-58-F1-5C"}, "base-station-58f15c"),
+            ({"radio_mac": None, "airport_mac": "E8-8D-28-58-F1-5C"}, "base-station-58f15c"),
             ({"radio_mac": None, "airport_mac": None}, "base-station-edffbf"),
         ]
         for macs, host in cases:
@@ -456,6 +457,28 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(derive_runtime_naming_identity("!!!", None).mdns_host_label, "timecapsule")
         self.assertEqual(derive_runtime_naming_identity("Time.Capsule", "other", radio_mac="E8:8D:28:61:9B:7D").mdns_host_label,
                          "time-capsule")
+
+    def test_runtime_naming_identity_host_label_prefers_syDN_like_acpd(self) -> None:
+        # Rows observed on NetBSD 4 LE after acp syDN=... and a reboot: ACPd's
+        # Bonjour host follows syDN's converted label, falls back to syNm when
+        # that label is empty, and the instance name stays syNm throughout.
+        cases = [
+            ("Dn Test.Name\u2019s", "dn-test-names", "dn-test-names"),
+            ("!!!", "base-station-edffbf", "airport-time-capsule"),
+            ("", "airport-time-capsule", "airport-time-capsule"),
+            (None, "airport-time-capsule", "airport-time-capsule"),
+        ]
+        for system_dns_name, hostname, host in cases:
+            with self.subTest(system_dns_name=system_dns_name):
+                result = derive_runtime_naming_identity("AirPort Time Capsule", hostname, system_dns_name=system_dns_name,
+                                                        radio_mac="E8:8D:28:61:9B:7D")
+                self.assertEqual(result.mdns_host_label, host)
+                self.assertEqual(result.mdns_instance_name, "AirPort Time Capsule")
+                self.assertEqual(result.system_dns_name, system_dns_name or None)
+        # With syDN and syNm both unnamed, the Bonjour host is Base-Station-<raMA>.
+        self.assertEqual(derive_runtime_naming_identity("   ", "base-station-edffbf", system_dns_name="!!!",
+                                                        radio_mac="E8:8D:28:61:9B:7D").mdns_host_label,
+                         "base-station-619b7d")
 
     def test_runtime_naming_identity_falls_back_only_without_a_name(self) -> None:
         for name in (None, ""):
@@ -469,32 +492,42 @@ class DeployModuleTests(unittest.TestCase):
         from timecapsulesmb.device import probe
         connection = SshConnection("host", "pw", "-o foo")
         with tempfile.TemporaryDirectory() as tmp:
-            acp, value, radio = Path(tmp) / "acp", Path(tmp) / "syNm", Path(tmp) / "raMA"
+            acp, value, radio, system_dns = Path(tmp) / "acp", Path(tmp) / "syNm", Path(tmp) / "raMA", Path(tmp) / "syDN"
             # Execute the real remote shell; command substitution drops only the
             # trailing newline, and the parser must not trim what is left. A
-            # failed query can print its error on stdout and still exit zero.
-            acp.write_text("#!/bin/sh\ncase \"$1:$2\" in\n"
-                           f"-q:syNm) cat {shlex.quote(str(value))};;\n"
-                           f"-q:raMA) cat {shlex.quote(str(radio))};;\n"
+            # failed query prints its error on stderr and still exits zero, as
+            # both NetBSD 4 and NetBSD 6 do for an unset syDN.
+            acp.write_text("#!/bin/sh\nshow() {\n  case \"$(cat \"$1\")\" in\n"
+                           "    \"### get \"*) cat \"$1\" >&2;;\n    *) cat \"$1\";;\n  esac\n}\n"
+                           "case \"$1:$2\" in\n"
+                           f"-q:syNm) show {shlex.quote(str(value))};;\n"
+                           f"-q:syDN) show {shlex.quote(str(system_dns))};;\n"
+                           f"-q:raMA) show {shlex.quote(str(radio))};;\n"
                            "-q:waMA) echo E8:8D:28:58:F1:5C;;\n*) exit 99;;\nesac\n")
             acp.chmod(0o755)
             def execute(_connection, command, **kwargs):
                 return subprocess.run(shlex.split(command), capture_output=True, text=True, encoding="utf-8", **kwargs)
+            unset = "### get 'syDN' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>"
             cases = [
-                (" AirPort Time\u00a0Capsule ", "E8:8D:28:61:9B:7D", "airport-time-capsule"),
-                ("   ", "E8:8D:28:61:9B:7D", "base-station-619b7d"),
-                ("   ", "### get 'raMA' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>", "base-station-58f15c"),
-                ("Capsule\u2028Office ", "E8:8D:28:61:9B:7D", "capsule-office"),
+                (" AirPort Time\u00a0Capsule ", unset, "E8:8D:28:61:9B:7D", "airport-time-capsule"),
+                ("   ", unset, "E8:8D:28:61:9B:7D", "base-station-619b7d"),
+                ("   ", unset, "### get 'raMA' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>", "base-station-58f15c"),
+                ("Capsule\u2028Office ", unset, "E8:8D:28:61:9B:7D", "capsule-office"),
+                ("AirPort Time Capsule", "Dn Test.Name\u2019s", "E8:8D:28:61:9B:7D", "dn-test-names"),
+                ("AirPort Time Capsule", "!!!", "E8:8D:28:61:9B:7D", "airport-time-capsule"),
+                ("AirPort Time Capsule", "", "E8:8D:28:61:9B:7D", "airport-time-capsule"),  # cleared
             ]
-            for name, radio_mac, host in cases:
-                with self.subTest(name=name, radio_mac=radio_mac):
+            for name, system_dns_name, radio_mac, host in cases:
+                with self.subTest(name=name, system_dns_name=system_dns_name, radio_mac=radio_mac):
                     value.write_text(name + "\n", encoding="utf-8")
+                    system_dns.write_text(system_dns_name + "\n", encoding="utf-8")
                     radio.write_text(radio_mac + "\n", encoding="utf-8")
                     with mock.patch.object(probe, "DEVICE_ACP_PATH", str(acp)), mock.patch.object(
                         probe, "run_ssh", side_effect=execute
                     ):
                         result = probe_remote_runtime_naming_identity_conn(connection)
                     self.assertEqual(result.system_name, name)
+                    self.assertEqual(result.system_dns_name, None if system_dns_name == unset else system_dns_name or None)
                     self.assertEqual(result.mdns_instance_name, name)
                     self.assertEqual(result.mdns_host_label, host)
 

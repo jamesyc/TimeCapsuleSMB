@@ -492,9 +492,10 @@ What Apple publishes vs what we publish:
 | host `A`/`AAAA` | Apple | fe80 + every IPv4 incl. 169.254, no GUA |
 | printers | Apple (printd) | Apple's |
 
-The hostname is Apple's (`AirPort-Time-Capsule.local`, from `syNm`), so SRV
-targets of our registrations resolve through Apple's host records. The doctor
-compares host labels case-insensitively.
+The hostname is Apple's (`AirPort-Time-Capsule.local`, from `syDN`, else
+`syNm`, else `Base-Station-<raMA, else waMA>`), so SRV targets of our
+registrations resolve through Apple's host records. The doctor compares host
+labels case-insensitively.
 
 ### Discovery policy and Samba networking
 
