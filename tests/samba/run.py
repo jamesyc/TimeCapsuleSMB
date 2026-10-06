@@ -37,8 +37,9 @@ AIO_CASES = (
     "exit_frames", "exit_frames_debug", "exit_no_frames", "exit_late_frames", "data_page_writes",
 )
 DURABLE_CASES = (
-    "transition", "exhausted", "already_disconnected", "client_mismatch",
+    "transition", "live", "already_disconnected", "client_mismatch",
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
+    "v1_transition",
 )
 
 STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",

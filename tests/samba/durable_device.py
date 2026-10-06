@@ -1,6 +1,6 @@
-"""Durable-handle, shutdown-close and handle-time device suite (Samba patches
-0019, 0024, 0029, 0062, NetBSD 4's futimens in 0002, and the parent scavenger
-in 0008), run from a Mac against a deployed device.
+"""Durable-handle, shutdown-close, short-WRITE and handle-time device suite
+(Samba patches 0019, 0024, 0029, 0062, 0072, NetBSD 4's futimens in 0002, and
+the parent scavenger in 0008), run from a Mac against a deployed device.
 
     .venv/bin/python -m tests.samba.durable_device --env .env [--stall SECONDS]
         [--case NAME ...]
@@ -14,10 +14,13 @@ it from a new connection with the same client GUID:
 - fin/rst: the client closes or resets TCP; the old smbd notices and marks the
   open disconnected.
 - half-open: the old connection stays up. Without PreviousSessionId the open is
-  still live, so after 0024's retry window the answer is OBJECT_NAME_NOT_FOUND
-  (MS-SMB2 3.3.5.9.12). An immediate refusal has the same status, so the case
-  also requires the wait to have lasted about the retry window;
-  naming the old session in the new session setup makes the old smbd close it.
+  still live, so 0024 defers the reconnect for 10 s and then answers
+  OBJECT_NAME_NOT_FOUND (MS-SMB2 3.3.5.9.12). An immediate refusal has the same
+  status, so the case also requires the full 10 s to have passed.
+- half-open+reset: as half-open, but the old connection is reset 2 s into the
+  wait; the deferred reconnect must then take the open over.
+- half-open+previous: naming the old session in the new session setup makes
+  the old smbd close it.
 - rst+ipc-tdis: before the reset, IPC$ is connected and disconnected, as a Mac
   listing shares does. That tree disconnect leaves smbd's working directory at
   "/", and the logoff that follows the reset closes the durable open from
@@ -33,6 +36,14 @@ session without a CLOSE: by a reset connection (drop) or a bare SMB2 LOGOFF,
 which smbd serves without changing into any share. With +ipc-tdis the IPC$
 tree disconnect first leaves the working directory at "/", so without 0062
 the delete finds no parent directory and the file survives.
+
+The short-write case sends what macOS was seen sending in issue 221: a WRITE
+whose data is 4 KiB short, so the next request (an ECHO) sits inside it. 0072
+must write nothing, log the refusal, and keep the connection open while
+answering nothing; after a reset the durable handle reconnects and a full write
+lands. The smb-in-data case writes data holding SMB2 headers that must not
+match (a far message ID, a wrong structure size, a response) and must be
+written as sent.
 
 The settime cases set a file's last-write time with SET_INFO and read it back
 through a new handle. settime:data sets it on a handle opened for reading and
@@ -66,15 +77,17 @@ from tests.samba.links_device import Device, Results, mount, unmount
 
 TEST_DIR = "__tc_durable_test__"
 STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
-# 0024 retries a live durable open 34 times, 150 ms apart.
-LIVE_RETRY_SECONDS = 34 * 0.150
-# Slack for the device's reply after the retries: an answer much later than the
-# window is not 0024's retry running out.
-LIVE_RETRY_SLACK_SECONDS = 3
-DROP_MODES = ("fin", "rst", "half-open", "half-open+previous", "rst+ipc-tdis", "rst+second-session")
+# 0024 defers a reconnect to a live durable open until 10 s after it arrived.
+LIVE_WAIT_SECONDS = 10.0
+# Slack for the device's reply after the deferral: an answer much later than
+# the window is not 0024's deferral running out.
+LIVE_WAIT_SLACK_SECONDS = 3
+DROP_MODES = ("fin", "rst", "half-open", "half-open+reset", "half-open+previous", "rst+ipc-tdis",
+              "rst+second-session")
+WRITE_MODES = ("short-write", "smb-in-data")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 SETTIME_MODES = ("data", "attributes")
-CASES = (DROP_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
+CASES = (DROP_MODES + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
          + tuple(f"settime:{mode}" for mode in SETTIME_MODES))
 # 2001-02-03 04:05:06 UTC as an SMB FILETIME (100 ns units since 1601).
 SETTIME_FILETIME = (981173106 + 11644473600) * 10_000_000
@@ -243,13 +256,29 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
                     client.reconnect(tree2, path, handle.file_id)
                 except SMBResponseException as error:
                     waited = time.monotonic() - started
-                    # The status alone cannot tell a retried refusal from an
-                    # immediate one, so the wait must match 0024's window.
+                    # The status alone cannot tell a deferred refusal from an
+                    # immediate one, so the wait must cover 0024's full window.
                     return (error.status == STATUS_OBJECT_NAME_NOT_FOUND and
-                            LIVE_RETRY_SECONDS - 1 <= waited <= LIVE_RETRY_SECONDS + LIVE_RETRY_SLACK_SECONDS)
+                            LIVE_WAIT_SECONDS - 0.2 <= waited <= LIVE_WAIT_SECONDS + LIVE_WAIT_SLACK_SECONDS)
                 return False
 
-            r.check(f"{mode}: a live open is refused after the retry window", refused)
+            r.check(f"{mode}: a live open is refused after the full deferral", refused)
+        elif mode == "half-open+reset":
+            reset = threading.Timer(2, _reset, (conn1,))
+            reset.start()
+
+            def taken_over() -> bool:
+                again = client.reconnect(tree2, path, handle.file_id)
+                waited = time.monotonic() - started
+                data = again.read(0, len(payload))
+                again.close()
+                # Deferred until the reset, and answered before the window ran out.
+                return data == payload and 2 <= waited < LIVE_WAIT_SECONDS
+
+            try:
+                r.check(f"{mode}: the deferred reconnect takes the open over once it is released", taken_over)
+            finally:
+                reset.join()
         else:
             def restored() -> bool:
                 again = client.reconnect(tree2, path, handle.file_id)
@@ -261,9 +290,133 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
     finally:
         with contextlib.suppress(Exception):
             conn2.disconnect()
-        if mode.startswith("half-open"):
+        if mode in ("half-open", "half-open+previous"):
             with contextlib.suppress(Exception):
                 conn1.disconnect()
+
+
+def _take_message_ids(conn, count: int) -> int:
+    """Reserve count message IDs in smbprotocol's window for raw requests."""
+    with conn.sequence_lock:
+        first = conn.sequence_window["low"]
+        conn.sequence_window["low"] += count
+    return first
+
+
+def _smb2_frame(conn, session_id: int, tree_id: int, message, mid: int) -> bytes:
+    """One request as it goes on the wire: NBT session header, then the PDU."""
+    from smbprotocol.header import SMB2HeaderRequest
+
+    header = SMB2HeaderRequest()
+    header["credit_charge"] = conn._calculate_credit_charge(message)
+    header["command"] = message.COMMAND
+    header["credit_request"] = 1
+    header["message_id"] = mid
+    header["session_id"] = session_id
+    header["tree_id"] = tree_id
+    header["data"] = message.pack()
+    pdu = header.pack()
+    return struct.pack(">I", len(pdu)) + pdu
+
+
+def _file_size(device: Device, name: str) -> int:
+    fields = device.sh(f"ls -l {shlex.quote(device.root + '/' + TEST_DIR + '/' + name)}").split()
+    return int(fields[4])
+
+
+def _smbd_log(device: Device) -> tuple[str, int]:
+    """The smbd log file named by the running smb.conf, and its size now."""
+    conf = device.sh("cat /mnt/Memory/samba4/etc/smb.conf")
+    log = next(line.split("=", 1)[1].strip() for line in conf.splitlines()
+               if line.strip().startswith("log file ="))
+    return log, int(device.sh(f"ls -l {shlex.quote(log)}").split()[4])
+
+
+def _smbd_log_since(device: Device, log: str, start: int) -> str:
+    """What smbd logged after start; a debug-logging log can be gigabytes.
+    Past "max log size" smbd renames the log to .old and starts a new one."""
+    block = 4096
+    tail = f"dd if={{}} bs={block} skip={start // block} 2>/dev/null"
+    size = int(device.sh(f"ls -l {shlex.quote(log)}").split()[4])
+    if size >= start:
+        return device.sh(tail.format(shlex.quote(log)), check=False)
+    return device.sh(f"{tail.format(shlex.quote(log + '.old'))}; cat {shlex.quote(log)}", check=False)
+
+
+def write_case(r: Results, device: Device, mode: str) -> None:
+    from smbprotocol.connection import SMB2Echo
+    from smbprotocol.open import SMB2WriteRequest
+
+    client = DurableClient(device)
+    name = f"{mode}.bin"
+    path = f"{TEST_DIR}\\{name}"
+    before = set(_smbd_children(device))
+    conn1, sess1, tree1 = client.connect()
+    try:
+        handle, granted = client.open_durable(tree1, path)
+        r.check(f"{mode}: durable handle granted", lambda: granted)
+        if mode == "smb-in-data":
+            # SMB2 headers inside ordinary data that 0072 must not take for the
+            # next request: a far message ID, a wrong structure size, a response.
+            mid = conn1.sequence_window["low"]
+            echo = SMB2Echo()
+            far = _smb2_frame(conn1, sess1.session_id, 0, echo, mid + 100000)
+            near = bytearray(_smb2_frame(conn1, sess1.session_id, 0, echo, mid + 1))
+            size65 = bytes(near[:8]) + struct.pack("<H", 65) + bytes(near[10:])
+            as_response = bytes(near[:20]) + bytes([near[20] | 0x01]) + bytes(near[21:])
+            data = b"".join(b"A" * 1024 + frame for frame in (far, size65, as_response)) + b"A" * 1024
+            write, _ = handle.write(data, 0, send=False)
+
+            def written() -> bool:
+                # A refused WRITE is never answered: time out instead of hanging.
+                request = conn1.send(write, sess1.session_id, tree1.tree_connect_id)
+                response = conn1.receive(request, timeout=30)
+                return response["status"].get_value() == 0 and handle.read(0, len(data)) == data
+
+            r.check(f"{mode}: the data is written as sent", written)
+            handle.close()
+            return
+        mine = sorted(set(_smbd_children(device)) - before)
+        r.check(f"{mode}: the connection has its own smbd", lambda: len(mine) == 1)
+        if len(mine) != 1 or not granted:
+            return
+        log, log_start = _smbd_log(device)
+        data = b"A" * 65536
+        write = SMB2WriteRequest()
+        write["length"] = len(data)
+        write["offset"] = 0
+        write["file_id"] = handle.file_id
+        write["buffer"] = data
+        mid = _take_message_ids(conn1, 2)
+        frame = _smb2_frame(conn1, sess1.session_id, tree1.tree_connect_id, write, mid)
+        echo = _smb2_frame(conn1, sess1.session_id, 0, SMB2Echo(), mid + 1)
+        cut = 4096
+        # The WRITE's NBT length is right but its data is 4 KiB short, so the
+        # ECHO and filler complete it, and more traffic follows out of step.
+        conn1.transport._sock.sendall(frame[:-cut] + echo + b"B" * (cut - len(echo)) + b"C" * 8192)
+        time.sleep(5)
+        r.check(f"{mode}: nothing was written", lambda: _file_size(device, name) == 0)
+        r.check(f"{mode}: smbd logged the refusal",
+                lambda: f"tc_desync: WRITE mid {mid} " in _smbd_log_since(device, log, log_start))
+        r.check(f"{mode}: smbd kept the connection, answering nothing",
+                lambda: mine[0] in _smbd_children(device))
+        _reset(conn1)
+        conn2, _, tree2 = client.connect()
+        try:
+            def full_write() -> bool:
+                again = client.reconnect(tree2, path, handle.file_id)
+                again.write(data, 0)
+                back = again.read(0, len(data))
+                again.close()
+                return back == data
+
+            r.check(f"{mode}: the reconnect restores the open and a full write lands", full_write)
+        finally:
+            with contextlib.suppress(Exception):
+                conn2.disconnect()
+    finally:
+        with contextlib.suppress(Exception):
+            conn1.disconnect()
 
 
 def delete_on_close_case(r: Results, device: Device, mode: str) -> None:
@@ -473,6 +626,9 @@ def main() -> int:
         for mode in DROP_MODES:
             if mode in wanted:
                 drop_case(results, device, mode)
+        for mode in WRITE_MODES:
+            if mode in wanted:
+                write_case(results, device, mode)
         for mode in DELETE_ON_CLOSE_MODES:
             if f"doc:{mode}" in wanted:
                 delete_on_close_case(results, device, mode)

@@ -211,7 +211,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 --- a/source3/smbd/proto.h
 +++ b/source3/smbd/proto.h
-@@ -1237,4 +1237,6 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
+@@ -1239,4 +1239,6 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
  					   TALLOC_CTX *mem_ctx,
  					   struct share_mode_lock **lck);
  
@@ -221,7 +221,7 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 --- a/source3/smbd/smb2_create.c
 +++ b/source3/smbd/smb2_create.c
-@@ -1360,7 +1360,9 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1386,7 +1386,9 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  
  		mode_t mode = state->result->fsp_name->st.st_ex_mode;
  
@@ -232,7 +232,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  			/*
  			 * Only open files and dirs without
  			 * FILE_OPEN_REPARSE_POINT
-@@ -1818,7 +1820,8 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+@@ -1844,7 +1846,8 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
  	state->out_file_attributes = fdos_mode(state->result);
  
  	if ((state->out_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT) &&

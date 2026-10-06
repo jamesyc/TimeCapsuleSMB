@@ -1,3 +1,58 @@
+# Durable reconnects deferred, not slept (0024); short macOS WRITEs refused without a reply (0072) (2026-10-06)
+
+Issue 221 (netbsd4le Time Capsule, old 2 TB drive, Mac on Wi-Fi) is a macOS
+bug: while smbd was blocked on the disk its TCP window stayed shut for ~5 s,
+and macOS then put SMB2 WRITEs on the wire with their data short, so the next
+request's header sat inside the data. A capture on the Mac showed it never sent the missing
+bytes. Stock smbd wrote the next request into the sparse bundle band and
+answered success, then read payload as frame headers. The reporter's patches
+0072 and 0074-0078 found the fix; this keeps their behaviour on less code:
+
+- 0024 no longer sleeps. A reconnect to an open the old smbd still holds is
+  deferred with upstream's `setup_poll_open()` (made non-static), retried every
+  150 ms until 10 s after the create arrived, then answered
+  OBJECT_NAME_NOT_FOUND as before. Teardown takes 3-5 s on these devices; 10 s
+  keeps a margin, and the smbd keeps reading and serving (STATUS_PENDING to the
+  client) instead of going deaf, which is what shuts its TCP window. The
+  reporter's 240 s window and forced 300 s durable timeout are not taken: the
+  only case for them was a dying drive.
+- 0072, the macOS workaround, checks each WRITE in the frame reader, before
+  dispatch: data holding an NBT session header and a complete SMB2 request
+  header (structure size 64, not a response) whose message ID is 1-8192 above
+  the WRITE's. Such a WRITE is never dispatched or answered, and every later
+  frame goes down stock smbd's "ignore NBT" path, so smbd keeps reading and
+  answers nothing until macOS's 35 s reply timer reconnects and resends
+  everything (the reporter measured that dropping the connection lost 1
+  backup in 12, and that not reading made macOS fail the request in flight).
+  It also fixes a Samba bug on that path: upstream kept every ignored frame's
+  buffer until the connection ended.
+- 0061 logs a deferred reconnect once, not on every 150 ms retry.
+- Not taken: their session-setup cap (0074; with a 10 s create window it would
+  give the old smbd less time than stock's full wait), dropping on a garbage
+  frame (0075), and the separate drain handler, timer and setting (0077, 0078).
+
+Tested (2026-10-06, no device runs in this change):
+
+- Host regression in Docker `ubuntu:24.04` with ASan/UBSan: all 161 driver
+  invocations pass, including `tc_durable_reconnect_test` `live` (a live open
+  answers FILE_NOT_AVAILABLE on one attempt and the record keeps the old
+  owner), and `transition` and `v1_transition` (busy, then taken over once
+  marked disconnected, with and without a create GUID). `v1_reconnect` now
+  starts from a disconnected record: it used to reach one only through the
+  removed sleep loop.
+- `tc_write_holds_next_request()` compiled alone on the Mac against 15 cases:
+  the next header inside the data, at the first and last possible offsets, cut
+  off at the end, message ID equal, lower, at and past the 8192 window, wrong
+  structure size, a response, a keepalive frame type, a READ, a transform
+  header, plain data and an empty frame.
+- pytest (`-n auto`): all pass.
+- Clean VM builds of all three lanes. Stripped smbd: NetBSD 6 10,240,168 bytes
+  (+448), NetBSD 4 LE 10,259,840 (+608), NetBSD 4 BE 10,258,784 (+628); the
+  migrators are unchanged.
+- Not yet run on a device: `durable_device.py` (`half-open` must be refused
+  after at least 9.8 s, `half-open+reset`, `short-write`, `smb-in-data`, and
+  the `mac` 60 s stall), the drivers, and the reporter's Time Machine run.
+
 # Manager startup age and heartbeat uptime on the device's monotonic clock (2026-10-06)
 
 Doctor's startup grace measured the manager's age with `ps etime`, which is

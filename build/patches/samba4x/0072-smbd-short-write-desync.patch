@@ -1,0 +1,88 @@
+diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
+--- a/source3/smbd/smb2_server.c
++++ b/source3/smbd/smb2_server.c
+@@ -5046,6 +5046,57 @@ static NTSTATUS smbd_smb2_flush_send_queue(struct smbXsrv_connection *xconn)
+ 	return status;
+ }
+ 
++/*
++ * Workaround for a macOS bug (issue 221): after the server's TCP window has
++ * stayed shut for about 5 s, macOS can send an SMB2 WRITE whose NBT length is
++ * right but whose data is short, so the next request's header lands inside
++ * the data. Without this check smbd writes that request into the file and
++ * answers success. Refuse such a WRITE, then read and discard everything and
++ * answer nothing, so that macOS's 35 s reply timer reconnects and resends
++ * every request. macOS fails the request in flight if we drop the connection
++ * or stop reading, and treats any error reply to a WRITE as fatal. One smbd
++ * serves one client (multichannel is off), so one flag is enough.
++ */
++static bool tc_out_of_step;
++
++static bool tc_write_holds_next_request(const uint8_t *pdu, size_t len)
++{
++	/*
++	 * A WRITE's data starts after its 0x30-byte fixed body at the
++	 * earliest, so a next request's "\xfeSMB" can only follow that and
++	 * its own 4-byte NBT header.
++	 */
++	size_t ofs = SMB2_HDR_BODY + 0x30 + NBT_HDR_SIZE;
++	uint64_t mid;
++
++	/* An encrypted PDU is not checked: decryption catches a short one. */
++	if (len < ofs + SMB2_HDR_BODY || IVAL(pdu, 0) != SMB2_MAGIC ||
++	    SVAL(pdu, SMB2_HDR_OPCODE) != SMB2_OP_WRITE) {
++		return false;
++	}
++	mid = BVAL(pdu, SMB2_HDR_MESSAGE_ID);
++	while (ofs + SMB2_HDR_BODY <= len) {
++		const uint8_t *p = memmem(pdu + ofs, len - ofs, "\xfeSMB", 4);
++
++		if (p == NULL || p + SMB2_HDR_BODY > pdu + len) {
++			return false;
++		}
++		/*
++		 * A backed-up capture of SMB2 traffic could match; the message
++		 * ID window makes that unlikely. Compare more fields if it ever
++		 * happens.
++		 */
++		if (p[-4] == 0x00 && smb2_len(p - 4) >= SMB2_HDR_BODY &&
++		    SVAL(p, SMB2_HDR_LENGTH) == SMB2_HDR_BODY &&
++		    !(IVAL(p, SMB2_HDR_FLAGS) & SMB2_HDR_FLAG_REDIRECT) &&
++		    BVAL(p, SMB2_HDR_MESSAGE_ID) - mid - 1 < 8192) {
++			return true;
++		}
++		ofs = p - pdu + 1;
++	}
++	return false;
++}
++
+ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, size_t n)
+ {
+ 	struct smbd_server_connection *sconn = xconn->client->sconn;
+@@ -5155,11 +5206,25 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+ 
+ got_full:
+ 
+-	if (state->hdr.nbt[0] != 0x00) {
++	if (state->hdr.nbt[0] == 0x00 && !tc_out_of_step &&
++	    tc_write_holds_next_request(state->pktbuf, state->pktlen)) {
++		DBG_ERR("tc_desync: WRITE mid %" PRIu64 " holds the next "
++			"request's header: not writing it, reading and "
++			"answering nothing more on this connection\n",
++			BVAL(state->pktbuf, SMB2_HDR_MESSAGE_ID));
++		tc_out_of_step = true;
++	}
++
++	if (state->hdr.nbt[0] != 0x00 || tc_out_of_step) {
+ 		DEBUG(1,("ignore NBT[0x%02X] msg\n",
+ 			 state->hdr.nbt[0]));
+ 
+ 		req = state->req;
++		/*
++		 * Samba bug: upstream keeps every ignored frame's buffer until
++		 * the request is freed, which is when the connection ends.
++		 */
++		TALLOC_FREE(state->pktbuf);
+ 		*state = (struct smbd_smb2_request_read_state) {
+ 			.req = req,
+ 			.min_recv_size = lp_min_receive_file_size(),

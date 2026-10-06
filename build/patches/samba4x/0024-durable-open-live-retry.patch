@@ -1,3 +1,63 @@
+diff --git a/source3/smbd/open.c b/source3/smbd/open.c
+--- a/source3/smbd/open.c
++++ b/source3/smbd/open.c
+@@ -3035,7 +3035,7 @@ static void poll_open_setup_watcher_fn(struct share_mode_lock *lck,
+ /**
+  * Reschedule an open for 1 second from now, if not timed out.
+  **/
+-static bool setup_poll_open(
++bool setup_poll_open(
+ 	struct smb_request *req,
+ 	const struct file_id *id,
+ 	struct timeval max_timeout,
+diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
+--- a/source3/smbd/proto.h
++++ b/source3/smbd/proto.h
+@@ -665,6 +665,8 @@ NTSTATUS send_break_message(struct messaging_context *msg_ctx,
+ 			    uint16_t break_to);
+ struct deferred_open_record;
+ bool is_deferred_open_async(const struct deferred_open_record *rec);
++bool setup_poll_open(struct smb_request *req, const struct file_id *id,
++		     struct timeval max_timeout, struct timeval interval);
+ bool defer_smb1_sharing_violation(struct smb_request *req);
+ NTSTATUS create_directory(connection_struct *conn,
+ 			  struct smb_request *req,
+diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
+--- a/source3/smbd/smb2_create.c
++++ b/source3/smbd/smb2_create.c
+@@ -1129,6 +1129,32 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+ 					       lease_key,
+ 					       now,
+ 					       &state->op);
++		if (NT_STATUS_EQUAL(status, NT_STATUS_FILE_NOT_AVAILABLE)) {
++			/*
++			 * The old smbd still holds this open: macOS reconnects
++			 * before the old smbd has finished tearing down the lost
++			 * connection, which takes 3-5 s on these devices. Defer
++			 * the create and retry every 150 ms until 10 s after it
++			 * arrived. Sleeping here instead would stop this smbd
++			 * reading its socket; its TCP window then closes, and
++			 * macOS answers that with short WRITEs (0072). Once the
++			 * 10 s run out, answer as upstream and MS-SMB2
++			 * 3.3.5.9.12 do for an open still attached to a session.
++			 */
++			if (!state->open_was_deferred) {
++				DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
++					   "%s is still attached to a live "
++					   "smbd; deferring for up to 10s\n",
++					   state->fname);
++			}
++			TALLOC_FREE(state->open_rec); /* the previous try's */
++			if (setup_poll_open(smb1req, NULL,
++					    tevent_timeval_set(10, 0),
++					    tevent_timeval_set(0, 150000))) {
++				return req;
++			}
++			status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
++		}
+ 		if (tevent_req_nterror(req, status)) {
+ 			DBG_NOTICE("smb2srv_open_recreate failed: %s\n",
+ 				   nt_errstr(status));
 diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
 --- a/source3/smbd/smbXsrv_open.c
 +++ b/source3/smbd/smbXsrv_open.c
@@ -31,7 +91,7 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
 +		/*
 +		 * NT_STATUS_FILE_NOT_AVAILABLE is only the caller's "still
 +		 * busy, retry" signal; the client never sees it (see
-+		 * smb2srv_open_recreate).
++		 * smbd_smb2_create_send).
 +		 */
 +		DBG_DEBUG("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
 +			  "open %s is still attached to a live smbd; "
@@ -45,82 +105,3 @@ diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
  	global->open_volatile_id = state->op->local_id;
  	global->server_id = state->me;
  	global->session_global_id = state->session->global->session_global_id;
-@@ -1391,6 +1416,16 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
- 	TDB_DATA key = smbXsrv_open_global_id_to_key(
- 		persistent_id & UINT32_MAX, &key_buf);
- 	int ret, local_id;
-+	const int live_open_retry_delay_msec = 150;
-+	/*
-+	 * Time Machine can leave dozens of durable handles for the old smbd to
-+	 * disconnect. Allow that teardown to finish before rejecting reconnect.
-+	 * The wait blocks only this client's own smbd (one process per client;
-+	 * multichannel is off), which meanwhile answers nothing, including
-+	 * lease breaks for handles this reconnect has already restored.
-+	 */
-+	const int live_open_retry_max = 34;
-+	int live_open_retries = 0;
- 	NTSTATUS status;
- 
- 	if (session_info == NULL) {
-@@ -1438,6 +1473,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
- 
- 	state.op->idle_time = now;
- 	state.op->status = NT_STATUS_FILE_CLOSED;
-+retry_live_open:
- 
- 	status = dbwrap_do_locked(
- 		table->global.db_ctx, key, smb2srv_open_recreate_fn, &state);
-@@ -1448,6 +1484,53 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
- 		goto fail;
- 	}
- 
-+	if (NT_STATUS_EQUAL(state.status, NT_STATUS_FILE_NOT_AVAILABLE) &&
-+	    live_open_retries < live_open_retry_max)
-+	{
-+		live_open_retries += 1;
-+		if (live_open_retries == 1) {
-+			DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
-+				   "waiting up to %dms in %dms intervals "
-+				   "for %s to be marked disconnected\n",
-+				   live_open_retry_delay_msec *
-+					   live_open_retry_max,
-+				   live_open_retry_delay_msec,
-+				   tdb_data_dbg(key));
-+		} else {
-+			DBG_DEBUG("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
-+				  "retry %d/%d waiting for %s to be marked "
-+				  "disconnected\n",
-+				  live_open_retries,
-+				  live_open_retry_max,
-+				  tdb_data_dbg(key));
-+		}
-+		/*
-+		 * Do not sleep while the TDB record is locked: the old smbd
-+		 * needs the same record lock in order to store the disconnected
-+		 * durable-open state that makes recreate safe.
-+		 */
-+		TALLOC_FREE(state.op->global);
-+		smb_msleep(live_open_retry_delay_msec);
-+		goto retry_live_open;
-+	}
-+
-+	if (NT_STATUS_EQUAL(state.status, NT_STATUS_FILE_NOT_AVAILABLE)) {
-+		/*
-+		 * Still attached after the retries: answer as upstream and
-+		 * MS-SMB2 3.3.5.9.12 do for an open whose session is not
-+		 * NULL. macOS revokes the file on any reconnect error, so this
-+		 * status only matters to the protocol.
-+		 */
-+		DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
-+			   "open %s is still attached to a live smbd after "
-+			   "%d retries over %dms; returning "
-+			   "NT_STATUS_OBJECT_NAME_NOT_FOUND\n",
-+			   tdb_data_dbg(key),
-+			   live_open_retries,
-+			   live_open_retries * live_open_retry_delay_msec);
-+		state.status = NT_STATUS_OBJECT_NAME_NOT_FOUND;
-+	}
-+
- 	if (!NT_STATUS_IS_OK(state.status)) {
- 		status = state.status;
- 		DBG_DEBUG("smb2srv_open_recreate_fn for %s failed: %s\n",

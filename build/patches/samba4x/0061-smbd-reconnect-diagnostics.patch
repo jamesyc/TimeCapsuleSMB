@@ -14,15 +14,16 @@ diff --git a/source3/smbd/close.c b/source3/smbd/close.c
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 --- a/source3/smbd/smb2_create.c
 +++ b/source3/smbd/smb2_create.c
-@@ -1118,6 +1118,20 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1118,6 +1118,21 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  		 */
  		SMB_ASSERT(state->op == NULL);
  
-+		{
++		if (!state->open_was_deferred) {
 +			struct GUID_txt_buf guid_buf;
 +
 +			/* Durable reconnect diagnostics (patch 0061). A v1
-+			 * reconnect has no create GUID. */
++			 * reconnect has no create GUID. 0024 retries a
++			 * deferred reconnect every 150 ms: log it once. */
 +			DBG_NOTICE("tc_reconnect: reconnect %s persistent=%#"
 +				   PRIx64 " create_guid=%s session=%#" PRIx64
 +				   "\n", state->fname,
@@ -35,7 +36,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  		if (state->lease_ptr != NULL) {
  			lease_key = &state->lease_ptr->lease_key;
  		}
-@@ -1189,6 +1203,8 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1215,6 +1230,8 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  			return tevent_req_post(req, state->ev);
  		}
  

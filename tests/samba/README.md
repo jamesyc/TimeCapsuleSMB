@@ -322,9 +322,15 @@ from a Mac (it needs `smbprotocol` on the host):
 
 It opens a file with a lease and a durable v2 request, drops the connection by
 FIN, by RST and half-open, and reconnects from a new connection. A half-open
-connection's open is refused with OBJECT_NAME_NOT_FOUND after 0024's retry
-window (the case checks the wait too, as an immediate refusal has the same
-status) unless the new session names the old one. The `rst+ipc-tdis` and
+connection's open is refused with OBJECT_NAME_NOT_FOUND once 0024's 10 s
+deferral runs out (the case checks the full wait too, as an immediate refusal
+has the same status) unless the new session names the old one;
+`half-open+reset` resets the old connection during the deferral, which must
+then take the open over. `short-write` sends a WRITE 4 KiB short with the next
+request inside it, as macOS did in issue 221: 0072 must write nothing, log
+`tc_desync:` and keep the connection open answering nothing, and the handle
+must reconnect after a reset. `smb-in-data` writes data holding SMB2 headers
+0072 must not match. The `rst+ipc-tdis` and
 `rst+second-session` cases drop the connection after another tree or session
 has closed, and the `doc:` cases end a session holding a delete-on-close file
 without a CLOSE (by reset or a bare LOGOFF); without 0062 smbd closes those

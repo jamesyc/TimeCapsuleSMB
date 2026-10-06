@@ -1,5 +1,6 @@
-/* Run the real recreate callback, NDR parsing, record locks and retry loop.
- * Process liveness and waiting are controlled so no test sleeps for seconds. */
+/* Run the real recreate callback, NDR parsing and record locks. Process
+ * liveness is controlled. The wait for a live open is the create's deferral
+ * (smb2_create.c), so recreate itself must answer at once. */
 /* Give the included translation unit private export names: the linked Samba
  * server library also contains its ordinary, uninstrumented copy. */
 #define smbXsrv_open_global_parse_record regression_smbXsrv_open_global_parse_record
@@ -38,7 +39,7 @@
 #endif
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(90); } } while (0)
-static unsigned lock_depth, attempts, waits, disconnect_at;
+static unsigned lock_depth, attempts;
 static bool fail_db;
 static struct db_context *database;
 static TDB_DATA record_key;
@@ -70,19 +71,6 @@ static NTSTATUS observed_do_locked(struct db_context *db, TDB_DATA key,
 	return status;
 }
 
-static void controlled_sleep(unsigned milliseconds)
-{
-	CHECK(milliseconds > 0 && lock_depth == 0);
-	/* A generous runaway guard protects the test, without specifying policy. */
-	CHECK(++waits < 10000);
-	if (disconnect_at && waits == disconnect_at) {
-		/* The old owner must be able to acquire this very record during the
-		 * wait. dbwrap_store uses the real DB's locking and serialization. */
-		server_id_set_disconnected(&record.server_id);
-		write_record();
-	}
-}
-
 static bool live_process(const struct server_id *id)
 {
 	return id->pid == 123;
@@ -95,13 +83,11 @@ static struct server_id current_process(const struct messaging_context *ctx)
 	return result;
 }
 
-#define smb_msleep controlled_sleep
 #define dbwrap_do_locked observed_do_locked
 #define serverid_exists live_process
 #define messaging_server_id current_process
 #define smbXsrv_version_global_current() SMBXSRV_VERSION_1
 #include "../smbd/smbXsrv_open.c"
-#undef smb_msleep
 #undef dbwrap_do_locked
 
 int main(int argc, char **argv)
@@ -123,9 +109,11 @@ int main(int argc, char **argv)
 	struct smbXsrv_open *opened = NULL;
 	struct smbXsrv_open_global_key_buf key_buf;
 	NTSTATUS status, expected = NT_STATUS_OK;
-	bool immediate = false;
-	unsigned id;
+	unsigned id, expected_attempts = 1;
+	const struct GUID *guid = NULL;
 	CHECK(argc == 2 && frame && table);
+	/* A v1 reconnect names no create GUID. */
+	if (strncmp(argv[1], "v1_", 3)) guid = &create_guid;
 	setup_logging(argv[0], DEBUG_STDERR);
 	alarm(10);
 	table->local.idr = idr_init(table);
@@ -148,23 +136,39 @@ int main(int argc, char **argv)
 		.server_id = {.pid = 123}, .client_guid = client_global.client_guid,
 		.create_guid = create_guid, .open_owner = owner,
 	};
-	disconnect_at = 3;
-	/* The retries run out: FILE_NOT_AVAILABLE stays internal, and the client gets
-	 * OBJECT_NAME_NOT_FOUND, as MS-SMB2 3.3.5.9.12 gives for an attached open. */
-	if (!strcmp(argv[1], "exhausted")) { disconnect_at = 0; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; }
-	else if (!strcmp(argv[1], "already_disconnected")) { server_id_set_disconnected(&record.server_id); immediate = true; }
-	else if (!strcmp(argv[1], "client_mismatch")) { record.client_guid.time_low++; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; immediate = true; }
-	else if (!strcmp(argv[1], "create_mismatch")) { record.create_guid.time_low++; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; immediate = true; }
-	else if (!strcmp(argv[1], "owner_mismatch")) { record.open_owner = global_sid_Anonymous; expected = NT_STATUS_ACCESS_DENIED; immediate = true; }
-	else if (!strcmp(argv[1], "not_durable")) { record.durable = false; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; immediate = true; }
-	else if (!strcmp(argv[1], "database_failure")) { fail_db = true; expected = NT_STATUS_INTERNAL_DB_CORRUPTION; immediate = true; }
+	/* A live open is only "still busy": FILE_NOT_AVAILABLE, never taken over.
+	 * The create defers and asks again; the client never sees this status. */
+	if (!strcmp(argv[1], "live")) expected = NT_STATUS_FILE_NOT_AVAILABLE;
+	else if (!strcmp(argv[1], "already_disconnected") || !strcmp(argv[1], "v1_reconnect"))
+		server_id_set_disconnected(&record.server_id);
+	else if (!strcmp(argv[1], "client_mismatch")) { record.client_guid.time_low++; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; }
+	else if (!strcmp(argv[1], "create_mismatch")) { record.create_guid.time_low++; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; }
+	else if (!strcmp(argv[1], "owner_mismatch")) { record.open_owner = global_sid_Anonymous; expected = NT_STATUS_ACCESS_DENIED; }
+	else if (!strcmp(argv[1], "not_durable")) { record.durable = false; expected = NT_STATUS_OBJECT_NAME_NOT_FOUND; }
+	else if (!strcmp(argv[1], "database_failure")) { fail_db = true; expected = NT_STATUS_INTERNAL_DB_CORRUPTION; }
 	write_record();
-	status = smb2srv_open_recreate(&conn, &session, &tcon, 7,
-		!strcmp(argv[1], "v1_reconnect") ? NULL : &create_guid, &lease_key, 0, &opened);
+	if (!strcmp(argv[1], "transition") || !strcmp(argv[1], "v1_transition")) {
+		/* Busy while the old smbd holds the open; the next try, after the
+		 * old smbd marked it disconnected, takes it over. */
+		status = smb2srv_open_recreate(&conn, &session, &tcon, 7, guid, &lease_key, 0, &opened);
+		CHECK(NT_STATUS_EQUAL(status, NT_STATUS_FILE_NOT_AVAILABLE) && opened == NULL);
+		CHECK(table->local.num_opens == 0);
+		server_id_set_disconnected(&record.server_id);
+		write_record();
+		expected_attempts = 2;
+	}
+	status = smb2srv_open_recreate(&conn, &session, &tcon, 7, guid, &lease_key, 0, &opened);
 	CHECK(NT_STATUS_EQUAL(status, expected));
 	CHECK(lock_depth == 0);
-	if (immediate) CHECK(waits == 0 && attempts == 1);
-	else CHECK(waits > 0 && attempts == waits + 1);
+	CHECK(attempts == expected_attempts);
+	if (!strcmp(argv[1], "live")) {
+		/* The old smbd still owns the stored record. */
+		TDB_DATA stored;
+		struct smbXsrv_open_global *decoded = NULL;
+		CHECK(NT_STATUS_IS_OK(dbwrap_fetch(database, frame, record_key, &stored)));
+		CHECK(NT_STATUS_IS_OK(smbXsrv_open_global_parse_record(frame, record_key, stored, &decoded)));
+		CHECK(decoded->server_id.pid == 123);
+	}
 	if (NT_STATUS_IS_OK(status)) {
 		TDB_DATA stored;
 		struct smbXsrv_open_global *decoded = NULL;
