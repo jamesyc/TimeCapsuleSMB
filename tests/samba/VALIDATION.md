@@ -1,3 +1,55 @@
+# Doctor lists processes stuck in the kernel before touching the disk (2026-10-06)
+
+A user's TimeCapsule8,119 on v3.2.0-3 passed doctor after deploying, then
+14.5 h later failed it: no Bonjour record visible from the Mac, and
+`smbclient -L` timing out at 20 s three times (one earlier attempt took
+14.7 s), while SSH and every RAM read still worked. The same device showed the
+same pattern on 2026-09-18, 15 h after a v3.0.0-1 deploy, then with SSH
+`echo` timing out too. Doctor recorded nothing that showed what the device's
+processes were waiting on, and its own SMB retries could each have left one
+more smbd child blocked.
+
+Doctor now runs `ps` right after the SSH login check and before any check
+that reads the data disk. ps reads the process table through sysctl, so it
+still answers while processes are blocked on the disk. A process in an
+uninterruptible sleep (`D`, not a kernel thread `K`) whose sleep time (`sl`)
+is at least 60 s is reported as a FAIL naming it, its wait channel and the
+time. When smbd is one of them, the authenticated SMB checks are skipped,
+since each new connection forks an smbd child that blocks the same way and
+cannot be killed (the kernel allows 84 processes). When ps itself does not
+answer in 15 s, doctor warns, tries SMB once without retries, and reads only
+the RAM logs. The full listing goes into the debug fields of a failing run.
+Startup grace does not mask the FAIL.
+
+Checked on the devices and in the SDK sources on the VM:
+
+- `ps` state comes from `kinfo_proc2.p_stat` and `p_flag`: `D` is
+  `LSSLEEP` without `L_SINTR` (bin/ps/print.c, both trees). `sl` is
+  `p_slptime`, the representative LWP's `l_slptime`: incremented once a
+  second for any sleeping LWP (NetBSD 4 `schedcpu`, NetBSD 6/7
+  `sched_lwp_stats`) and reset at every sleep and wake-up. ps only caps the
+  display at 127. NetBSD 6's `[system]` LWPs and NetBSD 4's kernel threads
+  sit in `DK` with `sl` climbing to 127 (`mod_unld`, `amc6821c`, `sccomp`),
+  so `K` must be excluded.
+- A process making progress does not reach 60 s: a busy smbd child on
+  NetBSD 6 (76 min CPU), sampled once a second for 60 s, was `R` 47 times,
+  `D` 8 times (`biowait`, `ahcicmd`, `sl` 0), `S` 5 times; `dd` writing and
+  then reading 2 GiB on NetBSD 4's data disk was almost always `R`. Its
+  `inblk`/`oublk` stayed at 0-33 for 2 GiB through HFS, so block counters
+  cannot show progress.
+- Limit: NetBSD 6 waits for a free buffer with `cv_timedwait(..., hz / 4)`
+  (vfs_bio.c `needbuf`, getnewbuf), so a process in the buffer-cache stall
+  wakes four times a second and its `sl` stays near 0. NetBSD 4's
+  `getnewbuf`/`buf_malloc`/`biowait` sleeps have no timeout. Apple's
+  multi-LWP daemons (ACPd 29 LWPs, afpserver 21, printerd 7, mDNSResponder
+  2-3) show only a representative LWP; every LWP of theirs was interruptible
+  (`ps -axs`). The manager can follow a process across samples and per LWP; doctor's single
+  snapshot cannot.
+- `ps` over SSH: 0.55-0.75 s on NetBSD 6, 0.66-0.82 s on NetBSD 4, about
+  0.1-0.2 s over an SSH `true`. The parser read both devices' real listings
+  (40 and 55 rows, one blank row) and reported nothing stuck.
+- `tcapsule doctor` passed on NetBSD 6 and NetBSD 4 with this change.
+
 # Samba and discovery start under the hostname's NetBIOS name (2026-10-06)
 
 Doctor on v3.2.0-2/-3 failed only "NBNS query for '<name>' timed out" when it

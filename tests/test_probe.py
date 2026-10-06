@@ -367,6 +367,66 @@ class ProbeTests(unittest.TestCase):
             self.assertFalse(kwargs["check"])
             self.assertEqual(kwargs["timeout"], probe.REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
 
+    def test_read_runtime_log_tails_conn_skips_data_disk_logs_when_asked(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        commands: list[str] = []
+
+        def fake_run_ssh(
+            _connection: SshConnection,
+            remote_cmd: str,
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            commands.append(remote_cmd)
+            if "/Volumes/" in remote_cmd or probe.RUNTIME_SMB_CONF in remote_cmd:
+                self.fail(f"read from the data disk: {remote_cmd}")
+            return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ram log\n", stderr="")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh):
+            logs = read_runtime_log_tails_conn(connection, skip_data_disk="the device's process list timed out")
+
+        self.assertEqual(len(commands), len(probe.REMOTE_RUNTIME_RAM_LOG_PATHS))
+        for key in probe.REMOTE_RUNTIME_RAM_LOG_PATHS:
+            self.assertEqual(logs[key], "ram log")
+        skipped = "(skipped: the device's process list timed out)"
+        self.assertEqual(logs["remote_payload_log_dir"], skipped)
+        for key in probe.REMOTE_PAYLOAD_LOG_FILENAMES:
+            self.assertEqual(logs[key], skipped)
+
+    def test_read_process_snapshot_conn_runs_ps_with_short_timeout(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        listing = "  457   146   457 I       20 select   smbd     /mnt/Memory/samba4/sbin/smbd -F\n"
+
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            return_value=subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=listing, stderr=""),
+        ) as run_ssh_mock:
+            snapshot = probe.read_process_snapshot_conn(connection)
+
+        self.assertEqual(snapshot, listing)
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args, (connection, probe.PROCESS_SNAPSHOT_COMMAND))
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.PROCESS_SNAPSHOT_TIMEOUT_SECONDS)
+
+    def test_read_process_snapshot_conn_returns_empty_text_without_output(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            return_value=subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout=None, stderr="ps: error"),
+        ):
+            self.assertEqual(probe.read_process_snapshot_conn(connection), "")
+
+    def test_read_process_snapshot_conn_raises_when_ps_does_not_answer(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=probe.SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+        ):
+            with self.assertRaises(SshCommandTimeout):
+                probe.read_process_snapshot_conn(connection)
+
     def test_read_runtime_log_tails_conn_reads_ram_logs_without_payload_state(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 

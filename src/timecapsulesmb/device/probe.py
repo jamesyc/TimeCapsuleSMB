@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING, Literal
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS, PS_CAPTURE_COMMAND, service_role_lines
+from timecapsulesmb.device.processes import (
+    PROBE_PROCESS_HELPERS,
+    PROCESS_SNAPSHOT_COMMAND,
+    PS_CAPTURE_COMMAND,
+    service_role_lines,
+)
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import (
@@ -44,6 +49,9 @@ REMOTE_LOG_TAIL_LINES = 80
 
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 30
+# ps answers in under a second on both kernels, even with processes stuck on
+# the disk; taking much longer means the device is short of processes.
+PROCESS_SNAPSHOT_TIMEOUT_SECONDS = 15
 SMBD_READINESS_PROBE_TIMEOUT_SECONDS = 30
 MDNS_BINARY_PROBE_TIMEOUT_SECONDS = 30
 MDNS_BINARY_PROBE_ATTEMPTS = 2
@@ -2159,7 +2167,7 @@ def probe_device_hostname_conn(connection: SshConnection) -> DeviceHostnameProbe
     return parse_device_hostname_probe(proc.stdout or "")
 
 
-def _limit_remote_log_tail(text: str) -> str:
+def limit_remote_log_tail(text: str) -> str:
     if len(text) <= REMOTE_LOG_TAIL_MAX_CHARS:
         return text
     return f"(truncated to last {REMOTE_LOG_TAIL_MAX_CHARS} chars)\n{text[-REMOTE_LOG_TAIL_MAX_CHARS:]}"
@@ -2188,7 +2196,7 @@ def read_remote_log_tail_conn(connection: SshConnection, path: str) -> str:
     if proc.returncode != 0:
         parts.append(f"(exit {proc.returncode})")
     text = "\n".join(parts) if parts else "(empty)"
-    return _limit_remote_log_tail(text)
+    return limit_remote_log_tail(text)
 
 
 def read_runtime_payload_dir_conn(
@@ -2203,13 +2211,19 @@ def read_runtime_payload_dir_conn(
     return parse_active_payload_dir(smb_conf)
 
 
-def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
+def read_runtime_log_tails_conn(connection: SshConnection, *, skip_data_disk: str | None = None) -> dict[str, str]:
+    """Tail the runtime logs; skip_data_disk, when given, is why the data-disk logs are not read."""
     logs: dict[str, str] = {}
     for key, path in REMOTE_RUNTIME_RAM_LOG_PATHS.items():
         try:
             logs[key] = read_remote_log_tail_conn(connection, path)
         except Exception as e:
             logs[key] = f"(unavailable: {e})"
+    if skip_data_disk is not None:
+        logs["remote_payload_log_dir"] = f"(skipped: {skip_data_disk})"
+        for key in REMOTE_PAYLOAD_LOG_FILENAMES:
+            logs[key] = f"(skipped: {skip_data_disk})"
+        return logs
     try:
         payload_dir = read_runtime_payload_dir_conn(connection, timeout_seconds=REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
     except Exception as e:
@@ -2253,6 +2267,17 @@ done
         timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
     )
     return proc.stdout.strip()
+
+
+def read_process_snapshot_conn(connection: SshConnection) -> str:
+    """Run PROCESS_SNAPSHOT_COMMAND; raises SshCommandTimeout when ps does not answer."""
+    proc = run_ssh(
+        connection,
+        PROCESS_SNAPSHOT_COMMAND,
+        check=False,
+        timeout=PROCESS_SNAPSHOT_TIMEOUT_SECONDS,
+    )
+    return proc.stdout or ""
 
 
 def read_runtime_ram_diagnostics_conn(connection: SshConnection) -> str:
@@ -2302,7 +2327,7 @@ done
         parts.append(f"stderr: {stderr}")
     if proc.returncode != 0:
         parts.append(f"(exit {proc.returncode})")
-    return _limit_remote_log_tail("\n".join(parts) if parts else "(empty)")
+    return limit_remote_log_tail("\n".join(parts) if parts else "(empty)")
 
 
 def probe_paths_absent_conn(

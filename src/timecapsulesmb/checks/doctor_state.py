@@ -8,6 +8,7 @@ from timecapsulesmb.checks.bonjour import BonjourServiceTarget
 from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import ProbedDeviceState, RuntimeNamingIdentityProbeResult
+from timecapsulesmb.device.processes import StuckProcess
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -73,6 +74,18 @@ class RemoteAccess:
     ssh_ok: bool
     remote_checks_enabled: bool
     active_smb_conf_reason: str
+
+
+@dataclass(frozen=True)
+class ProcessSnapshotState:
+    stuck: tuple[StuckProcess, ...] = ()
+    # ps did not answer: the device may be out of processes, so doctor starts
+    # as few new ones as it can.
+    timed_out: bool = False
+
+    @property
+    def smbd_stuck(self) -> bool:
+        return any(process.name == "smbd" for process in self.stuck)
 
 
 @dataclass(frozen=True)

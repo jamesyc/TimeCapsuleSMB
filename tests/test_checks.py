@@ -2333,6 +2333,148 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertFalse(any("data disk appears unresponsive" in result.message for result in run.results))
 
+    STUCK_SMBD_ROW = " 3166   457   457 D      127 biowait  smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+    HEALTHY_SMBD_ROW = "  457   146   457 I       20 select   smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+
+    def run_doctor_with_process_snapshot(
+        self,
+        snapshot: object,
+        *,
+        smb_listing: CheckResult | None = None,
+        manager_started_seconds_ago: float = 400.0,
+        ssh_login: object | None = None,
+    ):
+        debug_fields: dict[str, object] = {}
+        snapshot_mock = mock.Mock(side_effect=snapshot) if isinstance(snapshot, Exception) else mock.Mock(return_value=snapshot)
+        log_tail_mock = mock.Mock(return_value={})
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=ssh_login or mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                smb_instance=[],
+                smb_listing=smb_listing or self.smb_listing_result(),
+                smb_file_ops=[],
+                smbd_probe=mock.Mock(ready=True, detail="managed smbd is ready"),
+                mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
+                debug_fields=debug_fields,
+                extra_patches={
+                    "timecapsulesmb.checks.doctor_steps.read_process_snapshot_conn": snapshot_mock,
+                    "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                        return_value=ManagerStartupAgeProbeResult(
+                            manager_started_seconds_ago, f"manager started {int(manager_started_seconds_ago)}s ago"
+                        )
+                    ),
+                    "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": log_tail_mock,
+                    "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+                },
+            )
+        run.debug_fields = debug_fields
+        run.snapshot = snapshot_mock
+        run.log_tails = log_tail_mock
+        run.sleep = sleep_mock
+        return run
+
+    def connection_shaped_smb_failure(self) -> CheckResult:
+        return CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 home.local: NT_STATUS_IO_TIMEOUT",
+            {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_IO_TIMEOUT"}]},
+        )
+
+    def test_run_doctor_checks_reports_stuck_smbd_and_skips_authenticated_smb(self) -> None:
+        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_SMBD_ROW]))
+
+        self.assertTrue(run.fatal)
+        stuck = [result for result in run.results if "blocked in the kernel" in result.message]
+        self.assertEqual(len(stuck), 1)
+        self.assertEqual(stuck[0].status, "FAIL")
+        self.assertIn("smbd (pid 3166) waiting on biowait for 127+ s", stuck[0].message)
+        self.assertEqual(
+            stuck[0].details["stuck_processes"],
+            [{"pid": 3166, "name": "smbd", "wchan": "biowait", "sleep_seconds": 127}],
+        )
+        skipped = [result for result in run.results if result.status == "SKIP" and "authenticated SMB" in result.message]
+        self.assertEqual(len(skipped), 1)
+        run.mocks.check_authenticated_smb_listing.assert_not_called()
+        self.assertIn(self.STUCK_SMBD_ROW.strip(), run.debug_fields["remote_process_snapshot"])
+        # The snapshot answered, so the data-disk logs are still worth reading.
+        run.log_tails.assert_called_once()
+        self.assertIsNone(run.log_tails.call_args.kwargs["skip_data_disk"])
+
+    def test_run_doctor_checks_reports_stuck_non_smbd_process_but_still_checks_smb(self) -> None:
+        stuck_mdns = "  359   119     2 D       90 tstile   mDNSResponder /sbin/mDNSResponder -d"
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, stuck_mdns]),
+            smb_listing=self.connection_shaped_smb_failure(),
+        )
+
+        stuck = [result for result in run.results if "blocked in the kernel" in result.message]
+        self.assertEqual(len(stuck), 1)
+        self.assertIn("mDNSResponder (pid 359) waiting on tstile for 90 s", stuck[0].message)
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
+        self.assertEqual([call.args[0] for call in run.sleep.call_args_list], [10, 15])
+
+    def test_run_doctor_checks_ignores_short_uninterruptible_sleeps_and_kernel_threads(self) -> None:
+        snapshot = "\n".join(
+            [
+                self.HEALTHY_SMBD_ROW,
+                " 3166   457   457 D       30 biowait  smbd     /mnt/Memory/samba4/sbin/smbd -F",
+                "    0     0     0 DKl    127 uvm      system   [system]",
+            ]
+        )
+        run = self.run_doctor_with_process_snapshot(snapshot)
+
+        self.assertFalse(run.fatal)
+        self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
+        run.mocks.check_authenticated_smb_listing.assert_called()
+        self.assertIn("uvm", run.debug_fields["remote_process_snapshot"])
+
+    def test_run_doctor_checks_tries_smb_once_and_skips_data_disk_logs_when_snapshot_times_out(self) -> None:
+        run = self.run_doctor_with_process_snapshot(
+            SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+            smb_listing=self.connection_shaped_smb_failure(),
+        )
+
+        self.assertTrue(run.fatal)
+        warnings = [result for result in run.results if "listing the device's processes timed out" in result.message]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0].status, "WARN")
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 1)
+        run.sleep.assert_not_called()
+        self.assertEqual(
+            run.log_tails.call_args.kwargs["skip_data_disk"],
+            "the device's process list timed out",
+        )
+        self.assertIn("SshCommandTimeout", run.debug_fields["remote_process_snapshot_error"])
+        self.assertNotIn("remote_process_snapshot", run.debug_fields)
+
+    def test_run_doctor_checks_keeps_normal_flow_when_snapshot_fails_without_timeout(self) -> None:
+        run = self.run_doctor_with_process_snapshot(
+            SshError("ssh command failed with rc=255"),
+            smb_listing=self.connection_shaped_smb_failure(),
+        )
+
+        self.assertFalse(any(result.status == "WARN" and "processes" in result.message for result in run.results))
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
+        self.assertIsNone(run.log_tails.call_args.kwargs["skip_data_disk"])
+        self.assertIn("ssh command failed", run.debug_fields["remote_process_snapshot_error"])
+
+    def test_run_doctor_checks_does_not_list_processes_when_ssh_login_fails(self) -> None:
+        run = self.run_doctor_with_process_snapshot(
+            self.STUCK_SMBD_ROW,
+            ssh_login=mock.Mock(status="FAIL", message="ssh failed"),
+        )
+
+        run.snapshot.assert_not_called()
+        self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
+
+    def test_run_doctor_checks_startup_grace_does_not_mask_stuck_processes(self) -> None:
+        run = self.run_doctor_with_process_snapshot(self.STUCK_SMBD_ROW, manager_started_seconds_ago=41.0)
+
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertTrue(any("blocked in the kernel" in result.message for result in failures))
+        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in failures))
+
     def test_apply_startup_grace_masks_failures_within_grace_window(self) -> None:
         results = [
             CheckResult("PASS", "ssh ok"),

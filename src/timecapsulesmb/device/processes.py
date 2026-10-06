@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from dataclasses import dataclass
 
 
 PS_TEMP_COMMAND = "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null"
@@ -35,6 +36,53 @@ SUPERVISOR_STOP_SECONDS = 2 * MANAGER_CHILD_GRACE_SECONDS
 # NetBSD ps reports the kernel wait channel: a Samba child blocked on disk I/O
 # is the usual reason a manager cannot finish stopping.
 STUCK_PROCESS_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o wchan= -o ucomm="
+
+# ps reads the process table through sysctl, not from the disk, so this still
+# answers while processes are blocked on the data disk.
+PROCESS_SNAPSHOT_COMMAND = "/bin/ps axww -o pid= -o ppid= -o pgid= -o stat= -o sl= -o wchan= -o ucomm= -o command="
+# ps shows D for an uninterruptible sleep. The kernel counts a sleeping
+# thread's seconds asleep (l_slptime) and resets the count at every wake-up,
+# so a process doing slow disk I/O never reaches this; one that does has
+# waited in a single sleep that long. Waits that wake on a timeout to retry,
+# such as NetBSD 6's needbuf, reset the count and are not seen here.
+STUCK_SLEEP_SECONDS = 60
+# ps prints the sleep time capped at 127.
+PS_SLEEP_SECONDS_CAP = 127
+
+
+@dataclass(frozen=True)
+class StuckProcess:
+    pid: int
+    name: str
+    wchan: str
+    sleep_seconds: int
+
+    def describe(self) -> str:
+        seconds = f"{self.sleep_seconds}+" if self.sleep_seconds >= PS_SLEEP_SECONDS_CAP else str(self.sleep_seconds)
+        return f"{self.name} (pid {self.pid}) waiting on {self.wchan} for {seconds} s"
+
+
+def stuck_processes(ps_output: str) -> list[StuckProcess]:
+    """Processes in PROCESS_SNAPSHOT_COMMAND output asleep uninterruptibly for STUCK_SLEEP_SECONDS.
+
+    Kernel threads (state K) always sleep this way and are skipped.
+    """
+    stuck = []
+    for line in ps_output.splitlines():
+        fields = line.split(None, 7)
+        if len(fields) < 7:
+            continue
+        pid, _ppid, _pgid, state, sleep, wchan, name = fields[:7]
+        if not state.startswith("D") or "K" in state:
+            continue
+        try:
+            sleep_seconds = int(sleep)
+            stuck_pid = int(pid)
+        except ValueError:
+            continue
+        if sleep_seconds >= STUCK_SLEEP_SECONDS:
+            stuck.append(StuckProcess(stuck_pid, name, wchan, sleep_seconds))
+    return stuck
 
 
 def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = SUPERVISOR_STOP_SECONDS) -> str:

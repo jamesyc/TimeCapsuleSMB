@@ -34,6 +34,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_runtime_naming_identity,
     _doctor_check_runtime_ram_root,
     _doctor_check_ssh_login,
+    _doctor_check_stuck_processes,
     _doctor_probe_startup_age,
     _doctor_validate_config,
 )
@@ -79,6 +80,7 @@ def run_doctor_checks(
 
     target = _build_doctor_target(inputs)
     remote = _doctor_check_ssh_login(target, options, sink)
+    processes = _doctor_check_stuck_processes(target, remote, sink)
 
     if _doctor_check_running_migration(target, remote, sink).stop:
         return sink.results, sink.fatal()
@@ -119,8 +121,8 @@ def run_doctor_checks(
     _doctor_check_usb_printer(target, remote, bonjour_result, sink, network)
     _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
     _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns_ready, network)
-    _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, direct_smb, sink)
+    _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, direct_smb, processes, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
-    _doctor_add_fatal_runtime_log_tails(target, remote, sink)
+    _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
     _doctor_apply_startup_grace(sink, startup_age, enabled=startup_grace)
     return sink.results, sink.fatal()

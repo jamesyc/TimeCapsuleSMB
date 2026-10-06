@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.doctor_state import DoctorSink, DoctorTarget, RemoteAccess
+from timecapsulesmb.checks.doctor_state import DoctorSink, DoctorTarget, ProcessSnapshotState, RemoteAccess
 from timecapsulesmb.device.probe import (
     REMOTE_PAYLOAD_LOG_FILENAMES,
     REMOTE_RUNTIME_RAM_LOG_PATHS,
@@ -119,9 +119,19 @@ def _data_disk_unresponsive_result(logs: Mapping[str, object]) -> CheckResult | 
     )
 
 
-def _doctor_add_fatal_runtime_log_tails(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+def _doctor_add_fatal_runtime_log_tails(
+    target: DoctorTarget,
+    remote: RemoteAccess,
+    sink: DoctorSink,
+    processes: ProcessSnapshotState,
+) -> None:
     if sink.fatal() and sink.debug_fields is not None and remote.remote_checks_enabled:
-        logs = read_runtime_log_tails_conn(target.connection)
+        # A read that blocks on the disk leaves a process that cannot be
+        # killed; without a process snapshot the device may have none to spare.
+        logs = read_runtime_log_tails_conn(
+            target.connection,
+            skip_data_disk="the device's process list timed out" if processes.timed_out else None,
+        )
         sink.debug_fields.update(logs)
         disk_result = _data_disk_unresponsive_result(logs)
         if disk_result is not None:

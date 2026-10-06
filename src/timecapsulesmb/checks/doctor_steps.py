@@ -30,6 +30,7 @@ from timecapsulesmb.checks.doctor_state import (
     DoctorOptions,
     DoctorSink,
     DoctorTarget,
+    ProcessSnapshotState,
     RemoteAccess,
     RuntimeNamingState,
     SmbConfigState,
@@ -75,16 +76,19 @@ from timecapsulesmb.core.net import (
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
+from timecapsulesmb.device.processes import stuck_processes
 from timecapsulesmb.device.probe import (
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
     FLASH_RUNTIME_CONFIG,
+    PROCESS_SNAPSHOT_TIMEOUT_SECONDS,
     ReadinessProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
     UsbPrinterProbeResult,
     flash_runtime_config_present_conn,
+    limit_remote_log_tail,
     probe_connection_state,
     probe_device_networks_conn,
     probe_managed_mdns_conn,
@@ -95,6 +99,7 @@ from timecapsulesmb.device.probe import (
     probe_manager_startup_age_conn,
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
+    read_process_snapshot_conn,
     read_active_smb_conf_conn,
     runtime_ram_root_present_conn,
 )
@@ -105,7 +110,7 @@ from timecapsulesmb.discovery.bonjour import (
 
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import command_exists, scoped_tcp_connect_errors
-from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, ssh_local_forward
 
 
 T = TypeVar("T")
@@ -299,6 +304,7 @@ def _authenticated_smb_listing_with_doctor_retries(
     server: SmbClientTargetInput | list[SmbClientTargetInput],
     *,
     port: int | None = None,
+    retry_delays: tuple[int, ...] = DOCTOR_TRANSIENT_RETRY_DELAYS,
 ) -> CheckResult:
     attempts: list[dict[str, object]] = []
 
@@ -315,6 +321,7 @@ def _authenticated_smb_listing_with_doctor_retries(
     return _run_doctor_retryable_check(
         run_attempt,
         authenticated_smb_listing_retryable,
+        retry_delays=retry_delays,
         before_retry=mark_retry_delay,
     )
 
@@ -1503,6 +1510,7 @@ def _add_tunneled_authenticated_smb_results(
     debug_prefix: str,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
+    retry_delays: tuple[int, ...] = DOCTOR_TRANSIENT_RETRY_DELAYS,
 ) -> bool:
     local_port = find_free_local_port()
     if debug_fields is not None:
@@ -1520,6 +1528,7 @@ def _add_tunneled_authenticated_smb_results(
                 smb_password,
                 "127.0.0.1",
                 port=local_port,
+                retry_delays=retry_delays,
             )
             if debug_fields is not None and listing_result.details.get("attempts"):
                 debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
@@ -1565,6 +1574,7 @@ def _add_authenticated_smb_results(
     direct_smb: DirectSmbState,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
+    retry_delays: tuple[int, ...] = DOCTOR_TRANSIENT_RETRY_DELAYS,
 ) -> None:
     active_share_names = parse_active_share_names(active_smb_conf or "")
     smb_servers = _doctor_smb_client_targets(
@@ -1589,6 +1599,7 @@ def _add_authenticated_smb_results(
                 smb_password,
                 targets,
                 port=445,
+                retry_delays=retry_delays,
             ),
         )
         for family, targets in target_groups
@@ -1643,6 +1654,7 @@ def _add_authenticated_smb_results(
                 debug_prefix="authenticated_smb_tunnel",
                 debug_fields=debug_fields,
                 add_result=add_result,
+                retry_delays=retry_delays,
             ):
                 return
         add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
@@ -1721,6 +1733,52 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         remote_checks_enabled=ssh_ok,
         active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
     )
+
+
+def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> ProcessSnapshotState:
+    """List the device's processes before any check touches the data disk."""
+    if not remote.remote_checks_enabled:
+        return ProcessSnapshotState()
+    try:
+        snapshot = read_process_snapshot_conn(target.connection)
+    except SshCommandTimeout as e:
+        if sink.debug_fields is not None:
+            sink.debug_fields["remote_process_snapshot_error"] = f"{type(e).__name__}: {e}"
+        sink.add(
+            CheckResult(
+                "WARN",
+                f"listing the device's processes timed out after {PROCESS_SNAPSHOT_TIMEOUT_SECONDS}s although "
+                "SSH login worked; the device may be running out of processes, so doctor tries SMB only once "
+                "and does not read logs from the data disk",
+                {"domain": "Runtime"},
+            )
+        )
+        return ProcessSnapshotState(timed_out=True)
+    except Exception as e:
+        if sink.debug_fields is not None:
+            sink.debug_fields["remote_process_snapshot_error"] = f"{type(e).__name__}: {e}"
+        return ProcessSnapshotState()
+    if sink.debug_fields is not None:
+        sink.debug_fields["remote_process_snapshot"] = limit_remote_log_tail(snapshot.rstrip() or "(empty)")
+    stuck = tuple(stuck_processes(snapshot))
+    if stuck:
+        sink.add(
+            CheckResult(
+                "FAIL",
+                "device processes are blocked in the kernel without making progress: "
+                + "; ".join(process.describe() for process in stuck)
+                + ". A disk operation is not completing (a failing disk or a kernel I/O stall); "
+                "if this does not clear, power-cycle the device",
+                {
+                    "domain": "Runtime",
+                    "stuck_processes": [
+                        {"pid": p.pid, "name": p.name, "wchan": p.wchan, "sleep_seconds": p.sleep_seconds}
+                        for p in stuck
+                    ],
+                },
+            )
+        )
+    return ProcessSnapshotState(stuck=stuck)
 
 
 def _doctor_check_running_migration(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
@@ -2447,9 +2505,21 @@ def _doctor_check_authenticated_smb(
     naming: RuntimeNamingState,
     bonjour_result: DoctorBonjourResult,
     direct_smb: DirectSmbState,
+    processes: ProcessSnapshotState,
     sink: DoctorSink,
 ) -> None:
     if inputs.options.skip_smb:
+        return
+    if processes.smbd_stuck:
+        # Each new SMB connection forks an smbd child that blocks the same way
+        # and cannot be killed; the kernel allows 84 processes in all.
+        sink.add(
+            CheckResult(
+                "SKIP",
+                "authenticated SMB checks skipped: smbd is stuck in the kernel, "
+                "and each new SMB connection would leave another stuck smbd process",
+            )
+        )
         return
 
     _add_authenticated_smb_results(
@@ -2464,4 +2534,6 @@ def _doctor_check_authenticated_smb(
         direct_smb=direct_smb,
         debug_fields=sink.debug_fields,
         add_result=sink.add,
+        # Without a process snapshot, retries could pile up stuck processes.
+        retry_delays=() if processes.timed_out else DOCTOR_TRANSIENT_RETRY_DELAYS,
     )
