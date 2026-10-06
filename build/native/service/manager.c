@@ -105,6 +105,9 @@ struct manager {
     char hostname[256];
     int hostname_waiting;
     long long hostname_wait_since;
+    /* When this manager started, on the monotonic clock (-1 if unreadable):
+     * the title's started=, from which doctor measures the startup age. */
+    long long started_ms;
     /* The process table, read once per pass (proctable.h) for buffer-stall
      * recovery, stuck-process detection and the next audit. */
     struct tc_proctable procs;
@@ -136,41 +139,26 @@ static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-/* Doctor reads stuck=PID:COMM:WAIT:SECONDS[,...] from the title (ps shows
- * a sleep time of at most 127 s, and none for a wait that keeps waking). */
+/* Doctor reads started= and stuck=PID:COMM:WAIT:SECONDS[,...] from the
+ * title (stuck.h tc_manager_title; ps shows a sleep time of at most 127 s,
+ * and none for a wait that keeps waking). */
 static void set_manager_title(const struct manager *m) {
     char title[256];
-    size_t used, i, shown = 0, more = 0;
-    const struct tc_stuck_entry *order[TC_STUCK_MAX];
-    long long now = acp_monotonic_ms();
-    used = (size_t)snprintf(title, sizeof(title), "role=manager%s", m->hostname_waiting ? " waiting=hostname" : "");
-    for (i = 0; i < m->stuck.count; i++)
-        if (m->stuck.entries[i].stuck)
-            order[shown++] = &m->stuck.entries[i];
-    if (shown) {
-        size_t a, b;
-        for (a = 1; a < shown; a++)
-            for (b = a; b > 0 && order[b]->since < order[b - 1]->since; b--) {
-                const struct tc_stuck_entry *swap = order[b];
-                order[b] = order[b - 1];
-                order[b - 1] = swap;
-            }
-        if (shown > STUCK_TITLE_MAX) {
-            more = shown - STUCK_TITLE_MAX;
-            shown = STUCK_TITLE_MAX;
-        }
-        for (i = 0; i < shown && used < sizeof(title); i++) {
-            char comm[TC_STUCK_COMM], wmesg[TC_STUCK_WMESG];
-            tc_stuck_word(comm, sizeof(comm), order[i]->thread.comm);
-            tc_stuck_word(wmesg, sizeof(wmesg), order[i]->thread.wmesg);
-            used += (size_t)snprintf(title + used, sizeof(title) - used, "%s%ld:%s:%s:%lld", i ? "," : " stuck=",
-                                     (long)order[i]->thread.pid, comm, wmesg, (now - order[i]->since) / 1000);
-        }
-        if (more && used < sizeof(title))
-            snprintf(title + used, sizeof(title) - used, ",+%lu", (unsigned long)more);
-    }
+    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, &m->stuck, STUCK_TITLE_MAX,
+                     acp_monotonic_ms());
 #if defined(__NetBSD__)
     setproctitle("%s", title);
+#elif defined(TC_NATIVE_TEST)
+    {
+        /* Host tests read each title ps would show on a device. */
+        const char *root = getenv("TC_TEST_ROOT");
+        char path[1024];
+        FILE *titles;
+        if (root && snprintf(path, sizeof(path), "%s/titles", root) < (int)sizeof(path) && (titles = fopen(path, "a"))) {
+            fprintf(titles, "%s\n", title);
+            fclose(titles);
+        }
+    }
 #else
     (void)title;
 #endif
@@ -1121,8 +1109,8 @@ int tc_manager_main(int argc, char **argv) {
         close(lock);
         return 1;
     }
+    m->started_ms = m->hostname_wait_since = acp_monotonic_ms();
     set_manager_title(m);
-    m->hostname_wait_since = acp_monotonic_ms();
     m->storage_dirty = 1;
     timestamped_fprintf(stderr, "manager: starting native supervision\n");
     for (;;) {

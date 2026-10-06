@@ -1,3 +1,78 @@
+# Manager startup age and heartbeat uptime on the device's monotonic clock (2026-10-06)
+
+Doctor's startup grace measured the manager's age with `ps etime`, which is
+the wall clock now minus a start time recorded on the wall clock. A v3.3.0
+TimeCapsule8,119 booted with its clock a day behind; sntpd stepped it after
+the manager started, so 55 s after boot (boot heartbeat uptime 65 s at
+19:17:04Z) doctor read the manager as 86577 s old, skipped the grace, and
+failed on native NBNS that was still registering ("NBNS query for 'airporttc'
+timed out"). Its runtime.log shows the step: the manager started at
+"2026-10-05 22:13:59" and wcifsnd registered at "2026-10-06 22:16:23".
+
+Both readings now come from one clock. The manager records its start on the
+kernel's monotonic clock and shows it in its title, `role=manager started=S`,
+ahead of `waiting=` and `stuck=` so a full title never loses it. Doctor reads
+the title and `service --print-monotonic-ms` (new, the same clock) in one SSH
+command and subtracts. That is also right for a NetBSD 4 manager that
+`activate` starts long after boot, where the device uptime is not its age. A
+title without `started=` (an older release) or a failed clock read gives no
+grace, as an unknown age did before.
+
+The heartbeat's `uptime_sec` was the wall clock minus `kern.boottime`: two
+readings that agree only if the kernel moves boottime by the same step. The
+heartbeat above (65 s, sent after the step) suggests NetBSD 6 does; NetBSD 4
+was never checked. It is now the monotonic clock too, which counts from boot.
+
+Checked and left alone: the manager loop, stuck-process seconds, the plan
+loop, telemetry scheduling, wcifsnd backoff and `alarm()` already use the
+monotonic clock or kernel ticks; log timestamps, the smbpasswd last-change
+time and the heartbeat ID are labels, not durations; the reboot proof compares
+`syUT` with the Mac's elapsed time on purpose, with slack. Samba's tevent
+timers run on the wall clock: smbd starts before sntpd steps it, so a forward
+step fires pending timers early once; a backward step would delay them by the
+step. Devices seen so far boot behind, so nothing changes there.
+
+Validation:
+- pytest, full suite (3690 passed, on a quiet host); Ruff clean. Native: the
+  title formatter (start, waiting, stuck order and limit, a zero limit,
+  truncation, a failed clock read); the manager's own titles from start
+  through the hostname wait, which keep one started= (and fail if the start is
+  read after the first title); the helper against the test's own
+  `CLOCK_MONOTONIC` and its usage and closed-output errors, and heartbeat
+  uptime with this binary's `time()` stepped a day (fails with the old
+  `kern.boottime` code on macOS). The touched native suites pass with
+  sanitizers on macOS and under Ubuntu 24.04 gcc 13 `-Werror` in Docker, where
+  `host-check.sh` also passes.
+- Probe and doctor: the v3.3.0 field output (etime `1-00:02:57`, `started=5`,
+  `now_ms=60000`) collapses into the startup FAIL with age 55; an old manager
+  and an older release keep the real NBNS failures. The probe command runs in
+  a real shell with a stand-in service binary; an empty listing reports a
+  failed ps rather than a missing manager. The deploy stop script and role
+  matchers accept the new title.
+- VM: all three service lanes build (stripped sizes NetBSD 6 381380 -> 381644,
+  NetBSD 4 LE 341172 -> 341468, NetBSD 4 BE 340600 -> 340904 bytes).
+- Devices (2026-10-06, deploys of this build): on NetBSD 6, 31 s after the
+  manager started its title read `started=6`, `--print-monotonic-ms` 36104
+  and `ps etime` 0:31 (age 30 s by the title); `syUT` read 36 s, the same
+  clock from boot. The probe itself gave 45 s a little later. The boot
+  heartbeat said 66 s at 23:51:49Z, a boot at 23:50:43Z; `syUT` put it at
+  23:50:42Z. On NetBSD 4 LE: `started=7`, 42578 ms, `etime` 0:36, `syUT` 42 s;
+  the boot heartbeat (71 s at 23:57:47Z) and `syUT` both put the boot at
+  23:56:36Z, so the monotonic clock counts from boot there too. A manager
+  restarted without a reboot (killed by PID, `/mnt/Flash/rc.local`) read
+  `started=95` at 117322 ms, age 22 s against `etime` 0:22, where the device
+  uptime would have said 117 s. Doctor passed on both devices, the NetBSD 4
+  run 1-2 minutes after that restart.
+- Wall clock step on NetBSD 6 (no reboot): the runtime restarted with
+  `rc.local` (`started=713`), then `date` moved the clock a day ahead 10 s
+  later, the field case. `ps etime` for the manager jumped to 1-00:00:13
+  while the title gave 13 s (726703 ms) and `syUT` (726 s) did not move. The
+  probe gave 23 s and doctor passed, both with the clock a day ahead; a
+  heartbeat payload built then (`telemetry --print-payload`) said
+  `uptime_sec` 774 against 774402 ms. With the clock set back a day, `etime`
+  read 1:10 again and the probe 72 s. No file under the payload, the volume
+  roots, the RAM runtime or /mnt/Flash kept a date from the step.
+
 # A rebooted device gets 10 minutes to start again, then 4 for SSH (2026-10-06)
 
 One TimeCapsule6,116 (NetBSD 4 LE) failed three deploys on v3.2.0-3 and

@@ -237,6 +237,67 @@ static void words(void) {
     assert(!strcmp(out, "mDNS"));
 }
 
+/* A stuck entry as tc_stuck_step leaves it: asleep since `since`. */
+static struct tc_stuck_entry stuck_entry(pid_t pid, const char *comm, const char *wmesg, long long since) {
+    struct tc_stuck_entry e;
+    memset(&e, 0, sizeof(e));
+    e.thread = thread(pid, 0, 0, 0, wmesg);
+    snprintf(e.thread.comm, sizeof(e.thread.comm), "%s", comm);
+    e.since = since;
+    e.stuck = 1;
+    return e;
+}
+
+static void manager_titles(void) {
+    struct tc_stuck s;
+    char out[256], small[40];
+    size_t i;
+    fresh(&s);
+    /* The start is whole seconds on the monotonic clock. */
+    tc_manager_title(out, sizeof(out), 5999, 0, &s, 4, 6000);
+    assert(!strcmp(out, "role=manager started=5"));
+    tc_manager_title(out, sizeof(out), 0, 0, &s, 4, 0);
+    assert(!strcmp(out, "role=manager started=0"));
+    /* A failed clock read leaves the start out instead of inventing one. */
+    tc_manager_title(out, sizeof(out), -1, 1, &s, 4, 6000);
+    assert(!strcmp(out, "role=manager waiting=hostname"));
+    tc_manager_title(out, sizeof(out), 5000, 1, &s, 4, 6000);
+    assert(!strcmp(out, "role=manager started=5 waiting=hostname"));
+    /* Only stuck entries, longest first, seconds as now - since, words made
+     * title-safe. A sleeper not yet stuck is not named. */
+    s.entries[s.count++] = stuck_entry(30, "smbd", "biowait", 400000);
+    s.entries[s.count++] = stuck_entry(20, "rsync", "tstile", 100000);
+    s.entries[s.count] = stuck_entry(40, "sh", "pipe_rd", 0);
+    s.entries[s.count++].stuck = 0;
+    tc_manager_title(out, sizeof(out), 2000, 0, &s, 4, 700000);
+    assert(!strcmp(out, "role=manager started=2 stuck=20:rsync:tstile:600,30:smbd:biowait:300"));
+    s.entries[0] = stuck_entry(30, "a b", "x/y", 400000);
+    tc_manager_title(out, sizeof(out), 2000, 0, &s, 4, 700000);
+    assert(!strcmp(out, "role=manager started=2 stuck=20:rsync:tstile:600,30:a_b:x_y:300"));
+    /* Past the limit the rest is counted, not named. */
+    fresh(&s);
+    for (i = 0; i < 6; i++)
+        s.entries[s.count++] = stuck_entry((pid_t)(100 + i), "smbd", "biowait", (long long)i * 1000);
+    tc_manager_title(out, sizeof(out), 1000, 0, &s, 4, 10000);
+    assert(!strcmp(out, "role=manager started=1 stuck=100:smbd:biowait:10,101:smbd:biowait:9,"
+                        "102:smbd:biowait:8,103:smbd:biowait:7,+2"));
+    /* With no room to name any, the count still reads as a stuck= word. */
+    tc_manager_title(out, sizeof(out), 1000, 0, &s, 0, 10000);
+    assert(!strcmp(out, "role=manager started=1 stuck=+6"));
+    /* A full title loses stuck entries, never started=, and stays terminated. */
+    tc_manager_title(small, sizeof(small), 123456000, 1, &s, 4, 200000000);
+    assert(strlen(small) == sizeof(small) - 1);
+    assert(!strncmp(small, "role=manager started=123456 waiting=hos", sizeof(small) - 1));
+    tc_manager_title(small, sizeof(small), 123456000, 0, &s, 4, 200000000);
+    assert(!strncmp(small, "role=manager started=123456 stuck=100:", strlen("role=manager started=123456 stuck=100:")));
+    /* The largest start still fits a full-size title. */
+    tc_manager_title(out, sizeof(out), 9223372036854775807LL, 1, &s, 4, 200000000);
+    assert(!strncmp(out, "role=manager started=9223372036854775 waiting=hostname stuck=",
+                    strlen("role=manager started=9223372036854775 waiting=hostname stuck=")));
+    tc_manager_title(small, 1, 5000, 1, &s, 4, 6000);
+    assert(small[0] == 0);
+}
+
 static void proc(struct tc_proctable *t, pid_t pid, int stat, int flag, int threads, unsigned slept, const char *wmesg,
                  const char *comm) {
     struct tc_proc *p = &t->procs[t->count++];
@@ -304,6 +365,7 @@ int main(int argc, char **argv) {
     threads_are_followed_separately();
     every_change_reaches_the_callback();
     words();
+    manager_titles();
     read_from_table(argv[1]);
     return 0;
 }

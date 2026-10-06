@@ -92,8 +92,17 @@ static int print_samba_identity(void) {
     return printf("samba-identity 1\n%s\n%s\n%s\n", identity.netbios, identity.server, identity.model) < 0 || fflush(stdout) != 0;
 }
 
+/* Now on the kernel's monotonic clock, in ms: the clock of the manager's
+ * title started= (stuck.h tc_manager_title). Doctor subtracts the two, so the
+ * startup age never mixes it with the wall clock. */
+static int print_monotonic_ms(void) {
+    long long now = acp_monotonic_ms();
+    if (now < 0) return 1;
+    return printf("%lld\n", now) < 0 || fflush(stdout) != 0;
+}
+
 static void usage(void) {
-    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-mast [--timeout-seconds N]\n", stderr);
+    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-monotonic-ms | --print-mast [--timeout-seconds N]\n", stderr);
 }
 int tc_service_helper_main(int argc, char **argv) {
     const char *facts_file = NULL;
@@ -124,6 +133,7 @@ int tc_service_helper_main(int argc, char **argv) {
     if (!strcmp(command, "--print-samba-identity")) return print_samba_identity();
     if (!strcmp(command, "--print-device-nt-hash")) return print_device_nt_hash();
     if (!strcmp(command, "--print-nt-hash-from-stdin")) return print_nt_hash_from_stdin();
+    if (!strcmp(command, "--print-monotonic-ms")) return print_monotonic_ms();
     if (!strcmp(command, "--print-link-plan")) {
         if (service_collect_plan(&plan, facts_file) != 0) {
             fputs("service: device plan collection failed\n", stderr);

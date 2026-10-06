@@ -87,4 +87,17 @@ size_t tc_stuck_step(struct tc_stuck *state, const struct tc_stuck_sample *sampl
 void tc_stuck_word(char *out, size_t size, const char *text);
 /* The uninterruptible sleepers in this pass's process table. */
 int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table);
+/* The manager's process title, which doctor reads from ps:
+ *   role=manager started=S[ waiting=hostname][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
+ * started= is when the manager started, in whole seconds on the kernel's
+ * monotonic clock (started_ms; omitted when negative, a failed clock read).
+ * Doctor subtracts it from `service --print-monotonic-ms`, the same clock:
+ * ps's elapsed time is wall-clock arithmetic, and the wall clock can step
+ * when sntpd sets it after boot (by a day in the field). The title
+ * is rewritten only on changes, so it carries the start, not the age. Stuck
+ * entries come last, longest first, at most limit of them and then +N for
+ * the rest (stuck=+N alone when limit is 0): a title cut at size loses stuck
+ * entries, never started=. Their seconds are now - since. */
+void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, const struct tc_stuck *stuck,
+                      size_t limit, long long now);
 #endif

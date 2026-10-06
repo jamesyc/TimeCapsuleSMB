@@ -1954,6 +1954,8 @@ def _doctor_probe_startup_age(target: DoctorTarget, remote: RemoteAccess, sink: 
     if sink.debug_fields is not None:
         sink.debug_fields["manager_startup_age"] = {
             "seconds_ago": probe.manager_started_seconds_ago,
+            "started_monotonic_s": probe.started_monotonic_s,
+            "now_monotonic_ms": probe.now_monotonic_ms,
             "detail": probe.detail,
         }
     return probe.manager_started_seconds_ago

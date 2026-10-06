@@ -2013,37 +2013,38 @@ def probe_device_networks_conn(connection: SshConnection) -> DeviceNetworksProbe
     return DeviceNetworksProbeResult(parse_ifconfig_ipv4_entries(text), parse_ifconfig_networks(text))
 
 
-MANAGER_ELAPSED_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o etime= -o ucomm= -o command="
+# The manager's title (build/native/service/stuck.h tc_manager_title) is read
+# from this listing. Its etime column is never read: ps computes it from the
+# wall clock, which sntpd steps after boot. It stays for the column layout
+# service_role_lines expects (pid ppid stat <one field> ucomm command).
+MANAGER_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o etime= -o ucomm= -o command="
+# The title's started= and this reading are the same clock, the kernel's
+# monotonic one, read in that order so the age cannot come out negative.
+MANAGER_STARTUP_AGE_COMMAND = (
+    MANAGER_PS_COMMAND
+    + ' 2>/dev/null | sed "s/^/ps=/"; '
+    'echo "now_ms=$("${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}" --print-monotonic-ms 2>/dev/null)"'
+)
+_DECIMAL = re.compile(r"[0-9]+")
 
 
 @dataclass(frozen=True)
 class ManagerStartupAgeProbeResult:
     manager_started_seconds_ago: float | None
     detail: str
-
-
-def _parse_ps_elapsed(value: str) -> int | None:
-    # BSD ps etime is [[dd-]hh:]mm:ss.
-    days, separator, clock = value.rpartition("-")
-    parts = clock.split(":")
-    if not 2 <= len(parts) <= 3 or not all(part.isdigit() for part in parts):
-        return None
-    if separator and not days.isdigit():
-        return None
-    seconds = 0
-    for part in parts:
-        seconds = seconds * 60 + int(part)
-    return seconds + int(days or 0) * 86400
+    started_monotonic_s: int | None = None
+    now_monotonic_ms: int | None = None
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
-    # The kernel's elapsed time for the live manager process is the startup
-    # age: no log, state file or device clock is involved. boot.sh execs the
-    # service binary, so the count includes boot.sh's brief preparation.
+    # The age is now minus the manager's start, both on the device kernel's
+    # monotonic clock. A boot can start from a clock a day behind; sntpd then
+    # steps it, and ps's elapsed time (now minus a start recorded before the
+    # step, both wall clock) showed a 55 s old manager as 86577 s old.
     try:
         proc = run_ssh(
             connection,
-            MANAGER_ELAPSED_PS_COMMAND,
+            MANAGER_STARTUP_AGE_COMMAND,
             check=False,
             timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
         )
@@ -2051,15 +2052,38 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
         return ManagerStartupAgeProbeResult(None, "manager startup age probe timed out")
     if proc.returncode != 0:
         return ManagerStartupAgeProbeResult(None, f"manager startup age probe failed (rc={proc.returncode})")
-    rows = service_role_lines(proc.stdout or "", "manager")
+    ps_rows: list[str] = []
+    now_text = ""
+    for line in (proc.stdout or "").splitlines():
+        key, _, value = line.partition("=")
+        if key == "ps":
+            ps_rows.append(value)
+        elif key == "now_ms":
+            now_text = value.strip()
+    # ps's status is lost in the pipe (NetBSD 4's sh has no pipefail); a
+    # listing that always includes this shell's own processes came back empty.
+    if not ps_rows:
+        return ManagerStartupAgeProbeResult(None, "process listing failed")
+    rows = service_role_lines("\n".join(ps_rows), "manager")
     if not rows:
         return ManagerStartupAgeProbeResult(None, "manager is not running")
     if len(rows) > 1:
         return ManagerStartupAgeProbeResult(None, f"{len(rows)} manager processes are running")
-    seconds_ago = _parse_ps_elapsed(rows[0].split()[3])
-    if seconds_ago is None:
-        return ManagerStartupAgeProbeResult(None, "manager startup age probe output unparseable")
-    return ManagerStartupAgeProbeResult(float(seconds_ago), f"manager started {seconds_ago}s ago")
+    started_words = [word.removeprefix("started=") for word in rows[0].split()[6:] if word.startswith("started=")]
+    if len(started_words) != 1 or not _DECIMAL.fullmatch(started_words[0]):
+        return ManagerStartupAgeProbeResult(None, "manager title has no start time (an older release, or its clock read failed)")
+    started = int(started_words[0])
+    if not _DECIMAL.fullmatch(now_text):
+        return ManagerStartupAgeProbeResult(
+            None, "device monotonic clock unavailable (service --print-monotonic-ms failed)", started
+        )
+    now_ms = int(now_text)
+    seconds_ago = now_ms // 1000 - started
+    if seconds_ago < 0:
+        return ManagerStartupAgeProbeResult(
+            None, f"manager start {started}s is after the device clock reading {now_ms} ms", started, now_ms
+        )
+    return ManagerStartupAgeProbeResult(float(seconds_ago), f"manager started {seconds_ago}s ago", started, now_ms)
 
 
 # smbd resolves the device hostname at every login (issue #54), so the manager
@@ -2068,7 +2092,7 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
 # manager logged at boot (best effort: the manager trims runtime.log).
 DEVICE_HOSTNAME_PROBE_COMMAND = (
     'echo "hostname=$(/bin/hostname 2>/dev/null)"; '
-    + MANAGER_ELAPSED_PS_COMMAND
+    + MANAGER_PS_COMMAND
     + ' 2>/dev/null | sed "s/^/ps=/"; '
     'sed "s/^/hosts=/" /etc/hosts 2>/dev/null; '
     "sed -n 's/.*manager: hostname found: [^ ]* after \\([0-9]*\\) ms.*/found=\\1/p' "

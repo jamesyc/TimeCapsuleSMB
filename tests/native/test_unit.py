@@ -57,3 +57,13 @@ def test_http_deadline_uses_monotonic_clock(tmp_path, mode, curl_body):
     run = subprocess.run([str(output), mode], capture_output=True, text=True, timeout=15,
                          env={'PATH': '/usr/bin:/bin'})
     assert run.returncode == 0, run.stderr
+
+
+def test_heartbeat_uptime_ignores_wall_clock_steps(tmp_path):
+    native = ROOT / 'build/native'
+    output = tmp_path / 'uptime'
+    compile_modules(output, ('native/telemetry/device.c', 'native/common/acp.c', 'native/common/config.c'),
+                    flags=('-I', str(native / 'telemetry'), '-I', str(native / 'common')),
+                    extra_sources=(Path(__file__).parent / 'unit/test_uptime.c',))
+    run = subprocess.run([str(output)], capture_output=True, text=True, timeout=5)
+    assert run.returncode == 0, run.stderr

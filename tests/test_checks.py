@@ -84,6 +84,7 @@ from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
     ManagerStartupAgeProbeResult,
+    probe_manager_startup_age_conn,
     ProbedDeviceState,
     ProbeResult,
     ProbeStepResult,
@@ -2797,7 +2798,10 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any("managed mDNS registrant is not active" in result.message for result in demoted))
         self.assertEqual(failures[0].details["masked_failures"], [result.message for result in demoted])
         self.assertTrue(debug_fields["startup_grace_applied"])
-        self.assertEqual(debug_fields["manager_startup_age"], {"seconds_ago": 41.0, "detail": "manager started 41s ago"})
+        self.assertEqual(
+            debug_fields["manager_startup_age"],
+            {"seconds_ago": 41.0, "started_monotonic_s": None, "now_monotonic_ms": None, "detail": "manager started 41s ago"},
+        )
         # The synthesized failure is streamed so live consumers (CLI) see it last.
         self.assertEqual(streamed[-1].details.get("code"), DOCTOR_CODE_DEVICE_STARTING_UP)
 
@@ -3379,6 +3383,7 @@ class CheckTests(unittest.TestCase):
         device_probe_mock=None,
         socket_debug_mock=None,
         debug_fields: dict[str, object] | None = None,
+        startup_age_mock=None,
     ):
         # This computer defaults to 10.0.0.50, on the harness device's 10.0.0.0/24.
         with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
@@ -3397,7 +3402,7 @@ class CheckTests(unittest.TestCase):
                     ),
                     "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock,
                     "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
-                    "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                    "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": startup_age_mock or mock.Mock(
                         return_value=ManagerStartupAgeProbeResult(startup_age, f"manager started {int(startup_age)}s ago")
                     ),
                     "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
@@ -3498,6 +3503,52 @@ class CheckTests(unittest.TestCase):
                         {result.message for result in failures},
                         {"discovery native NBNS is not ready", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137"},
                     )
+
+    @staticmethod
+    def _device_startup_age(output: str) -> mock.Mock:
+        # The real startup-age probe, reading this output from the device.
+        def probe_device(connection):
+            proc = subprocess.CompletedProcess(["ssh"], 0, stdout=output)
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+                return probe_manager_startup_age_conn(connection)
+        return mock.Mock(side_effect=probe_device)
+
+    def test_run_doctor_checks_startup_grace_survives_a_wall_clock_step_after_boot(self) -> None:
+        # v3.3.0 field case: 55 s after boot, with the clock stepped a day by
+        # sntpd, ps said the manager was 86577 s old; the grace was skipped
+        # and native NBNS still starting failed doctor. The monotonic start
+        # keeps it a startup failure. A manager that is old on that clock,
+        # or that has no start (an older release), keeps the real failures.
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        nbns_failures = {"discovery native NBNS is not ready", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137"}
+        cases = (
+            ("stepped", "role=manager started=5", "60000", True, 55.0),
+            ("old", "role=manager started=5", "4000000", False, 3995.0),
+            ("older release", "role=manager", "60000", False, None),
+        )
+        for name, title, now_ms, collapsed, age in cases:
+            with self.subTest(name):
+                debug_fields: dict[str, object] = {}
+                output = f"ps=  142     1 S  1-00:02:57 service service: {title}\nnow_ms={now_ms}\n"
+                run, _ = self._run_doctor_nbns(
+                    mock.Mock(return_value=not_ready),
+                    mock.Mock(side_effect=[self._nbns_query_timeout()] * 3),
+                    debug_fields=debug_fields,
+                    startup_age_mock=self._device_startup_age(output),
+                )
+
+                self.assertTrue(run.fatal)
+                failures = [result for result in run.results if result.status == "FAIL"]
+                if collapsed:
+                    self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
+                    self.assertEqual(failures[0].details["manager_started_seconds_ago"], 55)
+                    self.assertTrue(nbns_failures <= set(failures[0].details["masked_failures"]))
+                else:
+                    self.assertEqual({result.message for result in failures}, nbns_failures)
+                startup = debug_fields["manager_startup_age"]
+                self.assertEqual(startup["seconds_ago"], age)
+                self.assertEqual(startup["now_monotonic_ms"], int(now_ms) if age is not None else None)
+                self.assertEqual(startup["started_monotonic_s"], 5 if age is not None else None)
 
     def test_run_doctor_checks_reports_query_timeout_at_once_when_native_nbns_was_not_probed(self) -> None:
         nbns_mock = mock.Mock(return_value=self._nbns_query_timeout())

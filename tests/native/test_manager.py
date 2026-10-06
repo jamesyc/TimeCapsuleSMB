@@ -189,7 +189,7 @@ def manager(manager_tools):
     else:hosts.unlink(missing_ok=True)
     for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
-                 'report-hold','report-exit'):
+                 'report-hold','report-exit','titles'):
         (root/name).unlink(missing_ok=True)
     (root/'wake').mkdir(exist_ok=True)
     (root/'procs').mkdir()
@@ -333,6 +333,33 @@ def test_samba_waits_for_the_hostname_and_starts_once_it_is_mapped(manager):
     assert found_after_ms(log,'capsule')>=2000
     assert f'stage: mapped capsule in {root}/hosts' in log
     wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+
+
+def manager_titles(root):
+    path=root/'titles'
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_manager_title_carries_its_monotonic_start_through_every_change(manager):
+    # Doctor's startup age is the device's monotonic clock minus the title's
+    # started=. The title is rewritten only on changes, so started= must be in
+    # the first one and keep its value through the hostname wait and after.
+    root,start,events,wait,_,_=manager
+    (root/'hostname').write_text('')
+    before=int(time.clock_gettime(time.CLOCK_MONOTONIC))
+    start()
+    wait(lambda rows:any(e['role']=='discovery' and '--diskless' in e['args'] for e in rows))
+    (root/'hostname').write_text('capsule\n')
+    wait(lambda rows:smbd_starts(rows))
+    after=int(time.clock_gettime(time.CLOCK_MONOTONIC))
+    titles=manager_titles(root)
+    started={title.split()[1] for title in titles}
+    assert len(started)==1, titles
+    value=started.pop()
+    assert value.startswith('started=') and before<=int(value.removeprefix('started='))<=after
+    assert titles[0]==f'role=manager {value}'
+    assert f'role=manager {value} waiting=hostname' in titles
+    assert titles[-1]==f'role=manager {value}'
 
 
 def discovery_names(rows):

@@ -141,3 +141,53 @@ int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table)
     }
     return 0;
 }
+
+/* Appends to a title, keeping *used at size once it is full. */
+static void title_append(char *out, size_t size, size_t *used, const char *format, ...) {
+    va_list args;
+    int n;
+    if (*used >= size)
+        return;
+    va_start(args, format);
+    n = vsnprintf(out + *used, size - *used, format, args);
+    va_end(args);
+    *used = n < 0 || (size_t)n >= size - *used ? size : *used + (size_t)n;
+}
+
+void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, const struct tc_stuck *stuck,
+                      size_t limit, long long now) {
+    const struct tc_stuck_entry *order[TC_STUCK_MAX];
+    size_t used = 0, i, shown = 0, more = 0;
+    if (!size)
+        return;
+    title_append(out, size, &used, "role=manager");
+    if (started_ms >= 0)
+        title_append(out, size, &used, " started=%lld", started_ms / 1000);
+    if (waiting)
+        title_append(out, size, &used, " waiting=hostname");
+    for (i = 0; i < stuck->count; i++)
+        if (stuck->entries[i].stuck)
+            order[shown++] = &stuck->entries[i];
+    if (shown) {
+        size_t a, b;
+        for (a = 1; a < shown; a++)
+            for (b = a; b > 0 && order[b]->since < order[b - 1]->since; b--) {
+                const struct tc_stuck_entry *swap = order[b];
+                order[b] = order[b - 1];
+                order[b - 1] = swap;
+            }
+        if (shown > limit) {
+            more = shown - limit;
+            shown = limit;
+        }
+        for (i = 0; i < shown; i++) {
+            char comm[TC_STUCK_COMM], wmesg[TC_STUCK_WMESG];
+            tc_stuck_word(comm, sizeof(comm), order[i]->thread.comm);
+            tc_stuck_word(wmesg, sizeof(wmesg), order[i]->thread.wmesg);
+            title_append(out, size, &used, "%s%ld:%s:%s:%lld", i ? "," : " stuck=", (long)order[i]->thread.pid, comm,
+                         wmesg, (now - order[i]->since) / 1000);
+        }
+        if (more)
+            title_append(out, size, &used, "%s+%lu", shown ? "," : " stuck=", (unsigned long)more);
+    }
+}
