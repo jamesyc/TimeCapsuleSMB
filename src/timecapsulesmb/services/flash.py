@@ -37,7 +37,10 @@ from timecapsulesmb.transport.ssh import SshConnection, run_ssh_capture_bytes
 
 
 FLASH_READ_TIMEOUT_SECONDS = 180
-FLASH_WRITE_TIMEOUT_SECONDS = 300
+# ACPd answers the ACP flash command only after it has erased, written and
+# verified the bank. Field writes took up to 200 s; 300 s cut off replies, and a
+# user told "failed" while ACPd is still writing may power-cycle mid-write.
+FLASH_WRITE_TIMEOUT_SECONDS = 600
 WRITE_OPERATIONS = {"patch", "restore"}
 READ_OPERATIONS = {"read_only", "patch", "restore", "check_apple", "download_only"}
 POWERCYCLE_REQUIRED_MESSAGE = (

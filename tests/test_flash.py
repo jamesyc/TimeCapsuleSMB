@@ -804,6 +804,26 @@ class FlashBackupServiceTests(unittest.TestCase):
         self.assertNotIn("flash_plan_error", saved)
         self.assertEqual(saved["operation"], "read_only")
 
+    def test_flash_write_waits_600_seconds_for_acpd_to_finish_the_bank(self) -> None:
+        # ACPd replies only after it has erased, written and verified the bank;
+        # field writes took up to 200 s and a 300 s wait cut some replies off.
+        target = SimpleNamespace(
+            connection=SshConnection("root@10.0.0.2", "pw", "-o foo"),
+            acp_host="10.0.0.2",
+            compatibility=SimpleNamespace(os_release="4.0_STABLE"),
+        )
+        plan = SimpleNamespace(target_bank=SimpleNamespace(name="primary"), payload=object())
+        with mock.patch("timecapsulesmb.services.flash.record_write_outcome") as record:
+            with mock.patch("timecapsulesmb.services.flash.write_and_validate_plan", return_value={"bank": "primary"}) as write:
+                result = flash_service.write_flash_plan(target=target, bundle=object(), plan=plan)
+
+        self.assertEqual(result, {"bank": "primary"})
+        self.assertEqual(write.call_args.kwargs["timeout"], 600)
+        self.assertEqual(
+            [call.kwargs["status"] for call in record.call_args_list],
+            ["attempting", "validated"],
+        )
+
     def test_flash_live_login_read_uses_binary_capture(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         payload = b"#!/bin/sh\n\xff"
