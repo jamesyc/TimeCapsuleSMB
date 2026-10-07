@@ -285,6 +285,7 @@
 "doctor.check.device_starting_up" = "Het apparaat start nog op. Wacht enkele minuten en voer de controle opnieuw uit.";
 "doctor.check.payload_missing_from_disk" = "De Samba-map ontbreekt op de gegevensschijf; de schijf is mogelijk gewist. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
 "doctor.check.metadata_migration_in_progress" = "Op het apparaat loopt nog een metadatamigratie. ‘Samba installeren / bijwerken’ wacht tot die klaar is en installeert pas daarna.";
+"doctor.check.client_on_unshared_network" = "Deze Mac zit op een netwerk waarop het apparaat zijn schijven niet deelt, zoals de internetkant (WAN) of het gastnetwerk van het apparaat. Verbind deze Mac via Wi-Fi of een van de LAN-poorten van het apparaat met het hoofdnetwerk van het apparaat en voer de controle opnieuw uit.";
 "doctor.domain.general" = "Algemeen";
 "doctor.domain.runtime" = "Servicestatus";
 "event.summary.check" = "%@ %@";
@@ -632,6 +633,7 @@
 "backend.error.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
 "backend.error.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
 "backend.error.local_network_filtered" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
+"backend.error.device_off_network" = "Het adres van het apparaat ligt niet in het netwerk van deze Mac. Controleer het adres, of verbind deze Mac via Wi-Fi of een van de LAN-poorten van het apparaat met het netwerk van het apparaat en probeer het opnieuw.";
 "backend.error.reboot_not_started" = "Het apparaat is na het herstartverzoek niet opnieuw opgestart.";
 "backend.error.reboot_not_finished" = "Het apparaat is na het opnieuw opstarten niet teruggekomen.";
 "backend.error.ssh_still_enabled" = "SSH is na het opnieuw opstarten nog steeds ingeschakeld; het uitschakelen is niet doorgevoerd.";
@@ -675,6 +677,8 @@
 "backend.recovery.local_network_permission_denied.action.3" = "Stop TimeCapsuleSMB en open de app weer; probeer daarna opnieuw te configureren.";
 "backend.recovery.local_network_filtered.title" = "Verbinding geblokkeerd op deze Mac";
 "backend.recovery.local_network_filtered.message" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
+"backend.recovery.device_off_network.title" = "Apparaat niet in het netwerk van deze Mac";
+"backend.recovery.device_off_network.message" = "Het adres van het apparaat ligt niet in het netwerk van deze Mac. Controleer het adres, of verbind deze Mac via Wi-Fi of een van de LAN-poorten van het apparaat met het netwerk van het apparaat en probeer het opnieuw.";
 "backend.recovery.unsupported_device.title" = "Niet-ondersteund apparaat";
 "backend.recovery.unsupported_device.message" = "Deze bewerking wordt niet ondersteund op het gedetecteerde AirPort-model of besturingssysteem.";
 "backend.recovery.unsupported_device.action.1" = "Controleer het gedetecteerde model en besturingssysteem.";

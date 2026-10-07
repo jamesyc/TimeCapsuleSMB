@@ -100,26 +100,6 @@ class AddressSummaryTests(unittest.TestCase):
         )
         self.assertEqual(acp_diagnostics.address_summary("capsule.local"), {"family": "unknown"})
 
-    def test_interface_kinds(self) -> None:
-        cases = {
-            "en0": "lan",
-            "eth0": "lan",
-            "enp3s0": "lan",
-            "wlan0": "lan",
-            "utun4": "vpn",
-            "ipsec0": "vpn",
-            "ppp0": "vpn",
-            "wg0": "vpn",
-            "tailscale0": "vpn",
-            "bridge100": "virtual",
-            "vmnet8": "virtual",
-            "docker0": "virtual",
-            "awdl0": "other",
-        }
-        for name, kind in cases.items():
-            with self.subTest(name=name):
-                self.assertEqual(acp_diagnostics.interface_kind(name), kind)
-
 
 class LocalNetworksFieldTests(unittest.TestCase):
     def test_groups_by_interface_and_hides_public_and_host_prefixes(self) -> None:

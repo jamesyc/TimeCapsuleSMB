@@ -285,6 +285,7 @@
 "doctor.check.device_starting_up" = "El dispositivo aún se está iniciando. Espere unos minutos y repita la comprobación.";
 "doctor.check.payload_missing_from_disk" = "Falta la carpeta Samba en el disco de datos; puede que se haya borrado el disco. Ejecute «Instalar / actualizar Samba» para reinstalar.";
 "doctor.check.metadata_migration_in_progress" = "Una migración de metadatos sigue en curso en el dispositivo. «Instalar / actualizar Samba» espera a que termine antes de instalar.";
+"doctor.check.client_on_unshared_network" = "Este Mac está en una red en la que el dispositivo no comparte sus discos, como su lado de Internet (WAN) o su red de invitados. Conecte este Mac a la red principal del dispositivo por Wi-Fi o mediante uno de sus puertos LAN y repita la comprobación.";
 "doctor.domain.general" = "General";
 "doctor.domain.runtime" = "Estado de los servicios";
 "event.summary.check" = "%@ %@";
@@ -632,6 +633,7 @@
 "backend.error.ssh_disabled" = "SSH está deshabilitado en este dispositivo.";
 "backend.error.device_unreachable" = "El dispositivo no responde ni por SSH ni por AirPort ACP.";
 "backend.error.local_network_filtered" = "Este Mac cortó la conexión antes de que llegara al dispositivo. Una VPN, un cortafuegos o un software de seguridad está filtrando el tráfico de la red local.";
+"backend.error.device_off_network" = "La dirección del dispositivo no está en la red de este Mac. Compruebe la dirección o conecte este Mac a la red del dispositivo por Wi-Fi o mediante uno de sus puertos LAN y vuelva a intentarlo.";
 "backend.error.reboot_not_started" = "El dispositivo no se reinició tras la solicitud de reinicio.";
 "backend.error.reboot_not_finished" = "El dispositivo no volvió a estar disponible tras reiniciarse.";
 "backend.error.ssh_still_enabled" = "SSH sigue habilitado después del reinicio, por lo que deshabilitarlo no surtió efecto.";
@@ -675,6 +677,8 @@
 "backend.recovery.local_network_permission_denied.action.3" = "Salga de TimeCapsuleSMB, vuelva a abrirlo y reintente la configuración del dispositivo.";
 "backend.recovery.local_network_filtered.title" = "Conexión bloqueada en este Mac";
 "backend.recovery.local_network_filtered.message" = "Este Mac cortó la conexión antes de que llegara al dispositivo. Una VPN, un cortafuegos o un software de seguridad está filtrando el tráfico de la red local.";
+"backend.recovery.device_off_network.title" = "Dispositivo fuera de la red de este Mac";
+"backend.recovery.device_off_network.message" = "La dirección del dispositivo no está en la red de este Mac. Compruebe la dirección o conecte este Mac a la red del dispositivo por Wi-Fi o mediante uno de sus puertos LAN y vuelva a intentarlo.";
 "backend.recovery.unsupported_device.title" = "Dispositivo no compatible";
 "backend.recovery.unsupported_device.message" = "Esta operación no es compatible con el modelo de AirPort o el sistema operativo detectados.";
 "backend.recovery.unsupported_device.action.1" = "Compruebe el modelo y el sistema operativo detectados.";

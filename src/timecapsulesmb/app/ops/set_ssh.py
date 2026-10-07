@@ -6,6 +6,7 @@ from timecapsulesmb.app.contracts import set_ssh_payload
 from timecapsulesmb.app.ops.common import load_request_config
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations.acp import ACPAuthError
+from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import resolve_env_connection
@@ -53,6 +54,8 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 code="auth_failed",
                 debug=str(exc),
             ) from exc
+        except ACPDeviceOffNetworkError as exc:
+            raise AppOperationError(str(exc), code="device_off_network") from exc
         except RebootFlowError as exc:
             # SSH not opening in time keeps its own guidance: enabling it can be slow.
             code = "ssh_enable_timeout" if exc.code == "reboot_not_finished" else exc.code

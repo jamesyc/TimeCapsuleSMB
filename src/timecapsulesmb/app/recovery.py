@@ -92,6 +92,14 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="configure",
         action_ids=("open_system_settings", "retry"),
     ),
+    # The helper's own message names the address and this Mac's networks.
+    "device_off_network": RecoveryInfo(
+        "Device not on this Mac's network",
+        "The device's address isn't on this Mac's network. Check the address, or connect this Mac "
+        "to the device's network by Wi-Fi or one of its LAN ports, then try again.",
+        (),
+        retryable=True,
+    ),
     # No step: the filtering app may be a VPN the user cannot turn off.
     "local_network_filtered": RecoveryInfo(
         "Connection blocked on this Mac",

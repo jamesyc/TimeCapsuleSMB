@@ -285,6 +285,7 @@
 "doctor.check.device_starting_up" = "Įrenginys vis dar paleidžiamas. Palaukite kelias minutes ir paleiskite patikrinimą iš naujo.";
 "doctor.check.payload_missing_from_disk" = "Duomenų diske trūksta Samba aplanko; diskas galėjo būti ištrintas. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
+"doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir paleiskite patikrinimą iš naujo.";
 "doctor.domain.general" = "Bendrieji";
 "doctor.domain.runtime" = "Aplinka";
 "event.summary.check" = "%@ %@";
@@ -632,6 +633,7 @@
 "backend.error.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
 "backend.error.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
 "backend.error.local_network_filtered" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
+"backend.error.device_off_network" = "Įrenginio adresas nėra šio Mac tinkle. Patikrinkite adresą arba prijunkite šį Mac prie įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir bandykite dar kartą.";
 "backend.error.reboot_not_started" = "Įrenginys nebuvo paleistas iš naujo po paleidimo iš naujo užklausos.";
 "backend.error.reboot_not_finished" = "Įrenginys negrįžo po paleidimo iš naujo.";
 "backend.error.ssh_still_enabled" = "SSH po paleidimo iš naujo vis dar įjungta, todėl išjungimas neįsigaliojo.";
@@ -675,6 +677,8 @@
 "backend.recovery.local_network_permission_denied.action.3" = "Išeikite iš TimeCapsuleSMB ir vėl ją atidarykite, tada bandykite konfigūruoti dar kartą.";
 "backend.recovery.local_network_filtered.title" = "Ryšys užblokuotas šiame Mac";
 "backend.recovery.local_network_filtered.message" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
+"backend.recovery.device_off_network.title" = "Įrenginys ne šio Mac tinkle";
+"backend.recovery.device_off_network.message" = "Įrenginio adresas nėra šio Mac tinkle. Patikrinkite adresą arba prijunkite šį Mac prie įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir bandykite dar kartą.";
 "backend.recovery.unsupported_device.title" = "Nepalaikomas įrenginys";
 "backend.recovery.unsupported_device.message" = "Ši operacija nepalaikoma aptiktame AirPort modelyje ar OS.";
 "backend.recovery.unsupported_device.action.1" = "Patikrinkite aptiktą modelį ir OS.";

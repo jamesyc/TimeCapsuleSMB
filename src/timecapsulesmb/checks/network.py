@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.device.probe import probe_ssh_command_conn
 from timecapsulesmb.transport.errors import local_network_filtered_message
 from timecapsulesmb.transport.local import tcp_connect_error
@@ -102,6 +103,32 @@ def local_interface_networks(adapters: Iterable[object] | None = None) -> tuple[
     return tuple(networks)
 
 
+def interface_kind(name: str) -> str:
+    lowered = name.lower()
+    if lowered.startswith(("utun", "ipsec", "ppp", "wg", "tun", "tap", "tailscale", "zt")):
+        return "vpn"
+    if lowered.startswith(("bridge", "vmnet", "vboxnet", "docker", "veth", "virbr", "br-")):
+        return "virtual"
+    if lowered.startswith(("en", "eth", "wl")):
+        return "lan"
+    return "other"
+
+
+def local_lan_networks(adapters: Iterable[object] | None = None) -> tuple[LocalInterfaceNetwork, ...]:
+    """This computer's networks without its VPN tunnels and virtual machine or
+    container bridges.
+
+    Their networks can overlap one of a device's (a VPN's 100.64.0.0/10 and a
+    carrier-NAT WAN address, say) without putting this computer on it.
+    Interfaces of unknown kind stay: Linux names a plain bridge `br0`, and
+    Windows names every adapter by GUID.
+    """
+    return tuple(
+        item for item in local_interface_networks(adapters)
+        if interface_kind(item.interface) not in ("vpn", "virtual")
+    )
+
+
 IpNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 NetworkLinkVerdict = Literal["shared", "separate", "unknown"]
 _SHARED_IPV4 = ipaddress.ip_network("100.64.0.0/10")
@@ -163,6 +190,21 @@ def reportable_network(network: IpNetwork, *, hide_hosts: bool = False) -> str:
 
 def network_display(network: IpNetwork) -> str:
     return str(network.network_address) if network.prefixlen == network.max_prefixlen else str(network)
+
+
+def host_networks(host: str) -> list[IpNetwork]:
+    """A device address, or every address its hostname resolves to, as
+    host-length networks. Link-local addresses are left out: every interface
+    has a link-local network, so they cannot say which network a host is on."""
+    text = host.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    literal = ipv4_literal(text) or ipv6_literal(text)
+    addresses = [literal] if literal is not None else [address.partition("%")[0] for address in resolve_host_ips(host)]
+    return [
+        network for network in (ipaddress.ip_network(address) for address in addresses)
+        if not network.network_address.is_link_local
+    ]
 
 
 def classify_network_link(

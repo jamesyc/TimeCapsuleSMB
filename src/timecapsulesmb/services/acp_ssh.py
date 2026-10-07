@@ -5,6 +5,7 @@ import os
 import sys
 import time
 
+from timecapsulesmb.checks.network import IpNetwork, classify_network_link, host_networks, local_lan_networks, reportable_network
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import (
     ACP_PORT,
@@ -24,6 +25,46 @@ SSH_ENABLE_TIMEOUT_MESSAGE = "SSH did not open after enabling via ACP."
 ACP_PORT_PROBE_ATTEMPTS = 3
 ACP_PORT_PROBE_RETRY_WINDOW_SECONDS = 4.0
 ACP_PORT_PROBE_RETRY_DELAY_SECONDS = ACP_PORT_PROBE_RETRY_WINDOW_SECONDS / (ACP_PORT_PROBE_ATTEMPTS - 1)
+
+
+class ACPDeviceOffNetworkError(ACPConnectionError):
+    """ACP did not answer, and the device's address is on none of this
+    computer's networks (VPN tunnels and virtual bridges aside)."""
+
+
+def device_off_network_message(
+    address: str,
+    client_networks: list[IpNetwork],
+    *,
+    platform: str | None = None,
+) -> str:
+    computer = "this Mac" if (platform or sys.platform) == "darwin" else "this computer"
+    # The message reaches telemetry as the operation's error, so this
+    # computer's public networks are shown only by family and prefix length.
+    networks = ", ".join(reportable_network(network, hide_hosts=True) for network in client_networks)
+    return (
+        f"{address} is not on {computer}'s network ({networks}). "
+        f"Check the address, or connect {computer} to the device's network by Wi-Fi or one of its LAN ports, "
+        "then try again."
+    )
+
+
+def _client_networks_if_off_network(host: str) -> list[IpNetwork] | None:
+    """This computer's networks when `host` is on none of them, else None.
+
+    Only explains a failure: an address on another network can still be
+    reachable through a router, so this never decides whether to try it.
+    """
+    try:
+        link = classify_network_link(
+            host_networks(host), [item.network for item in local_lan_networks()], source="acp_target",
+        )
+    except Exception:
+        return None
+    if link.verdict != "separate":
+        return None
+    client, _device = link.compared()
+    return list(client)
 
 
 def is_macos_gui_local_network_privacy_signal(error: object) -> bool:
@@ -141,10 +182,11 @@ def enable_ssh_with_port_preflight(
             acp_port_probe_error_kinds=[entry["kind"] for entry in errors],
         )
         _record_port_probe_context(host, record, callbacks, failed=True)
-        raise ACPConnectionError(
-            f"Could not connect to ACP on {host}:{ACP_PORT}. "
-            "Check the device IP address or hostname."
-        )
+        failure = f"Could not connect to ACP on {host}:{ACP_PORT}. "
+        client_networks = _client_networks_if_off_network(host)
+        if client_networks:
+            raise ACPDeviceOffNetworkError(failure + device_off_network_message(host, client_networks))
+        raise ACPConnectionError(failure + "Check the device IP address or hostname.")
 
     _run_enable_ssh(
         host,

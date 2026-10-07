@@ -283,6 +283,7 @@
 "doctor.check.device_starting_up" = "The device is still starting up. Wait a few minutes, then run Checkup again.";
 "doctor.check.payload_missing_from_disk" = "The Samba folder is missing from the data disk; the disk may have been erased. Run “Install / Update Samba” to reinstall.";
 "doctor.check.metadata_migration_in_progress" = "A metadata migration is still running on the device. “Install / Update Samba” waits for it to finish before installing.";
+"doctor.check.client_on_unshared_network" = "This Mac is on a network where the device does not share its disks, such as its internet (WAN) side or its guest network. Join the device's main network by Wi-Fi or one of its LAN ports, then run Checkup again.";
 "doctor.domain.general" = "General";
 "doctor.domain.runtime" = "Runtime";
 "event.summary.check" = "%@ %@";
@@ -630,6 +631,7 @@
 "backend.error.ssh_disabled" = "SSH is turned off on this device.";
 "backend.error.device_unreachable" = "The device isn't answering on SSH or AirPort ACP.";
 "backend.error.local_network_filtered" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
+"backend.error.device_off_network" = "The device's address isn't on this Mac's network. Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again.";
 "backend.error.reboot_not_started" = "The device did not restart after the reboot request.";
 "backend.error.reboot_not_finished" = "The device did not come back after restarting.";
 "backend.error.ssh_still_enabled" = "SSH is still enabled after the restart, so disabling it did not take effect.";
@@ -673,6 +675,8 @@
 "backend.recovery.local_network_permission_denied.action.3" = "Quit and reopen TimeCapsuleSMB, then retry configure.";
 "backend.recovery.local_network_filtered.title" = "Connection blocked on this Mac";
 "backend.recovery.local_network_filtered.message" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
+"backend.recovery.device_off_network.title" = "Device not on this Mac's network";
+"backend.recovery.device_off_network.message" = "The device's address isn't on this Mac's network. Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again.";
 "backend.recovery.unsupported_device.title" = "Unsupported device";
 "backend.recovery.unsupported_device.message" = "This operation is not supported on the detected AirPort model or OS.";
 "backend.recovery.unsupported_device.action.1" = "Check the detected model and OS.";

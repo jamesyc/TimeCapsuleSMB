@@ -285,6 +285,7 @@
 "doctor.check.device_starting_up" = "Das Gerät startet noch. Warten Sie einige Minuten und führen Sie die Überprüfung erneut aus.";
 "doctor.check.payload_missing_from_disk" = "Der Samba-Ordner fehlt auf dem Datenträger; dieser wurde möglicherweise gelöscht. Führen Sie „Samba installieren / aktualisieren“ zur Neuinstallation aus.";
 "doctor.check.metadata_migration_in_progress" = "Auf dem Gerät läuft noch eine Metadaten-Migration. „Samba installieren / aktualisieren“ wartet, bis sie abgeschlossen ist, und installiert erst dann.";
+"doctor.check.client_on_unshared_network" = "Dieser Mac ist in einem Netzwerk, in dem das Gerät seine Festplatten nicht freigibt, etwa am Internetanschluss (WAN) des Geräts oder in seinem Gastnetzwerk. Verbinden Sie diesen Mac per Wi-Fi oder über einen LAN-Anschluss des Geräts mit dessen Hauptnetzwerk und führen Sie die Überprüfung erneut aus.";
 "doctor.domain.general" = "Allgemein";
 "doctor.domain.runtime" = "Dienststatus";
 "event.summary.check" = "%@ %@";
@@ -632,6 +633,7 @@
 "backend.error.ssh_disabled" = "SSH ist auf diesem Gerät deaktiviert.";
 "backend.error.device_unreachable" = "Das Gerät antwortet weder über SSH noch über AirPort ACP.";
 "backend.error.local_network_filtered" = "Dieser Mac hat die Verbindung getrennt, bevor sie das Gerät erreicht hat. Ein VPN, eine Firewall oder Sicherheitssoftware filtert den lokalen Netzwerkverkehr.";
+"backend.error.device_off_network" = "Die Adresse des Geräts liegt nicht im Netzwerk dieses Mac. Prüfen Sie die Adresse oder verbinden Sie diesen Mac per Wi-Fi oder über einen LAN-Anschluss des Geräts mit dessen Netzwerk und versuchen Sie es erneut.";
 "backend.error.reboot_not_started" = "Das Gerät ist nach der Neustartanforderung nicht neu gestartet.";
 "backend.error.reboot_not_finished" = "Das Gerät ist nach dem Neustart nicht zurückgekehrt.";
 "backend.error.ssh_still_enabled" = "SSH ist nach dem Neustart weiterhin aktiviert; das Deaktivieren wurde nicht wirksam.";
@@ -675,6 +677,8 @@
 "backend.recovery.local_network_permission_denied.action.3" = "Beenden Sie TimeCapsuleSMB, öffnen Sie es erneut und versuchen Sie dann noch einmal, das Gerät hinzuzufügen.";
 "backend.recovery.local_network_filtered.title" = "Verbindung auf diesem Mac blockiert";
 "backend.recovery.local_network_filtered.message" = "Dieser Mac hat die Verbindung getrennt, bevor sie das Gerät erreicht hat. Ein VPN, eine Firewall oder Sicherheitssoftware filtert den lokalen Netzwerkverkehr.";
+"backend.recovery.device_off_network.title" = "Gerät nicht im Netzwerk dieses Mac";
+"backend.recovery.device_off_network.message" = "Die Adresse des Geräts liegt nicht im Netzwerk dieses Mac. Prüfen Sie die Adresse oder verbinden Sie diesen Mac per Wi-Fi oder über einen LAN-Anschluss des Geräts mit dessen Netzwerk und versuchen Sie es erneut.";
 "backend.recovery.unsupported_device.title" = "Nicht unterstütztes Gerät";
 "backend.recovery.unsupported_device.message" = "Dieser Vorgang wird auf dem erkannten AirPort-Modell oder Betriebssystem nicht unterstützt.";
 "backend.recovery.unsupported_device.action.1" = "Prüfen Sie das erkannte Modell und Betriebssystem.";

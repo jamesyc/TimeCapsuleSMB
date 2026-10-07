@@ -285,6 +285,7 @@
 "doctor.check.device_starting_up" = "Устройство еще запускается. Подождите несколько минут и запустите проверку снова.";
 "doctor.check.payload_missing_from_disk" = "Папка Samba отсутствует на диске данных; возможно, диск был стерт. Запустите «Установить/обновить Samba», чтобы установить заново.";
 "doctor.check.metadata_migration_in_progress" = "На устройстве все еще выполняется перенос метаданных. «Установить/обновить Samba» дождется его завершения перед установкой.";
+"doctor.check.client_on_unshared_network" = "Этот Mac находится в сети, в которой устройство не открывает общий доступ к своим дискам, например на стороне интернета (WAN) или в гостевой сети устройства. Подключите этот Mac к основной сети устройства по Wi-Fi или через один из его портов LAN и запустите проверку снова.";
 "doctor.domain.general" = "Общие сведения";
 "doctor.domain.runtime" = "Состояние служб";
 "event.summary.check" = "%@ %@";
@@ -632,6 +633,7 @@
 "backend.error.ssh_disabled" = "SSH отключен на этом устройстве.";
 "backend.error.device_unreachable" = "Устройство не отвечает ни по SSH, ни по AirPort ACP.";
 "backend.error.local_network_filtered" = "Этот Mac прервал соединение до того, как оно достигло устройства. Трафик локальной сети фильтрует VPN, брандмауэр или защитное ПО.";
+"backend.error.device_off_network" = "Адрес устройства не входит в сеть этого Mac. Проверьте адрес или подключите этот Mac к сети устройства по Wi-Fi или через один из его портов LAN и повторите попытку.";
 "backend.error.reboot_not_started" = "Устройство не перезагрузилось после запроса перезагрузки.";
 "backend.error.reboot_not_finished" = "Устройство не вернулось в сеть после перезагрузки.";
 "backend.error.ssh_still_enabled" = "SSH по-прежнему включен после перезагрузки, поэтому отключение не вступило в силу.";
@@ -675,6 +677,8 @@
 "backend.recovery.local_network_permission_denied.action.3" = "Завершите и снова откройте TimeCapsuleSMB, затем повторите добавление устройства.";
 "backend.recovery.local_network_filtered.title" = "Соединение заблокировано на этом Mac";
 "backend.recovery.local_network_filtered.message" = "Этот Mac прервал соединение до того, как оно достигло устройства. Трафик локальной сети фильтрует VPN, брандмауэр или защитное ПО.";
+"backend.recovery.device_off_network.title" = "Устройство не в сети этого Mac";
+"backend.recovery.device_off_network.message" = "Адрес устройства не входит в сеть этого Mac. Проверьте адрес или подключите этот Mac к сети устройства по Wi-Fi или через один из его портов LAN и повторите попытку.";
 "backend.recovery.unsupported_device.title" = "Устройство не поддерживается";
 "backend.recovery.unsupported_device.message" = "Эта операция не поддерживается на обнаруженной модели AirPort или ОС.";
 "backend.recovery.unsupported_device.action.1" = "Проверьте обнаруженную модель и ОС.";

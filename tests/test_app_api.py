@@ -3358,6 +3358,37 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(error["recovery"]["retryable"])
         self.assertNotIn("secret", json.dumps(collector.events))
 
+    def test_set_ssh_enable_for_a_saved_address_off_this_macs_network_says_so(self) -> None:
+        # The Mac moved to another network since the device was saved.
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            initial_status = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False)
+            params = {"config": str(config_path), "action": "enable", "password": "secret"}
+            first_collector = CollectingSink()
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
+                service.run_api_request({"operation": "set-ssh", "params": params}, first_collector.sink)
+            params["confirmation_id"] = self.assert_confirmation(first_collector, "ssh_access.enable_reboot")["confirmation_id"]
+
+            collector = CollectingSink()
+            elsewhere = (LocalInterfaceNetwork("en0", "192.168.20.5", ipaddress.ip_network("192.168.20.0/24")),)
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="timed out"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=elsewhere), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", "darwin"), \
+                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device") as reboot:
+                rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        reboot.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "device_off_network")
+        self.assertIn("10.0.0.2 is not on this Mac's network (192.168.20.0/24)", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "device_off_network")
+        self.assertEqual(error["recovery"]["title"], "Device not on this Mac's network")
+
     def test_set_ssh_rejected_admin_password_uses_auth_failed_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
@@ -3624,7 +3655,9 @@ class AppApiTests(unittest.TestCase):
                     "requires_reboot": True,
                 },
             )
-            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+            # This Mac is on the address's network, so the failure is not explained by where it is.
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)):
                 with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="Connection refused"):
                     with mock.patch("timecapsulesmb.services.acp_ssh.time.sleep") as sleep:
                         with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
@@ -3683,6 +3716,8 @@ class AppApiTests(unittest.TestCase):
                     mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="timed out"), \
                     mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
                     mock.patch("timecapsulesmb.services.acp_diagnostics.local_interface_networks", return_value=mac_lan), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=mac_lan), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", "darwin"), \
                     mock.patch(
                         "timecapsulesmb.services.acp_diagnostics.select_route_to_address",
                         return_value=RouteSelection("available", source="192.168.1.170"),
@@ -3695,8 +3730,17 @@ class AppApiTests(unittest.TestCase):
                 rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)
-        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "remote_error")
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "device_off_network")
+        self.assertEqual(
+            error["message"],
+            "Could not connect to ACP on 10.0.1.1:5009. 10.0.1.1 is not on this Mac's network (192.168.1.0/24). "
+            "Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, "
+            "then try again.",
+        )
+        self.assertEqual(error["recovery"]["localization_key"], "device_off_network")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["error_code"], "device_off_network")
         self.assertEqual(finished["stage"], "acp_port_probe")
         self.assertFalse(finished["acp_port_probe_succeeded"])
         self.assertEqual(finished["acp_port_probe_error_kinds"], ["timeout"] * 3)
@@ -3765,7 +3809,8 @@ class AppApiTests(unittest.TestCase):
                     "requires_reboot": True,
                 },
             )
-            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)):
                 with mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", "darwin"):
                     with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}):
                         with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="[Errno 65] No route to host"):

@@ -1781,6 +1781,31 @@ describe_managed_smbd_status "" ""
         ], native_nbns=native_nbns)
         return result
 
+    def test_probe_managed_mdns_hands_on_the_link_plan_it_read(self) -> None:
+        # Doctor uses it to tell whether this computer is on a network where
+        # the device shares its disks.
+        result = self._mdns_probe_with(self.PS_V31)
+        self.assertEqual(result.link_plan["status"], "validated")
+        self.assertEqual(result.link_plan["mode"], "bridge")
+        self.assertEqual(
+            [(link["name"], link["role"], link["mask"]) for link in result.link_plan["links"]],
+            [("bridge0", "lan", "smb,adisk"), ("bridge1", "isolated", "none")],
+        )
+
+    def test_probe_managed_mdns_has_no_link_plan_when_it_could_not_read_one(self) -> None:
+        stopped_early, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+        ])
+        self.assertIsNone(stopped_early.link_plan)
+        failed, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=1, stdout="", stderr="service: unknown option"),
+        ])
+        self.assertIsNone(failed.link_plan)
+
     def test_probe_managed_mdns_requires_native_nbns_to_finish_starting(self) -> None:
         result = self._mdns_probe_with(self.PS_V31.replace("nbns=ready", "nbns=starting"))
         self.assertFalse(result.ready)

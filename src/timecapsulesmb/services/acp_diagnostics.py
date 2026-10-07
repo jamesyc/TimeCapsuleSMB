@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Union
 
-from timecapsulesmb.checks.network import LocalInterfaceNetwork, local_interface_networks
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, interface_kind, local_interface_networks
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.discovery.bonjour import (
@@ -95,17 +95,6 @@ def address_scope(ip: IpAddress) -> str:
         return "ula"
     if ip.is_global:
         return "global"
-    return "other"
-
-
-def interface_kind(name: str) -> str:
-    lowered = name.lower()
-    if lowered.startswith(("utun", "ipsec", "ppp", "wg", "tun", "tap", "tailscale", "zt")):
-        return "vpn"
-    if lowered.startswith(("bridge", "vmnet", "vboxnet", "docker", "veth", "virbr", "br-")):
-        return "virtual"
-    if lowered.startswith(("en", "eth", "wl")):
-        return "lan"
     return "other"
 
 

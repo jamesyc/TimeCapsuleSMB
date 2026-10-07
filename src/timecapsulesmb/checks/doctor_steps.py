@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -38,7 +39,19 @@ from timecapsulesmb.checks.doctor_state import (
 )
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.network import NetworkLinkResult, check_smb_port, check_ssh_login, classify_network_link, local_interface_addresses, local_interface_networks, network_display
+from timecapsulesmb.checks.network import (
+    IpNetwork,
+    NetworkLinkResult,
+    check_smb_port,
+    check_ssh_login,
+    classify_network_link,
+    host_networks,
+    local_interface_addresses,
+    local_interface_networks,
+    local_lan_networks,
+    network_display,
+    reportable_network,
+)
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
@@ -67,7 +80,6 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.net import (
     endpoint_host,
     ipv6_scope_index,
-    is_link_local_ip,
     is_link_local_ipv4,
     is_link_local_ipv6,
     resolve_host_ips,
@@ -89,6 +101,7 @@ from timecapsulesmb.device.probe import (
     UsbPrinterProbeResult,
     flash_runtime_config_present_conn,
     limit_remote_log_tail,
+    link_plan_networks,
     probe_connection_state,
     probe_device_networks_conn,
     probe_managed_mdns_conn,
@@ -153,6 +166,10 @@ DOCTOR_CODE_METADATA_MIGRATION_IN_PROGRESS = "metadata_migration_in_progress"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
 DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
+# This computer is only on networks where the device does not share its disks
+# (its WAN side in router mode, its guest network), so nothing that checks
+# Bonjour or SMB from here can pass.
+DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK = "client_on_unshared_network"
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_GRACE_SECONDS = 180
 STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
@@ -1279,14 +1296,7 @@ class DoctorNetworkProbe:
             )
         # Without the device's own list, its address can still show that it
         # is on another network than this computer.
-        host = self._target.host
-        addresses = [host] if _ip_literal(host) is not None else list(resolve_host_ips(host))
-        networks = [
-            ipaddress.ip_network(address.partition("%")[0])
-            for address in addresses
-            if not is_link_local_ip(address)
-        ]
-        return classify_network_link(networks, local, source="device_address", detail=device.error)
+        return classify_network_link(host_networks(self._target.host), local, source="device_address", detail=device.error)
 
 
 def _off_link_message(prefix: str, link: NetworkLinkResult, consequence: str) -> str:
@@ -1296,6 +1306,71 @@ def _off_link_message(prefix: str, link: NetworkLinkResult, consequence: str) ->
         f"{prefix}; this computer ({', '.join(map(network_display, local))}) is not on the device's {noun} "
         f"({', '.join(map(network_display, device))}). {consequence}"
     )
+
+
+_UNSHARED_NETWORK_PLACES = {
+    "wan": "the device's internet (WAN) side",
+    "guest": "the device's guest network",
+}
+
+
+def client_on_unshared_network_message(
+    client_networks: Iterable[IpNetwork],
+    roles: Iterable[str],
+    shared_networks: Iterable[IpNetwork],
+    *,
+    platform: str | None = None,
+) -> str:
+    computer = "this Mac" if (platform or sys.platform) == "darwin" else "this computer"
+    distinct_roles = set(roles)
+    place = _UNSHARED_NETWORK_PLACES.get(next(iter(distinct_roles))) if len(distinct_roles) == 1 else None
+    # The message reaches telemetry in doctor's error, so public networks are
+    # shown only by family and prefix length.
+    client = ", ".join(reportable_network(network, hide_hosts=True) for network in client_networks)
+    shared = ", ".join(reportable_network(network) for network in shared_networks)
+    return (
+        f"{computer} is on {place or 'a device network'} ({client}), "
+        f"where the device does not share its disks; join the device's main network ({shared}) "
+        f"by Wi-Fi or one of its LAN ports, then run doctor again. Bonjour and SMB were not checked from {computer}"
+    )
+
+
+def _doctor_check_unshared_network(
+    remote: RemoteAccess,
+    link_plan: dict[str, object] | None,
+    sink: DoctorSink,
+) -> bool:
+    """FAIL when this computer is only on networks where the device does not
+    share its disks, and return whether it did.
+
+    The device's own link plan says which of its networks it shares disks on
+    (the runtime applies Apple's rules: in router mode the WAN side and the
+    guest network only with "Share disks over WAN"). Bonjour, SMB and NBNS
+    from such a network fail without saying why, so the caller skips them.
+    """
+    if not remote.remote_checks_enabled:
+        return False
+    shared, unshared = link_plan_networks(link_plan)
+    if not unshared:
+        return False
+    local = [item.network for item in local_lan_networks()]
+    if any(network.overlaps(item) for network in shared for item in local):
+        return False
+    matched = [(role, network) for role, network in unshared if any(network.overlaps(item) for item in local)]
+    if not matched:
+        return False
+    client = [item for item in local if any(item.overlaps(network) for _, network in matched)]
+    sink.add(CheckResult(
+        "FAIL",
+        client_on_unshared_network_message(client, (role for role, _ in matched), shared),
+        {
+            "code": DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK,
+            "client_networks": [reportable_network(network, hide_hosts=True) for network in client],
+            "unshared_networks": [{"role": role, "network": reportable_network(network)} for role, network in matched],
+            "shared_networks": [reportable_network(network) for network in shared],
+        },
+    ))
+    return True
 
 
 def _add_nbns_results(
@@ -1981,7 +2056,12 @@ def _apply_startup_grace(
         return results, ()
     if not 0 <= manager_started_seconds_ago < grace_seconds:
         return results, ()
-    failures = [result for result in results if result.status == "FAIL"]
+    # Waiting cannot move this computer onto another network, so that failure
+    # neither blocks the collapse nor gets a "may resolve" note.
+    failures = [
+        result for result in results
+        if result.status == "FAIL" and result.details.get("code") != DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
+    ]
     if not failures:
         return results, ()
     if not all(_startup_grace_can_mask_failure(result) for result in failures):
@@ -1996,9 +2076,10 @@ def _apply_startup_grace(
             },
         )
         return [*results, recent_startup_note], (recent_startup_note,)
+    masked = {id(result) for result in failures}
     transformed: list[CheckResult] = []
     for result in results:
-        if result.status == "FAIL":
+        if id(result) in masked:
             details = dict(result.details)
             details["masked_by"] = DOCTOR_CODE_DEVICE_STARTING_UP
             transformed.append(CheckResult("INFO", result.message, details))
@@ -2156,10 +2237,13 @@ def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink:
     )
 
 
-def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> bool | None:
-    """Return whether native NBNS passed (None when it was not probed)."""
+def _doctor_check_managed_mdns(
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink,
+) -> tuple[bool | None, dict[str, object] | None]:
+    """Return whether native NBNS passed (None when it was not probed), and
+    the device's link plan when the probe read one."""
     if not remote.remote_checks_enabled:
-        return None
+        return None, None
 
     retries = 0
 
@@ -2187,7 +2271,8 @@ def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink:
     )
     steps = getattr(mdns_probe, "steps", ())
     nbns = next((step for step in steps if getattr(step, "id", None) == "native_nbns"), None) if isinstance(steps, (list, tuple)) else None
-    return None if nbns is None else nbns.status == "pass"
+    link_plan = getattr(mdns_probe, "link_plan", None)
+    return (None if nbns is None else nbns.status == "pass"), (link_plan if isinstance(link_plan, dict) else None)
 
 
 def _add_usb_printer_results(

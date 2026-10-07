@@ -246,6 +246,8 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.payload_missing_from_disk")
         case "metadata_migration_in_progress":
             return L10n.string("doctor.check.metadata_migration_in_progress")
+        case "client_on_unshared_network":
+            return L10n.string("doctor.check.client_on_unshared_network")
         default:
             return message
         }

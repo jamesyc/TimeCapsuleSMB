@@ -84,6 +84,10 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Reboot / restart | Neustart (noun) / neu starten (verb) | herstart (noun) / opnieuw opstarten (verb) | redémarrage (noun) / redémarrer (verb) | reinicio (noun) / reiniciar (verb) |
 | Firewall | Firewall | firewall | coupe-feu | cortafuegos |
 | Security app | Sicherheitssoftware | beveiligingssoftware | logiciel de sécurité | software de seguridad |
+| Internet (WAN) side | Internetanschluss (WAN) | internetkant (WAN) | côté Internet (WAN) | lado de Internet (WAN) |
+| Guest network | Gastnetzwerk | gastnetwerk | réseau invité | red de invitados |
+| Main network | Hauptnetzwerk | hoofdnetwerk | réseau principal | red principal |
+| LAN port | LAN-Anschluss | LAN-poort | port LAN | puerto LAN |
 
 | Concept | it | pt-BR | ru | zh-Hans | lt |
 |---|---|---|---|---|---|
@@ -118,6 +122,10 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Reboot / restart | riavvio (noun) / riavviare (verb) | reinicialização (noun) / reiniciar (verb) | перезагрузка (noun) / перезагрузить (verb) | 重启 | paleidimas iš naujo (noun) / paleisti iš naujo (verb) |
 | Firewall | firewall | firewall | брандмауэр | 防火墙 | užkarda |
 | Security app | software di sicurezza | software de segurança | защитное ПО | 安全软件 | saugos programa |
+| Internet (WAN) side | lato Internet (WAN) | lado da internet (WAN) | сторона интернета (WAN) | 互联网 (WAN) 一侧 | interneto (WAN) pusė |
+| Guest network | rete ospiti | rede de convidados | гостевая сеть | 访客网络 | svečių tinklas |
+| Main network | rete principale | rede principal | основная сеть | 主网络 | pagrindinis tinklas |
+| LAN port | porta LAN | porta LAN | порт LAN | LAN 端口 | LAN prievadas |
 
 Notes on the new rows:
 
@@ -129,6 +137,7 @@ Notes on the new rows:
 - **Host:** a network host, entered as a name or IP address. It is not a "server" in the client/server sense and not the person hosting.
 - **Firewall:** Apple's own word in each language's "Block connections to your Mac with a firewall" help page ([fr](https://support.apple.com/fr-fr/guide/mac-help/mh34041/mac), [es](https://support.apple.com/es-es/guide/mac-help/mh34041/mac), [ru](https://support.apple.com/ru-ru/guide/mac-help/mh34041/mac), [zh-cn](https://support.apple.com/zh-cn/guide/mac-help/mh34041/mac)). French is *coupe-feu*, not *pare-feu*. Lithuanian has no Apple localization and uses the common *užkarda*. `VPN` stays `VPN` everywhere.
 - **Security app:** other software on the Mac that filters or routes its network traffic, named next to VPN and firewall. Lithuanian says *saugos programa*, not *saugos programinė įranga*, which reads as firmware (see the next note).
+- **Internet (WAN) side, guest network, main network, LAN port:** the networks of an AirPort in router mode. The internet side is the network on its WAN port. It shares disks there and on its guest network only with "Share disks over WAN"; its main network is the one on its LAN ports and main Wi-Fi. German says *Internetanschluss*, never *Internetseite*, which means a web page. `WAN` and `LAN` stay as they are.
 - **Lithuanian firmware:** the human translation uses *programinė įranga* for firmware, which also means "software" in general. Keep it for firmware (the flash screens need it), and say *įdiegta programinė įranga* or *diegimo failai* for our installed software so the two do not collide.
 
 Technical borrowings can be correct: Dutch `share`, Italian `log`, and Portuguese `snapshot` are acceptable in this app. Do not replace them with awkward literal inventions merely to remove English. Conversely, `Profile`, `Diagnostics`, `running`, and `bundled` are not protected names.

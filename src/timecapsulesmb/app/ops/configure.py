@@ -26,7 +26,7 @@ from timecapsulesmb.services.app import (
     string_param,
 )
 from timecapsulesmb.services import configure as configure_service
-from timecapsulesmb.services.acp_ssh import is_macos_gui_local_network_privacy_signal
+from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError, is_macos_gui_local_network_privacy_signal
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     build_managed_config_env_values,
@@ -309,6 +309,8 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         raise AppOperationError(str(exc), code="remote_error") from exc
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
+    except ACPDeviceOffNetworkError as exc:
+        raise AppOperationError(str(exc), code="device_off_network") from exc
     except ACPConnectionError as exc:
         if context.current_stage == "acp_port_probe":
             if is_macos_gui_local_network_privacy_signal(exc):

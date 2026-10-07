@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Union
 
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
@@ -395,6 +395,9 @@ class ReadinessProbeResult:
     ready: bool
     detail: str
     steps: tuple[ProbeStepResult, ...] = ()
+    # The parsed `--print-link-plan` output, from the mDNS probe only. Kept out
+    # of equality and hashing: it is a dict.
+    link_plan: dict[str, object] | None = field(default=None, compare=False)
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -1133,6 +1136,52 @@ def _parse_link_plan(text: str) -> dict[str, object]:
     return {"status": status, "mode": mode, "reason": reason, "links": links, "addresses": addresses}
 
 
+LinkPlanNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+
+
+def link_plan_networks(
+    plan: dict[str, object] | None,
+) -> tuple[tuple[LinkPlanNetwork, ...], tuple[tuple[str, LinkPlanNetwork], ...]]:
+    """The networks a validated plan shares disks on, and (role, network) for
+    its WAN side and guest network where it does not.
+
+    In router mode the runtime shares disks on those two only with "Share
+    disks over WAN", as Apple's firmware does. Other links without disks
+    (6to4's stf0, say) are left out: a client is never told it is on them. A
+    network that a sharing link also has counts as shared, so a router-mode
+    device whose WAN and LAN use the same subnet never puts that subnet in the
+    second list. Both lists are empty unless the plan is validated and shares
+    disks somewhere (a diskless plan shares nothing anywhere).
+    """
+    if plan is None or plan.get("status") != "validated":
+        return (), ()
+    by_link: dict[str, list[LinkPlanNetwork]] = {}
+    for addr in plan.get("addresses") or ():
+        address = str(addr.get("addr", "")).partition("%")[0]
+        try:
+            network = ipaddress.ip_interface(f"{address}/{addr.get('prefix', '')}").network
+        except ValueError:
+            continue
+        # Every link has a link-local network, so it says nothing about which
+        # network a client is on.
+        if network.network_address.is_link_local or network.network_address.is_loopback:
+            continue
+        by_link.setdefault(str(addr.get("link", "")), []).append(network)
+    served: list[LinkPlanNetwork] = []
+    unserved: list[tuple[str, LinkPlanNetwork]] = []
+    for link in plan.get("links") or ():
+        networks = by_link.get(str(link.get("index", "")), [])
+        role = str(link.get("role", ""))
+        if "smb" in str(link.get("mask", "")).split(","):
+            served.extend(networks)
+        elif role in ("wan", "guest"):
+            unserved.extend((role, network) for network in networks)
+    if not served:
+        return (), ()
+    unserved = [(role, network) for role, network in unserved if not any(network.overlaps(item) for item in served)]
+    return tuple(dict.fromkeys(served)), tuple(dict.fromkeys(unserved))
+
+
 def probe_managed_mdns_conn(
     connection: SshConnection,
     *,
@@ -1284,6 +1333,7 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
     if plan_step.status == "timeout":
         steps.append(plan_step)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
+    plan: dict[str, object] | None = None
     if plan_proc is None or plan_proc.returncode != 0:
         rc = "unknown" if plan_proc is None else str(plan_proc.returncode)
         _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan probe failed with exit code {rc}")
@@ -1363,11 +1413,12 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         _append_step(steps, "native_nbns", nbns_status, nbns_detail)
 
     ready = all(step.status in {"pass", "skip", "info"} for step in steps)
-    return _readiness_result_from_steps(
+    result = _readiness_result_from_steps(
         ready=ready,
         steps=steps,
         default_detail="managed mDNS registrant active" if ready else not_ready,
     )
+    return replace(result, link_plan=plan)
 
 
 def probe_managed_rsync_conn(

@@ -117,6 +117,45 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(row.message.contains("tcapsule deploy"))
     }
 
+    func testCheckupPresentationLocalizesClientOnUnsharedNetworkCheck() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        // The helper's text names this Mac's networks and says "run doctor";
+        // the row is the app's own sentence in the app's language.
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "this Mac is on the device's internet (WAN) side (192.168.1.0/24), where the device does not share its disks; join the device's main network (10.0.1.0/24) by Wi-Fi or one of its LAN ports, then run doctor again. Bonjour and SMB were not checked from this Mac",
+                domain: "General",
+                code: "client_on_unshared_network"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        L10n.apply(language: .english)
+        var row = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows.first)
+        XCTAssertEqual(
+            row.message,
+            "This Mac is on a network where the device does not share its disks, such as its internet (WAN) side or its guest network. Join the device's main network by Wi-Fi or one of its LAN ports, then run Checkup again."
+        )
+        XCTAssertFalse(row.message.contains("doctor"))
+
+        L10n.apply(language: .french)
+        row = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows.first)
+        XCTAssertTrue(row.message.hasPrefix("Ce Mac est sur un réseau où l’appareil ne partage pas ses disques"), row.message)
+    }
+
+    func testDeviceOffNetworkErrorUsesTheAppsTextForConfigureAndEnableSSH() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        let expected = "The device's address isn't on this Mac's network. Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again."
+        XCTAssertEqual(BackendErrorLocalization.message(operation: "configure", code: "device_off_network"), expected)
+        XCTAssertEqual(BackendErrorLocalization.message(operation: "set-ssh", code: "device_off_network"), expected)
+    }
+
     func testInstallActionsUseDownloadBoxIconExceptReinstall() {
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.title, "Refresh Status")
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.systemImage, "arrow.clockwise")

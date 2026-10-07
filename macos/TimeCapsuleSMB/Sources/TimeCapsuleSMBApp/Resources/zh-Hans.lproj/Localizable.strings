@@ -285,6 +285,7 @@
 "doctor.check.device_starting_up" = "设备仍在启动中。请等待几分钟，然后再次运行检查。";
 "doctor.check.payload_missing_from_disk" = "数据磁盘上缺少 Samba 文件夹；磁盘可能已被抹掉。请运行“安装 / 更新 Samba”以重新安装。";
 "doctor.check.metadata_migration_in_progress" = "设备上仍在运行元数据迁移。“安装 / 更新 Samba”会等待其完成后再安装。";
+"doctor.check.client_on_unshared_network" = "此 Mac 所在的网络中，设备不共享其磁盘，例如设备的互联网 (WAN) 一侧或访客网络。请通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的主网络，然后再次运行检查。";
 "doctor.domain.general" = "常规";
 "doctor.domain.runtime" = "服务状态";
 "event.summary.check" = "%@ %@";
@@ -632,6 +633,7 @@
 "backend.error.ssh_disabled" = "此设备上的 SSH 已禁用。";
 "backend.error.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
 "backend.error.local_network_filtered" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
+"backend.error.device_off_network" = "设备的地址不在此 Mac 的网络中。请检查地址，或通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的网络，然后重试。";
 "backend.error.reboot_not_started" = "设备在收到重启请求后未重启。";
 "backend.error.reboot_not_finished" = "设备重启后未重新上线。";
 "backend.error.ssh_still_enabled" = "重启后 SSH 仍处于启用状态，因此禁用未生效。";
@@ -675,6 +677,8 @@
 "backend.recovery.local_network_permission_denied.action.3" = "退出并重新打开 TimeCapsuleSMB，然后重试配置。";
 "backend.recovery.local_network_filtered.title" = "此 Mac 上的连接被阻止";
 "backend.recovery.local_network_filtered.message" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
+"backend.recovery.device_off_network.title" = "设备不在此 Mac 的网络中";
+"backend.recovery.device_off_network.message" = "设备的地址不在此 Mac 的网络中。请检查地址，或通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的网络，然后重试。";
 "backend.recovery.unsupported_device.title" = "不支持的设备";
 "backend.recovery.unsupported_device.message" = "检测到的 AirPort 型号或操作系统不支持此操作。";
 "backend.recovery.unsupported_device.action.1" = "检查检测到的型号和操作系统。";

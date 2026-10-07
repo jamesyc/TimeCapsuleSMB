@@ -47,7 +47,8 @@ from timecapsulesmb.checks.doctor_steps import (
     _add_sshpass_result,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
-from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE
+from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
+from tests.test_client_network import router_plan
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login
 from timecapsulesmb.core.net import RouteSelection
@@ -94,6 +95,7 @@ from timecapsulesmb.device.probe import (
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
     SshAccessStatus,
+    _parse_link_plan,
 )
 from timecapsulesmb.device.storage import MAST_PROBE_COMMAND, MaStProbeDiagnostics, MaStVolume
 from timecapsulesmb.discovery.models import _merge_snapshots
@@ -380,6 +382,9 @@ class CheckTests(unittest.TestCase):
             mocks.local_interface_networks = stack.enter_context(
                 mock.patch("timecapsulesmb.checks.doctor_steps.local_interface_networks", return_value=local_networks)
             )
+            mocks.local_lan_networks = stack.enter_context(
+                mock.patch("timecapsulesmb.checks.doctor_steps.local_lan_networks", return_value=local_networks)
+            )
             # Most Doctor cases supply Bonjour records and do not exercise DNS.
             # Keep those cases independent of the host's .local resolver while
             # DNS-specific cases still exercise their patched getaddrinfo calls.
@@ -389,6 +394,9 @@ class CheckTests(unittest.TestCase):
                 )
                 mocks.resolve_bonjour_host_ips = stack.enter_context(
                     mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=())
+                )
+                mocks.resolve_network_host_ips = stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.network.resolve_host_ips", return_value=())
                 )
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
                 setattr(mocks, f"extra_{index}", stack.enter_context(mock.patch(target, replacement, create=True)))
@@ -1571,6 +1579,97 @@ class CheckTests(unittest.TestCase):
         failures = [result.message for result in run.results if result.status == "FAIL"]
         self.assertTrue(any("belongs to another device" in message for message in failures), failures)
         self.assertNotIn("bonjour_link", debug_fields)
+
+    WAN_SIDE = (LocalInterfaceNetwork("en0", "192.168.1.170", ipaddress.ip_network("192.168.1.0/24")),)
+    ROUTER_LAN = (LocalInterfaceNetwork("en0", "10.0.1.20", ipaddress.ip_network("10.0.1.0/24")),)
+
+    def _run_doctor_against_router(self, *, local_networks, **kwargs):
+        """Doctor against a router-mode device whose link plan shares disks on
+        10.0.1.0/24 only. Records what ran from this computer."""
+        mdns = ReadinessProbeResult(
+            ready=True,
+            detail="managed mDNS registrant active",
+            steps=(
+                ProbeStepResult("mdns_process", "pass", "discovery process is running"),
+                ProbeStepResult("native_nbns", "pass", "Apple wcifsnd is ready on UDP 137 and 138"),
+            ),
+            link_plan=_parse_link_plan(router_plan()),
+        )
+        calls = SimpleNamespace(
+            discover=mock.Mock(return_value=(BonjourDiscoverySnapshot([], []), None, None)),
+            nbns=mock.Mock(return_value=CheckResult("PASS", "native NBNS resolved")),
+            listing=mock.Mock(return_value=self.smb_listing_result()),
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            mdns_probe=mdns,
+            local_networks=local_networks,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": calls.discover,
+                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": calls.nbns,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": calls.listing,
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(
+                    return_value=(None, CheckResult("FAIL", "expected _smb._tcp instance was not discovered")),
+                ),
+            },
+            **kwargs,
+        )
+        return run, calls
+
+    def test_doctor_from_the_wan_side_fails_first_and_checks_nothing_from_here(self) -> None:
+        with mock.patch("timecapsulesmb.checks.doctor_steps.sys.platform", "linux"):
+            run, calls = self._run_doctor_against_router(local_networks=self.WAN_SIDE)
+
+        self.assertTrue(run.fatal)
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK])
+        self.assertTrue(failures[0].message.startswith(
+            "this computer is on the device's internet (WAN) side (192.168.1.0/24), where the device does not share its disks"
+        ))
+        # Nothing that needs this computer on a disk network ran, and no
+        # Bonjour, SMB or NBNS result says it failed.
+        calls.discover.assert_not_called()
+        calls.nbns.assert_not_called()
+        calls.listing.assert_not_called()
+        run.mocks.check_smb_port.assert_not_called()
+        run.mocks.probe_device_networks_conn.assert_not_called()
+        self.assertFalse(any(result.message.startswith(("Bonjour", "SMB", "NBNS", "advertised Bonjour")) for result in run.results))
+        # Checks that run on the device still report.
+        messages = [result.message for result in run.results]
+        self.assertTrue(any(message.startswith("active Samba share names:") for message in messages), messages)
+        self.assertTrue(any(message == "discovery process is running" for message in messages), messages)
+
+    def test_doctor_from_the_wan_side_fails_even_when_bonjour_and_smb_are_skipped(self) -> None:
+        run, calls = self._run_doctor_against_router(local_networks=self.WAN_SIDE, skip_bonjour=True, skip_smb=True)
+        self.assertTrue(run.fatal)
+        self.assertTrue(any(result.details.get("code") == DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK for result in run.results))
+
+    def test_doctor_on_the_router_lan_runs_its_network_checks(self) -> None:
+        run, calls = self._run_doctor_against_router(local_networks=self.ROUTER_LAN, skip_smb=True)
+        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK for result in run.results))
+        calls.discover.assert_called()
+
+    def test_doctor_uses_the_link_plan_of_the_last_mdns_attempt(self) -> None:
+        transient = ReadinessProbeResult(
+            ready=False,
+            detail="discovery process is not running",
+            steps=(ProbeStepResult("mdns_process", "fail", "discovery process is not running"),),
+            link_plan=_parse_link_plan(router_plan(status="incomplete")),
+        )
+        ready = ReadinessProbeResult(
+            ready=True,
+            detail="managed mDNS registrant active",
+            steps=(ProbeStepResult("mdns_process", "pass", "discovery process is running"),),
+            link_plan=_parse_link_plan(router_plan()),
+        )
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep"):
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                local_networks=self.WAN_SIDE,
+                skip_smb=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mock.Mock(side_effect=[transient, ready])},
+            )
+        self.assertTrue(any(result.details.get("code") == DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK for result in run.results))
 
     def test_bonjour_miss_without_ssh_compares_the_device_address(self) -> None:
         debug_fields: dict[str, object] = {}
