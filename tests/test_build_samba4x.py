@@ -359,6 +359,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         return env
 
     def run_wrapper(self, wrapper: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        # A lane run starts ~400 processes for ~2.5 s of CPU; on a loaded host
+        # it took up to 77 s (2026-10-06). The limit only stops a hung wrapper.
         return subprocess.run(
             ["/bin/sh", str(REPO_ROOT / "build" / wrapper)],
             cwd=REPO_ROOT,
@@ -367,7 +369,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
-            timeout=30,
+            timeout=300,
         )
 
     def configure_args(self, capture: Path) -> list[str]:

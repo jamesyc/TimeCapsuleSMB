@@ -1,3 +1,18 @@
+# The fake Samba build tests give a wrapper 300 s, not 30 (2026-10-06)
+
+Each `tests/test_build_samba4x.py` wrapper run starts ~400 processes for about
+2.3 s of CPU, 5-8 s of wall time on a busy host. A loaded `make
+test-parallel` failed the `netbsd4le` subtest of
+`test_regression_build_links_every_driver_static_without_the_smbd_map` with
+`TimeoutExpired`. Hammering the file beside a full suite (load ~110) put 40 of
+829 wrapper runs over 30 s, the slowest at 77 s. The limit only stops a hung
+wrapper, so it is now 300 s.
+
+Validation:
+- Loaded runs (2026-10-06, after rebase on 4bd5494d): one full suite passes;
+  8 copies of the file run beside two full suites (load 60-90, 267-367 s
+  each) all pass, and so do both full suites.
+
 # The Samba regression runner accepts Darwin's EPERM for an emptied driver group (2026-10-06)
 
 `tests/samba/run.py` kills each driver's process group when the driver ends,
