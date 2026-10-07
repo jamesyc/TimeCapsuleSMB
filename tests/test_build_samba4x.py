@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -298,7 +299,9 @@ class Samba4XBuildScriptTests(unittest.TestCase):
 
         deps = samba_build / "deps"
         pins = self.dependency_pins()
-        self.make_file(deps / f".stamp-nettle-{pins['NETTLE_VERSION']}-{pins['NETTLE_SHA256']}-system-gmp")
+        # The NetBSD 6 lane's nettle has its ARM assembly.
+        nettle = "-system-gmp-armv6-asm" if lane == "netbsd7" else "-system-gmp"
+        self.make_file(deps / f".stamp-nettle-{pins['NETTLE_VERSION']}-{pins['NETTLE_SHA256']}{nettle}")
         self.make_file(deps / "lib" / "libnettle.a")
         self.make_file(deps / "lib" / "libhogweed.a")
         self.make_file(deps / f".stamp-libtasn1-{pins['LIBTASN1_VERSION']}-{pins['LIBTASN1_SHA256']}")
@@ -487,6 +490,110 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     line = next(item for item in log if item.startswith(variable))
                     self.assertIn("-DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1", line)
                     self.assertIn("-DTC_SAMBA4X_APPLIANCE=1", line)
+
+    def fake_nettle_archive(self, root: Path, lane: str, env: dict[str, str]) -> Path:
+        """A nettle source archive whose configure records its arguments; the
+        pin is moved to its hash, since nothing else can match the real one."""
+        version = self.dependency_pins()["NETTLE_VERSION"]
+        source = root / "nettle-src" / f"nettle-{version}"
+        self.make_executable(source / "configure",
+                             '#!/bin/sh\nprintf "%s\\n" "$@" "ASM_FLAGS=$ASM_FLAGS" > "$TEST_NETTLE_CONFIGURE_ARGS"\n'
+                             # The routines configure picks are linked into the build directory.
+                             'case "$1" in --host=armv[67]-*) [ -n "$TEST_NETTLE_NO_V6" ] || : > sha256-compress-n.asm ;; esac\n')
+        build = root / f"samba-build-{lane}"
+        archive = build / "distfiles" / f"nettle-{version}.tar.gz"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["tar", "-czf", str(archive), "-C", str(source.parent), source.name], check=True,
+                       env=dict(os.environ, COPYFILE_DISABLE="1"))
+        tools = root / f"out-{lane}" / "tools" / "bin"
+        self.make_executable(tools / "gmake", "#!/bin/sh\nexit 0\n")
+        env["SAMBA4X_NETTLE_SHA256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+        env["TEST_NETTLE_CONFIGURE_ARGS"] = str(root / "nettle-configure-args.txt")
+        return build / "deps"
+
+    def test_only_netbsd6_builds_nettle_with_its_arm_assembly(self) -> None:
+        for wrapper, lane, host, assembler, asm_flags, suffix in (
+            ("samba4x.sh", "netbsd7", "armv7-unknown-netbsd7.2",
+             ["--enable-assembler", "--disable-fat", "--disable-arm-neon"], "-march=armv6", "-system-gmp-armv6-asm"),
+            ("samba4xoldle.sh", "netbsd4le", "armv4-unknown-netbsd4.0", ["--disable-assembler"], "", "-system-gmp"),
+        ):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure-args.txt")
+                deps = self.fake_nettle_archive(root, lane, env)
+                version = self.dependency_pins()["NETTLE_VERSION"]
+                # A library built before this change: C code only. Its stamp
+                # must not stand for the assembly build.
+                for old in deps.glob(".stamp-nettle-*"):
+                    old.unlink()
+                if lane == "netbsd7":
+                    self.make_file(deps / f".stamp-nettle-{version}-{env['SAMBA4X_NETTLE_SHA256']}-system-gmp")
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                args = Path(env["TEST_NETTLE_CONFIGURE_ARGS"]).read_text().splitlines()
+                self.assertEqual(args[0], f"--host={host}")
+                # The C code keeps the lane's flags; only the assembler gets ARMv6.
+                self.assertEqual(args[-1], f"ASM_FLAGS={asm_flags}")
+                self.assertEqual(args[-1 - len(assembler):-1], assembler)
+                self.assertTrue((deps / f".stamp-nettle-{version}-{env['SAMBA4X_NETTLE_SHA256']}{suffix}").is_file())
+
+    def test_a_nettle_build_retires_the_other_variants_stamp(self) -> None:
+        # The C and assembly builds install into one deps/lib. A stamp left
+        # by the other variant would make a later build reuse libraries that
+        # are no longer the ones it names.
+        for wrapper, lane, other, own in (
+            ("samba4x.sh", "netbsd7", "-system-gmp", "-system-gmp-armv6-asm"),
+            ("samba4xoldle.sh", "netbsd4le", "-system-gmp-armv6-asm", "-system-gmp"),
+        ):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure-args.txt")
+                deps = self.fake_nettle_archive(root, lane, env)
+                for old in deps.glob(".stamp-nettle-*"):
+                    old.unlink()
+                version = self.dependency_pins()["NETTLE_VERSION"]
+                stamp = f".stamp-nettle-{version}-{env['SAMBA4X_NETTLE_SHA256']}"
+                self.make_file(deps / (stamp + other))
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(sorted(p.name for p in deps.glob(".stamp-nettle-*")), [stamp + own])
+
+    def test_netbsd6_nettle_host_is_armv7_whatever_the_lane_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt")
+            deps = self.fake_nettle_archive(root, "netbsd7", env)
+            for old in deps.glob(".stamp-nettle-*"):
+                old.unlink()
+            env["SAMBA4X_HOST_ALIAS"] = "arm-unknown-netbsd7.2"
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            args = Path(env["TEST_NETTLE_CONFIGURE_ARGS"]).read_text().splitlines()
+            self.assertEqual(args[0], "--host=armv7-unknown-netbsd7.2")
+
+    def test_netbsd6_nettle_without_its_armv6_assembly_stops_the_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+            deps = self.fake_nettle_archive(root, "netbsd7", env)
+            for old in deps.glob(".stamp-nettle-*"):
+                old.unlink()
+            env["TEST_NETTLE_NO_V6"] = "1"
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("nettle configure did not select its ARMv6 assembly", result.stdout + result.stderr + log)
+            self.assertFalse(list(deps.glob(".stamp-nettle-*")))
+            self.assertFalse(capture.exists())
 
     def test_every_lane_requires_the_stack_protector_and_fortify(self) -> None:
         # Samba's configure adds both together; on NetBSD 4 its check failed

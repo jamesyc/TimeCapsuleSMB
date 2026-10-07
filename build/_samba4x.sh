@@ -761,7 +761,28 @@ EOF
 }
 
 build_samba4x_nettle() {
-    stamp="$SAMBA4X_DEPS/.stamp-nettle-$SAMBA4X_NETTLE_VERSION-$SAMBA4X_NETTLE_SHA256-system-gmp"
+    # SMB signing and encryption run on nettle's AES, SHA-256 and memxor
+    # through GnuTLS. Its ARM assembly is written for the Cortex-A9 and the
+    # EABI (the NetBSD 6 models' CPU; the Time Capsule's hw.model is
+    # "Cortex-A9 r4p0", probed 2026-10-07), and reads unaligned input with
+    # byte or shifted aligned loads (the NetBSD 6 kernel traps unaligned
+    # words). An armv7 host selects the ARMv6 routines at build time; a "fat"
+    # library would choose at run time from /proc/cpuinfo, which NetBSD lacks,
+    # and fall back to the ARMv5 ones. ASM_FLAGS lets the assembler accept
+    # ARMv6 instructions; the C code stays ARMv4 like the rest of the lane.
+    # Neon stays off. The NetBSD 4 lanes (old ABI, ARMv5) keep the C code.
+    if [ "$SDK_FAMILY" = "netbsd7" ]; then
+        nettle_host="armv7-${SAMBA4X_HOST_ALIAS#*-}"
+        nettle_assembler="--enable-assembler --disable-fat --disable-arm-neon"
+        nettle_asm_flags="-march=armv6"
+        nettle_stamp_suffix="-system-gmp-armv6-asm"
+    else
+        nettle_host="$SAMBA4X_HOST_ALIAS"
+        nettle_assembler="--disable-assembler"
+        nettle_asm_flags=""
+        nettle_stamp_suffix="-system-gmp"
+    fi
+    stamp="$SAMBA4X_DEPS/.stamp-nettle-$SAMBA4X_NETTLE_VERSION-$SAMBA4X_NETTLE_SHA256$nettle_stamp_suffix"
     if [ -f "$stamp" ] &&
        [ -f "$SAMBA4X_DEPS/lib/libnettle.a" ] &&
        [ -f "$SAMBA4X_DEPS/lib/libhogweed.a" ]; then
@@ -769,6 +790,9 @@ build_samba4x_nettle() {
         return 0
     fi
 
+    # Both variants install into the same deps/lib: once this build replaces
+    # the libraries, the other variant's stamp no longer describes them.
+    rm -f "$SAMBA4X_DEPS"/.stamp-nettle-*
     archive="$(download_samba4x_archive "$SAMBA4X_NETTLE_URL" "nettle-$SAMBA4X_NETTLE_VERSION.tar.gz" "$SAMBA4X_NETTLE_SHA256")"
     extract_samba4x_archive "$archive" "nettle-$SAMBA4X_NETTLE_VERSION"
     cd "$SAMBA4X_BUILD/nettle-$SAMBA4X_NETTLE_VERSION"
@@ -777,12 +801,20 @@ build_samba4x_nettle() {
         PKG_CONFIG_SYSROOT_DIR= \
         CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" \
         CPPFLAGS="$CPPFLAGS" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
+        ASM_FLAGS="$nettle_asm_flags" \
         ./configure \
-            --host="$SAMBA4X_HOST_ALIAS" \
+            --host="$nettle_host" \
             --prefix="$SAMBA4X_DEPS" \
             --disable-shared \
             --enable-static \
-            --disable-assembler
+            $nettle_assembler
+    # configure links the routines it chose into the build directory; only
+    # the ARMv6 directory has a SHA-256 one. Without it the build would pass
+    # with nettle's C code under an assembly stamp.
+    if [ "$SDK_FAMILY" = "netbsd7" ] && [ ! -e sha256-compress-n.asm ]; then
+        echo "nettle configure did not select its ARMv6 assembly (host $nettle_host)"
+        exit 1
+    fi
     gmake -j"$SAMBA4X_JOBS" DESTDIR= install
     touch "$stamp"
 }
