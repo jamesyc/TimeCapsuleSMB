@@ -40,8 +40,9 @@ TIMINGS=dict(
     # second episode, which must not be reported again.
     TC_BUFSTALL_REPORT_MS=8000,  # device 1 hour after delivery
     TC_BUFSTALL_REPORT_RETRY_MS=1000, # device 60 s after failure
-    # Outlasts a report held across a second episode (about 2 s).
-    TC_BUFSTALL_REPORT_TIMEOUT_MS=5000, # device 180 s
+    # Outlasts a report a test holds in flight: about 1.5 s idle, past 5 s
+    # under full-suite load, when the kill requeues it early.
+    TC_BUFSTALL_REPORT_TIMEOUT_MS=15000, # device 180 s
     TC_STUCK_MS=1000,            # device 120 s
     TC_STUCK_REPORT_MS=3000,     # device 300 s
 )
