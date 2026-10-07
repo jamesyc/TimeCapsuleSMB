@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from timecapsulesmb.core.net import ipv6_scope_index
 
@@ -27,23 +28,39 @@ def command_exists(name: str) -> bool:
     ).returncode == 0
 
 
-def tcp_connect_error(host: str, port: int, timeout: float = 2.0) -> str | None:
-    errors: list[str] = []
+def _connect_error(family: int, socktype: int, proto: int, sockaddr: tuple, timeout: float) -> str | None:
     try:
-        for family, socktype, proto, _, sockaddr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
-            with socket.socket(family, socktype, proto) as sock:
-                sock.settimeout(timeout)
-                try:
-                    sock.connect(sockaddr)
-                    return None
-                except OSError as exc:
-                    message = str(exc) or exc.__class__.__name__
-                    if message not in errors:
-                        errors.append(message)
-                    continue
+        with socket.socket(family, socktype, proto) as sock:
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            return None
+    except OSError as exc:
+        return str(exc) or exc.__class__.__name__
+
+
+def tcp_connect_error(host: str, port: int, timeout: float = 2.0) -> str | None:
+    try:
+        attempts = [(family, socktype, proto, sockaddr) for family, socktype, proto, _, sockaddr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
     except Exception as exc:
         return str(exc) or exc.__class__.__name__
-    return "; ".join(errors) if errors else "connection failed"
+    if len(attempts) <= 1:
+        errors = [_connect_error(*attempt, timeout) for attempt in attempts]
+    else:
+        # A name's addresses are tried at once, as smbclient does, so an AirPort
+        # IPv4 address off this Mac's network does not delay its fe80 one.
+        pool = ThreadPoolExecutor(max_workers=len(attempts))
+        futures = [pool.submit(_connect_error, *attempt, timeout) for attempt in attempts]
+        try:
+            for future in as_completed(futures):
+                if future.result() is None:
+                    return None
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        errors = [future.result() for future in futures]
+    if None in errors:
+        return None
+    messages = list(dict.fromkeys(error for error in errors if error))
+    return "; ".join(messages) if messages else "connection failed"
 
 
 def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:

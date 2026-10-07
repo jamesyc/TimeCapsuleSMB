@@ -14,7 +14,90 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.transport.local import mac_network_filters, run_local_capture, scoped_tcp_connect_errors
+from timecapsulesmb.transport.local import mac_network_filters, run_local_capture, scoped_tcp_connect_errors, tcp_connect_error
+
+
+class TcpConnectErrorTests(unittest.TestCase):
+    """tcp_connect_error with fake sockets: each address's connect is scripted."""
+
+    def run_connect(self, host: str, addresses: list[tuple[int, tuple]], outcomes: dict[str, object]):
+        import socket
+        import threading
+
+        released = threading.Event()
+        self.addCleanup(released.set)
+        connected: list[str] = []
+
+        class FakeSocket:
+            def __init__(self, family, socktype, proto):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def settimeout(self, timeout):
+                pass
+
+            def connect(self, sockaddr):
+                connected.append(sockaddr[0])
+                outcome = outcomes[sockaddr[0]]
+                if outcome == "blackhole":
+                    released.wait(10)
+                    raise TimeoutError("timed out")
+                if isinstance(outcome, BaseException):
+                    raise outcome
+
+        infos = [(family, socket.SOCK_STREAM, 6, "", sockaddr) for family, sockaddr in addresses]
+        with mock.patch("timecapsulesmb.transport.local.socket.getaddrinfo", return_value=infos), \
+                mock.patch("timecapsulesmb.transport.local.socket.socket", FakeSocket):
+            result = tcp_connect_error(host, 5009, timeout=10)
+        return result, connected
+
+    def test_an_address_is_connected_once(self) -> None:
+        import socket
+
+        result, connected = self.run_connect("10.0.0.2", [(socket.AF_INET, ("10.0.0.2", 5009))], {"10.0.0.2": None})
+
+        self.assertIsNone(result)
+        self.assertEqual(connected, ["10.0.0.2"])
+
+    def test_a_name_answers_from_any_address_without_waiting_for_a_blackholed_one(self) -> None:
+        # AirPort-Time-Capsule.local with its IPv4 address off this Mac's network.
+        import socket
+        import time
+
+        start = time.monotonic()
+        result, connected = self.run_connect(
+            "AirPort-Time-Capsule.local",
+            [(socket.AF_INET, ("192.168.1.218", 5009)), (socket.AF_INET6, ("fe80::1", 5009, 0, 4))],
+            {"192.168.1.218": "blackhole", "fe80::1": None},
+        )
+
+        self.assertIsNone(result)
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertEqual(sorted(connected), ["192.168.1.218", "fe80::1"])
+
+    def test_a_name_reports_each_distinct_error_in_address_order(self) -> None:
+        import socket
+
+        refused = ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
+        unreachable = OSError(errno.EHOSTUNREACH, "No route to host")
+        result, _connected = self.run_connect(
+            "capsule.local",
+            [(socket.AF_INET, ("10.0.0.2", 5009)), (socket.AF_INET, ("10.0.0.3", 5009)), (socket.AF_INET6, ("fe80::1", 5009, 0, 4))],
+            {"10.0.0.2": refused, "10.0.0.3": refused, "fe80::1": unreachable},
+        )
+
+        self.assertEqual(result, f"{refused}; {unreachable}")
+
+    def test_a_failed_lookup_is_the_error(self) -> None:
+        import socket
+
+        with mock.patch("timecapsulesmb.transport.local.socket.getaddrinfo", side_effect=socket.gaierror(8, "nodename nor servname provided")):
+            self.assertEqual(tcp_connect_error("missing.local", 22), "[Errno 8] nodename nor servname provided")
 
 
 class LocalTransportTests(unittest.TestCase):

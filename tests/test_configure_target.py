@@ -59,18 +59,20 @@ class ConfigureTargetTests(unittest.TestCase):
 
         self.assertIn("Device SSH target host must not be a link-local address", str(raised.exception))
 
-    def test_explicit_hostname_that_resolves_link_local_is_rejected(self) -> None:
-        with mock.patch("timecapsulesmb.services.runtime.resolve_host_ipv4s", return_value=("169.254.44.9",)), \
-                mock.patch("timecapsulesmb.services.runtime.resolve_host_ipv6s", return_value=()):
-            with self.assertRaises(ValueError) as raised:
-                resolve_configure_target(
-                    explicit_host="root@capsule.local",
-                    selected_record=None,
-                    existing={},
-                    ssh_opts="",
-                )
+    def test_explicit_hostname_is_kept_without_a_name_lookup(self) -> None:
+        # An AirPort's .local name also resolves to its 169.254 and fe80
+        # addresses; the name is saved as typed and resolved at connect time.
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo") as getaddrinfo:
+            resolution = resolve_configure_target(
+                explicit_host="root@AirPort-Time-Capsule.local",
+                selected_record=None,
+                existing={},
+                ssh_opts="",
+            )
 
-        self.assertIn("capsule.local resolves to link-local address 169.254.44.9", str(raised.exception))
+        self.assertEqual(resolution.host, "root@AirPort-Time-Capsule.local")
+        self.assertEqual(resolution.source, "explicit_host")
+        getaddrinfo.assert_not_called()
 
     def test_existing_link_local_host_is_rejected(self) -> None:
         with self.assertRaises(ValueError) as raised:

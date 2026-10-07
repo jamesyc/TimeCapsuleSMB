@@ -1293,10 +1293,9 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertIn("Device SSH target host must not be a link-local address", result.text)
 
-    def test_configure_reprompts_hostname_that_resolves_link_local(self) -> None:
+    def test_configure_accepts_hostname_that_also_resolves_link_local(self) -> None:
         prompt_values = iter([
             "root@capsule.local",
-            "root@10.0.0.2",
             "rootpw",
             "Data",
             "admin",
@@ -1312,7 +1311,10 @@ class CliConfigureTests(CliTestCase):
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
-        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
+        addrinfo = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0)),
+        ]
 
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
@@ -1320,8 +1322,8 @@ class CliConfigureTests(CliTestCase):
             extra_patches={"timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(return_value=addrinfo)},
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
-        self.assertIn("capsule.local resolves to link-local address 169.254.44.9", result.text)
+        self.assertEqual(result.values["TC_HOST"], "root@capsule.local")
+        self.assertNotIn("link-local", result.text)
 
     def test_configure_skipped_mdns_netbsd6_little_autofills_syap_and_model(self) -> None:
         record = BonjourResolvedService(

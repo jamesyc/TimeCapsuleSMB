@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import socket
 import sys
 import tempfile
 import unittest
@@ -25,7 +24,7 @@ from timecapsulesmb.cli.runtime import (
 from timecapsulesmb.core.config import AppConfig, ConfigError, DEFAULTS
 from timecapsulesmb.core.paths import AppPaths
 from timecapsulesmb.services import runtime as service_runtime
-from timecapsulesmb.services.runtime import resolve_env_connection, ssh_target_link_local_resolution_error
+from timecapsulesmb.services.runtime import resolve_env_connection
 from timecapsulesmb.device.compat import classify_device_compatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
@@ -70,44 +69,6 @@ class RuntimeTests(unittest.TestCase):
             resolve_env_connection(config)
 
         self.assertIn("TC_PASSWORD is required", str(ctx.exception))
-
-    def test_ssh_target_link_local_resolution_error_rejects_resolved_hostname(self) -> None:
-        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
-
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
-            error = ssh_target_link_local_resolution_error(
-                "root@capsule.local",
-            )
-
-        self.assertIsNotNone(error)
-        assert error is not None
-        self.assertIn("capsule.local resolves to link-local address 169.254.44.9", error)
-
-    def test_ssh_target_link_local_resolution_error_rejects_resolved_ipv6_hostname(self) -> None:
-        addrinfo = [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("fe80::1%en0", 0, 0, 4))]
-
-        with (
-            mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo),
-            mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", return_value=4),
-            mock.patch("timecapsulesmb.core.net.socket.if_indextoname", return_value="en0"),
-        ):
-            error = ssh_target_link_local_resolution_error(
-                "root@capsule.local",
-            )
-
-        self.assertIsNotNone(error)
-        assert error is not None
-        self.assertIn("capsule.local resolves to link-local address fe80::1", error)
-
-    def test_ssh_target_link_local_resolution_error_allows_loopback_hostname(self) -> None:
-        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
-
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
-            error = ssh_target_link_local_resolution_error(
-                "root@localhost",
-            )
-
-        self.assertIsNone(error)
 
     def test_json_text_uses_stable_pretty_format(self) -> None:
         self.assertEqual(json_text({"b": 1, "a": {"c": 2}}), '{\n  "a": {\n    "c": 2\n  },\n  "b": 1\n}')
@@ -210,19 +171,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(target.connection.host, config.require("TC_HOST"))
         self.assertIsNone(target.probe_state)
 
-    def test_managed_target_rejects_hostname_that_resolves_link_local(self) -> None:
+    def test_managed_target_keeps_a_hostname_without_resolving_it(self) -> None:
         config = app_config(valid_env(TC_HOST="root@capsule.local"))
-        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
-            with self.assertRaises(ConfigError) as ctx:
-                service_runtime.resolve_validated_managed_target(
-                    config,
-                    command_name="deploy",
-                    profile="deploy",
-                    include_probe=False,
-                )
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo") as getaddrinfo:
+            target = service_runtime.resolve_validated_managed_target(
+                config,
+                command_name="deploy",
+                profile="deploy",
+                include_probe=False,
+            )
 
-        self.assertIn("TC_HOST host capsule.local resolves to link-local address 169.254.44.9", str(ctx.exception))
+        self.assertEqual(target.connection.host, "root@capsule.local")
+        getaddrinfo.assert_not_called()
 
     def test_managed_target_rejects_proxy_ssh_opts_before_any_lookup(self) -> None:
         config = app_config(

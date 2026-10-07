@@ -30,10 +30,7 @@ from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime import (
-    PROBE_STATUS_ERROR_CODES,
-    ssh_target_link_local_resolution_error,
-)
+from timecapsulesmb.services.runtime import PROBE_STATUS_ERROR_CODES
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -129,9 +126,6 @@ def configure_ssh_target(
     opts_error = CONFIG_VALIDATORS["TC_SSH_OPTS"](ssh_opts, "TC_SSH_OPTS")
     if opts_error is not None:
         raise ValueError(opts_error)
-    resolution_error = ssh_target_link_local_resolution_error(target)
-    if resolution_error is not None:
-        raise ValueError(resolution_error)
     return target
 
 

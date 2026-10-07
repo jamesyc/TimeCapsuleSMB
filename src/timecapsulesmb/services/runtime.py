@@ -6,15 +6,7 @@ from pathlib import Path
 import time
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
-from timecapsulesmb.core.net import (
-    canonical_ssh_target,
-    endpoint_host,
-    ipv4_literal,
-    is_link_local_ipv4,
-    is_link_local_ipv6,
-    resolve_host_ipv4s,
-    resolve_host_ipv6s,
-)
+from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
@@ -196,27 +188,6 @@ def resolve_env_connection(
     return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
 
 
-def ssh_target_link_local_resolution_error(
-    target: str,
-    *,
-    field_name: str = "Device SSH target",
-) -> str | None:
-    host = endpoint_host(target).strip()
-    if not host or ipv4_literal(host) is not None:
-        return None
-    link_local_ips = tuple(ip for ip in resolve_host_ipv4s(host) if is_link_local_ipv4(ip))
-    link_local_ipv6s = tuple(ip for ip in resolve_host_ipv6s(host) if is_link_local_ipv6(ip))
-    link_local_hosts = link_local_ips + link_local_ipv6s
-    if not link_local_hosts:
-        return None
-    noun = "address" if len(link_local_hosts) == 1 else "addresses"
-    return (
-        f"{field_name} host {host} resolves to link-local {noun} "
-        f"{', '.join(link_local_hosts)}. Use the device's LAN IP or a hostname that resolves "
-        "to its LAN IP; link-local addresses are only suitable for temporary SSH recovery."
-    )
-
-
 def resolve_validated_managed_target(
     config: AppConfig,
     *,
@@ -227,9 +198,6 @@ def resolve_validated_managed_target(
     password_provider: PasswordProvider | None = None,
 ) -> ManagedTargetState:
     require_valid_app_config(config, profile=profile, command_name=command_name)
-    resolution_error = ssh_target_link_local_resolution_error(config.require("TC_HOST"), field_name="TC_HOST")
-    if resolution_error is not None:
-        raise ConfigError(resolution_error)
     connection = resolve_env_connection(
         config,
         allow_password_prompt=allow_password_prompt,
