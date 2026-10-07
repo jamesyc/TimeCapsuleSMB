@@ -222,7 +222,9 @@ class RsyncBuildScriptTests(unittest.TestCase):
                         self.assertIn(f"-Wl,--wrap={name}", link[0])
                     self.assertTrue(link[0].endswith("/tc_fork_repair.o"), link[0])
                 else:
-                    self.assertEqual(link, [])
+                    # The NetBSD 4 link gets --gc-sections and the kept notes only.
+                    self.assertEqual(len(link), 1, make_args)
+                    self.assertNotIn("--wrap=", link[0])
 
     def test_every_build_starts_from_an_empty_build_directory(self) -> None:
         # make keeps an object whose source did not change, so objects compiled
@@ -263,6 +265,41 @@ class RsyncBuildScriptTests(unittest.TestCase):
                 self.assertTrue((src / "configure").is_file())
                 self.assertTrue(Path(env["RSYNC_NETBSD7_STAGE"]).is_dir())
                 self.assertFalse(capture.exists())
+
+    def test_netbsd4_final_link_is_garbage_collected_and_keeps_the_notes(self) -> None:
+        for wrapper, lane in (("rsyncoldle.sh", "netbsd4le"), ("rsyncoldbe.sh", "netbsd4be")):
+            with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure-args.txt", root / "configure-env.txt")
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                notes = Path(env[f"RSYNC_{lane.upper()}_BUILD"]) / "netbsd4-notes"
+                link = next(arg for arg in (root / "make-args.txt").read_text().splitlines()
+                            if arg.startswith("LDFLAGS="))
+                self.assertTrue(link.endswith(
+                    f" -Wl,--gc-sections -Wl,-T,{notes}/netbsd4-keep-notes.ld {notes}/netbsd4-notes.o"), link)
+                self.assertIn("KEEP(*(.note.netbsd.ident))", (notes / "netbsd4-keep-notes.ld").read_text())
+                # configure's probes link without them.
+                self.assertNotIn("--gc-sections", (root / "configure-env.txt").read_text())
+                log = Path(env[f"RSYNC_{lane.upper()}_LOG"]).read_text()
+                self.assertIn("rsync: NetBSD note sections are present", log)
+
+    def test_netbsd4_rsync_without_the_notes_is_never_staged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env_for_lane(root, "netbsd4le", root / "configure-args.txt", root / "configure-env.txt")
+            headers = root / "headers.txt"
+            headers.write_text("  0 .note.netbsd.ident 00000018\n")
+            env["TEST_OBJDUMP_HEADERS"] = str(headers)
+
+            result = self.run_wrapper("rsyncoldle.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["RSYNC_NETBSD4LE_LOG"]).read_text()
+            self.assertIn("rsync: missing .note.netbsd.pax", log)
+            self.assertFalse((Path(env["RSYNC_NETBSD4LE_STAGE"]) / "rsync.stripped").exists())
 
     def test_fork_repair_check_gates_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

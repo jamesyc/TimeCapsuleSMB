@@ -6,11 +6,11 @@
     },
     "rsync-netbsd4le": {
       "path": "bin/rsync-netbsd4le/rsync",
-      "sha256": "c900be2e2e53480ecf5aab8a9ae5b2b2fbd8d2a1ec62a00991c7e893abe268aa"
+      "sha256": "1336a8761a38fbdf8c2d1e0fcea6075b699a5b69ae537808a6828b471e0b402f"
     },
     "rsync-netbsd4be": {
       "path": "bin/rsync-netbsd4be/rsync",
-      "sha256": "464abedf1272c364fbc84a9f095bc4fb0bee1a26ffd2e331f54cc632b7a2acfd"
+      "sha256": "a95bca24805214bc7d1ec56a2f51341ba96673e9a230ceadf5ca838f17f4311b"
     },
     "smbd": {
       "path": "bin/samba4/smbd",
@@ -42,11 +42,11 @@
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "68eff2c5cc6616405096e217218a5a1dedbc193ce018cbce7c25b01f6268ba10"
+      "sha256": "3a7f766f7c8f9ecc8fb346fade1bbed4215c5100d46d5680848464b476d10bda"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "2bc8a4fd3cfcdafb1d36a805266411c989cbc1bab4cb7674c69ea1ee0b0c4626"
+      "sha256": "bda6e2f3949e512154439a274ceb626f808cb87a9816c231ea8e96a32793dc13"
     }
   }
 }

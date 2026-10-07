@@ -6,6 +6,7 @@ SAMBA4X_SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 . "$SAMBA4X_SCRIPT_DIR/env.sh"
 . "$SAMBA4X_SCRIPT_DIR/_patch_helpers.sh"
 . "$SAMBA4X_SCRIPT_DIR/_data_segment_check.sh"
+. "$SAMBA4X_SCRIPT_DIR/_netbsd4_notes.sh"
 
 GNUTLS_PATCH_DIR="$SAMBA4X_SCRIPT_DIR/patches/gnutls"
 TOOLDIR="$TOOLS"
@@ -44,13 +45,6 @@ pick_python3() {
     return 1
 }
 
-has_elf_section() {
-    path="$1"
-    section="$2"
-    "$TOOLDIR/bin/$TRIPLE-objdump" -h "$path" 2>/dev/null | \
-        awk '{print $2}' | grep -Fx "$section" >/dev/null 2>&1
-}
-
 dump_elf_notes() {
     label="$1"
     path="$2"
@@ -61,52 +55,6 @@ dump_elf_notes() {
     "$TOOLDIR/bin/$TRIPLE-objdump" -p "$path" 2>&1 | sed -n '1,80p'
 }
 
-prepare_netbsd4_gc_note_inputs() {
-    SAMBA4X_NETBSD4_NOTE_ASM="$SAMBA4X_BUILD/netbsd4-notes.S"
-    SAMBA4X_NETBSD4_NOTE_OBJ="$SAMBA4X_BUILD/netbsd4-notes.o"
-    SAMBA4X_NETBSD4_DEFAULT_LD="$SAMBA4X_BUILD/netbsd4-default.ld"
-    SAMBA4X_NETBSD4_KEEP_NOTES_LD="$SAMBA4X_BUILD/netbsd4-keep-notes.ld"
-
-    cat >"$SAMBA4X_NETBSD4_NOTE_ASM" <<'EOF'
-    .section .note.netbsd.ident,"a",%note
-    .balign 4
-    .long 7
-    .long 4
-    .long 1
-    .asciz "NetBSD"
-    .balign 4
-    .long 0x17d78403
-
-    .section .note.netbsd.pax,"a",%note
-    .balign 4
-    .long 4
-    .long 4
-    .long 3
-    .asciz "PaX"
-    .balign 4
-    .long 0
-EOF
-
-    "$TOOLDIR/bin/$TRIPLE-gcc" -c "$SAMBA4X_NETBSD4_NOTE_ASM" -o "$SAMBA4X_NETBSD4_NOTE_OBJ"
-
-    "$TOOLDIR/bin/$TRIPLE-ld" --verbose | awk '
-        /^====/ { seen++; next }
-        seen == 1 { print }
-    ' >"$SAMBA4X_NETBSD4_DEFAULT_LD"
-
-    awk '
-        /SIZEOF_HEADERS;/ {
-            print
-            print "  .note.netbsd.ident : { KEEP(*(.note.netbsd.ident)) }"
-            print "  .note.netbsd.pax : { KEEP(*(.note.netbsd.pax)) }"
-            next
-        }
-        { print }
-    ' "$SAMBA4X_NETBSD4_DEFAULT_LD" >"$SAMBA4X_NETBSD4_KEEP_NOTES_LD"
-
-    export SAMBA4X_NETBSD4_NOTE_OBJ SAMBA4X_NETBSD4_KEEP_NOTES_LD
-}
-
 validate_netbsd4_notes() {
     path="$1"
 
@@ -114,13 +62,9 @@ validate_netbsd4_notes() {
         return 0
     fi
 
-    if has_elf_section "$path" ".note.netbsd.ident" &&
-       has_elf_section "$path" ".note.netbsd.pax"; then
-        echo "NetBSD note sections are present in $path"
+    if netbsd4_require_notes "$path"; then
         return 0
     fi
-
-    echo "NetBSD note sections are missing from $path"
     dump_elf_notes "missing-note smbd" "$path"
     exit 1
 }
@@ -991,7 +935,7 @@ TC_STATIC_LINKFLAGS=
 TC_STATIC_LDFLAGS=
 
 if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
-    prepare_netbsd4_gc_note_inputs
+    netbsd4_keep_notes_inputs "$SAMBA4X_BUILD" || exit 1
 fi
 
 export PATH="$TOOLDIR/bin:/usr/pkg/libexec/heimdal:/usr/local/libexec/heimdal:/usr/pkg/bin:$PATH"
@@ -1039,8 +983,8 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     SAMBA4X_NETBSD4_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST"
     if [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
-        SAMBA4X_NETBSD4_FINAL_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-Wl,-T,$SAMBA4X_NETBSD4_KEEP_NOTES_LD', '$SAMBA4X_NETBSD4_NOTE_OBJ', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
-        SAMBA4X_NETBSD4_TEST_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-T,$SAMBA4X_NETBSD4_KEEP_NOTES_LD', '$SAMBA4X_NETBSD4_NOTE_OBJ', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
+        SAMBA4X_NETBSD4_FINAL_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-Wl,-T,$NETBSD4_KEEP_NOTES_LD', '$NETBSD4_KEEP_NOTES_OBJ', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
+        SAMBA4X_NETBSD4_TEST_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-T,$NETBSD4_KEEP_NOTES_LD', '$NETBSD4_KEEP_NOTES_OBJ', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     fi
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_NETBSD4_FINAL_LINKFLAGS"
     TC_STATIC_LINKFLAGS="$SAMBA4X_NETBSD4_TEST_LINKFLAGS"

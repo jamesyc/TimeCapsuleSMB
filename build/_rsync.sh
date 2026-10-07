@@ -3,6 +3,7 @@ set -eu
 
 . "$(dirname "$0")/env.sh"
 . "$(dirname "$0")/_data_segment_check.sh"
+. "$(dirname "$0")/_netbsd4_notes.sh"
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
@@ -107,7 +108,10 @@ mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirna
         --disable-md2man
 
     if [ "$SDK_FAMILY" = "netbsd4" ]; then
-        "$RSYNC_MAKE" -j"$RSYNC_JOBS"
+        # --gc-sections and the NetBSD notes it would drop (_netbsd4_notes.sh)
+        # go only on make's final link, as on NetBSD 6 below.
+        netbsd4_keep_notes_inputs "$RSYNC_BUILD/netbsd4-notes" || exit 1
+        "$RSYNC_MAKE" -j"$RSYNC_JOBS" LDFLAGS="$LDFLAGS $NETBSD4_KEEP_NOTES_LDFLAGS"
     else
         # rsync's workers keep running the forked image, so on NetBSD 6 every
         # fork() goes through the fork repair (_data_segment_check.sh; the
@@ -128,7 +132,9 @@ mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirna
 
     # rsync patch 0003's constructor keeps .data writes on Apple's kernels.
     verify_data_faultahead "$RSYNC_BUILD/rsync" tc_disable_data_faultahead || exit 1
-    if [ "$SDK_FAMILY" != "netbsd4" ]; then
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        netbsd4_require_notes "$RSYNC_BUILD/rsync" || exit 1
+    else
         verify_fork_repair "$RSYNC_BUILD/rsync" || exit 1
     fi
     cp "$RSYNC_BUILD/rsync" "$RSYNC_STAGE/bin/$RSYNC_BIN_NAME"

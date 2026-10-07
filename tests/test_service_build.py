@@ -98,6 +98,55 @@ class ServiceBuildWrapperTests(unittest.TestCase):
             self.assertIn("links libc's _fork without the fork repair's wrapper", log.read_text())
             self.assertFalse((root / "stage" / "service.stripped").exists())
 
+    def test_netbsd4_links_garbage_collected_and_keeps_the_netbsd_notes(self) -> None:
+        for wrapper, triple in (("serviceoldle.sh", "arm--netbsdelf"), ("serviceoldbe.sh", "armeb--netbsdelf")):
+            with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                helper = BuildWrapperHarness()
+                env, log, gcc_args, _ = helper.env_for(root, triple=triple)
+
+                result = helper.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                args = gcc_args.read_text().splitlines()
+                notes = root / "stage" / "netbsd4-notes"
+                self.assertIn("-Wl,--gc-sections", args)
+                self.assertIn(f"-Wl,-T,{notes}/netbsd4-keep-notes.ld", args)
+                self.assertIn(f"{notes}/netbsd4-notes.o", args)
+                self.assertIn("KEEP(*(.note.netbsd.ident))", (notes / "netbsd4-keep-notes.ld").read_text())
+                self.assertIn("service: NetBSD note sections are present", log.read_text())
+
+    def test_netbsd4_binary_without_the_notes_is_never_stripped(self) -> None:
+        helper = BuildWrapperHarness()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, log, _, _ = helper.env_for(root, triple="arm--netbsdelf")
+            headers = root / "headers.txt"
+            headers.write_text("  0 .text 00047000\n")
+            env["TEST_OBJDUMP_HEADERS"] = str(headers)
+
+            result = helper.run_wrapper("serviceoldle.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing .note.netbsd.ident; the NetBSD 4 kernel will not run it", log.read_text())
+            self.assertFalse((root / "stage" / "service.stripped").exists())
+
+    def test_netbsd6_needs_no_notes_object(self) -> None:
+        # ld 2.23 keeps note sections under --gc-sections by itself.
+        helper = BuildWrapperHarness()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, log, gcc_args, _ = helper.env_for(root, triple="arm--netbsdelf")
+            headers = root / "headers.txt"
+            headers.write_text("  0 .text 00047000\n")
+            env["TEST_OBJDUMP_HEADERS"] = str(headers)
+
+            result = helper.run_wrapper("service.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertFalse(any("netbsd4-notes" in arg for arg in gcc_args.read_text().splitlines()))
+            self.assertFalse((root / "stage" / "netbsd4-notes").exists())
+
     def test_netbsd4le_uses_little_endian_lane_without_sysroot(self) -> None:
         helper = BuildWrapperHarness()
         with tempfile.TemporaryDirectory() as tmp:

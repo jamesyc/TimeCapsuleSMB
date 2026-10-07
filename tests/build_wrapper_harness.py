@@ -45,9 +45,10 @@ FAKE_ELF = {
 
 
 def make_fake_elf_tools(tools: Path, triple: str) -> None:
-    """readelf/objdump/nm stubs; TEST_READELF_{LOAD,SECTIONS,SYMBOLS},
-    TEST_OBJDUMP_DISASM and TEST_NM_SYMBOLS name files that replace the
-    FAKE_ELF defaults."""
+    """readelf/objdump/nm/ld stubs; TEST_READELF_{LOAD,SECTIONS,SYMBOLS},
+    TEST_OBJDUMP_{DISASM,HEADERS} and TEST_NM_SYMBOLS name files that replace
+    the FAKE_ELF defaults, and TEST_LD_SCRIPT one that replaces the default
+    linker script ld --verbose prints."""
     data = tools / "fake-elf"
     data.mkdir(parents=True, exist_ok=True)
     for name, text in FAKE_ELF.items():
@@ -72,8 +73,12 @@ def make_fake_elf_tools(tools: Path, triple: str) -> None:
             d="$(dirname "$0")/fake-elf"
             case "${1:-}" in
                 -h)
-                    printf '  1 .note.netbsd.ident 00000000\\n'
-                    printf '  2 .note.netbsd.pax 00000000\\n'
+                    if [ -n "${TEST_OBJDUMP_HEADERS:-}" ]; then
+                        cat "$TEST_OBJDUMP_HEADERS"
+                    else
+                        printf '  1 .note.netbsd.ident 00000000\\n'
+                        printf '  2 .note.netbsd.pax 00000000\\n'
+                    fi
                     ;;
                 -p) printf 'Program Header:\\n' ;;
                 -d)
@@ -83,6 +88,18 @@ def make_fake_elf_tools(tools: Path, triple: str) -> None:
                     cat "${TEST_OBJDUMP_DISASM:-$d/disasm}"
                     ;;
             esac
+            """,
+        "ld": """\
+            #!/bin/sh
+            if [ "${1:-}" = "--verbose" ]; then
+                printf 'GNU ld version 2.16.1\\n==================================================\\n'
+                if [ -n "${TEST_LD_SCRIPT:-}" ]; then
+                    cat "$TEST_LD_SCRIPT"
+                else
+                    printf 'SECTIONS\\n{\\n  . = 0x8000 + SIZEOF_HEADERS;\\n  .text : { *(.text) }\\n}\\n'
+                fi
+                printf '==================================================\\n'
+            fi
             """,
     }.items():
         write_executable(tools / f"{triple}-{name}", textwrap.dedent(script))

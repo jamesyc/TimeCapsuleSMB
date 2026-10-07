@@ -88,18 +88,6 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         )
         self.make_executable(tools / f"{triple}-g++", "#!/bin/sh\nexit 0\n")
         self.make_executable(tools / f"{triple}-cpp", "#!/bin/sh\nexit 0\n")
-        self.make_executable(
-            tools / f"{triple}-ld",
-            textwrap.dedent(
-                """\
-                #!/bin/sh
-                if [ "${1:-}" = "--verbose" ]; then
-                    printf '====\\nSECTIONS {\\n  SIZEOF_HEADERS;\\n}\\n====\\n'
-                fi
-                exit 0
-                """
-            ),
-        )
         make_fake_elf_tools(tools, triple)
         for name in ("ar", "ranlib", "strip"):
             self.make_executable(tools / f"{triple}-{name}", "#!/bin/sh\nexit 0\n")
@@ -498,6 +486,40 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     line = next(item for item in log if item.startswith(variable))
                     self.assertIn("-DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1", line)
                     self.assertIn("-DTC_SAMBA4X_APPLIANCE=1", line)
+
+    def test_netbsd4_static_links_keep_the_netbsd_notes(self) -> None:
+        for wrapper, lane in (("samba4xoldle.sh", "netbsd4le"), ("samba4xoldbe.sh", "netbsd4be")):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure-args.txt")
+                env["SAMBA4X_BUILD_REGRESSION_TESTS"] = "1"
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                build = Path(env[f"SAMBA4X_{lane.upper()}_BUILD"])
+                self.assertIn("KEEP(*(.note.netbsd.pax))", (build / "netbsd4-keep-notes.ld").read_text())
+                log = Path(env[f"SAMBA4X_{lane.upper()}_LOG"]).read_text().splitlines()
+                for name in ("SAMBA4X_FINAL_LINKFLAGS=", "TC_STATIC_LINKFLAGS="):
+                    flags = next(line for line in log if line.startswith(name))
+                    self.assertIn("'-Wl,--gc-sections'", flags)
+                    self.assertIn(f"'-Wl,-T,{build}/netbsd4-keep-notes.ld', '{build}/netbsd4-notes.o'", flags)
+                self.assertIn("smbd: NetBSD note sections are present", "\n".join(log))
+
+    def test_netbsd4_smbd_without_the_notes_is_not_staged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env_for_lane(root, "netbsd4le", root / "configure-args.txt")
+            headers = root / "headers.txt"
+            headers.write_text("  0 .note.netbsd.ident 00000018\n  1 .text 00047000\n")
+            env["TEST_OBJDUMP_HEADERS"] = str(headers)
+
+            result = self.run_wrapper("samba4xoldle.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD4LE_LOG"]).read_text()
+            self.assertIn("smbd: missing .note.netbsd.pax", log)
+            self.assertFalse((Path(env["SAMBA4X_NETBSD4LE_STAGE"]) / "sbin" / "smbd.stripped").exists())
 
     def test_generation_helper_starts_from_fresh_seed_and_ignores_stale_answers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

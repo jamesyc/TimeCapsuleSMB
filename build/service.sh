@@ -3,6 +3,7 @@ set -eu
 
 . "$(dirname "$0")/env.sh"
 . "$(dirname "$0")/_data_segment_check.sh"
+. "$(dirname "$0")/_netbsd4_notes.sh"
 SERVICE_BIN_NAME=service
 
 TOOLDIR="$TOOLS"
@@ -21,9 +22,8 @@ case "$SDK_FAMILY:$NETBSD4_ABI" in
 esac
 
 if [ "$SDK_FAMILY" = "netbsd4" ]; then
-    # NetBSD 4's arm--netbsdelf linker was not configured for --sysroot.
-    # Keep this helper on the conservative no-GC link path so crt note
-    # sections survive and the binary remains executable on the old kernel.
+    # NetBSD 4's arm--netbsdelf linker was not configured for --sysroot. Its
+    # --gc-sections link keeps the NetBSD notes through _netbsd4_notes.sh.
     SERVICE_CC_SYSROOT_FLAGS=""
     SERVICE_CFLAGS="$SERVICE_CFLAGS -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
     SERVICE_LDFLAGS="${SERVICE_LDFLAGS_NETBSD4:--static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu}"
@@ -56,6 +56,10 @@ if ! : >"$SERVICE_LOG"; then
 fi
 
 if ! {
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        netbsd4_keep_notes_inputs "$SERVICE_STAGE/netbsd4-notes" || exit 1
+        SERVICE_LDFLAGS="$SERVICE_LDFLAGS $NETBSD4_KEEP_NOTES_LDFLAGS"
+    fi
     echo "SDK_FAMILY=$SDK_FAMILY"
     echo "SERVICE_SRC=$SERVICE_SRC"
     echo "SERVICE_STAGE=$SERVICE_STAGE"
@@ -69,8 +73,8 @@ if ! {
 
     # Explicit failures are necessary here: sh suppresses errexit inside the
     # enclosing if condition, otherwise a failed compile could copy stale output.
-    # Compile separate modules into a single static executable. Explicit lists
-    # avoid pulling every helper into NetBSD 4's deliberately no-GC link.
+    # Compile separate modules into a single static executable from the
+    # explicit list in service.sources.
     set --
     while IFS= read -r source; do
         set -- "$@" "$SCRIPT_DIR/$source"
@@ -88,7 +92,9 @@ if ! {
         $SERVICE_LDFLAGS || exit 1
     # entry.c's constructor keeps .data writes on Apple's kernels.
     verify_data_faultahead "$SERVICE_STAGE/$SERVICE_BIN_NAME" disable_data_faultahead || exit 1
-    if [ "$SDK_FAMILY" != "netbsd4" ]; then
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        netbsd4_require_notes "$SERVICE_STAGE/$SERVICE_BIN_NAME" || exit 1
+    else
         verify_fork_repair "$SERVICE_STAGE/$SERVICE_BIN_NAME" || exit 1
     fi
 
