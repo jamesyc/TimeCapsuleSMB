@@ -77,6 +77,17 @@ def test_parser_preserves_each_ipv6_scope_and_withdrawals():
     assert native._parse_dns_sd_address_output("10:20:08 Rmv 0 14 host.local. 192.0.2.10 0\n", ["192.0.2.10"]) == []
 
 
+def test_parser_gives_each_ipv6_address_one_spelling():
+    # dns-sd -G printed the NetBSD 6 device's address this way; doctor then
+    # listed it twice beside the compressed form from a name lookup.
+    output = (
+        "10:20:07 Add 2 17 host.local. FE80:0000:0000:0000:82EA:96FF:FEE6:5868%en0 120\n"
+        "10:20:07 Add 2 17 host.local. fe80::82ea:96ff:fee6:5868%en0 120\n"
+        "10:20:07 Add 2 17 host.local. 192.168.1.218 120\n"
+    )
+    assert native._parse_dns_sd_address_output(output) == ["192.168.1.218", "fe80::82ea:96ff:fee6:5868%en0"]
+
+
 def test_native_resolution_normalizes_txt_and_uses_observed_interface():
     instance = BonjourServiceInstance("_airport._tcp.local.", "Example", "Example._airport._tcp.local.", 14)
     responses = [(LOOKUP, "", 0, False, ""), (ADDRESSES, "", -15, True, "")]

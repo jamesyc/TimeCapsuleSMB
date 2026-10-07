@@ -434,9 +434,9 @@ def _append_ip(values: list[str], candidate: str) -> None:
         address = ipaddress.ip_address(cleaned.split("%", 1)[0])
     except ValueError:
         return
-    value = str(address)
-    if "%" in cleaned and address.version == 6:
-        value = cleaned
+    # dns-sd prints FE80:0000:…%en0; one spelling per address keeps lists and
+    # comparisons from seeing two.
+    value = scoped_ip_literal(cleaned) or str(address)
     if value not in values:
         values.append(value)
 
