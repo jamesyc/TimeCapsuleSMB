@@ -1,3 +1,22 @@
+# Doctor accepts the NBNS answer of a device reached only at 169.254 (2026-10-06)
+
+With the NetBSD 6 device's LAN address unreachable from the Mac (the #368
+network), doctor's only TCP-reachable IPv4 address was its 169.254 one. Doctor
+queried NBNS there and expected that address back, but the device answers with
+the address its name is registered with, its LAN one: `resolved to
+192.168.1.218, expected 169.254.155.207`. When only a link-local IPv4 address
+is reachable, doctor now queries it and accepts any positive answer; a
+reachable LAN address is still expected exactly.
+
+Validation:
+- pytest: the checks suite passes; new tests cover the query at 169.254 with
+  no expected address and the device's LAN answer passing, and the same answer
+  failing when an address is expected.
+- NetBSD 6 with its IPv4 blackholed: doctor printed
+  `NBNS query for 'jamess-airport-' at 169.254.155.207 resolved to
+  192.168.1.218` and passed. NetBSD 4 over IPv4 still checks
+  `resolved to 192.168.1.10`.
+
 # Configure reaches a device on another IPv4 subnet over link-local IPv6 (2026-10-06)
 
 Discussion #368 (A1470, 7.9.1): 20 configure runs failed at the ACP port probe

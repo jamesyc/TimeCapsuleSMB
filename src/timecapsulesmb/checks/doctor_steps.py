@@ -1317,14 +1317,17 @@ def _add_nbns_results(
             add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
             return
         ipv4_addresses = [address for address in reachable_addresses if _smb_target_family(address) == "ipv4"]
-        expected_ip = next((address for address in ipv4_addresses if not is_link_local_ipv4(address)), None)
-        if expected_ip is None and ipv4_addresses:
-            expected_ip = ipv4_addresses[0]
-        if expected_ip is None:
+        target_ip = next((address for address in ipv4_addresses if not is_link_local_ipv4(address)), None)
+        expected_ip = target_ip
+        if target_ip is None and ipv4_addresses:
+            # The device answers with the address it registered, its LAN one
+            # when it has one, even when only its 169.254 address is reachable.
+            target_ip = ipv4_addresses[0]
+        if target_ip is None:
             add_result(CheckResult("SKIP", "NBNS check skipped; no TCP-reachable IPv4 SMB address was discovered"))
             return
         def query() -> CheckResult:
-            return check_nbns_name_resolution(expected_name, expected_ip, expected_ip)
+            return check_nbns_name_resolution(expected_name, target_ip, expected_ip)
 
         if native_nbns_ready is False:
             # The device has not finished registering its name yet: a
@@ -1340,7 +1343,7 @@ def _add_nbns_results(
             result = _nbns_off_subnet_result(
                 result,
                 expected_name,
-                dict(route_sources).get(expected_ip),
+                dict(route_sources).get(target_ip),
                 probe_device_subnets,
                 debug_fields,
             )

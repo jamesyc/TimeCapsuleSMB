@@ -116,15 +116,20 @@ def apple_nbns_client_on_subnet(entries: Iterable[DeviceIpv4Entry], client_ip: s
     return False
 
 
-def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip: str, *, timeout: float = 2.0) -> CheckResult:
+def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip: str | None, *, timeout: float = 2.0) -> CheckResult:
+    """Query target_host for the name; expected_ip None accepts any address it answers with."""
     query = build_nbns_query(netbios_name)
-    try:
-        expected_addr = ipaddress.ip_address(expected_ip)
-    except ValueError:
-        return CheckResult("FAIL", f"NBNS check expected IP is invalid: {expected_ip}")
-    expected_ip = str(expected_addr)
-    if expected_addr.version != 4:
-        return CheckResult("FAIL", f"NBNS only supports IPv4 addresses, got {expected_ip}")
+    for address in (target_host, expected_ip):
+        if address is None:
+            continue
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            return CheckResult("FAIL", f"NBNS check address is invalid: {address}")
+        if parsed.version != 4:
+            return CheckResult("FAIL", f"NBNS only supports IPv4 addresses, got {address}")
+    if expected_ip is not None:
+        expected_ip = str(ipaddress.ip_address(expected_ip))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
     try:
@@ -147,6 +152,8 @@ def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip:
             f"NBNS query for {netbios_name!r} returned a negative response (rcode {response.rcode})",
             {"code": NBNS_NEGATIVE_RESPONSE_CODE, "rcode": response.rcode},
         )
+    if expected_ip is None:
+        return CheckResult("PASS", f"NBNS query for {netbios_name!r} at {target_host} resolved to {', '.join(response.addresses)}")
     if expected_ip not in response.addresses:
         return CheckResult("FAIL", f"NBNS query for {netbios_name!r} resolved to {', '.join(response.addresses)}, expected {expected_ip}")
     others = [address for address in response.addresses if address != expected_ip]

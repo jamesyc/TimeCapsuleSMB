@@ -5661,6 +5661,27 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertIn("timed out", result.message)
 
+    def test_check_nbns_name_resolution_without_expected_ip_accepts_the_devices_answer(self) -> None:
+        answer = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x06\x00\x00"
+            + b"\xc0\xa8\x01\xda"
+        )
+        fake_sock = mock.Mock()
+        fake_sock.recvfrom.return_value = (answer, ("169.254.155.207", 137))
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            result = check_nbns_name_resolution("TimeCapsule", "169.254.155.207", None)
+
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("at 169.254.155.207 resolved to 192.168.1.218", result.message)
+        fake_sock.sendto.assert_called_once_with(mock.ANY, ("169.254.155.207", 137))
+        # With an expected address, the same answer is still a mismatch.
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            result = check_nbns_name_resolution("TimeCapsule", "169.254.155.207", "169.254.155.207")
+        self.assertEqual(result.status, "FAIL")
+
     def test_check_nbns_name_resolution_reports_success(self) -> None:
         fake_sock = mock.Mock()
         fake_sock.recvfrom.return_value = (
@@ -5683,6 +5704,20 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertIn("NBNS only supports IPv4", result.message)
         socket_mock.assert_not_called()
+
+    def test_check_nbns_name_resolution_names_the_address_it_rejects(self) -> None:
+        cases = {
+            ("fd00::217", None): "NBNS only supports IPv4 addresses, got fd00::217",
+            ("192.168.1.217", "fd00::217"): "NBNS only supports IPv4 addresses, got fd00::217",
+            ("capsule.local", None): "NBNS check address is invalid: capsule.local",
+            ("192.168.1.217", "bogus"): "NBNS check address is invalid: bogus",
+        }
+        for (target, expected), message in cases.items():
+            with self.subTest(target=target, expected=expected):
+                with mock.patch("timecapsulesmb.checks.nbns.socket.socket") as socket_mock:
+                    result = check_nbns_name_resolution("TimeCapsule", target, expected)
+                self.assertEqual((result.status, result.message), ("FAIL", message))
+                socket_mock.assert_not_called()
 
     def test_check_nbns_name_resolution_reports_wrong_ip(self) -> None:
         fake_sock = mock.Mock()
@@ -6133,6 +6168,26 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
                 mock.call("TimeCapsule", "10.0.0.2", "10.0.0.2"),
             ],
         )
+
+    def test_run_doctor_checks_nbns_queries_a_link_local_only_address_for_any_answer(self) -> None:
+        # The Mac reaches the device only at its 169.254 address (another IPv4
+        # subnet of the same wire); the device answers with its LAN address.
+        nbns_mock = mock.Mock(return_value=mock.Mock(status="PASS", message="nbns ok"))
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+            skip_smb=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(
+                    ("169.254.1.2",)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(nbns_mock.call_args_list, [mock.call("TimeCapsule", "169.254.1.2", None)])
 
     def test_run_doctor_checks_pins_authenticated_smb_to_runtime_addresses(self) -> None:
         listing_result_v4 = CheckResult(
