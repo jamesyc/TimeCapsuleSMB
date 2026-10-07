@@ -48,6 +48,24 @@ export CPPFLAGS="$RSYNC_CPPFLAGS"
 export LDFLAGS="$RSYNC_LDFLAGS"
 
 RSYNC_MAKE="${RSYNC_MAKE:-gmake}"
+# Every build starts from an empty build directory: make keeps an object
+# whose source did not change, so objects compiled with other flags would be
+# linked into the new binary, and an rsync built with other link flags would
+# not be relinked. RSYNC_BUILD can be overridden, so refuse a directory that
+# holds the source or the staged output rather than delete it.
+case "$RSYNC_BUILD" in
+    ""|/|"$RSYNC_SRC_DIR"|"$RSYNC_SRC_DIR"/*|"$RSYNC_STAGE"|"$RSYNC_STAGE"/*)
+        echo "Refusing to empty RSYNC_BUILD=$RSYNC_BUILD (source or stage directory)"
+        exit 1
+        ;;
+esac
+case "$RSYNC_SRC_DIR/" in
+    "$RSYNC_BUILD"/*)
+        echo "Refusing to empty RSYNC_BUILD=$RSYNC_BUILD, which holds RSYNC_SRC_DIR"
+        exit 1
+        ;;
+esac
+rm -rf "$RSYNC_BUILD"
 mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirname "$RSYNC_LOG")"
 
 {
@@ -88,9 +106,6 @@ mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirna
         --disable-locale \
         --disable-md2man
 
-    # The build directory is reused and make does not relink when only the
-    # flags changed; always relink so the final link has the current ones.
-    rm -f "$RSYNC_BUILD/rsync"
     if [ "$SDK_FAMILY" = "netbsd4" ]; then
         "$RSYNC_MAKE" -j"$RSYNC_JOBS"
     else

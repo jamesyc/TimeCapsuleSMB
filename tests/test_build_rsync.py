@@ -64,7 +64,7 @@ class RsyncBuildScriptTests(unittest.TestCase):
                 """\
                 #!/bin/sh
                 printf '%s\\n' "$@" > "$TEST_MAKE_ARGS"
-                if [ -e rsync ]; then echo stale > "$TEST_MAKE_ARGS.found"; fi
+                ls > "$TEST_MAKE_ARGS.saw"
                 printf 'fake rsync\\n' > rsync
                 exit 0
                 """
@@ -224,9 +224,10 @@ class RsyncBuildScriptTests(unittest.TestCase):
                 else:
                     self.assertEqual(link, [])
 
-    def test_every_build_relinks_rsync(self) -> None:
-        # make does not relink when only LDFLAGS changed (the NetBSD 6 lane's
-        # fork repair once went missing this way), so the old binary goes first.
+    def test_every_build_starts_from_an_empty_build_directory(self) -> None:
+        # make keeps an object whose source did not change, so objects compiled
+        # with other flags were linked into the new rsync, and an old binary
+        # was not relinked (the NetBSD 6 lane's fork repair once went missing).
         for wrapper, lane in (("rsync.sh", "netbsd7"), ("rsyncoldle.sh", "netbsd4le")):
             with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -234,11 +235,34 @@ class RsyncBuildScriptTests(unittest.TestCase):
                 build = Path(env[f"RSYNC_{lane.upper()}_BUILD"])
                 build.mkdir(parents=True)
                 (build / "rsync").write_text("stale rsync\n")
+                (build / "flist.o").write_text("object compiled with other flags\n")
 
                 result = self.run_wrapper(wrapper, env)
 
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertFalse((root / "make-args.txt.found").exists())
+                seen = (root / "make-args.txt.saw").read_text().split()
+                self.assertNotIn("rsync", seen)
+                self.assertNotIn("flist.o", seen)
+
+    def test_a_build_directory_holding_the_source_or_stage_is_not_emptied(self) -> None:
+        for case in ("source", "inside source", "parent of source", "stage"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                capture = root / "configure-args.txt"
+                env = self.env_for_lane(root, "netbsd7", capture, root / "configure-env.txt")
+                src = Path(env["RSYNC_NETBSD7_SRC_DIR"])
+                env["RSYNC_NETBSD7_BUILD"] = str({"source": src, "inside source": src / "build",
+                                                  "parent of source": src.parent,
+                                                  "stage": Path(env["RSYNC_NETBSD7_STAGE"])}[case])
+                Path(env["RSYNC_NETBSD7_STAGE"]).mkdir(parents=True, exist_ok=True)
+
+                result = self.run_wrapper("rsync.sh", env)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Refusing to empty RSYNC_BUILD", result.stdout)
+                self.assertTrue((src / "configure").is_file())
+                self.assertTrue(Path(env["RSYNC_NETBSD7_STAGE"]).is_dir())
+                self.assertFalse(capture.exists())
 
     def test_fork_repair_check_gates_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
