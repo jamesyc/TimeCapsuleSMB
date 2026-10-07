@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from timecapsulesmb.transport.errors import SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
+from timecapsulesmb.transport.errors import LOCAL_NETWORK_FILTERED_MESSAGE, SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 
 
@@ -91,6 +91,13 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
         action_ids=("open_system_settings", "retry"),
+    ),
+    # No step: the filtering app may be a VPN the user cannot turn off.
+    "local_network_filtered": RecoveryInfo(
+        "Connection blocked on this Mac",
+        LOCAL_NETWORK_FILTERED_MESSAGE,
+        (),
+        retryable=True,
     ),
     "auth_failed": RecoveryInfo(
         "Authentication failed",

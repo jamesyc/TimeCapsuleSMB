@@ -631,6 +631,7 @@
 "backend.error.payload_upload_timeout" = "Le disque n’a pas répondu pendant la copie des fichiers d’installation SMB. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez la réparation du disque ; si le problème persiste, il faudra peut-être le remplacer.";
 "backend.error.ssh_disabled" = "SSH est désactivé sur cet appareil.";
 "backend.error.device_unreachable" = "L’appareil ne répond ni par SSH ni par AirPort ACP.";
+"backend.error.local_network_filtered" = "Ce Mac a interrompu la connexion avant qu’elle n’atteigne l’appareil. Un VPN, un coupe-feu ou un logiciel de sécurité filtre le trafic du réseau local.";
 "backend.error.reboot_not_started" = "L’appareil n’a pas redémarré après la demande de redémarrage.";
 "backend.error.reboot_not_finished" = "L’appareil n’est pas revenu après son redémarrage.";
 "backend.error.ssh_still_enabled" = "SSH est toujours activé après le redémarrage ; la désactivation n’a pas pris effet.";
@@ -672,6 +673,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "Ouvrez Réglages Système > Confidentialité et sécurité > Réseau local.";
 "backend.recovery.local_network_permission_denied.action.2" = "Activez TimeCapsuleSMB dans Réseau local.";
 "backend.recovery.local_network_permission_denied.action.3" = "Quittez et rouvrez TimeCapsuleSMB, puis relancez la configuration.";
+"backend.recovery.local_network_filtered.title" = "Connexion bloquée sur ce Mac";
+"backend.recovery.local_network_filtered.message" = "Ce Mac a interrompu la connexion avant qu’elle n’atteigne l’appareil. Un VPN, un coupe-feu ou un logiciel de sécurité filtre le trafic du réseau local.";
 "backend.recovery.unsupported_device.title" = "Appareil non pris en charge";
 "backend.recovery.unsupported_device.message" = "Cette opération n’est pas prise en charge sur le modèle AirPort ou le système d’exploitation détecté.";
 "backend.recovery.unsupported_device.action.1" = "Vérifiez le modèle et le système d’exploitation détectés.";

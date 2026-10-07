@@ -309,6 +309,35 @@ class TelemetryDebugTests(unittest.TestCase):
             },
         )
 
+    def test_filtered_probe_debug_summary_names_the_macs_vpns_and_network_extensions(self) -> None:
+        state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.LOCAL_NETWORK_FILTERED,
+                error="This Mac dropped the connection ...",
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+                mac_network_filters={
+                    "mac_network_extensions": ["com.objective-see.lulu.extension [activated enabled]"],
+                    "mac_vpn_services": ["(Connected) VPN (io.tailscale.ipn.macos)"],
+                },
+            ),
+            compatibility=None,
+        )
+
+        self.assertEqual(
+            debug_summary(state),
+            {
+                "probe_ssh_status": "local_network_filtered",
+                "probe_ssh_port_reachable": True,
+                "probe_ssh_authenticated": False,
+                "probe_error": "This Mac dropped the connection ...",
+                "mac_network_extensions": ["com.objective-see.lulu.extension [activated enabled]"],
+                "mac_vpn_services": ["(Connected) VPN (io.tailscale.ipn.macos)"],
+            },
+        )
+
     def test_unsupported_probe_debug_summary_includes_reason(self) -> None:
         state = ProbedDeviceState(
             probe_result=ProbeResult(

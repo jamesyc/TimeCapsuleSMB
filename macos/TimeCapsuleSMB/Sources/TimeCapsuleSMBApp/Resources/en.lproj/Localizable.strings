@@ -629,6 +629,7 @@
 "backend.error.payload_upload_timeout" = "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.";
 "backend.error.ssh_disabled" = "SSH is turned off on this device.";
 "backend.error.device_unreachable" = "The device isn't answering on SSH or AirPort ACP.";
+"backend.error.local_network_filtered" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
 "backend.error.reboot_not_started" = "The device did not restart after the reboot request.";
 "backend.error.reboot_not_finished" = "The device did not come back after restarting.";
 "backend.error.ssh_still_enabled" = "SSH is still enabled after the restart, so disabling it did not take effect.";
@@ -670,6 +671,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "Open System Settings > Privacy & Security > Local Network.";
 "backend.recovery.local_network_permission_denied.action.2" = "Enable TimeCapsuleSMB in Local Network.";
 "backend.recovery.local_network_permission_denied.action.3" = "Quit and reopen TimeCapsuleSMB, then retry configure.";
+"backend.recovery.local_network_filtered.title" = "Connection blocked on this Mac";
+"backend.recovery.local_network_filtered.message" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
 "backend.recovery.unsupported_device.title" = "Unsupported device";
 "backend.recovery.unsupported_device.message" = "This operation is not supported on the detected AirPort model or OS.";
 "backend.recovery.unsupported_device.action.1" = "Check the detected model and OS.";

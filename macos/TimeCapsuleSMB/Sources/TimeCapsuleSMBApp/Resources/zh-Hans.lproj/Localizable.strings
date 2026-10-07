@@ -631,6 +631,7 @@
 "backend.error.payload_upload_timeout" = "复制 SMB 安装文件时磁盘没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";
 "backend.error.ssh_disabled" = "此设备上的 SSH 已禁用。";
 "backend.error.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
+"backend.error.local_network_filtered" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
 "backend.error.reboot_not_started" = "设备在收到重启请求后未重启。";
 "backend.error.reboot_not_finished" = "设备重启后未重新上线。";
 "backend.error.ssh_still_enabled" = "重启后 SSH 仍处于启用状态，因此禁用未生效。";
@@ -672,6 +673,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "打开“系统设置”>“隐私与安全性”>“本地网络”。";
 "backend.recovery.local_network_permission_denied.action.2" = "在“本地网络”中启用 TimeCapsuleSMB。";
 "backend.recovery.local_network_permission_denied.action.3" = "退出并重新打开 TimeCapsuleSMB，然后重试配置。";
+"backend.recovery.local_network_filtered.title" = "此 Mac 上的连接被阻止";
+"backend.recovery.local_network_filtered.message" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
 "backend.recovery.unsupported_device.title" = "不支持的设备";
 "backend.recovery.unsupported_device.message" = "检测到的 AirPort 型号或操作系统不支持此操作。";
 "backend.recovery.unsupported_device.action.1" = "检查检测到的型号和操作系统。";

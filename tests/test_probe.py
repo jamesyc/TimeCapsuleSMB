@@ -25,7 +25,12 @@ from timecapsulesmb.device.probe import (
     read_runtime_log_tails_conn,
     runtime_ram_root_present_conn,
 )
-from timecapsulesmb.transport.errors import SshAlgorithmNegotiationError, SshAuthenticationError, SshNetworkError
+from timecapsulesmb.transport.errors import (
+    SshAlgorithmNegotiationError,
+    SshAuthenticationError,
+    SshLocalNetworkFilteredError,
+    SshNetworkError,
+)
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
@@ -706,6 +711,27 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(result.ssh_port_reachable)
         self.assertFalse(result.ssh_authenticated)
         self.assertEqual(result.error, "Connection timed out")
+        self.assertIsNone(result.mac_network_filters)
+
+    def test_probe_device_conn_reports_a_connection_this_mac_dropped_with_its_filters(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        dropped = SshLocalNetworkFilteredError("This Mac dropped the connection ... (ssh: ...)")
+        filters = {"mac_network_extensions": ["com.objective-see.lulu.extension [activated enabled]"]}
+
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=dropped):
+                with mock.patch("timecapsulesmb.device.probe.mac_network_filters", return_value=filters) as collect:
+                    result = probe.probe_device_conn(connection)
+
+        self.assertEqual(result.ssh_status, SshAccessStatus.LOCAL_NETWORK_FILTERED)
+        # The app's own connection to port 22 worked; only ssh's was dropped.
+        self.assertTrue(result.ssh_port_reachable)
+        self.assertFalse(result.ssh_authenticated)
+        self.assertEqual(result.error, str(dropped))
+        self.assertEqual(result.mac_network_filters, filters)
+        collect.assert_called_once_with()
+        # Probe results stay hashable with the filter fields attached.
+        hash(result)
 
     def test_probe_device_conn_reports_device_probe_failure_after_ssh_auth(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")

@@ -3,12 +3,14 @@ from __future__ import annotations
 import shlex
 import errno
 import os
+import re
 import selectors
 import shutil
 import socket
 import subprocess
+import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from timecapsulesmb.core.net import ipv6_scope_index
 
@@ -106,3 +108,77 @@ def run_local_capture(
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+SYSTEM_EXTENSIONS_COMMAND = ("/usr/bin/systemextensionsctl", "list")
+VPN_SERVICES_COMMAND = ("/usr/sbin/scutil", "--nc", "list")
+MAC_NETWORK_FILTERS_TIMEOUT_SECONDS = 5
+_NETWORK_EXTENSION_CATEGORY = "--- com.apple.system_extension.network_extension"
+# `* (Connected)  <UUID> VPN (io.tailscale.ipn.macos) "Tailscale"  [VPN:...]`
+_VPN_SERVICE_RE = re.compile(r'^\s*\*?\s*\((?P<status>[^)]*)\)\s+\S+\s+(?P<kind>[^"]*?)\s*"')
+
+
+def _network_extensions(output: str) -> list[str]:
+    """`bundleID [state]` for each network extension (content filters, VPNs)."""
+    extensions: list[str] = []
+    in_category = False
+    for line in output.splitlines():
+        if line.startswith("---"):
+            in_category = line.startswith(_NETWORK_EXTENSION_CATEGORY)
+            continue
+        columns = line.split("\t")
+        # enabled, active, teamID, "bundleID (version)", name, [state]
+        if not in_category or len(columns) < 6 or columns[0] == "enabled":
+            continue
+        extensions.append(f"{columns[3].split(' ', 1)[0]} {columns[5].strip()}")
+    return extensions
+
+
+def _vpn_services(output: str) -> list[str]:
+    """`(status) type (provider)` for each VPN service, without its name or UUID."""
+    services: list[str] = []
+    for line in output.splitlines():
+        match = _VPN_SERVICE_RE.match(line)
+        if match is not None:
+            services.append(f"({match.group('status')}) {match.group('kind')}")
+    return services
+
+
+def mac_network_filters(
+    *,
+    platform: str = sys.platform,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, object]:
+    """Telemetry fields naming what on this Mac can filter or tunnel its connections.
+
+    Collected when SSH fails with SshLocalNetworkFilteredError, to learn which
+    VPN, firewall or security apps cause it. Service names are left out:
+    users name VPN services, sometimes after their employer.
+    """
+    if platform != "darwin":
+        return {}
+    fields: dict[str, object] = {}
+    errors: list[str] = []
+    for key, command, parse in (
+        ("mac_network_extensions", SYSTEM_EXTENSIONS_COMMAND, _network_extensions),
+        ("mac_vpn_services", VPN_SERVICES_COMMAND, _vpn_services),
+    ):
+        try:
+            proc = run(
+                list(command),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=MAC_NETWORK_FILTERS_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"{command[0]}: {type(exc).__name__}")
+            continue
+        if proc.returncode != 0:
+            errors.append(f"{command[0]}: rc={proc.returncode}")
+            continue
+        fields[key] = parse(proc.stdout)
+    if errors:
+        fields["mac_network_filters_error"] = "; ".join(errors)
+    return fields

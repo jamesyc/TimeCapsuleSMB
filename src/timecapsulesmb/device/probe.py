@@ -6,7 +6,7 @@ import subprocess
 import time
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
@@ -20,10 +20,11 @@ from timecapsulesmb.device.processes import (
     service_role_lines,
 )
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
-from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.local import mac_network_filters, tcp_open
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
+    SshLocalNetworkFilteredError,
     TransportError,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
@@ -303,6 +304,8 @@ class SshAccessStatus(str, Enum):
     AUTH_REJECTED = "auth_rejected"
     ALGORITHM_NEGOTIATION_FAILED = "algorithm_negotiation_failed"
     TRANSPORT_FAILED = "transport_failed"
+    # This computer dropped the connection (SshLocalNetworkFilteredError).
+    LOCAL_NETWORK_FILTERED = "local_network_filtered"
     DEVICE_PROBE_FAILED = "device_probe_failed"
 
 
@@ -321,6 +324,9 @@ class ProbeResult:
     # Whether /etc/rc.d/LOGIN runs /mnt/Flash/rc.local at boot: the NetBSD4
     # firmware autostart patch. Stock NetBSD4 firmware does not.
     rc_local_autostart: bool = False
+    # For LOCAL_NETWORK_FILTERED: transport.local.mac_network_filters().
+    # Left out of the hash: a dict cannot be hashed, and every other field can.
+    mac_network_filters: dict[str, object] | None = field(default=None, hash=False)
 
     @property
     def ssh_port_reachable(self) -> bool:
@@ -481,6 +487,16 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
             os_release="",
             arch="",
             elf_endianness="unknown",
+        )
+    except SshLocalNetworkFilteredError as exc:
+        return ProbeResult(
+            ssh_status=SshAccessStatus.LOCAL_NETWORK_FILTERED,
+            error=str(exc),
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+            mac_network_filters=mac_network_filters(),
         )
     except TransportError as exc:
         return ProbeResult(

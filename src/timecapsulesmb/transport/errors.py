@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 
 class TransportError(Exception):
     """Base class for recoverable transport-layer failures."""
@@ -28,6 +30,29 @@ class SshClientConfigError(SshError):
 
 class SshNetworkError(SshError):
     """Raised when the SSH client reports a network-level failure."""
+
+
+class SshLocalNetworkFilteredError(SshNetworkError):
+    """Raised when this computer killed SSH's connection before it reached the device.
+
+    ssh prints "connect to host ... Bad file descriptor" when its connecting
+    socket's error is EBADF. macOS sets that only on a socket it marks defunct:
+    a network content filter's drop verdict, or a VPN tunnel or drop policy
+    applied mid-connect (XNU sodefunct()). Local Network privacy fails with
+    "No route to host" instead. Seen in telemetry with a VPN on the Mac,
+    while the app's own Python connection to port 22 succeeded.
+    """
+
+
+def local_network_filtered_message(*, platform: str = sys.platform) -> str:
+    computer = "This Mac" if platform == "darwin" else "This computer"
+    return (
+        f"{computer} dropped the connection before it reached the device. "
+        "A VPN, firewall or security app is filtering local network traffic."
+    )
+
+
+LOCAL_NETWORK_FILTERED_MESSAGE = local_network_filtered_message(platform="darwin")
 
 
 class SshCommandTimeout(SshError):

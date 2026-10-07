@@ -631,6 +631,7 @@
 "backend.error.payload_upload_timeout" = "De schijf reageerde niet tijdens het kopiëren van de SMB-installatiebestanden. Deze is mogelijk defect of kan niet gaan draaien. Voer Schijfreparatie uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "backend.error.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
 "backend.error.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
+"backend.error.local_network_filtered" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
 "backend.error.reboot_not_started" = "Het apparaat is na het herstartverzoek niet opnieuw opgestart.";
 "backend.error.reboot_not_finished" = "Het apparaat is na het opnieuw opstarten niet teruggekomen.";
 "backend.error.ssh_still_enabled" = "SSH is na het opnieuw opstarten nog steeds ingeschakeld; het uitschakelen is niet doorgevoerd.";
@@ -672,6 +673,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "Open Systeeminstellingen > Privacy en beveiliging > Lokaal netwerk.";
 "backend.recovery.local_network_permission_denied.action.2" = "Schakel TimeCapsuleSMB in onder Lokaal netwerk.";
 "backend.recovery.local_network_permission_denied.action.3" = "Stop TimeCapsuleSMB en open de app weer; probeer daarna opnieuw te configureren.";
+"backend.recovery.local_network_filtered.title" = "Verbinding geblokkeerd op deze Mac";
+"backend.recovery.local_network_filtered.message" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
 "backend.recovery.unsupported_device.title" = "Niet-ondersteund apparaat";
 "backend.recovery.unsupported_device.message" = "Deze bewerking wordt niet ondersteund op het gedetecteerde AirPort-model of besturingssysteem.";
 "backend.recovery.unsupported_device.action.1" = "Controleer het gedetecteerde model en besturingssysteem.";

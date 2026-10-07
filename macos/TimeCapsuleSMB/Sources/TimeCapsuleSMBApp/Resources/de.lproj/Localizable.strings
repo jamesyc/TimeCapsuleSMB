@@ -631,6 +631,7 @@
 "backend.error.payload_upload_timeout" = "Der Datenträger reagierte beim Kopieren der SMB-Installationsdateien nicht. Er ist möglicherweise defekt oder läuft nicht an. Führen Sie die Festplattenreparatur aus; bleibt das Problem bestehen, muss er eventuell ersetzt werden.";
 "backend.error.ssh_disabled" = "SSH ist auf diesem Gerät deaktiviert.";
 "backend.error.device_unreachable" = "Das Gerät antwortet weder über SSH noch über AirPort ACP.";
+"backend.error.local_network_filtered" = "Dieser Mac hat die Verbindung getrennt, bevor sie das Gerät erreicht hat. Ein VPN, eine Firewall oder Sicherheitssoftware filtert den lokalen Netzwerkverkehr.";
 "backend.error.reboot_not_started" = "Das Gerät ist nach der Neustartanforderung nicht neu gestartet.";
 "backend.error.reboot_not_finished" = "Das Gerät ist nach dem Neustart nicht zurückgekehrt.";
 "backend.error.ssh_still_enabled" = "SSH ist nach dem Neustart weiterhin aktiviert; das Deaktivieren wurde nicht wirksam.";
@@ -672,6 +673,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "Öffnen Sie Systemeinstellungen > Datenschutz & Sicherheit > Lokales Netzwerk.";
 "backend.recovery.local_network_permission_denied.action.2" = "Aktivieren Sie TimeCapsuleSMB unter „Lokales Netzwerk“.";
 "backend.recovery.local_network_permission_denied.action.3" = "Beenden Sie TimeCapsuleSMB, öffnen Sie es erneut und versuchen Sie dann noch einmal, das Gerät hinzuzufügen.";
+"backend.recovery.local_network_filtered.title" = "Verbindung auf diesem Mac blockiert";
+"backend.recovery.local_network_filtered.message" = "Dieser Mac hat die Verbindung getrennt, bevor sie das Gerät erreicht hat. Ein VPN, eine Firewall oder Sicherheitssoftware filtert den lokalen Netzwerkverkehr.";
 "backend.recovery.unsupported_device.title" = "Nicht unterstütztes Gerät";
 "backend.recovery.unsupported_device.message" = "Dieser Vorgang wird auf dem erkannten AirPort-Modell oder Betriebssystem nicht unterstützt.";
 "backend.recovery.unsupported_device.action.1" = "Prüfen Sie das erkannte Modell und Betriebssystem.";

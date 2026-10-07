@@ -862,6 +862,42 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ssh_compatibility_failed")
         self.assertIn("no matching MAC found", str(raised.exception))
 
+    def test_run_configure_flow_reports_a_connection_this_mac_dropped_with_its_own_code(self) -> None:
+        message = "This Mac dropped the connection before it reached the device. (ssh: ...)"
+        probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.LOCAL_NETWORK_FILTERED,
+                error=message,
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+        updates: list[dict[str, object]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with self.assertRaises(ConfigureFlowError) as raised:
+                run_configure_flow(
+                    ConfigureFlowRequest(
+                        existing={},
+                        env_path=env_path,
+                        host="root@10.0.0.2",
+                        password="pw",
+                        ssh_opts="-o foo",
+                        configure_id="config-id",
+                        persist_password=True,
+                        probe=mock.Mock(return_value=probe_state),
+                    ),
+                    callbacks=OperationCallbacks(update_fields=lambda **fields: updates.append(fields)),
+                )
+            self.assertFalse(env_path.exists())
+
+        self.assertEqual(raised.exception.code, "local_network_filtered")
+        self.assertEqual(str(raised.exception), message)
+        self.assertIn({"ssh_final_reachable": True}, updates)
+
     def test_run_configure_flow_rejects_unsupported_compatible_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ConfigureFlowError) as raised:

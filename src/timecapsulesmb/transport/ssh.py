@@ -24,7 +24,9 @@ from timecapsulesmb.transport.errors import (
     SshClientConfigError,
     SshCommandTimeout,
     SshError,
+    SshLocalNetworkFilteredError,
     SshNetworkError,
+    local_network_filtered_message,
 )
 
 from .local import find_command, tcp_open
@@ -63,6 +65,8 @@ LEGACY_AIRPORT_MACS = (
     "hmac-ripemd160",
 )
 
+# See SshLocalNetworkFilteredError for why EBADF means this computer dropped it.
+SSH_LOCAL_NETWORK_FILTERED_PATTERN = re.compile(r"^ssh: connect to host \S+ port \d+: Bad file descriptor$")
 SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/no/\[fingerprint\]\)\?"
 SSH_AUTH_FAILURE_PATTERNS = (
     re.compile(r"^Permission denied, please try again\.$", re.IGNORECASE),
@@ -179,6 +183,8 @@ def _classify_ssh_client_error_line(line: str) -> SshError | None:
     lowered = line.lower()
     if "bad configuration option" in lowered:
         return SshClientConfigError(f"Connecting to the device failed, SSH error: {line}")
+    if SSH_LOCAL_NETWORK_FILTERED_PATTERN.fullmatch(line):
+        return SshLocalNetworkFilteredError(f"{local_network_filtered_message()} ({line})")
     if any(pattern in lowered for pattern in SSH_TRANSPORT_ERROR_PATTERNS):
         return SshNetworkError(f"Connecting to the device failed, SSH error: {line}")
     if any(pattern.fullmatch(line) for pattern in SSH_AUTH_FAILURE_PATTERNS):

@@ -299,7 +299,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             raise AppOperationError(str(exc), code="ssh_compatibility_failed") from exc
         if exc.code == "ssh_enable_timeout":
             raise AppOperationError(str(exc), code="ssh_enable_timeout") from exc
-        if exc.code == "device_identity_mismatch":
+        if exc.code in ("device_identity_mismatch", "local_network_filtered"):
             raise AppOperationError(str(exc), code=exc.code) from exc
         if exc.code == "unsupported_device":
             raise AppOperationError(str(exc), code="unsupported_device") from exc

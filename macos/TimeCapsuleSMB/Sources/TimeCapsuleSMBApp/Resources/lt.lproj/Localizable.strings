@@ -609,7 +609,7 @@
 "backend.recovery.deploy.reboot_not_finished.action.5" = "Jei jūsų įrenginys atsistatė, žiūrėkite https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort nepasiekiamas šiuo adresu";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB negalėjo pasiekti AirPort ACP tarnybos prieš įjungiant SSH. Atsarginės kopijos arba AirPort Utility gali veikti net tada, kai ACP blokuojamas.";
-"backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Išjunkite VPN arba saugos programinę įrangą, kuri nukreipia vietinio tinklo srautą, tada bandykite dar kartą.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Išjunkite VPN arba saugos programą, kuri nukreipia vietinio tinklo srautą, tada bandykite dar kartą.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Patikrinkite, ar IP adresas yra Time Capsule arba AirPort adresas.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Patvirtinkite, kad esate tame pačiame tinkle kaip įrenginys.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Naudokite aptikimą arba įveskite dabartinį LAN IP adresą.";
@@ -631,6 +631,7 @@
 "backend.error.payload_upload_timeout" = "Diskas neatsakė kopijuojant SMB paketą. Jis gali gesti arba negalėti įsisukti. Paleiskite Disk Repair; jei tai kartojasi, diską gali reikėti pakeisti.";
 "backend.error.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
 "backend.error.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
+"backend.error.local_network_filtered" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
 "backend.error.reboot_not_started" = "Įrenginys nebuvo paleistas iš naujo po paleidimo iš naujo užklausos.";
 "backend.error.reboot_not_finished" = "Įrenginys negrįžo po paleidimo iš naujo.";
 "backend.error.ssh_still_enabled" = "SSH po paleidimo iš naujo vis dar įjungta, todėl išjungimas neįsigaliojo.";
@@ -672,6 +673,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "Atidarykite sistemos nustatymus ir eikite į Privacy & Security > Local Network.";
 "backend.recovery.local_network_permission_denied.action.2" = "Skiltyje Local Network įjunkite TimeCapsuleSMB.";
 "backend.recovery.local_network_permission_denied.action.3" = "Išeikite iš TimeCapsuleSMB ir vėl ją atidarykite, tada bandykite konfigūruoti dar kartą.";
+"backend.recovery.local_network_filtered.title" = "Ryšys užblokuotas šiame Mac";
+"backend.recovery.local_network_filtered.message" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
 "backend.recovery.unsupported_device.title" = "Nepalaikomas įrenginys";
 "backend.recovery.unsupported_device.message" = "Ši operacija nepalaikoma aptiktame AirPort modelyje ar OS.";
 "backend.recovery.unsupported_device.action.1" = "Patikrinkite aptiktą modelį ir OS.";

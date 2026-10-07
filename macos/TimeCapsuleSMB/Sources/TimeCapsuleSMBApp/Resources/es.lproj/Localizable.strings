@@ -631,6 +631,7 @@
 "backend.error.payload_upload_timeout" = "El disco no respondió al copiar los archivos de instalación SMB. Puede estar fallando o no conseguir girar. Ejecute la reparación del disco; si el problema persiste, puede ser necesario sustituirlo.";
 "backend.error.ssh_disabled" = "SSH está deshabilitado en este dispositivo.";
 "backend.error.device_unreachable" = "El dispositivo no responde ni por SSH ni por AirPort ACP.";
+"backend.error.local_network_filtered" = "Este Mac cortó la conexión antes de que llegara al dispositivo. Una VPN, un cortafuegos o un software de seguridad está filtrando el tráfico de la red local.";
 "backend.error.reboot_not_started" = "El dispositivo no se reinició tras la solicitud de reinicio.";
 "backend.error.reboot_not_finished" = "El dispositivo no volvió a estar disponible tras reiniciarse.";
 "backend.error.ssh_still_enabled" = "SSH sigue habilitado después del reinicio, por lo que deshabilitarlo no surtió efecto.";
@@ -672,6 +673,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "Abra Ajustes del Sistema > Privacidad y seguridad > Red local.";
 "backend.recovery.local_network_permission_denied.action.2" = "Habilite TimeCapsuleSMB en Red local.";
 "backend.recovery.local_network_permission_denied.action.3" = "Salga de TimeCapsuleSMB, vuelva a abrirlo y reintente la configuración del dispositivo.";
+"backend.recovery.local_network_filtered.title" = "Conexión bloqueada en este Mac";
+"backend.recovery.local_network_filtered.message" = "Este Mac cortó la conexión antes de que llegara al dispositivo. Una VPN, un cortafuegos o un software de seguridad está filtrando el tráfico de la red local.";
 "backend.recovery.unsupported_device.title" = "Dispositivo no compatible";
 "backend.recovery.unsupported_device.message" = "Esta operación no es compatible con el modelo de AirPort o el sistema operativo detectados.";
 "backend.recovery.unsupported_device.action.1" = "Compruebe el modelo y el sistema operativo detectados.";

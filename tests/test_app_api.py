@@ -74,7 +74,14 @@ from timecapsulesmb.services.maintenance import FSCK_NOT_UNMOUNTED_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
-from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError, ssh_timeout_slow_device_message
+from timecapsulesmb.transport.errors import (
+    LOCAL_NETWORK_FILTERED_MESSAGE,
+    SshCommandTimeout,
+    SshError,
+    SshLocalNetworkFilteredError,
+    TransportError,
+    ssh_timeout_slow_device_message,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -1507,6 +1514,35 @@ class AppApiTests(unittest.TestCase):
         self.assertIn(timeout, telemetry_error)
         self.assertIn("stage=upload_boot_files", telemetry_error)
         self._telemetry_urlopen.assert_not_called()
+
+    def test_dispatcher_gives_a_connection_this_mac_dropped_its_own_code_over_the_stages_advice(self) -> None:
+        collector = CollectingSink()
+        message = f"{LOCAL_NETWORK_FILTERED_MESSAGE} (ssh: connect to host 10.0.0.2 port 22: Bad file descriptor)"
+
+        def fail(_params, context):
+            # This stage has its own remote_error advice, about the device.
+            context.stage("verify_runtime_reboot")
+            raise SshLocalNetworkFilteredError(message)
+
+        with mock.patch.dict(service.OPERATIONS, {"deploy": fail}):
+            rc = service.run_api_request({"operation": "deploy", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual((error["code"], error["message"]), ("local_network_filtered", message))
+        self.assert_local_network_filtered_recovery(error)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["error_code"], "local_network_filtered")
+        self.assertIn("Bad file descriptor", finished["error"])
+
+    def assert_local_network_filtered_recovery(self, error: dict[str, object]) -> None:
+        recovery = error["recovery"]
+        self.assertEqual(recovery["localization_key"], "local_network_filtered")
+        self.assertEqual(recovery["title"], "Connection blocked on this Mac")
+        self.assertEqual(recovery["message"], LOCAL_NETWORK_FILTERED_MESSAGE)
+        # No step: the filtering app may be a VPN the user cannot turn off.
+        self.assertEqual((recovery["actions"], recovery["action_ids"]), ([], []))
+        self.assertTrue(recovery["retryable"])
 
     def test_dispatcher_includes_traceback_for_unexpected_errors(self) -> None:
         collector = CollectingSink()
@@ -3477,6 +3513,42 @@ class AppApiTests(unittest.TestCase):
         self.assertNotIn("replace_password", error["recovery"]["action_ids"])
         self.assertIn("no matching MAC found", error["message"])
 
+    def test_configure_reports_a_connection_this_mac_dropped_and_what_could_filter_it(self) -> None:
+        collector = CollectingSink()
+        message = f"{LOCAL_NETWORK_FILTERED_MESSAGE} (ssh: connect to host 192.168.1.22 port 22: Bad file descriptor)"
+        probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.LOCAL_NETWORK_FILTERED,
+                error=message,
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+                mac_network_filters={"mac_vpn_services": ["(Connected) VPN (io.tailscale.ipn.macos)"]},
+            ),
+            compatibility=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probe_state):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {"config": str(config_path), "host": "root@192.168.1.22", "password": "pw"},
+                    },
+                    collector.sink,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertFalse(config_path.exists())
+        error = collector.events_of_type("error")[0]
+        self.assertEqual((error["code"], error["message"]), ("local_network_filtered", message))
+        self.assert_local_network_filtered_recovery(error)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["error_code"], "local_network_filtered")
+        self.assertIn("probe_ssh_status=local_network_filtered", finished["error"])
+        self.assertIn("mac_vpn_services=[(Connected) VPN (io.tailscale.ipn.macos)]", finished["error"])
+
     def test_configure_reports_acp_port_preflight_connection_failure(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -5282,6 +5354,7 @@ MaSt = (
             (SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR, "auth_failed"),
             (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "no matching key exchange method found", "ssh_compatibility_failed"),
             (SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR, "ssh_transport_failed"),
+            (SshAccessStatus.LOCAL_NETWORK_FILTERED, LOCAL_NETWORK_FILTERED_MESSAGE, "local_network_filtered"),
             (SshAccessStatus.DEVICE_PROBE_FAILED, "Failed to determine remote device OS compatibility.", "device_probe_failed"),
         )
         for status, message, code in cases:

@@ -102,7 +102,8 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     BonjourServiceInstance,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.transport.errors import SshLocalNetworkFilteredError
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, parse_ssh_client_diagnostics
 
 
 DEFAULT_SMB_PORT_CHECK = object()
@@ -4024,6 +4025,16 @@ class CheckTests(unittest.TestCase):
             result.message,
             "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
         )
+
+    def test_check_ssh_login_reports_a_connection_this_mac_dropped_as_it_is(self) -> None:
+        connection = SshConnection("root@10.0.0.5", "pw", "")
+        # The real classifier, so the wording is this platform's, as doctor's is.
+        dropped = parse_ssh_client_diagnostics("ssh: connect to host 10.0.0.5 port 22: Bad file descriptor\n").error
+        self.assertIsInstance(dropped, SshLocalNetworkFilteredError)
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=dropped):
+            result = check_ssh_login(connection)
+
+        self.assertEqual((result.status, result.message), ("FAIL", str(dropped)))
 
     def test_run_doctor_checks_skip_ssh_does_not_probe_nbns_flash_config(self) -> None:
         values = {

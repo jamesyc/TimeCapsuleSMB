@@ -360,6 +360,7 @@ class ProbeFailureErrorTests(unittest.TestCase):
             (SshAccessStatus.AUTH_REJECTED, "auth_failed"),
             (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "ssh_compatibility_failed"),
             (SshAccessStatus.TRANSPORT_FAILED, "ssh_transport_failed"),
+            (SshAccessStatus.LOCAL_NETWORK_FILTERED, "local_network_filtered"),
             (SshAccessStatus.DEVICE_PROBE_FAILED, "device_probe_failed"),
         )
         for status, code in cases:
@@ -382,7 +383,15 @@ class ProbeFailureErrorTests(unittest.TestCase):
         self.assertNotIn("unsupported_device", codes)
         self.assertEqual(
             codes,
-            {"ssh_disabled", "device_unreachable", "auth_failed", "ssh_compatibility_failed", "ssh_transport_failed", "device_probe_failed"},
+            {
+                "ssh_disabled",
+                "device_unreachable",
+                "auth_failed",
+                "ssh_compatibility_failed",
+                "ssh_transport_failed",
+                "local_network_filtered",
+                "device_probe_failed",
+            },
         )
 
     def test_connection_compatibility_raises_the_coded_error_when_ssh_did_not_log_in(self) -> None:

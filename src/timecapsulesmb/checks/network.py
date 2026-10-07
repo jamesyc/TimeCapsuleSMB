@@ -7,6 +7,7 @@ from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.device.probe import probe_ssh_command_conn
+from timecapsulesmb.transport.errors import local_network_filtered_message
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -191,7 +192,7 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
     )
     if result.ok:
         return CheckResult("PASS", f"SSH command works for {connection.host}")
-    if result.detail.startswith("Connecting to the device failed, SSH error:"):
+    if result.detail.startswith(("Connecting to the device failed, SSH error:", local_network_filtered_message())):
         return CheckResult("FAIL", result.detail)
     return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}")
 

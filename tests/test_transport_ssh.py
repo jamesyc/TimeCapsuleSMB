@@ -170,6 +170,40 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(error.offered[0:2], ("hmac-md5", "hmac-sha1"))
         self.assertEqual(str(error), line)
 
+    def test_client_diagnostics_detect_a_connection_this_computer_dropped(self) -> None:
+        for line in (
+            "ssh: connect to host 192.168.1.22 port 22: Bad file descriptor",
+            "ssh: connect to host fe80::dea4:caff:feed:c031%en0 port 22: Bad file descriptor",
+        ):
+            with self.subTest(line=line):
+                error = ssh_transport.parse_ssh_client_diagnostics(f"{line}\n").error
+
+                self.assertIsInstance(error, transport_errors.SshLocalNetworkFilteredError)
+                # Callers that only know transport failures still catch it.
+                self.assertIsInstance(error, transport_errors.SshNetworkError)
+                self.assertEqual(str(error), f"{transport_errors.local_network_filtered_message()} ({line})")
+
+    def test_client_diagnostics_keep_other_failures_out_of_the_dropped_connection_error(self) -> None:
+        cases = (
+            ("ssh: connect to host 192.168.1.22 port 22: Connection refused", transport_errors.SshNetworkError),
+            ("ssh: connect to host 192.168.1.22 port 22: No route to host", transport_errors.SshNetworkError),
+            # The same errno from ssh-agent is not about the device connection.
+            ("Error connecting to agent: Bad file descriptor", type(None)),
+        )
+        for line, expected in cases:
+            with self.subTest(line=line):
+                error = ssh_transport.parse_ssh_client_diagnostics(f"{line}\n").error
+
+                self.assertIs(type(error), expected)
+
+    def test_dropped_connection_message_names_a_mac_only_on_macos(self) -> None:
+        self.assertTrue(transport_errors.local_network_filtered_message(platform="darwin").startswith("This Mac dropped"))
+        self.assertTrue(transport_errors.local_network_filtered_message(platform="linux").startswith("This computer dropped"))
+        self.assertEqual(
+            transport_errors.LOCAL_NETWORK_FILTERED_MESSAGE,
+            transport_errors.local_network_filtered_message(platform="darwin"),
+        )
+
     def test_client_diagnostics_detect_auth_rejection(self) -> None:
         error = ssh_transport.parse_ssh_client_diagnostics("Permission denied, please try again.\n").error
 

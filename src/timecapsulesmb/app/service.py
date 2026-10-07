@@ -25,7 +25,7 @@ from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_params,
 )
-from timecapsulesmb.transport.errors import is_ssh_timeout_error, TransportError
+from timecapsulesmb.transport.errors import is_ssh_timeout_error, SshLocalNetworkFilteredError, TransportError
 
 
 # The result of an operation that exits cleanly without emitting its own.
@@ -138,15 +138,18 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         return 1
     except TransportError as exc:
         device_name = context.known_airport_display_name()
+        # A connection this Mac dropped gets its own guidance, not the stage's
+        # remote_error advice, which is about the device.
+        code = "local_network_filtered" if isinstance(exc, SshLocalNetworkFilteredError) else "remote_error"
         recovery = (
             ssh_timeout_slow_device_recovery(device_name=device_name)
             if is_ssh_timeout_error(exc)
-            else recovery_for(operation, "remote_error", stage=context.current_stage)
+            else recovery_for(operation, code, stage=context.current_stage)
         )
         sink.error(
             operation,
             str(exc),
-            code="remote_error",
+            code=code,
             debug=context.failure_debug(exc),
             recovery=recovery,
         )
@@ -155,7 +158,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             context,
             result="failure",
             error=context.diagnostic_error(str(exc)) or str(exc),
-            error_code="remote_error",
+            error_code=code,
         )
         return 1
     except ClientDisconnected as exc:

@@ -22,6 +22,8 @@ def _(value: ProbedDeviceState) -> dict[str, object]:
     }
     if probe.error:
         summary["probe_error"] = probe.error
+    if probe.mac_network_filters:
+        summary.update(probe.mac_network_filters)
     elf_endianness_detail = getattr(probe, "elf_endianness_detail", None)
     if isinstance(elf_endianness_detail, str) and elf_endianness_detail:
         summary["probe_elf_endianness"] = probe.elf_endianness

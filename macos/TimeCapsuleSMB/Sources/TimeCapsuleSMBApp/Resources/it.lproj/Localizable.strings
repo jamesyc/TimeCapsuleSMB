@@ -631,6 +631,7 @@
 "backend.error.payload_upload_timeout" = "Il disco non ha risposto durante la copia dei file di installazione SMB. Potrebbe essere guasto o non riuscire a mettersi in rotazione. Esegui la riparazione del disco; se il problema persiste, potrebbe essere necessario sostituirlo.";
 "backend.error.ssh_disabled" = "SSH è disabilitato su questo dispositivo.";
 "backend.error.device_unreachable" = "Il dispositivo non risponde né tramite SSH né tramite AirPort ACP.";
+"backend.error.local_network_filtered" = "Questo Mac ha interrotto la connessione prima che raggiungesse il dispositivo. Una VPN, un firewall o un software di sicurezza sta filtrando il traffico della rete locale.";
 "backend.error.reboot_not_started" = "Il dispositivo non si è riavviato dopo la richiesta di riavvio.";
 "backend.error.reboot_not_finished" = "Il dispositivo non è tornato disponibile dopo il riavvio.";
 "backend.error.ssh_still_enabled" = "SSH è ancora abilitato dopo il riavvio, quindi la disabilitazione non ha avuto effetto.";
@@ -672,6 +673,8 @@
 "backend.recovery.local_network_permission_denied.action.1" = "Apri Impostazioni di Sistema > Privacy e sicurezza > Rete locale.";
 "backend.recovery.local_network_permission_denied.action.2" = "Abilita TimeCapsuleSMB in Rete locale.";
 "backend.recovery.local_network_permission_denied.action.3" = "Esci da TimeCapsuleSMB e riaprilo, poi riprova la configurazione del dispositivo.";
+"backend.recovery.local_network_filtered.title" = "Connessione bloccata su questo Mac";
+"backend.recovery.local_network_filtered.message" = "Questo Mac ha interrotto la connessione prima che raggiungesse il dispositivo. Una VPN, un firewall o un software di sicurezza sta filtrando il traffico della rete locale.";
 "backend.recovery.unsupported_device.title" = "Dispositivo non supportato";
 "backend.recovery.unsupported_device.message" = "Questa operazione non è supportata sul modello AirPort o sul sistema operativo rilevato.";
 "backend.recovery.unsupported_device.action.1" = "Controlla il modello e il sistema operativo rilevati.";
