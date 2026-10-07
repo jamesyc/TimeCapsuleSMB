@@ -74,6 +74,22 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertEqual(resolution.source, "explicit_host")
         getaddrinfo.assert_not_called()
 
+    def test_explicit_scoped_link_local_host_is_kept_with_its_zone(self) -> None:
+        resolution = resolve_configure_target(
+            explicit_host="FE80:0000:0000:0000:82EA:96FF:FEE6:5868%en0",
+            selected_record=None,
+            existing={},
+            ssh_opts="",
+        )
+
+        self.assertEqual(resolution.host, "root@fe80::82ea:96ff:fee6:5868%en0")
+
+    def test_explicit_unscoped_link_local_ipv6_host_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            resolve_configure_target(explicit_host="root@fe80::1", selected_record=None, existing={}, ssh_opts="")
+
+        self.assertIn("fe80::1 is a link-local IPv6 address without its interface", str(raised.exception))
+
     def test_existing_link_local_host_is_rejected(self) -> None:
         with self.assertRaises(ValueError) as raised:
             resolve_configure_target(

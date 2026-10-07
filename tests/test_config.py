@@ -60,6 +60,13 @@ class ConfigTests(unittest.TestCase):
             values = parse_env_file(path)
         self.assertEqual(values, {"TC_HOST": "root@10.0.0.5"})
 
+    def test_tc_host_round_trips_through_the_env_file_unchanged(self) -> None:
+        for host in ("root@10.0.0.2", "root@capsule.local", "root@fd00::2", "root@fe80::82ea:96ff:fee6:5868%en0"):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / ".env"
+                write_env_file(path, {"TC_HOST": host})
+                self.assertEqual(parse_env_file(path)["TC_HOST"], host)
+
     def test_load_app_config_tracks_missing_env_and_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
@@ -337,6 +344,9 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(validate_ssh_target("root@timecapsule.local:22", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("admin_user@wan.example.com", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@[fd00::2]:22", "Device SSH target"))
+        # The zone names this computer's interface, which makes fe80 usable.
+        self.assertIsNone(validate_ssh_target("root@fe80::1%en0", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@[fe80::1%en0]:22", "Device SSH target"))
 
     def test_validate_ssh_target_rejects_bare_or_unsafe_targets(self) -> None:
         self.assertEqual(
@@ -365,10 +375,9 @@ class ConfigTests(unittest.TestCase):
             "link-local addresses are only suitable for temporary SSH recovery.",
         )
         self.assertEqual(
-            validate_ssh_target("root@fe80::1%en0", "Device SSH target"),
-            "Device SSH target host must not be a link-local address. "
-            "Use the device's LAN IP or a hostname that resolves to its LAN IP; "
-            "link-local addresses are only suitable for temporary SSH recovery.",
+            validate_ssh_target("root@fe80::1", "Device SSH target"),
+            "Device SSH target host fe80::1 is a link-local IPv6 address without its interface. "
+            "Add it, for example fe80::1%en0, or select the device from discovery.",
         )
 
     def test_validate_ssh_target_rejects_placeholder_default_ip(self) -> None:
@@ -604,7 +613,7 @@ class ConfigTests(unittest.TestCase):
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].key, "TC_HOST")
-        self.assertIn("must not be a link-local address", errors[0].message)
+        self.assertIn("is a link-local IPv6 address without its interface", errors[0].message)
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig.from_values({"TC_HOST": ""})

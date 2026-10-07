@@ -31,6 +31,7 @@ from timecapsulesmb.checks.bonjour import (
     resolve_smb_instance,
     resolve_smb_service_target,
     select_resolved_smb_record,
+    select_resolved_smb_record_by_ip,
     select_smb_instance,
 )
 from timecapsulesmb.checks.doctor import run_doctor_checks
@@ -1069,6 +1070,21 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(identity.instance_name, "Home")
         self.assertEqual(identity.host_label, "home")
         self.assertEqual(identity.target_ip, "10.0.1.1")
+
+    def test_build_bonjour_expected_identity_keeps_a_link_local_zone(self) -> None:
+        identity = build_bonjour_expected_identity(AppConfig.from_values({"TC_HOST": "root@fe80::82ea:96ff:fee6:5868%en0"}))
+
+        self.assertEqual(identity.target_ip, "fe80::82ea:96ff:fee6:5868%en0")
+
+    def test_scoped_target_selects_the_smb_record_on_its_interface(self) -> None:
+        records = [
+            BonjourResolvedService("Other", "other.local", "_smb._tcp.local.", ipv4=["10.0.0.9"], ipv6=["fe80::1%en1"]),
+            BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", ipv4=["10.0.0.2"], ipv6=["fe80::1%en0"]),
+        ]
+        with mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", side_effect=lambda name: {"en0": 4, "en1": 5}[name]):
+            self.assertEqual(select_resolved_smb_record_by_ip(records, "fe80::1%en0").name, "Home")
+            self.assertEqual(select_resolved_smb_record_by_ip(records, "10.0.0.2").name, "Home")
+            self.assertIsNone(select_resolved_smb_record_by_ip(records, "fe80::1"))
 
     def test_build_bonjour_expected_identity_ignores_non_ip_ssh_target(self) -> None:
         identity = build_bonjour_expected_identity(
@@ -5249,7 +5265,7 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         self.assertFalse(any(result.status == "FAIL" for result in run.results))
         self.assertTrue(any(result.status == "WARN" and "retrying through SSH tunnel" in result.message for result in run.results))
-        tunnel_mock.assert_called_once_with(mock.ANY, local_port=2445, remote_host="10.0.0.2", remote_port=445)
+        tunnel_mock.assert_called_once_with(mock.ANY, local_port=2445, remote_host="127.0.0.1", remote_port=445)
         self.assertEqual(listing_mock.call_count, 2)
         self.assertEqual(listing_mock.call_args_list[1].args[2], "127.0.0.1")
         self.assertEqual(listing_mock.call_args_list[1].kwargs["port"], 2445)
@@ -5530,6 +5546,29 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(
             captured_args,
             ["smbclient", "-s", "/dev/null", "-g", "-I", "192.168.1.217", "-L", "//server.local", "-U", "admin%pw"],
+        )
+
+    def test_authenticated_smb_listing_passes_a_scoped_server_unbracketed(self) -> None:
+        # smbclient fails on [fe80::…%en0] and lists shares for the bare form.
+        captured_args = None
+
+        def fake_run_local_capture(args, timeout=30, **kwargs):
+            nonlocal captured_args
+            captured_args = args
+            return subprocess.CompletedProcess(args, 0, "Data\n", "")
+
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
+                result = check_authenticated_smb_listing(
+                    "admin",
+                    "pw",
+                    SmbClientTarget("fe80::1%en0", "fe80::1%en0"),
+                    expected_share_name="Data",
+                )
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(
+            captured_args,
+            ["smbclient", "-s", "/dev/null", "-g", "-I", "fe80::1%en0", "-L", "//fe80::1%en0", "-U", "admin%pw"],
         )
 
     def test_try_authenticated_smb_listing_forwards_custom_port(self) -> None:

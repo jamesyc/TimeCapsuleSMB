@@ -832,6 +832,31 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(cmd[1][cmd[1].index("-S") + 1], "none")
         self.assertFalse(any(arg.startswith("Control") for arg in cmd[1]))
 
+    def test_ssh_local_forward_passes_the_forward_spec_and_target_host(self) -> None:
+        try:
+            import pexpect  # noqa: F401
+        except Exception:
+            self.skipTest("pexpect not available")
+        for host in ("root@10.0.0.2", "root@fe80::1%en0"):
+            with self.subTest(host=host):
+                fake_child = mock.Mock()
+                fake_child.expect.side_effect = [1, 3]
+                fake_child.before = ""
+                with mock.patch("pexpect.spawn", return_value=fake_child) as spawn_mock:
+                    with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                        with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=True):
+                            with ssh_transport.ssh_local_forward(
+                                ssh_transport.SshConnection(host, "pw", ""),
+                                local_port=2445,
+                                remote_host="127.0.0.1",
+                                remote_port=445,
+                                ready_timeout=5,
+                            ):
+                                pass
+                args = spawn_mock.call_args.args[1]
+                self.assertEqual(args[args.index("-L") + 1], "2445:127.0.0.1:445")
+                self.assertEqual(args[-1], host)
+
     def test_ssh_local_forward_reports_transport_error_before_ready(self) -> None:
         try:
             import pexpect  # noqa: F401

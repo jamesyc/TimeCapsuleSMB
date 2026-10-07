@@ -62,6 +62,39 @@ class RuntimeTests(unittest.TestCase):
         provider.assert_called_once_with("Device root password: ")
         self.assertEqual(connection.password, "prompted-pw")
 
+    def test_resolve_env_connection_uses_the_saved_host_as_is(self) -> None:
+        for host in ("root@10.0.0.2", "root@fe80::82ea:96ff:fee6:5868%en0"):
+            with self.subTest(host=host):
+                config = AppConfig.from_values({"TC_HOST": host, "TC_PASSWORD": "pw"})
+                self.assertEqual(resolve_env_connection(config).host, host)
+
+    def test_managed_target_accepts_a_scoped_link_local_host(self) -> None:
+        config = app_config(valid_env(TC_HOST="root@fe80::1%en0"))
+        target = service_runtime.resolve_validated_managed_target(
+            config,
+            command_name="deploy",
+            profile="deploy",
+            include_probe=False,
+        )
+
+        self.assertEqual(target.connection.host, "root@fe80::1%en0")
+
+    def test_managed_target_still_rejects_unscoped_and_169_254_hosts(self) -> None:
+        cases = {
+            "root@fe80::1": "is a link-local IPv6 address without its interface",
+            "root@169.254.44.9": "must not be a link-local address",
+        }
+        for host, message in cases.items():
+            with self.subTest(host=host):
+                with self.assertRaises(ConfigError) as ctx:
+                    service_runtime.resolve_validated_managed_target(
+                        app_config(valid_env(TC_HOST=host)),
+                        command_name="deploy",
+                        profile="deploy",
+                        include_probe=False,
+                    )
+                self.assertIn(message, str(ctx.exception))
+
     def test_resolve_env_connection_does_not_prompt_without_provider(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2"})
 

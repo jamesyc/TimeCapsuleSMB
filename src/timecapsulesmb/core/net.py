@@ -68,7 +68,10 @@ def normalize_endpoint_host(value: str) -> str:
     candidate = value.strip().strip("[]")
     if not candidate:
         return ""
-    literal = ipv4_literal(candidate) or ipv6_literal(candidate)
+    literal = ipv4_literal(candidate)
+    if literal is None and ipv6_literal(candidate) is not None:
+        # A link-local IPv6 target is only usable with its zone (fe80::1%en0).
+        literal = scoped_ip_literal(candidate) or ipv6_literal(candidate)
     if literal is not None:
         return literal
     return candidate.rstrip(".")

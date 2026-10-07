@@ -16,6 +16,7 @@ from timecapsulesmb.core.net import (  # noqa: E402
     canonical_ssh_target,
     endpoint_host,
     ipv4_literal,
+    parse_endpoint,
     ipv6_literal,
     is_link_local_ip,
     is_link_local_ipv4,
@@ -40,15 +41,43 @@ class NetTests(unittest.TestCase):
             "[fd00::2]:445": "fd00::2",
             "fd00::2": "fd00::2",
             " capsule.local. ": "capsule.local",
+            "010.000.001.007": "10.0.1.7",
+            # A link-local IPv6 target keeps the zone that makes it usable.
+            "root@fe80::82ea:96ff:fee6:5868%en0": "fe80::82ea:96ff:fee6:5868%en0",
+            "root@[fe80::1%en0]:22": "fe80::1%en0",
+            "FE80:0000:0000:0000:82EA:96FF:FEE6:5868%en0": "fe80::82ea:96ff:fee6:5868%en0",
+            "fe80::1%7": "fe80::1%7",
+            # Other addresses never carry one.
+            "fd00::2%en0": "fd00::2",
+            "fe80::1": "fe80::1",
         }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(endpoint_host(raw), expected)
 
+    def test_parse_endpoint_splits_ipv4_and_scoped_ipv6_targets(self) -> None:
+        cases = {
+            "root@10.0.0.2": ("root", "10.0.0.2", None, None),
+            "root@10.0.0.2:22": ("root", "10.0.0.2", 22, None),
+            "root@10.0.0.2:ssh": ("root", "10.0.0.2:ssh", None, "ssh"),
+            "capsule.local": ("", "capsule.local", None, None),
+            "root@[fd00::2]:22": ("root", "fd00::2", 22, None),
+            "root@fe80::1%en0": ("root", "fe80::1%en0", None, None),
+            "root@[fe80::1%en0]:22": ("root", "fe80::1%en0", 22, None),
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                endpoint = parse_endpoint(raw)
+                self.assertEqual((endpoint.user, endpoint.host, endpoint.port, endpoint.invalid_port), expected)
+
     def test_canonical_ssh_target_adds_root_and_strips_default_port(self) -> None:
         self.assertEqual(canonical_ssh_target("10.0.0.2:22"), "root@10.0.0.2")
         self.assertEqual(canonical_ssh_target("admin@capsule.local:22"), "admin@capsule.local")
         self.assertEqual(canonical_ssh_target("root@[fd00::2]:22"), "root@fd00::2")
+        self.assertEqual(canonical_ssh_target("root@10.0.0.2"), "root@10.0.0.2")
+        self.assertEqual(canonical_ssh_target("010.000.000.002"), "root@10.0.0.2")
+        self.assertEqual(canonical_ssh_target("fe80::1%en0"), "root@fe80::1%en0")
+        self.assertEqual(canonical_ssh_target("root@[fe80::1%en0]:22"), "root@fe80::1%en0")
 
     def test_canonical_ssh_target_rejects_non_default_or_invalid_ports(self) -> None:
         with self.assertRaises(ValueError):

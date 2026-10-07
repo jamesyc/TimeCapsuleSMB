@@ -330,7 +330,14 @@ def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
     if host.startswith("-"):
         return f"{field_name} host must not start with a hyphen."
     host_ip = ipv4_literal(host) or ipv6_literal(host)
-    if host_ip is not None and is_link_local_ip(host_ip):
+    # A zone names this computer's interface, so a scoped fe80 address is a
+    # usable target; 169.254 and unscoped fe80 are not.
+    if host_ip is not None and is_link_local_ip(host_ip) and "%" not in host:
+        if ipv6_literal(host) is not None:
+            return (
+                f"{field_name} host {host} is a link-local IPv6 address without its interface. "
+                "Add it, for example fe80::1%en0, or select the device from discovery."
+            )
         return (
             f"{field_name} host must not be a link-local address. "
             "Use the device's LAN IP or a hostname that resolves to its LAN IP; "

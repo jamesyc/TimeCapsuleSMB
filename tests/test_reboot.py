@@ -26,6 +26,29 @@ def run(device: FakeAcpDevice, **kwargs):
 
 
 class RebootDeviceTests(unittest.TestCase):
+    def test_polls_acp_and_ssh_on_the_target_host_as_saved(self) -> None:
+        for target, host in (("root@10.0.0.2", "10.0.0.2"), ("root@fe80::1%en0", "fe80::1%en0")):
+            with self.subTest(target=target):
+                device = FakeAcpDevice()
+                seen: list[str] = []
+                read_property, open_port = device.get_property_int, device.tcp_open
+
+                def recording_read(polled: str, *args, **kwargs):
+                    seen.append(polled)
+                    return read_property(polled, *args, **kwargs)
+
+                def recording_open(polled: str, *args, **kwargs):
+                    seen.append(polled)
+                    return open_port(polled, *args, **kwargs)
+
+                device.get_property_int = recording_read
+                device.tcp_open = recording_open
+                with device.patched():
+                    reboot_device(target, "pw", wait=True, callbacks=RecordingCallbacks().callbacks())
+
+                self.assertTrue(seen)
+                self.assertEqual(set(seen), {host})
+
     def test_normal_reboot_goes_down_comes_back_and_opens_ssh(self) -> None:
         device = FakeAcpDevice()
         error, recorder = run(device)

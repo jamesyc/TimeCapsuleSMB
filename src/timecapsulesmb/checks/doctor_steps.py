@@ -1518,7 +1518,6 @@ def _smb_listing_looks_like_local_route_failure(result: CheckResult) -> bool:
 def _add_tunneled_authenticated_smb_results(
     connection: SshConnection,
     *,
-    host: str,
     smb_password: str,
     active_share_names: list[str],
     active_smb_conf_reason: str,
@@ -1536,7 +1535,9 @@ def _add_tunneled_authenticated_smb_results(
         with ssh_local_forward(
             connection,
             local_port=local_port,
-            remote_host=host,
+            # The device resolves the forward's host: its own loopback, which
+            # smbd's wildcard listener serves, works whatever address we used.
+            remote_host="127.0.0.1",
             remote_port=remote_port,
         ):
             listing_result = _authenticated_smb_listing_with_doctor_retries(
@@ -1662,7 +1663,6 @@ def _add_authenticated_smb_results(
             )
             if _add_tunneled_authenticated_smb_results(
                 connection,
-                host=host,
                 smb_password=smb_password,
                 active_share_names=active_share_names,
                 active_smb_conf_reason=active_smb_conf_reason,

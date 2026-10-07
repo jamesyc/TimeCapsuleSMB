@@ -226,12 +226,31 @@ class ReachabilityTests(unittest.TestCase):
         self.assertEqual(ping.call_args.args[0][0], "/sbin/ping6")
         self.assertIn("fd00::2", ping.call_args.args[0])
 
+    def test_ssh_and_smb_ports_are_checked_on_the_saved_host(self) -> None:
+        for saved, host in (("root@10.0.0.2", "10.0.0.2"), ("root@fe80::1%en0", "fe80::1%en0")):
+            with self.subTest(saved=saved):
+                config = AppConfig.from_values({"TC_HOST": saved, "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+                # The host's own ping binaries do not matter here.
+                with mock.patch("timecapsulesmb.services.reachability.shutil.which", side_effect=lambda name: f"/sbin/{name}"):
+                    with mock.patch(
+                        "timecapsulesmb.services.reachability.subprocess.run",
+                        return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
+                    ) as ping:
+                        with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None) as tcp:
+                            with self.ssh_auth_succeeds():
+                                reachability.run_reachability(config, {}, password="")
+
+                command = "/sbin/ping6" if ":" in host else "/sbin/ping"
+                self.assertEqual(ping.call_args.args[0], [command, "-c", "1", host])
+                self.assertIn(mock.call(host, 22, timeout=mock.ANY), tcp.call_args_list)
+                self.assertIn(mock.call(host, 445, timeout=mock.ANY), tcp.call_args_list)
+
     def test_endpoint_host_normalizes_urls_ports_ipv6_and_trailing_dots(self) -> None:
         cases = {
             "smb://Capsule.local.:445/Data": "capsule.local",
             "root@Capsule.local.:22": "Capsule.local",
             "root@[fd00::2]:22": "fd00::2",
-            "[fe80::1%bridge0]:445": "fe80::1",
+            "[fe80::1%bridge0]:445": "fe80::1%bridge0",
             "10.000.000.002:445": "10.0.0.2",
         }
 

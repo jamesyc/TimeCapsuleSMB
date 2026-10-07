@@ -80,8 +80,8 @@ def build_bonjour_expected_identity(
 ) -> BonjourExpectedIdentity:
     target_ip = None
     candidate_ip = endpoint_host(config.get("TC_HOST")).strip()
-    if candidate_ip:
-        target_ip = ipv4_literal(candidate_ip) or ipv6_literal(candidate_ip)
+    if candidate_ip and (ipv4_literal(candidate_ip) or ipv6_literal(candidate_ip)):
+        target_ip = candidate_ip
     return BonjourExpectedIdentity(
         instance_name=runtime_naming_identity.mdns_instance_name if runtime_naming_identity is not None else None,
         host_label=runtime_naming_identity.mdns_host_label if runtime_naming_identity is not None else None,
