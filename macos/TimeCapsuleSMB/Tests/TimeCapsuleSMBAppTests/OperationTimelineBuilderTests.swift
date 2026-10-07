@@ -258,6 +258,15 @@ final class OperationTimelineBuilderTests: XCTestCase {
         }
     }
 
+    func testConfigureTargetSelectionReadsAsAnACPCheck() {
+        // Configure probes the selected record's addresses on the ACP port.
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "configure", stage: "select_target"), "Checking AirPort ACP")
+        XCTAssertEqual(
+            OperationTimelineBuilder.stageTitle(for: "configure", stage: "select_target"),
+            OperationTimelineBuilder.stageTitle(for: "configure", stage: "acp_port_probe")
+        )
+    }
+
     func testFsckRestartingFileSharingAfterItsRebootShowsDeploysStartStages() {
         // fsck starts a NetBSD4 runtime after its reboot as deploy does.
         XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "fsck", stage: "post_reboot_activation"), "Start SMB After Reboot")

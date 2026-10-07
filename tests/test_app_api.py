@@ -242,6 +242,11 @@ class AppApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
         self._telemetry_client = mock.Mock()
+        # Every address of a selected record answers ACP unless a test says
+        # otherwise, so configure keeps the record's preferred address.
+        self._record_acp_probe = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.configure_target.tcp_connect_error", return_value=None)
+        )
         # App API tests exercise GUI/backend telemetry-enabled operations.
         # Keep telemetry mocked here so unit tests never POST to the live telemetry service.
         self._telemetry_factory = self._exit_stack.enter_context(
@@ -2450,6 +2455,7 @@ class AppApiTests(unittest.TestCase):
         # failure carried no addresses, so nobody could tell whether the device
         # lacked a LAN IPv4 address or discovery missed one.
         collector = CollectingSink()
+        self._record_acp_probe.return_value = "timed out"
         record = {
             "name": "Beaulieu",
             "hostname": "Beaulieu.local.",
@@ -2480,7 +2486,7 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "validation_failed")
         self.assertIn("only advertised link-local addresses", error["message"])
-        self.assertEqual(error["debug"]["stage"], "load_existing_config")
+        self.assertEqual(error["debug"]["stage"], "select_target")
         self.assertIn("169.254.44.113", json.dumps(error["debug"]["selected_bonjour_record"]))
         self.assertIn("fe80::bac7:5dff:fecf:d8ea%en0", json.dumps(error["debug"]["selected_bonjour_record"]))
         self.assertNotIn("configure_target_source", error["debug"])
@@ -2560,6 +2566,54 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(captured_connections[0].host, "root@10.0.0.80")
         self.assertEqual(values["TC_HOST"], "root@10.0.0.80")
+
+    def test_configure_reaches_a_device_on_another_ipv4_subnet_over_fe80(self) -> None:
+        # Discussion #368: same wire, two DHCP scopes. The record's IPv4 is off
+        # this Mac's network; its link-local IPv6 answers, as AirPort Utility uses.
+        collector = CollectingSink()
+        captured_connections: list[SshConnection] = []
+        self._record_acp_probe.side_effect = lambda address, port: None if address.lower().startswith("fe80") else "timed out"
+
+        def capture_probe(connection: SshConnection) -> ProbedDeviceState:
+            captured_connections.append(connection)
+            return probed_state()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", side_effect=capture_probe):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "selected_record": {
+                                "name": "AirPort Time Capsule",
+                                "hostname": "AirPort-Time-Capsule.local",
+                                "service_type": "_airport._tcp.local.",
+                                "port": 5009,
+                                "ipv4": ["192.168.1.83", "169.254.205.45"],
+                                "ipv6": ["FE80:0000:0000:0000:66A5:C3FF:FE60:FC22%en0"],
+                                "properties": {"syAP": "119"},
+                                "fullname": "AirPort Time Capsule._airport._tcp.local.",
+                                "interface_index": 6,
+                            },
+                            "password": "goodpw",
+                        },
+                    },
+                    collector.sink,
+                )
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured_connections[0].host, "root@fe80::66a5:c3ff:fe60:fc22%en0")
+        self.assertEqual(values["TC_HOST"], "root@fe80::66a5:c3ff:fe60:fc22%en0")
+        # The probing has its own stage, ahead of the SSH probe.
+        stages = [event["stage"] for event in collector.events_of_type("stage")]
+        self.assertLess(stages.index("select_target"), stages.index("ssh_probe"))
+        select_stage = collector.events_of_type("stage")[stages.index("select_target")]
+        self.assertEqual(select_stage["risk"], "remote_read")
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertEqual(result["payload"]["host"], "root@fe80::66a5:c3ff:fe60:fc22%en0")
 
     def test_configure_defaults_bare_host_to_root_user(self) -> None:
         collector = CollectingSink()
@@ -3785,6 +3839,9 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(config_path.exists())
         probe.assert_not_called()
         enable_ssh.assert_not_called()
+        # The model check needs the resolved target, so the record's address
+        # was tried first: a TCP connect to the ACP port, no ACP message.
+        self._record_acp_probe.assert_called_once_with("10.0.0.40", 5009)
         self.assertEqual(collector.events_of_type("confirmation_required"), [])
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "unsupported_device")

@@ -1235,6 +1235,42 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
 
+    def test_configure_saves_fe80_when_the_discovered_lan_address_is_off_this_network(self) -> None:
+        # Discussion #368 from the CLI: accepting the discovered default runs
+        # the same selection as the app, which reaches the device over fe80.
+        record = BonjourResolvedService(
+            name="AirPort Time Capsule",
+            hostname="AirPort-Time-Capsule.local",
+            service_type="_airport._tcp.local.",
+            ipv4=["192.168.1.83", "169.254.205.45"],
+            ipv6=["FE80:0000:0000:0000:66A5:C3FF:FE60:FC22%en0"],
+        )
+        self._record_acp_probe.side_effect = lambda address, port: None if address.lower().startswith("fe80") else "timed out"
+        prompt_values = iter(["rootpw", "Data", "admin", "TimeCapsule", "samba4", "Time Capsule Samba 4", "timecapsulesamba4"])
+        seen_defaults: dict[str, str] = {}
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label in {"Device SSH target", "Network interface on the device"}:
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        result = self.run_configure_cli(
+            discovered_records=[record],
+            input_side_effect=["1"],
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+        )
+
+        self.assertEqual(result.rc, 0)
+        # The prompt offers the advertised LAN address; the saved target is
+        # the address that answered.
+        self.assertEqual(seen_defaults["Device SSH target"], "root@192.168.1.83")
+        self.assertEqual(result.mocks.probe_connection_state.call_args.args[0].host, "root@fe80::66a5:c3ff:fe60:fc22%en0")
+        self.assertEqual(result.values["TC_HOST"], "root@fe80::66a5:c3ff:fe60:fc22%en0")
+
     def test_configure_prefills_mdns_device_model_from_detected_device(self) -> None:
         prompt_values = iter([
             "rootpw",
@@ -1988,6 +2024,61 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertIn("Selected device only advertised link-local addresses", result.text)
         self.assertIn("IPv6: fe80::82ea:96ff:fee6:c7e5", result.text)
+
+    def link_local_only_cli_run(self, *, fe80_answers: bool, typed_host: str | None):
+        seen_defaults: dict[str, str] = {}
+        record = BonjourResolvedService(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["169.254.44.9"],
+            ipv6=["fe80::82ea:96ff:fee6:c7e5%en0"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        self._record_acp_probe.return_value = None if fe80_answers else "timed out"
+        prompt_values = iter(["rootpw", "Data", "admin", "TimeCapsule", "samba4", "Time Capsule Samba 4", "timecapsulesamba4"])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the device":
+                return default
+            if label == "Device SSH target":
+                # Asked again means the first answer was refused.
+                if label in asked:
+                    raise AssertionError(f"reprompted for the SSH target after {default!r}")
+                asked.add(label)
+                return typed_host or default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        asked: set[str] = set()
+        result = self.run_configure_cli(
+            discovered_records=[record],
+            input_side_effect=["1"],
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+        )
+        return result, seen_defaults
+
+    def test_configure_offers_the_fe80_address_of_a_link_local_only_record_that_answers(self) -> None:
+        result, seen_defaults = self.link_local_only_cli_run(fe80_answers=True, typed_host=None)
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(seen_defaults["Device SSH target"], "root@fe80::82ea:96ff:fee6:c7e5%en0")
+        self.assertEqual(result.mocks.probe_connection_state.call_args.args[0].host, "root@fe80::82ea:96ff:fee6:c7e5%en0")
+        self.assertEqual(result.values["TC_HOST"], "root@fe80::82ea:96ff:fee6:c7e5%en0")
+        self.assertNotIn("Enter the device's LAN IP", result.text)
+        # 169.254 is never tried.
+        self.assertNotIn(mock.call("169.254.44.9", 5009), self._record_acp_probe.call_args_list)
+
+    def test_configure_asks_for_a_lan_address_when_a_link_local_only_record_does_not_answer(self) -> None:
+        result, seen_defaults = self.link_local_only_cli_run(fe80_answers=False, typed_host="root@10.0.0.2")
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(seen_defaults["Device SSH target"], DEFAULTS["TC_HOST"])
+        self.assertIn("only advertised link-local addresses, and none answered from this computer", result.text)
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
 
     def test_configure_defaults_to_ipv6_when_discovery_has_no_routable_ipv4(self) -> None:
         seen_defaults = {}

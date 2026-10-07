@@ -11,6 +11,13 @@ from timecapsulesmb.services.configure_target import (
 
 
 class ConfigureTargetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Every address of a selected record answers ACP unless a test says
+        # otherwise, so configure keeps the record's preferred address.
+        patcher = mock.patch("timecapsulesmb.services.configure_target.tcp_connect_error", return_value=None)
+        self.record_acp_probe = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_explicit_host_wins_over_selected_record_and_existing_config(self) -> None:
         record = BonjourResolvedService("Office", "office.local.", "_airport._tcp.local.", ipv4=["10.0.0.5"])
 
@@ -142,6 +149,7 @@ class ConfigureTargetTests(unittest.TestCase):
             ipv6=["fe80::9272:40ff:fe07:36a2%7"],
         )
 
+        self.record_acp_probe.return_value = "timed out"
         for existing in ({}, {"TC_HOST": "root@10.0.0.2"}):
             with self.subTest(existing=existing):
                 with self.assertRaises(ValueError) as raised:
@@ -152,7 +160,80 @@ class ConfigureTargetTests(unittest.TestCase):
                         ssh_opts="",
                     )
 
-                self.assertIn("only advertised link-local addresses", str(raised.exception))
+                self.assertIn("only advertised link-local addresses, and none answered", str(raised.exception))
+
+    def test_link_local_only_selected_record_uses_its_fe80_address_when_it_answers(self) -> None:
+        record = BonjourResolvedService(
+            "Office",
+            "office.local.",
+            "_airport._tcp.local.",
+            ipv4=["169.254.108.120"],
+            ipv6=["fe80::9272:40ff:fe07:36a2%7"],
+        )
+
+        resolution = resolve_configure_target(explicit_host="", selected_record=record, existing={}, ssh_opts="")
+
+        self.assertEqual(resolution.host, "root@fe80::9272:40ff:fe07:36a2%7")
+        self.assertEqual(resolution.source, "selected_record")
+        # 169.254 is never tried.
+        self.record_acp_probe.assert_called_once_with("fe80::9272:40ff:fe07:36a2%7", 5009)
+
+    def test_selected_record_falls_back_to_fe80_when_its_lan_address_is_off_this_network(self) -> None:
+        # The #368 record: the Mac is on 192.168.178.0/24, the AirPort got
+        # 192.168.1.83 from another router on the same wire.
+        record = BonjourResolvedService(
+            "AirPort Time Capsule",
+            "AirPort-Time-Capsule.local",
+            "_airport._tcp.local.",
+            ipv4=["192.168.1.83", "169.254.205.45"],
+            ipv6=["FE80:0000:0000:0000:66A5:C3FF:FE60:FC22%en0"],
+        )
+        self.record_acp_probe.side_effect = lambda address, port: None if address.lower().startswith("fe80") else "timed out"
+
+        resolution = resolve_configure_target(explicit_host="", selected_record=record, existing={}, ssh_opts="")
+
+        self.assertEqual(resolution.host, "root@fe80::66a5:c3ff:fe60:fc22%en0")
+        self.assertEqual(
+            [call.args for call in self.record_acp_probe.call_args_list],
+            [("192.168.1.83", 5009), ("FE80:0000:0000:0000:66A5:C3FF:FE60:FC22%en0", 5009)],
+        )
+
+    def test_selected_record_lan_address_wins_without_trying_fe80(self) -> None:
+        record = BonjourResolvedService(
+            "Office", "office.local.", "_airport._tcp.local.",
+            ipv4=["169.254.1.2", "10.0.0.4"], ipv6=["fe80::4%en0"],
+        )
+
+        resolution = resolve_configure_target(explicit_host="", selected_record=record, existing={}, ssh_opts="")
+
+        self.assertEqual(resolution.host, "root@10.0.0.4")
+        self.record_acp_probe.assert_called_once_with("10.0.0.4", 5009)
+
+    def test_selected_record_keeps_its_lan_address_when_nothing_answers(self) -> None:
+        # Configure then reports the ACP failure for the LAN address, as before.
+        record = BonjourResolvedService(
+            "Office", "office.local.", "_airport._tcp.local.",
+            ipv4=["10.0.0.4"], ipv6=["fe80::4%en0", "fe80::5"],
+        )
+        self.record_acp_probe.return_value = "timed out"
+
+        resolution = resolve_configure_target(explicit_host="", selected_record=record, existing={}, ssh_opts="")
+
+        self.assertEqual(resolution.host, "root@10.0.0.4")
+        # A zoneless fe80 names no interface and is never tried.
+        self.assertEqual(
+            [call.args for call in self.record_acp_probe.call_args_list],
+            [("10.0.0.4", 5009), ("fe80::4%en0", 5009)],
+        )
+
+    def test_explicit_and_saved_hosts_are_used_without_probing(self) -> None:
+        record = BonjourResolvedService("Office", "office.local.", "_airport._tcp.local.", ipv4=["10.0.0.4"])
+
+        explicit = resolve_configure_target(explicit_host="10.0.0.9", selected_record=record, existing={}, ssh_opts="")
+        saved = resolve_configure_target(explicit_host="", selected_record=None, existing={"TC_HOST": "root@10.0.0.7"}, ssh_opts="")
+
+        self.assertEqual((explicit.host, saved.host), ("root@10.0.0.9", "root@10.0.0.7"))
+        self.record_acp_probe.assert_not_called()
 
     def test_explicit_host_is_used_for_link_local_only_selected_record(self) -> None:
         record = BonjourResolvedService("Office", "office.local.", "_airport._tcp.local.", ipv4=["169.254.108.120"])

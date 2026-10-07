@@ -37,7 +37,7 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
-from timecapsulesmb.services.configure_target import resolve_configure_target
+from timecapsulesmb.services.configure_target import reachable_record_host, resolve_configure_target
 from timecapsulesmb.device.compat import airport_syap_supported, unsupported_syap_message, unsupported_syaps
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -156,15 +156,8 @@ def discover_default_record(
         print(f"Discovery skipped. Falling back to {existing_target}.\n", flush=True)
         return None
 
-    chosen_host = discovered_record_root_host(selected)
     selected_host = selected.display_host() or "manual SSH target required"
     print(f"Selected: {selected.name} ({selected_host})\n", flush=True)
-    if chosen_host is None and discovered_record_has_only_link_local_ips(selected):
-        print(
-            "Selected device only advertised link-local addresses. "
-            "Enter the device's LAN IP or LAN-resolving hostname manually.\n",
-            flush=True,
-        )
     return selected
 
 
@@ -514,6 +507,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 discovered_record = None
         command_context.add_debug_fields(selected_bonjour_record=discovered_record)
         discovered_host = discovered_record_root_host(discovered_record) if discovered_record else None
+        if discovered_record is not None and discovered_host is None and discovered_record_has_only_link_local_ips(discovered_record):
+            # Offer its link-local IPv6 address when it answers; accepting the
+            # offer then runs the same selection as the app.
+            discovered_host = reachable_record_host(discovered_record)
+            if discovered_host is None:
+                print(
+                    "Selected device only advertised link-local addresses, and none answered from this computer. "
+                    "Enter the device's LAN IP or LAN-resolving hostname manually.\n",
+                    flush=True,
+                )
         command_context.add_debug_fields(discovered_host=discovered_host)
         if discovered_record is not None:
             command_context.add_debug_fields(discovered_airport_syap=discovered_record.properties.get("syAP") or None)
@@ -577,6 +580,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             explicit_host = values["TC_HOST"]
             if discovered_record is not None and discovered_host is not None and explicit_host == discovered_host:
                 explicit_host = ""
+            command_context.set_stage("select_target")
             target = resolve_configure_target(
                 explicit_host=explicit_host,
                 selected_record=discovered_record,

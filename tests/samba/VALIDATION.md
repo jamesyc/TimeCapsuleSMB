@@ -1,3 +1,40 @@
+# Configure reaches a device on another IPv4 subnet over link-local IPv6 (2026-10-06)
+
+Discussion #368 (A1470, 7.9.1): 20 configure runs failed at the ACP port probe
+for `192.168.1.83:5009`. The Mac was on `192.168.178.0/24` and the AirPort had
+taken its address from a second router on the same wire; the record's
+`fe80::…%en0` answered 5009 in the same run's `acp_alt_probe`, and AirPort
+Utility worked through it. Since 2026-10-02 that pattern (target off this
+Mac's networks, link-local IPv6 reachable) was the largest ACP failure bucket:
+42 failures from 8 installs. Both LAN devices listen on IPv6 for sshd, smbd,
+afpserver and ACPd, and SSH, smbclient, `smbutil` and `mount_smbfs` all work
+over `fe80::…%en0`; AirPorts publish only link-local IPv6 in Bonjour.
+
+Configure now probes a selected record's LAN address on 5009 and, when it does
+not answer, the record's zoned link-local IPv6 addresses; the first to answer
+is saved as `TC_HOST=root@fe80::…%en0`. 169.254 is never tried. A typed or
+saved host is used without probing. `normalize_endpoint_host` keeps the zone
+of a link-local IPv6 literal (it used to drop it, which made the saved target,
+SSH, ACP, reboot and doctor's Bonjour match fail), validation accepts a zoned
+fe80 address, and doctor's SSH-tunnel SMB fallback forwards to the device's
+127.0.0.1. The hostname check that refused any name resolving to a link-local
+address is gone: every AirPort's `.local` name also resolves to its 169.254
+and fe80 addresses, so typing it was always refused.
+
+Validation:
+- pytest (`-n auto`): 3716 pass. `swift test`: 679 pass.
+- NetBSD 6, with `192.168.1.218` blackholed on the Mac
+  (`route add -host 192.168.1.218 127.0.0.1 -blackhole`), which reproduces
+  #368 exactly on main (target `root@192.168.1.218`, three 5009 timeouts):
+  configure from the discovered record took 3.2 s and saved
+  `root@fe80::82ea:96ff:fee6:5868%en0`; deploy rebooted and came back over it
+  (127 s); doctor passed before and after; `mount_smbfs` by `.local` name
+  mounted over fe80 in 1.0 s. With the device's resolver pointed at an address
+  that never answers, SSH logins over fe80 took 0.5-1.6 s, so sshd's reverse
+  lookup needs no hosts line for link-local clients.
+- NetBSD 4 LE over IPv4: configure chose `root@192.168.1.10` (1.6 s), deploy
+  (274 s) and doctor passed. Doctor with `TC_HOST=root@fe80::…%en0` passed.
+
 # The fake Samba build tests give a wrapper 300 s, not 30 (2026-10-06)
 
 Each `tests/test_build_samba4x.py` wrapper run starts ~400 processes for about

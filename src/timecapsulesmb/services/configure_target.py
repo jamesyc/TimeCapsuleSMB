@@ -4,12 +4,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from timecapsulesmb.core.net import is_link_local_ipv6, normalize_endpoint_host
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     discovered_record_has_only_link_local_ips,
     discovered_record_root_host,
 )
+from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services import configure as configure_service
+from timecapsulesmb.transport.local import tcp_connect_error
 
 
 ConfigureTargetSource = Literal["explicit_host", "selected_record", "existing_config"]
@@ -59,6 +62,21 @@ def bonjour_record_from_selected_record(selected: Mapping[str, object] | None) -
     )
 
 
+def reachable_record_host(record: BonjourResolvedService) -> str | None:
+    """The record's address that answers ACP: its LAN address, else link-local IPv6.
+
+    A Mac on another IPv4 subnet of the same network reaches the AirPort only
+    over link-local IPv6, as AirPort Utility does. 169.254 is never used: where
+    it would answer, the fe80 address answers too.
+    """
+    preferred = record.preferred_ip()
+    candidates = ([preferred] if preferred else []) + [ip for ip in record.ipv6 if is_link_local_ipv6(ip) and "%" in ip]
+    for address in candidates:
+        if tcp_connect_error(address, ACP_PORT) is None:
+            return f"root@{normalize_endpoint_host(address)}"
+    return None
+
+
 def resolve_configure_target(
     *,
     explicit_host: str,
@@ -78,14 +96,14 @@ def resolve_configure_target(
     if target:
         source = "explicit_host"
     else:
-        target = discovered_record_root_host(record) if record is not None else None
+        target = (reachable_record_host(record) or discovered_record_root_host(record)) if record is not None else None
         if target:
             source = "selected_record"
         elif record is not None and discovered_record_has_only_link_local_ips(record):
             # Falling back to the saved TC_HOST here would either report a blank
             # target or silently configure whichever device was saved last.
             raise ValueError(
-                "Selected device only advertised link-local addresses. "
+                "Selected device only advertised link-local addresses, and none answered from this computer. "
                 "Connect it to your network so it gets a LAN IP, then add it by that IP."
             )
         else:

@@ -171,6 +171,9 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     # telemetry) must still report which addresses the device advertised.
     if isinstance(selected_record, dict):
         context.add_debug_fields(selected_bonjour_record=selected_record)
+    # A selected record's addresses are probed here (2 s when its LAN one is
+    # off this Mac's network), so the time is not booked to loading the config.
+    context.stage("select_target")
     try:
         target = resolve_configure_target(
             explicit_host=string_param(params, "host"),

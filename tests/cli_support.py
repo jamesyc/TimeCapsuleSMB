@@ -242,6 +242,11 @@ class CliTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
         self._telemetry_client = mock.Mock()
+        # Every address of a selected record answers ACP unless a test says
+        # otherwise, so configure keeps the record's preferred address.
+        self._record_acp_probe = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.configure_target.tcp_connect_error", return_value=None)
+        )
         self._flash_capacity = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
         )
