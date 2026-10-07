@@ -405,6 +405,36 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(confirmation.actionTitle, "Write Firmware")
     }
 
+    func testSecondaryBankRestoreConfirmationNamesTheHostAndSaysNoRebootIsNeeded() throws {
+        let event = BackendEvent(
+            type: "error",
+            operation: "flash",
+            code: "confirmation_required",
+            message: "Backend fallback.",
+            details: .object([
+                "message": .string("Rewrite the backup bank."),
+                "action_title": .string("Write Firmware"),
+                "confirmation_id": .string("abc123"),
+                "presentation_id": .string("flash.restore_secondary_write"),
+                "presentation_values": .object([
+                    "host": .string("capsule.example"),
+                    "target_bank": .string("secondary"),
+                    "reboot_after_write": .bool(false)
+                ])
+            ])
+        )
+
+        let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+
+        XCTAssertEqual(confirmation.title, "Restore Backup Firmware Bank?")
+        XCTAssertEqual(
+            confirmation.message,
+            "The backup (secondary) firmware bank on capsule.example is damaged. Rewrite it with Apple stock firmware? "
+                + "The primary bank is not changed and no reboot is needed; keep the device powered for a few minutes."
+        )
+        XCTAssertEqual(confirmation.actionTitle, "Write Firmware")
+    }
+
     func testPendingConfirmationFallsBackToBackendTextForUnknownPresentationKey() throws {
         let event = BackendEvent(
             type: "error",

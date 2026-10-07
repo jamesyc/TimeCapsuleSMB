@@ -90,7 +90,7 @@ private struct ConfirmationPresentation {
                 return nil
             }
             return format(template, deviceName)
-        case "flash.patch_write":
+        case "flash.patch_write", "flash.restore_secondary_write":
             guard let host = stringValue(values, "host") else {
                 return nil
             }

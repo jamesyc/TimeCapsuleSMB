@@ -197,14 +197,20 @@ def _operation_from_args(args: argparse.Namespace) -> str:
 
 
 def _confirmation_prompt(plan: FlashPlan) -> str:
-    assert plan.target_bank is not None
+    assert plan.target_name is not None
     if plan.mode == "restore":
         payload = plan.payload
         version = "unknown" if payload is None else payload.template_version or f"0x{payload.inner_version:08x}"
         product = "unknown" if payload is None else payload.template_product_id or str(payload.inner_model)
+        if plan.secondary_refresh is not None:
+            return (
+                "The secondary (backup) firmware bank is invalid. "
+                f"This will write Apple firmware {version} for product {product} to the secondary bank. "
+                "The primary bank is not changed and no reboot is needed. Continue?"
+            )
         return (
             f"This will flash Apple stock firmware {version} for product {product} "
-            f"to the {plan.target_bank.name} firmware bank. Continue?"
+            f"to the {plan.target_name} firmware bank. Continue?"
         )
     return "This will patch the primary firmware bank. Continue?"
 
@@ -214,8 +220,8 @@ def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan) 
         "flash_plan_mode": plan.mode,
         "flash_plan_already_satisfied": plan.already_satisfied,
     }
-    if plan.target_bank is not None:
-        fields["flash_plan_target_bank"] = plan.target_bank.name
+    if plan.target_name is not None:
+        fields["flash_plan_target_bank"] = plan.target_name
     if plan.payload is not None:
         fields.update({
             "firmware_template_source": plan.payload.template_source,
@@ -233,7 +239,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--read-only", action="store_true", help="Dump and back up firmware banks without patch planning")
     mode_group.add_argument("--patch", action="store_true", help="Patch the primary firmware bank LOGIN hook")
-    mode_group.add_argument("--restore", action="store_true", help="Restore the target firmware bank from Apple stock firmware")
+    mode_group.add_argument("--restore", action="store_true", help="Restore Apple stock firmware: rewrites an invalid secondary bank, otherwise the target bank")
     mode_group.add_argument("--check-apple", action="store_true", help="Check whether candidate firmware banks match Apple stock firmware")
     mode_group.add_argument("--download-only", action="store_true", help="Download and validate Apple firmware without writing")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before --patch or --restore writes")
@@ -424,7 +430,7 @@ def _prepare_write(
         if operation == "patch":
             print("Primary firmware bank is already patched; no write needed.")
         else:
-            target_name = "target" if plan.target_bank is None else plan.target_bank.name.capitalize()
+            target_name = (plan.target_name or "target").capitalize()
             print(f"{target_name} firmware bank already matches the requested Apple stock firmware; no write needed.")
         record_write_outcome(
             bundle=bundle,
@@ -435,6 +441,16 @@ def _prepare_write(
         )
         command_context.succeed()
         return False, 0
+
+    if plan.secondary_refresh is not None and args.reboot:
+        message = (
+            "--reboot does not apply: restore is rewriting the secondary (backup) firmware bank, "
+            "which needs no reboot. Run `tcapsule flash --restore` without --reboot."
+        )
+        record_flash_error(command_context, message, stage="plan_flash")
+        print(message)
+        command_context.fail()
+        return False, 1
 
     if not args.yes:
         command_context.set_stage("confirm_write")
@@ -474,11 +490,12 @@ def _write_flash(
     live_login: bytes,
     log: ProgressLogger,
 ) -> dict[str, object] | None:
-    assert plan.target_bank is not None
+    assert plan.target_name is not None
     stage = write_stage_for_plan(plan)
-    target_text = plan.target_bank.name
     command_context.set_stage(stage)
-    emit_progress(log, f"Sending ACP flash command for {target_text} bank...")
+    if plan.secondary_refresh is None:
+        # write_flash_plan logs the secondary bank write command itself.
+        emit_progress(log, f"Sending ACP flash command for {plan.target_name} bank...")
     try:
         write_result = write_flash_plan(target=target, bundle=bundle, plan=plan, log=log)
     except FlashAnalysisError as exc:
@@ -523,12 +540,13 @@ def _write_flash(
     command_context.update_fields(
         wrote_bank=write_result["bank"],
         readback_sha256=write_result["readback_sha256"],
-        readback_prefix_sha256=write_result["readback_prefix_sha256"],
-        acp_reply_body_size=write_result["reply_body_size"],
+        readback_prefix_sha256=write_result.get("readback_prefix_sha256"),
+        acp_reply_body_size=write_result.get("reply_body_size"),
+        flash_firmware_version=write_result.get("firmware_version"),
     )
     print(
         f"Firmware write validated for {write_result['bank']} bank; "
-        f"readback_prefix_sha256={write_result['readback_prefix_sha256']}"
+        f"readback_sha256={write_result['readback_sha256']}"
     )
     return write_result
 
@@ -540,14 +558,15 @@ def _finish_write(
     operation: str,
     target: FlashTarget,
     bundle: FlashAnalysisBundle,
+    plan: FlashPlan,
 ) -> int:
-    reboot = operation == "restore" and args.reboot
+    reboot = operation == "restore" and args.reboot and plan.secondary_refresh is None
     wait = reboot and not args.no_wait
     try:
         finish_validated_write(
             target=target,
             bundle=bundle,
-            plan_operation=operation,
+            plan=plan,
             reboot=reboot,
             wait=wait,
             callbacks=command_context.to_operation_callbacks(),
@@ -560,7 +579,18 @@ def _finish_write(
             print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
         return 1
 
-    if operation == "patch":
+    if plan.secondary_refresh is not None:
+        print(f"{color_green('Backup firmware bank restored and verified.')} "
+              "The primary firmware was not changed and no reboot is needed.", flush=True)
+        # An unrecognized primary LOGIN gets no next step: patch would refuse it.
+        # A patched primary came here either from patch's refusal (nothing
+        # left to do) or to undo the patch (restore again).
+        if plan.secondary_refresh.primary_login == "already_patched":
+            print("The primary bank keeps the boot hook. To put Apple stock firmware back on it, "
+                  "run `tcapsule flash --restore` again.", flush=True)
+        elif plan.secondary_refresh.primary_login == "stock":
+            print("Run `tcapsule flash --patch` to install the boot hook.", flush=True)
+    elif operation == "patch":
         print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
         print(f"{color_green('Patch write successful.')} The device needs to be manually rebooted.", flush=True)
     elif not reboot:
@@ -624,7 +654,7 @@ def _run_flash(
     ) is None:
         return 1
 
-    return _finish_write(command_context, args=args, operation=operation, target=target, bundle=bundle)
+    return _finish_write(command_context, args=args, operation=operation, target=target, bundle=bundle, plan=plan)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

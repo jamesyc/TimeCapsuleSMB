@@ -201,6 +201,13 @@ class SummaryProducerTests(unittest.TestCase):
             "flash_restore_write_validated_reboot_requested", [], "Flash restore write validated; reboot requested."),
         "flash_restore_write_manual_reboot": (
             "flash_restore_write_validated_manual_reboot", [], "Flash restore write validated; manual reboot required."),
+        "flash_restore_secondary_write_plan": (
+            "flash.restore_secondary_write_plan_generated", [],
+            "Restore will rewrite the invalid secondary (backup) firmware bank with Apple firmware; "
+            "the primary bank is not changed."),
+        "flash_restore_secondary_write_validated": (
+            "flash_restore_secondary_write_validated", [],
+            "Secondary (backup) firmware bank restored and verified; no reboot needed."),
         "flash_write_completed": ("flash_write_completed", [], "Flash write completed."),
     }
 

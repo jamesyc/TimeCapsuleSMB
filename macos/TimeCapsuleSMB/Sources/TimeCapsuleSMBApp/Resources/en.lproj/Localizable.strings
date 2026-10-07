@@ -155,6 +155,9 @@
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook?";
 "confirm.flash.restore_write.action" = "Write Firmware";
 "confirm.flash.restore_write.message" = "Restore Apple stock firmware to the %@ firmware bank on %@ and reboot after validation?";
+"confirm.flash.restore_secondary_write.action" = "Write Firmware";
+"confirm.flash.restore_secondary_write.message" = "The backup (secondary) firmware bank on %@ is damaged. Rewrite it with Apple stock firmware? The primary bank is not changed and no reboot is needed; keep the device powered for a few minutes.";
+"confirm.flash.restore_secondary_write.title" = "Restore Backup Firmware Bank?";
 "confirm.flash.restore_write.title" = "Restore Apple Firmware?";
 "confirm.uninstall.no_reboot.action" = "Uninstall";
 "confirm.uninstall.no_reboot.message" = "Remove managed TimeCapsuleSMB files from the device?";
@@ -303,6 +306,7 @@
 "backend.summary.flash_backup_saved" = "Flash backup saved to %@.";
 "backend.summary.flash_patch_write_validated_power_cycle" = "Flash patch write validated; manual power cycle required.";
 "backend.summary.flash_plan_already_satisfied" = "Flash plan is already satisfied; no write is needed.";
+"backend.summary.flash_restore_secondary_write_validated" = "Secondary (backup) firmware bank restored and verified; no reboot needed.";
 "backend.summary.flash_restore_write_validated_manual_reboot" = "Flash restore write validated; manual reboot required.";
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Flash restore write validated; reboot requested.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash restore write validated; device rebooted.";
@@ -343,6 +347,7 @@
 "backend.summary.flash.patch_plan_generated" = "Flash patch plan generated.";
 "backend.summary.flash.patch_write_plan_generated" = "Flash patch write plan generated.";
 "backend.summary.flash.restore_plan_generated" = "Flash restore plan generated.";
+"backend.summary.flash.restore_secondary_write_plan_generated" = "Restore will rewrite the invalid secondary (backup) firmware bank with Apple firmware; the primary bank is not changed.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash restore write plan generated.";
 "backend.summary.fsck_failed" = "fsck_hfs exited with status %d; the disk may still need repair.";
 "backend.summary.reachability.auth_failed" = "The device rejected the supplied password or SSH credentials.";
@@ -621,6 +626,8 @@
 "backend.error.deploy.deploy_disk_not_mounted" = "A valid HFS disk was found, but it is not mounted, and the device did not mount it when asked. Wait a minute, then retry, or restart the device.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "A valid HFS disk is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be unmounted during the install. Wait a minute, then retry, or restart the device.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is not installed on this device. Run “Install / Update Samba” first.";
+"backend.error.flash.secondary_bank_invalid" = "Patching was refused because the backup (secondary) firmware bank is damaged. Choose “Plan Restore” to rewrite it with Apple firmware, then choose “Back Up and Inspect Again” and patch.";
+"backend.error.flash.secondary_bank_read_mismatch" = "The backup (secondary) firmware bank read differently in this backup and in the device's own check, so it was not rewritten and patching was refused. Choose “Back Up and Inspect”.";
 "backend.error.activate.runtime_outdated" = "The TimeCapsuleSMB installed on this device is too old for this app to start. Run “Install / Update Samba” first.";
 "backend.error.activate.client_outdated" = "The TimeCapsuleSMB installed on this device is from a newer major version than this app. Update TimeCapsuleSMB, then try again.";
 "backend.error.ssh_enable_timeout" = "The device accepted the setting, but SSH hasn't come up yet. Wait a few minutes (or restart the device) and try again.";
@@ -771,6 +778,14 @@
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB not installed";
 "backend.recovery.activate.runtime_not_installed.message" = "The device has no TimeCapsuleSMB installation to start.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Run Install / Update Samba.";
+"backend.recovery.flash.secondary_bank_invalid.title" = "Backup firmware bank is damaged";
+"backend.recovery.flash.secondary_bank_invalid.message" = "The secondary (backup) firmware bank is not a valid copy, so patching the primary bank is refused: an interrupted write would leave nothing to start from.";
+"backend.recovery.flash.secondary_bank_invalid.action.1" = "Choose Plan Restore to rewrite the backup bank with Apple firmware.";
+"backend.recovery.flash.secondary_bank_invalid.action.2" = "Then choose Back Up and Inspect Again, and patch.";
+"backend.recovery.flash.secondary_bank_read_mismatch.title" = "Backup firmware bank read inconsistently";
+"backend.recovery.flash.secondary_bank_read_mismatch.message" = "This backup's read of the secondary (backup) firmware bank does not agree with the device's own check of it. The bank may still be a good copy, so it is not rewritten and patching is refused.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Choose Back Up and Inspect.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "If the reads keep disagreeing, leave the firmware as it is: this device's flash may be failing.";
 "backend.recovery.activate.runtime_outdated.title" = "Installation is out of date";
 "backend.recovery.activate.runtime_outdated.message" = "The installed TimeCapsuleSMB is too old for this app to start or check.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Run Install / Update Samba.";

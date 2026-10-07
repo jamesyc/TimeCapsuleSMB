@@ -157,6 +157,9 @@
 "confirm.flash.patch_write.title" = "¿Modificar el hook de arranque del firmware?";
 "confirm.flash.restore_write.action" = "Escribir firmware";
 "confirm.flash.restore_write.message" = "¿Restaurar el firmware original de Apple en el banco de firmware %@ de %@ y reiniciar después de verificarlo?";
+"confirm.flash.restore_secondary_write.action" = "Escribir firmware";
+"confirm.flash.restore_secondary_write.message" = "El banco de firmware de respaldo (secundario) de %@ está dañado. ¿Volver a escribirlo con el firmware original de Apple? El banco principal no se modifica y no hace falta reiniciar; mantenga el dispositivo encendido unos minutos.";
+"confirm.flash.restore_secondary_write.title" = "¿Restaurar el banco de firmware de respaldo?";
 "confirm.flash.restore_write.title" = "¿Restaurar el firmware de Apple?";
 "confirm.uninstall.no_reboot.action" = "Desinstalar";
 "confirm.uninstall.no_reboot.message" = "¿Eliminar del dispositivo los archivos administrados por TimeCapsuleSMB?";
@@ -305,6 +308,7 @@
 "backend.summary.flash_backup_saved" = "Copia de seguridad de la memoria flash guardada en %@.";
 "backend.summary.flash_patch_write_validated_power_cycle" = "Escritura del parche en memoria flash verificada; desconecte y vuelva a conectar la alimentación manualmente.";
 "backend.summary.flash_plan_already_satisfied" = "La memoria flash ya cumple el plan; no es necesario escribir.";
+"backend.summary.flash_restore_secondary_write_validated" = "Banco de firmware secundario (de respaldo) restaurado y verificado; no hace falta reiniciar.";
 "backend.summary.flash_restore_write_validated_manual_reboot" = "Restauración de la memoria flash verificada; se requiere reinicio manual.";
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Restauración de la memoria flash verificada; reinicio solicitado.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Restauración de la memoria flash verificada; dispositivo reiniciado.";
@@ -345,6 +349,7 @@
 "backend.summary.flash.patch_plan_generated" = "Plan de parche de la memoria flash generado.";
 "backend.summary.flash.patch_write_plan_generated" = "Plan de escritura del parche en la memoria flash generado.";
 "backend.summary.flash.restore_plan_generated" = "Plan de restauración de la memoria flash generado.";
+"backend.summary.flash.restore_secondary_write_plan_generated" = "La restauración volverá a escribir el banco de firmware secundario (de respaldo), que no es válido, con firmware de Apple; el banco principal no se modifica.";
 "backend.summary.flash.restore_write_plan_generated" = "Plan de escritura de la restauración en la memoria flash generado.";
 "backend.summary.fsck_failed" = "fsck_hfs terminó con el estado %d; es posible que el disco aún necesite reparación.";
 "backend.summary.reachability.auth_failed" = "El dispositivo rechazó la contraseña o las credenciales SSH proporcionadas.";
@@ -623,6 +628,8 @@
 "backend.error.deploy.deploy_disk_not_mounted" = "Se encontró un disco HFS válido, pero no está montado y el dispositivo no lo montó cuando se le solicitó. Espere un minuto y vuelva a intentarlo, o reinicie el dispositivo.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Hay un disco HFS válido montado, pero el dispositivo no aceptó mantenerlo montado para TimeCapsuleSMB, por lo que podría desmontarse durante la instalación. Espere un minuto y vuelva a intentarlo, o reinicie el dispositivo.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB no está instalado en este dispositivo. Ejecute primero «Instalar / actualizar Samba».";
+"backend.error.flash.secondary_bank_invalid" = "Se rechazó el parche porque el banco de firmware de respaldo (secundario) está dañado. Elija «Planificar restauración» para volver a escribirlo con firmware de Apple; después elija «Crear copia de seguridad e inspeccionar de nuevo» y aplique el parche.";
+"backend.error.flash.secondary_bank_read_mismatch" = "El banco de firmware de respaldo (secundario) se leyó de forma distinta en esta copia de seguridad y en la comprobación del propio dispositivo, por lo que no se volvió a escribir y se rechazó el parche. Elija «Crear copia de seguridad e inspeccionar».";
 "backend.error.activate.runtime_outdated" = "El TimeCapsuleSMB instalado en este dispositivo es demasiado antiguo para que esta app pueda iniciarlo. Ejecute primero «Instalar / actualizar Samba».";
 "backend.error.activate.client_outdated" = "El TimeCapsuleSMB instalado en este dispositivo pertenece a una versión principal más reciente que esta app. Actualice TimeCapsuleSMB y vuelva a intentarlo.";
 "backend.error.ssh_enable_timeout" = "El dispositivo aceptó el ajuste, pero SSH aún no está disponible. Espera unos minutos (o reinicia el dispositivo) e inténtalo de nuevo.";
@@ -773,6 +780,14 @@
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB no está instalado";
 "backend.recovery.activate.runtime_not_installed.message" = "El dispositivo no tiene ninguna instalación de TimeCapsuleSMB que se pueda iniciar.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Ejecute «Instalar / actualizar Samba».";
+"backend.recovery.flash.secondary_bank_invalid.title" = "El banco de firmware de respaldo está dañado";
+"backend.recovery.flash.secondary_bank_invalid.message" = "El banco de firmware secundario (de respaldo) no es una copia válida, por lo que se rechaza parchear el banco principal: una escritura interrumpida no dejaría nada desde lo que arrancar.";
+"backend.recovery.flash.secondary_bank_invalid.action.1" = "Elija «Planificar restauración» para volver a escribir el banco de respaldo con firmware de Apple.";
+"backend.recovery.flash.secondary_bank_invalid.action.2" = "Después elija «Crear copia de seguridad e inspeccionar de nuevo» y aplique el parche.";
+"backend.recovery.flash.secondary_bank_read_mismatch.title" = "El banco de firmware de respaldo se leyó de forma inconsistente";
+"backend.recovery.flash.secondary_bank_read_mismatch.message" = "La lectura del banco de firmware secundario (de respaldo) en esta copia de seguridad no coincide con la comprobación del propio dispositivo. El banco puede seguir siendo una copia válida, por lo que no se vuelve a escribir y se rechaza el parche.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Elija «Crear copia de seguridad e inspeccionar».";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Si las lecturas siguen sin coincidir, deje el firmware como está: la memoria flash de este dispositivo podría estar fallando.";
 "backend.recovery.activate.runtime_outdated.title" = "La instalación está desactualizada";
 "backend.recovery.activate.runtime_outdated.message" = "El TimeCapsuleSMB instalado es demasiado antiguo para que esta app pueda iniciarlo o comprobarlo.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Ejecute «Instalar / actualizar Samba».";

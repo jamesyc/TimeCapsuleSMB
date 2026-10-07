@@ -373,6 +373,26 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
+    ("flash", "secondary_bank_invalid"): RecoveryInfo(
+        "Backup firmware bank is damaged",
+        "The secondary (backup) firmware bank is not a valid copy, so patching the primary bank is refused: "
+        "an interrupted write would leave nothing to start from.",
+        (
+            "Choose Plan Restore to rewrite the backup bank with Apple firmware.",
+            "Then choose Back Up and Inspect Again, and patch.",
+        ),
+        retryable=False,
+    ),
+    ("flash", "secondary_bank_read_mismatch"): RecoveryInfo(
+        "Backup firmware bank read inconsistently",
+        "This backup's read of the secondary (backup) firmware bank does not agree with the device's own check "
+        "of it. The bank may still be a good copy, so it is not rewritten and patching is refused.",
+        (
+            "Choose Back Up and Inspect.",
+            "If the reads keep disagreeing, leave the firmware as it is: this device's flash may be failing.",
+        ),
+        retryable=False,
+    ),
     ("activate", "runtime_not_installed"): RecoveryInfo(
         "TimeCapsuleSMB not installed",
         "The device has no TimeCapsuleSMB installation to start.",

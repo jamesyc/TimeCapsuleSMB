@@ -157,6 +157,9 @@
 "confirm.flash.patch_write.title" = "Изменить хук запуска в прошивке?";
 "confirm.flash.restore_write.action" = "Записать прошивку";
 "confirm.flash.restore_write.message" = "Восстановить оригинальную прошивку Apple в банке прошивки %@ на %@ и перезагрузить устройство после проверки?";
+"confirm.flash.restore_secondary_write.action" = "Записать прошивку";
+"confirm.flash.restore_secondary_write.message" = "Резервный (вторичный) банк прошивки на %@ повреждён. Перезаписать его оригинальной прошивкой Apple? Основной банк не изменяется, перезагрузка не нужна; не отключайте питание устройства несколько минут.";
+"confirm.flash.restore_secondary_write.title" = "Восстановить резервный банк прошивки?";
 "confirm.flash.restore_write.title" = "Восстановить прошивку Apple?";
 "confirm.uninstall.no_reboot.action" = "Удалить";
 "confirm.uninstall.no_reboot.message" = "Удалить с устройства файлы, управляемые TimeCapsuleSMB?";
@@ -305,6 +308,7 @@
 "backend.summary.flash_backup_saved" = "Резервная копия флеш-памяти сохранена в %@.";
 "backend.summary.flash_patch_write_validated_power_cycle" = "Запись патча во флеш-память проверена; требуется вручную отключить и снова подключить питание.";
 "backend.summary.flash_plan_already_satisfied" = "Содержимое флеш-памяти уже соответствует плану; запись не требуется.";
+"backend.summary.flash_restore_secondary_write_validated" = "Вторичный (резервный) банк прошивки восстановлен и проверен; перезагрузка не нужна.";
 "backend.summary.flash_restore_write_validated_manual_reboot" = "Восстановление флеш-памяти проверено; требуется ручная перезагрузка.";
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Восстановление флеш-памяти проверено; перезагрузка запрошена.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Восстановление флеш-памяти проверено; устройство перезагружено.";
@@ -345,6 +349,7 @@
 "backend.summary.flash.patch_plan_generated" = "Создан план патча флеш-памяти.";
 "backend.summary.flash.patch_write_plan_generated" = "Создан план записи патча во флеш-память.";
 "backend.summary.flash.restore_plan_generated" = "Создан план восстановления флеш-памяти.";
+"backend.summary.flash.restore_secondary_write_plan_generated" = "Восстановление перезапишет недействительный вторичный (резервный) банк прошивки прошивкой Apple; основной банк не изменяется.";
 "backend.summary.flash.restore_write_plan_generated" = "Создан план записи восстановления во флеш-память.";
 "backend.summary.fsck_failed" = "fsck_hfs завершился с кодом %d; диск, возможно, все еще требует исправления.";
 "backend.summary.reachability.auth_failed" = "Устройство отклонило указанный пароль или учетные данные SSH.";
@@ -623,6 +628,8 @@
 "backend.error.deploy.deploy_disk_not_mounted" = "Найден корректный диск HFS, но он не смонтирован, и устройство не смонтировало его по запросу. Подождите минуту и повторите попытку или перезагрузите устройство.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Корректный диск HFS смонтирован, но устройство отказалось удерживать его смонтированным для TimeCapsuleSMB, поэтому во время установки он может быть размонтирован. Подождите минуту и повторите попытку или перезагрузите устройство.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB не установлен на этом устройстве. Сначала запустите «Установить/обновить Samba».";
+"backend.error.flash.secondary_bank_invalid" = "Установка патча отклонена, потому что резервный (вторичный) банк прошивки повреждён. Выберите «Спланировать восстановление», чтобы перезаписать его прошивкой Apple, затем выберите «Снова создать резервную копию и проверить» и установите патч.";
+"backend.error.flash.secondary_bank_read_mismatch" = "Резервный (вторичный) банк прошивки прочитан в этой резервной копии иначе, чем при проверке самим устройством, поэтому он не перезаписан, а установка патча отклонена. Выберите «Создать резервную копию и проверить».";
 "backend.error.activate.runtime_outdated" = "Установленный на этом устройстве TimeCapsuleSMB слишком старый, и это приложение не может его запустить. Сначала запустите «Установить/обновить Samba».";
 "backend.error.activate.client_outdated" = "Установленный на этом устройстве TimeCapsuleSMB относится к более новой основной версии, чем это приложение. Обновите TimeCapsuleSMB и повторите попытку.";
 "backend.error.ssh_enable_timeout" = "Устройство приняло настройку, но SSH еще не стал доступен. Подождите несколько минут (или перезапустите устройство) и повторите попытку.";
@@ -773,6 +780,14 @@
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB не установлен";
 "backend.recovery.activate.runtime_not_installed.message" = "На устройстве нет установленного TimeCapsuleSMB, который можно запустить.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Запустите «Установить/обновить Samba».";
+"backend.recovery.flash.secondary_bank_invalid.title" = "Резервный банк прошивки повреждён";
+"backend.recovery.flash.secondary_bank_invalid.message" = "Вторичный (резервный) банк прошивки не является действительной копией, поэтому установка патча в основной банк отклонена: при прерванной записи устройству не с чего было бы загрузиться.";
+"backend.recovery.flash.secondary_bank_invalid.action.1" = "Выберите «Спланировать восстановление», чтобы перезаписать резервный банк прошивкой Apple.";
+"backend.recovery.flash.secondary_bank_invalid.action.2" = "Затем выберите «Снова создать резервную копию и проверить» и установите патч.";
+"backend.recovery.flash.secondary_bank_read_mismatch.title" = "Резервный банк прошивки читается непоследовательно";
+"backend.recovery.flash.secondary_bank_read_mismatch.message" = "Чтение вторичного (резервного) банка прошивки в этой резервной копии не совпадает с проверкой самим устройством. Банк может оказаться действительной копией, поэтому он не перезаписывается, а установка патча отклонена.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Выберите «Создать резервную копию и проверить».";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Если результаты чтения по-прежнему расходятся, оставьте прошивку как есть: флеш-память этого устройства может выходить из строя.";
 "backend.recovery.activate.runtime_outdated.title" = "Установленная версия устарела";
 "backend.recovery.activate.runtime_outdated.message" = "Установленный TimeCapsuleSMB слишком старый, и это приложение не может его запустить или проверить.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Запустите «Установить/обновить Samba».";

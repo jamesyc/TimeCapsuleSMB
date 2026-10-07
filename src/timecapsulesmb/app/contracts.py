@@ -475,6 +475,12 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
         summary_fields = apple_summary.fields()
     elif already_satisfied:
         summary_fields = Summary("flash_plan_already_satisfied", "Flash plan is already satisfied; no write is needed.").fields()
+    elif write_requested and mode == "restore" and plan.get("secondary_refresh"):
+        summary_fields = Summary(
+            "flash.restore_secondary_write_plan_generated",
+            "Restore will rewrite the invalid secondary (backup) firmware bank with Apple firmware; "
+            "the primary bank is not changed.",
+        ).fields()
     elif write_requested:
         key = f"flash.{mode}_write_plan_generated" if mode in ("patch", "restore") else None
         summary_fields = _flash_summary_fields(key, f"Flash {mode} write plan generated.")
@@ -518,6 +524,9 @@ def flash_write_payload(raw: Mapping[str, object]) -> dict[str, object]:
     elif write_validated and mode == "patch":
         summary_fields = Summary("flash_patch_write_validated_power_cycle",
                                  "Flash patch write validated; manual power cycle required.").fields()
+    elif write_validated and mode == "restore" and post_write_action == "none":
+        summary_fields = Summary("flash_restore_secondary_write_validated",
+                                 "Secondary (backup) firmware bank restored and verified; no reboot needed.").fields()
     elif write_validated and mode == "restore":
         if post_write_action == "ssh_reboot" and rebooted:
             summary = Summary("flash_restore_write_validated_rebooted", "Flash restore write validated; device rebooted.")

@@ -1,3 +1,71 @@
+# Restore rewrites an invalid secondary firmware bank (2026-10-07)
+
+Since June, 15 TimeCapsule6,116 units (about 2.2% of the 670 that used flash)
+refused patch and restore because the secondary bank's footer did not
+validate; 8 of them read a different secondary on every backup. Patching
+rightly needs a valid secondary: Apple's EFI bootloader on the 116 boots the
+primary when its adler32 footer checks out, otherwise the secondary, and with
+neither it waits at a serial-only shell. ACPd cannot repair the secondary on
+shipping units: its write-secondary command needs the factory `diag` unlock,
+which has no ACP setter.
+
+Restore now rewrites an invalid secondary when the primary is a valid backup
+and the bank the device runs, on syAP 106, 109, 113 and 116, with the newest
+Apple firmware for the model (`--firmware-version` picks another):
+`/sbin/flashctl /dev/rflash1.raw erase </dev/null && /bin/dd
+of=/dev/rflash1.raw ibs=4096 obs=65536`, fed a whole bank image (firmware,
+0xFF, the footer at bank end - 32, written last). On both kernels (Kirkwood SPI 113/116, Orion
+CFI 106/109) an erase of that unit cannot reach any other unit, a raw write
+is cut off at the end of the bank, and dd with ibs != obs reblocks short pipe
+reads (checked on the LAN 116). Nothing verifies a raw write or reports an
+unerased sector, so the write passes only when the full readback equals the
+image (one reread for flash that reads inconsistently), ACPd's cks2 equals the
+footer, and cks1 did not move; a readback equal to the old bank says the bank
+may be write-protected. No reboot follows. The secondary is rewritten only when
+both reads of it fail the footer at bank end - 32: this backup's (the data does
+not match the slot's checksum, or the slot is empty) and ACPd's (cks2, the
+adler32 of its own read up to the slot's end offset, is not the slot's
+checksum, or is nonzero for an empty slot). When one read passes, the bank may
+still be a good fallback: restore and patch refuse, name the read that
+disagreed and ask for a fresh backup (app code
+`secondary_bank_read_mismatch`); both passing keeps the old refusals. After the
+rewrite the CLI suggests patch for a stock primary, says a patched one keeps
+the boot hook (restore again removes it), and says nothing for a LOGIN it does
+not recognize. Patch refused for a bad
+secondary alone now says to run restore (app code `secondary_bank_invalid`).
+The app's confirmation names the image's SHA-256 and firmware version, so it
+cannot approve a different download. Never
+`flashctl unlock`: on Orion it erases every protection bit chip-wide.
+Reverse-engineering notes: plan/issue177-acpd/flash-secondary-20261007.
+
+Validation:
+- pytest, full suite (3816 passed, `-n auto`); Ruff clean. New
+  tests/test_flash_secondary.py drives 7 MiB banks through a fake device that
+  behaves like the kernel and ACPd: the image layout, target choice for every
+  bank state and model, the size guard, the exact command, every verify
+  outcome (flaky read, write-protected, corrupt, failed command, cks2, cks1),
+  each state of the two reads (both fail, each one alone passing, no cks2,
+  both pass) for restore, patch and `--force`, the fake device running
+  the command against the devices it names (only rflash1 erased, no unlock),
+  the manifest and stale backup after a write, the CLI (`--restore`, its
+  prompt, `--reboot` refused, patch pointing at restore, the next step per
+  LOGIN state, one write log line) and the app op (both error codes, a
+  confirmation that does not carry over to another image).
+- Swift, full suite (687 passed, 1 skipped): FlashWorkflowStoreTests and
+  PendingConfirmationTests (secondary confirmation, no power-cycle notice
+  after the write); all ten catalogs carry both error codes.
+- Device, NetBSD 4 LE (TimeCapsule6,116, patched 7.8.1 primary, valid
+  7.6.1 secondary): two reads of the secondary agreed (sha256 c1c54741...),
+  then `flashctl /dev/rflash1.raw erase` (27 s) left it all 0xFF with ACP
+  cks2 = 0 and cks1 unchanged (0xb66cde93). `tcapsule flash --restore --yes`
+  from this tree planned the rewrite (footer unreadable, both reads damaged),
+  downloaded 7.8.1, wrote and verified it in 74 s for the whole run: readback
+  = image (sha256 90c73531...), cks2 = footer 0x5d239503, cks1 before = after.
+  A separate read-only backup afterwards found both banks valid backups, the
+  primary byte-identical (a96e21e4...) and still patched, the secondary
+  Apple 7.8.1 with a stock LOGIN; uptime kept climbing (no reboot), nothing
+  under /mnt/Flash changed.
+
 # Doctor accepts the NBNS answer of a device reached only at 169.254 (2026-10-06)
 
 With the NetBSD 6 device's LAN address unreachable from the Mac (the #368

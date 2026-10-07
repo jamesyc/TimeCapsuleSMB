@@ -157,6 +157,9 @@
 "confirm.flash.patch_write.title" = "Opstart-hook in firmware patchen?";
 "confirm.flash.restore_write.action" = "Firmware schrijven";
 "confirm.flash.restore_write.message" = "De originele Apple-firmware terugzetten in firmwarebank %@ op %@ en na verificatie herstarten?";
+"confirm.flash.restore_secondary_write.action" = "Firmware schrijven";
+"confirm.flash.restore_secondary_write.message" = "De reservefirmwarebank (secundair) op %@ is beschadigd. Opnieuw schrijven met de originele Apple-firmware? De primaire bank wordt niet gewijzigd en een herstart is niet nodig; houd het apparaat een paar minuten ingeschakeld.";
+"confirm.flash.restore_secondary_write.title" = "Reservefirmwarebank herstellen?";
 "confirm.flash.restore_write.title" = "Apple-firmware herstellen?";
 "confirm.uninstall.no_reboot.action" = "Verwijderen";
 "confirm.uninstall.no_reboot.message" = "Door TimeCapsuleSMB beheerde bestanden van het apparaat verwijderen?";
@@ -305,6 +308,7 @@
 "backend.summary.flash_backup_saved" = "Flashback-up opgeslagen in %@.";
 "backend.summary.flash_patch_write_validated_power_cycle" = "Het schrijven van de flashpatch is geverifieerd; schakel het apparaat handmatig uit en weer in.";
 "backend.summary.flash_plan_already_satisfied" = "De flashinhoud voldoet al aan het plan; schrijven is niet nodig.";
+"backend.summary.flash_restore_secondary_write_validated" = "Secundaire firmwarebank (reserve) hersteld en geverifieerd; een herstart is niet nodig.";
 "backend.summary.flash_restore_write_validated_manual_reboot" = "Herstel naar flash geverifieerd; handmatige herstart vereist.";
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Herstel naar flash geverifieerd; herstart aangevraagd.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Herstel naar flash geverifieerd; apparaat herstart.";
@@ -345,6 +349,7 @@
 "backend.summary.flash.patch_plan_generated" = "Flash-patchplan aangemaakt.";
 "backend.summary.flash.patch_write_plan_generated" = "Flash-schrijfplan voor de patch aangemaakt.";
 "backend.summary.flash.restore_plan_generated" = "Flash-herstelplan aangemaakt.";
+"backend.summary.flash.restore_secondary_write_plan_generated" = "Het herstel schrijft de ongeldige secundaire firmwarebank (reserve) opnieuw met Apple-firmware; de primaire bank wordt niet gewijzigd.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash-schrijfplan voor het herstel aangemaakt.";
 "backend.summary.fsck_failed" = "fsck_hfs is gestopt met status %d; de schijf moet mogelijk nog worden gerepareerd.";
 "backend.summary.reachability.auth_failed" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
@@ -623,6 +628,8 @@
 "backend.error.deploy.deploy_disk_not_mounted" = "Er is een geldige HFS-schijf gevonden, maar deze is niet gekoppeld en het apparaat heeft deze op verzoek niet gekoppeld. Wacht een minuut en probeer het opnieuw, of herstart het apparaat.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Er is een geldige HFS-schijf gekoppeld, maar het apparaat wilde deze niet gekoppeld houden voor TimeCapsuleSMB, waardoor deze tijdens de installatie ontkoppeld zou kunnen worden. Wacht een minuut en probeer het opnieuw, of herstart het apparaat.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is niet geïnstalleerd op dit apparaat. Voer eerst ‘Samba installeren / bijwerken’ uit.";
+"backend.error.flash.secondary_bank_invalid" = "Patchen is geweigerd omdat de reservefirmwarebank (secundair) beschadigd is. Kies ‘Herstel plannen’ om deze opnieuw te schrijven met Apple-firmware, kies daarna ‘Back-up maken en opnieuw inspecteren’ en patch.";
+"backend.error.flash.secondary_bank_read_mismatch" = "De reservefirmwarebank (secundair) werd in deze back-up anders gelezen dan bij de controle door het apparaat zelf, dus deze is niet opnieuw geschreven en patchen is geweigerd. Kies ‘Back-up maken en inspecteren’.";
 "backend.error.activate.runtime_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is te oud om door deze app te worden gestart. Voer eerst ‘Samba installeren / bijwerken’ uit.";
 "backend.error.activate.client_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is van een nieuwere hoofdversie dan deze app. Werk TimeCapsuleSMB bij en probeer het daarna opnieuw.";
 "backend.error.ssh_enable_timeout" = "Het apparaat heeft de instelling geaccepteerd, maar SSH is nog niet beschikbaar. Wacht een paar minuten (of start het apparaat opnieuw op) en probeer het opnieuw.";
@@ -773,6 +780,14 @@
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB niet geïnstalleerd";
 "backend.recovery.activate.runtime_not_installed.message" = "Er is geen TimeCapsuleSMB-installatie op het apparaat die kan worden gestart.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";
+"backend.recovery.flash.secondary_bank_invalid.title" = "Reservefirmwarebank is beschadigd";
+"backend.recovery.flash.secondary_bank_invalid.message" = "De secundaire firmwarebank (reserve) is geen geldige kopie, dus patchen van de primaire bank wordt geweigerd: een onderbroken schrijfactie zou niets overlaten om van op te starten.";
+"backend.recovery.flash.secondary_bank_invalid.action.1" = "Kies ‘Herstel plannen’ om de reservebank opnieuw te schrijven met Apple-firmware.";
+"backend.recovery.flash.secondary_bank_invalid.action.2" = "Kies daarna ‘Back-up maken en opnieuw inspecteren’ en patch.";
+"backend.recovery.flash.secondary_bank_read_mismatch.title" = "Reservefirmwarebank wisselend gelezen";
+"backend.recovery.flash.secondary_bank_read_mismatch.message" = "Het lezen van de secundaire firmwarebank (reserve) in deze back-up komt niet overeen met de controle door het apparaat zelf. De bank kan nog steeds een geldige kopie zijn, dus deze wordt niet opnieuw geschreven en patchen wordt geweigerd.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Kies ‘Back-up maken en inspecteren’.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Als de leesresultaten blijven verschillen, laat de firmware dan zoals hij is: het flashgeheugen van dit apparaat kan defect zijn.";
 "backend.recovery.activate.runtime_outdated.title" = "Installatie is verouderd";
 "backend.recovery.activate.runtime_outdated.message" = "De geïnstalleerde TimeCapsuleSMB is te oud om door deze app te worden gestart of gecontroleerd.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";

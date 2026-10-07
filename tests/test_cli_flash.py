@@ -448,7 +448,7 @@ class CliFlashTests(CliTestCase):
         self.assertIn("refusing to patch primary because primary is not an active firmware candidate", output.getvalue())
         self.assertIn("primary: backup=valid; active=not_candidate", output.getvalue())
         self.assertIn("secondary: backup=valid; active=not_candidate", output.getvalue())
-        self.assertIn("Use --force to patch the primary bank anyway", output.getvalue())
+        self.assertIn("`tcapsule flash --patch --force` patches the primary bank anyway", output.getvalue())
         self.assertEqual(manifest["flash_plan_error"]["stage"], "plan_flash")
         self.assertIn("refusing to patch primary", manifest["flash_plan_error"]["message"])
         self.assertNotIn("flash_plan", manifest)
@@ -1225,6 +1225,7 @@ class CliFlashTests(CliTestCase):
         reboot: bool,
         no_wait: bool,
         device: FakeAcpDevice | None = None,
+        secondary_refresh: bool = False,
     ) -> tuple[int, str, dict[str, object], FakeCommandContext, FakeAcpDevice]:
         output = io.StringIO()
         command_context = FakeCommandContext()
@@ -1248,6 +1249,10 @@ class CliFlashTests(CliTestCase):
                             operation=operation,
                             target=target,
                             bundle=bundle,
+                            plan=SimpleNamespace(
+                                mode=operation,
+                                secondary_refresh=SimpleNamespace(primary_login="stock") if secondary_refresh else None,
+                            ),
                         )
             saved = json.loads((backup_dir / "manifest.json").read_text())
         return rc, output.getvalue(), saved["write_outcome"], command_context, device
@@ -1264,6 +1269,22 @@ class CliFlashTests(CliTestCase):
         self.assertEqual(outcome["status"], "validated")
         self.assertIn("POWER-CYCLE REQUIRED", text)
         self.assertIn("Patch write successful.", text)
+        self.assertEqual(command_context.result, "success")
+
+    def test_flash_secondary_restore_needs_no_reboot_even_when_asked(self) -> None:
+        # The device keeps running the primary it booted; restarting adds nothing.
+        rc, text, outcome, command_context, device = self.run_finish_write(
+            operation="restore", reboot=True, no_wait=False, secondary_refresh=True,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(device.calls, [])
+        self.assertEqual(outcome["post_write_action"], "none")
+        self.assertFalse(outcome["reboot_requested"])
+        self.assertIn("Backup firmware bank restored and verified.", text)
+        self.assertIn("Run `tcapsule flash --patch` to install the boot hook.", text)
+        self.assertNotIn("POWER-CYCLE REQUIRED", text)
+        self.assertNotIn("manually rebooted", text)
         self.assertEqual(command_context.result, "success")
 
     def test_flash_restore_write_without_reboot_records_manual_reboot(self) -> None:

@@ -173,6 +173,12 @@ class BankInspection:
     active_failures: tuple[str, ...]
     live_login_match: bool | None
     error: str | None
+    # The footer slot at bank end - 32, where ACPd and the bootloader read it:
+    # its checksum (None when the slot holds no plausible footer) and whether
+    # this read of the data matches it. find_footer only accepts a matching
+    # footer, so a bank whose data no longer matches has no analysis.
+    stored_footer_checksum: int | None = None
+    stored_footer_matches_data: bool = False
 
 
 @dataclass(frozen=True)
@@ -527,6 +533,19 @@ def analyze_bank(
     return analysis
 
 
+def stored_footer(data: bytes) -> tuple[int, bool] | None:
+    """The footer slot at bank end - 32: its checksum and whether the data matches it.
+
+    None when the slot holds no plausible end offset (an erased or zeroed slot).
+    """
+    if len(data) < 32:
+        return None
+    checksum, end_offset = struct.unpack_from(">II", data, len(data) - 32)
+    if end_offset == 0 or end_offset > len(data) - 32:
+        return None
+    return checksum, (zlib.adler32(memoryview(data)[:end_offset]) & 0xFFFFFFFF) == checksum
+
+
 def inspect_bank(
     *,
     name: str,
@@ -538,6 +557,11 @@ def inspect_bank(
     live_login: bytes | None = None,
     saved_live_login_match: bool | None = None,
 ) -> BankInspection:
+    footer_slot = stored_footer(data)
+    footer_fields = {
+        "stored_footer_checksum": None if footer_slot is None else footer_slot[0],
+        "stored_footer_matches_data": footer_slot is not None and footer_slot[1],
+    }
     try:
         analysis = analyze_bank(
             name=name,
@@ -562,6 +586,7 @@ def inspect_bank(
             active_failures=(error,),
             live_login_match=None,
             error=error,
+            **footer_fields,
         )
     backup_failures = _backup_validation_failures(analysis)
     active_failures = backup_failures
@@ -585,6 +610,7 @@ def inspect_bank(
         active_failures=active_failures,
         live_login_match=live_login_match,
         error=None,
+        **footer_fields,
     )
 
 

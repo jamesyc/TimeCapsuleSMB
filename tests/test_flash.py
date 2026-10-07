@@ -812,7 +812,9 @@ class FlashBackupServiceTests(unittest.TestCase):
             acp_host="10.0.0.2",
             compatibility=SimpleNamespace(os_release="4.0_STABLE"),
         )
-        plan = SimpleNamespace(target_bank=SimpleNamespace(name="primary"), payload=object())
+        plan = SimpleNamespace(
+            target_name="primary", target_bank=SimpleNamespace(name="primary"), payload=object(), secondary_refresh=None,
+        )
         with mock.patch("timecapsulesmb.services.flash.record_write_outcome") as record:
             with mock.patch("timecapsulesmb.services.flash.write_and_validate_plan", return_value={"bank": "primary"}) as write:
                 result = flash_service.write_flash_plan(target=target, bundle=object(), plan=plan)

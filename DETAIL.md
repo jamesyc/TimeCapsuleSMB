@@ -1112,16 +1112,18 @@ This command is only supported for NetBSD 4 AirPort storage devices. NetBSD 6 de
 
 `tcapsule flash` is the NetBSD 4 firmware-bank helper. By default it is read-only: it backs up and analyzes both flash banks, saves a manifest, and prints the firmware state. Write modes are explicit. `--patch` installs the persistent TimeCapsuleSMB boot hook into the primary bank. `--restore` writes Apple stock firmware to the uniquely selected active bank, or to the primary bank with a warning when both candidates pass active selection.
 
+Without `--force`, patching refuses unless both banks are valid backups, so an interrupted write always leaves a bank to start from. When the primary is a valid backup and the running bank and only the secondary is invalid, `--restore` rewrites the secondary instead: ACPd cannot write that bank on shipping units (its write-secondary command needs the factory `diag` unlock), so restore erases it with `/sbin/flashctl /dev/rflash1.raw erase` and writes a whole 7 MiB bank image of the newest Apple firmware for the model (footer last) through `dd` over SSH. It runs only on syAP 106, 109, 113 and 116, whose flash drivers were checked to keep the erase and the write inside that bank, and only when both this backup's read of the secondary and ACPd's own check (`cks2`) fail its footer; if one of them passes, the bank may still be a good copy, and restore and patch both refuse and ask for a fresh backup. The write is verified by reading the whole bank back, by `cks2` matching the new footer, and by `cks1` (the primary) not changing. The device keeps running its primary bank, so no reboot follows; the saved backup no longer describes the device, so back up again before patching.
+
 Arguments:
 - `--config PATH`: use a non-default config
 - `--read-only`: dump and back up firmware banks without patch planning; this is also the default when no mode is provided
 - `--patch`: build and write the TimeCapsuleSMB LOGIN hook patch to the primary bank
-- `--restore`: restore the selected candidate bank from Apple stock firmware; when both candidates pass active selection, target the primary bank
+- `--restore`: restore the selected candidate bank from Apple stock firmware; when both candidates pass active selection, target the primary bank; when only the secondary bank is invalid, rewrite it with the newest Apple firmware for the model
 - `--check-apple`: check whether the candidate bank or banks match Apple stock firmware
 - `--download-only`: connect to the configured NetBSD 4 device, back up and analyze its banks, then download and validate Apple firmware without writing firmware
 - `--yes`: do not prompt before `--patch` or `--restore` writes; only valid for write modes
 - `--no-input`: fail instead of prompting; write modes require `--yes`
-- `--reboot`: after a validated `--restore` write, request a software reboot
+- `--reboot`: after a validated `--restore` write to the active bank, request a software reboot
 - `--no-wait`: with `--restore --reboot`, return after the reboot request without waiting for the device
 - `--json`: emit flash analysis and plan JSON; only valid for read-only modes, not `--patch` or `--restore`
 - `--backup-dir PATH`: use `PATH` as this run's exact backup directory instead of creating a timestamped directory under the default backup root
@@ -1135,6 +1137,7 @@ Hidden unsupported argument:
 Important mode restrictions:
 - `flash --patch --reboot` is rejected; patch mode cannot request a software reboot
 - `--reboot` is only valid with `--restore`
+- `flash --restore --reboot` is rejected when restore rewrites the secondary bank; that write needs no reboot
 - `--no-wait` is only valid with `--restore --reboot`
 - `--json` is only valid for read-only flash modes
 - patch mode requires `zopfli` gzip support on the host

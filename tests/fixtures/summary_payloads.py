@@ -209,6 +209,8 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
         ("flash_restore_plan", result, "flash", True, _flash_plan("restore")),
         ("flash_patch_write_plan", result, "flash", True, _flash_plan("patch", write_requested=True)),
         ("flash_restore_write_plan", result, "flash", True, _flash_plan("restore", write_requested=True)),
+        ("flash_restore_secondary_write_plan", result, "flash", True, _flash_plan(
+            "restore", write_requested=True, target_bank="secondary", secondary_refresh={"device": "/dev/rflash1.raw"})),
         ("flash_write_not_needed", result, "flash", True, _flash_write(status="not_needed", mode="patch")),
         ("flash_patch_write_validated", result, "flash", True, _flash_write(
             status="written", mode="patch", write_validated=True, post_write_action="manual_power_cycle")),
@@ -219,6 +221,8 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
             status="written", mode="restore", write_validated=True, post_write_action="ssh_reboot", reboot_requested=True)),
         ("flash_restore_write_manual_reboot", result, "flash", True, _flash_write(
             status="written", mode="restore", write_validated=True, post_write_action="manual_reboot")),
+        ("flash_restore_secondary_write_validated", result, "flash", True, _flash_write(
+            status="validated", mode="restore", write_validated=True, post_write_action="none")),
         ("flash_write_completed", result, "flash", True, _flash_write(status="written", mode="patch")),
     ]
     for name, ssh_result in _set_ssh_results():

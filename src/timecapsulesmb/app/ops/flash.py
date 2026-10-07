@@ -13,6 +13,7 @@ from timecapsulesmb.app.ops.deploy import device_operation_error
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.flash import FlashAnalysisError
+from timecapsulesmb.flash_workflow import FlashPlan, SecondaryBankInvalidError, SecondaryBankReadMismatchError
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -156,12 +157,29 @@ def _plan_operation(params: dict[str, object], context: AppOperationContext) -> 
             firmware_template=firmware_template,
             firmware_version=firmware_version,
         )
+    except SecondaryBankInvalidError as exc:
+        raise AppOperationError(str(exc), code="secondary_bank_invalid") from exc
+    except SecondaryBankReadMismatchError as exc:
+        raise AppOperationError(str(exc), code="secondary_bank_read_mismatch") from exc
     except FlashAnalysisError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     return OperationResult(True, flash_plan_payload(bundle.manifest))
 
 
-def _confirmation_message(target: FlashTarget, mode: str, bank: str | None, *, reboot_after_write: bool) -> str:
+def _confirmation_message(
+    target: FlashTarget,
+    mode: str,
+    bank: str | None,
+    *,
+    reboot_after_write: bool,
+    secondary_refresh: bool = False,
+) -> str:
+    if secondary_refresh:
+        return (
+            f"The backup (secondary) firmware bank on {target.acp_host} is invalid. The primary bank is not "
+            "changed and no reboot is needed; keep the device powered for a few minutes. "
+            "Rewrite the backup bank with Apple stock firmware?"
+        )
     if mode == "patch":
         return (
             f"Patch the primary firmware bank boot hook on {target.acp_host} "
@@ -174,6 +192,14 @@ def _confirmation_message(target: FlashTarget, mode: str, bank: str | None, *, r
             "and reboot after validation?"
         )
     return f"Restore Apple stock firmware to the {bank_text} firmware bank on {target.acp_host}?"
+
+
+def _secondary_refresh_context(plan: FlashPlan) -> dict[str, object]:
+    """A secondary rewrite has no saved bank to name: the confirmation approves its image."""
+    refresh = plan.secondary_refresh
+    if refresh is None or plan.payload is None:
+        return {}
+    return {"image_sha256": refresh.image_sha256, "firmware_version": plan.payload.template_version}
 
 
 def _write_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -203,6 +229,10 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
             firmware_template=firmware_template,
             firmware_version=firmware_version,
         )
+    except SecondaryBankInvalidError as exc:
+        raise AppOperationError(str(exc), code="secondary_bank_invalid") from exc
+    except SecondaryBankReadMismatchError as exc:
+        raise AppOperationError(str(exc), code="secondary_bank_read_mismatch") from exc
     except FlashAnalysisError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     if plan is None:
@@ -217,10 +247,17 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
         )
         return OperationResult(True, flash_write_payload(bundle.manifest))
 
+    secondary_refresh = plan.secondary_refresh is not None
+    if secondary_refresh:
+        # The device keeps running the primary it booted; a restart adds nothing.
+        reboot_after_write = False
+        wait_after_reboot = False
+        context.update_fields(reboot_after_write=False, wait_after_reboot=False)
     config = load_request_config(params, context)
     target = _resolve_flash_target(config, context)
-    bank = None if plan.target_bank is None else plan.target_bank.name
+    bank = plan.target_name
     context.update_fields(target_bank=bank)
+    presentation_id = "flash.restore_secondary_write" if secondary_refresh else f"flash.{plan_operation}_write"
     context.stage("confirm_write")
     require_confirmation(
         params,
@@ -233,6 +270,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
                 plan_operation,
                 bank,
                 reboot_after_write=reboot_after_write,
+                secondary_refresh=secondary_refresh,
             ),
             action_title="Write Firmware",
             risk="destructive",
@@ -245,8 +283,9 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
                 "target_sha256": None if plan.target_bank is None else plan.target_bank.sha256,
                 "reboot_after_write": reboot_after_write,
                 "wait_after_reboot": wait_after_reboot,
+                **_secondary_refresh_context(plan),
             },
-            presentation_id=f"flash.{plan_operation}_write",
+            presentation_id=presentation_id,
             presentation_values={
                 "host": target.acp_host,
                 "backup_dir": str(bundle.backup_dir),
@@ -266,7 +305,9 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
             log=context.log,
         )
         context.stage(write_stage_for_plan(plan))
-        context.log("Sending ACP flash command...")
+        if not secondary_refresh:
+            # write_flash_plan logs the secondary bank write command itself.
+            context.log("Sending ACP flash command...")
         write_flash_plan(
             target=target,
             bundle=bundle,
@@ -282,7 +323,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
         finish_validated_write(
             target=target,
             bundle=bundle,
-            plan_operation=plan_operation,
+            plan=plan,
             reboot=reboot_after_write,
             wait=wait_after_reboot,
             callbacks=context.to_operation_callbacks(),

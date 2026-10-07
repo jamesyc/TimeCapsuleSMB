@@ -25,10 +25,12 @@ from timecapsulesmb.flash_workflow import (
     plan_check_apple,
     plan_patch_primary,
     plan_restore_apple,
+    SecondaryBankInvalidError,
     require_primary_patch_ready,
     write_and_validate_plan,
 )
 from timecapsulesmb.integrations.acp import ACPError, ACPFlashResult
+from tests.flash_fixtures import inspect_full_banks
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -147,8 +149,15 @@ class FlashWorkflowTests(unittest.TestCase):
             require_primary_patch_ready(make_inspection(primary_active_candidate=False))
 
     def test_require_primary_patch_ready_rejects_bad_backup_bank(self) -> None:
-        with self.assertRaisesRegex(FlashAnalysisError, "both firmware banks must be valid backups"):
-            require_primary_patch_ready(make_inspection(secondary_backup_valid=False))
+        # Only the secondary is bad, in both its reads: restore can rewrite
+        # it, so say so. (The inspections built here carry no footer slot.)
+        with self.assertRaisesRegex(SecondaryBankInvalidError, "Run restore"):
+            require_primary_patch_ready(inspect_full_banks())
+        # A bad primary is not something restore's secondary rewrite fixes.
+        with self.assertRaises(FlashAnalysisError) as raised:
+            require_primary_patch_ready(make_inspection(primary_backup_valid=False))
+        self.assertNotIsInstance(raised.exception, SecondaryBankInvalidError)
+        self.assertIn("both firmware banks must be valid backups", str(raised.exception))
 
     def test_require_primary_patch_ready_force_skips_selection_checks(self) -> None:
         primary = make_bank("primary", patch=make_patch(make_bank("primary")))
@@ -243,7 +252,8 @@ class FlashWorkflowTests(unittest.TestCase):
         self.assertEqual(plan.warnings, ())
 
     def test_plan_restore_rejects_invalid_backup_bank(self) -> None:
-        inspection = make_inspection(secondary_backup_valid=False)
+        # An invalid primary; an invalid secondary alone is rewritten (test_flash_secondary).
+        inspection = make_inspection(primary_backup_valid=False)
 
         with self.assertRaisesRegex(FlashAnalysisError, "both firmware banks must be valid backups"):
             plan_restore_apple(inspection, syap="116", firmware_template=None)

@@ -480,6 +480,28 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(store.manualPowerCycleNotice?.mode, .restore)
     }
 
+    func testValidatedSecondaryBankRestoreShowsNoPowerCycleNoticeAndAsksForAFreshBackup() async throws {
+        // The device keeps running its primary bank, so nothing needs restarting,
+        // but the backup no longer describes the rewritten secondary bank.
+        let store = try await storeAfterValidatedWrite(
+            mode: .restore,
+            writePayload: flashWritePayload(
+                mode: .restore,
+                postWriteAction: "none",
+                rebootRequested: false,
+                rebooted: false,
+                waitedAfterReboot: false,
+                summary: "Secondary (backup) firmware bank restored and verified; no reboot needed."
+            )
+        )
+
+        XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
+        XCTAssertNil(store.manualPowerCycleNotice)
+        XCTAssertTrue(store.backupSnapshotStale)
+        XCTAssertFalse(store.canPlan)
+        XCTAssertTrue(store.canBackup)
+    }
+
     func testValidatedWriteMarksSnapshotStaleAndDisablesPlanning() async throws {
         let store = try await storeAfterValidatedWrite(mode: .patch)
         let presentation = FlashPresentation(store: store)

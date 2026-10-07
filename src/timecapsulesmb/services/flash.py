@@ -23,17 +23,20 @@ from timecapsulesmb.flash import (
     sha256_hex,
 )
 from timecapsulesmb.flash_workflow import (
+    SECONDARY_BANK_DEVICE,
+    SECONDARY_BANK_WRITE_COMMAND,
     FlashPlan,
     plan_check_apple,
     plan_download_only,
     plan_patch_primary,
     plan_restore_apple,
     write_and_validate_plan,
+    write_and_validate_secondary_refresh,
 )
 from timecapsulesmb.integrations.acp import ACPError, flash_firmware_bank, get_property_int
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import reboot_device
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh_capture_bytes
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh_capture_bytes, run_ssh_input
 
 
 FLASH_READ_TIMEOUT_SECONDS = 180
@@ -178,7 +181,8 @@ def get_property_int_for_validation(
     log: object | None = None,
     **kwargs: object,
 ) -> int:
-    _emit(log, f"Reading ACP checksum property {name} after write...")
+    # The secondary bank write reads cks1 before the write too.
+    _emit(log, f"Reading ACP checksum property {name}...")
     return get_property_int(host, password, name, **kwargs)
 
 
@@ -200,7 +204,7 @@ def _manifest_banks(manifest: dict[str, object]) -> list[dict[str, object]]:
 
 
 def apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) -> None:
-    target_name = None if plan.target_bank is None else plan.target_bank.name
+    target_name = plan.target_name
     for bank in _manifest_banks(manifest):
         bank_name = str(bank.get("name") or "target")
         if bank.get("name") != target_name:
@@ -217,6 +221,8 @@ def apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) -
                 bank["write_decision"] = "primary bank already patched; no write needed"
             elif plan.write_requested:
                 bank["write_decision"] = "primary bank patch planned"
+        elif plan.secondary_refresh is not None:
+            bank["write_decision"] = "invalid secondary bank rewrite with the newest Apple firmware planned"
         elif plan.mode == "restore":
             if plan.write_requested:
                 bank["write_decision"] = f"{target_name} bank restore from Apple firmware planned"
@@ -550,14 +556,14 @@ def save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashIns
 def save_acp_flash_payload(*, backup_dir: Path, plan: FlashPlan) -> Path | None:
     if plan.payload is None:
         return None
-    if plan.target_bank is None:
+    if plan.target_name is None:
         if plan.mode != "download_only":
             return None
         path = backup_dir / f"{plan.mode}.basebinary"
         path.write_bytes(plan.payload.data)
         return path
     suffix = "patched" if plan.mode == "patch" else plan.mode
-    path = backup_dir / f"{plan.target_bank.name}.{suffix}.basebinary"
+    path = backup_dir / f"{plan.target_name}.{suffix}.basebinary"
     path.write_bytes(plan.payload.data)
     return path
 
@@ -612,8 +618,8 @@ def plan_flash_from_backup(
         payload_path = save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
         files = bundle.manifest.get("files")
         if isinstance(files, dict) and payload_path is not None:
-            if plan.target_bank is not None:
-                files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
+            if plan.target_name is not None:
+                files[f"{plan.target_name}_{plan.mode}_basebinary_payload"] = str(payload_path)
             elif plan.mode == "download_only":
                 files[f"{plan.mode}_basebinary_payload"] = str(payload_path)
         bundle.manifest["flash_plan"] = plan.to_jsonable()
@@ -637,7 +643,9 @@ def write_outcome_payload(
         "write_validated": write_validated,
         "write_may_have_modified_device": write_may_have_modified_device,
     }
-    if plan.target_bank is not None:
+    if plan.secondary_refresh is not None:
+        outcome.update({"bank": "secondary", "device": SECONDARY_BANK_DEVICE})
+    elif plan.target_bank is not None:
         outcome.update({
             "bank": plan.target_bank.name,
             "device": plan.target_bank.device,
@@ -657,6 +665,8 @@ def write_outcome_payload(
 
 
 def write_stage_for_plan(plan: FlashPlan) -> str:
+    if plan.secondary_refresh is not None:
+        return "write_secondary_bank"
     if plan.target_bank is not None and plan.target_bank.name == "primary":
         return "write_primary_bank"
     return "write_active_bank"
@@ -713,6 +723,17 @@ def validate_live_target_matches_backup(
     plan: FlashPlan,
     log: object | None = None,
 ) -> None:
+    if plan.secondary_refresh is not None:
+        # The secondary is about to be overwritten; what must not have moved
+        # is the primary the plan judged valid.
+        _emit(log, "Verifying live primary bank still matches the saved backup...")
+        live_sha256 = sha256_hex(dump_remote_bank(connection, "/dev/rflash0.raw", log=log))
+        if live_sha256 != plan.secondary_refresh.primary_sha256:
+            raise FlashAnalysisError(
+                "refusing to write because the live primary firmware bank changed since the saved backup: "
+                f"live_sha256={live_sha256} backup_sha256={plan.secondary_refresh.primary_sha256}"
+            )
+        return
     if plan.target_bank is None:
         raise FlashAnalysisError("flash plan has no target bank")
     _emit(log, f"Verifying live {plan.target_bank.name} bank still matches the saved backup...")
@@ -732,7 +753,7 @@ def write_flash_plan(
     plan: FlashPlan,
     log: object | None = None,
 ) -> dict[str, object]:
-    if plan.target_bank is None or plan.payload is None:
+    if plan.target_name is None or plan.payload is None:
         raise FlashAnalysisError("flash plan has no write payload")
     record_write_outcome(
         bundle=bundle,
@@ -742,16 +763,28 @@ def write_flash_plan(
         write_may_have_modified_device=True,
         stage=write_stage_for_plan(plan),
     )
-    write_result = write_and_validate_plan(
-        connection=target.connection,
-        acp_host=target.acp_host,
-        plan=plan,
-        os_release=target.compatibility.os_release,
-        flash_firmware_bank_func=flash_firmware_bank,
-        dump_remote_bank_func=partial(dump_remote_bank_for_validation, log=log),
-        get_property_int_func=partial(get_property_int_for_validation, log=log),
-        timeout=FLASH_WRITE_TIMEOUT_SECONDS,
-    )
+    if plan.secondary_refresh is not None:
+        _emit(log, f"Writing the secondary firmware bank with {SECONDARY_BANK_WRITE_COMMAND}; this takes a few minutes...")
+        write_result = write_and_validate_secondary_refresh(
+            connection=target.connection,
+            acp_host=target.acp_host,
+            plan=plan,
+            run_write_func=run_ssh_input,
+            dump_remote_bank_func=partial(dump_remote_bank_for_validation, log=log),
+            get_property_int_func=partial(get_property_int_for_validation, log=log),
+            timeout=FLASH_WRITE_TIMEOUT_SECONDS,
+        )
+    else:
+        write_result = write_and_validate_plan(
+            connection=target.connection,
+            acp_host=target.acp_host,
+            plan=plan,
+            os_release=target.compatibility.os_release,
+            flash_firmware_bank_func=flash_firmware_bank,
+            dump_remote_bank_func=partial(dump_remote_bank_for_validation, log=log),
+            get_property_int_func=partial(get_property_int_for_validation, log=log),
+            timeout=FLASH_WRITE_TIMEOUT_SECONDS,
+        )
     record_write_outcome(
         bundle=bundle,
         plan=plan,
@@ -767,7 +800,7 @@ def finish_validated_write(
     *,
     target: FlashTarget,
     bundle: FlashAnalysisBundle,
-    plan_operation: str,
+    plan: FlashPlan,
     reboot: bool,
     wait: bool,
     callbacks: OperationCallbacks,
@@ -775,9 +808,20 @@ def finish_validated_write(
     """Record what follows a validated write in the manifest, and reboot if asked.
 
     A patched bank needs a manual power cycle; a restore asks ACPd to reboot
-    only when requested. Raises RebootFlowError when the reboot
+    only when requested. A rewritten secondary needs nothing: the device keeps
+    running the primary it booted. Raises RebootFlowError when the reboot
     request or wait fails.
     """
+    plan_operation = plan.mode
+    if plan.secondary_refresh is not None:
+        record_post_write_action(
+            bundle=bundle,
+            post_write_action="none",
+            reboot_requested=False,
+            rebooted=False,
+            waited_after_reboot=False,
+        )
+        return
     if plan_operation == "patch" or not reboot:
         record_post_write_action(
             bundle=bundle,

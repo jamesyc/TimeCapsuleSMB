@@ -499,7 +499,8 @@ final class FlashWorkflowStore: ObservableObject {
         case .patch:
             return true
         case .restore:
-            return !result.rebootRequested
+            // A rewritten secondary bank needs nothing: the device keeps running its primary.
+            return !result.rebootRequested && result.postWriteAction != "none"
         case .checkApple, .downloadOnly:
             return false
         }
@@ -570,6 +571,7 @@ final class FlashWorkflowStore: ObservableObject {
         }
         return currentStage?.stage == "write_primary_bank"
             || currentStage?.stage == "write_active_bank"
+            || currentStage?.stage == "write_secondary_bank"
             || currentStage?.stage == "post_write_validation"
             || currentStage?.stage == "reboot"
             || currentStage?.stage == "wait_for_reboot_down"
@@ -599,7 +601,7 @@ final class FlashWorkflowStore: ObservableObject {
             return .awaitingStrongConfirmation
         case "pre_write_validation", "post_write_validation":
             return .readbackValidating
-        case "write_primary_bank", "write_active_bank":
+        case "write_primary_bank", "write_active_bank", "write_secondary_bank":
             return .writing
         case "reboot", "wait_for_reboot_down", "wait_for_reboot_up":
             return .restoreRebooting

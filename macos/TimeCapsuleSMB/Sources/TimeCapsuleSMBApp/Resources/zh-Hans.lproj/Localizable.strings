@@ -157,6 +157,9 @@
 "confirm.flash.patch_write.title" = "修改固件启动钩子？";
 "confirm.flash.restore_write.action" = "写入固件";
 "confirm.flash.restore_write.message" = "将固件区 %@（位于 %@）恢复为苹果原厂固件，并在验证后重启？";
+"confirm.flash.restore_secondary_write.action" = "写入固件";
+"confirm.flash.restore_secondary_write.message" = "%@ 上的备用（第二）固件区已损坏。要用苹果原厂固件重新写入吗？主固件区不会改变，也无需重启；请保持设备通电几分钟。";
+"confirm.flash.restore_secondary_write.title" = "恢复备用固件区？";
 "confirm.flash.restore_write.title" = "恢复苹果固件？";
 "confirm.uninstall.no_reboot.action" = "卸载";
 "confirm.uninstall.no_reboot.message" = "从设备中移除由 TimeCapsuleSMB 管理的文件？";
@@ -305,6 +308,7 @@
 "backend.summary.flash_backup_saved" = "闪存备份已保存到 %@。";
 "backend.summary.flash_patch_write_validated_power_cycle" = "闪存补丁写入已验证；需要手动断电重启。";
 "backend.summary.flash_plan_already_satisfied" = "闪存已符合计划，无需写入。";
+"backend.summary.flash_restore_secondary_write_validated" = "第二（备用）固件区已恢复并验证；无需重启。";
 "backend.summary.flash_restore_write_validated_manual_reboot" = "闪存恢复写入已验证；需要手动重启。";
 "backend.summary.flash_restore_write_validated_reboot_requested" = "闪存恢复写入已验证；已请求重启。";
 "backend.summary.flash_restore_write_validated_rebooted" = "闪存恢复写入已验证；设备已重启。";
@@ -345,6 +349,7 @@
 "backend.summary.flash.patch_plan_generated" = "闪存修补计划已生成。";
 "backend.summary.flash.patch_write_plan_generated" = "闪存修补写入计划已生成。";
 "backend.summary.flash.restore_plan_generated" = "闪存恢复计划已生成。";
+"backend.summary.flash.restore_secondary_write_plan_generated" = "恢复将用苹果固件重新写入无效的第二（备用）固件区；主固件区不会改变。";
 "backend.summary.flash.restore_write_plan_generated" = "闪存恢复写入计划已生成。";
 "backend.summary.fsck_failed" = "fsck_hfs 以状态 %d 退出；磁盘可能仍需修复。";
 "backend.summary.reachability.auth_failed" = "设备拒绝了提供的密码或 SSH 凭据。";
@@ -623,6 +628,8 @@
 "backend.error.deploy.deploy_disk_not_mounted" = "已找到有效的 HFS 磁盘，但它尚未挂载，设备也未按请求将其挂载。请等待一分钟后重试，或重启设备。";
 "backend.error.deploy.deploy_disk_not_confirmed" = "有效的 HFS 磁盘已挂载，但设备拒绝为 TimeCapsuleSMB 保持其挂载状态，因此它可能会在安装过程中被卸载。请等待一分钟后重试，或重启设备。";
 "backend.error.activate.runtime_not_installed" = "此设备上未安装 TimeCapsuleSMB。请先运行“安装 / 更新 Samba”。";
+"backend.error.flash.secondary_bank_invalid" = "已拒绝打补丁，因为备用（第二）固件区已损坏。请选择“规划恢复”用苹果固件重新写入它，然后选择“再次备份并检查”并打补丁。";
+"backend.error.flash.secondary_bank_read_mismatch" = "此备份读取的备用（第二）固件区与设备自身的检查结果不一致，因此未重新写入它，并已拒绝打补丁。请选择“备份并检查”。";
 "backend.error.activate.runtime_outdated" = "此设备上安装的 TimeCapsuleSMB 版本过旧，此应用无法启动它。请先运行“安装 / 更新 Samba”。";
 "backend.error.activate.client_outdated" = "此设备上安装的 TimeCapsuleSMB 属于比此应用更新的主版本。请更新 TimeCapsuleSMB，然后重试。";
 "backend.error.ssh_enable_timeout" = "设备已接受该设置，但 SSH 尚未启动。请等待几分钟（或重启设备），然后重试。";
@@ -773,6 +780,14 @@
 "backend.recovery.activate.runtime_not_installed.title" = "未安装 TimeCapsuleSMB";
 "backend.recovery.activate.runtime_not_installed.message" = "设备上没有可启动的 TimeCapsuleSMB 安装。";
 "backend.recovery.activate.runtime_not_installed.action.1" = "运行“安装 / 更新 Samba”。";
+"backend.recovery.flash.secondary_bank_invalid.title" = "备用固件区已损坏";
+"backend.recovery.flash.secondary_bank_invalid.message" = "第二（备用）固件区不是有效的副本，因此拒绝为主固件区打补丁：写入一旦中断，设备将无从启动。";
+"backend.recovery.flash.secondary_bank_invalid.action.1" = "选择“规划恢复”，用苹果固件重新写入备用固件区。";
+"backend.recovery.flash.secondary_bank_invalid.action.2" = "然后选择“再次备份并检查”并打补丁。";
+"backend.recovery.flash.secondary_bank_read_mismatch.title" = "备用固件区读取结果不一致";
+"backend.recovery.flash.secondary_bank_read_mismatch.message" = "此备份中读取的第二（备用）固件区与设备自身的检查结果不一致。该固件区可能仍是有效的副本，因此不会重新写入，并拒绝打补丁。";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "选择“备份并检查”。";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "如果读取结果仍不一致，请保持固件不变：此设备的闪存可能出现故障。";
 "backend.recovery.activate.runtime_outdated.title" = "已安装的版本过旧";
 "backend.recovery.activate.runtime_outdated.message" = "已安装的 TimeCapsuleSMB 版本过旧，此应用无法启动或检查它。";
 "backend.recovery.activate.runtime_outdated.action.1" = "运行“安装 / 更新 Samba”。";

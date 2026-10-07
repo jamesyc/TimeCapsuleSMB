@@ -157,6 +157,9 @@
 "confirm.flash.patch_write.title" = "Pataisyti programinės įrangos įkrovos įskiepį?";
 "confirm.flash.restore_write.action" = "Įrašyti programinę įrangą";
 "confirm.flash.restore_write.message" = "Atkurti Apple originalią programinę įrangą į programinės įrangos banką %@ įrenginyje %@ ir paleisti iš naujo po patvirtinimo?";
+"confirm.flash.restore_secondary_write.action" = "Įrašyti programinę įrangą";
+"confirm.flash.restore_secondary_write.message" = "Atsarginis (antrinis) programinės įrangos bankas įrenginyje %@ sugadintas. Perrašyti jį Apple originalia programine įranga? Pagrindinis bankas nekeičiamas ir paleisti iš naujo nereikia; kelias minutes neatjunkite įrenginio nuo maitinimo.";
+"confirm.flash.restore_secondary_write.title" = "Atkurti atsarginį programinės įrangos banką?";
 "confirm.flash.restore_write.title" = "Atkurti Apple programinę įrangą?";
 "confirm.uninstall.no_reboot.action" = "Pašalinti";
 "confirm.uninstall.no_reboot.message" = "Pašalinti valdomus TimeCapsuleSMB failus iš įrenginio?";
@@ -305,6 +308,7 @@
 "backend.summary.flash_backup_saved" = "Flash atminties atsarginė kopija išsaugota į %@.";
 "backend.summary.flash_patch_write_validated_power_cycle" = "Flash atminties pataisymo įrašymas patvirtintas; reikalingas rankinis maitinimo ciklas.";
 "backend.summary.flash_plan_already_satisfied" = "Flash atminties planas jau įvykdytas; įrašyti nereikia.";
+"backend.summary.flash_restore_secondary_write_validated" = "Antrinis (atsarginis) programinės įrangos bankas atkurtas ir patikrintas; paleisti iš naujo nereikia.";
 "backend.summary.flash_restore_write_validated_manual_reboot" = "Flash atminties atkūrimo įrašymas patvirtintas; reikalingas rankinis paleidimas iš naujo.";
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Flash atminties atkūrimo įrašymas patvirtintas; paprašyta paleisti iš naujo.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash atminties atkūrimo įrašymas patvirtintas; įrenginys paleistas iš naujo.";
@@ -345,6 +349,7 @@
 "backend.summary.flash.patch_plan_generated" = "Flash atminties pataisymo planas sugeneruotas.";
 "backend.summary.flash.patch_write_plan_generated" = "Flash atminties pataisymo įrašymo planas sugeneruotas.";
 "backend.summary.flash.restore_plan_generated" = "Flash atminties atkūrimo planas sugeneruotas.";
+"backend.summary.flash.restore_secondary_write_plan_generated" = "Atkūrimas perrašys netinkamą antrinį (atsarginį) programinės įrangos banką Apple programine įranga; pagrindinis bankas nekeičiamas.";
 "backend.summary.flash.restore_write_plan_generated" = "Flash atminties atkūrimo įrašymo planas sugeneruotas.";
 "backend.summary.fsck_failed" = "fsck_hfs baigė darbą su būsena %d; diską gali tekti dar taisyti.";
 "backend.summary.reachability.auth_failed" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
@@ -623,6 +628,8 @@
 "backend.error.deploy.deploy_disk_not_mounted" = "Rastas tinkamas HFS diskas, bet jis neprijungtas, o įrenginys, paprašytas jį prijungti, to nepadarė. Palaukite minutę ir bandykite dar kartą arba paleiskite įrenginį iš naujo.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Tinkamas HFS diskas prijungtas, bet įrenginys nesutiko išlaikyti jo prijungto TimeCapsuleSMB reikmėms, todėl diegimo metu jis galėtų būti atjungtas. Palaukite minutę ir bandykite dar kartą arba paleiskite įrenginį iš naujo.";
 "backend.error.activate.runtime_not_installed" = "Šiame įrenginyje TimeCapsuleSMB neįdiegta. Pirmiausia paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.error.flash.secondary_bank_invalid" = "Pataisymas atmestas, nes atsarginis (antrinis) programinės įrangos bankas sugadintas. Pasirinkite „Planuoti atkūrimą“, kad perrašytumėte jį Apple programine įranga, tada pasirinkite „Sukurti atsarginę kopiją ir patikrinti dar kartą“ ir taikykite pataisymą.";
+"backend.error.flash.secondary_bank_read_mismatch" = "Atsarginis (antrinis) programinės įrangos bankas šioje atsarginėje kopijoje nuskaitytas kitaip nei paties įrenginio patikroje, todėl jis neperrašytas, o pataisymas atmestas. Pasirinkite „Sukurti atsarginę kopiją ir patikrinti“.";
 "backend.error.activate.runtime_outdated" = "Šiame įrenginyje įdiegta TimeCapsuleSMB versija per sena, kad ši programa galėtų ją paleisti. Pirmiausia paleiskite „Įdiegti / atnaujinti Samba“.";
 "backend.error.activate.client_outdated" = "Šiame įrenginyje įdiegtos TimeCapsuleSMB pagrindinė versija yra naujesnė nei šios programos. Atnaujinkite TimeCapsuleSMB ir bandykite dar kartą.";
 "backend.error.ssh_enable_timeout" = "Įrenginys priėmė nustatymą, bet SSH dar nepasiekiama. Palaukite kelias minutes (arba paleiskite įrenginį iš naujo) ir bandykite dar kartą.";
@@ -773,6 +780,14 @@
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB neįdiegta";
 "backend.recovery.activate.runtime_not_installed.message" = "Įrenginyje nėra įdiegtos TimeCapsuleSMB, kurią būtų galima paleisti.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.flash.secondary_bank_invalid.title" = "Atsarginis programinės įrangos bankas sugadintas";
+"backend.recovery.flash.secondary_bank_invalid.message" = "Antrinis (atsarginis) programinės įrangos bankas nėra tinkama kopija, todėl pagrindinio banko pataisymas atmetamas: nutrūkus įrašymui neliktų nieko, iš ko būtų galima paleisti įrenginį.";
+"backend.recovery.flash.secondary_bank_invalid.action.1" = "Pasirinkite „Planuoti atkūrimą“, kad perrašytumėte atsarginį banką Apple programine įranga.";
+"backend.recovery.flash.secondary_bank_invalid.action.2" = "Tada pasirinkite „Sukurti atsarginę kopiją ir patikrinti dar kartą“ ir taikykite pataisymą.";
+"backend.recovery.flash.secondary_bank_read_mismatch.title" = "Atsarginis programinės įrangos bankas nuskaitomas nevienodai";
+"backend.recovery.flash.secondary_bank_read_mismatch.message" = "Antrinio (atsarginio) programinės įrangos banko nuskaitymas šioje atsarginėje kopijoje nesutampa su paties įrenginio patikra. Bankas vis dar gali būti tinkama kopija, todėl jis neperrašomas, o pataisymas atmetamas.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Pasirinkite „Sukurti atsarginę kopiją ir patikrinti“.";
+"backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Jei nuskaitymai ir toliau nesutampa, palikite programinę įrangą tokią, kokia yra: šio įrenginio flash atmintis gali gesti.";
 "backend.recovery.activate.runtime_outdated.title" = "Įdiegta versija pasenusi";
 "backend.recovery.activate.runtime_outdated.message" = "Įdiegta TimeCapsuleSMB versija per sena, kad ši programa galėtų ją paleisti ar patikrinti.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Paleiskite „Įdiegti / atnaujinti Samba“.";

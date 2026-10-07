@@ -127,6 +127,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("flash", "pre_write_validation"): StagePolicy(REMOTE_READ, True, "Verify the live target bank still matches the saved backup."),
     ("flash", "write_primary_bank"): StagePolicy(DESTRUCTIVE, False, "Write the primary firmware bank."),
     ("flash", "write_active_bank"): StagePolicy(DESTRUCTIVE, False, "Write the active firmware bank."),
+    ("flash", "write_secondary_bank"): StagePolicy(DESTRUCTIVE, False, "Rewrite the invalid secondary firmware bank."),
     ("flash", "post_write_validation"): StagePolicy(REMOTE_READ, True, "Read back and validate the written firmware bank."),
 }
 # After its reboot, fsck starts file sharing again where it does not start by

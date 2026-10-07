@@ -32,6 +32,8 @@ from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb.app import contracts, helper, service
+from timecapsulesmb.flash_workflow import SecondaryBankInvalidError, SecondaryBankReadMismatchError
+from tests.flash_fixtures import inspect_full_banks, plan_full_restore
 from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
@@ -877,7 +879,10 @@ class AppApiTests(unittest.TestCase):
                 },
             }
             target_bank = SimpleNamespace(name="primary", sha256="bank-sha")
-            plan = SimpleNamespace(already_satisfied=False, target_bank=target_bank)
+            plan = SimpleNamespace(
+                already_satisfied=False, target_bank=target_bank, target_name="primary",
+                secondary_refresh=None, mode="patch",
+            )
             bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
             target = SimpleNamespace(acp_host="10.0.0.2", connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
 
@@ -923,6 +928,95 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["post_write_action"], "manual_power_cycle")
         self.assertFalse(payload["reboot_requested"])
 
+    def test_flash_secondary_restore_confirms_its_own_text_and_never_reboots(self) -> None:
+        plan, _download, _restore = plan_full_restore(inspect_full_banks())
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            manifest = {
+                "backup_dir": str(backup_dir),
+                "write_outcome": {"status": "validated", "mode": "restore", "write_validated": True},
+            }
+            bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
+            target = SimpleNamespace(acp_host="10.0.0.2", connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+            # The app sends its restore default: reboot after the write.
+            params = {"action": "write", "backup_dir": str(backup_dir), "mode": "restore", "reboot_after_write": True}
+
+            def run(request_params: dict[str, object], planned=plan) -> CollectingSink:
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, planned)):
+                    with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()):
+                        with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
+                            with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"):
+                                with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
+                                    with mock.patch("timecapsulesmb.services.flash.reboot_device") as reboot_mock:
+                                        collector.rc = service.run_api_request(  # type: ignore[attr-defined]
+                                            {"operation": "flash", "params": request_params}, collector.sink,
+                                        )
+                                        collector.write_mock = write_mock  # type: ignore[attr-defined]
+                                        collector.reboot_mock = reboot_mock  # type: ignore[attr-defined]
+                return collector
+
+            first = run(params)
+            details = self.assert_confirmation(
+                first,
+                "flash.restore_secondary_write",
+                {"host": "10.0.0.2", "target_bank": "secondary", "reboot_after_write": False},
+            )
+            self.assertIn("backup (secondary) firmware bank on 10.0.0.2 is invalid", details["message"])
+            first.write_mock.assert_not_called()  # type: ignore[attr-defined]
+            # The confirmation approves this image: a plan that would write
+            # another one (a newer firmware download, say) needs its own.
+            assert plan.secondary_refresh is not None
+            other_image = replace(plan, secondary_refresh=replace(plan.secondary_refresh, image=b"\x00" * 16))
+            stale = run({**params, "confirmation_id": details["confirmation_id"]}, planned=other_image)
+            self.assert_confirmation(stale, "flash.restore_secondary_write")
+            stale.write_mock.assert_not_called()  # type: ignore[attr-defined]
+            second = run({**params, "confirmation_id": details["confirmation_id"]})
+
+        self.assertEqual(second.rc, 0)  # type: ignore[attr-defined]
+        second.write_mock.assert_called_once()  # type: ignore[attr-defined]
+        second.reboot_mock.assert_not_called()  # type: ignore[attr-defined]
+        payload = self.assert_single_terminal_event(second, "result")["payload"]
+        self.assertEqual(payload["post_write_action"], "none")
+        self.assertFalse(payload["reboot_requested"])
+        self.assertEqual(payload["summary_key"], "flash_restore_secondary_write_validated")
+
+    def test_flash_patch_refused_for_a_bad_secondary_points_the_app_at_restore(self) -> None:
+        collector = CollectingSink()
+        refusal = SecondaryBankInvalidError("refusing to patch primary because the secondary (backup) firmware bank ...")
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", side_effect=refusal):
+                service.run_api_request(
+                    {"operation": "flash", "params": {"action": "plan", "backup_dir": tmp, "mode": "patch"}},
+                    collector.sink,
+                )
+
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "secondary_bank_invalid")
+        self.assertEqual(error["recovery"]["localization_key"], "flash.secondary_bank_invalid")
+        self.assertEqual(error["recovery"]["title"], "Backup firmware bank is damaged")
+
+    def test_flash_secondary_read_disagreement_asks_the_app_for_a_fresh_backup(self) -> None:
+        # Our read finds the secondary damaged, ACPd's own read finds it intact.
+        refusal = SecondaryBankReadMismatchError(
+            "refusing to rewrite the secondary bank because the secondary (backup) firmware bank read differently ..."
+        )
+        for action, mode in (("plan", "restore"), ("plan", "patch"), ("write", "restore")):
+            with self.subTest(action=action, mode=mode):
+                collector = CollectingSink()
+                with tempfile.TemporaryDirectory() as tmp:
+                    with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", side_effect=refusal):
+                        with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
+                            service.run_api_request(
+                                {"operation": "flash", "params": {"action": action, "backup_dir": tmp, "mode": mode}},
+                                collector.sink,
+                            )
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "secondary_bank_read_mismatch")
+                self.assertEqual(error["recovery"]["localization_key"], "flash.secondary_bank_read_mismatch")
+                self.assertEqual(error["recovery"]["title"], "Backup firmware bank read inconsistently")
+                write_mock.assert_not_called()
+
     def test_flash_write_payload_restore_summary_mentions_manual_reboot_without_reboot_request(self) -> None:
         payload = contracts.flash_write_payload({
             "backup_dir": "/tmp/flash-backup",
@@ -949,7 +1043,10 @@ class AppApiTests(unittest.TestCase):
                 },
             }
             target_bank = SimpleNamespace(name="primary", sha256="bank-sha")
-            plan = SimpleNamespace(already_satisfied=False, target_bank=target_bank)
+            plan = SimpleNamespace(
+                already_satisfied=False, target_bank=target_bank, target_name="primary",
+                secondary_refresh=None, mode="restore",
+            )
             bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
             connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
             target = SimpleNamespace(acp_host="10.0.0.2", connection=connection)
@@ -1027,7 +1124,10 @@ class AppApiTests(unittest.TestCase):
                 "backup_dir": str(backup_dir),
                 "write_outcome": {"status": "validated", "mode": "restore", "write_validated": True},
             }
-            plan = SimpleNamespace(already_satisfied=False, target_bank=SimpleNamespace(name="primary", sha256="bank-sha"))
+            plan = SimpleNamespace(
+                already_satisfied=False, target_bank=SimpleNamespace(name="primary", sha256="bank-sha"),
+                target_name="primary", secondary_refresh=None, mode="restore",
+            )
             bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
             target = SimpleNamespace(acp_host="10.0.0.2", connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
             params: dict[str, object] = {"action": "write", "backup_dir": str(backup_dir), "mode": "restore"}

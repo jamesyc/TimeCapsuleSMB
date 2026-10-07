@@ -1770,6 +1770,40 @@
       "ok": true,
       "operation": "flash",
       "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "backup_dir": "/tmp/flash-backup",
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "restore",
+          "secondary_refresh": {
+            "device": "/dev/rflash1.raw"
+          },
+          "target_bank": "secondary",
+          "write_requested": true
+        },
+        "mode": "restore",
+        "schema_version": 1,
+        "summary": "Restore will rewrite the invalid secondary (backup) firmware bank with Apple firmware; the primary bank is not changed.",
+        "summary_args": [],
+        "summary_key": "flash.restore_secondary_write_plan_generated",
+        "warnings": [],
+        "write_requested": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_secondary_write_plan"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
         "backup_dir": "/tmp/flash-backup",
         "mode": "patch",
         "post_write_action": "",
@@ -1915,6 +1949,36 @@
       "type": "result"
     },
     "name": "flash_restore_write_manual_reboot"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "backup_dir": "/tmp/flash-backup",
+        "mode": "restore",
+        "post_write_action": "none",
+        "reboot_requested": false,
+        "rebooted": false,
+        "schema_version": 1,
+        "summary": "Secondary (backup) firmware bank restored and verified; no reboot needed.",
+        "summary_args": [],
+        "summary_key": "flash_restore_secondary_write_validated",
+        "waited_after_reboot": false,
+        "write_outcome": {
+          "mode": "restore",
+          "post_write_action": "none",
+          "status": "validated",
+          "write_validated": true
+        },
+        "write_status": "validated",
+        "write_validated": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_secondary_write_validated"
   },
   {
     "event": {
