@@ -222,7 +222,7 @@
 # timers there too (upstream forks it even in interactive mode). Skip the
 # datagram-socket sweep, which forks each time it runs; cleanupd still removes
 # each exited child's socket. Forked helpers work without pthread (tested
-# 2026-09-26, tests/samba/VALIDATION.md); this saves two or three resident
+# 2026-09-26); this saves two or three resident
 # smbds (about 2.5 MB RSS each, some of it shared with the parent) and 14 KB
 # of smbd.
 0008-smbd-helpers-in-parent.patch|host smbd helper services in the parent event loop

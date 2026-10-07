@@ -1,5 +1,5 @@
 # smbtorture tests that fail on the appliance for known reasons (both devices,
-# 2026-09-28; tests/samba/VALIDATION.md). tests/samba/torture.py reports only
+# 2026-09-28). tests/samba/torture.py reports only
 # failures missing from this list and listed tests that now pass.
 #
 # One test per line: [flaky] [only=6|only=4le] <suite>.<test>  # reason

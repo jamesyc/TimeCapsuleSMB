@@ -211,7 +211,7 @@ an available HFS share. It interrupts SMB service, so run it when backups can
 be interrupted:
 
 ```sh
-python -m tests.samba.device_supervision --config .env.backup6
+python -m tests.samba.device_supervision --config .env
 ```
 
 The test verifies direct-child process groups, durable network reconnect,
@@ -239,7 +239,7 @@ restored afterward. The focused manager/process/storage/staging suite passed
 53 tests under AddressSanitizer and UndefinedBehaviorSanitizer on the host.
 
 The big-endian Samba artifact was rebuilt with the
-existing NetBSD 4 SDK and checked as static ARM MSB; the UK device was unreachable,
+existing NetBSD 4 SDK and checked as static ARM MSB; no big-endian device was available,
 so that build does not constitute big-endian hardware validation.
 
 Physical USB detach/reconnect after this refactor remains pending because the
@@ -390,7 +390,7 @@ check accepts either result; the target must never change.
 `dir_device.py` checks the same paths over SMB against a deployed device:
 
 ```sh
-.venv/bin/python -m tests.samba.dir_device --env .env.backup4 --record /tmp/after.json --compare /tmp/before.json
+.venv/bin/python -m tests.samba.dir_device --env .env --record /tmp/after.json --compare /tmp/before.json
 ```
 
 Its open matrix tries every create disposition with and without
@@ -466,7 +466,7 @@ request while it is still in progress, which smbd reports as INVALID_PARAMETER.
 (it needs `smbprotocol` on the host):
 
 ```sh
-.venv/bin/python -m tests.samba.growth_device --env .env.backup6 [--aio]
+.venv/bin/python -m tests.samba.growth_device --env .env [--aio]
 ```
 
 It first looks for 0065's refusal message in the smbd the device runs and

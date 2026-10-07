@@ -12,7 +12,7 @@
  * pmap's "modified" emulation, which makes the page writable again without a
  * copy-on-write fault, and the parent writes into the page it now shares with
  * the child. NetBSD 4's pmap_protect() treats any non-zero PTE as present and
- * is not affected. Proven on the device (2026-09-29, tests/samba/VALIDATION.md):
+ * is not affected. Proven on the device (2026-09-29):
  * a connection child spun forever freeing an smbd parent context whose child
  * list came half from before and half from after the fork.
  *

@@ -1637,7 +1637,7 @@ Shell scripts must be written very conservatively.
 ### Apple mDNSResponder facts ledger (verified on devices, 2026-09-16)
 
 The v3.1.0 move from our own responder to Apple's on-device `mDNSResponder`
-rests on these measured facts. Numbers match the v3.1 implementation guide.
+rests on these measured facts.
 
 | # | Fact |
 | --- | --- |
@@ -1652,7 +1652,6 @@ rests on these measured facts. Numbers match the v3.1 implementation guide.
 | F9 | Registering a name another client already holds auto-renames to "Name (2)" unless `kDNSServiceFlagsNoAutoRename` is passed (then the callback reports `kDNSServiceErr_NameConflict`). |
 | F10 | Apple's host records on the LAN: fe80 plus every IPv4 including 169.254, no GUA. Hostname `AirPort-Time-Capsule.local.` (mixed case); SRV targets of our registrations are that hostname automatically. |
 | F11 | Killing the daemon is unrecoverable without a reboot: ACPd never respawns it and a hand-started daemon lacks `_airport`. The runtime must never kill it. |
-| F12 | The `.env.backup4` device is **little-endian** (its Apple ELF is LSB; it runs the `bin/service-netbsd4le` build). The UK device is presumably the BE one — verify with `file` on first contact. |
 | F13 | `/etc/mdnsd.conf` (RAM root, regenerated each boot) carries `Hardware TimeCapsule6,116` / `TimeCapsule8,119`, `Software 7.8.1` / `7.9.1`, `PrimaryIPv4Interface bridge0`. |
 | F14 | Samba's IPv6 `interfaces=` tokens must use the embedded-scope form `fe80:<index hex>::…/64`; Apple's pf opens 445/139/137/138/548 on the WAN iff `usbF & 0x8` in NAT mode; router mode is `(raNA,raDS)`: `(0,0)` bridge, `(0,1)` DHCP-only, `(1,1)` NAT; the guest bridge owns `gnRo`. |
 | F15 | Device shell quirks: NetBSD 4 `sed` has no `\|` alternation; `reboot`, `ifconfig` need full paths in non-login shells; `/etc` edits do not persist; `/mnt/Memory` is the 15 MB RAM staging area; `/mnt/Flash` is ≈1 MB. |
