@@ -1,3 +1,25 @@
+# The Samba regression runner accepts Darwin's EPERM for an emptied driver group (2026-10-06)
+
+`tests/samba/run.py` kills each driver's process group when the driver ends,
+to collect anything it forked. A loaded `make test-parallel` failed
+`test_regression_validation_passes_then_stages` (wrapper exit 1, no output)
+and `test_runner_propagates_test_exit_status[0]`: the runner died with
+`PermissionError` from that `os.killpg`. Darwin can answer EPERM, not ESRCH,
+for a group with no live member, even just after its only process was
+reaped: 1 of 2,400 `killpg` calls after reaping a lone `/usr/bin/true` did,
+at load ~50 (`tests/native/test_manager.py` notes the same answer for a
+zombie-only group). The runner now treats EPERM like ESRCH.
+
+Validation:
+- New runner tests: either answer, with the driver exiting 0 and 2; a child a
+  driver leaves behind is killed after a normal and a failing exit; a timeout
+  kills the whole group (the timeout fires only once the child exists, so a
+  slow start cannot race it). With the old `except` the EPERM cases fail; with
+  no `killpg` the three kill tests fail.
+- Loaded runs (2026-10-06, after rebase on 4bd5494d): `make test-parallel`
+  equivalent passes (3697); two more full suites with hammered copies beside
+  them (load 60-90) had no runner or samba4x failure.
+
 # Durable reconnects deferred, not slept (0024); short macOS WRITEs refused without a reply (0072) (2026-10-06)
 
 Issue 221 (netbsd4le Time Capsule, old 2 TB drive, Mac on Wi-Fi) is a macOS

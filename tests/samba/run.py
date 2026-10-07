@@ -203,9 +203,11 @@ def run_tests(source: Path, cross_exec: str | None = None) -> None:
                 raise subprocess.CalledProcessError(result, command)
         finally:
             # Also collect descendants after an assertion failure in a driver.
+            # Darwin can answer EPERM, not ESRCH, for a group with no live
+            # member, even just after its only process was reaped.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
             process.wait()
 

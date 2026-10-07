@@ -1,7 +1,9 @@
 """Exercise runner failure propagation without downloading or building Samba."""
 import os
+import signal
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -21,6 +23,71 @@ def test_runner_propagates_test_exit_status(tmp_path, monkeypatch, status):
         assert error.value.returncode == status
     else:
         run.run_tests(tmp_path)
+
+
+def fixture_driver(tmp_path, monkeypatch, script):
+    binary = tmp_path / "bin/default/source3/modules/fixture"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\n" + script)
+    binary.chmod(0o755)
+    monkeypatch.setattr(run, "cases", lambda: iter([("fixture", ())]))
+
+
+def wait_gone(pid):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(.02)
+    pytest.fail(f"driver descendant {pid} outlived its test")
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
+@pytest.mark.parametrize("status", [0, 2])
+def test_runner_accepts_either_answer_for_a_group_with_no_live_member(tmp_path, monkeypatch, error, status):
+    # Linux answers ESRCH; Darwin can answer EPERM just after the reap.
+    fixture_driver(tmp_path, monkeypatch, f"exit {status}\n")
+    groups = []
+    def killpg(pgid, sig):
+        groups.append((pgid, sig))
+        raise error(1, "no live member")
+    monkeypatch.setattr(run.os, "killpg", killpg)
+    if status:
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            run.run_tests(tmp_path)
+        assert raised.value.returncode == status
+    else:
+        run.run_tests(tmp_path)
+    assert len(groups) == 1 and groups[0][1] == signal.SIGKILL
+
+
+@pytest.mark.parametrize("status", [0, 3])
+def test_runner_kills_what_a_finished_driver_left_in_its_group(tmp_path, monkeypatch, status):
+    fixture_driver(tmp_path, monkeypatch, f'sleep 30 &\necho $! > "{tmp_path}/child"\nexit {status}\n')
+    if status:
+        with pytest.raises(subprocess.CalledProcessError):
+            run.run_tests(tmp_path)
+    else:
+        run.run_tests(tmp_path)
+    wait_gone(int((tmp_path / "child").read_text()))
+
+
+def test_runner_timeout_kills_the_whole_driver_group(tmp_path, monkeypatch):
+    child = tmp_path / "child"
+    fixture_driver(tmp_path, monkeypatch, f'sleep 60 &\necho $! > "{child}.new"\nmv "{child}.new" "{child}"\nsleep 3\n')
+    def timeout_once_started(_target, _cross_exec):
+        # The runner asks after starting the driver; time out only once its
+        # child exists, however long a loaded host takes to get there.
+        deadline = time.monotonic() + 30
+        while not child.exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        return .1
+    monkeypatch.setattr(run, "case_timeout", timeout_once_started)
+    with pytest.raises(subprocess.TimeoutExpired):
+        run.run_tests(tmp_path)
+    wait_gone(int(child.read_text()))
 
 
 def test_runner_rejects_missing_test_without_running_later_cases(tmp_path, monkeypatch):
