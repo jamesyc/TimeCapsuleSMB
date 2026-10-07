@@ -57,10 +57,10 @@ enum DeviceEndpointPolicy {
         if let hostname = normalizedHostname(identity.hostname) {
             return hostname
         }
-        if let target = preferredSetupTarget(for: identity) {
+        if let target = hostComponent(identity.configuredSSHTarget) {
             return target
         }
-        return hostComponent(identity.configuredSSHTarget)
+        return preferredSetupTarget(for: identity)
             ?? identity.configuredSSHTarget.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -126,8 +126,11 @@ enum DeviceEndpointPolicy {
         return ordered
     }
 
-    static func addressSummary(_ addresses: [DeviceNetworkAddress]) -> String {
-        let regular = addresses.filter { $0.scope == .regular }
+    /// Regular addresses first; a link-local one shows only when nothing else
+    /// does or when it is the saved target the app connects through.
+    static func addressSummary(_ addresses: [DeviceNetworkAddress], target: String? = nil) -> String {
+        let targetKey = normalizedHostKey(target)
+        let regular = addresses.filter { $0.scope == .regular || (!targetKey.isEmpty && normalizedHostKey($0.value) == targetKey) }
         let prioritized = regular.isEmpty ? addresses : regular
         return prioritized
             .map { "\($0.family.title) \($0.value)" + ($0.scope == .linkLocal ? " link-local" : "") }

@@ -90,8 +90,6 @@ final class BackendPayloadTests: XCTestCase {
             "addresses": ["10.0.0.2"],
             "ipv4": ["10.0.0.2"],
             "ipv6": [],
-            "preferred_ipv4": "10.0.0.2",
-            "link_local_only": false,
             "syap": "119",
             "model": "Time Capsule",
             "service_type": "_airport._tcp.local.",

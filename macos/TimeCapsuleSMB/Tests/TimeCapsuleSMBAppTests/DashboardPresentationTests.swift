@@ -318,6 +318,18 @@ final class DashboardPresentationTests: XCTestCase {
         )
     }
 
+    func testSidebarCopyIPAddressCopiesTheSavedLinkLocalTarget() throws {
+        // Discussion #368: the LAN address is advertised but off this Mac's
+        // network; the saved target is the address that answers.
+        var profile = try makeProfile(host: "root@fe80::82ea:96ff:fee6:5868%en0")
+        profile.addresses = ["192.168.1.83", "169.254.205.45", "fe80::82ea:96ff:fee6:5868%en0"]
+        let summary = DeviceDashboardSummary(profile: profile, passwordState: .available, displayStatus: .healthy, primaryAction: .openSMB, hostWarning: nil)
+
+        let presentation = DeviceSidebarContextMenuPresentation(profile: profile, summary: summary, isDeviceBusy: false)
+
+        XCTAssertEqual(presentation.clipboardValue(for: .copyIPAddress), "fe80::82ea:96ff:fee6:5868%en0")
+    }
+
     func testSidebarContextMenuDisablesUnavailableActionsAndCopyValues() throws {
         let profile = try makeProfile(host: "airport-time-capsule.local")
         let summary = DeviceDashboardSummary(

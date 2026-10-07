@@ -17,6 +17,38 @@ final class DeviceEndpointPolicyTests: XCTestCase {
         XCTAssertEqual(DeviceEndpointPolicy.hostComponent(" capsule.local. "), "capsule.local")
     }
 
+    func testScopedLinkLocalTargetsKeepTheirZone() {
+        // The backend saves root@fe80::…%en0 when only link-local IPv6 answers.
+        let target = "root@fe80::82ea:96ff:fee6:5868%en0"
+        XCTAssertEqual(DeviceEndpointPolicy.hostComponent(target), "fe80::82ea:96ff:fee6:5868%en0")
+        XCTAssertEqual(DeviceEndpointPolicy.rootSSHTarget(target), target)
+        XCTAssertEqual(DeviceEndpointPolicy.rootSSHTarget("fe80::1%en0"), "root@fe80::1%en0")
+        XCTAssertEqual(DeviceEndpointPolicy.normalizedHostKey(target), "ipv6:fe80::82ea:96ff:fee6:5868%en0")
+        XCTAssertNotEqual(DeviceEndpointPolicy.normalizedHostKey("root@fe80::1%en0"), DeviceEndpointPolicy.normalizedHostKey("root@fe80::1%en1"))
+        XCTAssertEqual(DeviceEndpointPolicy.smbURL(host: "fe80::1%en0", account: "admin")?.absoluteString, "smb://admin@[fe80::1%25en0]")
+        // IPv4 is unchanged.
+        XCTAssertEqual(DeviceEndpointPolicy.rootSSHTarget("10.0.0.2"), "root@10.0.0.2")
+        XCTAssertEqual(DeviceEndpointPolicy.normalizedHostKey("root@10.0.0.2"), "ipv4:10.0.0.2")
+        XCTAssertEqual(DeviceEndpointPolicy.smbURL(host: "10.0.0.2", account: "admin")?.absoluteString, "smb://admin@10.0.0.2")
+    }
+
+    func testAddressSummaryListsALinkLocalAddressOnlyWhenItIsTheTarget() {
+        let addresses = ["192.168.1.218", "169.254.155.207", "fe80::82ea:96ff:fee6:5868%en0"]
+            .compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+
+        XCTAssertEqual(DeviceEndpointPolicy.addressSummary(addresses), "IPv4 192.168.1.218")
+        XCTAssertEqual(DeviceEndpointPolicy.addressSummary(addresses, target: "root@192.168.1.218"), "IPv4 192.168.1.218")
+        XCTAssertEqual(
+            DeviceEndpointPolicy.addressSummary(addresses, target: "root@fe80::82ea:96ff:fee6:5868%en0"),
+            "IPv4 192.168.1.218  IPv6 fe80::82ea:96ff:fee6:5868%en0 link-local"
+        )
+        // The same address on another interface is not the target.
+        XCTAssertEqual(DeviceEndpointPolicy.addressSummary(addresses, target: "root@fe80::82ea:96ff:fee6:5868%en1"), "IPv4 192.168.1.218")
+        // With no regular address, every link-local one shows, as before.
+        let linkLocalOnly = ["169.254.155.207", "fe80::1%en0"].compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+        XCTAssertEqual(DeviceEndpointPolicy.addressSummary(linkLocalOnly), "IPv4 169.254.155.207 link-local  IPv6 fe80::1%en0 link-local")
+    }
+
     func testHostComponentStripsPortsWithoutBreakingIPv6Literals() {
         XCTAssertEqual(DeviceEndpointPolicy.hostComponent("root@10.0.0.2:22"), "10.0.0.2")
         XCTAssertEqual(DeviceEndpointPolicy.hostComponent("capsule.local:445"), "capsule.local")

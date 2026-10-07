@@ -2234,7 +2234,10 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["resolved"][0]["ipv4"], ["169.254.44.9", "10.0.0.2"])
         self.assertEqual(result["payload"]["devices"][0]["name"], "TC")
         self.assertEqual(result["payload"]["devices"][0]["host"], "10.0.0.2")
-        self.assertEqual(result["payload"]["devices"][0]["preferred_ipv4"], "10.0.0.2")
+        self.assertEqual(result["payload"]["devices"][0]["ssh_host"], "root@10.0.0.2")
+        # The app reads ssh_host; the IPv4-only hints it never read are gone.
+        self.assertNotIn("preferred_ipv4", result["payload"]["devices"][0])
+        self.assertNotIn("link_local_only", result["payload"]["devices"][0])
         self.assertEqual(result["payload"]["devices"][0]["selected_record"]["fullname"], "TC._airport._tcp.local.")
         self.assertEqual(result["payload"]["schema_version"], 1)
         self.assertEqual(result["payload"]["counts"], {"instances": 1, "resolved": 1, "devices": 1})

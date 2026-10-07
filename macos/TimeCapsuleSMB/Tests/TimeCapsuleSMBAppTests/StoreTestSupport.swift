@@ -583,9 +583,7 @@ func testDiscoveredDevice(
     addresses: [String]? = nil,
     ipv4: [String]? = nil,
     ipv6: [String] = [],
-    preferredIPv4: String? = nil,
     sshHost: String? = nil,
-    linkLocalOnly: Bool = false,
     syap: String? = "119",
     model: String? = "Time Capsule",
     supportedModel: Bool? = nil,
@@ -595,9 +593,9 @@ func testDiscoveredDevice(
     let hostIsIPv6 = host.contains(":")
     let resolvedIPv4 = ipv4 ?? (hostIsIPv6 ? [] : [host])
     let resolvedIPv6 = ipv6.isEmpty && hostIsIPv6 ? [host] : ipv6
-    let resolvedPreferredIPv4 = preferredIPv4 ?? resolvedIPv4.first { !$0.hasPrefix("169.254.") }
+    let lanIPv4 = resolvedIPv4.first { !$0.hasPrefix("169.254.") }
     let resolvedAddresses = addresses ?? (resolvedIPv4 + resolvedIPv6)
-    let resolvedSSHHost = sshHost ?? ((resolvedPreferredIPv4 != nil || !resolvedIPv6.isEmpty) ? "root@\(host)" : nil)
+    let resolvedSSHHost = sshHost ?? ((lanIPv4 != nil || !resolvedIPv6.isEmpty) ? "root@\(host)" : nil)
     let record = selectedRecord ?? testDeviceRecord(
         name: name,
         hostname: hostname,
@@ -616,8 +614,6 @@ func testDiscoveredDevice(
         "addresses": .array(resolvedAddresses.map(JSONValue.string)),
         "ipv4": .array(resolvedIPv4.map(JSONValue.string)),
         "ipv6": .array(resolvedIPv6.map(JSONValue.string)),
-        "preferred_ipv4": resolvedPreferredIPv4.map(JSONValue.string) ?? .null,
-        "link_local_only": .bool(linkLocalOnly),
         "syap": syap.map(JSONValue.string) ?? .null,
         "model": model.map(JSONValue.string) ?? .null,
         "service_type": .string("_airport._tcp.local."),
@@ -662,7 +658,6 @@ func testDiscoverPayload(records: [JSONValue], devices: [JSONValue]? = nil) -> J
                 addresses: ipv4 + ipv6,
                 ipv4: ipv4,
                 ipv6: ipv6,
-                preferredIPv4: preferredIPv4,
                 sshHost: sshHost,
                 fullname: fullname,
                 selectedRecord: record

@@ -28,10 +28,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -126,10 +124,8 @@
           "ipv6": [
             "fd00::20"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": null,
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -216,10 +212,8 @@
           "id": "airport:00:11:22:33:44:55",
           "ipv4": [],
           "ipv6": [],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": null,
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "hostname-only.local",
@@ -309,10 +303,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": null,
           "name": "Express",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Express._airport._tcp.local.",
             "hostname": "office.local",
@@ -406,10 +398,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": null,
           "name": "Unknown",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Unknown._airport._tcp.local.",
             "hostname": "office.local",
@@ -499,10 +489,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Bob's.Café\\123",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Bob's.Café\\123._airport._tcp.local.",
             "hostname": "office.local",
@@ -601,10 +589,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "first.local",
@@ -648,10 +634,8 @@
           "ipv6": [
             "fd00::20"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.20",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "second.local",
@@ -776,10 +760,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -823,10 +805,8 @@
           "ipv6": [
             "fd00::20"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.20",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -951,10 +931,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "First",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "First._airport._tcp.local.",
             "hostname": "office.local",
@@ -998,10 +976,8 @@
           "ipv6": [
             "fd00::20"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Second",
-          "preferred_ipv4": "192.0.2.20",
           "selected_record": {
             "fullname": "Second._airport._tcp.local.",
             "hostname": "office.local",
@@ -1125,10 +1101,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -1255,10 +1229,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -1297,10 +1269,8 @@
             "192.0.2.20"
           ],
           "ipv6": [],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Office",
-          "preferred_ipv4": "192.0.2.20",
           "selected_record": {
             "fullname": "Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -1437,10 +1407,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": " AirPort Time Capsule ",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": " AirPort Time Capsule ._airport._tcp.local.",
             "hostname": "office.local",
@@ -1538,10 +1506,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Capsule Office",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Capsule Office._airport._tcp.local.",
             "hostname": "office.local",
@@ -1639,10 +1605,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "   ",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "   ._airport._tcp.local.",
             "hostname": "office.local",
@@ -1742,10 +1706,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": " Capsule",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": " Capsule._airport._tcp.local.",
             "hostname": "office.local",
@@ -1787,10 +1749,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Capsule",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Capsule._airport._tcp.local.",
             "hostname": "office.local",
@@ -1832,10 +1792,8 @@
           "ipv6": [
             "fd00::10"
           ],
-          "link_local_only": false,
           "model": "TimeCapsule6,116",
           "name": "Capsule ",
-          "preferred_ipv4": "192.0.2.10",
           "selected_record": {
             "fullname": "Capsule ._airport._tcp.local.",
             "hostname": "office.local",

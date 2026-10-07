@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import ipaddress
 import json
 from dataclasses import dataclass, replace
 from typing import Iterable
 
 from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
-from timecapsulesmb.core.net import is_link_local_ipv4
 from timecapsulesmb.device.compat import airport_syap_supported
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
@@ -28,8 +26,6 @@ class DiscoveredDeviceCandidate:
     addresses: tuple[str, ...]
     ipv4: tuple[str, ...]
     ipv6: tuple[str, ...]
-    preferred_ipv4: str | None
-    link_local_only: bool
     syap: str | None
     model: str | None
     service_type: str
@@ -74,8 +70,6 @@ def device_candidate_to_jsonable(candidate: DiscoveredDeviceCandidate) -> dict[s
         "addresses": list(candidate.addresses),
         "ipv4": list(candidate.ipv4),
         "ipv6": list(candidate.ipv6),
-        "preferred_ipv4": candidate.preferred_ipv4,
-        "link_local_only": candidate.link_local_only,
         "syap": candidate.syap,
         "model": candidate.model,
         "supported_model": airport_syap_supported(candidate.syap),
@@ -86,7 +80,6 @@ def device_candidate_to_jsonable(candidate: DiscoveredDeviceCandidate) -> dict[s
 
 
 def _candidate_from_record(record: BonjourResolvedService) -> DiscoveredDeviceCandidate:
-    preferred_ipv4 = _first_non_link_local_ipv4(record.ipv4)
     ssh_host = discovered_record_root_host(record)
     host = _host_from_ssh_host(ssh_host) or record.hostname or _first_value(record.ipv6) or ""
     name = record.name or record.hostname or host or "AirPort Device"
@@ -103,8 +96,6 @@ def _candidate_from_record(record: BonjourResolvedService) -> DiscoveredDeviceCa
         addresses=tuple([*record.ipv4, *record.ipv6]),
         ipv4=tuple(record.ipv4),
         ipv6=tuple(record.ipv6),
-        preferred_ipv4=preferred_ipv4,
-        link_local_only=bool(record.ipv4) and preferred_ipv4 is None,
         syap=syap,
         model=model,
         service_type=record.service_type or "",
@@ -133,7 +124,7 @@ def _candidate_model(model: str | None, syap: str | None) -> str | None:
 
 def _candidate_score(candidate: DiscoveredDeviceCandidate) -> tuple[int, int, int, int]:
     return (
-        1 if candidate.preferred_ipv4 else 0,
+        1 if candidate.selected_record.preferred_ipv4() else 0,
         1 if candidate.ssh_host else 0,
         1 if candidate.syap else 0,
         len(candidate.addresses),
@@ -150,18 +141,6 @@ def _candidate_id(record: BonjourResolvedService, *, host: str) -> str:
            _normalize(record.hostname) or _normalize(host), record.service_type,
            record.interface_index or 0, record.port)
     return "observation:" + json.dumps(key, separators=(",", ":"), ensure_ascii=False)
-
-
-def _first_non_link_local_ipv4(values: Iterable[str]) -> str | None:
-    for value in values:
-        if not value or is_link_local_ipv4(value):
-            continue
-        try:
-            if ipaddress.ip_address(value).version == 4:
-                return value
-        except ValueError:
-            continue
-    return None
 
 
 def _host_from_ssh_host(value: str | None) -> str:

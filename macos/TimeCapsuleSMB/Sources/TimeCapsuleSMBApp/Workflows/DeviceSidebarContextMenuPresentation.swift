@@ -141,6 +141,10 @@ struct DeviceSidebarContextMenuPresentation: Equatable {
     }
 
     private static func ipAddress(for profile: DeviceProfile) -> String? {
+        // The saved target when it is an address: the one SSH and SMB reach.
+        if DeviceEndpointPolicy.addressFamily(for: profile.connectionTarget) != nil {
+            return profile.connectionTarget
+        }
         let regular = profile.network.addresses.filter { $0.scope == .regular }
         return regular.first { $0.family == .ipv4 }?.value
             ?? regular.first { $0.family == .ipv6 }?.value

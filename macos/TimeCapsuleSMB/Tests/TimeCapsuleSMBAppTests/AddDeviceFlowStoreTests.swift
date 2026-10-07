@@ -136,7 +136,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 hostname: "office.local.",
                 addresses: ["169.254.44.9", "10.0.0.2"],
                 ipv4: ["169.254.44.9", "10.0.0.2"],
-                preferredIPv4: "10.0.0.2",
                 fullname: "Office Capsule._airport._tcp.local.",
                 selectedRecord: records[0]
             )

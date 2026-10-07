@@ -24,8 +24,6 @@ class DiscoveryDeviceCandidateTests(unittest.TestCase):
         self.assertEqual([device.name for device in devices], ["James", "Office"])
         self.assertEqual(devices[0].host, "192.168.1.217")
         self.assertEqual(devices[0].ssh_host, "root@192.168.1.217")
-        self.assertEqual(devices[0].preferred_ipv4, "192.168.1.217")
-        self.assertFalse(devices[0].link_local_only)
         self.assertEqual(devices[0].selected_record.service_type, "_airport._tcp.local.")
 
     def test_ignores_non_airport_records_even_when_they_have_time_capsule_metadata(self) -> None:
@@ -67,8 +65,7 @@ class DiscoveryDeviceCandidateTests(unittest.TestCase):
         device = devices[0]
         self.assertEqual(device.host, "office.local.")
         self.assertIsNone(device.ssh_host)
-        self.assertIsNone(device.preferred_ipv4)
-        self.assertTrue(device.link_local_only)
+        self.assertEqual(device.addresses, ("169.254.44.9",))
 
     def test_distinct_observations_sharing_hostname_keep_stable_ids(self) -> None:
         first = self.record("First", "_airport._tcp.local.", ["192.0.2.10"], hostname="SHARED.local.")

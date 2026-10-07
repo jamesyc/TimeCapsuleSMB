@@ -207,8 +207,6 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
     let addresses: [String]
     let ipv4: [String]
     let ipv6: [String]
-    let preferredIPv4: String?
-    let linkLocalOnly: Bool
     let syap: String?
     let model: String?
     /// nil when the advertised syAP cannot tell; false for another AirPort model.
@@ -227,8 +225,6 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
         case addresses
         case ipv4
         case ipv6
-        case preferredIPv4 = "preferred_ipv4"
-        case linkLocalOnly = "link_local_only"
         case syap
         case model
         case supportedModel = "supported_model"
@@ -248,8 +244,6 @@ struct DiscoveredDevicePayload: Decodable, Equatable {
         self.addresses = try container.decodeIfPresent([String].self, forKey: .addresses) ?? []
         self.ipv4 = try container.decodeIfPresent([String].self, forKey: .ipv4) ?? []
         self.ipv6 = try container.decodeIfPresent([String].self, forKey: .ipv6) ?? []
-        self.preferredIPv4 = try container.decodeIfPresent(String.self, forKey: .preferredIPv4)
-        self.linkLocalOnly = try container.decodeIfPresent(Bool.self, forKey: .linkLocalOnly) ?? false
         self.syap = try container.decodeIfPresent(String.self, forKey: .syap)
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
         self.supportedModel = try container.decodeIfPresent(Bool.self, forKey: .supportedModel)

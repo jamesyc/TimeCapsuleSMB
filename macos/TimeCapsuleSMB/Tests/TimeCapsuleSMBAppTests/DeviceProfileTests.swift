@@ -38,6 +38,32 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(profile.addressSummary, "IPv4 10.0.0.2  IPv6 fd00::2")
     }
 
+    func testConnectionTargetIsTheSavedHostEvenWhenALANAddressIsAdvertised() {
+        // Discussion #368: the LAN address is on another subnet, so configure
+        // saved the link-local address that answered.
+        let profile = makeProfile(
+            host: "root@fe80::82ea:96ff:fee6:5868%en0",
+            hostname: "AirPort-Time-Capsule.local.",
+            addresses: ["192.168.1.83", "169.254.205.45", "fe80::82ea:96ff:fee6:5868%en0"]
+        )
+
+        XCTAssertEqual(profile.connectionTarget, "fe80::82ea:96ff:fee6:5868%en0")
+        // The address in use is listed beside the unreachable LAN one; the
+        // 169.254 address stays hidden.
+        XCTAssertEqual(profile.addressSummary, "IPv4 192.168.1.83  IPv6 fe80::82ea:96ff:fee6:5868%en0 link-local")
+    }
+
+    func testDisplayTargetWithoutAHostnameIsTheSavedHost() {
+        let profile = makeProfile(
+            host: "root@fe80::82ea:96ff:fee6:5868%en0",
+            bonjourName: nil,
+            hostname: nil,
+            addresses: ["192.168.1.83", "fe80::82ea:96ff:fee6:5868%en0"]
+        )
+
+        XCTAssertEqual(profile.displayTarget, "fe80::82ea:96ff:fee6:5868%en0")
+    }
+
     func testNetworkIdentitySupportsIPv6OnlyProfiles() {
         let profile = makeProfile(
             host: "root@fd00::2",

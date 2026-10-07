@@ -103,7 +103,7 @@ struct DeviceNetworkIdentity: Codable, Equatable {
     }
 
     var addressSummary: String {
-        DeviceEndpointPolicy.addressSummary(addresses)
+        DeviceEndpointPolicy.addressSummary(addresses, target: configuredSSHTarget)
     }
 
     var normalizedHostname: String {

@@ -429,8 +429,10 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         set { network.setAddressValues(newValue) }
     }
 
+    /// The host SSH uses: the saved target, which the backend chose by
+    /// reachability, not a guess from the advertised addresses.
     var connectionTarget: String {
-        network.preferredSetupTarget
+        DeviceEndpointPolicy.hostComponent(network.configuredSSHTarget) ?? network.preferredSetupTarget
     }
 
     var displayTarget: String {
