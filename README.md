@@ -29,13 +29,15 @@ If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buym
 ## Requirements
 
 You will need:  
-- A macOS 14+ or Linux machine on the same local network as the Time Capsule
+- An Intel or Apple Silicon macOS 14+ or Linux machine on the same local network as the Time Capsule
 - The password for the Time Capsule
 
 For the python setup, you need:  
 - Python 3.9+
 - `smbclient` installed locally for `doctor`
-- Homebrew installed for macOS users
+- Homebrew installed for macOS users (requires an Apple Silicon computer)
+
+If you have a Linux computer, then you must use the python CLI version. If you have an Intel Mac, you must use the universal macOS app, as Homebrew has dropped support for Intel. 
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
