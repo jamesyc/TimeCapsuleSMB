@@ -85,6 +85,13 @@
 # Samba uses C11 generic selection for const-preserving charset helpers. The
 # existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.
 0036-charset-legacy-gcc-generic.patch|const-preserving charset helpers on legacy GCC
+# waf writes each configure test program exactly as the check gives it, and
+# some end in indentation instead of a newline. GCC 4.1 reports "no newline at
+# end of file", an error under -Werror, so on the NetBSD 4 SDK such a check
+# failed whatever it tested. The one that mattered adds the stack protector
+# and _FORTIFY_SOURCE: NetBSD 4 binaries were built without both. End every
+# test program with a newline.
+0073-waf-config-test-final-newline.patch|configure test programs end with a newline
 
 # NetBSD 4 and old-kernel compatibility.
 # Neither Apple kernel has the *at system calls: NetBSD 4 and NetBSD 6 both

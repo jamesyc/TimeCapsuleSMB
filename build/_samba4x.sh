@@ -86,20 +86,6 @@ set_waf_cache_value() {
     patch_require_fixed "$desc" "$name = $value" "$cache_file"
 }
 
-remove_waf_cache_fixed_text() {
-    cache_file="$1"
-    text="$2"
-    expr="$3"
-    desc="$4"
-
-    if grep -F -q "$text" "$cache_file"; then
-        patch_perl "$desc" "$expr" "$cache_file"
-    fi
-    if grep -F -q "$text" "$cache_file"; then
-        patch_fail "$desc: forbidden cache text still present in $cache_file"
-    fi
-}
-
 undef_config_symbol() {
     config_header="$1"
     symbol="$2"
@@ -167,13 +153,6 @@ apply_samba4x_waf_cache_overrides() {
     # old NetBSD libc process-title/backtrace probes must not leak into it.
     apply_samba4x_static_waf_cache "$cache_file"
     apply_samba4x_runtime_waf_cache "$cache_file"
-
-    if [ "$SDK_FAMILY" = "netbsd4" ]; then
-        # NetBSD4's old static libc/toolchain combination does not support the
-        # stack protector runtime expected by newer Samba configure probes.
-        # NetBSD6/7 keep the normal detection.
-        remove_waf_cache_fixed_text "$cache_file" "'-fstack-protector'" "s/'-fstack-protector',\\s*//g; s/\\s*'\\-fstack-protector'\\s*//g" "Samba 4.x waf cache NetBSD4 stack protector removal"
-    fi
 }
 
 sync_samba4x_config_header() {
@@ -1107,6 +1086,15 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     for cache_file in "$SAMBA4X_SRC_DIR"/bin/c4che/*.py; do
         [ -f "$cache_file" ] || continue
         apply_samba4x_waf_cache_overrides "$cache_file"
+    done
+    # Samba's configure adds the stack protector and _FORTIFY_SOURCE together
+    # to EXTRA_CFLAGS when its check compiles (samba_autoconf.py). On NetBSD 4
+    # that check failed silently for an unrelated reason until patch 0073, so
+    # refuse a lane whose configure lost either flag.
+    for tc_hardening_flag in "'-fstack-protector'" "-D_FORTIFY_SOURCE="; do
+        if ! grep -q "^EXTRA_CFLAGS = .*$tc_hardening_flag" "$SAMBA4X_SRC_DIR"/bin/c4che/*.py; then
+            patch_fail "Samba 4.x configure did not enable $tc_hardening_flag (EXTRA_CFLAGS)"
+        fi
     done
 
     for config_header in \

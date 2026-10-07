@@ -1,0 +1,20 @@
+diff --git a/third_party/waf/waflib/Tools/c_config.py b/third_party/waf/waflib/Tools/c_config.py
+--- a/third_party/waf/waflib/Tools/c_config.py
++++ b/third_party/waf/waflib/Tools/c_config.py
+@@ -394,7 +394,15 @@ def build_fun(bld):
+ 	"""
+ 	if bld.kw['compile_filename']:
+ 		node = bld.srcnode.make_node(bld.kw['compile_filename'])
+-		node.write(bld.kw['code'])
++		# C wants a source file to end with a newline, and GCC 4.1 warns
++		# "no newline at end of file", an error under -Werror. Fragments
++		# such as the stack protector check's end in indentation instead,
++		# so on that compiler every check compiled with -Werror failed
++		# whatever it was testing.
++		code = bld.kw['code']
++		if not code.endswith('\n'):
++			code += '\n'
++		node.write(code)
+ 
+ 	o = bld(features=bld.kw['features'], source=bld.kw['compile_filename'], target='testprog')
+ 

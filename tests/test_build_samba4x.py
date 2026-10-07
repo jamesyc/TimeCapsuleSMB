@@ -170,6 +170,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 LDFLAGS = []
                 LINKFLAGS = []
                 EOF
+                printf '%s\\n' "${TEST_CONFIGURE_CACHE-EXTRA_CFLAGS = ['-fPIC', '-fstack-protector', '-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3']}" >> bin/c4che/default.py
                 if [ "${TEST_CONFIGURE_NO_HEADERS:-0}" != "1" ]; then
                     mkdir -p bin/default/include bin/default/source3/include bin/default/source4/include
                     for header in bin/default/include/config.h bin/default/source3/include/config.h bin/default/source4/include/config.h; do
@@ -486,6 +487,37 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     line = next(item for item in log if item.startswith(variable))
                     self.assertIn("-DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1", line)
                     self.assertIn("-DTC_SAMBA4X_APPLIANCE=1", line)
+
+    def test_every_lane_requires_the_stack_protector_and_fortify(self) -> None:
+        # Samba's configure adds both together; on NetBSD 4 its check failed
+        # for an unrelated reason (GCC 4.1 and test files without a final
+        # newline, patch 0073) and the lane silently built without either.
+        for wrapper, lane in (("samba4x.sh", "netbsd7"), ("samba4xoldle.sh", "netbsd4le"),
+                              ("samba4xoldbe.sh", "netbsd4be")):
+            for case, cache, missing in (
+                ("both", "EXTRA_CFLAGS = ['-fstack-protector', '-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3']", None),
+                ("no stack protector", "EXTRA_CFLAGS = ['-fPIC', '-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3']",
+                 "'-fstack-protector'"),
+                ("no fortify", "EXTRA_CFLAGS = ['-fPIC', '-fstack-protector']", "-D_FORTIFY_SOURCE="),
+                ("no EXTRA_CFLAGS", "", "'-fstack-protector'"),
+            ):
+                with self.subTest(lane=lane, case=case), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    env = self.env_for_lane(root, lane, root / "configure-args.txt")
+                    env["TEST_CONFIGURE_CACHE"] = cache
+                    targets = root / "waf-targets.txt"
+                    env["TEST_WAF_TARGETS"] = str(targets)
+
+                    result = self.run_wrapper(wrapper, env)
+
+                    output = result.stdout + result.stderr + Path(env[f"SAMBA4X_{lane.upper()}_LOG"]).read_text()
+                    if missing is None:
+                        self.assertEqual(result.returncode, 0, output)
+                        self.assertIn("smbd/smbd", targets.read_text())
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(f"configure did not enable {missing} (EXTRA_CFLAGS)", output)
+                        self.assertFalse(targets.exists())
 
     def test_netbsd4_static_links_keep_the_netbsd_notes(self) -> None:
         for wrapper, lane in (("samba4xoldle.sh", "netbsd4le"), ("samba4xoldbe.sh", "netbsd4be")):
