@@ -353,6 +353,34 @@ class CliSetSshTests(CliTestCase):
         self.assertNotIn("device_came_back_after_reboot", finished)
         self.assertIn("stage=wait_for_reboot_up", finished["error"])
 
+    def test_set_ssh_disable_records_the_reboot_cycle_in_telemetry(self) -> None:
+        # A device that never comes back is the case the measurement explains.
+        self.device.kernel_after = 10_000
+        rc, _text, _disable, _input = self.run_disable([])
+
+        self.assertEqual(rc, 1)
+        execution = self.telemetry_payload("set_ssh_finished")["execution"]
+        cycle = execution["measurements"]["reboot_cycle"][0]
+        self.assertEqual(cycle["result"], "did_not_come_back_up")
+        self.assertFalse(cycle["expect_ssh"])
+        self.assertIn("down_seen_after_sec", cycle)
+        self.assertEqual(execution["measurements"]["reboot_request"][0]["strategy"], "network_acp")
+
+    def test_set_ssh_enable_records_the_reboot_cycle_in_telemetry(self) -> None:
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"):
+                    with mock.patch.object(self.device, "ssh_open", False):
+                        with redirect_stdout(io.StringIO()):
+                            rc = set_ssh.main([])
+
+        self.assertEqual(rc, 0)
+        cycle = self.telemetry_payload("set_ssh_finished")["execution"]["measurements"]["reboot_cycle"][0]
+        self.assertEqual(cycle["result"], "success")
+        self.assertTrue(cycle["expect_ssh"])
+        self.assertIn("ssh_ready_after_sec", cycle)
+
     def test_set_ssh_disable_flow_confirms_ssh_disabled(self) -> None:
         self.device.ssh_up_after_boot = None
         rc, text, _disable, _input = self.run_disable([])

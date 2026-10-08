@@ -35,7 +35,6 @@ from timecapsulesmb.services.configure import (
     ConfigureFlowRequest,
     write_configure_env_file,
 )
-from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure_target import resolve_configure_target
 from timecapsulesmb.core.summaries import Summary
 
@@ -280,12 +279,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 ata_standby=params.get("ata_standby") if "ata_standby" in params else None,
                 probe=probe_for_context,
             ),
-            callbacks=OperationCallbacks(
-                set_stage=context.stage,
-                add_debug_fields=context.add_debug_fields,
-                update_fields=context.update_fields,
-                log=context.log,
-            ),
+            callbacks=context.to_operation_callbacks(),
             hooks=ConfigureFlowHooks(
                 after_probe=apply_probe_to_context,
                 before_enable_ssh=before_enable_ssh,

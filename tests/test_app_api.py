@@ -4160,6 +4160,32 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(error["recovery"]["retryable"])
         self.assertNotIn("secret", json.dumps(collector.events))
 
+    def test_configure_records_the_ssh_enable_reboot_cycle_in_telemetry(self) -> None:
+        # The real enable-and-reboot runs against the simulated device; only the
+        # ACP write is stubbed. SSH never opens on the new boot.
+        collector = CollectingSink()
+        device = FakeAcpDevice(ssh_open=False, ssh_up_after_boot=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            params = {"config": str(Path(tmp) / ".env"), "host": "root@10.0.0.2", "password": "secret"}
+            params["confirmation_id"] = self.confirmation_id_for(
+                "configure",
+                params,
+                {"host": "root@10.0.0.2", "device_name": "10.0.0.2", "requires_reboot": True},
+            )
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+                with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight"):
+                    with device.patched():
+                        rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "ssh_enable_timeout")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["phase"], "finished")
+        cycle = finished["execution"]["measurements"]["reboot_cycle"][0]
+        self.assertEqual(cycle["result"], "ssh_not_open")
+        self.assertIn("reset_seen_after_sec", cycle)
+        self.assertEqual(finished["execution"]["measurements"]["reboot_request"][0]["strategy"], "network_acp")
+
     def test_doctor_streams_check_events(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})

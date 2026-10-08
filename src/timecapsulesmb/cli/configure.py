@@ -4,6 +4,7 @@ import argparse
 import sys
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
@@ -35,7 +36,6 @@ from timecapsulesmb.core.errors import missing_dependency_message, missing_requi
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
-from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
 from timecapsulesmb.services.configure_target import reachable_record_host, resolve_configure_target
 from timecapsulesmb.device.compat import airport_syap_supported, unsupported_syap_message, unsupported_syaps
@@ -630,12 +630,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         probe=probe_for_context,
                         write_env=lambda path, output: write_configure_env_file(path, output, persist_password=True),
                     ),
-                    callbacks=OperationCallbacks(
-                        set_stage=command_context.set_stage,
-                        add_debug_fields=command_context.add_debug_fields,
-                        update_fields=command_context.update_fields,
-                        log=progress,
-                    ),
+                    callbacks=replace(command_context.to_operation_callbacks(), log=progress),
                     hooks=configure_service.ConfigureFlowHooks(
                         after_probe=apply_probe_to_context,
                         before_enable_ssh=before_enable_ssh,

@@ -15,7 +15,6 @@ from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config, require_device_password
 from timecapsulesmb.services.set_ssh import (
@@ -120,7 +119,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 result = enable_set_ssh(
                     connection,
                     no_wait=args.no_wait,
-                    callbacks=_callbacks(command_context),
+                    callbacks=command_context.to_operation_callbacks(),
                     initial=status,
                 )
             except Exception as e:
@@ -148,7 +147,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # Disabling SSH ends in an ACP reboot: check the password before the
         # prompt and before SSH is turned off in the saved settings.
-        require_device_password(connection, _callbacks(command_context))
+        require_device_password(connection, command_context.to_operation_callbacks())
 
         if action is SetSshAction.PROMPT_DISABLE:
             command_context.set_stage("prompt_disable_ssh")
@@ -181,7 +180,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = disable_set_ssh(
                 connection,
                 no_wait=args.no_wait,
-                callbacks=_callbacks(command_context),
+                callbacks=command_context.to_operation_callbacks(),
                 initial=status,
             )
         except RebootFlowError as e:
@@ -204,11 +203,3 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.succeed()
         return 0
 
-
-def _callbacks(command_context: CommandContext) -> OperationCallbacks:
-    return OperationCallbacks(
-        set_stage=command_context.set_stage,
-        log=print,
-        add_debug_fields=command_context.add_debug_fields,
-        update_fields=command_context.update_fields,
-    )

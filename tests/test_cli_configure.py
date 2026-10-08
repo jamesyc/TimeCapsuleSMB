@@ -26,6 +26,7 @@ from timecapsulesmb.discovery.bonjour import (
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 
+from timecapsulesmb.services.configure import enable_ssh_and_reprobe as real_enable_ssh_and_reprobe
 from tests.cli_support import CliTestCase, FakeCommandContext
 
 
@@ -2828,6 +2829,26 @@ class CliConfigureTests(CliTestCase):
             "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again.",
             self.configure_finished_error(),
         )
+
+    def test_configure_records_the_ssh_enable_reboot_cycle_in_telemetry(self) -> None:
+        # The real enable-and-reboot runs against the simulated device; only the
+        # ACP write is stubbed. SSH never opens on the new boot.
+        self._configure_acp_probe_mock.side_effect = real_enable_ssh_and_reprobe
+        self.device.ssh_up_after_boot = None
+        with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight"):
+            result = self.run_configure_cli(
+                prompt_side_effect=self.configure_prompt_defaults(),
+                probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                confirm=True,
+            )
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn("SSH did not open after enabling via ACP.", self.configure_finished_error())
+        execution = self.telemetry_payload("configure_finished")["execution"]
+        cycle = execution["measurements"]["reboot_cycle"][0]
+        self.assertEqual(cycle["result"], "ssh_not_open")
+        self.assertIn("reset_seen_after_sec", cycle)
+        self.assertEqual(execution["measurements"]["reboot_request"][0]["strategy"], "network_acp")
 
     def test_configure_ignores_legacy_name_values_and_does_not_prompt_for_them(self) -> None:
         prompted_labels: list[str] = []
