@@ -20,6 +20,11 @@ def find_command(name: str) -> str | None:
     return shutil.which(name)
 
 
+def sshpass_missing() -> bool:
+    """Commands that reach the device stream data through local sshpass."""
+    return find_command("sshpass") is None
+
+
 def command_exists(name: str) -> bool:
     if find_command(name):
         return True

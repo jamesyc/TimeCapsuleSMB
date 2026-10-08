@@ -46,7 +46,6 @@ from timecapsulesmb.checks.doctor_steps import (
     STARTUP_GRACE_DETAIL_KEY,
     STARTUP_GRACE_MASK,
     _apply_startup_grace,
-    _add_sshpass_result,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
@@ -252,7 +251,6 @@ class CheckTests(unittest.TestCase):
         run_ssh_stdout: str = "",
         run_ssh_returncode: int = 0,
         run_ssh_side_effect=None,
-        command_exists=True,
         read_active_smb_conf: str | None = None,
         xattr_result=None,
         smbd_probe=None,
@@ -318,8 +316,6 @@ class CheckTests(unittest.TestCase):
                         return_value=mock.Mock(returncode=run_ssh_returncode, stdout=run_ssh_stdout),
                     )
                 )
-            if command_exists is not None:
-                mocks.command_exists = stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.command_exists", return_value=command_exists))
             mocks.read_active_smb_conf_conn = stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.checks.doctor_steps.read_active_smb_conf_conn",
@@ -1842,17 +1838,26 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(results[0].status, "FAIL")
         self.assertIn("missing required configuration file", results[0].message)
 
-    def test_check_required_local_tools_marks_dns_sd_missing_as_fail(self) -> None:
+    def test_check_required_local_tools_reports_each_tool(self) -> None:
         def fake_exists(name: str) -> bool:
             return name == "ssh"
 
         with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=fake_exists):
             results = check_required_local_tools()
-        self.assertEqual([r.status for r in results], ["FAIL", "PASS"])
+        self.assertEqual([r.status for r in results], ["FAIL", "FAIL", "PASS"])
         self.assertEqual(
             [r.message for r in results],
-            ["missing local tool smbclient, please install smbclient on your computer", "found local tool ssh"],
+            [
+                "missing local tool sshpass, please install sshpass on your computer",
+                "missing local tool smbclient, please install smbclient on your computer",
+                "found local tool ssh",
+            ],
         )
+
+    def test_check_required_local_tools_warns_only_for_missing_ssh(self) -> None:
+        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=lambda name: name != "ssh"):
+            results = check_required_local_tools()
+        self.assertEqual([r.status for r in results], ["PASS", "PASS", "WARN"])
 
     def test_discover_smb_services_detailed_returns_snapshot_and_diagnostics(self) -> None:
         snapshot = BonjourDiscoverySnapshot(
@@ -2161,69 +2166,83 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(run.results[0].status, "PASS")
         self.assertIn("configuration file exists", run.results[0].message)
 
-    def test_run_doctor_checks_fails_missing_sshpass_for_netbsd4(self) -> None:
-        values = self.valid_doctor_values(TC_MDNS_DEVICE_MODEL="TimeCapsule6,113", TC_AIRPORT_SYAP="113")
-        netbsd4_state = mock.Mock(
-            probe_result=mock.Mock(ssh_authenticated=True, error=None),
-            compatibility=DeviceCompatibility(
-                os_name="NetBSD",
-                os_release="4.0_STABLE",
-                arch="evbarm",
-                elf_endianness="little",
-                payload_family="netbsd4le_samba4",
-                device_generation="gen1-4",
-                supported=True,
-                reason_code="supported_netbsd4",
-            ),
-        )
+    def test_check_required_local_tools_fails_missing_sshpass(self) -> None:
+        # sshpass is required whatever the login method: deploy, activate,
+        # uninstall, fsck and flash refuse to start without it.
+        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=lambda name: name != "sshpass"):
+            results = check_required_local_tools()
+
+        self.assertEqual(results[0], CheckResult("FAIL", "missing local tool sshpass, please install sshpass on your computer"))
+        self.assertEqual([r.status for r in results[1:]], ["PASS", "PASS"])
+
+    def test_run_doctor_checks_reports_local_tools_after_a_valid_config(self) -> None:
+        tools = [CheckResult("FAIL", "missing local tool sshpass, please install sshpass on your computer")]
         run = self.run_doctor_with_mocks(
-            values,
+            local_tools=tools,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            command_exists=False,
             mdns_probe=mock.Mock(ready=True, detail="ok"),
             read_active_smb_conf="",
             xattr_result=mock.Mock(status="WARN", message="xattr skipped"),
             smb_port=mock.Mock(status="SKIP", message="port skipped"),
-            precomputed_probe_state=netbsd4_state,
             skip_bonjour=True,
             skip_smb=True,
         )
+
         self.assertTrue(run.fatal)
-        self.assertTrue(any(result.status == "FAIL" and "missing local tool sshpass" in result.message for result in run.results))
+        run.mocks.check_required_local_tools.assert_called_once_with()
+        self.assertEqual([r for r in run.results if "local tool" in r.message], tools)
+        self.assertIn("contains all required settings", run.results[1].message)
+        self.assertIs(run.results[2], tools[0])
 
-    def test_run_doctor_checks_fails_missing_sshpass_for_password_netbsd6(self) -> None:
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            command_exists=False,
-            mdns_probe=mock.Mock(ready=True, detail="ok"),
-            read_active_smb_conf="",
-            xattr_result=mock.Mock(status="WARN", message="xattr skipped"),
-            smb_port=mock.Mock(status="SKIP", message="port skipped"),
-            skip_bonjour=True,
-            skip_smb=True,
+    def _doctor_without_usable_config(self, config: AppConfig, tool_present):
+        ssh_login = mock.Mock()
+        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=tool_present):
+            with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", ssh_login):
+                with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts") as artifacts:
+                    results, fatal = run_doctor_checks(config, repo_root=REPO_ROOT)
+        ssh_login.assert_not_called()
+        artifacts.assert_not_called()
+        return results, fatal
+
+    def test_run_doctor_checks_missing_env_suggests_configure_and_reports_missing_tools(self) -> None:
+        results, fatal = self._doctor_without_usable_config(
+            self.doctor_config(self.valid_doctor_values(), exists=False),
+            lambda name: name == "ssh",
         )
-        self.assertTrue(any(result.status == "FAIL" and "password-based SSH uploads require sshpass" in result.message for result in run.results))
 
-    def test_run_doctor_checks_allows_missing_sshpass_for_key_authentication(self) -> None:
-        results: list[CheckResult] = []
-        with mock.patch("timecapsulesmb.checks.doctor_steps.command_exists", return_value=False):
-            _add_sshpass_result(results.append, password_auth=False)
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].status, "INFO")
-        self.assertIn("key-authenticated SSH uploads", results[0].message)
-
-    def test_run_doctor_checks_passes_when_sshpass_installed(self) -> None:
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            command_exists=True,
-            mdns_probe=mock.Mock(ready=True, detail="ok"),
-            read_active_smb_conf="",
-            xattr_result=mock.Mock(status="WARN", message="xattr skipped"),
-            smb_port=mock.Mock(status="SKIP", message="port skipped"),
-            skip_bonjour=True,
-            skip_smb=True,
+        self.assertTrue(fatal)
+        self.assertEqual(
+            [(r.status, r.message) for r in results],
+            [
+                ("FAIL", f"missing required configuration file: {REPO_ROOT / '.env'}; run the `configure` command before running `doctor`"),
+                ("FAIL", "missing local tool sshpass, please install sshpass on your computer"),
+                ("FAIL", "missing local tool smbclient, please install smbclient on your computer"),
+                ("PASS", "found local tool ssh"),
+            ],
         )
-        self.assertTrue(any(result.status == "PASS" and result.message == "found local tool sshpass" for result in run.results))
+
+    def test_run_doctor_checks_missing_env_reports_present_tools(self) -> None:
+        results, fatal = self._doctor_without_usable_config(
+            self.doctor_config(self.valid_doctor_values(), exists=False),
+            lambda name: True,
+        )
+
+        self.assertTrue(fatal)
+        self.assertEqual([r.status for r in results], ["FAIL", "PASS", "PASS", "PASS"])
+        self.assertEqual(results[1].message, "found local tool sshpass")
+
+    def test_run_doctor_checks_invalid_env_reports_errors_then_tools(self) -> None:
+        values = self.valid_doctor_values()
+        del values["TC_HOST"]
+        results, fatal = self._doctor_without_usable_config(self.doctor_config(values), lambda name: name != "smbclient")
+
+        self.assertTrue(fatal)
+        self.assertEqual(results[0].message, f"configuration file exists: {REPO_ROOT / '.env'}")
+        tool_results = [r for r in results if "local tool" in r.message]
+        self.assertEqual([r.status for r in tool_results], ["PASS", "FAIL", "PASS"])
+        config_errors = results[1:results.index(tool_results[0])]
+        self.assertTrue(config_errors)
+        self.assertTrue(all(r.status == "FAIL" for r in config_errors))
 
     def run_doctor_with_sypw_answer(self, returncode: int):
         debug_fields: dict[str, object] = {}
@@ -2231,7 +2250,6 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
             run = self.run_doctor_with_mocks(
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-                command_exists=True,
                 mdns_probe=mock.Mock(ready=True, detail="ok"),
                 read_active_smb_conf="",
                 xattr_result=mock.Mock(status="WARN", message="xattr skipped"),
@@ -2256,7 +2274,6 @@ class CheckTests(unittest.TestCase):
         self.assertEqual([line.status for line in lines], ["WARN"])
         self.assertIn("tcapsule configure", lines[0].message)
         self.assertEqual(debug_fields["sypw_check"], "mismatch")
-        self.assertTrue(any(result.message == "found local tool sshpass" for result in run.results))
         self.assertTrue(any(result.message == "xattr skipped" for result in run.results))
 
     def test_doctor_reports_a_password_it_cannot_compare_as_info(self) -> None:
@@ -2358,7 +2375,6 @@ class CheckTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.9", "pw", "-o injected")
         run = self.run_doctor_with_mocks(
             ssh_login=CheckResult("PASS", "ssh ok"),
-            command_exists=True,
             read_active_smb_conf="",
             xattr_result=CheckResult("WARN", "xattr skipped"),
             smb_port=CheckResult("PASS", "445 ok"),

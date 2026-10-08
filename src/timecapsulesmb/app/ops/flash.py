@@ -7,6 +7,7 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.app.contracts import flash_backup_payload, flash_plan_payload, flash_write_payload
 from timecapsulesmb.app.ops.common import (
     load_request_config,
+    require_request_sshpass,
     resolve_request_target,
 )
 from timecapsulesmb.app.ops.deploy import device_operation_error
@@ -96,6 +97,7 @@ def _write_reboot_policy(params: dict[str, object], plan_operation: str) -> tupl
 
 
 def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> FlashTarget:
+    require_request_sshpass()
     target = resolve_request_target(config, context, profile="flash", include_probe=False)
     context.stage("check_compatibility")
     try:

@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime as cli_runtime
@@ -19,6 +20,7 @@ from timecapsulesmb.services.context import (
 )
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.telemetry import build_device_os_version
+from timecapsulesmb.transport import local as local_transport
 from timecapsulesmb.telemetry.operation import (
     OperationTelemetrySession,
     client_from_environment,
@@ -84,6 +86,9 @@ class CommandContext:
         self.telemetry_session.start(**fields)
 
     def __enter__(self) -> "CommandContext":
+        # Under --json every command keeps stdout for its JSON document.
+        self._stdout_scope = ExitStack()
+        self._stdout_scope.enter_context(cli_runtime.json_mode_stdout(bool(getattr(self.args, "json", False))))
         return self
 
     @property
@@ -134,7 +139,13 @@ class CommandContext:
     def probe_state(self, value: ProbedDeviceState | None) -> None:
         self.operation_context.probe_state = value
 
-    def __exit__(self, exc_type: object, exc: object, _tb: object) -> bool:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        try:
+            return self._exit(exc_type, exc, tb)
+        finally:
+            self._stdout_scope.close()
+
+    def _exit(self, exc_type: object, exc: object, _tb: object) -> bool:
         if exc_type is KeyboardInterrupt and self.result != "cancelled":
             self.result = "cancelled"
             if not self.error_lines:
@@ -331,6 +342,20 @@ class CommandContext:
             password_provider=cli_runtime.prompt_device_password,
         )
         return self.connection
+
+    def require_local_sshpass(self) -> bool:
+        """Fail before touching the device when local sshpass is missing.
+
+        Without this check a command found out partway through, after it had
+        already probed the device or started its work.
+        """
+        self.set_stage("check_local_tools")
+        if not local_transport.sshpass_missing():
+            return True
+        message = "local tool sshpass is missing; run `./tcapsule bootstrap` to install it"
+        print(color_red(message))
+        self.fail_with_error(message)
+        return False
 
     def require_valid_config(self, *, profile: str) -> None:
         if self.config is None:

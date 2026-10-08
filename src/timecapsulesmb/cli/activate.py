@@ -51,6 +51,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "activate", "activate_started", "activate_finished", config=config, args=args) as command_context:
         command_context.update_fields(dry_run=args.dry_run, yes=args.yes, runtime_already_ready=False)
+        if not command_context.require_local_sshpass():
+            return 1
         if no_input_enabled(args) and not args.yes and not args.dry_run:
             command_context.set_stage("noninteractive_confirmation")
             message = "Running `activate` in non-interactive mode requires `--yes` to approve activation."

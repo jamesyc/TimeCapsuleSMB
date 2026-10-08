@@ -611,6 +611,8 @@ def _run_flash(
     log: ProgressLogger,
 ) -> int:
     command_context.update_fields(read_only=operation not in WRITE_OPERATIONS, write_requested=operation in WRITE_OPERATIONS, operation=operation)
+    if not command_context.require_local_sshpass():
+        return 1
     target = _resolve_flash_target(command_context, args=args, log=log)
     inputs = _read_flash(command_context, target, log=log)
     if inputs is None:

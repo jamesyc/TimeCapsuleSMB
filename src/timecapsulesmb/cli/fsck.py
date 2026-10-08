@@ -57,6 +57,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
+        if not command_context.require_local_sshpass():
+            return 1
         command_context.set_stage("validate_config")
         command_context.require_valid_config(profile="fsck")
         if no_input_enabled(args) and not args.yes:

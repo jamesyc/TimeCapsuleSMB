@@ -124,7 +124,7 @@ from timecapsulesmb.discovery.bonjour import (
 )
 
 from timecapsulesmb.transport.local import find_free_local_port
-from timecapsulesmb.transport.local import command_exists, scoped_tcp_connect_errors
+from timecapsulesmb.transport.local import scoped_tcp_connect_errors
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, ssh_local_forward
 
 
@@ -378,14 +378,11 @@ def _add_probe_line_results(
         add_result(_startup_transient_result("FAIL", fallback_fail_message))
 
 
-def _add_sshpass_result(add_result: Callable[[CheckResult], None], *, password_auth: bool) -> None:
-    if command_exists("sshpass"):
-        add_result(CheckResult("PASS", "found local tool sshpass"))
-        return
-    if password_auth:
-        add_result(CheckResult("FAIL", "missing local tool sshpass; password-based SSH uploads require sshpass"))
-        return
-    add_result(CheckResult("INFO", "local sshpass not installed; key-authenticated SSH uploads do not require it"))
+def _add_local_tool_results(add_result: Callable[[CheckResult], None]) -> None:
+    # Reported even without a usable .env: a user stuck before configure needs
+    # to see which local tools are missing too.
+    for result in check_required_local_tools():
+        add_result(result)
 
 
 def _add_config_validation_results(
@@ -395,7 +392,11 @@ def _add_config_validation_results(
     add_result: Callable[[CheckResult], None],
 ) -> bool:
     if not config.exists:
-        add_result(CheckResult("FAIL", f"missing required configuration file: {config.path}"))
+        add_result(CheckResult(
+            "FAIL",
+            f"missing required configuration file: {config.path}; run the `configure` command before running `doctor`",
+        ))
+        _add_local_tool_results(add_result)
         return False
 
     add_result(CheckResult("PASS", f"configuration file exists: {config.path}"))
@@ -403,12 +404,11 @@ def _add_config_validation_results(
     if validation_errors:
         for error in validation_errors:
             add_result(CheckResult("FAIL", error.format_for_cli().replace("\n", " ")))
+        _add_local_tool_results(add_result)
         return False
 
     add_result(CheckResult("PASS", f"{config.path} contains all required settings"))
-
-    for result in check_required_local_tools():
-        add_result(result)
+    _add_local_tool_results(add_result)
     for result in check_required_artifacts(repo_root):
         add_result(result)
     return True
@@ -2168,7 +2168,6 @@ def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarge
             sink.add(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
         elif compatibility.supported:
             sink.add(CheckResult("PASS", render_compatibility_message(compatibility)))
-            _add_sshpass_result(sink.add, password_auth=bool(target.connection.password))
             _add_admin_password_result(target.connection, sink)
         else:
             sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))

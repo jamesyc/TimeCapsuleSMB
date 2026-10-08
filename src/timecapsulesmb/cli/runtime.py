@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import io
 import json
 import os
 import sys
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional, TextIO
 
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.redaction import redact_sensitive_fields
@@ -168,8 +170,41 @@ def json_text(data: object) -> str:
     return json.dumps(data, indent=2, sort_keys=True)
 
 
+class _JsonModeStdout(io.TextIOBase):
+    """sys.stdout while a command runs with --json.
+
+    stdout then carries only the JSON document, which print_json writes to
+    `json_stream`. Every other line, a failure message or a prompt included,
+    goes to stderr, so a consumer parsing stdout never sees it.
+    """
+
+    def __init__(self, json_stream: TextIO) -> None:
+        super().__init__()
+        self.json_stream = json_stream
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        return sys.stderr.write(text)
+
+    def flush(self) -> None:
+        sys.stderr.flush()
+
+
+@contextmanager
+def json_mode_stdout(enabled: bool) -> Iterator[None]:
+    if not enabled:
+        yield
+        return
+    # A nested scope keeps writing the document to the outer scope's stream.
+    with redirect_stdout(_JsonModeStdout(getattr(sys.stdout, "json_stream", sys.stdout))):
+        yield
+
+
 def print_json(data: object) -> None:
-    print(json_text(redact_sensitive_fields(data)))
+    stream = getattr(sys.stdout, "json_stream", sys.stdout)
+    print(json_text(redact_sensitive_fields(data)), file=stream, flush=True)
 
 
 def prefixed_logger(prefix: str, *, enabled: bool) -> LogCallback:

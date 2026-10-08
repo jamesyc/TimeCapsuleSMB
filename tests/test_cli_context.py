@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -14,7 +16,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import NonInteractivePromptError
+from timecapsulesmb.cli.runtime import NonInteractivePromptError, print_json
+from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbedDeviceState, ProbeResult, SshAccessStatus
@@ -137,6 +140,77 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ssh_disabled")
         self.assertIn("SSH is turned off", str(raised.exception))
         self.assertIsNone(context.compatibility)
+
+
+class JsonModeStdoutTests(unittest.TestCase):
+    def make_context(self, *, json_output: bool) -> CommandContext:
+        return CommandContext(mock.Mock(), "test", "test_started", "test_finished", args=SimpleNamespace(json=json_output))
+
+    def run_in_context(self, body, *, json_output: bool) -> tuple[str, str]:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.make_context(json_output=json_output):
+                body()
+        return stdout.getvalue(), stderr.getvalue()
+
+    def test_json_mode_keeps_stdout_for_the_document(self) -> None:
+        def body() -> None:
+            print("Resolving deployment target...")
+            print_json({"ok": True})
+            print("local tool sshpass is missing")
+
+        stdout, stderr = self.run_in_context(body, json_output=True)
+
+        self.assertEqual(json.loads(stdout), {"ok": True})
+        self.assertEqual(stderr, "Resolving deployment target...\nlocal tool sshpass is missing\n")
+
+    def test_json_mode_sends_prompts_to_stderr(self) -> None:
+        answers: list[str] = []
+        with mock.patch("sys.stdin", io.StringIO("yes\n")):
+            stdout, stderr = self.run_in_context(lambda: answers.append(input("Continue? ")), json_output=True)
+
+        self.assertEqual(answers, ["yes"])
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "Continue? ")
+
+    def test_without_json_everything_stays_on_stdout(self) -> None:
+        def body() -> None:
+            print("progress")
+            print_json({"ok": True})
+
+        stdout, stderr = self.run_in_context(body, json_output=False)
+
+        self.assertEqual(stdout, 'progress\n{\n  "ok": true\n}\n')
+        self.assertEqual(stderr, "")
+
+    def test_context_without_args_leaves_stdout_alone(self) -> None:
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            with CommandContext(mock.Mock(), "test", "test_started", "test_finished"):
+                print("progress")
+        self.assertEqual(stdout.getvalue(), "progress\n")
+
+    def test_json_mode_restores_stdout_when_the_command_fails(self) -> None:
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                with self.make_context(json_output=True):
+                    raise ConfigError("missing TC_HOST")
+            self.assertIs(sys.stdout, stdout)
+            print("after")
+        self.assertEqual(stdout.getvalue(), "after\n")
+
+    def test_nested_json_contexts_write_the_document_to_the_real_stdout(self) -> None:
+        def body() -> None:
+            with self.make_context(json_output=True):
+                print("inner progress")
+                print_json({"inner": 1})
+
+        stdout, stderr = self.run_in_context(body, json_output=True)
+
+        self.assertEqual(json.loads(stdout), {"inner": 1})
+        self.assertEqual(stderr, "inner progress\n")
 
 
 if __name__ == "__main__":

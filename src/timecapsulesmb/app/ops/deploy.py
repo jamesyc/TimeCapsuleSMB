@@ -14,6 +14,7 @@ from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.app.ops.common import (
     load_request_config,
+    require_request_sshpass,
     resolve_request_target,
 )
 from timecapsulesmb.device.errors import DeviceError
@@ -148,6 +149,7 @@ def _deploy_completion_payload(result) -> object:
 
 def deploy_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     operation = "deploy"
+    require_request_sshpass()
     if "nbns_enabled" in params:
         raise AppOperationError(
             "nbns_enabled has been removed; Apple’s native NBNS service is always enabled.",

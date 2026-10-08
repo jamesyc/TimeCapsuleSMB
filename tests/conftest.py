@@ -19,6 +19,15 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
+def local_sshpass_installed(monkeypatch: pytest.MonkeyPatch):
+    # Device commands refuse to start without local sshpass. CI hosts do not
+    # have it, so tests run as if it were installed; a test of the check
+    # patches timecapsulesmb.transport.local.sshpass_missing itself.
+    monkeypatch.setattr("timecapsulesmb.transport.local.sshpass_missing", lambda: False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def block_unmocked_telemetry_posts(monkeypatch: pytest.MonkeyPatch):
     urlopen_mock = mock.Mock(side_effect=AssertionError("tests must not send telemetry"))
     monkeypatch.setattr("timecapsulesmb.telemetry.urllib.request.urlopen", urlopen_mock)
