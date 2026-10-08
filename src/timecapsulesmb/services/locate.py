@@ -96,13 +96,17 @@ def locate_airport(
         return LocateResult("not_moved")
     started = time.monotonic()
     snapshot, _diagnostics = (browse or BonjourQuery().browse)(AIRPORT_SERVICE, timeout=LOCATE_BROWSE_SECONDS)
-    candidates = [c for c in device_candidates_from_records(snapshot.resolved) if mac and c.airport_mac == mac]
+    airports = device_candidates_from_records(snapshot.resolved)
+    candidates = [c for c in airports if mac and c.airport_mac == mac]
     browse_sec = time.monotonic() - started
     result = _first_answer(candidates, mac, password, current, attempts)
     fields: dict[str, object] = {
         "trigger": trigger,
         "result": result.outcome,
         "candidates": len(candidates),
+        # Other AirPorts seen tell an absent device from a computer whose
+        # browse saw nothing at all (no network, or Bonjour blocked).
+        "airports_seen": len(airports),
         "browse_sec": round(browse_sec, 3),
         "from_scope": address_summary(current).get("scope"),
     }

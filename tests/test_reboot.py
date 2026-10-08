@@ -9,7 +9,7 @@ from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from timecapsulesmb.transport.ssh import SshConnection
-from tests.reboot_support import FakeAcpDevice, RecordingCallbacks
+from tests.reboot_support import NETWORK_CONTEXT, FakeAcpDevice, RecordingCallbacks
 
 UP_LIMIT = reboot_service.REBOOT_UP_TIMEOUT_SECONDS
 SSH_LIMIT = reboot_service.REBOOT_SSH_TIMEOUT_SECONDS
@@ -515,6 +515,49 @@ class RebootFollowTests(unittest.TestCase):
 
         self.assertEqual(moved, "root@10.0.0.9")
         self.assertEqual(recorder.measurement("reboot_cycle")["result"], "success")
+
+    def test_a_device_that_never_returns_records_what_failed_and_where(self) -> None:
+        # Telemetry install 00094b92: ACP never answered again. The wait says how
+        # each read failed, and how this computer reached the address at the end.
+        device = FakeAcpDevice(kernel_after=10_000)
+        error, recorder = run_returning(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        cycle = recorder.measurement("reboot_cycle")
+        timeouts = cycle["read_errors"]["timeout"]
+        self.assertEqual(set(cycle["read_errors"]), {"timeout"})
+        self.assertGreater(timeouts["count"], 100)
+        self.assertGreaterEqual(timeouts["first_sec"], 10)
+        self.assertGreaterEqual(timeouts["last_sec"] - timeouts["first_sec"], UP_LIMIT - 5)
+        self.assertEqual(cycle["local_networks"], NETWORK_CONTEXT["local_networks"])
+        self.assertEqual(cycle["acp_target_addresses"], NETWORK_CONTEXT["acp_target_addresses"])
+        self.assertEqual(cycle["context_host"], "10.0.0.2")
+
+    def test_a_device_back_at_its_address_with_another_password_is_counted_as_such(self) -> None:
+        device = FakeAcpDevice(kernel_after=40)
+        answer = device.get_properties
+
+        def reads(host, *args, **kwargs):
+            values = answer(host, *args, **kwargs)
+            if device.served_new_boot:
+                raise ACPAuthError("ACP command failed with error_code -0x10 (likely wrong AirPort admin password)")
+            return values
+
+        device.get_properties = reads
+        error, recorder = run_returning(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        read_errors = recorder.measurement("reboot_cycle")["read_errors"]
+        self.assertGreater(read_errors["auth"]["count"], 0)
+        self.assertLess(read_errors["timeout"]["first_sec"], read_errors["auth"]["first_sec"])
+
+    def test_a_successful_wait_records_no_network_context(self) -> None:
+        moved, recorder = run_returning(FakeAcpDevice(kernel_after=40))
+
+        self.assertIsNone(moved)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertNotIn("local_networks", cycle)
+        self.assertEqual(set(cycle["read_errors"]), {"timeout"})
 
     def test_followed_moves_only_a_moved_connection(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")

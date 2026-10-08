@@ -6,6 +6,7 @@ from dataclasses import replace
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.discovery.models import normalize_airport_mac
 from timecapsulesmb.integrations import acp
+from timecapsulesmb.services import acp_diagnostics
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import LocateResult, locate_airport
 from timecapsulesmb.transport.local import tcp_open
@@ -137,6 +138,30 @@ def _read_uptime(host: str, password: str) -> tuple[int | None, str | None, acp.
         return None, None, exc
 
 
+def _read_error_kind(error: acp.ACPError) -> str:
+    if isinstance(error, acp.ACPAuthError):
+        # A device reset to factory settings comes back with another password.
+        return "auth"
+    if isinstance(error, acp.ACPPropertyError):
+        return "property"
+    if isinstance(error, acp.ACPProtocolError):
+        return "protocol"
+    return acp_diagnostics.connect_error_kind(str(error)) or "other"
+
+
+def _network_context(host: str) -> dict[str, object]:
+    """How this computer reaches `host` when a wait fails.
+
+    The computer's own networks can change during the reboot: telemetry
+    install 00094b92 lost one of its two interfaces on the device's network,
+    and nothing else showed whether the device or the computer went away.
+    """
+    try:
+        return acp_diagnostics.probe_context_fields(host, None)
+    except Exception as exc:
+        return {"acp_diagnostics_error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
 def _request(host: str, password: str, callbacks: OperationCallbacks, *, raise_errors: bool) -> None:
     callbacks.stage("reboot")
     callbacks.update(reboot_was_attempted=True)
@@ -193,9 +218,19 @@ def _wait(
     }
     moved: str | None = None
     rejected: LocateResult | None = None
+    # Each kind of failed read, and when it was first and last seen: refused
+    # means something answers at the address but not ACPd, host down or no
+    # route that nothing answers there at all.
+    read_errors: dict[str, dict[str, object]] = {}
 
     def finish(result: str, code: str | None = None, message: str = "") -> None:
         fields["total_wait_duration_sec"] = round(time.monotonic() - started, 3)
+        if read_errors:
+            fields["read_errors"] = read_errors
+        if code is not None:
+            # A failure is reported at the address the wait began with: a
+            # follow changes `host` only when it succeeds.
+            fields.update(_network_context(host))
         callbacks.measurement("reboot_cycle", result=result, **fields)
         if code is not None:
             raise RebootFlowError(message, code)
@@ -215,6 +250,9 @@ def _wait(
         now = time.monotonic()
         if error is not None:
             fields["last_read_error"] = str(error)
+            seen = read_errors.setdefault(_read_error_kind(error), {"count": 0, "first_sec": round(read_started - started, 3)})
+            seen["count"] = int(seen["count"]) + 1
+            seen["last_sec"] = round(read_started - started, 3)
         if airport_mac and mac and mac != airport_mac:
             # Another AirPort took this address: the device itself is not here.
             uptime = None

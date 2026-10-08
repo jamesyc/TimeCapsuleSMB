@@ -56,7 +56,10 @@ class LocateAirportTests(unittest.TestCase):
         self.assertEqual(reads, ["192.168.1.40"])
         self.assertEqual(
             {key: value for key, value in follow.items() if key != "browse_sec"},
-            {"trigger": "acp_unreachable", "result": "found", "candidates": 1, "from_scope": "private", "to_scope": "private"},
+            {
+                "trigger": "acp_unreachable", "result": "found", "candidates": 1, "airports_seen": 1,
+                "from_scope": "private", "to_scope": "private",
+            },
         )
 
     def test_another_airport_is_never_read(self) -> None:
@@ -64,7 +67,8 @@ class LocateAirportTests(unittest.TestCase):
 
         self.assertEqual(result, LocateResult("not_found"))
         self.assertEqual(reads, [])
-        self.assertEqual(follow["candidates"], 0)
+        # The browse worked: it saw another AirPort, just not this one.
+        self.assertEqual((follow["candidates"], follow["airports_seen"]), (0, 1))
 
     def test_a_device_still_listing_the_current_address_has_not_moved(self) -> None:
         # ACPd is busy or still booting: its fe80 address may answer, but the
@@ -163,6 +167,7 @@ class LocateAirportTests(unittest.TestCase):
         self.assertEqual(result, LocateResult("not_found"))
         self.assertEqual(reads, [])
         self.assertNotIn("to_scope", follow)
+        self.assertEqual(follow["airports_seen"], 0)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,12 @@ from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, AC
 
 # The AirPort MAC (waMA) every simulated device reports over network ACP.
 DEVICE_AIRPORT_MAC = "02:00:00:00:00:01"
+# What a failed reboot wait records about this computer's networks; the real
+# fields read the host's interfaces and routes (tests/test_acp_diagnostics.py).
+NETWORK_CONTEXT = {
+    "acp_target_addresses": [{"role": "target", "family": "ipv4", "scope": "private", "address": "10.0.0.2", "link": "on_link"}],
+    "local_networks": [{"interface": "en0", "kind": "lan", "networks": [{"family": "ipv4", "scope": "private", "prefixlen": 24}]}],
+}
 
 
 def acp_reading(matches: bool | None):
@@ -176,6 +182,10 @@ class FakeAcpDevice:
             mock.patch("timecapsulesmb.integrations.acp.get_property_int", side_effect=lambda *a, **k: self.get_property_int(*a, **k)),
             mock.patch("timecapsulesmb.integrations.acp.get_properties", side_effect=self.get_properties),
             mock.patch("timecapsulesmb.services.reboot.locate_airport", side_effect=self.locate_airport),
+            mock.patch(
+                "timecapsulesmb.services.acp_diagnostics.probe_context_fields",
+                side_effect=lambda host, record: {**NETWORK_CONTEXT, "context_host": host},
+            ),
             mock.patch("timecapsulesmb.integrations.acp.reboot", side_effect=self.reboot),
             mock.patch("timecapsulesmb.services.reboot.tcp_open", side_effect=self.tcp_open),
             mock.patch(
