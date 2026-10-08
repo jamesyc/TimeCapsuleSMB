@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.events import EventSink
@@ -122,6 +123,11 @@ class AppOperationContext:
 
     def update_fields(self, **fields: object) -> None:
         self.diagnostics.update_fields(**fields)
+        # A device found at another address (services.locate) is reached there
+        # from now on, and failures report that address.
+        current_host = fields.get("current_host")
+        if isinstance(current_host, str) and self.connection is not None:
+            self.connection = replace(self.connection, host=current_host)
 
     def add_debug_fields(self, **fields: object) -> None:
         self.diagnostics.add_debug_fields(**fields)

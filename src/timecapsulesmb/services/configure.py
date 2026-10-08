@@ -34,7 +34,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
-from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
+from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, PROBE_STATUS_ERROR_CODES
 from timecapsulesmb.transport.ssh import SshConnection
@@ -177,7 +177,10 @@ def enable_ssh_and_reprobe(
     if host != endpoint_host(connection.host):
         connection = replace(connection, host=canonical_ssh_target(host))
     try:
-        reboot_device(host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE)
+        connection = followed(
+            connection,
+            reboot_device(host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE),
+        )
     except RebootFlowError as exc:
         if exc.code != "reboot_not_finished":
             raise

@@ -2118,7 +2118,7 @@ describe_managed_smbd_status "" ""
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         verify_runtime = mock.Mock()
 
-        with mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
+        with mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None) as reboot:
             result = complete_deployment_after_upload(
                 connection,
                 prepared_plan,
@@ -2135,6 +2135,29 @@ describe_managed_smbd_status "" ""
         self.assertFalse(result.waited)
         self.assertFalse(result.verified)
 
+    def test_complete_deployment_activates_where_the_device_came_back(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            payload_family="netbsd4be_samba4",
+            is_netbsd4=True,
+        )
+        callbacks, _stages, _logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        run_actions = mock.Mock()
+        verify_runtime = mock.Mock()
+        with mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value="root@10.0.0.9"):
+            complete_deployment_after_upload(
+                SshConnection("root@10.0.0.2", "pw", "-o foo"),
+                prepared_plan,
+                no_wait=False,
+                callbacks=callbacks,
+                run_remote_actions_func=run_actions,
+                verify_runtime_func=verify_runtime,
+            )
+
+        moved = SshConnection("root@10.0.0.9", "pw", "-o foo")
+        run_actions.assert_called_once_with(moved, prepared_plan.plan.activation_actions)
+        self.assertEqual(verify_runtime.call_args.args[0], moved)
+
     def test_complete_deployment_netbsd4_runs_activation_after_reboot_when_autostart_missing(self) -> None:
         prepared_plan = self._prepared_deploy_plan(
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -2146,7 +2169,7 @@ describe_managed_smbd_status "" ""
         run_actions = mock.Mock()
         verify_runtime = mock.Mock()
         order = mock.Mock()
-        with mock.patch("time.sleep") as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
+        with mock.patch("time.sleep") as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None) as reboot:
             order.attach_mock(reboot, "reboot")
             order.attach_mock(run_actions, "run_actions")
             order.attach_mock(verify_runtime, "verify_runtime")
@@ -2187,7 +2210,7 @@ describe_managed_smbd_status "" ""
         callbacks, stages, logs, debug_fields, _finish_fields = self._operation_callbacks()
         run_actions = mock.Mock()
         verify_runtime = mock.Mock()
-        with mock.patch("timecapsulesmb.services.deploy.reboot_device"):
+        with mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None):
             result = complete_deployment_after_upload(
                 SshConnection("root@10.0.0.2", "pw", "-o foo"),
                 prepared_plan,
@@ -2212,7 +2235,7 @@ describe_managed_smbd_status "" ""
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         verify_runtime = mock.Mock()
 
-        with mock.patch("time.sleep") as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device"):
+        with mock.patch("time.sleep") as sleep_mock, mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None):
             result = complete_deployment_after_upload(
                 connection,
                 prepared_plan,

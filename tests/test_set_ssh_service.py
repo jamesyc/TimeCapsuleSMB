@@ -82,6 +82,12 @@ class SetSshServiceTests(unittest.TestCase):
         self.assertTrue(result.reboot_requested)
         self.assertEqual(result.summary.key, "ssh.configured")
 
+    def test_enable_reports_the_address_the_device_came_back_at(self) -> None:
+        result, _recorder, _enable = self.enable(FakeAcpDevice(ssh_open=False, new_address="10.0.0.9"))
+
+        self.assertEqual(result.host, "10.0.0.9")
+        self.assertTrue(result.ssh_final_reachable)
+
     def test_enable_no_wait_requests_the_reboot_and_skips_ssh_verification(self) -> None:
         device = FakeAcpDevice(ssh_open=False)
         result, _recorder, _enable = self.enable(device, no_wait=True)

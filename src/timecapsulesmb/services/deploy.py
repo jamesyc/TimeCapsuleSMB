@@ -96,7 +96,7 @@ from timecapsulesmb.device.storage import (
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbsd4_runtime_after_reboot
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import reboot_device
+from timecapsulesmb.services.reboot import followed, reboot_device
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_device_password
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
@@ -1400,14 +1400,14 @@ def complete_deployment_after_upload(
 
     if messages.reboot_request_message:
         callbacks.message(messages.reboot_request_message)
-    reboot_device(
+    connection = followed(connection, reboot_device(
         connection.host,
         connection.password,
         wait=True,
         callbacks=callbacks,
         no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
         up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
-    )
+    ))
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         start_netbsd4_runtime_after_reboot(

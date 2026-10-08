@@ -265,6 +265,14 @@ class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
         self.assertEqual(recorder.debug["activation_decision"], "firmware_autostart_missing")
         self.assertIn("File sharing is running again after the reboot.", recorder.messages)
 
+    def test_file_sharing_is_started_where_the_device_came_back(self) -> None:
+        device = FakeAcpDevice(new_address="10.0.0.9")
+        outcome, recorder, _device, runtime = self.netbsd4(device=device)
+
+        self.assertIsNone(outcome.runtime_restart_error)
+        self.assertEqual(runtime.hosts, ["root@10.0.0.9", "root@10.0.0.9"])
+        self.assertEqual(recorder.fields["current_host"], "root@10.0.0.9")
+
     def test_firmware_autostart_only_waits_for_the_runtime(self) -> None:
         outcome, recorder, _device, runtime = self.netbsd4(autostart=True)
 
@@ -468,9 +476,9 @@ class UninstallTests(unittest.TestCase):
         self.assertFalse(plan.reboot_required)
         self.assertFalse(plan.wait_after_reboot)
 
-    def reboot(self, plan, *, verification=None, reboot_error=None):
+    def reboot(self, plan, *, verification=None, reboot_error=None, moved_to=None):
         recorder = RecordingCallbacks()
-        with mock.patch("timecapsulesmb.services.maintenance.reboot_device", side_effect=reboot_error) as reboot:
+        with mock.patch("timecapsulesmb.services.maintenance.reboot_device", side_effect=reboot_error, return_value=moved_to) as reboot:
             with mock.patch("timecapsulesmb.services.maintenance.verify_post_uninstall", return_value=verification) as verify:
                 try:
                     result = reboot_after_uninstall(CONNECTION, plan, callbacks=recorder.callbacks)
@@ -507,6 +515,14 @@ class UninstallTests(unittest.TestCase):
         verify.assert_called_once_with(CONNECTION, plan)
         self.assertEqual(recorder.stages, ["verify_post_uninstall"])
         self.assertTrue(recorder.messages)
+
+    def test_the_removal_is_verified_where_the_device_came_back(self) -> None:
+        plan, _recorder, _mount = self.prepare()
+        verification = VerificationResult(ok=True, lines=("PASS:/Volumes/dk2/.samba4 absent",))
+        result, _recorder, _reboot, verify = self.reboot(plan, verification=verification, moved_to="root@10.0.0.9")
+
+        self.assertIs(result, True)
+        verify.assert_called_once_with(SshConnection("root@10.0.0.9", "pw", "-o foo"), plan)
 
     def test_files_left_after_the_reboot_fail_the_uninstall(self) -> None:
         plan, _recorder, _mount = self.prepare()

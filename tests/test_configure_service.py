@@ -279,7 +279,7 @@ class ConfigureServiceTests(unittest.TestCase):
         callbacks, stages, logs, debug_fields, update_fields = self.callbacks()
         with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None) as tcp_connect_error:
             with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
-                with mock.patch("timecapsulesmb.services.configure.reboot_device") as wait:
+                with mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as wait:
                     with mock.patch("timecapsulesmb.services.configure.probe_connection_state", return_value=probe_state) as probe:
                         result = enable_ssh_and_reprobe(connection, callbacks=callbacks)
 
@@ -344,7 +344,7 @@ class ConfigureServiceTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="Connection refused") as tcp_connect_error:
             with mock.patch("timecapsulesmb.services.acp_ssh.time.sleep") as sleep:
                 with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
-                    with mock.patch("timecapsulesmb.services.configure.reboot_device") as wait:
+                    with mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as wait:
                         with mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
                             with self.assertRaises(ACPConnectionError) as raised:
                                 enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
@@ -627,7 +627,7 @@ class ConfigureServiceTests(unittest.TestCase):
         callbacks, _stages, _logs, debug_fields, update_fields = self.callbacks()
         with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug", side_effect=ACPAuthError("bad password")) as enable_ssh:
-                with mock.patch("timecapsulesmb.services.configure.reboot_device") as wait:
+                with mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as wait:
                     with mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
                         with self.assertRaises(ACPAuthError):
                             enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
@@ -648,7 +648,7 @@ class ConfigureServiceTests(unittest.TestCase):
         callbacks, _stages, _logs, debug_fields, update_fields = self.callbacks()
         with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
             with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug", side_effect=ACPConnectionError("connection failed")) as enable_ssh:
-                with mock.patch("timecapsulesmb.services.configure.reboot_device") as wait:
+                with mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as wait:
                     with mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
                         with self.assertRaises(ACPConnectionError):
                             enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
@@ -658,6 +658,18 @@ class ConfigureServiceTests(unittest.TestCase):
         probe.assert_not_called()
         self.assertEqual(debug_fields[-1], {"configure_acp_enable_succeeded": False})
         self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT])
+
+    def test_enable_ssh_and_reprobe_probes_where_the_device_came_back(self) -> None:
+        probe_state = self.make_probe_state()
+        with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"), \
+                mock.patch("timecapsulesmb.services.configure.reboot_device", return_value="root@10.0.0.9"), \
+                mock.patch("timecapsulesmb.services.configure.probe_connection_state", return_value=probe_state) as probe:
+            connection, state = enable_ssh_and_reprobe(self.make_connection(), callbacks=self.callbacks()[0])
+
+        self.assertEqual(connection.host, "root@10.0.0.9")
+        self.assertIs(state, probe_state)
+        probe.assert_called_once_with(connection)
 
     def test_enable_ssh_and_reprobe_returns_none_when_ssh_does_not_open(self) -> None:
         callbacks, stages, _logs, _debug_fields, update_fields = self.callbacks()
@@ -1004,7 +1016,7 @@ class ConfigureServiceTests(unittest.TestCase):
         writer = mock.Mock()
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", return_value="192.168.1.40"), \
-                    mock.patch("timecapsulesmb.services.configure.reboot_device") as reboot:
+                    mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as reboot:
                 result = run_configure_flow(self.configure_request(Path(tmp) / ".env", mock.Mock(side_effect=probe), write_env=writer))
 
         self.assertEqual(probed_hosts, ["root@10.0.0.2", "root@192.168.1.40"])
@@ -1221,7 +1233,7 @@ class ConfigureServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
             with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_ssh:
-                with mock.patch("timecapsulesmb.services.configure.reboot_device"):
+                with mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None):
                     with self.assertRaises(ConfigureFlowError) as raised:
                         run_configure_flow(self.configure_request(env_path, probe))
             self.assertFalse(env_path.exists())

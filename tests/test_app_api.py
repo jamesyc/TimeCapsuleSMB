@@ -895,7 +895,7 @@ class AppApiTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
                             with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup") as validate_mock:
                                 with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
-                                    with mock.patch("timecapsulesmb.services.flash.reboot_device") as reboot_mock:
+                                    with mock.patch("timecapsulesmb.services.flash.reboot_device", return_value=None) as reboot_mock:
                                         rc = service.run_api_request(
                                             {"operation": "flash", "params": params},
                                             collector.sink,
@@ -950,7 +950,7 @@ class AppApiTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
                             with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"):
                                 with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
-                                    with mock.patch("timecapsulesmb.services.flash.reboot_device") as reboot_mock:
+                                    with mock.patch("timecapsulesmb.services.flash.reboot_device", return_value=None) as reboot_mock:
                                         collector.rc = service.run_api_request(  # type: ignore[attr-defined]
                                             {"operation": "flash", "params": request_params}, collector.sink,
                                         )
@@ -1099,7 +1099,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
                         with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"):
                             with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan"):
-                                with mock.patch("timecapsulesmb.services.flash.reboot_device") as reboot_wait:
+                                with mock.patch("timecapsulesmb.services.flash.reboot_device", return_value=None) as reboot_wait:
                                     rc = service.run_api_request(
                                         {
                                             "operation": "flash",
@@ -3314,7 +3314,7 @@ class AppApiTests(unittest.TestCase):
             ) as probe:
                 with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None) as tcp_connect_error:
                     with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
-                        with mock.patch("timecapsulesmb.services.configure.reboot_device") as wait_for_ssh:
+                        with mock.patch("timecapsulesmb.services.configure.reboot_device", return_value=None) as wait_for_ssh:
                             rc = service.run_api_request(
                                 {
                                     "operation": "configure",
@@ -3644,7 +3644,7 @@ class AppApiTests(unittest.TestCase):
                     mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                     mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=elsewhere), \
                     mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", "darwin"), \
-                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device") as reboot:
+                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot:
                 rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)
@@ -4778,7 +4778,7 @@ class AppApiTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
-                                                with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"), mock.patch("timecapsulesmb.services.deploy.reboot_device"):
+                                                with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"), mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None):
                                                     with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=managed_runtime_probe()):
                                                         confirmed = dict(base_params)
                                                         confirmed["confirmation_id"] = confirmation_id
@@ -4885,7 +4885,7 @@ class AppApiTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
-                                                with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"), mock.patch("timecapsulesmb.services.deploy.reboot_device") as wait:
+                                                with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"), mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None) as wait:
                                                     with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=managed_runtime_probe()) as verify_runtime:
                                                         with mock.patch("timecapsulesmb.services.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime:
                                                             rc = service.run_api_request(
@@ -4962,7 +4962,7 @@ class AppApiTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload", side_effect=fake_upload):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
-                                                with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"), mock.patch("timecapsulesmb.services.deploy.reboot_device"):
+                                                with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"), mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None):
                                                     with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=managed_runtime_probe()):
                                                         rc = service.run_api_request(
                                                             {
@@ -5055,7 +5055,7 @@ class AppApiTests(unittest.TestCase):
                                                 with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=inventory):
                                                     with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload", side_effect=fail_in_stage):
                                                         with mock.patch("timecapsulesmb.services.deploy.run_remote_actions", side_effect=fail_in_stage):
-                                                            with mock.patch("timecapsulesmb.services.deploy.reboot_device") as reboot:
+                                                            with mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None) as reboot:
                                                                 rc = service.run_api_request(
                                                                     {"operation": "deploy", "params": params},
                                                                     collector.sink,
@@ -5322,6 +5322,14 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(cycle["result"], "success")
         self.assertEqual(cycle["u0_sec"], 3600)
         self.assertIn("uptime_at_return_sec", cycle)
+
+    def test_a_device_found_at_another_address_moves_the_context_connection(self) -> None:
+        context = AppOperationContext("deploy", CollectingSink().sink)
+        context.connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+
+        context.to_operation_callbacks().update_fields(current_host="root@10.0.0.9")
+
+        self.assertEqual(context.connection, SshConnection("root@10.0.0.9", "pw", "-o foo"))
 
     def test_deploy_no_wait_reboot_request_error_is_raised(self) -> None:
         collector = CollectingSink()

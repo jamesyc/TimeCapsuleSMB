@@ -89,6 +89,24 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.debug_fields["reboot_request_strategy"], "native_acp")
         print_mock.assert_called_once_with("reboot requested")
 
+    def test_a_device_found_at_another_address_moves_the_connection(self) -> None:
+        context = self.make_context()
+        context.connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+
+        with redirect_stdout(io.StringIO()) as output:
+            context.to_operation_callbacks().update_fields(current_host="root@10.0.0.9")
+
+        self.assertEqual(context.connection, SshConnection("root@10.0.0.9", "pw", "-o foo"))
+        self.assertEqual(context.finish_fields["current_host"], "root@10.0.0.9")
+        self.assertIn("Run `tcapsule configure` to save the device's new address (root@10.0.0.9).", output.getvalue())
+
+    def test_configure_saves_the_new_address_so_it_prints_no_hint(self) -> None:
+        context = CommandContext(mock.Mock(), "configure", "configure_started", "configure_finished")
+        with redirect_stdout(io.StringIO()) as output:
+            context.update_fields(current_host="root@10.0.0.9")
+
+        self.assertEqual(output.getvalue(), "")
+
     def test_to_operation_callbacks_updates_context(self) -> None:
         context = self.make_context()
 

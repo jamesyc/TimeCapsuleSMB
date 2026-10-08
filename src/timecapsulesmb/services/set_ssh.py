@@ -128,13 +128,13 @@ def enable_set_ssh(
         )
 
     target_host = enable_ssh_with_port_preflight(target_host, connection.password, callbacks=callbacks)
-    reboot_device(
+    target_host = endpoint_host(reboot_device(
         target_host,
         connection.password,
         wait=not no_wait,
         callbacks=callbacks,
         up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE,
-    )
+    ) or target_host)
     if no_wait:
         return SetSshResult(
             host=target_host,
@@ -197,14 +197,14 @@ def disable_set_ssh(
     disable_ssh_over_ssh(connection, log=callbacks.log)
     # SSH must stay closed on the new boot: the uptime proves the reboot,
     # which a closed port alone cannot.
-    reboot_device(
+    target_host = endpoint_host(reboot_device(
         target_host,
         connection.password,
         wait=not no_wait,
         callbacks=callbacks,
         expect_ssh=False,
         up_timeout_message="Device went down after disable request but did not come back within timeout.",
-    )
+    ) or target_host)
     if no_wait:
         return SetSshResult(
             host=target_host,

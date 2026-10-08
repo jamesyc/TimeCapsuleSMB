@@ -17,7 +17,7 @@ from timecapsulesmb.services.activation import (
     start_netbsd4_runtime_after_reboot,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
+from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
@@ -238,13 +238,13 @@ def run_fsck(
             if not wait and netbsd4_autostart is False:
                 # Without the wait nothing starts file sharing after the reboot.
                 callbacks.message(MANUAL_START_AFTER_REBOOT_MESSAGE)
-            reboot_device(
+            connection = followed(connection, reboot_device(
                 connection.host,
                 connection.password,
                 wait=wait,
                 callbacks=callbacks,
                 start_timeout_seconds=120,
-            )
+            ))
     except RebootFlowError as exc:
         if failure is None:
             raise
@@ -328,13 +328,13 @@ def reboot_after_uninstall(connection: SshConnection, plan: UninstallPlan, *, ca
     """
     if not plan.reboot_required:
         return False
-    reboot_device(
+    connection = followed(connection, reboot_device(
         connection.host,
         connection.password,
         wait=plan.wait_after_reboot,
         callbacks=callbacks,
         no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
-    )
+    ))
     if not plan.wait_after_reboot:
         return False
     callbacks.stage("verify_post_uninstall")

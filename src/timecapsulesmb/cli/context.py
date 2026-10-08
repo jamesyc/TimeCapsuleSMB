@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from dataclasses import replace
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
@@ -219,6 +220,15 @@ class CommandContext:
 
     def update_fields(self, **fields: object) -> None:
         self.operation_context.update_fields(**fields)
+        # A device found at another address (services.locate) is reached there
+        # from now on, and failures report that address.
+        current_host = fields.get("current_host")
+        if isinstance(current_host, str) and self.connection is not None:
+            self.connection = replace(self.connection, host=current_host)
+        # The CLI follows the device only for this command; configure saves the
+        # address it ends at, every other command leaves the saved one as it was.
+        if isinstance(current_host, str) and self.command_name != "configure":
+            print(f"Run `tcapsule configure` to save the device's new address ({current_host}).")
 
     def _update_device_identity_fields(self, *, model: str | None, syap: str | None) -> None:
         self.update_fields(device_model=model, device_syap=syap)

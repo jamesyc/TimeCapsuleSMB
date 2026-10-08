@@ -8,6 +8,7 @@ from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
+from timecapsulesmb.transport.ssh import SshConnection
 from tests.reboot_support import FakeAcpDevice, RecordingCallbacks
 
 UP_LIMIT = reboot_service.REBOOT_UP_TIMEOUT_SECONDS
@@ -394,6 +395,132 @@ class RandomTimelineTests(unittest.TestCase):
                     # it came back inside the start limit with time to spare.
                     if device.kernel_after + device.acp_up_after_boot + 15 < 90:
                         self.assertNotEqual(error.code, "reboot_not_started")
+
+
+def run_returning(device: FakeAcpDevice, **kwargs):
+    """Like run, but also returns what reboot_device returned."""
+    recorder = RecordingCallbacks()
+    kwargs.setdefault("wait", True)
+    with device.patched():
+        try:
+            moved = reboot_device("root@10.0.0.2", "pw", callbacks=recorder.callbacks(), **kwargs)
+        except RebootFlowError as exc:
+            return exc, recorder
+    return moved, recorder
+
+
+class RebootFollowTests(unittest.TestCase):
+    """A device whose new boot gets another DHCP address is found by its MAC."""
+
+    def test_a_device_back_at_a_new_address_is_followed_there(self) -> None:
+        device = FakeAcpDevice(new_address="10.0.0.9", kernel_after=40)
+        moved, recorder = run_returning(device)
+
+        self.assertEqual(moved, "root@10.0.0.9")
+        self.assertIn("locate", device.calls)
+        self.assertEqual(recorder.fields["current_host"], "root@10.0.0.9")
+        self.assertEqual(recorder.fields["device_came_back_after_reboot"], True)
+        self.assertIn("The device came back at 10.0.0.9; the saved address is out of date.", recorder.messages)
+        cycle = recorder.measurement("reboot_cycle")
+        self.assertEqual(cycle["result"], "success")
+        self.assertTrue(cycle["followed"])
+        # Looked for only after a minute down, and SSH is checked at the new address.
+        self.assertGreaterEqual(cycle["follow_after_sec"] - cycle["down_seen_after_sec"], reboot_service.FOLLOW_AFTER_DOWN_SECONDS)
+        self.assertTrue(device.tcp_open("10.0.0.9", 22))
+
+    def test_a_device_back_within_a_minute_is_never_looked_for(self) -> None:
+        device = FakeAcpDevice(kernel_after=40)
+        moved, recorder = run_returning(device)
+
+        self.assertIsNone(moved)
+        self.assertNotIn("locate", device.calls)
+        self.assertNotIn("current_host", recorder.fields)
+        self.assertNotIn("followed", recorder.measurement("reboot_cycle"))
+
+    def test_a_slow_device_back_at_its_address_stays_there(self) -> None:
+        device = FakeAcpDevice(kernel_after=180)
+        moved, recorder = run_returning(device)
+
+        self.assertIsNone(moved)
+        self.assertIn("locate", device.calls)
+        self.assertEqual(recorder.measurement("reboot_cycle")["result"], "success")
+        self.assertNotIn("current_host", recorder.fields)
+
+    def test_looks_repeat_every_interval_until_the_device_answers(self) -> None:
+        # The new boot answers 300 s after the request; looks at 60 s down and
+        # then every 30 s find nothing until then.
+        device = FakeAcpDevice(new_address="10.0.0.9", kernel_after=300)
+        moved, _recorder = run_returning(device)
+
+        self.assertEqual(moved, "root@10.0.0.9")
+        self.assertGreaterEqual(device.calls.count("locate"), 7)
+
+    def test_without_the_mac_the_device_is_not_followed(self) -> None:
+        device = FakeAcpDevice(new_address="10.0.0.9", kernel_after=40)
+        answer = device.get_properties
+        device.get_properties = lambda *args, **kwargs: {"syUT": answer(*args, **kwargs)["syUT"]}
+        error, _recorder = run_returning(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertNotIn("locate", device.calls)
+
+    def test_a_found_address_without_a_new_boot_is_not_followed(self) -> None:
+        from timecapsulesmb.services.locate import LocateResult
+
+        device = FakeAcpDevice(kernel_after=10_000)
+        read = device.get_property_int
+        # Something answers at .7 with the old boot's uptime.
+        device.get_property_int = lambda host, *args, **kwargs: 999_999 if host == "10.0.0.7" else read(host, *args, **kwargs)
+        device.locate_airport = lambda *_args, **_kwargs: LocateResult("found", host="root@10.0.0.7", address="10.0.0.7")
+        error, recorder = run_returning(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertNotIn("current_host", recorder.fields)
+
+    def test_another_airport_at_the_old_address_does_not_prove_the_reboot(self) -> None:
+        # The device came back at .9; another AirPort that just booted took .2.
+        device = FakeAcpDevice(new_address="10.0.0.9", kernel_after=40)
+        answer = device.get_properties
+
+        def reads(host, *args, **kwargs):
+            kernel = device.requested_at + device.kernel_after if device.requested_at is not None else None
+            if host == "10.0.0.2" and kernel is not None and device.now >= kernel:
+                device.calls.append("read")
+                return {"syUT": (5).to_bytes(4, "big"), "waMA": bytes.fromhex("020000000002")}
+            return answer(host, *args, **kwargs)
+
+        device.get_properties = reads
+        moved, recorder = run_returning(device)
+
+        self.assertEqual(moved, "root@10.0.0.9")
+        self.assertTrue(recorder.measurement("reboot_cycle")["other_device_at_address"])
+
+    def test_a_device_back_with_another_password_is_named_in_the_timeout(self) -> None:
+        from timecapsulesmb.services.locate import LocateResult
+
+        device = FakeAcpDevice(kernel_after=10_000)
+        device.locate_airport = lambda *_args, **_kwargs: LocateResult("password_rejected", address="10.0.1.1")
+        error, _recorder = run_returning(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(
+            str(error),
+            "Timed out waiting for SSH after reboot. An AirPort advertising this device's MAC answered at 10.0.1.1"
+            " but rejected the AirPort admin password; it may have been reset.",
+        )
+
+    def test_ssh_kept_closed_is_checked_at_the_new_address(self) -> None:
+        device = FakeAcpDevice(new_address="10.0.0.9", kernel_after=40, ssh_up_after_boot=None)
+        moved, recorder = run_returning(device, expect_ssh=False)
+
+        self.assertEqual(moved, "root@10.0.0.9")
+        self.assertEqual(recorder.measurement("reboot_cycle")["result"], "success")
+
+    def test_followed_moves_only_a_moved_connection(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+
+        self.assertIs(reboot_service.followed(connection, None), connection)
+        self.assertEqual(reboot_service.followed(connection, "root@10.0.0.9"), SshConnection("root@10.0.0.9", "pw", "-o foo"))
 
 
 if __name__ == "__main__":

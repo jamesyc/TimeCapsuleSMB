@@ -8,6 +8,7 @@ things happen and the real reboot loop observes them.
 from __future__ import annotations
 
 import contextlib
+import struct
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest import mock
@@ -57,6 +58,9 @@ class FakeAcpDevice:
     flaky_reads_at: tuple[tuple[float, float], ...] = ()
     # Device clock speed relative to the host's.
     device_rate: float = 1.0
+    # The address the new boot answers at, when DHCP gave the device another
+    # one; the old address then answers nothing.
+    new_address: str | None = None
     now: float = 1000.0
     requested_at: float | None = None
     calls: list[str] = field(default_factory=list)
@@ -104,6 +108,12 @@ class FakeAcpDevice:
             return int((self.now - kernel) * self.device_rate)
         return int((self.now - self._boot_at) * self.device_rate)
 
+    def _answers_at(self, host: str) -> bool:
+        kernel = self._new_kernel_at()
+        if self.new_address is None or kernel is None or self.now < kernel:
+            return True
+        return host == self.new_address
+
     # Patched callables.
     def get_property_int(self, host: str, password: str, name: str, *, timeout: float = 25.0) -> int:
         assert name == "syUT", name
@@ -112,12 +122,29 @@ class FakeAcpDevice:
         if self.reads == 1 and self.first_read_error is not None:
             raise self.first_read_error
         self.now += self.read_latency
-        if not self._acp_up() or any(start <= self.now < end for start, end in self.flaky_reads_at):
+        if (not self._acp_up() or not self._answers_at(host)
+                or any(start <= self.now < end for start, end in self.flaky_reads_at)):
             raise ACPConnectionError(f"Could not connect to ACP on {host}:5009: timed out")
         kernel = self._new_kernel_at()
         if kernel is not None and self.now >= kernel:
             self.served_new_boot = True
         return self.device_uptime()
+
+    def get_properties(self, host: str, password: str, names: tuple[str, ...], *, timeout: float = 25.0) -> dict[str, bytes]:
+        # The reboot path reads the uptime and the AirPort MAC together.
+        assert set(names) <= {"syUT", "waMA"}, names
+        uptime = self.get_property_int(host, password, "syUT", timeout=timeout)
+        return {"syUT": struct.pack(">I", uptime), "waMA": bytes.fromhex(DEVICE_AIRPORT_MAC.replace(":", ""))}
+
+    def locate_airport(self, airport_mac: str, password: str, *, current_host: str, trigger: str, attempts: int = 2, **_kwargs: object):
+        from timecapsulesmb.services.locate import LocateResult
+
+        self.calls.append("locate")
+        # The reboot wait reads each candidate once and looks again later.
+        assert (airport_mac, trigger, attempts) == (DEVICE_AIRPORT_MAC, "reboot_wait", 1), (airport_mac, trigger, attempts)
+        if self.new_address is not None and self._answers_at(self.new_address) and self._acp_up():
+            return LocateResult("found", host=f"root@{self.new_address}", address=self.new_address)
+        return LocateResult("not_found")
 
     def reboot(self, host: str, password: str, *, timeout: float = 25.0, **_kwargs: object) -> None:
         self.calls.append("request")
@@ -130,6 +157,8 @@ class FakeAcpDevice:
     def tcp_open(self, host: str, port: int, timeout: float = 2.0) -> bool:
         assert port == 22, port
         self.calls.append("tcp 22")
+        if not self._answers_at(host):
+            return False
         kernel = self._new_kernel_at()
         if kernel is None:
             return self.ssh_open
@@ -144,7 +173,9 @@ class FakeAcpDevice:
         clock = SimpleNamespace(monotonic=self.monotonic, sleep=self.sleep)
         with (
             mock.patch("timecapsulesmb.services.reboot.time", clock),
-            mock.patch("timecapsulesmb.integrations.acp.get_property_int", side_effect=self.get_property_int),
+            mock.patch("timecapsulesmb.integrations.acp.get_property_int", side_effect=lambda *a, **k: self.get_property_int(*a, **k)),
+            mock.patch("timecapsulesmb.integrations.acp.get_properties", side_effect=self.get_properties),
+            mock.patch("timecapsulesmb.services.reboot.locate_airport", side_effect=self.locate_airport),
             mock.patch("timecapsulesmb.integrations.acp.reboot", side_effect=self.reboot),
             mock.patch("timecapsulesmb.services.reboot.tcp_open", side_effect=self.tcp_open),
             mock.patch(
@@ -199,6 +230,8 @@ class FakeInstalledRuntime:
     # Whether the runtime becomes ready once started.
     becomes_ready: bool = True
     calls: list[str] = field(default_factory=list)
+    # The SSH target each start and wait reached the device at.
+    hosts: list[str] = field(default_factory=list)
 
     NOT_READY_DETAIL = "managed smbd parent process is not running"
 
@@ -214,12 +247,14 @@ class FakeInstalledRuntime:
         )
 
     def _run_actions(self, connection, actions, **_kwargs):
+        self.hosts.append(connection.host)
         self.calls.append("run " + ", ".join(getattr(action, "path", repr(action)) for action in actions))
 
     def _verify(self, connection, *, callbacks, stage, timeout_seconds, heading, failure_message):
         from timecapsulesmb.device.errors import DeviceError
 
         callbacks.stage(stage)
+        self.hosts.append(connection.host)
         self.calls.append(f"verify {timeout_seconds}s")
         if not self.becomes_ready:
             raise DeviceError(f"{failure_message} {self.NOT_READY_DETAIL}")

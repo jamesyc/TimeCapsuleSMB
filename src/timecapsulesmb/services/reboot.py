@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.discovery.models import normalize_airport_mac
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.locate import LocateResult, locate_airport
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import close_ssh_masters
+from timecapsulesmb.transport.ssh import SshConnection, close_ssh_masters
 
 
 # Every TimeCapsuleSMB reboot goes through Apple's ACPd over the network, as
@@ -39,6 +42,12 @@ UPTIME_SLACK_SECONDS = 2
 # A device whose SSH is still closed at this uptime kept SSH off.
 SSH_CLOSED_CHECK_UPTIME_SECONDS = 60
 SSH_PORT = 22
+# A device that is down this long may have come back at another DHCP address
+# (51 of 259 installs whose wait timed out since v3.0 later reached it at a new
+# address), so it is looked for by its AirPort MAC from then on. The new kernel
+# starts 47-175 s after the request, so earlier looks find nothing.
+FOLLOW_AFTER_DOWN_SECONDS = 60
+FOLLOW_INTERVAL_SECONDS = 30
 
 REBOOT_NO_DOWN_MESSAGE = "Reboot was requested but the device did not restart."
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
@@ -64,31 +73,33 @@ def reboot_device(
     up_timeout_seconds: int = REBOOT_UP_TIMEOUT_SECONDS,
     no_down_message: str = REBOOT_NO_DOWN_MESSAGE,
     up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
-) -> None:
+) -> str | None:
     """Reboot the device through ACP and, with `wait`, prove it rebooted.
 
     The new boot must answer ACP within `up_timeout_seconds` of the first
     unanswered read. Then SSH must open within REBOOT_SSH_TIMEOUT_SECONDS of
     the new boot being seen (`expect_ssh`), or must stay closed.
-    Raises RebootFlowError.
+    Returns the device's SSH target when the new boot came up at another
+    address (see services.locate), else None. Raises RebootFlowError.
     """
     callbacks = callbacks or OperationCallbacks()
     host = endpoint_host(host)
     if not wait:
         _request(host, password, callbacks, raise_errors=True)
-        return
-    u0, error = _read_uptime(host, password)
+        return None
+    u0, airport_mac, error = _read_uptime(host, password)
     if u0 is None:
         code = "auth_failed" if isinstance(error, acp.ACPAuthError) else "device_unreachable"
         raise RebootFlowError(f"Could not read the device's uptime through AirPort ACP before rebooting: {error}", code)
     started = time.monotonic()
     time.sleep(1)
     _request(host, password, callbacks, raise_errors=False)
-    _wait(
+    return _wait(
         host,
         password,
         u0,
         started,
+        airport_mac=airport_mac,
         callbacks=callbacks,
         expect_ssh=expect_ssh,
         start_timeout_seconds=start_timeout_seconds,
@@ -98,11 +109,32 @@ def reboot_device(
     )
 
 
-def _read_uptime(host: str, password: str) -> tuple[int | None, acp.ACPError | None]:
+def followed(connection: SshConnection, moved: str | None) -> SshConnection:
+    """`connection`, at the address reboot_device found the device at."""
+    return connection if moved is None else replace(connection, host=moved)
+
+
+def _read_uptime(host: str, password: str) -> tuple[int | None, str | None, acp.ACPError | None]:
+    """The uptime and AirPort MAC at `host`, read in one request.
+
+    The MAC is None when the device could not read waMA; the reboot is then
+    proven at `host` only.
+    """
     try:
-        return acp.get_property_int(host, password, "syUT", timeout=UPTIME_READ_TIMEOUT_SECONDS), None
+        values = acp.get_properties(host, password, ("syUT", "waMA"), timeout=UPTIME_READ_TIMEOUT_SECONDS)
+        uptime = values.get("syUT")
+        if isinstance(uptime, acp.ACPError):
+            raise uptime
+        if uptime is None:
+            raise acp.ACPPropertyError("ACP property syUT was not returned")
+        mac = values.get("waMA")
+        return (
+            acp.property_uint32("syUT", uptime),
+            normalize_airport_mac(mac.hex(":")) if isinstance(mac, bytes) else None,
+            None,
+        )
     except acp.ACPError as exc:
-        return None, exc
+        return None, None, exc
 
 
 def _request(host: str, password: str, callbacks: OperationCallbacks, *, raise_errors: bool) -> None:
@@ -145,19 +177,22 @@ def _wait(
     u0: int,
     started: float,
     *,
+    airport_mac: str | None,
     callbacks: OperationCallbacks,
     expect_ssh: bool,
     start_timeout_seconds: int,
     up_timeout_seconds: int,
     no_down_message: str,
     up_timeout_message: str,
-) -> None:
+) -> str | None:
     fields: dict[str, object] = {
         "start_timeout_sec": start_timeout_seconds,
         "up_timeout_sec": up_timeout_seconds,
         "expect_ssh": expect_ssh,
         "u0_sec": u0,
     }
+    moved: str | None = None
+    rejected: LocateResult | None = None
 
     def finish(result: str, code: str | None = None, message: str = "") -> None:
         fields["total_wait_duration_sec"] = round(time.monotonic() - started, 3)
@@ -165,18 +200,26 @@ def _wait(
         if code is not None:
             raise RebootFlowError(message, code)
 
+    def is_new_boot(uptime: int | None, read_started: float) -> bool:
+        return uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started)
+
     callbacks.message("Waiting for the device to restart...")
     callbacks.stage("wait_for_reboot_down")
     down_since: float | None = None
+    next_follow = 0.0
     up_stage = False
     while True:
         time.sleep(REBOOT_POLL_SECONDS)
         read_started = time.monotonic()
-        uptime, error = _read_uptime(host, password)
+        uptime, mac, error = _read_uptime(host, password)
         now = time.monotonic()
         if error is not None:
             fields["last_read_error"] = str(error)
-        if uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started):
+        if airport_mac and mac and mac != airport_mac:
+            # Another AirPort took this address: the device itself is not here.
+            uptime = None
+            fields["other_device_at_address"] = True
+        if is_new_boot(uptime, read_started):
             break
         if uptime is not None:
             down_since = None
@@ -190,8 +233,30 @@ def _wait(
             up_stage = True
             callbacks.message("Device went down; waiting for it to come back up...")
             callbacks.stage("wait_for_reboot_up")
+        if airport_mac and now - down_since >= FOLLOW_AFTER_DOWN_SECONDS and now >= next_follow:
+            next_follow = now + FOLLOW_INTERVAL_SECONDS
+            # One read per candidate: a device still booting fails every read,
+            # and the next look is FOLLOW_INTERVAL_SECONDS away.
+            located = locate_airport(
+                airport_mac, password, current_host=host, trigger="reboot_wait", callbacks=callbacks, attempts=1,
+            )
+            if located.outcome == "password_rejected":
+                rejected = located
+            elif located.host is not None:
+                candidate = endpoint_host(located.host)
+                read_started = time.monotonic()
+                uptime, _mac, _error = _read_uptime(candidate, password)
+                if is_new_boot(uptime, read_started):
+                    host, moved = candidate, located.host
+                    now = time.monotonic()
+                    fields["followed"] = True
+                    fields["follow_after_sec"] = round(now - started, 3)
+                    callbacks.message(f"The device came back at {candidate}; the saved address is out of date.")
+                    callbacks.update(current_host=located.host)
+                    break
         if now - down_since >= up_timeout_seconds:
-            finish("did_not_come_back_up", "reboot_not_finished", up_timeout_message)
+            message = up_timeout_message if rejected is None else f"{up_timeout_message} {rejected.rejected_note}"
+            finish("did_not_come_back_up", "reboot_not_finished", message)
 
     fields["reset_seen_after_sec"] = round(now - started, 3)
     fields["uptime_at_return_sec"] = uptime
@@ -218,3 +283,4 @@ def _wait(
     callbacks.update(device_came_back_after_reboot=True)
     callbacks.message("Device is back online.")
     finish("success")
+    return moved
