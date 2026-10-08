@@ -905,6 +905,15 @@ class AirportAcpReadingTests(unittest.TestCase):
         self.assertEqual(get.call_count, 2)
         sleep.assert_called_once_with(5.0)
 
+    def test_a_single_attempt_read_is_not_retried(self) -> None:
+        get = mock.Mock(side_effect=[acp.ACPConnectionError("ACP receive failed: timed out")])
+        with mock.patch.object(probe.acp, "get_properties", get), mock.patch.object(probe.time, "sleep") as sleep:
+            reading = REAL_READ_AIRPORT_ACP("root@10.0.0.2", "pw", attempts=1)
+
+        self.assertIsNone(reading.password_matches)
+        get.assert_called_once()
+        sleep.assert_not_called()
+
     def test_two_failed_reads_are_unknown_not_a_wrong_password(self) -> None:
         reading, get, sleep = self.read(
             acp.ACPConnectionError("ACP receive failed: timed out"),

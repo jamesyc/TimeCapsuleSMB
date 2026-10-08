@@ -97,6 +97,20 @@ class BonjourResolvedService:
     def preferred_ip(self) -> str | None:
         return self.preferred_ipv4() or self.preferred_ipv6()
 
+    def acp_addresses(self) -> list[str]:
+        """Where to reach the AirPort's ACP: its LAN addresses, then link-local IPv6.
+
+        A record merged from several observations can list an old and a new
+        LAN address, so all are given. A Mac on another IPv4 subnet of the same
+        network reaches the AirPort only over link-local IPv6, as AirPort
+        Utility does. 169.254 is never used: where it would answer, the fe80
+        address answers too.
+        """
+        lan = [ip for ip in self.ipv4 if not is_link_local_ipv4(ip)]
+        if not lan and (ipv6 := self.preferred_ipv6()):
+            lan = [ipv6]
+        return lan + [ip for ip in self.ipv6 if is_link_local_ipv6(ip) and "%" in ip]
+
     def preferred_connection_host(self) -> str:
         preferred_ip = self.preferred_ip()
         if preferred_ip:

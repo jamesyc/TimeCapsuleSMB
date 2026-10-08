@@ -50,7 +50,7 @@ class SetSshServiceTests(unittest.TestCase):
 
     def enable(self, device: FakeAcpDevice, *, no_wait: bool = False):
         recorder = RecordingCallbacks()
-        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable:
+        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable:
             with device.patched():
                 try:
                     result = enable_set_ssh(CONNECTION, no_wait=no_wait, callbacks=recorder.callbacks(), initial=SSH_CLOSED)
@@ -59,7 +59,7 @@ class SetSshServiceTests(unittest.TestCase):
         return result, recorder, enable
 
     def test_enable_noops_when_ssh_is_already_open(self) -> None:
-        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable:
+        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable:
             result = enable_set_ssh(CONNECTION, no_wait=False, initial=SSH_OPEN)
 
         enable.assert_not_called()

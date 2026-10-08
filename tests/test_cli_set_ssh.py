@@ -64,7 +64,7 @@ class CliSetSshTests(CliTestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_ssh_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_ssh_mock:
                     with mock.patch.object(self.device, "ssh_open", False):
                         with redirect_stdout(output):
                             rc = set_ssh.main([])
@@ -82,7 +82,7 @@ class CliSetSshTests(CliTestCase):
         values = {"TC_HOST": "root@10.0.0.2"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_mock:
                     with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
                         with redirect_stdout(output):
                             rc = set_ssh.main(["--status"])
@@ -99,7 +99,7 @@ class CliSetSshTests(CliTestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_mock:
                     with redirect_stdout(output):
                         rc = set_ssh.main(["--enable"])
 
@@ -125,7 +125,7 @@ class CliSetSshTests(CliTestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_mock:
                     with redirect_stdout(output):
                         rc = set_ssh.main(["--enable", "--no-wait"])
 
@@ -370,7 +370,7 @@ class CliSetSshTests(CliTestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"):
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host):
                     with mock.patch.object(self.device, "ssh_open", False):
                         with redirect_stdout(io.StringIO()):
                             rc = set_ssh.main([])

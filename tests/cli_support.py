@@ -265,10 +265,12 @@ class CliTestCase(unittest.TestCase):
             callbacks.update_fields(ssh_final_reachable=True)
             return self.make_probe_state(self.make_probe_result_netbsd6())
 
-        self._configure_acp_probe_mock = self._exit_stack.enter_context(
+        # Tests set the probe state SSH comes back with; the connection stays.
+        self._configure_acp_probe_mock = mock.Mock(side_effect=fake_configure_acp_probe)
+        self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.services.configure.enable_ssh_and_reprobe",
-                side_effect=fake_configure_acp_probe,
+                side_effect=lambda connection, **kwargs: (connection, self._configure_acp_probe_mock(connection, **kwargs)),
             )
         )
         # No test may reach a real device's ACP. Every reboot goes to this

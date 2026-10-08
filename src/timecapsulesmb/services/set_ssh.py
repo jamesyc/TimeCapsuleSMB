@@ -127,7 +127,7 @@ def enable_set_ssh(
             summary=Summary("ssh.already_enabled", "SSH is already enabled."),
         )
 
-    enable_ssh_with_port_preflight(target_host, connection.password, callbacks=callbacks)
+    target_host = enable_ssh_with_port_preflight(target_host, connection.password, callbacks=callbacks)
     reboot_device(
         target_host,
         connection.password,

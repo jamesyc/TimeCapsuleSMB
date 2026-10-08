@@ -34,6 +34,7 @@ from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.flash_workflow import SecondaryBankInvalidError, SecondaryBankReadMismatchError
 from tests.flash_fixtures import inspect_full_banks, plan_full_restore
+from tests.reboot_support import DEVICE_AIRPORT_MAC
 from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
@@ -63,7 +64,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
-from timecapsulesmb.discovery.bonjour import BonjourFamilyDiscoveryAttempt, BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
+from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.app import AppOperationError, jsonable
@@ -2695,6 +2696,69 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(captured_connections[0].host, "root@10.0.0.80")
         self.assertEqual(values["TC_HOST"], "root@10.0.0.80")
 
+    def test_configure_follows_a_device_that_took_a_new_dhcp_address(self) -> None:
+        # Telemetry install 2e923635 (v3.3.0): the discovered record said .80,
+        # the device had moved to .81, and every retry went back to .80.
+        collector = CollectingSink()
+        probed_hosts: list[str] = []
+        states = iter([unreachable_probed_state(), probed_state()])
+
+        def capture_probe(connection: SshConnection) -> ProbedDeviceState:
+            probed_hosts.append(connection.host)
+            return next(states)
+
+        properties = {"syAP": "119", "waMA": DEVICE_AIRPORT_MAC.upper().replace(":", "-")}
+        record = {
+            "name": "Office Capsule",
+            "hostname": "Office-Capsule.local",
+            "service_type": "_airport._tcp.local.",
+            "port": 5009,
+            "ipv4": ["192.168.31.80"],
+            "ipv6": [],
+            "properties": properties,
+            "fullname": "Office Capsule._airport._tcp.local.",
+        }
+        moved = BonjourResolvedService(
+            name="Office Capsule", hostname="Office-Capsule.local", service_type="_airport._tcp.local.", port=5009,
+            ipv4=["192.168.31.81"], properties=dict(properties), fullname="Office Capsule._airport._tcp.local.",
+        )
+        browse_diagnostics = BonjourQueryDiagnostics("zeroconf", ["_airport._tcp.local."], 2, 2, 0, 1)
+        device = FakeAcpDevice(ssh_open=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            params = {"config": str(config_path), "selected_record": record, "password": "pw"}
+            params["confirmation_id"] = self.confirmation_id_for(
+                "configure",
+                params,
+                {"host": "root@192.168.31.80", "device_name": "Office Capsule", "requires_reboot": True},
+            )
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", side_effect=capture_probe), \
+                    mock.patch(
+                        "timecapsulesmb.services.acp_ssh.tcp_connect_error",
+                        side_effect=lambda address, _port: "timed out" if address == "192.168.31.80" else None,
+                    ), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=()), \
+                    mock.patch("timecapsulesmb.services.acp_diagnostics.local_interface_networks", return_value=()), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
+                    mock.patch(
+                        "timecapsulesmb.discovery.bonjour.BonjourQuery.browse",
+                        return_value=(BonjourDiscoverySnapshot([], [moved]), browse_diagnostics),
+                    ), \
+                    device.patched():
+                rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(set_dbug.call_args.args[:2], ("192.168.31.81", "pw"))
+        self.assertEqual(probed_hosts, ["root@192.168.31.80", "root@192.168.31.81"])
+        self.assertEqual(values["TC_HOST"], "root@192.168.31.81")
+        self.assertEqual(self.assert_single_terminal_event(collector, "result")["payload"]["host"], "root@192.168.31.81")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        follow = finished["execution"]["measurements"]["host_follow"][0]
+        self.assertEqual((follow["trigger"], follow["result"], follow["candidates"]), ("acp_unreachable", "found", 1))
+        self.assertEqual(finished["current_host"], "root@192.168.31.81")
+
     def test_configure_reaches_a_device_on_another_ipv4_subnet_over_fe80(self) -> None:
         # Discussion #368: same wire, two DHCP scopes. The record's IPv4 is off
         # this Mac's network; its link-local IPv6 answers, as AirPort Utility uses.
@@ -3898,14 +3962,14 @@ class AppApiTests(unittest.TestCase):
             "port": 5009,
             "ipv4": ["10.0.1.1", "169.254.155.34"],
             "ipv6": ["fe80::7273:cbff:feb2:71a2%en0"],
-            "properties": {"syAP": "116", "raNm": "Apple Network b67fdb", "raNA": "1", "prob": "waCF;opNW;pubP;+"},
+            "properties": {
+                "syAP": "116", "raNm": "Apple Network b67fdb", "raNA": "1", "prob": "waCF;opNW;pubP;+",
+                "waMA": "70-73-CB-B2-71-A2",
+            },
             "fullname": "Time Capsule b67fdb._airport._tcp.local.",
         }
         mac_lan = (LocalInterfaceNetwork("en0", "192.168.1.170", ipaddress.ip_network("192.168.1.0/24")),)
-        lookup_diagnostics = BonjourQueryDiagnostics(
-            "zeroconf", ["_airport._tcp.local."], 3, 3, 0, 0,
-            attempts=[BonjourFamilyDiscoveryAttempt(f, BonjourDiscoverySnapshot([], [])) for f in ("ipv4", "ipv6")],
-        )
+        browse_diagnostics = BonjourQueryDiagnostics("zeroconf", ["_airport._tcp.local."], 2, 2, 0, 0)
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
             params = {"config": str(Path(tmp) / ".env"), "selected_record": record, "password": "pw"}
@@ -3925,10 +3989,9 @@ class AppApiTests(unittest.TestCase):
                         return_value=RouteSelection("available", source="192.168.1.170"),
                     ), \
                     mock.patch(
-                        "timecapsulesmb.services.acp_diagnostics.tcp_connect_error",
-                        side_effect=lambda address, _port, _timeout: None if address.startswith("169.254.") else "timed out",
-                    ), \
-                    mock.patch("timecapsulesmb.discovery.bonjour.BonjourQuery.resolve_detailed", return_value=(None, lookup_diagnostics)):
+                        "timecapsulesmb.discovery.bonjour.BonjourQuery.browse",
+                        return_value=(BonjourDiscoverySnapshot([], []), browse_diagnostics),
+                    ):
                 rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
 
         self.assertEqual(rc, 1)
@@ -3954,9 +4017,12 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["local_networks"][0]["networks"][0]["network"], "192.168.1.0/24")
         self.assertTrue(finished["acp_record_flags"]["default_network_name"])
         self.assertNotIn("Apple Network", json.dumps(finished["acp_record_flags"]))
-        reachable = {entry["address"]: entry["reachable"] for entry in finished["acp_alt_probe"]}
-        self.assertEqual(reachable, {"169.254.155.34": True, "fe80::7273:cbff:feb2:71a2%en0": False})
-        self.assertEqual(finished["acp_fresh_lookup"], {"ipv4": "no_answer", "ipv6": "no_answer"})
+        # The device was looked for by its AirPort MAC, and is not on this network.
+        follow = finished["execution"]["measurements"]["host_follow"][0]
+        self.assertEqual(
+            {key: follow[key] for key in ("trigger", "result", "candidates", "from_scope")},
+            {"trigger": "acp_unreachable", "result": "not_found", "candidates": 0, "from_scope": "private"},
+        )
         self.assertNotIn("192.168.1.170", json.dumps(finished, default=str))
 
     def test_configure_aborts_on_denied_macos_local_network_preflight_and_emits_telemetry(self) -> None:
@@ -4142,7 +4208,7 @@ class AppApiTests(unittest.TestCase):
                 },
             )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe", return_value=None):
+                with mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe", side_effect=lambda connection, **_kwargs: (connection, None)):
                     rc = service.run_api_request(
                         {
                             "operation": "configure",
@@ -4173,7 +4239,7 @@ class AppApiTests(unittest.TestCase):
                 {"host": "root@10.0.0.2", "device_name": "10.0.0.2", "requires_reboot": True},
             )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight"):
+                with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host):
                     with device.patched():
                         rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
 

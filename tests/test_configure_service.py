@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 from unittest import mock
 
@@ -14,10 +15,10 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.device.compat import compatibility_from_probe_result
-from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
+from timecapsulesmb.device.probe import AirportAcpReading, ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACP_PORT, DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
@@ -31,14 +32,23 @@ from timecapsulesmb.services.configure import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
-from tests.reboot_support import acp_password_answer
+from timecapsulesmb.services.locate import LocateResult
+from tests.reboot_support import DEVICE_AIRPORT_MAC, acp_password_answer, acp_reading
 
 
 # Stand-ins for the ACP network diagnostics, which read this computer's
 # interfaces; tests/test_acp_diagnostics.py covers what they contain.
 PROBE_CONTEXT = {"acp_target_addresses": [{"role": "target", "link": "on_link"}], "local_networks": []}
-FAILURE_CONTEXT = {"acp_alt_probe": [{"reachable": False}]}
 PROBE_SUCCEEDED = {"acp_port_probe_succeeded": True, "acp_port_probe_error_kinds": []}
+RECORD_WITH_MAC = BonjourResolvedService(
+    name="Office Capsule",
+    hostname="Office-Capsule.local",
+    service_type="_airport._tcp.local.",
+    port=5009,
+    ipv4=["192.168.1.218"],
+    properties={"syAP": "119", "waMA": DEVICE_AIRPORT_MAC.upper().replace(":", "-")},
+    fullname="Office Capsule._airport._tcp.local.",
+)
 SELECTED_RECORD = BonjourResolvedService(
     name="Time Capsule b67fdb",
     hostname="Time-Capsule-b67fdb.local",
@@ -56,14 +66,8 @@ class ConfigureServiceTests(unittest.TestCase):
             "timecapsulesmb.services.acp_diagnostics.probe_context_fields",
             side_effect=lambda *_args, **_kwargs: dict(PROBE_CONTEXT),
         )
-        failure = mock.patch(
-            "timecapsulesmb.services.acp_diagnostics.failure_fields",
-            side_effect=lambda *_args, **_kwargs: dict(FAILURE_CONTEXT),
-        )
         self.probe_context = context.start()
         self.addCleanup(context.stop)
-        self.failure_context = failure.start()
-        self.addCleanup(failure.stop)
 
     def test_build_configure_env_values_handles_advanced_metadata_settings(self) -> None:
         preserved = build_configure_env_values(
@@ -279,7 +283,7 @@ class ConfigureServiceTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.configure.probe_connection_state", return_value=probe_state) as probe:
                         result = enable_ssh_and_reprobe(connection, callbacks=callbacks)
 
-        self.assertIs(result, probe_state)
+        self.assertEqual(result, (connection, probe_state))
         tcp_connect_error.assert_called_once_with("10.0.0.2", ACP_PORT)
         enable_ssh.assert_called_once_with("10.0.0.2", "pw", DBUG_SSH_VALUE, log=callbacks.log, timeout=25.0)
         # SSH turns on at the next boot: the shared reboot path restarts the
@@ -306,7 +310,6 @@ class ConfigureServiceTests(unittest.TestCase):
         )
         self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": True}])
         self.probe_context.assert_called_once_with("10.0.0.2", None)
-        self.failure_context.assert_not_called()
         self.assertIn("Attempting to enable SSH", logs[0])
 
     def test_enable_ssh_with_port_preflight_happy_path_runs_enable_without_retry(self) -> None:
@@ -377,9 +380,8 @@ class ConfigureServiceTests(unittest.TestCase):
         )
         self.assertEqual(update_fields, [
             {"acp_port_probe_succeeded": False, "acp_port_probe_error_kinds": ["refused", "refused", "refused"]},
-            {**PROBE_CONTEXT, **FAILURE_CONTEXT},
+            PROBE_CONTEXT,
         ])
-        self.failure_context.assert_called_once_with("10.0.0.2", None)
 
     def test_enable_ssh_with_port_preflight_retries_transient_acp_failures_before_success(self) -> None:
         callbacks, stages, _logs, debug_fields, _update_fields = self.callbacks()
@@ -434,29 +436,116 @@ class ConfigureServiceTests(unittest.TestCase):
 
         enable_ssh.assert_called_once()
         self.probe_context.assert_called_once_with("10.0.1.1", SELECTED_RECORD)
-        self.failure_context.assert_not_called()
         self.assertEqual(update_fields, [
             {"acp_port_probe_succeeded": True, "acp_port_probe_error_kinds": ["timeout"]},
             PROBE_CONTEXT,
         ])
 
-    def test_failed_port_probe_adds_the_record_failure_diagnostics(self) -> None:
-        callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
-        with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
-            with self.assertRaises(ACPConnectionError):
-                enable_ssh_with_port_preflight(
-                    "10.0.1.1",
+    def preflight(
+        self,
+        *,
+        port_answers: bool,
+        located: LocateResult | None = None,
+        reading: AirportAcpReading | None = None,
+        record: BonjourResolvedService = RECORD_WITH_MAC,
+    ):
+        """enable_ssh_with_port_preflight against the record's 192.168.1.218.
+
+        `port_answers` is whether ACP's port answers there, `reading` the
+        network ACP read of it, `located` where locate_airport finds the device."""
+        callbacks, _stages, logs, _debug, update_fields = self.callbacks()
+        locate = mock.Mock(return_value=located or LocateResult("not_found"))
+        read = mock.Mock(return_value=reading or acp_reading(True))
+        outcome: object
+        with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
+                mock.patch("timecapsulesmb.services.acp_ssh.locate_airport", locate), \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", read), \
+                mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=()):
+            try:
+                outcome = enable_ssh_with_port_preflight(
+                    "192.168.1.218",
                     "pw",
                     callbacks=callbacks,
-                    record=SELECTED_RECORD,
-                    tcp_connect_error_func=mock.Mock(return_value="[Errno 65] No route to host"),
+                    record=record,
+                    tcp_connect_error_func=mock.Mock(return_value=None if port_answers else "timed out"),
                     sleep_func=mock.Mock(),
                 )
+            except Exception as exc:
+                outcome = exc
+        return SimpleNamespace(outcome=outcome, set_dbug=set_dbug, locate=locate, read=read, logs=logs, updates=update_fields)
 
-        enable_ssh.assert_not_called()
-        self.failure_context.assert_called_once_with("10.0.1.1", SELECTED_RECORD)
-        self.assertEqual(update_fields[-1], {**PROBE_CONTEXT, **FAILURE_CONTEXT})
-        self.assertEqual(update_fields[0]["acp_port_probe_error_kinds"], ["no_route"] * 3)
+    def test_a_device_that_moved_gets_ssh_turned_on_at_its_new_address(self) -> None:
+        run = self.preflight(port_answers=False, located=LocateResult("found", host="root@192.168.1.40", address="192.168.1.40"))
+
+        self.assertEqual(run.outcome, "192.168.1.40")
+        run.locate.assert_called_once_with(
+            DEVICE_AIRPORT_MAC, "pw", current_host="192.168.1.218", trigger="acp_unreachable", callbacks=mock.ANY,
+        )
+        self.assertEqual(run.set_dbug.call_args.args[:2], ("192.168.1.40", "pw"))
+        self.assertIn({"current_host": "root@192.168.1.40"}, run.updates)
+        self.assertIn("The device now answers at 192.168.1.40.", run.logs)
+
+    def test_a_device_found_nowhere_else_keeps_the_original_connection_error(self) -> None:
+        run = self.preflight(port_answers=False)
+
+        self.assertIsInstance(run.outcome, ACPConnectionError)
+        self.assertIn("Could not connect to ACP on 192.168.1.218:5009", str(run.outcome))
+        run.set_dbug.assert_not_called()
+
+    def test_a_device_found_with_another_password_is_reported_and_keeps_the_connection_error(self) -> None:
+        # The record's MAC may be a stale cache entry for an address another
+        # AirPort took, so it is only reported.
+        run = self.preflight(port_answers=False, located=LocateResult("password_rejected", address="10.0.1.1"))
+
+        self.assertIsInstance(run.outcome, ACPConnectionError)
+        self.assertIn("Could not connect to ACP on 192.168.1.218:5009", str(run.outcome))
+        self.assertIn(LocateResult("password_rejected", address="10.0.1.1").rejected_note, run.logs)
+        run.set_dbug.assert_not_called()
+
+    def test_another_airport_at_the_address_is_never_changed(self) -> None:
+        other = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:02")
+        cases = {
+            "selected one found elsewhere": (LocateResult("found", host="root@192.168.1.40", address="192.168.1.40"), "192.168.1.40"),
+            "selected one not found": (LocateResult("not_found"), None),
+        }
+        for case, (located, enabled_at) in cases.items():
+            with self.subTest(case=case):
+                run = self.preflight(port_answers=True, reading=other, located=located)
+
+                self.assertEqual(run.locate.call_args.kwargs["trigger"], "identity_mismatch")
+                if enabled_at is None:
+                    self.assertIsInstance(run.outcome, AirportIdentityMismatchError)
+                    self.assertIn("A different AirPort answers at 192.168.1.218", str(run.outcome))
+                    run.set_dbug.assert_not_called()
+                else:
+                    self.assertEqual(run.outcome, enabled_at)
+                    self.assertEqual(run.set_dbug.call_args.args[0], enabled_at)
+
+    def test_a_rejected_password_stops_before_the_acp_write(self) -> None:
+        run = self.preflight(port_answers=True, reading=acp_reading(False))
+
+        self.assertIsInstance(run.outcome, ACPAuthError)
+        run.set_dbug.assert_not_called()
+        run.locate.assert_not_called()
+
+    def test_the_selected_device_or_an_unanswered_read_goes_on_to_the_acp_write(self) -> None:
+        for case, reading in {"same MAC": acp_reading(True), "no answer": acp_reading(None)}.items():
+            with self.subTest(case=case):
+                run = self.preflight(port_answers=True, reading=reading)
+
+                self.assertEqual(run.outcome, "192.168.1.218")
+                run.read.assert_called_once_with("192.168.1.218", "pw")
+                run.locate.assert_not_called()
+                self.assertEqual(run.set_dbug.call_args.args[0], "192.168.1.218")
+
+    def test_without_the_devices_mac_nothing_is_read_or_looked_for(self) -> None:
+        for port_answers in (True, False):
+            with self.subTest(port_answers=port_answers):
+                run = self.preflight(port_answers=port_answers, record=SELECTED_RECORD)
+
+                run.read.assert_not_called()
+                run.locate.assert_not_called()
+                self.assertEqual(run.set_dbug.called, port_answers)
 
     def test_diagnostics_errors_are_recorded_without_changing_the_outcome(self) -> None:
         for connect_errors, outcome in ((None, "enabled"), ("Connection refused", "acp_unreachable")):
@@ -581,7 +670,7 @@ class ConfigureServiceTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
                         result = enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
 
-        self.assertIsNone(result)
+        self.assertEqual(result, (self.make_connection(), None))
         probe.assert_not_called()
         self.assertEqual(stages, ["acp_port_probe", "acp_enable_ssh"])
         self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": False}])
@@ -887,12 +976,56 @@ class ConfigureServiceTests(unittest.TestCase):
         writer = mock.Mock()
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe",
-                            return_value=self.make_probe_state()):
+                            side_effect=lambda connection, **_kwargs: (connection, self.make_probe_state())):
                 with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
                     run_configure_flow(self.configure_request(Path(tmp) / ".env", mock.Mock(return_value=closed),
                                                               write_env=writer))
         compare.assert_called_once()
         writer.assert_called_once()
+
+    def closed_ssh_state(self) -> ProbedDeviceState:
+        return ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.CLOSED, error="SSH is not reachable yet.",
+                os_name="", os_release="", arch="", elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+
+    def test_configure_saves_the_address_ssh_was_turned_on_at(self) -> None:
+        # The device answered at a new address (found by its MAC); the reboot,
+        # the probe after it and the saved TC_HOST all use that address.
+        probed_hosts: list[str] = []
+
+        def probe(connection: SshConnection) -> ProbedDeviceState:
+            probed_hosts.append(connection.host)
+            return self.closed_ssh_state() if len(probed_hosts) == 1 else self.make_probe_state()
+
+        writer = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", return_value="192.168.1.40"), \
+                    mock.patch("timecapsulesmb.services.configure.reboot_device") as reboot:
+                result = run_configure_flow(self.configure_request(Path(tmp) / ".env", mock.Mock(side_effect=probe), write_env=writer))
+
+        self.assertEqual(probed_hosts, ["root@10.0.0.2", "root@192.168.1.40"])
+        self.assertEqual(reboot.call_args.args[0], "192.168.1.40")
+        self.assertEqual(result.host, "root@192.168.1.40")
+        self.assertEqual(result.connection.host, "root@192.168.1.40")
+        self.assertEqual(writer.call_args.args[1]["TC_HOST"], "root@192.168.1.40")
+
+    def test_another_airport_at_the_address_fails_configure_as_an_identity_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with mock.patch(
+                "timecapsulesmb.services.configure.enable_ssh_with_port_preflight",
+                side_effect=AirportIdentityMismatchError("A different AirPort answers at 10.0.0.2."),
+            ):
+                with self.assertRaises(ConfigureFlowError) as raised:
+                    run_configure_flow(self.configure_request(env_path, mock.Mock(return_value=self.closed_ssh_state())))
+            self.assertFalse(env_path.exists())
+
+        self.assertEqual(raised.exception.code, "device_identity_mismatch")
+        self.assertEqual(str(raised.exception), "A different AirPort answers at 10.0.0.2.")
 
     def test_password_ssh_rejects_is_not_compared_with_the_device(self) -> None:
         compare = acp_password_answer(True)
@@ -1006,7 +1139,7 @@ class ConfigureServiceTests(unittest.TestCase):
         before_enable_ssh = mock.Mock()
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
-            with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable_ssh:
+            with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_ssh:
                 with self.assertRaises(ConfigureFlowError) as raised:
                     run_configure_flow(
                         self.configure_request(env_path, probe, selected_record_airport_syap="115"),
@@ -1087,7 +1220,7 @@ class ConfigureServiceTests(unittest.TestCase):
         probe = mock.Mock(side_effect=[self.make_ssh_closed_probe_state(), self.make_airport_express_probe_state()])
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
-            with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable_ssh:
+            with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable_ssh:
                 with mock.patch("timecapsulesmb.services.configure.reboot_device"):
                     with self.assertRaises(ConfigureFlowError) as raised:
                         run_configure_flow(self.configure_request(env_path, probe))

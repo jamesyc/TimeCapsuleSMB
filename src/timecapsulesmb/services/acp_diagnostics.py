@@ -7,8 +7,8 @@ alone cannot say whether this computer was on the device's network at all.
 
 Every probe records how each known device address relates to this computer's
 networks, plus the AirPort record's status flags, so failures have a baseline
-to compare with. A failed probe also tries the record's other addresses and
-looks the Bonjour name up again. None of this changes what the operation does.
+to compare with. None of this changes what the operation does; finding a
+device that moved is services.locate's job.
 
 Addresses and prefixes are reported only for private, shared (100.64/10),
 unique local and link-local ranges. Public ones are reduced to their family
@@ -20,23 +20,15 @@ from __future__ import annotations
 import ipaddress
 import re
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from typing import Union
 
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, interface_kind, local_interface_networks
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, resolve_host_ips
-from timecapsulesmb.discovery.bonjour import (
-    BonjourResolvedService,
-    BonjourServiceInstance,
-    BonjourQuery,
-)
+from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACP_PORT
-from timecapsulesmb.transport.local import tcp_connect_error
 
 
-ALT_PROBE_TIMEOUT_SECONDS = 2.0
-FRESH_LOOKUP_TIMEOUT_MS = 3000
 RECORD_FLAG_KEYS = ("raNA", "raSt", "prob", "syFl")
 
 # A reset AirPort names its network "Apple Network" plus the last six hex
@@ -244,81 +236,4 @@ def probe_context_fields(
     }
     if record is not None:
         fields["acp_record_flags"] = record_flags(record)
-    return fields
-
-
-def fresh_lookup(
-    record: BonjourResolvedService,
-    *,
-    query: BonjourQuery | None = None,
-) -> dict[str, object]:
-    """Resolve the record's Bonjour name again and compare its addresses."""
-    instance = BonjourServiceInstance(record.service_type, record.name, record.fullname, record.interface_index)
-    resolved, diagnostics = (query or BonjourQuery()).resolve_detailed(instance, FRESH_LOOKUP_TIMEOUT_MS)
-    result: dict[str, object] = {}
-    now: list[str] = []
-    verified_families: set[int] = set()
-    for family, version in (("ipv4", 4), ("ipv6", 6)):
-        addresses, error = diagnostics.family_result(resolved, family)
-        if error:
-            result[family] = "error"
-            result[f"{family}_error"] = error[:200]
-            continue
-        if not addresses:
-            result[family] = "no_answer"
-            continue
-        result[family] = "answered"
-        verified_families.add(version)
-        for address in addresses:
-            if not any(_same_address(address, known) for known in now):
-                now.append(address)
-    if verified_families:
-        before = {str(ip) for ip in map(_parse_address, [*record.ipv4, *record.ipv6]) if ip is not None and ip.version in verified_families}
-        after = {str(ip) for ip in map(_parse_address, now) if ip is not None}
-        result["addresses_changed"] = before != after
-        result["added"] = [address_summary(address) for address in sorted(after - before)]
-        result["removed"] = [address_summary(address) for address in sorted(before - after)]
-    return result
-
-
-def failure_fields(
-    host: str,
-    record: BonjourResolvedService | None,
-    *,
-    connect: Callable[[str, int, float], str | None] | None = None,
-    lookup: Callable[[BonjourResolvedService], dict[str, object]] | None = None,
-    resolve: Callable[[str], Sequence[str]] | None = None,
-) -> dict[str, object]:
-    """Fields for a failed ACP port probe. Takes at most about three seconds."""
-    if record is None:
-        return {}
-    connect = connect or tcp_connect_error
-    lookup = lookup or fresh_lookup
-    alternates = [address for address, role in candidate_addresses(host, record, resolve=resolve) if role == "record"]
-    can_look_up = bool(record.fullname and record.service_type)
-    workers = len(alternates) + (1 if can_look_up else 0)
-    if workers == 0:
-        return {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        probes = [(address, pool.submit(connect, address, ACP_PORT, ALT_PROBE_TIMEOUT_SECONDS)) for address in alternates]
-        lookup_future = pool.submit(lookup, record) if can_look_up else None
-    fields: dict[str, object] = {}
-    if alternates:
-        alt_probe: list[dict[str, object]] = []
-        for address, future in probes:
-            try:
-                error = future.result()
-            except Exception as exc:
-                error = str(exc) or exc.__class__.__name__
-            entry = address_summary(address)
-            entry["reachable"] = error is None
-            if error is not None:
-                entry["error_kind"] = connect_error_kind(error)
-            alt_probe.append(entry)
-        fields["acp_alt_probe"] = alt_probe
-    if lookup_future is not None:
-        try:
-            fields["acp_fresh_lookup"] = lookup_future.result()
-        except Exception as exc:
-            fields["acp_fresh_lookup"] = {"error": (str(exc) or exc.__class__.__name__)[:200]}
     return fields

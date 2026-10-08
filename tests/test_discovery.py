@@ -109,6 +109,21 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual({r.fullname for r in collector.results()}, set(names))
         self.assertEqual(set(collector.pending), set())
 
+    def test_acp_addresses_list_every_lan_address_then_scoped_link_local(self) -> None:
+        cases = (
+            # One observation, as configure's selected record.
+            (["10.0.0.2", "169.254.1.2"], ["fe80::1", "fe80::1%en0"], ["10.0.0.2", "fe80::1%en0"]),
+            # Observations merged by MAC: an old and a new LAN address.
+            (["10.0.0.2", "10.0.0.9"], ["fe80::1%en0"], ["10.0.0.2", "10.0.0.9", "fe80::1%en0"]),
+            # No LAN IPv4: the routable IPv6 address stands in.
+            (["169.254.1.2"], ["fd00::2", "fe80::1%en0"], ["fd00::2", "fe80::1%en0"]),
+            ([], [], []),
+        )
+        for ipv4, ipv6, expected in cases:
+            with self.subTest(ipv4=ipv4, ipv6=ipv6):
+                record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=ipv4, ipv6=ipv6)
+                self.assertEqual(record.acp_addresses(), expected)
+
     def test_preferred_connection_host_uses_address_policy_before_hostname(self) -> None:
         record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=["10.0.0.2"])
         self.assertEqual(record.preferred_connection_host(), "10.0.0.2")

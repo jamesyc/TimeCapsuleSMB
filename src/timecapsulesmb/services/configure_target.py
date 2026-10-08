@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from timecapsulesmb.core.net import is_link_local_ipv6, normalize_endpoint_host
+from timecapsulesmb.core.net import normalize_endpoint_host
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     discovered_record_has_only_link_local_ips,
@@ -63,15 +63,8 @@ def bonjour_record_from_selected_record(selected: Mapping[str, object] | None) -
 
 
 def reachable_record_host(record: BonjourResolvedService) -> str | None:
-    """The record's address that answers ACP: its LAN address, else link-local IPv6.
-
-    A Mac on another IPv4 subnet of the same network reaches the AirPort only
-    over link-local IPv6, as AirPort Utility does. 169.254 is never used: where
-    it would answer, the fe80 address answers too.
-    """
-    preferred = record.preferred_ip()
-    candidates = ([preferred] if preferred else []) + [ip for ip in record.ipv6 if is_link_local_ipv6(ip) and "%" in ip]
-    for address in candidates:
+    """The first of the record's ACP addresses that answers on the ACP port."""
+    for address in record.acp_addresses():
         if tcp_connect_error(address, ACP_PORT) is None:
             return f"root@{normalize_endpoint_host(address)}"
     return None

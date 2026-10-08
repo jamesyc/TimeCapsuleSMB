@@ -570,10 +570,11 @@ class AirportAcpReading:
     error: str | None = None
 
 
-def read_airport_acp(host: str, password: str) -> AirportAcpReading:
+def read_airport_acp(host: str, password: str, *, attempts: int = 2) -> AirportAcpReading:
+    """The password check reads twice; finding a device reads each address once."""
     target = endpoint_host(host)
     error: str | None = None
-    for attempt in range(2):
+    for attempt in range(attempts):
         if attempt:
             time.sleep(ACP_IDENTITY_RETRY_DELAY_SECONDS)
         try:

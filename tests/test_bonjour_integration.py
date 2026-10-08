@@ -346,20 +346,6 @@ def test_zeroconf_inflight_removed_generation_cannot_resurrect(monkeypatch):
     assert collector.pending_count() == 1
 
 
-def test_acp_partial_family_failure_does_not_report_old_ipv6_removed():
-    from timecapsulesmb.services.acp_diagnostics import fresh_lookup
-    from timecapsulesmb.discovery.models import BonjourResolvedService
-    before = BonjourResolvedService("Office", "office.local", "_airport._tcp.local.", ipv4=["192.0.2.10"], ipv6=["fd00::10"], interface_index=14)
-    def resolve(instance, _timeout, *, family, **_kwargs):
-        assert instance.interface_index == 14
-        if family == "ipv6": raise OSError("IPv6 query failed")
-        return BonjourResolvedService("Office", "office.local", "_airport._tcp.local.", ipv4=["192.0.2.10"])
-    with mock.patch.object(bonjour, "command_exists", return_value=False), mock.patch.object(zeroconf_backend, "resolve_service_instance", side_effect=resolve):
-        result = fresh_lookup(before)
-    assert result["ipv6"] == "error"
-    assert result["addresses_changed"] is False and result["removed"] == []
-
-
 def test_candidate_boundary_keeps_conflicting_ports_as_distinct_evidence():
     from timecapsulesmb.discovery.devices import device_candidates_from_records
     from timecapsulesmb.discovery.models import BonjourResolvedService

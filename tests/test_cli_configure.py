@@ -2833,9 +2833,9 @@ class CliConfigureTests(CliTestCase):
     def test_configure_records_the_ssh_enable_reboot_cycle_in_telemetry(self) -> None:
         # The real enable-and-reboot runs against the simulated device; only the
         # ACP write is stubbed. SSH never opens on the new boot.
-        self._configure_acp_probe_mock.side_effect = real_enable_ssh_and_reprobe
+        self._configure_acp_probe_mock.side_effect = lambda connection, **kwargs: real_enable_ssh_and_reprobe(connection, **kwargs)[1]
         self.device.ssh_up_after_boot = None
-        with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight"):
+        with mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host):
             result = self.run_configure_cli(
                 prompt_side_effect=self.configure_prompt_defaults(),
                 probe_state=self.make_probe_state(self.make_probe_result_unreachable()),

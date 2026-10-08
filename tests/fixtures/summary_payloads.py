@@ -48,7 +48,7 @@ def _set_ssh_results() -> list[tuple[str, SetSshResult]]:
     ssh_open = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True)
     ssh_closed = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False)
     with (
-        mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"),
+        mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host),
         mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"),
     ):
         results = [

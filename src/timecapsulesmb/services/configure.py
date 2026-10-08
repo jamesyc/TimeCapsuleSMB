@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
 
@@ -33,7 +33,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, PROBE_STATUS_ERROR_CODES
@@ -141,19 +141,24 @@ def enable_ssh_and_reprobe(
     callbacks: OperationCallbacks | None = None,
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
     record: BonjourResolvedService | None = None,
-) -> ProbedDeviceState | None:
+) -> tuple[SshConnection, ProbedDeviceState | None]:
+    """Turn SSH on through ACP, reboot, and probe again.
+
+    Returns the connection to the address SSH was turned on at, which moves
+    when the device is found at a new address by its AirPort MAC, and the new
+    probe, or None when SSH did not open in time.
+    """
     callbacks = callbacks or OperationCallbacks()
     if probe is None:
         probe = probe_connection_state
-    host = endpoint_host(connection.host)
     callbacks.debug(
         configure_acp_enable_attempted=True,
         ssh_initially_reachable=False,
     )
     callbacks.message("\nSSH is not reachable. Attempting to enable SSH on the device...")
     try:
-        enable_ssh_with_port_preflight(
-            host,
+        host = enable_ssh_with_port_preflight(
+            endpoint_host(connection.host),
             connection.password,
             callbacks=callbacks,
             record=record,
@@ -169,17 +174,19 @@ def enable_ssh_and_reprobe(
         raise
 
     callbacks.debug(configure_acp_enable_succeeded=True)
+    if host != endpoint_host(connection.host):
+        connection = replace(connection, host=canonical_ssh_target(host))
     try:
         reboot_device(host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE)
     except RebootFlowError as exc:
         if exc.code != "reboot_not_finished":
             raise
         callbacks.update(ssh_final_reachable=False)
-        return None
+        return connection, None
 
     callbacks.update(ssh_final_reachable=True)
     callbacks.stage("ssh_probe_after_acp")
-    return probe(connection)
+    return connection, probe(connection)
 
 
 def observed_device_identity(
@@ -261,7 +268,7 @@ def run_configure_flow(
         if hooks.before_enable_ssh is not None:
             hooks.before_enable_ssh(connection, probed_state)
         try:
-            probed_state = enable_ssh_and_reprobe(
+            connection, probed_state = enable_ssh_and_reprobe(
                 connection,
                 callbacks=callbacks,
                 probe=probe_connection,
@@ -273,10 +280,14 @@ def run_configure_flow(
                 code="auth_failed",
                 debug=str(exc),
             ) from exc
+        except AirportIdentityMismatchError as exc:
+            raise ConfigureFlowError(str(exc), code="device_identity_mismatch") from exc
         except RebootFlowError as exc:
             raise ConfigureFlowError(str(exc), code=exc.code) from exc
         if probed_state is None:
             raise ConfigureFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="ssh_enable_timeout")
+        # The device answered at a new address: that is the one to save.
+        values["TC_HOST"] = connection.host
         if hooks.after_probe is not None:
             hooks.after_probe(connection, probed_state)
         probe = probed_state.probe_result
@@ -359,7 +370,7 @@ def run_configure_flow(
 
     return ConfigureFlowResult(
         values=values,
-        host=request.host,
+        host=connection.host,
         configure_id=request.configure_id,
         connection=connection,
         probe_state=probed_state,
