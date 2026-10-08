@@ -93,15 +93,21 @@ A reboot and clean deploy will fix 90% of issues. Uploads stream over SSH on eve
 
 #### Time Machine backups are broken on macOS?
 
-Time Machine network backups have known macOS-side regressions on macOS 26.4.x and macOS 15.7.5-15.7.7. You may get an error like `The network backup disk could not be accessed because there was a problem with the network username or password. You may need to re-select the backup disk and enter the correct username and password.`
+Time Machine network backups have known macOS-side regressions on macOS 26.4.x, macOS 15.7.5+, and macOS 14.8.5+. You may get an error like `The network backup disk could not be accessed because there was a problem with the network username or password. You may need to re-select the backup disk and enter the correct username and password.`
 
 | macOS Version    |                      Release date |
 | ---------------- | --------------------------------: |
 | `26.4`           |                **March 24, 2026** |
 | `15.7.5`         |                **March 24, 2026** |
+| `14.8.5`         |                **March 24, 2026** |
 | `26.4.1`         |                 **April 9, 2026** |
-| `15.7.6`         |            **Beta versions only** |
+| `15.7.6`         |            **Only Beta releases** |
 | `15.7.7`         |                  **May 11, 2026** |
+| `14.8.7`         |                  **May 11, 2026** |
+| `15.7.8`         |                 **July 27, 2026** |
+| `14.8.8`         |                 **July 27, 2026** |
+| `15.7.9`         |                   **Aug 6, 2026** |
+| `14.8.9`         |                   **Aug 6, 2026** |
 
 See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) and this later [MacObserver report about a 26.5 fix](https://www.macobserver.com/news/macos-tahoe-26-4-breaks-time-machine-users-report-widespread-failures/) for context. Either update to macOS 26.5 or newer, or try the plist fix here: https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
 
