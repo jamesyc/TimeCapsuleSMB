@@ -981,7 +981,7 @@ Shared command behavior:
 
 ### `bootstrap`
 
-`tcapsule bootstrap` prepares the local host. It validates the selected Python, creates or reuses `.venv`, installs `requirements.txt`, installs the repo into the virtualenv, and verifies required host tools. If `smbclient` or `sshpass` is missing, it attempts host-tool installation through Homebrew on supported macOS versions or through the detected Linux package manager.
+`tcapsule bootstrap` prepares the local host. It validates the selected Python, creates or reuses `.venv`, installs `requirements.txt`, installs the repo into the virtualenv, and verifies required host tools. If `smbclient` or `sshpass` is missing, it attempts host-tool installation through Homebrew on supported macOS versions or through the detected Linux package manager. On Intel Macs it skips `smbclient`, which Homebrew no longer builds for Intel, and installs only `sshpass`; deploy does not need `smbclient`, but doctor's SMB checks do.
 
 Arguments:
 - `--python PYTHON`: Python interpreter validated and used when creating a new `.venv`; defaults to the Python running the command. An existing `.venv` is reused with its existing interpreter. The selected interpreter must be Python 3.9 or newer.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import subprocess
 import sys
@@ -19,6 +20,19 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+# The Mac app bundles its own sshpass and smbclient for both Mac architectures.
+MAC_APP_HINT = (
+    "Or use the TimeCapsuleSMB Mac app, which includes these tools and needs no Homebrew: "
+    "https://github.com/jamesyc/TimeCapsuleSMB/releases"
+)
+# Homebrew stopped building packages for Intel Macs in September 2026; its
+# samba (smbclient) has none for them, so an install builds it and its
+# dependency tree from source or fails. Deploy does not use smbclient, only
+# doctor's SMB checks do.
+INTEL_SMBCLIENT_SKIPPED = (
+    "Homebrew no longer builds smbclient for Intel Macs, so bootstrap skips it. "
+    "Deploy works without it; `doctor` will report it missing and cannot run its SMB checks."
+)
 MACOS_SSHPASS_FORMULA = "sshpass"
 REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
 MIN_BOOTSTRAP_PYTHON = (3, 9)
@@ -35,7 +49,12 @@ LINUX_HOST_TOOL_PACKAGES = {
     "zypper": {"sshpass": "sshpass", "smbclient": "samba-client"},
     "pacman": {"sshpass": "sshpass", "smbclient": "smbclient"},
 }
-COMMAND_OUTPUT_ERROR_LIMIT = 8192
+# Telemetry keeps the start and the end of a failed command's output: brew and
+# pip print their error last, but some brew errors come first.
+COMMAND_OUTPUT_HEAD_LIMIT = 2048
+COMMAND_OUTPUT_TAIL_LIMIT = 6144
+# After Ctrl-C the child got the same SIGINT; give it this long to exit.
+INTERRUPTED_CHILD_GRACE_SECONDS = 5.0
 
 
 class BootstrapError(Exception):
@@ -49,39 +68,79 @@ class BootstrapPreflightError(BootstrapError):
 
 
 class BootstrapCommandError(Exception):
-    def __init__(self, cmd: list[str], returncode: int, stdout: str, stderr: str) -> None:
+    def __init__(self, cmd: list[str], returncode: int, output: str) -> None:
         self.cmd = cmd
         self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+        self.output = output
         super().__init__(f"Command failed with exit code {returncode}: {cmd}")
 
 
+def _echo(chunk: bytes) -> None:
+    sys.stdout.flush()
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        sys.stdout.write(chunk.decode("utf-8", errors="replace"))
+        sys.stdout.flush()
+        return
+    buffer.write(chunk)
+    buffer.flush()
+
+
+def _clean_command_output(text: str) -> str:
+    """Keep each line as a terminal shows it: the text after its last carriage return."""
+    return "\n".join(line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n"))
+
+
+def _command_output(chunks: list[bytes]) -> str:
+    return _clean_command_output(b"".join(chunks).decode("utf-8", errors="replace"))
+
+
 def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
-    proc = subprocess.run(
+    """Run cmd with its output shown as it arrives, keeping a copy for errors.
+
+    Installing host tools can take minutes; output held until the command
+    exits left the terminal silent, and users stopped bootstrap with Ctrl-C.
+    """
+    proc = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
-    if proc.stdout:
-        sys.stdout.write(proc.stdout)
-        sys.stdout.flush()
-    if proc.stderr:
-        sys.stderr.write(proc.stderr)
-        sys.stderr.flush()
-    if proc.returncode != 0:
-        raise BootstrapCommandError(cmd, proc.returncode, proc.stdout or "", proc.stderr or "")
+    assert proc.stdout is not None
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            _echo(chunk)
+        returncode = proc.wait()
+    except KeyboardInterrupt as exc:
+        exc.command_output = _command_output(chunks)  # type: ignore[attr-defined]
+        try:
+            proc.wait(timeout=INTERRUPTED_CHILD_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+        raise
+    finally:
+        proc.stdout.close()
+        proc.wait()
+    if returncode != 0:
+        raise BootstrapCommandError(cmd, returncode, _command_output(chunks))
 
 
-def _truncate_command_output(text: str, limit: int = COMMAND_OUTPUT_ERROR_LIMIT) -> str:
-    if len(text) <= limit:
-        return text.rstrip()
-    omitted = len(text) - limit
-    return f"{text[:limit].rstrip()}\n...<truncated {omitted} chars>"
+def _truncate_command_output(
+    text: str,
+    head: int = COMMAND_OUTPUT_HEAD_LIMIT,
+    tail: int = COMMAND_OUTPUT_TAIL_LIMIT,
+) -> str:
+    text = text.rstrip()
+    if len(text) <= head + tail:
+        return text
+    omitted = len(text) - head - tail
+    return f"{text[:head].rstrip()}\n...<truncated {omitted} chars>...\n{text[-tail:]}"
 
 
 def _format_command_output(label: str, text: str) -> str | None:
@@ -93,9 +152,7 @@ def _format_command_output(label: str, text: str) -> str | None:
 
 def _format_command_error(exc: BootstrapCommandError) -> str:
     message = f"Command failed with exit code {exc.returncode}: {exc.cmd}"
-    output = _format_command_output("stderr", exc.stderr)
-    if output is None:
-        output = _format_command_output("stdout", exc.stdout)
+    output = _format_command_output("output", exc.output)
     if output is not None:
         message = f"{message}\n\n{output}"
     return message
@@ -195,6 +252,21 @@ def detect_macos_product_version() -> str | None:
         if version:
             return version
     return platform.mac_ver()[0] or None
+
+
+def _macos_intel_host() -> bool:
+    # hw.optional.arm64 is 1 on Apple Silicon, also for a process running
+    # under Rosetta. Intel Macs do not have the key, so sysctl fails there.
+    try:
+        proc = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return True
+    return proc.returncode != 0 or proc.stdout.strip() != "1"
 
 
 def _required_host_tool_paths() -> dict[str, str | None]:
@@ -344,9 +416,10 @@ def _install_macos_host_tools(missing_tools: list[str]) -> None:
         print(color_red(f"Missing host tools: {_format_tools(missing_tools)}"), flush=True)
         print(color_red("Homebrew install command:"), flush=True)
         print(HOMEBREW_INSTALL_COMMAND, flush=True)
+        # main prints this error last, so the app hint appears once, at the end.
         raise BootstrapError(
             "Install Homebrew or manually install the missing tools on macOS: "
-            f"{_format_tools(missing_tools)}"
+            f"{_format_tools(missing_tools)}. {MAC_APP_HINT}"
         )
 
     packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
@@ -354,14 +427,24 @@ def _install_macos_host_tools(missing_tools: list[str]) -> None:
     run([brew, "install", *packages])
 
 
-def install_required_host_tools() -> None:
+def install_required_host_tools() -> list[str]:
+    """Install missing host tools; return the ones skipped on purpose."""
     missing_tools = _missing_required_host_tools()
     if not missing_tools:
         print(f"Found required host tools: {_format_tools(list(REQUIRED_HOST_TOOLS))}", flush=True)
-        return
+        return []
 
     print(f"Missing required host tools: {_format_tools(missing_tools)}", flush=True)
     platform_label = current_platform_label()
+    skipped: list[str] = []
+    if platform_label == "macOS" and "smbclient" in missing_tools and _macos_intel_host():
+        skipped = ["smbclient"]
+        missing_tools = [tool for tool in missing_tools if tool != "smbclient"]
+        # The app hint comes once, at the end: in the summary of a successful
+        # run, or in the error when Homebrew is missing.
+        print(INTEL_SMBCLIENT_SKIPPED, flush=True)
+        if not missing_tools:
+            return skipped
     manual_command: str | None = None
     try:
         if platform_label == "macOS":
@@ -398,13 +481,14 @@ def install_required_host_tools() -> None:
             print(manual_command, flush=True)
         raise BootstrapError(message) from exc
 
-    still_missing = _missing_required_host_tools()
+    still_missing = [tool for tool in _missing_required_host_tools() if tool not in skipped]
     if still_missing:
         _raise_host_tool_install_error(
             f"Required host tools are still missing after install attempt: {_format_tools(still_missing)}",
             manual_command,
         )
     print(f"Installed required host tools: {_format_tools(missing_tools)}", flush=True)
+    return skipped
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -457,7 +541,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.set_stage("install_python_requirements")
             install_python_requirements(venv_python)
             command_context.set_stage("install_host_tools")
-            install_required_host_tools()
+            skipped_tools = install_required_host_tools()
+            if skipped_tools:
+                command_context.update_fields(skipped_host_tools=_format_tools(skipped_tools))
         except BootstrapCommandError as e:
             message = _format_command_error(e)
             print(message, file=sys.stderr)
@@ -468,6 +554,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(message, file=sys.stderr)
             command_context.fail_with_error(message)
             return e.returncode or 1
+        except KeyboardInterrupt as e:
+            output = _format_command_output("output", getattr(e, "command_output", ""))
+            if output is not None:
+                command_context.set_error(f"Cancelled by user\n\n{output}")
+            raise
         except BootstrapError as e:
             if isinstance(e, BootstrapPreflightError):
                 command_context.update_fields(**e.fields)
@@ -481,6 +572,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             sshpass_available_after=find_command("sshpass") is not None,
             venv_exists_after=VENVDIR.exists(),
         )
+        if skipped_tools:
+            print(f"\nNot installed: {_format_tools(skipped_tools)}. {INTEL_SMBCLIENT_SKIPPED}", flush=True)
+            print(MAC_APP_HINT, flush=True)
         print("\nHost setup complete.", flush=True)
         print("Next steps:", flush=True)
         print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)
