@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -12,6 +14,8 @@ from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE
 
 
 VERSION_CHECK_URL = "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json"
+NO_VERSION_CHECK_ENV = "TCAPSULE_NO_VERSION_CHECK"
+_TRUTHY = frozenset({"true", "1", "yes", "on"})
 DEFAULT_DOWNLOAD_URL = "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest"
 DEFAULT_UNSUPPORTED_MESSAGE = "This version is no longer supported. Please update before continuing."
 VERSION_CHECK_TIMEOUT_SECONDS = 3.0
@@ -150,6 +154,11 @@ def default_version_check_cache_path() -> Path:
     return resolve_app_paths().version_check_cache_path
 
 
+def version_check_disabled(env: Mapping[str, str] | None = None) -> bool:
+    environ = os.environ if env is None else env
+    return environ.get(NO_VERSION_CHECK_ENV, "").strip().lower() in _TRUTHY
+
+
 def check_client_version(
     *,
     local_version_code: int = CLI_VERSION_CODE,
@@ -158,7 +167,10 @@ def check_client_version(
     cache_path: Path | None = None,
     now: float | None = None,
     opener: UrlOpen = urllib.request.urlopen,
+    env: Mapping[str, str] | None = None,
 ) -> VersionCheckResult:
+    if version_check_disabled(env):
+        return VersionCheckResult(should_block=False, checked_url=url, local_version_code=local_version_code, source="disabled")
     try:
         return _check_client_version(
             local_version_code=local_version_code,
