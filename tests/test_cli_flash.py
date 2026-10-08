@@ -21,6 +21,7 @@ from timecapsulesmb.basebinary import (
     parse_nested_basebinary,
 )
 from timecapsulesmb.cli import flash as cli_flash
+from timecapsulesmb.cli.runtime import NonInteractivePromptError
 from timecapsulesmb.services import flash as flash_service
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.flash import (
@@ -701,13 +702,17 @@ class CliFlashTests(CliTestCase):
                 flash_mock = stack.enter_context(mock.patch("timecapsulesmb.services.flash.flash_firmware_bank"))
                 stack.enter_context(mock.patch("builtins.input", side_effect=answer))
                 stack.enter_context(redirect_stdout(output))
-                rc = cli_flash.main([
-                    "--patch",
-                    "--firmware-template",
-                    str(template_path),
-                    "--backup-dir",
-                    str(backup_dir),
-                ])
+                try:
+                    rc = cli_flash.main([
+                        "--patch",
+                        "--firmware-template",
+                        str(template_path),
+                        "--backup-dir",
+                        str(backup_dir),
+                    ])
+                except NonInteractivePromptError as exc:
+                    # The fake context lets it escape; the real one exits with its message.
+                    rc = exc
             manifest = json.loads((backup_dir / "manifest.json").read_text())
         return rc, output.getvalue(), manifest, command_context, inspect, flash_mock
 
@@ -730,11 +735,14 @@ class CliFlashTests(CliTestCase):
         self.assertEqual([key for key in finished if key.endswith("_path")], [])
 
     def test_flash_patch_without_interactive_input_refuses_before_writing(self) -> None:
-        rc, text, manifest, command_context, _inspect, flash_mock = self.run_patch_until_prompt(answer=EOFError)
+        rc, _text, manifest, command_context, _inspect, flash_mock = self.run_patch_until_prompt(answer=EOFError)
 
-        self.assertEqual(rc, 1)
+        self.assertIsInstance(rc, NonInteractivePromptError)
+        self.assertEqual(
+            str(rc),
+            "No answer was read for the flash write confirmation. Use `flash --patch --yes` to skip the prompt.",
+        )
         flash_mock.assert_not_called()
-        self.assertIn("requires confirmation when stdin is not interactive", text)
         self.assertEqual(manifest["flash_plan"]["target_bank"], "primary")
         self.assertNotIn("write_outcome", manifest)
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
@@ -1945,7 +1953,7 @@ class CliFlashTests(CliTestCase):
                         "timecapsulesmb.services.flash.read_flash_inputs",
                         return_value=flash_inputs(primary, secondary, live_login=unknown_login),
                     ):
-                        with mock.patch("timecapsulesmb.cli.context.cli_runtime.confirm", side_effect=AssertionError("confirm should not be called")) as confirm_mock:
+                        with mock.patch("timecapsulesmb.cli.flash.confirm", side_effect=AssertionError("confirm should not be called")) as confirm_mock:
                             with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with redirect_stdout(output):
                                     rc = cli_flash.main([

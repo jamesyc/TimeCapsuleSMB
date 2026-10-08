@@ -176,7 +176,6 @@ def resolve_ssh_credentials(
     config: AppConfig,
     *,
     allow_empty_password: bool = False,
-    allow_password_prompt: bool = True,
     password_provider: PasswordProvider | None = None,
 ) -> tuple[str, str]:
     raw_host = config.require("TC_HOST")
@@ -186,7 +185,7 @@ def resolve_ssh_credentials(
         raise ConfigError(str(exc)) from exc
     password = config.get("TC_PASSWORD")
     if not password and not allow_empty_password:
-        if not allow_password_prompt or password_provider is None:
+        if password_provider is None:
             raise ConfigError("TC_PASSWORD is required when --no-input is used.")
         password = password_provider("Device root password: ")
     return host, password
@@ -197,7 +196,6 @@ def resolve_env_connection(
     *,
     required_keys: tuple[str, ...] = (),
     allow_empty_password: bool = False,
-    allow_password_prompt: bool = True,
     password_provider: PasswordProvider | None = None,
 ) -> SshConnection:
     for key in required_keys:
@@ -205,7 +203,6 @@ def resolve_env_connection(
     host, password = resolve_ssh_credentials(
         config,
         allow_empty_password=allow_empty_password,
-        allow_password_prompt=allow_password_prompt,
         password_provider=password_provider,
     )
     return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
@@ -217,13 +214,11 @@ def resolve_validated_managed_target(
     command_name: str,
     profile: str,
     include_probe: bool = False,
-    allow_password_prompt: bool = True,
     password_provider: PasswordProvider | None = None,
 ) -> ManagedTargetState:
     require_valid_app_config(config, profile=profile, command_name=command_name)
     connection = resolve_env_connection(
         config,
-        allow_password_prompt=allow_password_prompt,
         password_provider=password_provider,
     )
     if profile == "flash":

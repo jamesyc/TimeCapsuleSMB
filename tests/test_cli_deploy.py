@@ -952,6 +952,25 @@ class CliDeployTests(CliTestCase):
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
 
+    def test_deploy_without_input_at_the_reboot_prompt_stops_before_mutation(self) -> None:
+        result = self.run_deploy_cli(
+            [],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            input_side_effect=EOFError("EOF when reading a line"),
+            raises=SystemExit,
+        )
+
+        message = "No answer was read for the reboot confirmation. Use `deploy --yes` to skip the prompt."
+        self.assertEqual(result.exception.code, message)
+        self.assertNotIn("request", result.mocks.device.calls)
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+        payload = self.telemetry_payload("deploy_finished")
+        self.assertEqual(payload["result"], "failure")
+        self.assertTrue(payload["error"].startswith(message + "\nCaused by: EOF when reading a line"))
+
     def test_deploy_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
         # SSH accepts a password right in its first 8 characters; the ACP
         # reboot would not. Refused before the prompt, nothing uploaded.

@@ -8,6 +8,7 @@ from timecapsulesmb.cli.runtime import (
     add_boolean_override_arguments,
     add_config_argument,
     add_no_input_argument,
+    confirm,
     no_input_enabled,
     print_json,
 )
@@ -288,14 +289,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 prompt = f"This will request a reboot of the {device_name} and return without waiting for verification. Continue?"
             else:
                 prompt = f"This will reboot the {device_name} now. Continue?"
-            proceed = command_context.confirm_or_fail(
+            proceed = confirm(
                 prompt,
                 default=True,
-                noninteractive_message="Running `deploy` with reboot requires confirmation when stdin is not interactive. Use `deploy --yes` to skip the prompt.",
-                allow_prompt=not no_input_enabled(args),
+                noninteractive_message="No answer was read for the reboot confirmation. Use `deploy --yes` to skip the prompt.",
             )
-            if proceed is None:
-                return 1
             if not proceed:
                 print("Deployment cancelled.", flush=True)
                 command_context.cancel_with_error("Cancelled by user before installation.")

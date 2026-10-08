@@ -46,10 +46,11 @@ class PromptTests(unittest.TestCase):
             self.assertFalse(confirm("Continue?", default=True, eof_default=False))
 
     def test_confirm_raises_noninteractive_error_without_eof_default(self) -> None:
-        with mock.patch("builtins.input", side_effect=EOFError):
+        with mock.patch("builtins.input", side_effect=EOFError("EOF when reading a line")):
             with self.assertRaises(NonInteractivePromptError) as raised:
                 confirm("Continue?", default=False, noninteractive_message="no stdin")
         self.assertEqual(str(raised.exception), "no stdin")
+        self.assertIsInstance(raised.exception.__cause__, EOFError)
 
     def test_confirm_asks_again_after_input_the_terminal_encoding_cannot_decode(self) -> None:
         output = io.StringIO()

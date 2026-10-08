@@ -519,7 +519,7 @@ class SecondaryRestoreCliTests(CliTestCase):
                 mock.patch("timecapsulesmb.flash.require_python_module", return_value=None),
             ):
                 stack.enter_context(patch)
-            prompt = stack.enter_context(mock.patch("timecapsulesmb.cli.runtime.confirm", side_effect=confirm))
+            prompt = stack.enter_context(mock.patch("timecapsulesmb.cli.flash.confirm", side_effect=confirm))
             with redirect_stdout(output):
                 rc = cli_flash.main([*argv, "--backup-dir", str(Path(tmp) / "backup")])
         return rc, output.getvalue(), command_context, prompt

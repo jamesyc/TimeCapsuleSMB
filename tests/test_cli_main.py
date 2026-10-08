@@ -359,6 +359,39 @@ class CliMainTests(CliTestCase):
         self.assertIn("could not be read as", output.getvalue())
         self.assertEqual(output.getvalue().splitlines()[-1], record.display_host())
 
+    def test_discover_select_at_end_of_input_cancels_without_a_traceback(self) -> None:
+        record = BonjourResolvedService(
+            name="Time Capsule",
+            hostname="capsule.local",
+            ipv4=["10.0.0.2"],
+            ipv6=[],
+            services={"_airport._tcp.local."},
+            properties={"model": "AirPort Time Capsule"},
+        )
+        snapshot = BonjourDiscoverySnapshot(
+            instances=[BonjourServiceInstance("_airport._tcp.local.", "Time Capsule", "Time Capsule._airport._tcp.local.")],
+            resolved=[record],
+        )
+        diagnostics = BonjourQueryDiagnostics(
+            provider="zeroconf",
+            service_types=[],
+            timeout_sec=6.0,
+            elapsed_sec=0.0,
+            instance_count=1,
+            resolved_count=1,
+        )
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.discover.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_detailed", return_value=(snapshot, diagnostics)):
+                with mock.patch("builtins.input", side_effect=EOFError) as input_mock:
+                    with redirect_stdout(output):
+                        rc = discover.main(["--select"])
+        self.assertEqual(rc, 1)
+        input_mock.assert_called_once()
+        finished = self.telemetry_payload("discover_finished")
+        self.assertEqual(finished["result"], "cancelled")
+        self.assertIn("Cancelled during discovery selection.", finished["error"])
+
     def test_discover_json_outputs_records(self) -> None:
         output = io.StringIO()
         record = BonjourResolvedService(

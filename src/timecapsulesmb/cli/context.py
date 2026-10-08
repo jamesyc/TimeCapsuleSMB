@@ -298,33 +298,9 @@ class CommandContext:
     def build_error(self) -> str | None:
         return self.operation_context.build_error()
 
-    def confirm_or_fail(
-        self,
-        prompt_text: str,
-        *,
-        default: bool,
-        noninteractive_message: str,
-        eof_default: bool | None = None,
-        interrupt_default: bool | None = None,
-        allow_prompt: bool = True,
-    ) -> bool | None:
-        if not allow_prompt:
-            print(noninteractive_message)
-            self.fail_with_error(noninteractive_message)
-            return None
-        try:
-            return cli_runtime.confirm(
-                prompt_text,
-                default=default,
-                eof_default=eof_default,
-                interrupt_default=interrupt_default,
-                noninteractive_message=noninteractive_message,
-            )
-        except cli_runtime.NonInteractivePromptError as exc:
-            message = str(exc)
-            print(message)
-            self.fail_with_error(message)
-            return None
+    def _password_provider(self) -> service_runtime.PasswordProvider | None:
+        # Without a provider the services refuse a missing TC_PASSWORD instead of prompting.
+        return None if cli_runtime.no_input_enabled(self.args) else cli_runtime.prompt_device_password
 
     def resolve_env_connection(
         self,
@@ -338,8 +314,7 @@ class CommandContext:
             self.config,
             required_keys=required_keys,
             allow_empty_password=allow_empty_password,
-            allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
-            password_provider=cli_runtime.prompt_device_password,
+            password_provider=self._password_provider(),
         )
         return self.connection
 
@@ -392,8 +367,7 @@ class CommandContext:
             command_name=self.command_name,
             profile=profile,
             include_probe=include_probe,
-            allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
-            password_provider=cli_runtime.prompt_device_password,
+            password_provider=self._password_provider(),
         )
         return self._apply_managed_target_state(target)
 

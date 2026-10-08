@@ -11,6 +11,7 @@ from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
     add_no_wait_argument,
+    confirm,
     emit_progress,
     no_input_enabled,
     prefixed_logger,
@@ -454,17 +455,14 @@ def _prepare_write(
 
     if not args.yes:
         command_context.set_stage("confirm_write")
-        proceed = command_context.confirm_or_fail(
+        proceed = confirm(
             _confirmation_prompt(plan),
             default=False,
             noninteractive_message=(
-                f"Running `flash --{operation}` requires confirmation when stdin is not interactive. "
+                "No answer was read for the flash write confirmation. "
                 f"Use `flash --{operation} --yes` to skip the prompt."
             ),
-            allow_prompt=not no_input_enabled(args),
         )
-        if proceed is None:
-            return False, 1
         if not proceed:
             print("Flash write cancelled.", flush=True)
             record_write_outcome(

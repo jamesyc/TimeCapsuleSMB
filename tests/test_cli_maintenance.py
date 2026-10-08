@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest import mock
 from timecapsulesmb.cli import activate, fsck, uninstall
 from timecapsulesmb.cli.main import main
+from timecapsulesmb.cli.runtime import DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE, NonInteractivePromptError
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services import maintenance as maintenance_service
 from timecapsulesmb.services import reboot as reboot_service
@@ -165,14 +166,15 @@ class CliMaintenanceTests(CliTestCase):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
                             with redirect_stdout(output):
-                                rc = activate.main([])
-        self.assertEqual(rc, 1)
+                                with self.assertRaises(NonInteractivePromptError) as raised:
+                                    activate.main([])
         actions_mock.assert_not_called()
-        message = "Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment."
-        self.assertIn(message, output.getvalue())
+        self.assertEqual(
+            str(raised.exception),
+            "No answer was read for the activation confirmation. Use `activate --yes` to skip the prompt.",
+        )
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
-        self.assertEqual(command_context.finish.call_args.kwargs["error"], message)
 
     def test_activate_no_input_requires_yes_without_reading_stdin(self) -> None:
         output = io.StringIO()
@@ -840,6 +842,23 @@ class CliMaintenanceTests(CliTestCase):
         reboot.assert_called_once()
         self.assertEqual(reboot.call_args.args[1], "typed")
 
+    def test_fsck_without_a_saved_password_or_input_says_how_to_save_it(self) -> None:
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "", "TC_SSH_OPTS": "-o foo"}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "fsck")
+            stack.enter_context(mock.patch("getpass.getpass", side_effect=EOFError("EOF when reading a line")))
+            run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            reboot = stack.enter_context(mock.patch("timecapsulesmb.integrations.acp.reboot"))
+            with self.assertRaises(SystemExit) as ctx:
+                with redirect_stdout(io.StringIO()):
+                    fsck.main(["--yes", "--no-wait"])
+
+        self.assertEqual(ctx.exception.code, DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE)
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        run_ssh.assert_not_called()
+        reboot.assert_not_called()
+
     def sypw_answer(self, returncode: int) -> mock.Mock:
         # The device's comparison of the saved password with syPW: 0 match, 1 mismatch.
         return mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
@@ -1005,6 +1024,28 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("Mounted HFS volumes:", text)
         self.assertIn("2. /dev/dk5 on /Volumes/dk5 (External, external)", text)
         self.assertIn("Mounted HFS volume: /dev/dk5 on /Volumes/dk5", text)
+
+    def test_fsck_volume_prompt_without_input_names_the_volume_option(self) -> None:
+        values = self.make_valid_env()
+        internal = self._mast_volume("dk2", name="Internal", builtin=True)
+        external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(internal, external))
+            stack.enter_context(mock.patch("builtins.input", side_effect=EOFError("EOF when reading a line")))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            reboot = stack.enter_context(mock.patch("timecapsulesmb.integrations.acp.reboot"))
+            with self.assertRaises(SystemExit) as ctx:
+                with redirect_stdout(io.StringIO()):
+                    fsck.main([])
+
+        self.assertEqual(
+            ctx.exception.code,
+            "No volume was chosen because no input was read. Rerun with --volume, for example: tcapsule fsck --volume dk2",
+        )
+        run_ssh_mock.assert_not_called()
+        reboot.assert_not_called()
 
     def test_fsck_yes_with_multiple_hfs_volumes_requires_selector(self) -> None:
         output = io.StringIO()

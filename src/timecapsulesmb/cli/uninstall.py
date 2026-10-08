@@ -9,6 +9,7 @@ from timecapsulesmb.cli.runtime import (
     add_mount_wait_argument,
     add_no_input_argument,
     add_no_wait_argument,
+    confirm,
     no_input_enabled,
     print_json,
 )
@@ -107,14 +108,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.yes:
             command_context.set_stage("confirm_reboot")
             device_name = command_context.optional_airport_display_name(timeout_seconds=0.1)
-            proceed = command_context.confirm_or_fail(
+            proceed = confirm(
                 f"This will reboot the {device_name} now. Continue?",
                 default=True,
-                noninteractive_message="Running `uninstall` with reboot requires confirmation when stdin is not interactive. Use `uninstall --yes` to skip the prompt or `uninstall --no-reboot`.",
-                allow_prompt=not no_input_enabled(args),
+                noninteractive_message="No answer was read for the reboot confirmation. Use `uninstall --yes` to skip the prompt, or `uninstall --no-reboot`.",
             )
-            if proceed is None:
-                return 1
             if not proceed:
                 print(f"Skipped reboot. The {device_name} may need a manual reboot to fully clear running processes.")
                 command_context.succeed()

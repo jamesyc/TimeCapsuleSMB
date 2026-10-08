@@ -7,6 +7,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
+    confirm,
     no_input_enabled,
     read_terminal_line,
 )
@@ -29,7 +30,10 @@ from timecapsulesmb.telemetry import TelemetryClient
 def prompt_fsck_target(targets: tuple[FsckTarget, ...]) -> FsckTarget:
     print(format_fsck_targets(targets))
     while True:
-        answer = read_terminal_line("Select a volume to fsck by number: ").strip()
+        answer = read_terminal_line(
+            "Select a volume to fsck by number: ",
+            noninteractive_message="No volume was chosen because no input was read. Rerun with --volume, for example: tcapsule fsck --volume dk2",
+        ).strip()
         if answer.isdigit():
             index = int(answer)
             if 1 <= index <= len(targets):
@@ -106,14 +110,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             else:
                 confirmation = f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?"
-            proceed = command_context.confirm_or_fail(
+            proceed = confirm(
                 confirmation,
                 default=True,
-                noninteractive_message="Running `fsck` requires confirmation when stdin is not interactive. Use `fsck --yes` in a non-interactive environment.",
-                allow_prompt=not no_input_enabled(args),
+                noninteractive_message="No answer was read for the fsck confirmation. Use `fsck --yes` to skip the prompt.",
             )
-            if proceed is None:
-                return 1
             if not proceed:
                 print("fsck cancelled.")
                 command_context.cancel_with_error("Cancelled by user at fsck confirmation prompt.")

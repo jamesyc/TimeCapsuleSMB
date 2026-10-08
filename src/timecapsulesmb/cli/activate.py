@@ -7,6 +7,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
+    confirm,
     no_input_enabled,
     print_json,
     require_netbsd4_device_compatibility,
@@ -90,14 +91,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"This will start the deployed Samba payload on the {device_name}.")
             if not rc_local_autostart:
                 print(color_red(NETBSD4_REBOOT_GUIDANCE))
-            proceed = command_context.confirm_or_fail(
+            proceed = confirm(
                 "Continue with NetBSD4 activation?",
                 default=False,
-                noninteractive_message="Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment.",
-                allow_prompt=not no_input_enabled(args),
+                noninteractive_message="No answer was read for the activation confirmation. Use `activate --yes` to skip the prompt.",
             )
-            if proceed is None:
-                return 1
             if not proceed:
                 print("Activation cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")

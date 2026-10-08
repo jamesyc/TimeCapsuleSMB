@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import NonInteractivePromptError, print_json
+from timecapsulesmb.cli.runtime import confirm, print_json
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
@@ -60,36 +60,19 @@ class CommandContextHelperTests(unittest.TestCase):
             compatibility=compatibility or self.make_supported_compatibility(),
         )
 
-    def test_confirm_or_fail_returns_prompt_result(self) -> None:
-        context = self.make_context()
-        with mock.patch("timecapsulesmb.cli.context.cli_runtime.confirm", return_value=True) as confirm_mock:
-            result = context.confirm_or_fail("Continue?", default=False, noninteractive_message="no stdin")
+    def test_prompt_without_input_ends_the_command_with_its_message(self) -> None:
+        telemetry = mock.Mock()
+        with mock.patch("builtins.input", side_effect=EOFError("EOF when reading a line")):
+            with self.assertRaises(SystemExit) as raised:
+                with CommandContext(telemetry, "test", "test_started", "test_finished") as context:
+                    context.set_stage("confirm_reboot")
+                    confirm("Continue?", default=True, noninteractive_message="Use `test --yes` to skip the prompt.")
 
-        self.assertTrue(result)
-        confirm_mock.assert_called_once_with(
-            "Continue?",
-            default=False,
-            eof_default=None,
-            interrupt_default=None,
-            noninteractive_message="no stdin",
-        )
-        self.assertEqual(context.result, "failure")
-        self.assertEqual(context.error_lines, [])
-
-    def test_confirm_or_fail_records_noninteractive_failure(self) -> None:
-        context = self.make_context()
-        output = io.StringIO()
-        with mock.patch(
-            "timecapsulesmb.cli.context.cli_runtime.confirm",
-            side_effect=NonInteractivePromptError("no stdin"),
-        ):
-            with redirect_stdout(output):
-                result = context.confirm_or_fail("Continue?", default=False, noninteractive_message="no stdin")
-
-        self.assertIsNone(result)
-        self.assertEqual(context.result, "failure")
-        self.assertEqual(context.error_lines, ["no stdin"])
-        self.assertIn("no stdin", output.getvalue())
+        self.assertEqual(raised.exception.code, "Use `test --yes` to skip the prompt.")
+        finished = telemetry.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "confirm_reboot")
+        self.assertTrue(finished["error"].startswith("Use `test --yes` to skip the prompt.\nCaused by: EOF when reading a line"))
 
     def test_to_operation_callbacks_updates_command_context(self) -> None:
         context = self.make_context()

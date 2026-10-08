@@ -70,11 +70,18 @@ def non_negative_integer_arg(value: str) -> str:
     return str(int(value))
 
 
+CONFIGURE_NONINTERACTIVE_MESSAGE = (
+    "configure needs answers but no input was read. Run it in a terminal, or pass "
+    "them as options: tcapsule configure --no-input --host root@<device IP> "
+    "--password-stdin (or --password-env NAME / --password-file PATH)."
+)
+
+
 def prompt(label: str, default: str, secret: bool) -> str:
     suffix = f" [{color_cyan(default)}]" if default and not secret else ""
     text = f"{label}{suffix}: "
     while True:
-        value = read_terminal_line(text, secret=secret)
+        value = read_terminal_line(text, secret=secret, noninteractive_message=CONFIGURE_NONINTERACTIVE_MESSAGE)
         if value != "":
             return value
         if default != "":
@@ -108,7 +115,10 @@ def choose_device(records: Sequence[BonjourResolvedService]) -> Optional[Bonjour
         try:
             raw = read_terminal_line("Select a device by number (q to skip discovery): ").strip()
         except EOFError:
-            print()
+            # End of input (Ctrl-D or a closed stdin) skips discovery; a closed
+            # stdin then fails at the SSH target prompt. Letting it escape
+            # would reach the except Exception around discovery and be
+            # reported as an mDNS failure.
             return None
         if raw.lower() in {"q", "quit", "exit"}:
             return None

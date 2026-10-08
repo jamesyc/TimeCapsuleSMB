@@ -122,8 +122,9 @@ def _run_discover(args: argparse.Namespace, command_context: CommandContext | No
         while True:
             try:
                 raw = read_terminal_line("Select device number (q to quit): ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
+            except (EOFError, KeyboardInterrupt) as exc:
+                if isinstance(exc, KeyboardInterrupt):
+                    print()  # read_terminal_line ends the line itself at end of input
                 if command_context is not None:
                     command_context.cancel_with_error("Cancelled during discovery selection.")
                 return 1

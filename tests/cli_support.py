@@ -9,7 +9,6 @@ from unittest import mock
 
 from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.device.migration_jobs import MigrationActivity
-from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
@@ -180,34 +179,6 @@ class FakeCommandContext:
 
     def require_compatibility(self):
         return self.compatibility
-
-    def confirm_or_fail(
-        self,
-        prompt_text: str,
-        *,
-        default: bool,
-        noninteractive_message: str,
-        eof_default: bool | None = None,
-        interrupt_default: bool | None = None,
-        allow_prompt: bool = True,
-    ) -> bool | None:
-        if not allow_prompt:
-            print(noninteractive_message)
-            self.fail_with_error(noninteractive_message)
-            return None
-        try:
-            return cli_runtime.confirm(
-                prompt_text,
-                default=default,
-                eof_default=eof_default,
-                interrupt_default=interrupt_default,
-                noninteractive_message=noninteractive_message,
-            )
-        except cli_runtime.NonInteractivePromptError as exc:
-            message = str(exc)
-            print(message)
-            self.fail_with_error(message)
-            return None
 
 
 class CliTestCase(unittest.TestCase):

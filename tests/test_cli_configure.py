@@ -1069,6 +1069,44 @@ class CliConfigureTests(CliTestCase):
             properties={"syAP": "119"},
         )
 
+    def assert_configure_stopped_for_closed_input(self, result) -> None:
+        self.assertEqual(result.exception.code, configure.CONFIGURE_NONINTERACTIVE_MESSAGE)
+        result.mocks.write_env_file.assert_not_called()
+        result.mocks.probe_connection_state.assert_not_called()
+        self.assertEqual(self.configure_finished_result(), "failure")
+        error = self.configure_finished_error()
+        self.assertTrue(error.startswith(configure.CONFIGURE_NONINTERACTIVE_MESSAGE + "\nCaused by: EOF when reading a line"))
+        self.assertIn("stage=prompt_host_password", error)
+
+    def test_configure_without_input_names_the_scripted_options_instead_of_a_traceback(self) -> None:
+        # v3.3.1-1 telemetry: configure run by an agent whose shell has no stdin.
+        result = self.run_configure_cli(
+            discovered_records=[self.capsule_record()],
+            input_side_effect=EOFError("EOF when reading a line"),
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            raises=SystemExit,
+        )
+
+        self.assert_configure_stopped_for_closed_input(result)
+        self.assertIn("Found devices:", result.text)
+        self.assertNotIn("mDNS discovery failed", result.text)
+
+    def test_configure_without_input_at_the_password_prompt_stops_before_probing(self) -> None:
+        # The SSH target is answered (Enter accepts --host), then the password
+        # prompt reads end of input: Ctrl-D, or a pipe that ran dry.
+        getpass_mock = mock.Mock(side_effect=EOFError("EOF when reading a line"))
+        result = self.run_configure_cli(
+            ["--host", "root@10.0.1.20"],
+            input_side_effect=[""],
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            extra_patches={"timecapsulesmb.cli.runtime.getpass.getpass": getpass_mock},
+            raises=SystemExit,
+        )
+
+        self.assert_configure_stopped_for_closed_input(result)
+        self.assertEqual(result.mocks.input.call_count, 1)
+        getpass_mock.assert_called_once()
+
     def test_configure_lists_unsupported_model_and_asks_again_when_it_is_chosen(self) -> None:
         result = self.run_configure_cli(
             discovered_records=[self.airport_express_record(), self.capsule_record()],
@@ -2938,6 +2976,18 @@ class ConfigurePromptEncodingTests(unittest.TestCase):
                 chosen = configure.choose_device(records)
 
         self.assertIs(chosen, records[0])
+
+    def test_device_choice_skips_discovery_at_end_of_input(self) -> None:
+        # Ctrl-D (or a closed stdin) at the device list falls back to the SSH
+        # target prompt rather than escaping as a discovery failure.
+        records = [SimpleNamespace(name="Capsule", display_host=lambda: "capsule.local", ipv4=["10.0.1.2"], ipv6=[], properties={})]
+        with mock.patch("builtins.input", side_effect=EOFError):
+            with redirect_stdout(io.StringIO()) as output:
+                chosen = configure.choose_device(records)
+
+        self.assertIsNone(chosen)
+        # One newline ends the unanswered prompt; the fallback message follows on the next line.
+        self.assertEqual(output.getvalue(), "\n")
 
 
 if __name__ == "__main__":

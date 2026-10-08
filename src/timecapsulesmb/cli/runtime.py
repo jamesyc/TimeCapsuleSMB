@@ -23,8 +23,23 @@ from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 LogCallback = Optional[Callable[[str], None]]
 
 
-class NonInteractivePromptError(RuntimeError):
-    """Raised when a required confirmation cannot be read from stdin."""
+class NonInteractivePromptError(ConfigError, EOFError):
+    """A prompt read no answer: stdin ended (closed, or a pipe ran dry) or
+    the user pressed Ctrl-D. It is an EOFError, so callers that treat end
+    of input as an answer still catch it, and a ConfigError, so an uncaught
+    one ends the command with its message instead of a traceback."""
+
+
+NONINTERACTIVE_INPUT_MESSAGE = (
+    "No input was read for this prompt. Run the command in a terminal, or "
+    "rerun it with --no-input and the options listed in --help."
+)
+
+DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE = (
+    "No device password was read, and none is saved. Run the command in a "
+    "terminal, or save the password first with: tcapsule configure --no-input "
+    "--host root@<device IP> --password-stdin"
+)
 
 
 def add_config_argument(parser: argparse.ArgumentParser) -> None:
@@ -59,20 +74,25 @@ def terminal_encoding_message() -> str:
     )
 
 
-def read_terminal_line(text: str, *, secret: bool = False) -> str:
+def read_terminal_line(text: str, *, secret: bool = False, noninteractive_message: str | None = None) -> str:
     """Read one line with input() or getpass(), asking again when the terminal
     sends bytes that are not text in its encoding (a non-UTF-8 terminal under
-    a UTF-8 locale), instead of failing with a UnicodeDecodeError traceback."""
+    a UTF-8 locale), instead of failing with a UnicodeDecodeError traceback.
+    End of input raises NonInteractivePromptError with noninteractive_message,
+    which should name the options that answer this prompt."""
     for _ in range(TERMINAL_INPUT_ATTEMPTS):
         try:
             return getpass.getpass(text) if secret else input(text)
         except UnicodeDecodeError:
             print(terminal_encoding_message())
+        except EOFError as exc:
+            print()  # end the unanswered prompt's line
+            raise NonInteractivePromptError(noninteractive_message or NONINTERACTIVE_INPUT_MESSAGE) from exc
     raise ConfigError(terminal_encoding_message())
 
 
 def prompt_device_password(prompt: str) -> str:
-    return read_terminal_line(prompt, secret=True)
+    return read_terminal_line(prompt, secret=True, noninteractive_message=DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE)
 
 
 def add_password_source_arguments(parser: argparse.ArgumentParser) -> None:
@@ -236,11 +256,14 @@ def confirm(
 ) -> bool:
     while True:
         try:
-            answer = read_terminal_line(f"{prompt_text} {_confirm_suffix(default)}: ").strip().lower()
-        except EOFError as exc:
-            if eof_default is not None:
-                return eof_default
-            raise NonInteractivePromptError(noninteractive_message or "Confirmation requires interactive stdin.") from exc
+            answer = read_terminal_line(
+                f"{prompt_text} {_confirm_suffix(default)}: ",
+                noninteractive_message=noninteractive_message,
+            ).strip().lower()
+        except EOFError:
+            if eof_default is None:
+                raise
+            return eof_default
         except KeyboardInterrupt:
             if interrupt_default is not None:
                 print()

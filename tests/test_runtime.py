@@ -16,7 +16,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli.runtime import (
+    DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE,
     TERMINAL_INPUT_ATTEMPTS,
+    NonInteractivePromptError,
     json_text,
     print_json,
     prompt_device_password,
@@ -274,11 +276,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("could not be read as", str(ctx.exception))
         self.assertNotIn("UnicodeDecodeError", str(ctx.exception))
 
-    def test_resolve_env_connection_no_input_fails_instead_of_prompting_for_password(self) -> None:
+    def test_device_password_prompt_without_input_says_how_to_save_the_password(self) -> None:
+        with mock.patch("getpass.getpass", side_effect=EOFError("EOF when reading a line")):
+            with self.assertRaises(NonInteractivePromptError) as ctx:
+                prompt_device_password("Device root password: ")
+
+        self.assertEqual(str(ctx.exception), DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE)
+        self.assertIsInstance(ctx.exception.__cause__, EOFError)
+
+    def test_end_of_input_after_undecodable_input_stops_instead_of_retrying(self) -> None:
+        output = io.StringIO()
+        with mock.patch("getpass.getpass", side_effect=[self._bad_decode(), EOFError()]) as getpass_mock:
+            with redirect_stdout(output):
+                with self.assertRaises(NonInteractivePromptError):
+                    prompt_device_password("Device root password: ")
+
+        self.assertEqual(getpass_mock.call_count, 2)
+        self.assertEqual(output.getvalue().count("could not be read as"), 1)
+
+    def test_resolve_env_connection_without_a_password_provider_fails_instead_of_prompting(self) -> None:
         config = app_config({"TC_HOST": "root@10.0.0.2"})
         with mock.patch("getpass.getpass", side_effect=AssertionError("non-interactive callers must not prompt")):
             with self.assertRaises(ConfigError) as ctx:
-                service_runtime.resolve_env_connection(config, allow_password_prompt=False)
+                service_runtime.resolve_env_connection(config)
 
         self.assertIn("TC_PASSWORD is required when --no-input is used.", str(ctx.exception))
 
