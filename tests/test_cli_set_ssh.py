@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 import timecapsulesmb.cli.main as cli_main_module
 from timecapsulesmb.cli import set_ssh
+from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 
@@ -280,6 +282,35 @@ class CliSetSshTests(CliTestCase):
                         with redirect_stdout(output):
                             rc = set_ssh.main(argv)
         return rc, output.getvalue(), disable_mock, input_mock
+
+    def test_set_ssh_disable_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
+        # Both the prompted (legacy) and the explicit --disable path: SSH is
+        # not turned off and no reboot is requested with a password ACP rejects.
+        for argv in ([], ["--disable"]):
+            with self.subTest(argv=argv):
+                compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 1, b"", b""))
+                self.device.calls.clear()
+                with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                    with self.assertRaises(SystemExit) as raised:
+                        self.run_disable(argv)
+
+                self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+                compare.assert_called_once()
+                self.assertNotIn("request", self.device.calls)
+                finished = self.telemetry_payload("set_ssh_finished")
+                self.assertEqual(finished["result"], "failure")
+
+    def test_set_ssh_disable_checks_the_password_before_the_prompt(self) -> None:
+        self.device.ssh_up_after_boot = None
+        order: list[str] = []
+        compare = mock.Mock(side_effect=lambda *_a, **_k: order.append("compare") or subprocess.CompletedProcess(["ssh"], 0, b"", b""))
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+            with mock.patch("timecapsulesmb.cli.set_ssh.confirm", side_effect=lambda *_a, **_k: order.append("prompt") or True):
+                rc, _text, disable_mock, _input = self.run_disable([])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(order, ["compare", "prompt"])
+        disable_mock.assert_called_once()
 
     def test_set_ssh_disable_fails_when_the_device_never_restarts(self) -> None:
         self.device.reboots = False

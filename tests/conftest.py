@@ -57,6 +57,22 @@ def block_real_acp_connections(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def device_password_matches(monkeypatch: pytest.MonkeyPatch):
+    # Commands that reboot compare the password with the device's syPW over
+    # SSH. Tests answer "match" (exit 0); a test that needs another answer
+    # patches timecapsulesmb.device.probe.run_ssh_input itself.
+    import subprocess
+
+    from timecapsulesmb.device import probe
+
+    monkeypatch.setattr(
+        probe, "run_ssh_input",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["ssh"], 0, b"", b""),
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
     # Tests use made-up device addresses such as 10.0.0.2 and capsule.local.
     # A real TCP connect to one, a UDP datagram to it (an NBNS query), or a

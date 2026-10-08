@@ -97,7 +97,7 @@ from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbsd4_runtime_after_reboot
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import reboot_device
-from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error
+from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_device_password
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
 )
@@ -641,6 +641,10 @@ def prepare_deploy_preflight(
 
     callbacks.stage("check_compatibility")
     compatibility = require_supported_payload(target, allow_unsupported=options.allow_unsupported)
+    if not options.dry_run:
+        # Deploy ends in an ACP reboot: refuse a password ACP would reject
+        # before the confirmation, not after the upload has stopped the runtime.
+        require_device_password(connection, callbacks)
     payload_context = prepare_deploy_payload_context(
         connection,
         compatibility,

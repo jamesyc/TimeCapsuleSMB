@@ -17,7 +17,7 @@ from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config
+from timecapsulesmb.services.runtime import load_env_config, require_device_password
 from timecapsulesmb.services.set_ssh import (
     SetSshAction,
     SetSshResult,
@@ -145,6 +145,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("SSH already disabled.")
             command_context.succeed()
             return 0
+
+        # Disabling SSH ends in an ACP reboot: check the password before the
+        # prompt and before SSH is turned off in the saved settings.
+        require_device_password(connection, _callbacks(command_context))
 
         if action is SetSshAction.PROMPT_DISABLE:
             command_context.set_stage("prompt_disable_ssh")

@@ -13,10 +13,13 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ProbeResult,
     ProbedDeviceState,
+    PASSWORD_CHECK_RESULTS,
     SshAccessStatus,
+    password_matches_device,
     probe_connection_state,
 )
 from timecapsulesmb.integrations.acp import ACP_PORT
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.transport.local import tcp_connect_error, tcp_open
 
@@ -46,6 +49,26 @@ class DeviceAccessError(DeviceError):
     def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
+# Commands other than configure say where to enter it again.
+AIRPORT_PASSWORD_MISMATCH_MESSAGE = (
+    f"{AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE} Re-enter it in the macOS app, "
+    "or run tcapsule configure from the command line."
+)
+
+
+def require_device_password(connection: SshConnection, callbacks: OperationCallbacks) -> None:
+    """Refuse a password the device's ACP would reject, before anything changes.
+
+    Every reboot goes through ACP, so a command that reboots checks the
+    password first instead of failing at the reboot with its work half done.
+    """
+    match = password_matches_device(connection)
+    callbacks.debug(sypw_check=PASSWORD_CHECK_RESULTS[match])
+    if match is False:
+        raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
 
 
 def probe_failure_error(

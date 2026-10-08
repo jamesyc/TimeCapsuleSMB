@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 from dataclasses import replace
 import shlex
+import subprocess
 import json
 import unittest
 from contextlib import ExitStack
@@ -15,6 +16,7 @@ from timecapsulesmb.cli.main import main
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services import maintenance as maintenance_service
 from timecapsulesmb.services import reboot as reboot_service
+from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.probe import ProbeResult, SshAccessStatus
 from timecapsulesmb.device.storage import MaStVolume
@@ -218,6 +220,23 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn("without file transfer", output.getvalue())
         self.assertNotIn("Waiting a few seconds", output.getvalue())
 
+    def test_activate_runs_with_a_password_acp_would_reject(self) -> None:
+        # Activate only uses SSH; on a NetBSD 4 device that is not flashed it is
+        # what starts file sharing after a reboot, so the syPW check never stops it.
+        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 1, b"", b""))
+        values = self.make_valid_env()
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+            with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
+                with mock.patch("timecapsulesmb.services.runtime.probe_managed_connection_state", return_value=self.make_logged_in_probe_state(self.make_supported_netbsd4_compatibility())):
+                    with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
+                        with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
+                            with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)):
+                                with redirect_stdout(io.StringIO()):
+                                    rc = activate.main(["--yes"])
+        self.assertEqual(rc, 0)
+        actions_mock.assert_called_once()
+        compare.assert_not_called()
+
     def test_activate_on_a_device_without_an_install_exits_before_running_anything(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
@@ -407,6 +426,39 @@ class CliMaintenanceTests(CliTestCase):
                     self.assertEqual(rc, 0)
                     remove.assert_called_once()
                 self.assertEqual(self.device.calls, [])
+
+    def test_uninstall_refuses_a_password_the_device_would_reject_before_removing_anything(self) -> None:
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        compare = self.sypw_answer(1)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "uninstall")
+            remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare))
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                uninstall.main(["--yes"])
+
+        self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        compare.assert_called_once()
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        remove.assert_not_called()
+        self.assertEqual(self.device.calls, [])
+
+    def test_uninstall_without_a_reboot_does_not_compare_the_password(self) -> None:
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        for argv in (["--yes", "--no-reboot"], ["--dry-run"]):
+            with self.subTest(argv=argv):
+                compare = self.sypw_answer(1)
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+                    self._patch_mast_volume_flow(stack, "uninstall")
+                    stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+                    stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare))
+                    with redirect_stdout(io.StringIO()):
+                        rc = uninstall.main(argv)
+
+                self.assertEqual(rc, 0)
+                compare.assert_not_called()
 
     def test_uninstall_ignores_unsafe_legacy_payload_dir(self) -> None:
         output = io.StringIO()
@@ -787,6 +839,44 @@ class CliMaintenanceTests(CliTestCase):
         prompt.assert_called_once()
         reboot.assert_called_once()
         self.assertEqual(reboot.call_args.args[1], "typed")
+
+    def sypw_answer(self, returncode: int) -> mock.Mock:
+        # The device's comparison of the saved password with syPW: 0 match, 1 mismatch.
+        return mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
+
+    def test_fsck_refuses_a_password_the_device_would_reject_before_touching_the_disk(self) -> None:
+        # SSH accepts a password right in its first 8 characters; the ACP
+        # reboot would not, so the repair never starts.
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        compare = self.sypw_answer(1)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            flow = self._patch_mast_volume_flow(stack, "fsck")
+            run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare))
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                fsck.main(["--yes"])
+
+        self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(compare.call_args.kwargs["input_bytes"], b"pw-secretzz")
+        flow.mounted_mast_volumes_conn.assert_not_called()
+        run_ssh.assert_not_called()
+        self.assertEqual(self.device.calls, [])
+
+    def test_fsck_without_reboot_does_not_compare_the_password(self) -> None:
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n", returncode=0)
+        compare = self.sypw_answer(1)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck")
+            stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", return_value=run_result))
+            stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare))
+            with redirect_stdout(io.StringIO()):
+                rc = fsck.main(["--yes", "--no-reboot"])
+
+        self.assertEqual(rc, 0)
+        compare.assert_not_called()
 
     def test_fsck_no_wait_requests_reboot_without_waiting(self) -> None:
         output = io.StringIO()

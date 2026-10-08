@@ -3,7 +3,7 @@ from __future__ import annotations
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import set_ssh_payload
-from timecapsulesmb.app.ops.common import load_request_config
+from timecapsulesmb.app.ops.common import load_request_config, require_request_device_password
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError
@@ -64,6 +64,8 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
     else:
         if initial.ssh_port_reachable:
+            # Disabling SSH ends in an ACP reboot: check the password first.
+            require_request_device_password(context, connection)
             context.stage("confirm_disable_ssh")
             _require_disable_confirmation(params, context=context, connection_host=connection.host, acp_host=acp_host)
         try:
@@ -154,6 +156,7 @@ def _require_disable_confirmation(
                 "device_name": acp_host,
                 "requires_reboot": True,
             },
+            presentation_id="ssh_access.disable_reboot",
             presentation_values={
                 "host": acp_host,
                 "device_name": acp_host,

@@ -3,13 +3,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.services.app import config_path
+from timecapsulesmb.services.app import AppOperationError, config_path
 from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.runtime import (
+    DeviceAccessError,
     ManagedTargetState,
     load_env_config,
     load_optional_env_config,
     resolve_env_connection,
+    require_device_password,
     resolve_validated_managed_target,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -60,3 +62,11 @@ def resolve_request_target(
     )
     context.apply_managed_target(target)
     return target
+
+
+def require_request_device_password(context: AppOperationContext, connection: SshConnection) -> None:
+    """Refuse a password the device's ACP would reject, as `auth_failed`."""
+    try:
+        require_device_password(connection, context.to_operation_callbacks())
+    except DeviceAccessError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc

@@ -84,6 +84,7 @@ from timecapsulesmb.transport.errors import (
     TransportError,
     ssh_timeout_slow_device_message,
 )
+from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -2502,6 +2503,30 @@ class AppApiTests(unittest.TestCase):
                     self.assertEqual(rc, 0)
                     self.assertEqual(self.assert_single_terminal_event(collector, "result")["payload"]["airport_mac"], "02:aa:bb:cc:dd:ee")
 
+    def test_configure_refuses_a_password_ssh_accepts_but_the_device_rejects(self) -> None:
+        # SSH checks only 8 characters; the app reports the device's syPW
+        # mismatch as the AirPort password being rejected and saves nothing.
+        collector = CollectingSink()
+        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 1, b"", b""))
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                    rc = service.run_api_request(
+                        {"operation": "configure",
+                         "params": {"config": str(config_path), "host": "root@10.0.0.2", "password": "goodpw-typo"}},
+                        collector.sink,
+                    )
+            self.assertFalse(config_path.exists())
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertEqual(error["message"], "The AirPort admin password did not work.")
+        self.assertEqual(error["recovery"]["action_ids"], ["replace_password"])
+        self.assertEqual(compare.call_args.kwargs["input_bytes"], b"goodpw-typo")
+        self.assertNotIn("goodpw-typo", json.dumps(collector.events))
+
     def test_configure_writes_env_without_persisting_or_leaking_password_by_default(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3292,6 +3317,83 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["summary"], "AirPort ACP is reachable, but SSH is closed.")
         self._telemetry_factory.assert_not_called()
         self._telemetry_client.emit.assert_not_called()
+
+    def run_set_ssh_disable_with_sypw_answer(self, returncode: int, *, ssh_open: bool) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
+        collector = CollectingSink()
+        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch(
+                "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=ssh_open),
+            ):
+                with mock.patch("timecapsulesmb.app.ops.set_ssh.disable_set_ssh") as disable_ssh:
+                    with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                        rc = service.run_api_request(
+                            {"operation": "set-ssh",
+                             "params": {"config": str(config_path), "action": "disable", "password": "secret"}},
+                            collector.sink,
+                        )
+        return collector, rc, compare, disable_ssh
+
+    def test_set_ssh_disable_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
+        # Disabling SSH ends in an ACP reboot; refused before the confirmation
+        # and before SSH is turned off in the saved settings.
+        collector, rc, compare, disable_ssh = self.run_set_ssh_disable_with_sypw_answer(1, ssh_open=True)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertEqual(compare.call_args.kwargs["input_bytes"], b"secret")
+        disable_ssh.assert_not_called()
+
+    def test_set_ssh_disable_asks_for_confirmation_when_the_password_matches(self) -> None:
+        collector, rc, compare, disable_ssh = self.run_set_ssh_disable_with_sypw_answer(0, ssh_open=True)
+
+        self.assertEqual(rc, 1)
+        details = self.assert_confirmation(
+            collector,
+            "ssh_access.disable_reboot",
+            {"host": "10.0.0.2", "device_name": "10.0.0.2", "requires_reboot": True},
+        )
+        self.assertEqual(details["message"], "Disable SSH on 10.0.0.2 and reboot this AirPort device?")
+        compare.assert_called_once()
+        disable_ssh.assert_not_called()
+
+    def test_set_ssh_disable_runs_once_confirmed(self) -> None:
+        result = SetSshResult(
+            host="10.0.0.2", action="disable_ssh", ssh_initially_reachable=True, ssh_final_reachable=False,
+            acp_port_reachable=True, reboot_requested=True, waited=True,
+            summary=Summary("ssh.disabled", "SSH disabled."),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            params: dict[str, object] = {"config": str(config_path), "action": "disable", "password": "secret"}
+            with mock.patch(
+                "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=True),
+            ):
+                with mock.patch("timecapsulesmb.app.ops.set_ssh.disable_set_ssh", return_value=result) as disable_ssh:
+                    asking = CollectingSink()
+                    service.run_api_request({"operation": "set-ssh", "params": params}, asking.sink)
+                    confirmation_id = self.assert_confirmation(asking, "ssh_access.disable_reboot")["confirmation_id"]
+                    disable_ssh.assert_not_called()
+
+                    collector = CollectingSink()
+                    rc = service.run_api_request(
+                        {"operation": "set-ssh", "params": {**params, "confirmation_id": confirmation_id}},
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 0, collector.events)
+        disable_ssh.assert_called_once()
+
+    def test_set_ssh_disable_with_ssh_already_off_does_not_compare_the_password(self) -> None:
+        _collector, _rc, compare, _disable_ssh = self.run_set_ssh_disable_with_sypw_answer(1, ssh_open=False)
+
+        compare.assert_not_called()
 
     def test_set_ssh_enable_requires_reboot_confirmation(self) -> None:
         collector = CollectingSink()
@@ -4369,6 +4471,52 @@ class AppApiTests(unittest.TestCase):
             },
         )
         remote_actions.assert_not_called()
+
+    def run_deploy_with_sypw_answer(self, returncode: int, params: dict[str, object]) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
+        }
+        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
+                            with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
+                                with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                                    rc = service.run_api_request({"operation": "deploy", "params": params}, collector.sink)
+        return collector, rc, compare, remote_actions
+
+    def test_deploy_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
+        # Deploy ends in an ACP reboot. A password SSH accepted on its first 8
+        # characters is refused before the confirmation, not after the upload.
+        collector, rc, compare, remote_actions = self.run_deploy_with_sypw_answer(1, {"dry_run": False})
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertEqual(error["message"], AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        compare.assert_called_once()
+        remote_actions.assert_not_called()
+
+    def test_deploy_asks_for_confirmation_when_the_device_cannot_compare_the_password(self) -> None:
+        collector, rc, _compare, remote_actions = self.run_deploy_with_sypw_answer(2, {"dry_run": False})
+
+        self.assertEqual(rc, 1)
+        self.assert_confirmation(collector, "deploy.reboot")
+        remote_actions.assert_not_called()
+
+    def test_deploy_dry_run_does_not_compare_the_password(self) -> None:
+        collector, rc, compare, _remote_actions = self.run_deploy_with_sypw_answer(1, {"dry_run": True})
+
+        self.assertEqual(rc, 0, collector.events)
+        compare.assert_not_called()
 
     def test_deploy_requires_netbsd4_activation_confirmation_before_remote_actions(self) -> None:
         collector = CollectingSink()
@@ -5844,6 +5992,36 @@ MaSt = (
         self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
         read_mast.assert_not_called()
 
+    def run_uninstall_with_sypw_answer(self, returncode: int, params: dict[str, object]) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
+                    with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                        rc = service.run_api_request({"operation": "uninstall", "params": params}, collector.sink)
+        return collector, rc, compare, uninstall
+
+    def test_uninstall_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
+        collector, rc, compare, uninstall = self.run_uninstall_with_sypw_answer(1, {})
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertEqual(error["message"], AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        compare.assert_called_once()
+        uninstall.assert_not_called()
+
+    def test_uninstall_without_reboot_does_not_compare_the_password(self) -> None:
+        # Without the ACP reboot the password is not needed for the removal.
+        collector, rc, compare, _uninstall = self.run_uninstall_with_sypw_answer(1, {"no_reboot": True})
+
+        self.assertEqual(rc, 1)
+        self.assert_confirmation(collector, "uninstall.no_reboot")
+        compare.assert_not_called()
+
     def test_uninstall_dry_run_bypasses_confirmation_and_returns_plan(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
@@ -5930,17 +6108,46 @@ MaSt = (
         self.assertEqual(payload["waited"], False)
         self.assertEqual(payload["verified"], False)
 
-    def test_fsck_requires_confirmation_before_remote_connection(self) -> None:
+    def test_fsck_checks_the_password_then_asks_before_touching_the_disk(self) -> None:
+        # The repair reboots through ACP, so the password is compared with the
+        # device's before the confirmation; the disk waits for the answer.
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 0, b"", b""))
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection") as resolve_connection:
-                rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                    with mock.patch(
+                        "timecapsulesmb.app.ops.maintenance.storage_service.mount_mast_volumes_with_diagnostics",
+                    ) as mount:
+                        rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 1)
         self.assert_confirmation(collector, "fsck.reboot", {"requires_reboot": True, "no_reboot": False})
-        resolve_connection.assert_not_called()
+        compare.assert_called_once()
+        mount.assert_not_called()
+
+    def test_fsck_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-typo"})
+        connection = SshConnection("root@10.0.0.2", "pw-typo", "")
+        mismatch = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 1, b"", b""))
+
+        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh_input", mismatch):
+                    with mock.patch(
+                        "timecapsulesmb.app.ops.maintenance.storage_service.mount_mast_volumes_with_diagnostics",
+                    ) as mount:
+                        rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertEqual(error["message"], AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        mount.assert_not_called()
 
     def test_fsck_without_reboot_requires_question_form_confirmation(self) -> None:
         collector = CollectingSink()

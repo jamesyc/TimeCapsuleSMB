@@ -6,6 +6,7 @@ import io
 import json
 import os
 import socket
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -1014,7 +1015,8 @@ class CliConfigureTests(CliTestCase):
         self.assertIn("probe_ssh_port_reachable=true", error)
         self.assertIn("probe_ssh_authenticated=true", error)
         self.assertNotIn("TC_PASSWORD", error)
-        self.assertNotIn("pw", error)
+        # The password "pw" as a value, not inside a field name such as sypw_check.
+        self.assertNotRegex(error, r"\bpw\b")
 
     def test_configure_telemetry_records_auth_failed_saved_branch_on_later_failure(self) -> None:
         self.run_configure_cli(
@@ -2690,6 +2692,71 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(self._configure_acp_probe_mock.call_count, 2)
         self.assertIn("The AirPort admin password did not work", result.text)
         self.assertIn("Please enter the SSH target and password again", result.text)
+
+    def test_configure_reprompts_when_ssh_accepts_a_password_the_device_rejects(self) -> None:
+        # SSH checks only 8 characters: "pw-secretzz" logs in where the AirPort
+        # admin password is "pw-secret". The device's syPW comparison refuses it,
+        # the user declines to save it anyway, and the retyped password is saved.
+        prompt_values = iter(["root@10.0.0.2", "pw-secretzz", "root@10.0.0.2", "pw-secret"])
+
+        def fake_prompt(label, default, _secret):
+            if label == "mDNS device model hint":
+                return default
+            return next(prompt_values, default)
+
+        compare = mock.Mock(side_effect=[
+            subprocess.CompletedProcess(["ssh"], 1, b"", b""),
+            subprocess.CompletedProcess(["ssh"], 0, b"", b""),
+        ])
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+            result = self.run_configure_cli(
+                prompt_side_effect=fake_prompt,
+                probe_state=self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),
+                confirm=False,
+            )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_PASSWORD"], "pw-secret")
+        self.assertEqual([call.kwargs["input_bytes"] for call in compare.call_args_list], [b"pw-secretzz", b"pw-secret"])
+        self.assertIn("SSH accepted the password, but it is not the AirPort admin password.", result.text)
+        self.assertNotIn("The provided AirPort SSH target and password did not work", result.text)
+        self.assertIn("Please enter the SSH target and password again", result.text)
+
+    def test_enter_at_save_anyway_does_not_keep_a_password_the_device_rejects(self) -> None:
+        # The prompt defaults to No: pressing Enter after "SSH accepted the
+        # password, but it is not the AirPort admin password" asks again.
+        prompt_values = iter(["root@10.0.0.2", "pw-secretzz", "root@10.0.0.2", "pw-secret"])
+
+        def fake_prompt(label, default, _secret):
+            if label == "mDNS device model hint":
+                return default
+            return next(prompt_values, default)
+
+        compare = mock.Mock(side_effect=[
+            subprocess.CompletedProcess(["ssh"], 1, b"", b""),
+            subprocess.CompletedProcess(["ssh"], 0, b"", b""),
+        ])
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+            result = self.run_configure_cli(
+                prompt_side_effect=fake_prompt,
+                probe_state=self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),
+                input_side_effect=[""],
+            )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_PASSWORD"], "pw-secret")
+        self.assertIn("Save this information still? [y/N]", "".join(str(call.args[0]) for call in result.mocks.input.call_args_list))
+
+    def test_configure_save_anyway_prompt_says_ssh_rejected_the_password(self) -> None:
+        result = self.run_configure_cli(
+            prompt_side_effect=self.configure_prompt_defaults(password="badpw"),
+            probe_state=self.make_probe_state(self.make_probe_result_auth_failed()),
+            confirm=True,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_PASSWORD"], "badpw")
+        self.assertIn("The provided AirPort SSH target and password did not work", result.text)
 
     def test_configure_hard_fails_when_acp_enable_fails_non_auth(self) -> None:
         self._configure_acp_probe_mock.side_effect = ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009")

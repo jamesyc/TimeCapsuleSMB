@@ -27,7 +27,7 @@ from timecapsulesmb.transport.errors import (
     SshLocalNetworkFilteredError,
     TransportError,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_input
 from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_MODEL,
     AIRPORT_IDENTITIES_BY_SYAP,
@@ -539,6 +539,41 @@ def probe_connection_state(connection: SshConnection) -> ProbedDeviceState:
     probe_result = probe_device_conn(connection)
     compatibility = compatibility_from_probe_result(probe_result)
     return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
+
+
+# Apple's sshd checks the root password with DES crypt, which reads only its
+# first 8 characters, while ACPd checks the whole admin password (syPW). A
+# password with a typo past the 8th character logs in over SSH and then fails
+# every ACP reboot with -0x10. The comparison runs on the device: the typed
+# password goes on stdin and the saved one never leaves it. acp -q exits 0
+# when a read fails, printing nothing on stdout, so an empty read means unknown.
+PASSWORD_MATCHES_SYPW_COMMAND = (
+    f'p=$({DEVICE_ACP_PATH} -q syPW 2>/dev/null); [ -n "$p" ] || exit 2; [ "$p" = "$(cat)" ]'
+)
+PASSWORD_CHECK_RESULTS = {True: "match", False: "mismatch", None: "unknown"}
+
+
+def password_matches_device(connection: SshConnection) -> bool | None:
+    """Whether the password is the device's AirPort admin password.
+
+    None when that cannot be told: no password, the device could not read
+    syPW, or SSH failed (the caller's next command reports that itself).
+    """
+    if not connection.password:
+        return None
+    try:
+        proc = run_ssh_input(
+            connection,
+            PASSWORD_MATCHES_SYPW_COMMAND,
+            input_bytes=connection.password.encode("utf-8"),
+            raw_remote_status=True,
+            # acp can stall while ACPd is busy (the native reader caps it at
+            # 20 s); give up as unknown rather than hold up the command.
+            timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+        )
+    except TransportError:
+        return None
+    return {0: True, 1: False}.get(proc.returncode)
 
 
 def probe_ssh_command_conn(

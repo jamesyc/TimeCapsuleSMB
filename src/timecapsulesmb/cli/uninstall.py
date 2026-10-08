@@ -18,7 +18,7 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.maintenance import prepare_uninstall, reboot_after_uninstall
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config
+from timecapsulesmb.services.runtime import load_env_config, require_device_password
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -66,6 +66,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         connection = command_context.resolve_env_connection(allow_empty_password=args.no_reboot or args.dry_run)
         if connection.password:
             command_context.start_optional_airport_identity_probe(connection)
+        if not args.no_reboot and not args.dry_run:
+            # The reboot goes through ACP: check the password before anything is removed.
+            require_device_password(connection, command_context.to_operation_callbacks())
 
         plan = prepare_uninstall(
             connection,

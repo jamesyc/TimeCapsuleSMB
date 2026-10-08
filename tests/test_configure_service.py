@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,7 @@ from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_s
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
+    SSH_ONLY_PASSWORD_DEBUG,
     ConfigureFlowError,
     ConfigureFlowHooks,
     ConfigureFlowRequest,
@@ -818,6 +820,93 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.debug, str(acp_error))
         self.assertIs(raised.exception.__cause__, acp_error)
         self.assertFalse(env_path.exists())
+
+    def sypw_answer(self, returncode: int) -> mock.Mock:
+        # The device's comparison of the typed password with syPW: 0 match,
+        # 1 mismatch, 2 unknown.
+        return mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
+
+    def test_password_ssh_accepts_but_the_device_rejects_is_not_saved(self) -> None:
+        # SSH compares only 8 characters, so "pw-secretzz" logs in where the
+        # admin password is "pw-secret"; every later ACP reboot would refuse it.
+        callbacks, _stages, _logs, debug_fields, _updates = self.callbacks()
+        compare = self.sypw_answer(1)
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                with self.assertRaises(ConfigureFlowError) as raised:
+                    run_configure_flow(
+                        self.configure_request(env_path, mock.Mock(return_value=self.make_probe_state()),
+                                               password="pw-secretzz"),
+                        callbacks=callbacks,
+                    )
+            self.assertFalse(env_path.exists())
+
+        self.assertEqual(raised.exception.code, "auth_failed")
+        self.assertEqual(str(raised.exception), AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE)
+        self.assertEqual(raised.exception.debug, SSH_ONLY_PASSWORD_DEBUG)
+        self.assertIn({"sypw_check": "mismatch"}, debug_fields)
+        self.assertEqual(compare.call_args.kwargs["input_bytes"], b"pw-secretzz")
+
+    def test_device_rejected_password_can_still_be_saved_when_the_user_asks(self) -> None:
+        written: dict[str, str] = {}
+        seen: list[ProbedDeviceState] = []
+        probe_state = self.make_probe_state()
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("timecapsulesmb.device.probe.run_ssh_input", self.sypw_answer(1)):
+                run_configure_flow(
+                    self.configure_request(
+                        Path(tmp) / ".env", mock.Mock(return_value=probe_state),
+                        password="pw-secretzz", write_env=lambda _path, values: written.update(values),
+                    ),
+                    hooks=ConfigureFlowHooks(save_without_authentication=lambda state: seen.append(state) or True),
+                )
+        self.assertEqual(seen, [probe_state])
+        self.assertEqual(written["TC_PASSWORD"], "pw-secretzz")
+
+    def test_password_is_saved_when_the_device_matches_or_cannot_tell(self) -> None:
+        for returncode, result in ((0, "match"), (2, "unknown")):
+            with self.subTest(result=result):
+                callbacks, _stages, _logs, debug_fields, _updates = self.callbacks()
+                writer = mock.Mock()
+                with tempfile.TemporaryDirectory() as tmp:
+                    with mock.patch("timecapsulesmb.device.probe.run_ssh_input", self.sypw_answer(returncode)):
+                        run_configure_flow(
+                            self.configure_request(Path(tmp) / ".env", mock.Mock(return_value=self.make_probe_state()),
+                                                   write_env=writer),
+                            callbacks=callbacks,
+                        )
+                writer.assert_called_once()
+                self.assertIn({"sypw_check": result}, debug_fields)
+                self.assertIn({"ssh_final_reachable": True}, debug_fields)
+
+    def test_password_is_compared_once_after_acp_turns_ssh_on(self) -> None:
+        closed = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.CLOSED, error="SSH is not reachable yet.",
+                os_name="", os_release="", arch="", elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+        compare = self.sypw_answer(0)
+        writer = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe",
+                            return_value=self.make_probe_state()):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                    run_configure_flow(self.configure_request(Path(tmp) / ".env", mock.Mock(return_value=closed),
+                                                              write_env=writer))
+        compare.assert_called_once()
+        writer.assert_called_once()
+
+    def test_password_ssh_rejects_is_not_compared_with_the_device(self) -> None:
+        compare = self.sypw_answer(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                with self.assertRaises(ConfigureFlowError):
+                    run_configure_flow(self.configure_request(
+                        Path(tmp) / ".env", mock.Mock(return_value=self.make_auth_failed_probe_state())))
+        compare.assert_not_called()
 
     def test_run_configure_flow_normalizes_ssh_authentication_failure(self) -> None:
         probe_state = self.make_auth_failed_probe_state()

@@ -14,6 +14,7 @@ from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.ops.common import (
     load_request_config,
+    require_request_device_password,
     resolve_request_connection,
     resolve_request_target,
 )
@@ -51,6 +52,7 @@ from timecapsulesmb.services.maintenance import (
 )
 from timecapsulesmb.services.deploy import require_supported_payload
 from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.services.runtime import (
     load_env_config,
     probe_failure_error,
@@ -121,6 +123,8 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     config = load_request_config(params, context)
     # The reboot goes through AirPort ACP, which needs the password.
     connection = resolve_request_connection(config, context, allow_empty_password=no_reboot or dry_run)
+    if not dry_run and not no_reboot:
+        require_request_device_password(context, connection)
     if not dry_run:
         presentation_id = "uninstall.no_reboot" if no_reboot else "uninstall.reboot"
         presentation_values = {
@@ -177,6 +181,17 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     ))
 
 
+def _fsck_connection(params: dict[str, object], context: AppOperationContext, *, rebooting: bool) -> SshConnection:
+    context.stage("load_config")
+    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
+    context.config = config
+    context.stage("resolve_connection")
+    # The reboot goes through AirPort ACP, which needs the password.
+    connection = resolve_env_connection(config, allow_empty_password=not rebooting)
+    context.connection = connection
+    return connection
+
+
 def fsck_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     operation = "fsck"
     dry_run = bool_param(params, "dry_run")
@@ -186,6 +201,13 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     if dry_run and list_volumes:
         raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code="validation_failed")
+    rebooting = not (no_reboot or dry_run or list_volumes)
+    connection = None
+    if rebooting:
+        # The reboot goes through ACP: refuse a password it would reject
+        # before the confirmation and before the disk is touched.
+        connection = _fsck_connection(params, context, rebooting=True)
+        require_request_device_password(context, connection)
     if not dry_run and not list_volumes:
         presentation_id = "fsck.no_reboot" if no_reboot else "fsck.reboot"
         volume = string_param(params, "volume")
@@ -217,13 +239,8 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
                 },
             ),
         )
-    context.stage("load_config")
-    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
-    context.config = config
-    context.stage("resolve_connection")
-    # The reboot goes through AirPort ACP, which needs the password.
-    connection = resolve_env_connection(config, allow_empty_password=no_reboot or dry_run or list_volumes)
-    context.connection = connection
+    if connection is None:
+        connection = _fsck_connection(params, context, rebooting=rebooting)
     mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
         connection,
         callbacks=context.to_operation_callbacks(),

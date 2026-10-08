@@ -562,10 +562,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         def save_without_authentication(probed_state: ProbedDeviceState) -> bool:
             if no_input_enabled(args):
                 return False
-            print("\nThe provided AirPort SSH target and password did not work.")
+            if probed_state.probe_result.ssh_authenticated:
+                # SSH checks only 8 characters; the device's syPW comparison did not match.
+                print("\nSSH accepted the password, but it is not the AirPort admin password.")
+            else:
+                print("\nThe provided AirPort SSH target and password did not work.")
             if probed_state.probe_result.ssh_port_reachable:
                 command_context.update_fields(ssh_final_reachable=True)
-            if confirm("Save this information still?", True):
+            if confirm("Save this information still?", default_no=True):
                 command_context.add_debug_fields(configure_saved_without_ssh_authentication=True)
                 return True
             print("Please enter the SSH target and password again.\n")

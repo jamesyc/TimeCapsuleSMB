@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
     SshLocalNetworkFilteredError,
+    SshError,
     SshNetworkError,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
@@ -857,3 +859,81 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result.model, "AirPort7,120")
         self.assertEqual(result.syap, "120")
         self.assertIn("AirPort7,120", result.detail)
+
+
+class PasswordMatchesDeviceTests(unittest.TestCase):
+    """The typed password against the device's AirPort admin password (syPW).
+
+    SSH checks only the first 8 characters of the root password; ACP checks
+    all of syPW, so the comparison runs on the device with the typed password
+    on stdin.
+    """
+
+    def run_comparison(self, typed: str, *, sypw: str | None, acp_error: str = "") -> int:
+        # The real command under /bin/sh, with a stand-in for Apple's acp. Like
+        # the device's, a failed read exits 0 with nothing on stdout.
+        with tempfile.TemporaryDirectory() as tmp:
+            acp = Path(tmp) / "acp"
+            value = "" if sypw is None else f"printf '%s\\n' {shlex.quote(sypw)}\n"
+            acp.write_text(
+                "#!/bin/sh\n"
+                '[ "$1 $2" = "-q syPW" ] || exit 64\n'
+                f"{value}"
+                f"printf '%s\\n' {shlex.quote(acp_error)} >&2\n"
+                "exit 0\n"
+            )
+            acp.chmod(0o755)
+            command = probe.PASSWORD_MATCHES_SYPW_COMMAND.replace(probe.DEVICE_ACP_PATH, str(acp))
+            return subprocess.run(["/bin/sh", "-c", command], input=typed.encode(), check=False).returncode
+
+    def test_device_command_matches_only_the_whole_admin_password(self) -> None:
+        self.assertEqual(self.run_comparison("pw-secret", sypw="pw-secret"), 0)
+        # SSH would accept both of these: their first 8 characters are right.
+        self.assertEqual(self.run_comparison("pw-secretzz", sypw="pw-secret"), 1)
+        self.assertEqual(self.run_comparison("pw-secre", sypw="pw-secret"), 1)
+
+    def test_device_command_compares_shell_characters_literally(self) -> None:
+        for password in ('a b$HOME"q\'`x`\\', "*", "-n"):
+            with self.subTest(password=password):
+                self.assertEqual(self.run_comparison(password, sypw=password), 0)
+                self.assertEqual(self.run_comparison(password + "x", sypw=password), 1)
+
+    def test_device_command_reports_an_unreadable_sypw_as_unknown(self) -> None:
+        self.assertEqual(self.run_comparison("pw", sypw=None, acp_error="### get 'syPW' failed: -6727"), 2)
+
+    def answer(self, returncode: int) -> mock.Mock:
+        return mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
+
+    def test_exit_status_maps_to_match_mismatch_or_unknown(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        for returncode, expected in ((0, True), (1, False), (2, None), (255, None)):
+            with self.subTest(returncode=returncode):
+                with mock.patch.object(probe, "run_ssh_input", self.answer(returncode)):
+                    self.assertIs(probe.password_matches_device(connection), expected)
+
+    def test_password_goes_to_the_device_only_on_stdin(self) -> None:
+        compare = self.answer(0)
+        with mock.patch.object(probe, "run_ssh_input", compare):
+            probe.password_matches_device(SshConnection("root@10.0.0.2", "s3cret-pw", ""))
+        _connection, command = compare.call_args.args
+        self.assertNotIn("s3cret-pw", command)
+        self.assertEqual(compare.call_args.kwargs["input_bytes"], b"s3cret-pw")
+        self.assertTrue(compare.call_args.kwargs["raw_remote_status"])
+
+    def test_no_password_is_unknown_without_asking_the_device(self) -> None:
+        compare = self.answer(0)
+        with mock.patch.object(probe, "run_ssh_input", compare):
+            self.assertIsNone(probe.password_matches_device(SshConnection("root@10.0.0.2", "", "")))
+        compare.assert_not_called()
+
+    def test_ssh_failure_is_unknown_not_a_wrong_password(self) -> None:
+        with mock.patch.object(probe, "run_ssh_input", side_effect=SshError("connection reset")):
+            self.assertIsNone(probe.password_matches_device(SshConnection("root@10.0.0.2", "pw", "")))
+
+    def test_a_stalled_acp_read_gives_up_as_unknown_within_the_probe_timeout(self) -> None:
+        # acp can stall while ACPd is busy; the command goes on after the
+        # probe timeout instead of the transport's default two minutes.
+        stalled = mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish"))
+        with mock.patch.object(probe, "run_ssh_input", stalled):
+            self.assertIsNone(probe.password_matches_device(SshConnection("root@10.0.0.2", "pw", "")))
+        self.assertEqual(stalled.call_args.kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)

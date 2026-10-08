@@ -24,17 +24,23 @@ from timecapsulesmb.device.compat import (
     render_compatibility_message,
     unsupported_syap_message,
 )
-from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, probe_connection_state
+from timecapsulesmb.device.probe import (
+    PASSWORD_CHECK_RESULTS,
+    ProbedDeviceState,
+    SshAccessStatus,
+    password_matches_device,
+    probe_connection_state,
+)
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, enable_ssh_with_port_preflight
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime import PROBE_STATUS_ERROR_CODES
+from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, PROBE_STATUS_ERROR_CODES
 from timecapsulesmb.transport.ssh import SshConnection
 
 
-AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
+SSH_ONLY_PASSWORD_DEBUG = "SSH accepted the password, but it is not the device's AirPort admin password (syPW)."
 # The stage configure fails in when the selected Bonjour record's syAP names an
 # unsupported model. The CLI asks for another device before it gets this far.
 CHECK_DEVICE_MODEL_STAGE = "check_device_model"
@@ -277,17 +283,28 @@ def run_configure_flow(
         if not probe.ssh_port_reachable:
             raise ConfigureFlowError("SSH did not become reachable after enabling via ACP.", code="ssh_unreachable")
 
+    # SSH accepts a password whose first 8 characters are right; every later
+    # reboot goes through ACP, which wants all of it, so both must accept it.
+    password_rejected = probe.ssh_status == SshAccessStatus.AUTH_REJECTED
+    password_error = probe.error
     if probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
-        callbacks.debug(ssh_final_reachable=True)
-        callbacks.update(ssh_final_reachable=True)
-    elif probe.ssh_status == SshAccessStatus.AUTH_REJECTED:
+        password_match = password_matches_device(connection)
+        callbacks.debug(sypw_check=PASSWORD_CHECK_RESULTS[password_match])
+        if password_match is False:
+            password_rejected = True
+            password_error = SSH_ONLY_PASSWORD_DEBUG
+
+    if password_rejected:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
         if hooks.save_without_authentication is None or not hooks.save_without_authentication(probed_state):
             raise ConfigureFlowError(
                 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
                 code="auth_failed",
-                debug=probe.error,
+                debug=password_error,
             )
+    elif probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
+        callbacks.debug(ssh_final_reachable=True)
+        callbacks.update(ssh_final_reachable=True)
     elif probe.ssh_status == SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
         raise ConfigureFlowError(

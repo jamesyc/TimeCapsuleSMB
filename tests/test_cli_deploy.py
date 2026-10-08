@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import plistlib
+import subprocess
 import unittest
 from contextlib import ExitStack
 from contextlib import redirect_stderr, redirect_stdout
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from unittest import mock
 from timecapsulesmb.cli import deploy
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_NO_DOWN_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.compat import DeviceCompatibility, classify_device_compatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
@@ -947,6 +949,28 @@ class CliDeployTests(CliTestCase):
         self.assertNotIn("request", result.mocks.device.calls)
         result.mocks.verify_payload_home_conn.assert_not_called()
         result.mocks.flush_remote_filesystem_writes.assert_not_called()
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+
+    def test_deploy_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
+        # SSH accepts a password right in its first 8 characters; the ACP
+        # reboot would not. Refused before the prompt, nothing uploaded.
+        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 1, b"", b""))
+        input_mock = mock.Mock(side_effect=AssertionError("deploy must not ask before the password check"))
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+            result = self.run_deploy_cli(
+                [],
+                artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
+                patch_actions=True,
+                patch_upload=True,
+                input_side_effect=input_mock,
+                raises=SystemExit,
+            )
+
+        self.assertIn(AIRPORT_PASSWORD_MISMATCH_MESSAGE, str(result.exception.code))
+        compare.assert_called_once()
+        input_mock.assert_not_called()
+        self.assertNotIn("request", result.mocks.device.calls)
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
 

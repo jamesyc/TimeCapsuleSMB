@@ -102,6 +102,8 @@ from timecapsulesmb.device.probe import (
     flash_runtime_config_present_conn,
     limit_remote_log_tail,
     link_plan_networks,
+    PASSWORD_CHECK_RESULTS,
+    password_matches_device,
     probe_connection_state,
     probe_device_networks_conn,
     probe_managed_mdns_conn,
@@ -2167,10 +2169,37 @@ def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarge
         elif compatibility.supported:
             sink.add(CheckResult("PASS", render_compatibility_message(compatibility)))
             _add_sshpass_result(sink.add, password_auth=bool(target.connection.password))
+            _add_admin_password_result(target.connection, sink)
         else:
             sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))
     except Exception as e:
         sink.add(CheckResult("FAIL", f"device compatibility check failed: {e}"))
+
+
+def _add_admin_password_result(connection: SshConnection, sink: DoctorSink) -> None:
+    """Report a saved password that SSH accepts but ACP would reject.
+
+    SSH checks only the first 8 characters, so such a password logs in, but the
+    commands that reboot through ACP refuse it. A warning, not a failure: the
+    authenticated SMB checks already fail with it (Samba's password comes from
+    the whole syPW), and this line says why.
+    """
+    if not connection.password:
+        return
+    match = password_matches_device(connection)
+    if sink.debug_fields is not None:
+        sink.debug_fields["sypw_check"] = PASSWORD_CHECK_RESULTS[match]
+    if match is True:
+        sink.add(CheckResult("PASS", "the saved password is the AirPort admin password"))
+    elif match is False:
+        sink.add(CheckResult(
+            "WARN",
+            "the saved password logs in over SSH but is not the AirPort admin password; "
+            "Install / Update, disk repair, uninstall and SSH changes refuse it until it is re-entered "
+            "in the macOS app or with tcapsule configure",
+        ))
+    else:
+        sink.add(CheckResult("INFO", "could not compare the saved password with the AirPort admin password"))
 
 
 def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
