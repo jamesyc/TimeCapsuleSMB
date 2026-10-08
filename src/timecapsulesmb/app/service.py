@@ -239,9 +239,15 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         )
         return 1
     payload_error = _payload_error(result.payload) if not result.ok else None
+    payload = result.payload
+    current_host = context.finish_fields.get("current_host")
+    if isinstance(payload, dict) and isinstance(current_host, str):
+        # The device answered at another address than the saved one; the app
+        # offers to save it there.
+        payload = {**payload, "current_host": current_host}
     context.emit_result(
         ok=result.ok,
-        payload=result.payload,
+        payload=payload,
         debug=context.failure_debug() if not result.ok else None,
     )
     _finish_api_telemetry(

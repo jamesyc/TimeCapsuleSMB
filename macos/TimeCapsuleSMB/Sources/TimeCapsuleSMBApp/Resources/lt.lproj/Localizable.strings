@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "Paleidimas iš naujo nebaigtas";
 "backend.recovery.deploy.reboot_not_finished.message" = "Diegimo failai buvo įkelti ir paleidimo iš naujo užklausa pavyko, tačiau įrenginys laiku nepriėmė SSH iš naujo. Gali būti, kad jis vis dar kraunasi arba grįžo su kitu IP adresu.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Palaukite dar kelias minutes.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "Įrenginys gali turėti naują IP adresą. Paleiskite Discover ir pasirinkite jį iš naujo.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "NetBSD 4 įrenginiuose paleiskite tcapsule activate, kai SSH bus pasiekiama; diegimas nebuvo pakankamai atliktas, kad po paleidimo iš naujo aktyvuotų Samba.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "Jei jūsų įrenginys atsistatė, žiūrėkite https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "NetBSD 4 įrenginiuose paleiskite tcapsule activate, kai SSH bus pasiekiama; diegimas nebuvo pakankamai atliktas, kad po paleidimo iš naujo aktyvuotų Samba.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "Jei jūsų įrenginys atsistatė, žiūrėkite https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort nepasiekiamas šiuo adresu";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB negalėjo pasiekti AirPort ACP tarnybos prieš įjungiant SSH. Atsarginės kopijos arba AirPort Utility gali veikti net tada, kai ACP blokuojamas.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Išjunkite VPN arba saugos programą, kuri nukreipia vietinio tinklo srautą, tada bandykite dar kartą.";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "Nei SSH, nei AirPort ACP neatsakė išsaugotu įrenginio adresu.";
 "backend.recovery.device_unreachable.action.1" = "Įsitikinkite, kad įrenginys įjungtas ir prijungtas prie to paties tinklo ar Wi-Fi kaip šis Mac.";
 "backend.recovery.device_unreachable.action.2" = "Jei įrenginys paleidžiamas iš naujo, palaukite kelias minutes ir bandykite dar kartą.";
-"backend.recovery.device_unreachable.action.3" = "Įrenginys gali turėti naują IP adresą. Paleiskite Discover ir pasirinkite jį iš naujo.";
 "backend.recovery.ssh_transport_failed.title" = "SSH ryšys nutrūko";
 "backend.recovery.ssh_transport_failed.message" = "Įrenginys priėmė SSH ryšį, bet jį uždarė prieš prisijungimą. Taip gali nutikti, kol įrenginys paleidžiamas arba yra užimtas.";
 "backend.recovery.ssh_transport_failed.action.1" = "Palaukite minutę ir bandykite dar kartą.";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "Paleidimas iš naujo nebaigtas";
 "backend.recovery.reboot_not_finished.message" = "Įrenginys atsijungė arba buvo paleistas iš naujo, bet laiku negrįžo. Gali būti, kad jis vis dar kraunasi arba turi kitą IP adresą.";
 "backend.recovery.reboot_not_finished.action.1" = "Palaukite dar kelias minutes.";
-"backend.recovery.reboot_not_finished.action.2" = "Įrenginys gali turėti naują IP adresą. Paleiskite Discover ir pasirinkite jį iš naujo.";
-"backend.recovery.reboot_not_finished.action.3" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
+"backend.recovery.reboot_not_finished.action.2" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
 "backend.recovery.runtime_not_restarted.title" = "Failų bendrinimas vėl neįsijungė";
 "backend.recovery.runtime_not_restarted.message" = "Įrenginys paleistas iš naujo, bet įdiegtos TimeCapsuleSMB paslaugos nepasileido.";
 "backend.recovery.runtime_not_restarted.action.1" = "Paleiskite „Aktyvuoti“.";

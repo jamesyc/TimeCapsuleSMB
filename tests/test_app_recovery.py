@@ -106,7 +106,6 @@ class AppRecoveryTests(unittest.TestCase):
             recovery["actions"],
             [
                 "Wait a few more minutes.",
-                "The device may have a new IP address. Run Discover and reselect it.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
                 (
                     "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "

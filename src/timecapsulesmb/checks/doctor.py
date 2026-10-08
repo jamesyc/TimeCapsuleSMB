@@ -42,7 +42,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.smb_config import parse_active_share_names
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.probe import ProbedDeviceState
+from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -52,6 +52,7 @@ def run_doctor_checks(
     repo_root: Path,
     connection: SshConnection | None = None,
     precomputed_probe_state: ProbedDeviceState | None = None,
+    device_reading: AirportAcpReading | None = None,
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
@@ -70,6 +71,7 @@ def run_doctor_checks(
         connection=connection,
         precomputed_probe_state=precomputed_probe_state,
         options=options,
+        device_reading=device_reading,
     )
     sink = DoctorSink(
         on_result=on_result,

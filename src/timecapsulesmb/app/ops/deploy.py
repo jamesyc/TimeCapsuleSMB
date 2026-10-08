@@ -14,6 +14,7 @@ from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.app.ops.common import (
     load_request_config,
+    request_device_reading,
     require_request_sshpass,
     resolve_request_target,
 )
@@ -252,6 +253,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             app_paths.distribution_root,
             deploy_options,
             callbacks=context.to_operation_callbacks(),
+            device_reading=request_device_reading(context, connection),
         )
     except DeployArtifactValidationError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc

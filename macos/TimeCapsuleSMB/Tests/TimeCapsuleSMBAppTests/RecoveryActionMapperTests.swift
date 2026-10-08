@@ -277,8 +277,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             "message": .string("Neither SSH nor AirPort ACP answered at the device's saved address."),
             "actions": .array([
                 .string("Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac."),
-                .string("If the device is restarting, wait a few minutes, then try again."),
-                .string("The device may have a new IP address. Run Discover and reselect it.")
+                .string("If the device is restarting, wait a few minutes, then try again.")
             ]),
             "action_ids": .array([]),
             "retryable": .bool(true),
@@ -360,7 +359,6 @@ final class RecoveryActionMapperTests: XCTestCase {
             title: "Reboot did not finish",
             actions: [
                 "Wait a few more minutes.",
-                "The device may have a new IP address. Run Discover and reselect it.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
                 "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.",
                 "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
@@ -383,10 +381,10 @@ final class RecoveryActionMapperTests: XCTestCase {
             english.detail,
             "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again in time. It may still be booting, or it may have come back with a different IP address."
         )
-        XCTAssertEqual(english.steps.count, 5)
-        XCTAssertEqual(english.steps[1], "The device may have a new IP address. Run Discover and reselect it.")
+        XCTAssertEqual(english.steps.count, 4)
+        XCTAssertEqual(english.steps[1], "Make sure you are connected to the same network or Wi-Fi as the device.")
         XCTAssertEqual(
-            english.steps[4],
+            english.steps[3],
             "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
         )
 
@@ -394,10 +392,9 @@ final class RecoveryActionMapperTests: XCTestCase {
         let chinese = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(chinese.title, "重启未完成")
         XCTAssertEqual(chinese.steps[0], "再等待几分钟。")
-        XCTAssertEqual(chinese.steps[1], "设备可能获得了新的 IP 地址。请重新发现设备并选择它。")
-        XCTAssertEqual(chinese.steps.count, 5)
+        XCTAssertEqual(chinese.steps.count, 4)
         XCTAssertEqual(
-            chinese.steps[4],
+            chinese.steps[3],
             "如果设备自行重置，请参见 https://github.com/jamesyc/TimeCapsuleSMB/issues/177。"
         )
     }

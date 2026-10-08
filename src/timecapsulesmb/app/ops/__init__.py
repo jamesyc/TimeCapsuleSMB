@@ -48,7 +48,8 @@ class OperationSpec:
 
 # Read by the shared request helpers for every operation: the config path,
 # request-scoped credentials, and the answer to a confirmation.
-COMMON_PARAMS = frozenset({"config", "credentials", "password", "confirmation_id", "confirmation"})
+# airport_mac is the saved device's AirPort MAC, to find it where it moved.
+COMMON_PARAMS = frozenset({"airport_mac", "config", "credentials", "password", "confirmation_id", "confirmation"})
 MANAGED_SETTING_PARAMS = frozenset({
     "any_protocol",
     "ata_idle_seconds",

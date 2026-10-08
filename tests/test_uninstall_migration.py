@@ -78,7 +78,7 @@ def test_uninstall_stops_a_running_migration_before_removing_it(monkeypatch, tmp
     monkeypatch.setattr(maintenance_service, 'reboot_device', lambda *a, wait, **kw: reboot.append('wait' if wait else 'request'))
     monkeypatch.setattr(maintenance_service, 'verify_post_uninstall', lambda *a: True)
     monkeypatch.setattr(maintenance_service, 'render_post_uninstall_verification', lambda *a: [])
-    context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=OperationCallbacks)
+    context = SimpleNamespace(stage=lambda *a: None, log=lambda *a: None, to_operation_callbacks=OperationCallbacks, device_reading=None)
 
     if scenario in ('unkillable', 'ps_failure'):
         with pytest.raises(RuntimeError) as failure:

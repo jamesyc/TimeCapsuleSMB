@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.discovery.models import normalize_airport_mac
 
 
 def request_password(params: Mapping[str, object]) -> str:
@@ -15,6 +16,17 @@ def request_password(params: Mapping[str, object]) -> str:
         if isinstance(nested, str) and nested:
             return nested
     return ""
+
+
+def request_airport_mac(params: Mapping[str, object]) -> str | None:
+    """The saved device's AirPort MAC (waMA), which the app sends with each operation."""
+    value = params.get("airport_mac")
+    if value is None:
+        return None
+    mac = normalize_airport_mac(value)
+    if mac is None:
+        raise ValueError(f"airport_mac is not an AirPort MAC address: {value!r}")
+    return mac
 
 
 def overlay_request_credentials(config: AppConfig, params: Mapping[str, object]) -> AppConfig:

@@ -150,7 +150,6 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         (
             "Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac.",
             "If the device is restarting, wait a few minutes, then try again.",
-            "The device may have a new IP address. Run Discover and reselect it.",
         ),
         retryable=True,
     ),
@@ -193,7 +192,6 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         (
             "Wait a few more minutes.",
-            "The device may have a new IP address. Run Discover and reselect it.",
             "Make sure you are connected to the same network or Wi-Fi as the device.",
         ),
         retryable=True,
@@ -256,7 +254,6 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         (
             "Wait a few more minutes.",
-            "The device may have a new IP address. Run Discover and reselect it.",
             "Make sure you are connected to the same network or Wi-Fi as the device.",
             (
                 "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "

@@ -18,8 +18,10 @@ from timecapsulesmb.device.probe import (
     read_admin_password,
     probe_connection_state,
 )
+from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.locate import locate_airport
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.transport.local import tcp_connect_error, tcp_open
 
@@ -59,16 +61,63 @@ AIRPORT_PASSWORD_MISMATCH_MESSAGE = (
 )
 
 
-def require_device_password(connection: SshConnection, callbacks: OperationCallbacks) -> None:
+def require_device_password(
+    connection: SshConnection,
+    callbacks: OperationCallbacks,
+    *,
+    reading: device_probe.AirportAcpReading | None = None,
+) -> None:
     """Refuse a password the device's ACP would reject, before anything changes.
 
     Every reboot goes through ACP, so a command that reboots checks the
     password first instead of failing at the reboot with its work half done.
+    `reading` is this command's earlier read of the device at this address
+    (confirm_device_address); an unanswered one is not read again, as the
+    second read would only repeat the same retry.
     """
-    reading = read_admin_password(connection)
+    if reading is None:
+        reading = read_admin_password(connection)
     callbacks.debug(**password_check_fields(reading))
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
+
+
+def confirm_device_address(
+    host: str,
+    password: str,
+    airport_mac: str,
+    callbacks: OperationCallbacks,
+) -> tuple[str, device_probe.AirportAcpReading]:
+    """The SSH target of the AirPort with this MAC, and the read that showed it.
+
+    A saved address goes stale when DHCP gives the device another one, and
+    another AirPort may then answer at it. Either way the device is looked
+    for by its MAC (services.locate). Where it is not found, `host` stays and
+    the command's own checks report what answers there.
+    """
+    reading = device_probe.read_airport_acp(host, password)
+    if reading.password_matches and reading.airport_mac in (None, airport_mac):
+        return host, reading
+    if reading.password_matches is None:
+        trigger = "unreachable"
+    elif reading.password_matches is False:
+        trigger = "password_rejected"
+    else:
+        trigger = "identity_mismatch"
+    located = locate_airport(airport_mac, password, current_host=host, trigger=trigger, callbacks=callbacks)
+    if located.host is not None:
+        callbacks.message(f"The device now answers at {endpoint_host(located.host)}; the saved address is out of date.")
+        callbacks.update(current_host=located.host)
+        # locate accepted it only after its read took the password and gave this MAC.
+        return located.host, device_probe.AirportAcpReading(password_matches=True, airport_mac=airport_mac)
+    if located.outcome == "password_rejected":
+        callbacks.message(located.rejected_note)
+    if trigger == "identity_mismatch":
+        raise DeviceAccessError(
+            f"A different AirPort answers at {endpoint_host(host)}, and this device was not found on the network.",
+            code="device_identity_mismatch",
+        )
+    return host, reading
 
 
 def probe_failure_error(

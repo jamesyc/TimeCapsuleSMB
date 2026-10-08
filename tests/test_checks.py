@@ -50,7 +50,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
 from tests.test_client_network import router_plan
-from tests.reboot_support import acp_password_answer
+from tests.reboot_support import acp_password_answer, acp_reading
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login
 from timecapsulesmb.core.net import RouteSelection
@@ -258,6 +258,7 @@ class CheckTests(unittest.TestCase):
         mdns_probe=None,
         connection=None,
         precomputed_probe_state=None,
+        device_reading=None,
         skip_ssh: bool = False,
         skip_bonjour: bool = False,
         skip_smb: bool = False,
@@ -405,6 +406,7 @@ class CheckTests(unittest.TestCase):
                 repo_root=REPO_ROOT,
                 connection=connection,
                 precomputed_probe_state=precomputed_probe_state,
+                device_reading=device_reading,
                 skip_ssh=skip_ssh,
                 skip_bonjour=skip_bonjour,
                 skip_smb=skip_smb,
@@ -2245,11 +2247,12 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(config_errors)
         self.assertTrue(all(r.status == "FAIL" for r in config_errors))
 
-    def run_doctor_with_password_answer(self, matches: bool | None):
+    def run_doctor_with_password_answer(self, matches: bool | None, *, device_reading=None):
         debug_fields: dict[str, object] = {}
         compare = acp_password_answer(matches)
         with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
             run = self.run_doctor_with_mocks(
+                device_reading=device_reading,
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
                 mdns_probe=mock.Mock(ready=True, detail="ok"),
                 read_active_smb_conf="",
@@ -2260,7 +2263,20 @@ class CheckTests(unittest.TestCase):
                 debug_fields=debug_fields,
             )
         lines = [result for result in run.results if "AirPort admin password" in result.message]
+        run.compare = compare
         return run, lines, debug_fields
+
+    def test_doctor_uses_the_apps_earlier_read_instead_of_reading_again(self) -> None:
+        expected = {True: "PASS", False: "WARN", None: "INFO"}
+        for matches, status in expected.items():
+            with self.subTest(matches=matches):
+                # The device would answer the opposite way if it were asked.
+                run, lines, debug_fields = self.run_doctor_with_password_answer(
+                    not matches, device_reading=acp_reading(matches),
+                )
+                run.compare.assert_not_called()
+                self.assertEqual([line.status for line in lines], [status])
+                self.assertEqual(debug_fields["sypw_check"], {True: "match", False: "mismatch", None: "unknown"}[matches])
 
     def test_doctor_passes_a_saved_password_that_matches_the_device(self) -> None:
         _run, lines, debug_fields = self.run_doctor_with_password_answer(True)

@@ -20,6 +20,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     private var cancellables: Set<AnyCancellable> = []
     private var pendingSSHRefresh: (operation: String, requestID: String, sshRequestID: String?)?
     private var handledSSHFailures: [String: String] = [:]
+    // By event, not request: a confirmed replay reuses its confirmation's request ID.
+    private var checkedAddressOutcomes: Set<UUID> = []
 
     var events: [BackendEvent] {
         lane.backend.events
@@ -65,6 +67,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         forwardChildChanges()
         forwardLaneEvents()
         observeProfileEditor()
+        // Outcomes from before this dashboard opened were answered then.
+        checkedAddressOutcomes = Set(addressOutcomeEvents().map(\.id))
         observeRemoteWorkflowFailures()
         observeSSHAccessMaintenanceResults()
     }
@@ -382,7 +386,10 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             .sink { [weak self] _ in
                 // Published changes arrive before the stored value changes. Recheck
                 // actual device ownership on the actor after that mutation finishes.
-                Task { @MainActor [weak self] in self?.runPendingSSHRefresh() }
+                Task { @MainActor [weak self] in
+                    self?.runPendingSSHRefresh()
+                    self?.refreshDiscoveryAfterAddressOutcome()
+                }
             }
             .store(in: &cancellables)
         deployStore.$error
@@ -432,6 +439,36 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         handledSSHFailures[error.operation] = requestID
         pendingSSHRefresh = (error.operation, requestID, latestTerminalEvent(for: "set-ssh")?.requestId)
         Task { @MainActor [weak self] in self?.runPendingSSHRefresh() }
+    }
+
+    /// Error codes after which the device may be at another DHCP address.
+    static let addressOutcomeCodes: Set<String> = ["device_unreachable", "device_identity_mismatch", "reboot_not_finished"]
+
+    /// The helper found the device at another address (`current_host`), or
+    /// could not find it where it was saved: look again, so the stale-address
+    /// banner offers the current one. The helper never saves an address itself.
+    private func refreshDiscoveryAfterAddressOutcome() {
+        var refresh = false
+        for event in addressOutcomeEvents() {
+            guard checkedAddressOutcomes.insert(event.id).inserted else { continue }
+            // A result carries the new address in its payload, a failure in its debug fields.
+            let movedTo = event.payload?.stringValue(for: "current_host") ?? event.debug?.stringValue(for: "current_host")
+            if movedTo != nil || Self.addressOutcomeCodes.contains(event.code ?? "") {
+                refresh = true
+            }
+        }
+        if refresh {
+            appStore.deviceDiscovery.refresh()
+        }
+    }
+
+    /// Each finished lane's outcome. The revision moves on every event of every
+    /// lane, so a running lane, whose outcome is still to come, is not scanned;
+    /// a run has one outcome, and the next run starts only after this one ends.
+    private func addressOutcomeEvents() -> [BackendEvent] {
+        appStore.operationCoordinator.allLanes
+            .filter { $0.key.deviceProfileID == id && !$0.backend.isRunning }
+            .compactMap { lane in lane.backend.events.last { $0.type == "error" || $0.type == "result" } }
     }
 
     private func latestTerminalEvent(for operation: String) -> BackendEvent? {

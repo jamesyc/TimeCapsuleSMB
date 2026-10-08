@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.services.app import AppOperationError, config_path
-from timecapsulesmb.services.credentials import overlay_request_credentials
+from timecapsulesmb.services.credentials import overlay_request_credentials, request_airport_mac
 from timecapsulesmb.services.runtime import (
     DeviceAccessError,
     ManagedTargetState,
+    confirm_device_address,
     load_env_config,
     load_optional_env_config,
     resolve_env_connection,
@@ -16,9 +18,6 @@ from timecapsulesmb.services.runtime import (
 )
 from timecapsulesmb.transport import local as local_transport
 from timecapsulesmb.transport.ssh import SshConnection
-
-if TYPE_CHECKING:
-    from timecapsulesmb.core.config import AppConfig
 
 
 def require_request_sshpass() -> None:
@@ -37,14 +36,47 @@ def require_request_sshpass() -> None:
         )
 
 
-def load_request_config(params: dict[str, object], context: AppOperationContext) -> "AppConfig":
+def load_request_config(params: dict[str, object], context: AppOperationContext) -> AppConfig:
+    # Finding the saved device runs inside load_config although it reads the
+    # network: a stage of its own would need timeline strings in every locale.
+    # It is cancellable like load_config, and slow only when the saved address
+    # is out of date.
     context.stage("load_config")
-    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
+    config = _follow_saved_device(overlay_request_credentials(load_env_config(env_path=config_path(params)), params), params, context)
     context.config = config
     return config
 
 
-def load_optional_request_config(params: dict[str, object], context: AppOperationContext) -> "AppConfig":
+def _follow_saved_device(config: AppConfig, params: dict[str, object], context: AppOperationContext) -> AppConfig:
+    """The config with TC_HOST where the saved device answers now.
+
+    Only the operation's copy changes: the app saves a new address itself,
+    after the user confirms it (its stale-address banner).
+    """
+    try:
+        airport_mac = request_airport_mac(params)
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
+    host = config.get("TC_HOST")
+    password = config.get("TC_PASSWORD")
+    if not airport_mac or not host or not password:
+        return config
+    try:
+        current, reading = confirm_device_address(host, password, airport_mac, context.to_operation_callbacks())
+    except DeviceAccessError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc
+    context.device_reading = (current, reading)
+    if current == host:
+        return config
+    return AppConfig.from_values(
+        {**config.values, "TC_HOST": current},
+        path=config.path,
+        exists=config.exists,
+        file_values=config.file_values,
+    )
+
+
+def load_optional_request_config(params: dict[str, object], context: AppOperationContext) -> AppConfig:
     context.stage("load_config")
     config = overlay_request_credentials(load_optional_env_config(env_path=config_path(params)), params)
     context.config = config
@@ -52,7 +84,7 @@ def load_optional_request_config(params: dict[str, object], context: AppOperatio
 
 
 def resolve_request_connection(
-    config: "AppConfig",
+    config: AppConfig,
     context: AppOperationContext,
     *,
     allow_empty_password: bool = True,
@@ -64,7 +96,7 @@ def resolve_request_connection(
 
 
 def resolve_request_target(
-    config: "AppConfig",
+    config: AppConfig,
     context: AppOperationContext,
     *,
     profile: str,
@@ -81,9 +113,17 @@ def resolve_request_target(
     return target
 
 
+def request_device_reading(context: AppOperationContext, connection: SshConnection) -> AirportAcpReading | None:
+    """The read load_request_config took of the device at this connection's address."""
+    if context.device_reading is None:
+        return None
+    host, reading = context.device_reading
+    return reading if endpoint_host(host) == endpoint_host(connection.host) else None
+
+
 def require_request_device_password(context: AppOperationContext, connection: SshConnection) -> None:
     """Refuse a password the device's ACP would reject, as `auth_failed`."""
     try:
-        require_device_password(connection, context.to_operation_callbacks())
+        require_device_password(connection, context.to_operation_callbacks(), reading=request_device_reading(context, connection))
     except DeviceAccessError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc

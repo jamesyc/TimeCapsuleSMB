@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "El reinicio no finalizó";
 "backend.recovery.deploy.reboot_not_finished.message" = "Los archivos de instalación se enviaron y el reinicio se solicitó correctamente, pero SSH no volvió a estar accesible a tiempo. El dispositivo puede seguir iniciándose o utilizar otra dirección IP.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Espere unos minutos más.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "El dispositivo puede tener una nueva dirección IP. Busque dispositivos y vuelva a seleccionarlo.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Asegúrese de estar conectado a la misma red o Wi-Fi que el dispositivo.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "En dispositivos NetBSD 4, ejecute tcapsule activate cuando SSH esté disponible; la instalación no llegó a activar Samba después del reinicio.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "Si el dispositivo se restablece por sí solo, consulte https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Asegúrese de estar conectado a la misma red o Wi-Fi que el dispositivo.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "En dispositivos NetBSD 4, ejecute tcapsule activate cuando SSH esté disponible; la instalación no llegó a activar Samba después del reinicio.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "Si el dispositivo se restablece por sí solo, consulte https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort no es accesible en esta dirección";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB no pudo conectar con el servicio AirPort ACP antes de habilitar SSH. Las copias de seguridad o Utilidad AirPort pueden funcionar aunque ACP esté bloqueado.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Desactive la VPN o el software de seguridad que enruta el tráfico de la red local y vuelva a intentarlo.";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "Ni SSH ni AirPort ACP respondieron en la dirección guardada del dispositivo.";
 "backend.recovery.device_unreachable.action.1" = "Asegúrese de que el dispositivo esté encendido y conectado a la misma red o Wi-Fi que este Mac.";
 "backend.recovery.device_unreachable.action.2" = "Si el dispositivo se está reiniciando, espere unos minutos y vuelva a intentarlo.";
-"backend.recovery.device_unreachable.action.3" = "El dispositivo puede tener una nueva dirección IP. Busque dispositivos y vuelva a seleccionarlo.";
 "backend.recovery.ssh_transport_failed.title" = "Conexión SSH interrumpida";
 "backend.recovery.ssh_transport_failed.message" = "El dispositivo aceptó la conexión SSH y la cerró antes de iniciar sesión. Puede ocurrir mientras el dispositivo se inicia o está ocupado.";
 "backend.recovery.ssh_transport_failed.action.1" = "Espere un minuto y vuelva a intentarlo.";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "El reinicio no finalizó";
 "backend.recovery.reboot_not_finished.message" = "El dispositivo se desconectó o se reinició, pero no volvió a tiempo. Puede seguir iniciándose o utilizar otra dirección IP.";
 "backend.recovery.reboot_not_finished.action.1" = "Espere unos minutos más.";
-"backend.recovery.reboot_not_finished.action.2" = "El dispositivo puede tener una nueva dirección IP. Busque dispositivos y vuelva a seleccionarlo.";
-"backend.recovery.reboot_not_finished.action.3" = "Asegúrese de estar conectado a la misma red o Wi-Fi que el dispositivo.";
+"backend.recovery.reboot_not_finished.action.2" = "Asegúrese de estar conectado a la misma red o Wi-Fi que el dispositivo.";
 "backend.recovery.runtime_not_restarted.title" = "El uso compartido de archivos no se reanudó";
 "backend.recovery.runtime_not_restarted.message" = "El dispositivo se reinició, pero los servicios de TimeCapsuleSMB instalados no se iniciaron.";
 "backend.recovery.runtime_not_restarted.action.1" = "Ejecute «Activar».";

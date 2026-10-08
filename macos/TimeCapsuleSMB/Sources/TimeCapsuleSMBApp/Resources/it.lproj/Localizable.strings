@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "Il riavvio non è stato completato";
 "backend.recovery.deploy.reboot_not_finished.message" = "I file di installazione sono stati inviati e il riavvio richiesto, ma SSH non è tornato raggiungibile in tempo. Il dispositivo potrebbe essere ancora in avvio o usare un nuovo indirizzo IP.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Aspetta ancora qualche minuto.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "Il dispositivo potrebbe avere un nuovo indirizzo IP. Ripeti il rilevamento e selezionalo di nuovo.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Assicurati di essere connesso alla stessa rete o Wi-Fi del dispositivo.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "Sui dispositivi NetBSD 4, esegui tcapsule activate quando SSH è disponibile; l’installazione non ha raggiunto l’attivazione di Samba dopo il riavvio.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "Se il dispositivo si ripristina da solo, vedere https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Assicurati di essere connesso alla stessa rete o Wi-Fi del dispositivo.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "Sui dispositivi NetBSD 4, esegui tcapsule activate quando SSH è disponibile; l’installazione non ha raggiunto l’attivazione di Samba dopo il riavvio.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "Se il dispositivo si ripristina da solo, vedere https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort non è raggiungibile a questo indirizzo";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB non è riuscito a raggiungere il servizio ACP AirPort prima di abilitare SSH. I backup o Utility AirPort potrebbero continuare a funzionare anche quando ACP è bloccato.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Disattiva la VPN o il software di sicurezza che instrada il traffico della rete locale, quindi riprova.";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "Né SSH né AirPort ACP hanno risposto all’indirizzo salvato del dispositivo.";
 "backend.recovery.device_unreachable.action.1" = "Assicurati che il dispositivo sia acceso e connesso alla stessa rete o Wi-Fi di questo Mac.";
 "backend.recovery.device_unreachable.action.2" = "Se il dispositivo si sta riavviando, attendi qualche minuto e riprova.";
-"backend.recovery.device_unreachable.action.3" = "Il dispositivo potrebbe avere un nuovo indirizzo IP. Ripeti il rilevamento e selezionalo di nuovo.";
 "backend.recovery.ssh_transport_failed.title" = "Connessione SSH interrotta";
 "backend.recovery.ssh_transport_failed.message" = "Il dispositivo ha accettato la connessione SSH e l’ha chiusa prima dell’accesso. Può succedere mentre il dispositivo si avvia o è occupato.";
 "backend.recovery.ssh_transport_failed.action.1" = "Attendi un minuto e riprova.";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "Il riavvio non è stato completato";
 "backend.recovery.reboot_not_finished.message" = "Il dispositivo è andato offline o si è riavviato, ma non è tornato in tempo. Potrebbe essere ancora in avvio o usare un nuovo indirizzo IP.";
 "backend.recovery.reboot_not_finished.action.1" = "Aspetta ancora qualche minuto.";
-"backend.recovery.reboot_not_finished.action.2" = "Il dispositivo potrebbe avere un nuovo indirizzo IP. Ripeti il rilevamento e selezionalo di nuovo.";
-"backend.recovery.reboot_not_finished.action.3" = "Assicurati di essere connesso alla stessa rete o Wi-Fi del dispositivo.";
+"backend.recovery.reboot_not_finished.action.2" = "Assicurati di essere connesso alla stessa rete o Wi-Fi del dispositivo.";
 "backend.recovery.runtime_not_restarted.title" = "La condivisione dei file non è ripartita";
 "backend.recovery.runtime_not_restarted.message" = "Il dispositivo si è riavviato, ma i servizi TimeCapsuleSMB installati non si sono avviati.";
 "backend.recovery.runtime_not_restarted.action.1" = "Esegui “Attiva”.";

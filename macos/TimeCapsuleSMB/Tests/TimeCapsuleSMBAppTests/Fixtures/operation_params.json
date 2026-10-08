@@ -1,5 +1,6 @@
 {
   "common": [
+    "airport_mac",
     "config",
     "confirmation",
     "confirmation_id",

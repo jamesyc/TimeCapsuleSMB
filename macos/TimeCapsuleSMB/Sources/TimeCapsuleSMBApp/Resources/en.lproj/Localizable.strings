@@ -607,10 +607,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "Reboot did not finish";
 "backend.recovery.deploy.reboot_not_finished.message" = "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again in time. It may still be booting, or it may have come back with a different IP address.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Wait a few more minutes.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "The device may have a new IP address. Run Discover and reselect it.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Make sure you are connected to the same network or Wi-Fi as the device.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Make sure you are connected to the same network or Wi-Fi as the device.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort not reachable at this address";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. Backups or AirPort Utility may still work even when ACP is blocked.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Disable VPN or security software that routes local network traffic, then try again.";
@@ -699,7 +698,6 @@
 "backend.recovery.device_unreachable.message" = "Neither SSH nor AirPort ACP answered at the device's saved address.";
 "backend.recovery.device_unreachable.action.1" = "Make sure the device is turned on and connected to the same network or Wi-Fi as this Mac.";
 "backend.recovery.device_unreachable.action.2" = "If the device is restarting, wait a few minutes, then try again.";
-"backend.recovery.device_unreachable.action.3" = "The device may have a new IP address. Run Discover and reselect it.";
 "backend.recovery.ssh_transport_failed.title" = "SSH connection dropped";
 "backend.recovery.ssh_transport_failed.message" = "The device accepted the SSH connection, then closed it before login. This can happen while the device is starting up or busy.";
 "backend.recovery.ssh_transport_failed.action.1" = "Wait a minute, then try again.";
@@ -837,8 +835,7 @@
 "backend.recovery.reboot_not_finished.title" = "Reboot did not finish";
 "backend.recovery.reboot_not_finished.message" = "The device went offline or restarted, but did not come back in time. It may still be starting up, or it may have a new IP address.";
 "backend.recovery.reboot_not_finished.action.1" = "Wait a few more minutes.";
-"backend.recovery.reboot_not_finished.action.2" = "The device may have a new IP address. Run Discover and reselect it.";
-"backend.recovery.reboot_not_finished.action.3" = "Make sure you are connected to the same network or Wi-Fi as the device.";
+"backend.recovery.reboot_not_finished.action.2" = "Make sure you are connected to the same network or Wi-Fi as the device.";
 "backend.recovery.runtime_not_restarted.title" = "File sharing did not restart";
 "backend.recovery.runtime_not_restarted.message" = "The device restarted, but the installed TimeCapsuleSMB services did not start.";
 "backend.recovery.runtime_not_restarted.action.1" = "Run Activate.";

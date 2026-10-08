@@ -10,7 +10,6 @@ from timecapsulesmb.app.contracts import (
     uninstall_plan_payload,
     uninstall_result_payload,
 )
-from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.ops.common import (
     load_request_config,
@@ -33,7 +32,6 @@ from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
     bool_param,
-    config_path,
     int_param,
     string_param,
 )
@@ -55,7 +53,6 @@ from timecapsulesmb.services.deploy import require_supported_payload
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.services.runtime import (
-    load_env_config,
     probe_failure_error,
     probe_managed_connection_state,
     resolve_env_connection,
@@ -185,9 +182,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
 
 
 def _fsck_connection(params: dict[str, object], context: AppOperationContext, *, rebooting: bool) -> SshConnection:
-    context.stage("load_config")
-    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
-    context.config = config
+    config = load_request_config(params, context)
     context.stage("resolve_connection")
     # The reboot goes through AirPort ACP, which needs the password.
     connection = resolve_env_connection(config, allow_empty_password=not rebooting)

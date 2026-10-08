@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "Het opnieuw opstarten is niet voltooid";
 "backend.recovery.deploy.reboot_not_finished.message" = "De installatiebestanden zijn geüpload en de herstart is aangevraagd, maar het apparaat was niet op tijd weer bereikbaar via SSH. Het start mogelijk nog op of heeft een nieuw IP-adres.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Wacht nog een paar minuten.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "Het apparaat heeft mogelijk een nieuw IP-adres. Zoek opnieuw naar apparaten en selecteer het opnieuw.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "Voer op NetBSD 4-apparaten tcapsule activate uit zodra SSH bereikbaar is; de installatie bereikte de Samba-activering na de herstart niet.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "Als uw apparaat zichzelf reset, zie https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "Voer op NetBSD 4-apparaten tcapsule activate uit zodra SSH bereikbaar is; de installatie bereikte de Samba-activering na de herstart niet.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "Als uw apparaat zichzelf reset, zie https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort is niet bereikbaar op dit adres";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB kon de AirPort ACP-service niet bereiken voordat SSH werd ingeschakeld. Back-ups of AirPort-configuratieprogramma kunnen nog steeds werken, zelfs als ACP wordt geblokkeerd.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Schakel VPN of beveiligingssoftware uit die lokaal netwerkverkeer routeert en probeer het opnieuw.";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "SSH en AirPort ACP reageerden geen van beide op het opgeslagen adres van het apparaat.";
 "backend.recovery.device_unreachable.action.1" = "Zorg ervoor dat het apparaat is ingeschakeld en verbonden met hetzelfde netwerk of Wi-Fi als deze Mac.";
 "backend.recovery.device_unreachable.action.2" = "Als het apparaat opnieuw opstart, wacht dan een paar minuten en probeer het opnieuw.";
-"backend.recovery.device_unreachable.action.3" = "Het apparaat heeft mogelijk een nieuw IP-adres. Zoek opnieuw naar apparaten en selecteer het opnieuw.";
 "backend.recovery.ssh_transport_failed.title" = "SSH-verbinding verbroken";
 "backend.recovery.ssh_transport_failed.message" = "Het apparaat accepteerde de SSH-verbinding en sloot deze vóór het inloggen. Dit kan gebeuren terwijl het apparaat opstart of bezet is.";
 "backend.recovery.ssh_transport_failed.action.1" = "Wacht een minuut en probeer het opnieuw.";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "Het opnieuw opstarten is niet voltooid";
 "backend.recovery.reboot_not_finished.message" = "Het apparaat ging offline of startte opnieuw op, maar kwam niet op tijd terug. Het start mogelijk nog op of heeft een nieuw IP-adres.";
 "backend.recovery.reboot_not_finished.action.1" = "Wacht nog een paar minuten.";
-"backend.recovery.reboot_not_finished.action.2" = "Het apparaat heeft mogelijk een nieuw IP-adres. Zoek opnieuw naar apparaten en selecteer het opnieuw.";
-"backend.recovery.reboot_not_finished.action.3" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
+"backend.recovery.reboot_not_finished.action.2" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
 "backend.recovery.runtime_not_restarted.title" = "Bestandsdeling niet opnieuw gestart";
 "backend.recovery.runtime_not_restarted.message" = "Het apparaat is opnieuw opgestart, maar de geïnstalleerde TimeCapsuleSMB-services zijn niet gestart.";
 "backend.recovery.runtime_not_restarted.action.1" = "Voer ‘Activeren’ uit.";

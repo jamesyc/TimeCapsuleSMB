@@ -243,6 +243,27 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].params["config"], .string("/tmp/manual.env"))
     }
 
+    func testProfileContextSendsTheSavedAirportMAC() async throws {
+        let runner = RecordingHelperRunner(
+            events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
+            ],
+            result: HelperRunResult(exitCode: 0, sawTerminalEvent: true, stderr: "")
+        )
+        let client = BackendClient(runner: runner)
+        let withMAC = DeviceRuntimeContext(
+            profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"), airportMAC: "02:00:00:00:00:01"
+        )
+
+        client.run(operation: "doctor", params: [:], context: withMAC)
+        try await waitUntil { !client.isRunning && runner.calls.count == 1 }
+        XCTAssertEqual(runner.calls[0].params["airport_mac"], .string("02:00:00:00:00:01"))
+
+        client.run(operation: "doctor", params: [:], context: DeviceRuntimeContext(profileID: "device-one", configURL: withMAC.configURL))
+        try await waitUntil { !client.isRunning && runner.calls.count == 2 }
+        XCTAssertNil(runner.calls[1].params["airport_mac"])
+    }
+
     func testConfirmationReplayPreservesDeviceContext() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

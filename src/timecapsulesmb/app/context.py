@@ -16,6 +16,7 @@ from timecapsulesmb.telemetry import build_device_os_version
 
 if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
+    from timecapsulesmb.device.probe import AirportAcpReading
     from timecapsulesmb.device.probe import ProbedDeviceState
     from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.transport.ssh import SshConnection
@@ -30,6 +31,9 @@ class AppOperationContext:
         self.diagnostics = OperationContext(operation)
         self.result = "failure"
         self.error: str | None = None
+        # The SSH target and network ACP read load_request_config took of the
+        # saved device, so the command's password check need not read again.
+        self.device_reading: tuple[str, AirportAcpReading] | None = None
 
     @property
     def current_stage(self) -> str | None:
@@ -126,8 +130,11 @@ class AppOperationContext:
         # A device found at another address (services.locate) is reached there
         # from now on, and failures report that address.
         current_host = fields.get("current_host")
-        if isinstance(current_host, str) and self.connection is not None:
-            self.connection = replace(self.connection, host=current_host)
+        if isinstance(current_host, str):
+            # In the debug fields too, so every error event carries it.
+            self.diagnostics.add_debug_fields(current_host=current_host)
+            if self.connection is not None:
+                self.connection = replace(self.connection, host=current_host)
 
     def add_debug_fields(self, **fields: object) -> None:
         self.diagnostics.add_debug_fields(**fields)

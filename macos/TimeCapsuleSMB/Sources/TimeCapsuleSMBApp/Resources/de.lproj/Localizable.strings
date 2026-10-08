@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "Neustart wurde nicht abgeschlossen";
 "backend.recovery.deploy.reboot_not_finished.message" = "Die Installationsdateien wurden hochgeladen und der Neustart angefordert, aber das Gerät war nicht rechtzeitig wieder über SSH erreichbar. Es startet möglicherweise noch oder hat eine neue IP-Adresse.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Warten Sie noch ein paar Minuten.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "Das Gerät hat möglicherweise eine neue IP-Adresse. Starten Sie die Gerätesuche und wählen Sie es erneut aus.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Stellen Sie sicher, dass Sie mit demselben Netzwerk oder Wi-Fi wie das Gerät verbunden sind.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "Führen Sie auf NetBSD 4-Geräten tcapsule activate aus, sobald SSH erreichbar ist; die Installation erreichte die Samba-Aktivierung nach dem Neustart nicht.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "Wenn sich Ihr Gerät selbst zurücksetzt, lesen Sie https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Stellen Sie sicher, dass Sie mit demselben Netzwerk oder Wi-Fi wie das Gerät verbunden sind.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "Führen Sie auf NetBSD 4-Geräten tcapsule activate aus, sobald SSH erreichbar ist; die Installation erreichte die Samba-Aktivierung nach dem Neustart nicht.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "Wenn sich Ihr Gerät selbst zurücksetzt, lesen Sie https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort ist unter dieser Adresse nicht erreichbar";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB konnte den AirPort ACP-Dienst vor dem Aktivieren von SSH nicht erreichen. Backups oder das AirPort-Dienstprogramm können weiterhin funktionieren, auch wenn ACP blockiert ist.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Deaktivieren Sie VPN oder Sicherheitssoftware, die lokalen Netzwerkverkehr weiterleitet, und versuchen Sie es erneut.";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "Weder SSH noch AirPort ACP hat unter der gespeicherten Adresse des Geräts geantwortet.";
 "backend.recovery.device_unreachable.action.1" = "Stellen Sie sicher, dass das Gerät eingeschaltet und mit demselben Netzwerk oder Wi-Fi wie dieser Mac verbunden ist.";
 "backend.recovery.device_unreachable.action.2" = "Falls das Gerät gerade neu startet, warten Sie ein paar Minuten und versuchen Sie es dann erneut.";
-"backend.recovery.device_unreachable.action.3" = "Das Gerät hat möglicherweise eine neue IP-Adresse. Starten Sie die Gerätesuche und wählen Sie es erneut aus.";
 "backend.recovery.ssh_transport_failed.title" = "SSH-Verbindung abgebrochen";
 "backend.recovery.ssh_transport_failed.message" = "Das Gerät hat die SSH-Verbindung angenommen und vor der Anmeldung wieder geschlossen. Das kann passieren, während das Gerät startet oder ausgelastet ist.";
 "backend.recovery.ssh_transport_failed.action.1" = "Warten Sie eine Minute und versuchen Sie es dann erneut.";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "Neustart wurde nicht abgeschlossen";
 "backend.recovery.reboot_not_finished.message" = "Das Gerät ging offline oder startete neu, kam aber nicht rechtzeitig zurück. Es startet möglicherweise noch oder hat eine neue IP-Adresse.";
 "backend.recovery.reboot_not_finished.action.1" = "Warten Sie noch ein paar Minuten.";
-"backend.recovery.reboot_not_finished.action.2" = "Das Gerät hat möglicherweise eine neue IP-Adresse. Starten Sie die Gerätesuche und wählen Sie es erneut aus.";
-"backend.recovery.reboot_not_finished.action.3" = "Stellen Sie sicher, dass Sie mit demselben Netzwerk oder Wi-Fi wie das Gerät verbunden sind.";
+"backend.recovery.reboot_not_finished.action.2" = "Stellen Sie sicher, dass Sie mit demselben Netzwerk oder Wi-Fi wie das Gerät verbunden sind.";
 "backend.recovery.runtime_not_restarted.title" = "Dateifreigabe nicht wieder gestartet";
 "backend.recovery.runtime_not_restarted.message" = "Das Gerät wurde neu gestartet, aber die installierten TimeCapsuleSMB-Dienste wurden nicht gestartet.";
 "backend.recovery.runtime_not_restarted.action.1" = "Führen Sie „Aktivieren“ aus.";

@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "A reinicialização não foi concluída";
 "backend.recovery.deploy.reboot_not_finished.message" = "Os arquivos de instalação foram enviados e a reinicialização foi solicitada, mas SSH não voltou a ficar acessível a tempo. O dispositivo pode ainda estar iniciando ou usar outro endereço IP.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Aguarde mais alguns minutos.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "O dispositivo pode ter um novo endereço IP. Busque dispositivos e selecione-o novamente.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Certifique-se de estar conectado à mesma rede ou Wi-Fi do dispositivo.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "Em dispositivos NetBSD 4, execute tcapsule activate assim que SSH estiver disponível; a instalação não chegou à ativação do Samba após a reinicialização.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "Se o dispositivo se redefinir sozinho, consulte https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Certifique-se de estar conectado à mesma rede ou Wi-Fi do dispositivo.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "Em dispositivos NetBSD 4, execute tcapsule activate assim que SSH estiver disponível; a instalação não chegou à ativação do Samba após a reinicialização.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "Se o dispositivo se redefinir sozinho, consulte https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort não está acessível neste endereço";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB não conseguiu alcançar o serviço ACP do AirPort antes de ativar SSH. Backups ou o Utilitário AirPort ainda podem funcionar mesmo quando ACP está bloqueado.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Desative VPN ou software de segurança que roteia o tráfego da rede local e tente novamente.";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "Nem SSH nem AirPort ACP responderam no endereço salvo do dispositivo.";
 "backend.recovery.device_unreachable.action.1" = "Verifique se o dispositivo está ligado e conectado à mesma rede ou Wi-Fi deste Mac.";
 "backend.recovery.device_unreachable.action.2" = "Se o dispositivo estiver reiniciando, aguarde alguns minutos e tente novamente.";
-"backend.recovery.device_unreachable.action.3" = "O dispositivo pode ter um novo endereço IP. Busque dispositivos e selecione-o novamente.";
 "backend.recovery.ssh_transport_failed.title" = "Conexão SSH interrompida";
 "backend.recovery.ssh_transport_failed.message" = "O dispositivo aceitou a conexão SSH e a fechou antes do login. Isso pode acontecer enquanto o dispositivo está iniciando ou ocupado.";
 "backend.recovery.ssh_transport_failed.action.1" = "Aguarde um minuto e tente novamente.";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "A reinicialização não foi concluída";
 "backend.recovery.reboot_not_finished.message" = "O dispositivo ficou offline ou reiniciou, mas não voltou a tempo. Ele pode ainda estar iniciando ou usar outro endereço IP.";
 "backend.recovery.reboot_not_finished.action.1" = "Aguarde mais alguns minutos.";
-"backend.recovery.reboot_not_finished.action.2" = "O dispositivo pode ter um novo endereço IP. Busque dispositivos e selecione-o novamente.";
-"backend.recovery.reboot_not_finished.action.3" = "Certifique-se de estar conectado à mesma rede ou Wi-Fi do dispositivo.";
+"backend.recovery.reboot_not_finished.action.2" = "Certifique-se de estar conectado à mesma rede ou Wi-Fi do dispositivo.";
 "backend.recovery.runtime_not_restarted.title" = "O compartilhamento de arquivos não foi retomado";
 "backend.recovery.runtime_not_restarted.message" = "O dispositivo foi reiniciado, mas os serviços do TimeCapsuleSMB instalados não foram iniciados.";
 "backend.recovery.runtime_not_restarted.action.1" = "Execute “Ativar”.";

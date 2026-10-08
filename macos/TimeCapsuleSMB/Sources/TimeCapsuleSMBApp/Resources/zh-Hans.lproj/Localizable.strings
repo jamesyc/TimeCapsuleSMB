@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "重启未完成";
 "backend.recovery.deploy.reboot_not_finished.message" = "安装文件已上传，重启请求也已成功发送，但设备未能及时恢复 SSH 连接。它可能仍在启动，也可能已使用新的 IP 地址重新上线。";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "再等待几分钟。";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "设备可能获得了新的 IP 地址。请重新发现设备并选择它。";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "在 NetBSD 4 设备上，SSH 可用后请运行 tcapsule activate；安装过程尚未进行到重启后启动 Samba 的步骤。";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "如果设备自行重置，请参见 https://github.com/jamesyc/TimeCapsuleSMB/issues/177。";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "在 NetBSD 4 设备上，SSH 可用后请运行 tcapsule activate；安装过程尚未进行到重启后启动 Samba 的步骤。";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "如果设备自行重置，请参见 https://github.com/jamesyc/TimeCapsuleSMB/issues/177。";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "无法通过此地址访问 AirPort";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB 在启用 SSH 前无法连接到 AirPort ACP 服务。即使 ACP 被阻止，备份或 AirPort 实用工具仍可能工作。";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "停用会路由本地网络流量的 VPN 或安全软件，然后重试。";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "在设备已保存的地址上，SSH 和 AirPort ACP 都没有响应。";
 "backend.recovery.device_unreachable.action.1" = "确认设备已开机，并与这台 Mac 连接在同一网络或 Wi-Fi 上。";
 "backend.recovery.device_unreachable.action.2" = "如果设备正在重启，请等待几分钟后重试。";
-"backend.recovery.device_unreachable.action.3" = "设备可能获得了新的 IP 地址。请重新发现设备并选择它。";
 "backend.recovery.ssh_transport_failed.title" = "SSH 连接中断";
 "backend.recovery.ssh_transport_failed.message" = "设备接受了 SSH 连接，但在登录前将其关闭。设备正在启动或繁忙时可能会出现这种情况。";
 "backend.recovery.ssh_transport_failed.action.1" = "等待一分钟后重试。";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "重启未完成";
 "backend.recovery.reboot_not_finished.message" = "设备已断开或已重启，但未能及时重新上线。它可能仍在启动，也可能已使用新的 IP 地址。";
 "backend.recovery.reboot_not_finished.action.1" = "再等待几分钟。";
-"backend.recovery.reboot_not_finished.action.2" = "设备可能获得了新的 IP 地址。请重新发现设备并选择它。";
-"backend.recovery.reboot_not_finished.action.3" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
+"backend.recovery.reboot_not_finished.action.2" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
 "backend.recovery.runtime_not_restarted.title" = "文件共享没有恢复";
 "backend.recovery.runtime_not_restarted.message" = "设备已重启，但已安装的 TimeCapsuleSMB 服务没有启动。";
 "backend.recovery.runtime_not_restarted.action.1" = "运行“启动 SMB”。";

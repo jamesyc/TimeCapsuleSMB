@@ -23,6 +23,113 @@ final class OperationCompletionTests: XCTestCase {
         XCTAssertNil(fixture.app.sshAccessStore.error(for: fixture.profile))
     }
 
+    func testAddressOutcomesLookForTheDeviceAgainAndOtherFailuresDoNot() async throws {
+        var moved = testDeployResultPayload()
+        if case .object(var fields) = moved {
+            fields["current_host"] = .string("root@10.0.0.9")
+            moved = .object(fields)
+        }
+        let cases: [(String, BackendEvent, Bool)] = [
+            ("not answering", BackendEvent(type: "error", operation: "deploy", code: "device_unreachable", message: "Not answering."), true),
+            ("did not come back", BackendEvent(type: "error", operation: "deploy", code: "reboot_not_finished", message: "Timed out."), true),
+            ("found at a new address", BackendEvent(type: "result", operation: "deploy", ok: true, payload: moved), true),
+            ("found at a new address, then failed", BackendEvent(
+                type: "error", operation: "deploy", code: "remote_error", message: "Disk did not mount.",
+                debug: .object(["current_host": .string("root@10.0.0.9")])
+            ), true),
+            ("unrelated failure", failure("deploy"), false),
+            ("plain success", BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload()), false),
+        ]
+        for (name, outcome, looksAgain) in cases {
+            let fixture = try await makeFixture(responses: [
+                .init("deploy"): [.init(events: [outcome])],
+                .init("set-ssh"): [.init(events: [sshResult()])]
+            ])
+            let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+            session.runInstall(profile: fixture.profile)
+            try await waitUntilStoreState { !fixture.coordinator.isDeviceBusy(fixture.profile) && fixture.runner.calls.count >= 1 }
+            if looksAgain {
+                try await waitUntilStoreState { fixture.app.deviceDiscovery.state != .idle }
+            } else {
+                // Give a wrongly scheduled refresh the time it would need.
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            // Discovery waits for the app's readiness checks here; it was asked to look.
+            XCTAssertEqual(fixture.app.deviceDiscovery.state == .waitingForReadiness, looksAgain, name)
+            withExtendedLifetime(session) {}
+        }
+    }
+
+    func testOutcomesFromBeforeTheDashboardOpenedDoNotLookAgain() async throws {
+        let unreachable = BackendEvent(type: "error", operation: "deploy", code: "device_unreachable", message: "Not answering.")
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [.init(events: [unreachable]), .init(events: [unreachable])],
+            .init("set-ssh"): [.init(events: [sshResult()]), .init(events: [sshResult()])]
+        ])
+        // A failure answered before this dashboard existed.
+        _ = fixture.coordinator.run(
+            operation: "deploy",
+            params: [:],
+            context: fixture.profile.runtimeContext,
+            activeDeviceID: fixture.profile.id,
+            laneKey: .deviceWorkflow(fixture.profile.id, .deploy)
+        )
+        try await waitUntilStoreState { !fixture.coordinator.isDeviceBusy(fixture.profile) && fixture.runner.calls.count == 1 }
+
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(fixture.app.deviceDiscovery.state, .idle)
+
+        // A new one after it opened still does.
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState { fixture.app.deviceDiscovery.state == .waitingForReadiness }
+        withExtendedLifetime(session) {}
+    }
+
+    func testAConfirmedRunThatFoundTheDeviceElsewhereLooksAgain() async throws {
+        // The replay after a confirmation reuses the confirmation's request ID.
+        var moved = testDeployResultPayload()
+        if case .object(var fields) = moved {
+            fields["current_host"] = .string("root@10.0.0.9")
+            moved = .object(fields)
+        }
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [
+                .init(events: [confirmation("deploy", id: "first")]),
+                .init(events: [BackendEvent(type: "result", operation: "deploy", ok: true, payload: moved)])
+            ]
+        ])
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        _ = fixture.coordinator.run(operation: "deploy", profile: fixture.profile)
+        try await waitUntilStoreState { fixture.coordinator.readyConfirmation != nil }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(fixture.app.deviceDiscovery.state, .idle)
+
+        fixture.coordinator.confirm(try XCTUnwrap(fixture.coordinator.readyConfirmation))
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 && !fixture.coordinator.isDeviceBusy(fixture.profile) }
+        try await waitUntilStoreState { fixture.app.deviceDiscovery.state == .waitingForReadiness }
+        withExtendedLifetime(session) {}
+    }
+
+    func testEventsOfARunningLaneAreNotScanned() async throws {
+        // An address outcome is only read once its run has ended.
+        let unreachable = BackendEvent(type: "error", operation: "deploy", code: "device_unreachable", message: "Not answering.")
+        let fixture = try await makeFixture(responses: [
+            .init("deploy"): [.init(events: [unreachable], pauseAfterEvents: true)],
+            .init("set-ssh"): [.init(events: [sshResult()])]
+        ])
+        defer { fixture.runner.finishAll() }
+        let session = DeviceDashboardSession(profile: fixture.profile, appStore: fixture.app)
+        session.runInstall(profile: fixture.profile)
+        try await waitUntilStoreState { session.deployStore.error != nil }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(fixture.app.deviceDiscovery.state, .idle)
+
+        fixture.runner.finish(.init("deploy"))
+        try await waitUntilStoreState { fixture.app.deviceDiscovery.state == .waitingForReadiness }
+        withExtendedLifetime(session) {}
+    }
+
     func testDeferredRefreshSurvivesAnotherWorkflowAndIsSupersededBySuccessfulRetry() async throws {
         for supersedingOperation in [nil, "deploy", "set-ssh"] as [String?] {
             let fixture = try await makeFixture(responses: [

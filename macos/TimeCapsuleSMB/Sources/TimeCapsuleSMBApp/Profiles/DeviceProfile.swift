@@ -3,10 +3,14 @@ import Foundation
 public struct DeviceRuntimeContext: Equatable, Sendable {
     public let profileID: String
     public let configURL: URL
+    /// The device's confirmed AirPort MAC, so the helper can find it at a new
+    /// address when DHCP moved it.
+    public let airportMAC: String?
 
-    public init(profileID: String, configURL: URL) {
+    public init(profileID: String, configURL: URL, airportMAC: String? = nil) {
         self.profileID = profileID
         self.configURL = configURL
+        self.airportMAC = airportMAC
     }
 }
 
@@ -462,7 +466,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     }
 
     var runtimeContext: DeviceRuntimeContext {
-        DeviceRuntimeContext(profileID: id, configURL: URL(fileURLWithPath: configPath))
+        DeviceRuntimeContext(profileID: id, configURL: URL(fileURLWithPath: configPath), airportMAC: network.airportMAC)
     }
 
     var configURL: URL {

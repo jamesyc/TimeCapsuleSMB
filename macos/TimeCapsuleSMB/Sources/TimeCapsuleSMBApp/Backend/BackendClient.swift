@@ -66,6 +66,9 @@ final class BackendClient: ObservableObject {
         if let context, runParams["config"] == nil {
             runParams["config"] = .string(context.configURL.path)
         }
+        if let airportMAC = context?.airportMAC, runParams["airport_mac"] == nil {
+            runParams["airport_mac"] = .string(airportMAC)
+        }
         isRunning = true
         lastExitCode = nil
         pendingConfirmation = nil

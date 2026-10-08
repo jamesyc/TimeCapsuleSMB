@@ -109,8 +109,7 @@ class AppSshpassRequirementTests(unittest.TestCase):
             mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config", return_value=self._telemetry_client)
         )
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
-        for target in ("timecapsulesmb.app.ops.common.load_env_config", "timecapsulesmb.app.ops.maintenance.load_env_config"):
-            self._exit_stack.enter_context(mock.patch(target, return_value=config))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config))
         self.device_steps = mock.Mock(side_effect=ReachedDevice)
         for target in (
             "timecapsulesmb.app.ops.common.resolve_validated_managed_target",

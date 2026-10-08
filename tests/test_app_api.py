@@ -75,7 +75,8 @@ from timecapsulesmb.services.flash import (
 )
 from timecapsulesmb.services.maintenance import FSCK_NOT_UNMOUNTED_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
-from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime, acp_password_answer
+from timecapsulesmb.services.locate import LocateResult
+from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime, acp_password_answer, acp_reading
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
 from timecapsulesmb.transport.errors import (
     LOCAL_NETWORK_FILTERED_MESSAGE,
@@ -3382,7 +3383,9 @@ class AppApiTests(unittest.TestCase):
         self._telemetry_factory.assert_not_called()
         self._telemetry_client.emit.assert_not_called()
 
-    def run_set_ssh_disable_with_password_answer(self, matches: bool | None, *, ssh_open: bool) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
+    def run_set_ssh_disable_with_password_answer(
+        self, matches: bool | None, *, ssh_open: bool, extra_params: dict[str, object] | None = None,
+    ) -> tuple[CollectingSink, int, mock.Mock, mock.Mock]:
         collector = CollectingSink()
         compare = acp_password_answer(matches)
         with tempfile.TemporaryDirectory() as tmp:
@@ -3396,7 +3399,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
                         rc = service.run_api_request(
                             {"operation": "set-ssh",
-                             "params": {"config": str(config_path), "action": "disable", "password": "secret"}},
+                             "params": {"config": str(config_path), "action": "disable", "password": "secret", **(extra_params or {})}},
                             collector.sink,
                         )
         return collector, rc, compare, disable_ssh
@@ -3458,6 +3461,78 @@ class AppApiTests(unittest.TestCase):
         _collector, _rc, compare, _disable_ssh = self.run_set_ssh_disable_with_password_answer(False, ssh_open=False)
 
         compare.assert_not_called()
+
+    def run_set_ssh_with_the_saved_mac(self, airport_mac: object, *, located):
+        """set-ssh enable, with SSH already on, for a profile saved at .2 whose
+        device no longer answers there."""
+        collector = CollectingSink()
+        probed: list[str] = []
+
+        def status(host: str) -> SetSshStatusResult:
+            probed.append(host)
+            return SetSshStatusResult(host=host.removeprefix("root@"), acp_port_reachable=True, ssh_port_reachable=True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(None)), \
+                    mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=located) as locate, \
+                    mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", side_effect=status):
+                rc = service.run_api_request(
+                    {
+                        "operation": "set-ssh",
+                        "params": {"config": str(config_path), "action": "enable", "password": "secret", "airport_mac": airport_mac},
+                    },
+                    collector.sink,
+                )
+            saved = config_path.read_text()
+        return rc, collector, probed, locate, saved
+
+    def test_an_operation_reaches_the_saved_device_where_it_moved(self) -> None:
+        moved = LocateResult("found", host="root@10.0.0.9", address="10.0.0.9")
+        rc, collector, probed, locate, saved = self.run_set_ssh_with_the_saved_mac(DEVICE_AIRPORT_MAC.upper().replace(":", "-"), located=moved)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(locate.call_args.args[0], DEVICE_AIRPORT_MAC)
+        self.assertEqual(probed, ["root@10.0.0.9"])
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertEqual(result["payload"]["current_host"], "root@10.0.0.9")
+        # Only this operation used the new address: the app saves it after asking.
+        self.assertEqual(saved, "TC_HOST=root@10.0.0.2\n")
+
+    def test_a_failure_after_the_device_was_found_elsewhere_still_names_its_address(self) -> None:
+        collector = CollectingSink()
+        moved = LocateResult("found", host="root@10.0.0.9", address="10.0.0.9")
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(None)), \
+                    mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=moved), \
+                    mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", side_effect=OSError("connection reset")):
+                rc = service.run_api_request(
+                    {"operation": "set-ssh", "params": {
+                        "config": str(config_path), "action": "enable", "password": "secret", "airport_mac": DEVICE_AIRPORT_MAC,
+                    }},
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["debug"]["current_host"], "root@10.0.0.9")
+
+    def test_an_operation_whose_device_was_not_found_elsewhere_reports_no_new_address(self) -> None:
+        rc, collector, probed, _locate, _saved = self.run_set_ssh_with_the_saved_mac(DEVICE_AIRPORT_MAC, located=LocateResult("not_found"))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(probed, ["root@10.0.0.2"])
+        self.assertNotIn("current_host", self.assert_single_terminal_event(collector, "result")["payload"])
+
+    def test_a_malformed_saved_mac_is_refused(self) -> None:
+        rc, collector, probed, locate, _saved = self.run_set_ssh_with_the_saved_mac("80:ea", located=LocateResult("not_found"))
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "validation_failed")
+        locate.assert_not_called()
+        self.assertEqual(probed, [])
 
     def test_set_ssh_enable_requires_reboot_confirmation(self) -> None:
         collector = CollectingSink()
@@ -4271,6 +4346,24 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(len(checks), 1)
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertEqual(checks[0]["details"], {"port": 445})
+
+    def test_doctor_given_the_saved_mac_passes_its_one_read_to_the_checks(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        read = acp_password_answer(True)
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+                mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")), \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", read), \
+                mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", return_value=([], False)) as checks:
+            rc = service.run_api_request(
+                {"operation": "doctor", "params": {"airport_mac": DEVICE_AIRPORT_MAC}},
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 0)
+        read.assert_called_once()
+        self.assertEqual(checks.call_args.kwargs["device_reading"], read.return_value)
 
     def test_doctor_ignores_legacy_bonjour_timeout_param(self) -> None:
         collector = CollectingSink()
@@ -5295,12 +5388,9 @@ class AppApiTests(unittest.TestCase):
         errors = collector.events_of_type("error")
         self.assertEqual(errors[0]["code"], "reboot_not_finished")
         self.assertEqual(errors[0]["message"], "Timed out waiting for SSH after reboot.")
-        self.assertNotIn("Run Discover and reselect it", errors[0]["message"])
         self.assertEqual(errors[0]["recovery"]["localization_key"], "deploy.reboot_not_finished")
-        self.assertIn(
-            "The device may have a new IP address. Run Discover and reselect it.",
-            errors[0]["recovery"]["actions"],
-        )
+        # The app looks for the device again itself; no step asks the user to.
+        self.assertFalse(any("Discover" in action for action in errors[0]["recovery"]["actions"]))
         self.assertEqual(collector.events_of_type("result"), [])
 
     def test_deploy_reboot_records_lifecycle_fields(self) -> None:
@@ -6104,6 +6194,39 @@ MaSt = (
                         rc = service.run_api_request({"operation": "uninstall", "params": params}, collector.sink)
         return collector, rc, compare, uninstall
 
+    def test_a_command_given_the_saved_mac_reads_the_device_once(self) -> None:
+        # The read that placed the device at operation start is also its
+        # password check; an unanswered one is not repeated either.
+        saved_mac = {"airport_mac": DEVICE_AIRPORT_MAC}
+        runs = {
+            "deploy": lambda matches: self.run_deploy_with_password_answer(matches, {"dry_run": False, **saved_mac}),
+            "uninstall": lambda matches: self.run_uninstall_with_password_answer(matches, dict(saved_mac)),
+            "set-ssh disable": lambda matches: self.run_set_ssh_disable_with_password_answer(
+                matches, ssh_open=True, extra_params=saved_mac,
+            ),
+        }
+        for command, run in runs.items():
+            for matches in (True, False, None):
+                with self.subTest(command=command, matches=matches):
+                    with mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=LocateResult("not_moved")):
+                        collector, _rc, compare, _work = run(matches)
+
+                    self.assertEqual(compare.call_count, 1)
+                    error = collector.events_of_type("error")[-1]
+                    # Refused only for a rejected password; otherwise it asks to go ahead.
+                    self.assertEqual(error["code"], "auth_failed" if matches is False else "confirmation_required")
+
+    def test_a_read_taken_at_another_address_is_not_reused(self) -> None:
+        from timecapsulesmb.app.ops.common import require_request_device_password
+
+        context = AppOperationContext("uninstall", CollectingSink().sink)
+        context.device_reading = ("root@10.0.0.9", acp_reading(False))
+        compare = acp_password_answer(True)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
+            require_request_device_password(context, SshConnection("root@10.0.0.2", "pw", ""))
+
+        compare.assert_called_once()
+
     def test_uninstall_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
         collector, rc, compare, uninstall = self.run_uninstall_with_password_answer(False, {})
 
@@ -6216,7 +6339,7 @@ MaSt = (
         connection = SshConnection("root@10.0.0.2", "pw", "")
         compare = acp_password_answer(True)
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
                     with mock.patch(
@@ -6235,7 +6358,7 @@ MaSt = (
         connection = SshConnection("root@10.0.0.2", "pw-typo", "")
         mismatch = acp_password_answer(False)
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.device.probe.read_airport_acp", mismatch):
                     with mock.patch(
@@ -6252,7 +6375,7 @@ MaSt = (
     def test_fsck_without_reboot_requires_question_form_confirmation(self) -> None:
         collector = CollectingSink()
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config") as load_config:
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config") as load_config:
             rc = service.run_api_request(
                 {"operation": "fsck", "params": {"no_reboot": True}},
                 collector.sink,
@@ -6266,7 +6389,7 @@ MaSt = (
         for value in (12.5, True):
             with self.subTest(value=value):
                 collector = CollectingSink()
-                with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config") as load_config:
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config") as load_config:
                     rc = service.run_api_request(
                         {
                             "operation": "fsck",
@@ -6287,7 +6410,7 @@ MaSt = (
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         mounted = [MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "uuid", True, "hfs")]
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
                     with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
@@ -6343,7 +6466,7 @@ MaSt = (
             with self.subTest(operation=operation, params=sorted(params)):
                 collector = CollectingSink()
                 with ExitStack() as stack:
-                    stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config))
+                    stack.enter_context(mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config))
                     stack.enter_context(mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config))
                     stack.enter_context(mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]))
                     mounted_mock = stack.enter_context(mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted))
@@ -6370,7 +6493,7 @@ MaSt = (
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         mounted = [MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "uuid", True, "hfs")]
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
                     with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted):
@@ -6408,7 +6531,7 @@ MaSt = (
             },
         )
         with ExitStack() as stack:
-            stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config))
+            stack.enter_context(mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config))
             stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection))
             stack.enter_context(mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]))
             stack.enter_context(mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted))

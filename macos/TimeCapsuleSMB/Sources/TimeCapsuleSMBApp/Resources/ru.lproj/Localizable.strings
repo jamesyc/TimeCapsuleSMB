@@ -609,10 +609,9 @@
 "backend.recovery.deploy.reboot_not_finished.title" = "Перезагрузка не завершилась";
 "backend.recovery.deploy.reboot_not_finished.message" = "Файлы установки отправлены, запрос перезагрузки выполнен, но доступ по SSH не восстановился вовремя. Устройство может еще запускаться или использовать другой IP-адрес.";
 "backend.recovery.deploy.reboot_not_finished.action.1" = "Подождите еще несколько минут.";
-"backend.recovery.deploy.reboot_not_finished.action.2" = "У устройства может быть новый IP-адрес. Повторите поиск устройств и выберите его снова.";
-"backend.recovery.deploy.reboot_not_finished.action.3" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
-"backend.recovery.deploy.reboot_not_finished.action.4" = "На устройствах NetBSD 4 выполните tcapsule activate, когда SSH станет доступен; установка не дошла до активации Samba после перезагрузки.";
-"backend.recovery.deploy.reboot_not_finished.action.5" = "Если устройство самостоятельно сбрасывает настройки, см. https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.deploy.reboot_not_finished.action.2" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
+"backend.recovery.deploy.reboot_not_finished.action.3" = "На устройствах NetBSD 4 выполните tcapsule activate, когда SSH станет доступен; установка не дошла до активации Samba после перезагрузки.";
+"backend.recovery.deploy.reboot_not_finished.action.4" = "Если устройство самостоятельно сбрасывает настройки, см. https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort недоступен по этому адресу";
 "backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB не удалось подключиться к AirPort ACP перед включением SSH. Резервное копирование или Утилита AirPort могут работать, даже если ACP заблокирован.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Отключите VPN или защитное ПО, которое маршрутизирует трафик локальной сети, затем повторите попытку.";
@@ -701,7 +700,6 @@
 "backend.recovery.device_unreachable.message" = "Ни SSH, ни AirPort ACP не ответили по сохраненному адресу устройства.";
 "backend.recovery.device_unreachable.action.1" = "Убедитесь, что устройство включено и подключено к той же сети или Wi-Fi, что и этот Mac.";
 "backend.recovery.device_unreachable.action.2" = "Если устройство перезагружается, подождите несколько минут и повторите попытку.";
-"backend.recovery.device_unreachable.action.3" = "У устройства может быть новый IP-адрес. Повторите поиск устройств и выберите его снова.";
 "backend.recovery.ssh_transport_failed.title" = "SSH-соединение прервано";
 "backend.recovery.ssh_transport_failed.message" = "Устройство приняло SSH-соединение, но закрыло его до входа. Так бывает, пока устройство запускается или занято.";
 "backend.recovery.ssh_transport_failed.action.1" = "Подождите минуту и повторите попытку.";
@@ -839,8 +837,7 @@
 "backend.recovery.reboot_not_finished.title" = "Перезагрузка не завершилась";
 "backend.recovery.reboot_not_finished.message" = "Устройство отключилось от сети или перезагрузилось, но не вернулось вовремя. Оно может еще запускаться или использовать другой IP-адрес.";
 "backend.recovery.reboot_not_finished.action.1" = "Подождите еще несколько минут.";
-"backend.recovery.reboot_not_finished.action.2" = "У устройства может быть новый IP-адрес. Повторите поиск устройств и выберите его снова.";
-"backend.recovery.reboot_not_finished.action.3" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
+"backend.recovery.reboot_not_finished.action.2" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
 "backend.recovery.runtime_not_restarted.title" = "Общий доступ к файлам не возобновился";
 "backend.recovery.runtime_not_restarted.message" = "Устройство перезагрузилось, но установленные службы TimeCapsuleSMB не запустились.";
 "backend.recovery.runtime_not_restarted.action.1" = "Запустите «Активировать».";

@@ -29,13 +29,15 @@ from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.services.runtime import resolve_env_connection
 from timecapsulesmb.device.compat import classify_device_compatibility
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
+from timecapsulesmb.device.probe import AirportAcpReading, ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import DeployDeviceError, require_supported_payload
 from timecapsulesmb.transport.ssh import SshConnection
 
 from tests.cli_support import app_config, valid_env
-from tests.reboot_support import acp_password_answer
+from timecapsulesmb.services.credentials import request_airport_mac
+from timecapsulesmb.services.locate import LocateResult
+from tests.reboot_support import DEVICE_AIRPORT_MAC, RecordingCallbacks, acp_password_answer, acp_reading
 
 
 class RuntimeTests(unittest.TestCase):
@@ -622,3 +624,143 @@ class RequireDevicePasswordTests(unittest.TestCase):
                 debug, error = self.check(matches)
                 self.assertIsNone(error)
                 self.assertEqual(debug, [{"sypw_check": result}])
+
+
+class RequireDevicePasswordReadingTests(unittest.TestCase):
+    """A command that already read the device does not read it again."""
+
+    def test_an_earlier_read_is_used_instead_of_a_new_one(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        for reading, refused in ((acp_reading(True), False), (acp_reading(False), True), (acp_reading(None), False)):
+            with self.subTest(matches=reading.password_matches):
+                read = acp_password_answer(True)
+                debug: list[dict[str, object]] = []
+                callbacks = OperationCallbacks(add_debug_fields=lambda **fields: debug.append(fields))
+                with mock.patch("timecapsulesmb.device.probe.read_airport_acp", read):
+                    try:
+                        service_runtime.require_device_password(connection, callbacks, reading=reading)
+                        outcome = None
+                    except service_runtime.DeviceAccessError as exc:
+                        outcome = exc
+                read.assert_not_called()
+                self.assertEqual(outcome is not None, refused)
+                self.assertEqual(debug, [{"sypw_check": {True: "match", False: "mismatch", None: "unknown"}[reading.password_matches]}])
+
+
+class PasswordCheckReadErrorTests(unittest.TestCase):
+    def test_an_unanswered_check_records_why_and_goes_on(self) -> None:
+        debug: list[dict[str, object]] = []
+        unanswered = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=unanswered):
+            service_runtime.require_device_password(
+                SshConnection("root@10.0.0.2", "pw", ""),
+                OperationCallbacks(add_debug_fields=lambda **fields: debug.append(fields)),
+            )
+
+        self.assertEqual(debug, [{"sypw_check": "unknown", "acp_read_error": "ACP receive failed: timed out"}])
+
+
+class ConfirmDeviceAddressTests(unittest.TestCase):
+    """The saved address checked against the AirPort MAC the app saved."""
+
+    MOVED = LocateResult("found", host="root@10.0.0.9", address="10.0.0.9")
+
+    def confirm(self, reading, located: LocateResult | None = None):
+        recorder = RecordingCallbacks()
+        locate = mock.Mock(return_value=located or LocateResult("not_found"))
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading), \
+                mock.patch("timecapsulesmb.services.runtime.locate_airport", locate):
+            try:
+                outcome = service_runtime.confirm_device_address("root@10.0.0.2", "pw", DEVICE_AIRPORT_MAC, recorder.callbacks())[0]
+            except service_runtime.DeviceAccessError as exc:
+                outcome = exc
+        return outcome, locate, recorder
+
+    def test_the_device_at_its_saved_address_is_used_there(self) -> None:
+        for reading in (acp_reading(True), AirportAcpReading(password_matches=True, airport_mac=None)):
+            with self.subTest(reading=reading):
+                outcome, locate, recorder = self.confirm(reading)
+
+                self.assertEqual(outcome, "root@10.0.0.2")
+                locate.assert_not_called()
+                self.assertNotIn("current_host", recorder.fields)
+
+    def test_a_device_that_moved_is_used_at_its_new_address(self) -> None:
+        readings = {
+            "unreachable": acp_reading(None),
+            # Another AirPort took the address, with another password or the same one.
+            "password_rejected": acp_reading(False),
+            "identity_mismatch": AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:02"),
+        }
+        for trigger, reading in readings.items():
+            with self.subTest(trigger=trigger):
+                outcome, locate, recorder = self.confirm(reading, self.MOVED)
+
+                self.assertEqual(outcome, "root@10.0.0.9")
+                self.assertEqual(locate.call_args.kwargs["trigger"], trigger)
+                self.assertEqual(locate.call_args.kwargs["current_host"], "root@10.0.0.2")
+                self.assertEqual(recorder.fields["current_host"], "root@10.0.0.9")
+                self.assertIn("The device now answers at 10.0.0.9; the saved address is out of date.", recorder.messages)
+
+    def test_a_device_found_nowhere_else_stays_at_its_saved_address(self) -> None:
+        # The command's own probe or password check then says what is wrong.
+        for reading in (acp_reading(None), acp_reading(False)):
+            with self.subTest(reading=reading):
+                outcome, _locate, recorder = self.confirm(reading)
+
+                self.assertEqual(outcome, "root@10.0.0.2")
+                self.assertNotIn("current_host", recorder.fields)
+
+    def test_another_airport_at_the_address_with_the_device_nowhere_fails(self) -> None:
+        outcome, _locate, _recorder = self.confirm(AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:02"))
+
+        self.assertIsInstance(outcome, service_runtime.DeviceAccessError)
+        self.assertEqual(outcome.code, "device_identity_mismatch")
+        self.assertIn("A different AirPort answers at 10.0.0.2", str(outcome))
+
+    def test_a_device_back_with_another_password_is_reported_and_stays_at_its_saved_address(self) -> None:
+        # Only the record's MAC says it is this device, and the record may be a
+        # stale cache entry for an address another AirPort took.
+        located = LocateResult("password_rejected", address="10.0.1.1")
+        outcome, _locate, recorder = self.confirm(acp_reading(None), located)
+
+        self.assertEqual(outcome, "root@10.0.0.2")
+        self.assertIn(located.rejected_note, recorder.messages)
+
+    def test_the_read_that_placed_the_device_is_returned_for_the_password_check(self) -> None:
+        cases = {
+            "there": (acp_reading(True), None, ("root@10.0.0.2", acp_reading(True))),
+            "moved": (acp_reading(None), self.MOVED, ("root@10.0.0.9", acp_reading(True))),
+            "unanswered": (acp_reading(None), None, ("root@10.0.0.2", acp_reading(None))),
+        }
+        for case, (reading, located, expected) in cases.items():
+            with self.subTest(case=case):
+                with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading), \
+                        mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=located or LocateResult("not_found")):
+                    result = service_runtime.confirm_device_address("root@10.0.0.2", "pw", DEVICE_AIRPORT_MAC, RecordingCallbacks().callbacks())
+                self.assertEqual(result, expected)
+
+
+class SavedHostnameTests(unittest.TestCase):
+    def test_a_profile_saved_by_hostname_is_not_looked_for_elsewhere(self) -> None:
+        # A hostname resolves to wherever the device is now.
+        recorder = RecordingCallbacks()
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(None)), \
+                mock.patch("timecapsulesmb.discovery.bonjour.BonjourQuery.browse") as browse:
+            host, reading = service_runtime.confirm_device_address(
+                "root@Office-Capsule.local", "pw", DEVICE_AIRPORT_MAC, recorder.callbacks(),
+            )
+
+        self.assertEqual((host, reading), ("root@Office-Capsule.local", acp_reading(None)))
+        browse.assert_not_called()
+        self.assertTrue(recorder.measurement("host_follow")["saved_hostname"])
+
+
+class RequestAirportMacTests(unittest.TestCase):
+    def test_the_apps_mac_is_normalized_and_a_malformed_one_refused(self) -> None:
+        self.assertIsNone(request_airport_mac({}))
+        self.assertEqual(request_airport_mac({"airport_mac": "02-00-00-00-00-0A"}), "02:00:00:00:00:0a")
+        for value in ("02:00:00", "", 42, "01:00:5e:00:00:01"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    request_airport_mac({"airport_mac": value})

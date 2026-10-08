@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import doctor_payload
-from timecapsulesmb.app.ops.common import load_request_config, resolve_request_connection
+from timecapsulesmb.app.ops.common import load_request_config, request_device_reading, resolve_request_connection
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.paths import resolve_app_paths
@@ -31,6 +31,7 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         config,
         repo_root=app_paths.distribution_root,
         connection=connection,
+        device_reading=request_device_reading(context, connection) if connection is not None else None,
         skip_ssh=skip_ssh,
         skip_bonjour=skip_bonjour,
         skip_smb=skip_smb,

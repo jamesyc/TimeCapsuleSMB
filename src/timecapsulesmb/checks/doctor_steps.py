@@ -102,6 +102,7 @@ from timecapsulesmb.device.probe import (
     flash_runtime_config_present_conn,
     limit_remote_log_tail,
     link_plan_networks,
+    AirportAcpReading,
     password_check_fields,
     read_admin_password,
     probe_connection_state,
@@ -2168,14 +2169,14 @@ def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarge
             sink.add(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
         elif compatibility.supported:
             sink.add(CheckResult("PASS", render_compatibility_message(compatibility)))
-            _add_admin_password_result(target.connection, sink)
+            _add_admin_password_result(target.connection, sink, inputs.device_reading)
         else:
             sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))
     except Exception as e:
         sink.add(CheckResult("FAIL", f"device compatibility check failed: {e}"))
 
 
-def _add_admin_password_result(connection: SshConnection, sink: DoctorSink) -> None:
+def _add_admin_password_result(connection: SshConnection, sink: DoctorSink, reading: AirportAcpReading | None = None) -> None:
     """Report a saved password that SSH accepts but ACP would reject.
 
     SSH checks only the first 8 characters, so such a password logs in, but the
@@ -2185,7 +2186,8 @@ def _add_admin_password_result(connection: SshConnection, sink: DoctorSink) -> N
     """
     if not connection.password:
         return
-    reading = read_admin_password(connection)
+    if reading is None:
+        reading = read_admin_password(connection)
     match = reading.password_matches
     if sink.debug_fields is not None:
         sink.debug_fields.update(password_check_fields(reading))

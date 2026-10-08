@@ -7,7 +7,7 @@ from pathlib import Path
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget
 from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.probe import ProbedDeviceState, RuntimeNamingIdentityProbeResult
+from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState, RuntimeNamingIdentityProbeResult
 from timecapsulesmb.device.processes import StuckProcess
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -38,6 +38,9 @@ class DoctorInputs:
     connection: SshConnection | None
     precomputed_probe_state: ProbedDeviceState | None
     options: DoctorOptions
+    # The app's start-of-command read of the device at this connection's
+    # address; the password check uses it instead of reading again.
+    device_reading: AirportAcpReading | None = None
 
 
 @dataclass
