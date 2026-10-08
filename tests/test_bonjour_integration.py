@@ -231,6 +231,20 @@ def test_native_removed_then_readded_instance_survives_old_inflight_resolve(monk
     assert all(p.poll() is not None for p in children)
 
 
+def test_native_targeted_browse_skips_interface_banner(monkeypatch, tmp_path):
+    # Doctor browses on the target's interface; dns-sd -i then prints "Using interface N" first.
+    children = install_native(monkeypatch, tmp_path, records())
+    monkeypatch.setattr(native_dns_sd, "interface_index_for_target", lambda *_args: 14)
+    snapshot, diagnostics = bonjour.discover_snapshot_detailed(timeout=2, target_ip="192.0.2.10")
+    browse_args = [p.args for p in children if "-B" in p.args]
+    assert len(browse_args) == len(SERVICE_TYPES)
+    assert all(args[args.index("-i") + 1] == "14" for args in browse_args)
+    assert len(snapshot.resolved) == len(records())
+    assert [(b.service_type, len(b.events), b.unparsed_lines) for b in diagnostics.details.browses] == [
+        (stype.removesuffix(".local."), 1, []) for stype in SERVICE_TYPES]
+    assert all(p.poll() is not None for p in children)
+
+
 @pytest.mark.parametrize("name", ["Office", " AirPort Time\u00a0Capsule "])
 def test_native_removal_is_scoped_to_its_interface(monkeypatch, tmp_path, name):
     observations = [{**records()[0], "name": name, "browse_events": [[.1, "Rmv"]]},

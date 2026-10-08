@@ -219,7 +219,8 @@ def _(value: NativeDnsSdBrowseResult) -> dict[str, object]:
     summary: dict[str, object] = {
         "service_type": value.service_type,
         "event_count": len(value.events),
-        "parse_error_count": value.parse_error_count,
+        "parse_error_count": len(value.unparsed_lines),
+        "unparsed_lines": [_truncate_debug_text(line) for line in _debug_limited(value.unparsed_lines, 5)],
         **_command_fields(value),
         "events": [_native_dns_sd_event_summary(event) for event in _debug_limited(value.events)],
     }

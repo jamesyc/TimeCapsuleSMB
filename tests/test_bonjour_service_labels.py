@@ -10,7 +10,7 @@ from unittest import mock
 import pytest
 
 from tests.fixtures.bonjour import (
-    APPLE_STAMP, cap_browse_window, install_native, install_zeroconf, native_fullname, records,
+    APPLE_STAMP, browse_row, cap_browse_window, install_native, install_zeroconf, native_fullname, records,
 )
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import EventSink
@@ -40,13 +40,6 @@ LABELS = [
 ]
 
 
-def browse_row(name, *, action="Add", domain="local.", service="_smb._tcp.", index=14, flags=2):
-    # The C formatter's minimum widths apply to UTF-8 bytes, not Python code points.
-    return (f"{APPLE_STAMP}{action} {flags:8X} {index:3d} ".encode()
-            + domain.encode().ljust(20) + b" " + service.encode().ljust(20) + b" "
-            + name.encode() + b"\n").decode()
-
-
 def service(name, *, address="192.0.2.10", hostname="host.local", stype="_smb._tcp.local.", index=14):
     return BonjourResolvedService(name, hostname, stype, 445, ipv4=[address],
                                   fullname=f"{name}.{stype}", interface_index=index)
@@ -59,17 +52,19 @@ def instance(record):
 @pytest.mark.parametrize("name", LABELS)
 def test_browse_preserves_complete_label(name):
     events, errors = native._parse_dns_sd_browse_output("_smb._tcp", browse_row(name))
-    assert errors == 0 and len(events) == 1
+    assert errors == [] and len(events) == 1
     assert events[0].name == name
     assert (events[0].action, events[0].flags, events[0].interface_index) == ("Add", "2", 14)
 
 
 # Captured from macOS dns-sd (2026-10-03) with only the labels changed: the
 # stamp is "%2d:%02d:%02d.%03d  ", so before 10:00 it starts with a space.
+# dns-sd -i N prints "Using interface N" before everything else (macOS 26.6.2).
+@pytest.mark.parametrize("banner", ["", "Using interface 17\n"])
 @pytest.mark.parametrize("stamp", [" 1:57:05.199", "18:56:53.249", " 0:00:00.000", "23:59:59.999"])
-def test_captured_apple_browse_output_parses_at_every_hour(stamp):
+def test_captured_apple_browse_output_parses_at_every_hour(stamp, banner):
     output = (
-        "Browsing for _smb._tcp.local.\n"
+        f"{banner}Browsing for _smb._tcp.local.\n"
         "DATE: ---Sun 04 Oct 2026---\n"
         f"{stamp}  ...STARTING...\n"
         "Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n"
@@ -78,7 +73,7 @@ def test_captured_apple_browse_output_parses_at_every_hour(stamp):
         f"{stamp}  Rmv        0  17 local.               _smb._tcp.           \u00a0Capsule\n"
     )
     events, errors = native._parse_dns_sd_browse_output("_smb._tcp", output)
-    assert errors == 0
+    assert errors == []
     assert [(e.action, e.flags, e.interface_index, e.name) for e in events] == [
         ("Add", "3", 17, "Office Capsule"), ("Add", "2", 17, "  Capsule  "), ("Rmv", "0", 17, "\u00a0Capsule"),
     ]
@@ -131,10 +126,13 @@ def test_browse_line_endings_do_not_trim_the_label(ending):
 
 
 def test_browse_headers_and_malformed_rows_are_not_instances():
-    output = f"Browsing for _smb._tcp\nDATE: ---Sat 03 Oct 2026---\nTimestamp A/R Flags if Domain Service Type Instance Name\n{APPLE_STAMP}...STARTING...\n\n"
-    assert native._parse_dns_sd_browse_output("_smb._tcp", output) == ([], 0)
-    for malformed in ["10:20:00 Add", browse_row("")]:
-        assert native._parse_dns_sd_browse_output("_smb._tcp", malformed) == ([], 1)
+    output = (f"Using interface 14\nBrowsing for _smb._tcp\nDATE: ---Sat 03 Oct 2026---\n"
+              f"Timestamp A/R Flags if Domain Service Type Instance Name\n{APPLE_STAMP}...STARTING...\n\n")
+    assert native._parse_dns_sd_browse_output("_smb._tcp", output) == ([], [])
+    # Only callbacks carry a timestamp, so untimestamped text is preamble, not a row.
+    assert native._parse_dns_sd_browse_output("_smb._tcp", "future preamble line\n") == ([], [])
+    for malformed in ["10:20:00 Add", browse_row(""), f"{APPLE_STAMP}Error code -65563\n"]:
+        assert native._parse_dns_sd_browse_output("_smb._tcp", malformed) == ([], [malformed.removesuffix("\n")])
 
 
 @pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])

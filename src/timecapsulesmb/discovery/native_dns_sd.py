@@ -46,7 +46,7 @@ class NativeDnsSdServiceEvent:
 class NativeDnsSdBrowseResult:
     service_type: str
     events: list[NativeDnsSdServiceEvent] = field(default_factory=list)
-    parse_error_count: int = 0
+    unparsed_lines: list[str] = field(default_factory=list)
     stderr: str = ""
     exit_code: int | None = None
     terminated_after_timeout: bool = False
@@ -108,25 +108,25 @@ def _dns_sd_service_type_domain(service_type: str, domain: str = "local.") -> st
     return f"{normalized}.{normalized_domain}."
 
 
-def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[NativeDnsSdServiceEvent], int]:
+def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[NativeDnsSdServiceEvent], list[str]]:
     events: list[NativeDnsSdServiceEvent] = []
-    parse_error_count = 0
+    unparsed: list[str] = []
     # dns-sd prints LF records; Unicode line separators belong to service labels.
     for line in stdout.split("\n"):
         line = line.removesuffix("\r")
         stripped = line.strip()
-        if not stripped:
-            continue
         if (
-            stripped.startswith("Browsing for ")
-            or stripped.startswith("DATE:")
-            or stripped.startswith("Timestamp")
+            # Apple timestamps every callback; preamble lines ("Using interface N"
+            # with -i, "Browsing for", "DATE:", the column header) never are. dns-sd
+            # prints labels raw, so text after a newline inside a label is dropped
+            # here too: counting it would need per-stream state for a hostile name.
+            not re.match(rf"{_DNS_SD_TIMESTAMP}[ \t]", line)
             or re.fullmatch(rf"{_DNS_SD_TIMESTAMP}[ \t]+\.\.\.STARTING\.\.\.", stripped)
         ):
             continue
         prefix = re.match(rf"^{_DNS_SD_TIMESTAMP}[ \t]+(Add|Rmv)[ \t]+([0-9A-Fa-f]+)[ \t]+(-?\d+)[ \t]+", line)
         if prefix is None:
-            parse_error_count += 1
+            unparsed.append(line)
             continue
         action, flags, iface = prefix.groups()
         remainder = line[prefix.end():].encode("utf-8")
@@ -144,7 +144,7 @@ def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[Na
             fields.append(value.decode("utf-8"))
             remainder = remainder[len(framed):]
         if len(fields) != 2 or not remainder:
-            parse_error_count += 1
+            unparsed.append(line)
             continue
         domain, observed_service_type = fields
         events.append(
@@ -158,7 +158,7 @@ def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[Na
                 name=remainder.decode("utf-8"),
             )
         )
-    return events, parse_error_count
+    return events, unparsed
 
 
 MAX_COMMAND_OUTPUT = 1024 * 1024
@@ -612,9 +612,9 @@ def discover_snapshot_merged_detailed(service: str | None = None, timeout: float
                     begin = offsets.get(i, 0)
                     cut = raw.rfind(b"\n", begin) + 1
                     if cut > begin:
-                        events, malformed = _parse_dns_sd_browse_output(stype, bytes(raw[begin:cut]).decode("utf-8", "replace"))
+                        events, unparsed = _parse_dns_sd_browse_output(stype, bytes(raw[begin:cut]).decode("utf-8", "replace"))
                         offsets[i] = cut
-                        browses[i].parse_error_count += malformed
+                        browses[i].unparsed_lines.extend(unparsed)
                         for event in events:
                             if len(browses[i].events) < 100:
                                 browses[i].events.append(event)

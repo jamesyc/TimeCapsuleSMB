@@ -38,6 +38,13 @@ def native_txt_output(properties):
     return " ".join(field(key + "=" + value) for key, value in properties.items())
 
 
+def browse_row(name, *, action="Add", domain="local.", service="_smb._tcp.", index=14, flags=2):
+    # The C formatter's minimum widths apply to UTF-8 bytes, not Python code points.
+    return (f"{APPLE_STAMP}{action} {flags:8X} {index:3d} ".encode()
+            + domain.encode().ljust(20) + b" " + service.encode().ljust(20) + b" "
+            + name.encode() + b"\n").decode()
+
+
 def native_fullname(name, service_type):
     """DNSServiceConstructFullName escapes ASCII controls, spaces, dots and backslashes."""
     label = "".join(f"\\{ord(char):03d}" if ord(char) <= 32 else "\\" + char
@@ -115,15 +122,30 @@ changes_ready = threading.Event()
 signal.signal(signal.SIGUSR1, lambda *_args: changes_ready.set())
 if ignore: signal.signal(signal.SIGTERM, signal.SIG_IGN)
 index=int(args[args.index('-i')+1]) if '-i' in args else None
+# Apple's preamble, captured from macOS 26.6.2. dns-sd flushes stdout only from a
+# callback, so the preamble reaches the pipe with the first answer, never alone.
+preamble=('Using interface %d\\n' % index if index else '')
+if '-B' in args:
+    preamble+='Browsing for %s.%s\\n' % tuple(args[args.index('-B')+1:args.index('-B')+3])
+elif '-L' in args:
+    preamble+='Lookup %s.%s.%s\\n' % tuple(args[args.index('-L')+1:args.index('-L')+4])
+preamble+='DATE: ---Thu 08 Oct 2026---\\n 9:20:00.100  ...STARTING...\\n'
+if '-B' in args:
+    preamble+='Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\\n'
+elif '-G' in args:
+    preamble+='Timestamp     A/R  Flags         IF  Hostname                               Address                                      TTL\\n'
+def out(data):
+    global preamble
+    sys.stdout.buffer.write(preamble.encode()+data); sys.stdout.buffer.flush(); preamble=''
 def emit_browse(action,r):
-    row=(' 9:20:00.123  %s %8X %3d %-20s %-20s %s' % (action,2,r.get('interface_index',14),'local.',stype.removesuffix('local.'),r['name'])+chr(10)).encode()
+    row=r['native_browse_rows'][action].encode()
     if fragment:
         label_start=len(row)-len(r['name'].encode())-1
         cuts=[0,label_start,label_start+1,len(row)-1,len(row)]
         for start,end in zip(cuts,cuts[1:]):
-            sys.stdout.buffer.write(row[start:end]); sys.stdout.buffer.flush(); time.sleep(.02)
+            out(row[start:end]); time.sleep(.02)
     else:
-        sys.stdout.buffer.write(row); sys.stdout.buffer.flush()
+        out(row)
 if '-B' in args:
     stype=args[args.index('-B')+1]+'.local.'
     for r in records:
@@ -140,8 +162,7 @@ elif '-L' in args:
     name,stype=args[args.index('-L')+1:args.index('-L')+3]
     for r in records:
         if r['name']==name and r['service_type']==stype+'.local.' and (index is None or index==r.get('interface_index',14)):
-            print(' 9:20:00.123  %s can be reached at %s.:%d (interface %d)' % (r['native_fullname'],r['hostname'],r['port'],r.get('interface_index',14)),flush=True)
-            print(r['native_txt'],flush=True)
+            out((' 9:20:00.123  %s can be reached at %s.:%d (interface %d)\\n%s\\n' % (r['native_fullname'],r['hostname'],r['port'],r.get('interface_index',14),r['native_txt'])).encode())
             break
 elif '-G' in args:
     host=args[args.index('-G')+2]
@@ -158,7 +179,7 @@ elif '-G' in args:
             for i,address in enumerate(addresses):
                 # Flag 1 (MoreComing) marks all but a batch's last answer; -m exits after the batch.
                 flags=3 if i<len(addresses)-1 else 2
-                print(' 9:20:00.123  Add %d %d %s. %s 120' % (flags,r.get('interface_index',14),host,address),flush=True)
+                out((' 9:20:00.123  Add %d %d %s. %s 120\\n' % (flags,r.get('interface_index',14),host,address)).encode())
             if addresses and '-m' in args: sys.exit()
     time.sleep(30)
 ''')
@@ -166,7 +187,10 @@ elif '-G' in args:
     epochs = {}
     launch = native_dns_sd._ProcessOwner.launch
     wire_observations = [dict(r, native_txt=native_txt_output(r.get("properties", {})),
-                             native_fullname=native_fullname(r['name'], r['service_type'])) for r in observations]
+                             native_fullname=native_fullname(r['name'], r['service_type']),
+                             native_browse_rows={action: browse_row(r['name'], action=action, index=r.get('interface_index', 14),
+                                                                    service=r['service_type'].removesuffix('local.'))
+                                                 for action in ("Add", "Rmv")}) for r in observations]
     def fake_launch(owner, args):
         # macOS Python 3.9's monotonic() starts separately in each process.
         now = time.clock_gettime(time.CLOCK_MONOTONIC)
@@ -175,6 +199,13 @@ elif '-G' in args:
         children.append(proc)
         return proc
     monkeypatch.setattr(native_dns_sd._ProcessOwner, "launch", fake_launch)
+    parse = native_dns_sd._parse_dns_sd_browse_output
+    def strict_parse(*args):
+        # The fake prints Apple's real output, so a rejected line means the fixture and parser drifted.
+        events, unparsed = parse(*args)
+        assert unparsed == [], unparsed
+        return events, unparsed
+    monkeypatch.setattr(native_dns_sd, "_parse_dns_sd_browse_output", strict_parse)
     monkeypatch.setattr(bonjour, "command_exists", lambda _name: True)
     return children
 

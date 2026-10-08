@@ -230,7 +230,7 @@ class TelemetryDebugTests(unittest.TestCase):
                 NativeDnsSdBrowseResult(
                     service_type="_smb._tcp",
                     events=events,
-                    parse_error_count=2,
+                    unparsed_lines=[" 9:20:00.123  Error code -65563", "x" * 300, *(f"bad {idx}" for idx in range(5))],
                     stderr="",
                     exit_code=-15,
                     terminated_after_timeout=True,
@@ -242,7 +242,10 @@ class TelemetryDebugTests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["browses"][0]["event_count"], 55)
-        self.assertEqual(summary["browses"][0]["parse_error_count"], 2)
+        self.assertEqual(summary["browses"][0]["parse_error_count"], 7)
+        # A bounded sample keeps evidence of what failed to parse without carrying all of it.
+        self.assertEqual(summary["browses"][0]["unparsed_lines"],
+                         [" 9:20:00.123  Error code -65563", "x" * 200 + "...", "bad 0", "bad 1", "bad 2"])
         self.assertEqual(len(summary["browses"][0]["events"]), 50)
         self.assertEqual(summary["browses"][0]["events"][0]["name"], "Device 0")
 
