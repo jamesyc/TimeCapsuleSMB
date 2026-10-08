@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -36,6 +35,7 @@ from timecapsulesmb.services.deploy import DeployDeviceError, require_supported_
 from timecapsulesmb.transport.ssh import SshConnection
 
 from tests.cli_support import app_config, valid_env
+from tests.reboot_support import acp_password_answer
 
 
 class RuntimeTests(unittest.TestCase):
@@ -598,11 +598,11 @@ class RequireSupportedPayloadTests(unittest.TestCase):
 
 
 class RequireDevicePasswordTests(unittest.TestCase):
-    def check(self, returncode: int) -> tuple[list[dict[str, object]], Exception | None]:
+    def check(self, matches: bool | None) -> tuple[list[dict[str, object]], Exception | None]:
         debug: list[dict[str, object]] = []
         callbacks = OperationCallbacks(add_debug_fields=lambda **fields: debug.append(fields))
-        answer = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", answer):
+        answer = acp_password_answer(matches)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", answer):
             try:
                 service_runtime.require_device_password(SshConnection("root@10.0.0.2", "pw", ""), callbacks)
             except Exception as exc:  # noqa: BLE001 - the test inspects what was raised
@@ -610,15 +610,15 @@ class RequireDevicePasswordTests(unittest.TestCase):
         return debug, None
 
     def test_a_mismatch_is_refused_as_auth_failed(self) -> None:
-        debug, error = self.check(1)
+        debug, error = self.check(False)
         self.assertIsInstance(error, service_runtime.DeviceAccessError)
         self.assertEqual(error.code, "auth_failed")
         self.assertEqual(str(error), service_runtime.AIRPORT_PASSWORD_MISMATCH_MESSAGE)
         self.assertEqual(debug, [{"sypw_check": "mismatch"}])
 
     def test_a_match_or_an_unknown_answer_lets_the_command_go_on(self) -> None:
-        for returncode, result in ((0, "match"), (2, "unknown")):
+        for matches, result in ((True, "match"), (None, "unknown")):
             with self.subTest(result=result):
-                debug, error = self.check(returncode)
+                debug, error = self.check(matches)
                 self.assertIsNone(error)
                 self.assertEqual(debug, [{"sypw_check": result}])

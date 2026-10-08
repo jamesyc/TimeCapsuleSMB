@@ -6,7 +6,6 @@ import io
 import json
 import os
 import socket
-import subprocess
 import tempfile
 import unittest
 import uuid
@@ -28,6 +27,7 @@ from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 
 from timecapsulesmb.services.configure import enable_ssh_and_reprobe as real_enable_ssh_and_reprobe
 from tests.cli_support import CliTestCase, FakeCommandContext
+from tests.reboot_support import acp_reading
 
 
 class CliConfigureTests(CliTestCase):
@@ -2744,10 +2744,10 @@ class CliConfigureTests(CliTestCase):
             return next(prompt_values, default)
 
         compare = mock.Mock(side_effect=[
-            subprocess.CompletedProcess(["ssh"], 1, b"", b""),
-            subprocess.CompletedProcess(["ssh"], 0, b"", b""),
+            acp_reading(False),
+            acp_reading(True),
         ])
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
             result = self.run_configure_cli(
                 prompt_side_effect=fake_prompt,
                 probe_state=self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),
@@ -2756,7 +2756,7 @@ class CliConfigureTests(CliTestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_PASSWORD"], "pw-secret")
-        self.assertEqual([call.kwargs["input_bytes"] for call in compare.call_args_list], [b"pw-secretzz", b"pw-secret"])
+        self.assertEqual([call.args[1] for call in compare.call_args_list], ["pw-secretzz", "pw-secret"])
         self.assertIn("SSH accepted the password, but it is not the AirPort admin password.", result.text)
         self.assertNotIn("The provided AirPort SSH target and password did not work", result.text)
         self.assertIn("Please enter the SSH target and password again", result.text)
@@ -2772,10 +2772,10 @@ class CliConfigureTests(CliTestCase):
             return next(prompt_values, default)
 
         compare = mock.Mock(side_effect=[
-            subprocess.CompletedProcess(["ssh"], 1, b"", b""),
-            subprocess.CompletedProcess(["ssh"], 0, b"", b""),
+            acp_reading(False),
+            acp_reading(True),
         ])
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
             result = self.run_configure_cli(
                 prompt_side_effect=fake_prompt,
                 probe_state=self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),

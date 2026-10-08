@@ -102,8 +102,8 @@ from timecapsulesmb.device.probe import (
     flash_runtime_config_present_conn,
     limit_remote_log_tail,
     link_plan_networks,
-    PASSWORD_CHECK_RESULTS,
-    password_matches_device,
+    password_check_fields,
+    read_admin_password,
     probe_connection_state,
     probe_device_networks_conn,
     probe_managed_mdns_conn,
@@ -2185,9 +2185,10 @@ def _add_admin_password_result(connection: SshConnection, sink: DoctorSink) -> N
     """
     if not connection.password:
         return
-    match = password_matches_device(connection)
+    reading = read_admin_password(connection)
+    match = reading.password_matches
     if sink.debug_fields is not None:
-        sink.debug_fields["sypw_check"] = PASSWORD_CHECK_RESULTS[match]
+        sink.debug_fields.update(password_check_fields(reading))
     if match is True:
         sink.add(CheckResult("PASS", "the saved password is the AirPort admin password"))
     elif match is False:

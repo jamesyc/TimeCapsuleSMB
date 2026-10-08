@@ -216,7 +216,17 @@ def _parse_property_header(data: bytes) -> tuple[str | None, int, int]:
     return name, flags, size
 
 
-def _parse_property_result_from_body(body: bytes, offset: int) -> tuple[str | None, int, bytes, int]:
+def _element_error(name: str | None, flags: int, data: bytes) -> ACPPropertyError | None:
+    """The error a property element carries, if it is an error element."""
+    if not flags & 1:
+        return None
+    if len(data) == 4:
+        error_code = struct.unpack(">i", data)[0]
+        return ACPPropertyError(f"ACP property {name or '<end>'} failed with error_code {_format_error_code(error_code)}")
+    return ACPPropertyError(f"ACP property {name or '<end>'} failed")
+
+
+def _body_element(body: bytes, offset: int) -> tuple[str | None, int, bytes, int]:
     end_header = offset + PROPERTY_HEADER.size
     if end_header > len(body):
         raise ACPProtocolError(
@@ -228,15 +238,7 @@ def _parse_property_result_from_body(body: bytes, offset: int) -> tuple[str | No
         raise ACPProtocolError(
             f"ACP property {name or '<end>'} value extends past body size {len(body)}"
         )
-    data = body[end_header:end_value]
-    if flags & 1:
-        if len(data) == 4:
-            error_code = struct.unpack(">i", data)[0]
-            raise ACPPropertyError(
-                f"ACP property {name or '<end>'} failed with error_code {_format_error_code(error_code)}"
-            )
-        raise ACPPropertyError(f"ACP property {name or '<end>'} failed")
-    return name, flags, data, end_value
+    return name, flags, body[end_header:end_value], end_value
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -301,16 +303,15 @@ def _read_reply_body(sock: socket.socket, header: ACPMessageHeader) -> bytes:
     return body
 
 
-def _read_property_result(sock: socket.socket) -> tuple[str | None, int, bytes]:
+def _read_element(sock: socket.socket) -> tuple[str | None, int, bytes]:
     name, flags, size = _parse_property_header(_recv_exact(sock, PROPERTY_HEADER.size))
-    data = _recv_exact(sock, size)
-    if flags & 1:
-        if len(data) == 4:
-            error_code = struct.unpack(">i", data)[0]
-            raise ACPPropertyError(
-                f"ACP property {name or '<end>'} failed with error_code {_format_error_code(error_code)}"
-            )
-        raise ACPPropertyError(f"ACP property {name or '<end>'} failed")
+    return name, flags, _recv_exact(sock, size)
+
+
+def _read_property_result(sock: socket.socket) -> tuple[str | None, int, bytes]:
+    name, flags, data = _read_element(sock)
+    if error := _element_error(name, flags, data):
+        raise error
     return name, flags, data
 
 
@@ -318,7 +319,9 @@ def _iter_property_results_from_body(body: bytes) -> list[tuple[str | None, int,
     results: list[tuple[str | None, int, bytes]] = []
     offset = 0
     while offset < len(body):
-        name, flags, data, offset = _parse_property_result_from_body(body, offset)
+        name, flags, data, offset = _body_element(body, offset)
+        if error := _element_error(name, flags, data):
+            raise error
         results.append((name, flags, data))
     return results
 
@@ -350,6 +353,52 @@ def set_property_int(
         sock.close()
 
 
+def get_properties(
+    host: str,
+    password: str,
+    names: tuple[str, ...],
+    *,
+    timeout: float = 25.0,
+) -> dict[str, bytes | ACPPropertyError]:
+    """Read several properties in one request.
+
+    ACPd answers the names in order. One it cannot read gets an error element
+    and the rest still follow (NetBSD 4 and 6 firmware, 2026-10-08), so that
+    name maps to its error. A wrong password raises ACPAuthError.
+
+    A streamed reply is read only until every name has answered: the end
+    marker after them was seen on both firmware families, but older ACPd
+    replies (TimeCapsule6,106) were only ever read up to the asked name.
+    """
+    payload = b"".join(_compose_property_element(name, None) for name in names)
+    sock = _send_message(host, password, COMMAND_GETPROP, payload, flags=4, timeout=timeout)
+    try:
+        header = _read_reply_header(sock, expected_command=COMMAND_GETPROP)
+        # A reply streams its elements unless the header gives a body size.
+        body = None if header.body_size in (-1, 0) else _read_reply_body(sock, header)
+        values: dict[str, bytes | ACPPropertyError] = {}
+        offset = 0
+        while body is None or offset < len(body):
+            if body is None:
+                name, flags, data = _read_element(sock)
+            else:
+                name, flags, data, offset = _body_element(body, offset)
+            if name is None:
+                break
+            values[name] = _element_error(name, flags, data) or data
+            if body is None and all(asked in values for asked in names):
+                break
+        return values
+    finally:
+        sock.close()
+
+
+def property_uint32(name: str, data: bytes) -> int:
+    if len(data) != 4:
+        raise ACPProtocolError(f"ACP property {name} returned {len(data)} bytes, expected 4")
+    return struct.unpack(">I", data)[0]
+
+
 def get_property_int(
     host: str,
     password: str,
@@ -357,30 +406,12 @@ def get_property_int(
     *,
     timeout: float = 25.0,
 ) -> int:
-    payload = _compose_property_element(name, None)
-    sock = _send_message(host, password, COMMAND_GETPROP, payload, flags=4, timeout=timeout)
-    try:
-        header = _read_reply_header(sock, expected_command=COMMAND_GETPROP)
-        results = _read_property_results(sock, header)
-        if results is None:
-            while True:
-                prop_name, _flags, data = _read_property_result(sock)
-                if prop_name is None and data == b"\x00\x00\x00\x00":
-                    raise ACPPropertyError(f"ACP property {name} was not returned")
-                if prop_name == name:
-                    if len(data) != 4:
-                        raise ACPProtocolError(f"ACP property {name} returned {len(data)} bytes, expected 4")
-                    return struct.unpack(">I", data)[0]
-        for prop_name, _flags, data in results:
-            if prop_name is None and data == b"\x00\x00\x00\x00":
-                break
-            if prop_name == name:
-                if len(data) != 4:
-                    raise ACPProtocolError(f"ACP property {name} returned {len(data)} bytes, expected 4")
-                return struct.unpack(">I", data)[0]
+    value = get_properties(host, password, (name,), timeout=timeout).get(name)
+    if value is None:
         raise ACPPropertyError(f"ACP property {name} was not returned")
-    finally:
-        sock.close()
+    if isinstance(value, ACPPropertyError):
+        raise value
+    return property_uint32(name, value)
 
 
 def flash_firmware_bank(

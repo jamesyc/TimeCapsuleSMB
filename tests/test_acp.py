@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 import subprocess
 import sys
 import unittest
@@ -185,6 +186,73 @@ class ACPTests(unittest.TestCase):
                 acp.get_property_int("10.0.0.2", "pw", "dbug")
 
         self.assertIn("body checksum mismatch", str(raised.exception))
+
+    def device_reply_elements(self) -> bytes:
+        # What both device families sent for syUT, raM2 and waMA (2026-10-08):
+        # raM2 does not exist there, and the names after it still answer.
+        return (
+            acp._compose_property_element("syUT", 0x88AA)
+            + acp._compose_property_element("raM2", struct.pack(">i", -0x1A37), flags=1)
+            + acp._compose_property_element("waMA", bytes.fromhex("020000000001"))
+            + acp._compose_property_element(None, None)
+        )
+
+    def test_get_properties_keeps_reading_past_a_failed_name(self) -> None:
+        elements = self.device_reply_elements()
+        replies = {
+            "streamed": acp._compose_header(command=acp.COMMAND_GETPROP) + elements,
+            "sized body": acp._compose_header(command=acp.COMMAND_GETPROP, payload=elements) + elements,
+        }
+        for shape, response in replies.items():
+            with self.subTest(shape=shape):
+                fake_socket = FakeSocket(response)
+                with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+                    values = acp.get_properties("10.0.0.2", "pw", ("syUT", "raM2", "waMA"))
+
+                self.assertEqual(values["syUT"], struct.pack(">I", 0x88AA))
+                self.assertEqual(values["waMA"], bytes.fromhex("020000000001"))
+                self.assertIsInstance(values["raM2"], acp.ACPPropertyError)
+                self.assertIn("-0x1a37", str(values["raM2"]))
+                # One request names all three properties.
+                request = fake_socket.sent[acp.HEADER.size:]
+                self.assertEqual([request[i:i + 4] for i in range(0, len(request), 16)], [b"syUT", b"raM2", b"waMA"])
+                self.assertTrue(fake_socket.closed)
+
+    def test_get_properties_stops_once_every_asked_name_has_answered(self) -> None:
+        # A streamed reply without the end marker: reading on for it would wait
+        # until the connection drops.
+        response = (
+            acp._compose_header(command=acp.COMMAND_GETPROP)
+            + acp._compose_property_element("syUT", 0x88AA)
+            + acp._compose_property_element("waMA", bytes.fromhex("020000000001"))
+        )
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=FakeSocket(response)):
+            values = acp.get_properties("10.0.0.2", "pw", ("syUT", "waMA"))
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=FakeSocket(response)):
+            uptime = acp.get_property_int("10.0.0.2", "pw", "syUT")
+
+        self.assertEqual(values, {"syUT": struct.pack(">I", 0x88AA), "waMA": bytes.fromhex("020000000001")})
+        self.assertEqual(uptime, 0x88AA)
+
+    def test_get_properties_reports_a_rejected_password(self) -> None:
+        response = acp._compose_header(command=acp.COMMAND_GETPROP, error_code=-0x10)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=FakeSocket(response)):
+            with self.assertRaises(acp.ACPAuthError):
+                acp.get_properties("10.0.0.2", "wrong", ("waMA",))
+
+    def test_get_property_int_raises_for_a_failed_missing_or_misshaped_value(self) -> None:
+        cases = {
+            "failed": (self.device_reply_elements(), "raM2", acp.ACPPropertyError, "-0x1a37"),
+            "missing": (acp._compose_property_element(None, None), "syUT", acp.ACPPropertyError, "was not returned"),
+            "misshaped": (self.device_reply_elements(), "waMA", acp.ACPProtocolError, "returned 6 bytes, expected 4"),
+        }
+        for case, (elements, name, error, text) in cases.items():
+            with self.subTest(case=case):
+                response = acp._compose_header(command=acp.COMMAND_GETPROP) + elements
+                with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=FakeSocket(response)):
+                    with self.assertRaises(error) as raised:
+                        acp.get_property_int("10.0.0.2", "pw", name)
+                self.assertIn(text, str(raised.exception))
 
     def test_bad_header_checksum_is_protocol_error(self) -> None:
         header = bytearray(acp._compose_header(command=acp.COMMAND_SETPROP))

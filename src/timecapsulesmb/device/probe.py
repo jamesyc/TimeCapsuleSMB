@@ -19,6 +19,8 @@ from timecapsulesmb.device.processes import (
     PS_CAPTURE_COMMAND,
     service_role_lines,
 )
+from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.integrations import acp
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.local import mac_network_filters, tcp_open
 from timecapsulesmb.transport.errors import (
@@ -27,7 +29,7 @@ from timecapsulesmb.transport.errors import (
     SshLocalNetworkFilteredError,
     TransportError,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_input
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_MODEL,
     AIRPORT_IDENTITIES_BY_SYAP,
@@ -542,38 +544,69 @@ def probe_connection_state(connection: SshConnection) -> ProbedDeviceState:
 
 
 # Apple's sshd checks the root password with DES crypt, which reads only its
-# first 8 characters, while ACPd checks the whole admin password (syPW). A
-# password with a typo past the 8th character logs in over SSH and then fails
-# every ACP reboot with -0x10. The comparison runs on the device: the typed
-# password goes on stdin and the saved one never leaves it. acp -q exits 0
-# when a read fails, printing nothing on stdout, so an empty read means unknown.
-PASSWORD_MATCHES_SYPW_COMMAND = (
-    f'p=$({DEVICE_ACP_PATH} -q syPW 2>/dev/null); [ -n "$p" ] || exit 2; [ "$p" = "$(cat)" ]'
-)
+# first 8 characters, while ACPd checks the whole admin password (syPW) on each
+# network ACP request. A password with a typo past the 8th character logs in
+# over SSH and then fails every ACP reboot with -0x10, so the check is a network
+# ACP read, the same kind of request a reboot makes. It reads waMA, the
+# device's AirPort MAC, which also tells which device answered.
+ACP_IDENTITY_READ_TIMEOUT_SECONDS = 5.0
+# A network ACP read sometimes fails while ACPd is busy and works seconds later:
+# since v3.0, 17 reads taken just before a reboot timed out with SSH up, and
+# those devices answered on a later run. A second read 5 s later costs little.
+ACP_IDENTITY_RETRY_DELAY_SECONDS = 5.0
 PASSWORD_CHECK_RESULTS = {True: "match", False: "mismatch", None: "unknown"}
 
 
-def password_matches_device(connection: SshConnection) -> bool | None:
-    """Whether the password is the device's AirPort admin password.
+@dataclass(frozen=True)
+class AirportAcpReading:
+    """One network ACP read of the AirPort's MAC.
 
-    None when that cannot be told: no password, the device could not read
-    syPW, or SSH failed (the caller's next command reports that itself).
+    `password_matches` is None when ACP did not answer either read.
+    `airport_mac` is None when the device answered but could not read waMA.
+    """
+
+    password_matches: bool | None
+    airport_mac: str | None = None
+    error: str | None = None
+
+
+def read_airport_acp(host: str, password: str) -> AirportAcpReading:
+    target = endpoint_host(host)
+    error: str | None = None
+    for attempt in range(2):
+        if attempt:
+            time.sleep(ACP_IDENTITY_RETRY_DELAY_SECONDS)
+        try:
+            values = acp.get_properties(target, password, ("waMA",), timeout=ACP_IDENTITY_READ_TIMEOUT_SECONDS)
+        except acp.ACPAuthError:
+            return AirportAcpReading(password_matches=False)
+        except acp.ACPError as exc:
+            error = str(exc)
+            continue
+        mac = values.get("waMA")
+        return AirportAcpReading(
+            password_matches=True,
+            airport_mac=normalize_airport_mac(mac.hex(":")) if isinstance(mac, bytes) else None,
+        )
+    return AirportAcpReading(password_matches=None, error=error)
+
+
+def read_admin_password(connection: SshConnection) -> AirportAcpReading:
+    """The read that tells whether the password is the device's AirPort admin password.
+
+    Unknown, without asking the device, when there is no password.
     """
     if not connection.password:
-        return None
-    try:
-        proc = run_ssh_input(
-            connection,
-            PASSWORD_MATCHES_SYPW_COMMAND,
-            input_bytes=connection.password.encode("utf-8"),
-            raw_remote_status=True,
-            # acp can stall while ACPd is busy (the native reader caps it at
-            # 20 s); give up as unknown rather than hold up the command.
-            timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
-        )
-    except TransportError:
-        return None
-    return {0: True, 1: False}.get(proc.returncode)
+        return AirportAcpReading(password_matches=None)
+    return read_airport_acp(connection.host, connection.password)
+
+
+def password_check_fields(reading: AirportAcpReading) -> dict[str, object]:
+    """Debug fields for a password check; an unknown result says why."""
+    fields: dict[str, object] = {"sypw_check": PASSWORD_CHECK_RESULTS[reading.password_matches]}
+    if reading.password_matches is None and reading.error:
+        fields["acp_read_error"] = reading.error[:200]
+    return fields
 
 
 def probe_ssh_command_conn(

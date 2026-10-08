@@ -13,9 +13,9 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ProbeResult,
     ProbedDeviceState,
-    PASSWORD_CHECK_RESULTS,
     SshAccessStatus,
-    password_matches_device,
+    password_check_fields,
+    read_admin_password,
     probe_connection_state,
 )
 from timecapsulesmb.integrations.acp import ACP_PORT
@@ -65,9 +65,9 @@ def require_device_password(connection: SshConnection, callbacks: OperationCallb
     Every reboot goes through ACP, so a command that reboots checks the
     password first instead of failing at the reboot with its work half done.
     """
-    match = password_matches_device(connection)
-    callbacks.debug(sypw_check=PASSWORD_CHECK_RESULTS[match])
-    if match is False:
+    reading = read_admin_password(connection)
+    callbacks.debug(**password_check_fields(reading))
+    if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
 
 

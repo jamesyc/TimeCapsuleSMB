@@ -4,7 +4,6 @@ from __future__ import annotations
 import io
 import json
 import plistlib
-import subprocess
 import unittest
 from contextlib import ExitStack
 from contextlib import redirect_stderr, redirect_stdout
@@ -41,7 +40,7 @@ from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 
 from tests.cli_support import CliTestCase
-from tests.reboot_support import FakeAcpDevice
+from tests.reboot_support import FakeAcpDevice, acp_password_answer
 from timecapsulesmb.integrations.acp import ACPConnectionError
 
 
@@ -974,9 +973,9 @@ class CliDeployTests(CliTestCase):
     def test_deploy_refuses_a_password_the_device_would_reject_before_asking(self) -> None:
         # SSH accepts a password right in its first 8 characters; the ACP
         # reboot would not. Refused before the prompt, nothing uploaded.
-        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 1, b"", b""))
+        compare = acp_password_answer(False)
         input_mock = mock.Mock(side_effect=AssertionError("deploy must not ask before the password check"))
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
             result = self.run_deploy_cli(
                 [],
                 artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],

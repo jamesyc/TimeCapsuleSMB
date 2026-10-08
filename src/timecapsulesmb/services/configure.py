@@ -25,10 +25,10 @@ from timecapsulesmb.device.compat import (
     unsupported_syap_message,
 )
 from timecapsulesmb.device.probe import (
-    PASSWORD_CHECK_RESULTS,
     ProbedDeviceState,
     SshAccessStatus,
-    password_matches_device,
+    password_check_fields,
+    read_admin_password,
     probe_connection_state,
 )
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
@@ -288,9 +288,9 @@ def run_configure_flow(
     password_rejected = probe.ssh_status == SshAccessStatus.AUTH_REJECTED
     password_error = probe.error
     if probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
-        password_match = password_matches_device(connection)
-        callbacks.debug(sypw_check=PASSWORD_CHECK_RESULTS[password_match])
-        if password_match is False:
+        password_reading = read_admin_password(connection)
+        callbacks.debug(**password_check_fields(password_reading))
+        if password_reading.password_matches is False:
             password_rejected = True
             password_error = SSH_ONLY_PASSWORD_DEBUG
 

@@ -14,6 +14,22 @@ from unittest import mock
 
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
 
+# The AirPort MAC (waMA) every simulated device reports over network ACP.
+DEVICE_AIRPORT_MAC = "02:00:00:00:00:01"
+
+
+def acp_reading(matches: bool | None):
+    """What device.probe.read_airport_acp returns: the password matches (True),
+    ACPd rejected it (False), or ACP did not answer (None)."""
+    from timecapsulesmb.device.probe import AirportAcpReading
+
+    return AirportAcpReading(password_matches=matches, airport_mac=DEVICE_AIRPORT_MAC if matches else None)
+
+
+def acp_password_answer(matches: bool | None) -> mock.Mock:
+    """A stand-in for device.probe.read_airport_acp."""
+    return mock.Mock(return_value=acp_reading(matches))
+
 
 @dataclass
 class FakeAcpDevice:

@@ -67,17 +67,14 @@ def block_real_acp_connections(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def device_password_matches(monkeypatch: pytest.MonkeyPatch):
-    # Commands that reboot compare the password with the device's syPW over
-    # SSH. Tests answer "match" (exit 0); a test that needs another answer
-    # patches timecapsulesmb.device.probe.run_ssh_input itself.
-    import subprocess
-
+    # Commands that reboot read the device over network ACP first, which checks
+    # the admin password. Tests answer "match"; a test that needs another answer
+    # patches timecapsulesmb.device.probe.read_airport_acp itself.
     from timecapsulesmb.device import probe
 
-    monkeypatch.setattr(
-        probe, "run_ssh_input",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(["ssh"], 0, b"", b""),
-    )
+    from tests.reboot_support import acp_reading
+
+    monkeypatch.setattr(probe, "read_airport_acp", lambda *_args, **_kwargs: acp_reading(True))
     yield
 
 

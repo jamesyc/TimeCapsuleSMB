@@ -50,6 +50,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
 from tests.test_client_network import router_plan
+from tests.reboot_support import acp_password_answer
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login
 from timecapsulesmb.core.net import RouteSelection
@@ -2244,10 +2245,10 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(config_errors)
         self.assertTrue(all(r.status == "FAIL" for r in config_errors))
 
-    def run_doctor_with_sypw_answer(self, returncode: int):
+    def run_doctor_with_password_answer(self, matches: bool | None):
         debug_fields: dict[str, object] = {}
-        compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], returncode, b"", b""))
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+        compare = acp_password_answer(matches)
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
             run = self.run_doctor_with_mocks(
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
                 mdns_probe=mock.Mock(ready=True, detail="ok"),
@@ -2262,7 +2263,7 @@ class CheckTests(unittest.TestCase):
         return run, lines, debug_fields
 
     def test_doctor_passes_a_saved_password_that_matches_the_device(self) -> None:
-        _run, lines, debug_fields = self.run_doctor_with_sypw_answer(0)
+        _run, lines, debug_fields = self.run_doctor_with_password_answer(True)
         self.assertEqual([(line.status, line.message) for line in lines],
                          [("PASS", "the saved password is the AirPort admin password")])
         self.assertEqual(debug_fields["sypw_check"], "match")
@@ -2270,21 +2271,21 @@ class CheckTests(unittest.TestCase):
     def test_doctor_warns_about_a_saved_password_acp_would_reject_and_keeps_checking(self) -> None:
         # A password right in its first 8 characters logs in over SSH, so file
         # sharing still works: a warning, and the other checks still run.
-        run, lines, debug_fields = self.run_doctor_with_sypw_answer(1)
+        run, lines, debug_fields = self.run_doctor_with_password_answer(False)
         self.assertEqual([line.status for line in lines], ["WARN"])
         self.assertIn("tcapsule configure", lines[0].message)
         self.assertEqual(debug_fields["sypw_check"], "mismatch")
         self.assertTrue(any(result.message == "xattr skipped" for result in run.results))
 
     def test_doctor_reports_a_password_it_cannot_compare_as_info(self) -> None:
-        _run, lines, debug_fields = self.run_doctor_with_sypw_answer(2)
+        _run, lines, debug_fields = self.run_doctor_with_password_answer(None)
         self.assertEqual([line.status for line in lines], ["INFO"])
         self.assertEqual(debug_fields["sypw_check"], "unknown")
 
     def test_doctor_has_no_password_line_for_key_authentication(self) -> None:
         sink = DoctorSink(on_result=None, debug_fields={})
         compare = mock.Mock()
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
             _add_admin_password_result(SshConnection("root@10.0.0.2", "", "-o foo"), sink)
         self.assertEqual(sink.results, [])
         compare.assert_not_called()

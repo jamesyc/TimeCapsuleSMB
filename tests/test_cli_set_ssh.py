@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import io
-import subprocess
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -13,6 +12,7 @@ from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 
 from tests.cli_support import CliTestCase
+from tests.reboot_support import acp_password_answer, acp_reading
 
 
 class CliSetSshTests(CliTestCase):
@@ -288,9 +288,9 @@ class CliSetSshTests(CliTestCase):
         # not turned off and no reboot is requested with a password ACP rejects.
         for argv in ([], ["--disable"]):
             with self.subTest(argv=argv):
-                compare = mock.Mock(return_value=subprocess.CompletedProcess(["ssh"], 1, b"", b""))
+                compare = acp_password_answer(False)
                 self.device.calls.clear()
-                with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+                with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
                     with self.assertRaises(SystemExit) as raised:
                         self.run_disable(argv)
 
@@ -303,8 +303,8 @@ class CliSetSshTests(CliTestCase):
     def test_set_ssh_disable_checks_the_password_before_the_prompt(self) -> None:
         self.device.ssh_up_after_boot = None
         order: list[str] = []
-        compare = mock.Mock(side_effect=lambda *_a, **_k: order.append("compare") or subprocess.CompletedProcess(["ssh"], 0, b"", b""))
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_input", compare):
+        compare = mock.Mock(side_effect=lambda *_a, **_k: order.append("compare") or acp_reading(True))
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
             with mock.patch("timecapsulesmb.cli.set_ssh.confirm", side_effect=lambda *_a, **_k: order.append("prompt") or True):
                 rc, _text, disable_mock, _input = self.run_disable([])
 
