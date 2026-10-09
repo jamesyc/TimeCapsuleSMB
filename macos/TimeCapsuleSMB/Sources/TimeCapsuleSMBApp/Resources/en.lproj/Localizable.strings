@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "Open saved device “%@”";
 
 "discovery.reconnect_selected" = "Saving will reconnect the selected device to “%@” and keep its saved settings.";
+
+"backend.error.ssh_client_failed" = "The local SSH client could not complete the operation.";
+"backend.recovery.ssh_client_failed.title" = "Local SSH client failed";
+"backend.recovery.ssh_client_failed.message" = "The SSH client on this computer could not complete the operation. Check the local SSH error in the operation log, then retry.";

@@ -4,6 +4,7 @@
 # as TimeCapsuleSMB always has, and refuses anything else, such as a key
 # passphrase, so ssh gives up on that prompt instead of waiting.
 case $1 in
+*[Pp]assphrase*|*[Nn]ew\ password*) exit 1 ;;
 *"continue connecting"*) echo yes ;;
 *[Pp]assword*) [ -n "${TCAPSULE_SSH_PASSWORD:-}" ] && printf '%s\n' "$TCAPSULE_SSH_PASSWORD" ;;
 *) exit 1 ;;

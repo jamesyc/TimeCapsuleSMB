@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from timecapsulesmb.core.net import ipv6_scope_index
-from timecapsulesmb.core.process import run_process
+from timecapsulesmb.core.process import SPAWN_LOCK, run_process
 
 
 def find_command(name: str) -> str | None:
@@ -109,7 +109,8 @@ def scoped_tcp_connect_errors(hosts: Sequence[str], port: int, *, timeout: float
 
 
 def find_free_local_port(host: str = "127.0.0.1") -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    # A concurrent spawn must not inherit this socket before close-on-exec is set.
+    with SPAWN_LOCK, socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((host, 0))
         return int(sock.getsockname()[1])
 

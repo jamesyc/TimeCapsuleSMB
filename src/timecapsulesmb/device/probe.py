@@ -27,6 +27,7 @@ from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
     SshLocalNetworkFilteredError,
+    SshClientError,
     TransportError,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
@@ -306,6 +307,7 @@ class SshAccessStatus(str, Enum):
     AUTH_REJECTED = "auth_rejected"
     ALGORITHM_NEGOTIATION_FAILED = "algorithm_negotiation_failed"
     TRANSPORT_FAILED = "transport_failed"
+    CLIENT_FAILED = "client_failed"
     # This computer dropped the connection (SshLocalNetworkFilteredError).
     LOCAL_NETWORK_FILTERED = "local_network_filtered"
     DEVICE_PROBE_FAILED = "device_probe_failed"
@@ -502,6 +504,11 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
             arch="",
             elf_endianness="unknown",
             mac_network_filters=mac_network_filters(),
+        )
+    except SshClientError as exc:
+        return ProbeResult(
+            ssh_status=SshAccessStatus.CLIENT_FAILED,
+            error=str(exc), os_name="", os_release="", arch="", elf_endianness="unknown",
         )
     except TransportError as exc:
         return ProbeResult(

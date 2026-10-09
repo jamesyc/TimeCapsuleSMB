@@ -11,7 +11,11 @@ OPEN_FILE_LIMIT = 256
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    import os
     import resource
+
+    # Set this before urllib builds its default opener. Proxy tests can opt in.
+    os.environ["no_proxy"] = os.environ["NO_PROXY"] = "*"
 
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft == resource.RLIM_INFINITY or soft > OPEN_FILE_LIMIT:

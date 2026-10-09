@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "Gespeichertes Gerät „%@“ öffnen";
 
 "discovery.reconnect_selected" = "Beim Sichern wird das ausgewählte Gerät erneut mit „%@“ verbunden. Die gespeicherten Einstellungen bleiben erhalten.";
+
+"backend.error.ssh_client_failed" = "Der lokale SSH-Client konnte den Vorgang nicht abschließen.";
+"backend.recovery.ssh_client_failed.title" = "Lokaler SSH-Client fehlgeschlagen";
+"backend.recovery.ssh_client_failed.message" = "Der SSH-Client auf diesem Computer konnte den Vorgang nicht abschließen. Prüfe den lokalen SSH-Fehler im Vorgangsprotokoll und versuche es erneut.";

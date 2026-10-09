@@ -13,6 +13,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.transport.http import HttpError
+
 from timecapsulesmb.apple_firmware import (
     FlashAnalysisError,
     download_firmware_template_to_cache,
@@ -72,6 +74,55 @@ class AppleFirmwareTests(unittest.TestCase):
         self.assertEqual(entries[0]["version"], "7.8.1")
         self.assertEqual(cached_catalog, old_catalog)
         self.assertEqual(leftovers, [])
+
+    def test_bad_download_preserves_and_uses_a_good_catalog(self) -> None:
+        valid = plistlib.dumps({"firmwareUpdates": [{"version": "old"}]})
+        for download in (b"<partial", plistlib.dumps({}), plistlib.dumps({"firmwareUpdates": {}}), HttpError("short body")):
+            with self.subTest(download=download), tempfile.TemporaryDirectory() as tmp:
+                cache = Path(tmp)
+                path = cache / "version.xml"
+                path.write_bytes(valid)
+                kwargs = {"side_effect": download} if isinstance(download, Exception) else {"return_value": download}
+                with mock.patch("timecapsulesmb.apple_firmware.http_get", **kwargs):
+                    self.assertEqual(load_apple_firmware_catalog(cache_dir=cache), [{"version": "old"}])
+                self.assertEqual(path.read_bytes(), valid)
+                self.assertEqual(list(cache.iterdir()), [path])
+
+    def test_bad_download_without_a_good_cache_fails(self) -> None:
+        for cached in (None, b"<broken", plistlib.dumps({})):
+            for downloaded in (b"<partial", plistlib.dumps({}), HttpError("short body")):
+                with self.subTest(cached=cached, downloaded=downloaded), tempfile.TemporaryDirectory() as tmp:
+                    cache = Path(tmp)
+                    path = cache / "version.xml"
+                    if cached is not None:
+                        path.write_bytes(cached)
+                    kwargs = {"side_effect": downloaded} if isinstance(downloaded, Exception) else {"return_value": downloaded}
+                    with mock.patch("timecapsulesmb.apple_firmware.http_get", **kwargs):
+                        with self.assertRaises(FlashAnalysisError):
+                            load_apple_firmware_catalog(cache_dir=cache)
+                    self.assertEqual(path.read_bytes() if path.exists() else None, cached)
+
+    def test_valid_catalog_replaces_an_absent_or_bad_or_old_cache(self) -> None:
+        valid = plistlib.dumps({"firmwareUpdates": [{"version": "new"}]})
+        for cached in (None, b"<broken", plistlib.dumps({"firmwareUpdates": [{"version": "old"}]})):
+            with self.subTest(cached=cached), tempfile.TemporaryDirectory() as tmp:
+                cache = Path(tmp)
+                path = cache / "version.xml"
+                if cached is not None:
+                    path.write_bytes(cached)
+                with mock.patch("timecapsulesmb.apple_firmware.http_get", return_value=valid):
+                    self.assertEqual(load_apple_firmware_catalog(cache_dir=cache), [{"version": "new"}])
+                self.assertEqual(path.read_bytes(), valid)
+
+    def test_template_download_error_includes_its_url_once(self) -> None:
+        url = "https://example.invalid/firmware"
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("timecapsulesmb.apple_firmware.http_get", side_effect=HttpError(f"{url}: short body")):
+            with self.assertRaises(FlashAnalysisError) as raised:
+                download_firmware_template_to_cache(
+                    url=url, path=Path(tmp) / "firmware", product_id="113", version="7.8.1", expected_size=10,
+                )
+        self.assertEqual(str(raised.exception).count(url), 1)
 
     def test_template_cache_write_failure_does_not_leave_target_or_temp_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

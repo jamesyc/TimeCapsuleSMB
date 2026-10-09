@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "Ouvrir l’appareil enregistré « %@ »";
 
 "discovery.reconnect_selected" = "L’enregistrement reconnectera l’appareil sélectionné à « %@ » et conservera ses paramètres enregistrés.";
+
+"backend.error.ssh_client_failed" = "Le client SSH local n’a pas pu terminer l’opération.";
+"backend.recovery.ssh_client_failed.title" = "Échec du client SSH local";
+"backend.recovery.ssh_client_failed.message" = "Le client SSH de cet ordinateur n’a pas pu terminer l’opération. Consultez l’erreur SSH locale dans le journal de l’opération, puis réessayez.";

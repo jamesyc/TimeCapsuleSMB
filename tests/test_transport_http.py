@@ -32,7 +32,10 @@ class _Server:
                     return
                 status, body = routes[self.path]
                 self.send_response(status)
-                self.send_header("Content-Length", str(len(body)))
+                if self.path == "/chunked-short":
+                    self.send_header("Transfer-Encoding", "chunked")
+                elif self.path != "/no-length":
+                    self.send_header("Content-Length", str(len(body) + (10 if self.path == "/short" else 0)))
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -74,6 +77,18 @@ class HttpGetTests(unittest.TestCase):
         with _Server({"/v": (200, b"payload!")}) as server:
             with self.assertRaisesRegex(HttpError, "larger than 7 bytes"):
                 http_get(f"{server.url}/v", timeout=5, max_bytes=7)
+
+    def test_a_short_body_or_incomplete_chunk_fails(self) -> None:
+        for path, body in (("/short", b"partial"), ("/chunked-short", b"10\r\npartial")):
+            with self.subTest(path=path), _Server({path: (200, body)}) as server:
+                with self.assertRaisesRegex(HttpError, "IncompleteRead"):
+                    http_get(f"{server.url}{path}", timeout=5, max_bytes=100)
+
+    def test_a_body_without_a_length_is_allowed_but_still_bounded(self) -> None:
+        with _Server({"/no-length": (200, b"payload")}) as server:
+            self.assertEqual(http_get(f"{server.url}/no-length", timeout=5, max_bytes=7), b"payload")
+            with self.assertRaisesRegex(HttpError, "larger than 6 bytes"):
+                http_get(f"{server.url}/no-length", timeout=5, max_bytes=6)
 
     def test_an_error_status_fails(self) -> None:
         with _Server({"/missing": (404, b"no")}) as server:

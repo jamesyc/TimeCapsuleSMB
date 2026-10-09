@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -80,6 +81,8 @@ from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime, acp_passwo
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
 from timecapsulesmb.transport.errors import (
     LOCAL_NETWORK_FILTERED_MESSAGE,
+    SshClientConfigError,
+    SshClientStoppedError,
     SshCommandTimeout,
     SshError,
     SshLocalNetworkFilteredError,
@@ -1642,6 +1645,33 @@ class AppApiTests(unittest.TestCase):
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["error_code"], "local_network_filtered")
         self.assertIn("Bad file descriptor", finished["error"])
+
+    def test_local_client_failures_do_not_get_device_or_filter_recovery(self) -> None:
+        from timecapsulesmb.transport.errors import SshClientConfigError, ssh_signal_error
+        import signal
+
+        for failure in (SshClientConfigError("Upgrade OpenSSH"), ssh_signal_error(signal.SIGKILL)):
+            with self.subTest(failure=failure):
+                collector = CollectingSink()
+
+                def fail(_params, context):
+                    context.stage("verify_runtime_reboot")
+                    raise failure
+
+                with mock.patch.dict(service.OPERATIONS, {"deploy": fail}):
+                    rc = service.run_api_request({"operation": "deploy", "params": {}}, collector.sink)
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "ssh_client_failed")
+                self.assertEqual(error["message"], str(failure))
+                recovery = error["recovery"]
+                self.assertEqual(recovery["localization_key"], "ssh_client_failed")
+                self.assertEqual(recovery["title"], "Local SSH client failed")
+                self.assertEqual(recovery["actions"], [])
+                self.assertNotIn("reboot", recovery["message"].lower())
+                self.assertNotIn("VPN", recovery["message"])
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(finished["error_code"], "ssh_client_failed")
 
     def assert_local_network_filtered_recovery(self, error: dict[str, object]) -> None:
         recovery = error["recovery"]
@@ -3942,6 +3972,51 @@ class AppApiTests(unittest.TestCase):
         self.assertNotIn("replace_password", error["recovery"]["action_ids"])
         self.assertIn("no matching MAC found", error["message"])
 
+    def test_configure_preserves_local_ssh_failures_through_probe_service_and_api(self) -> None:
+        failures = (
+            SshClientConfigError("Local SSH client is OpenSSH_8.0; OpenSSH 8.4 or newer is required."),
+            SshClientStoppedError(signal.SIGTERM),
+        )
+        for failure in failures:
+            for original in (None, "TC_HOST=root@192.0.2.1\n"):
+                with self.subTest(failure=type(failure).__name__, existing=original is not None), \
+                     tempfile.TemporaryDirectory() as tmp:
+                    collector = CollectingSink()
+                    config_path = Path(tmp) / ".env"
+                    if original is not None:
+                        config_path.write_text(original)
+                    # Keep the real probe, Configure service and error translation.
+                    # Only the SSH boundary fails; the device's port is reachable.
+                    with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True), \
+                         mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=failure) as ssh, \
+                         mock.patch("timecapsulesmb.device.probe.mac_network_filters") as filters, \
+                         mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe") as enable, \
+                         mock.patch("timecapsulesmb.services.configure.reboot_device") as reboot:
+                        rc = service.run_api_request(
+                            {
+                                "operation": "configure",
+                                "params": {"config": str(config_path), "host": "root@192.0.2.1", "password": "pw"},
+                            },
+                            collector.sink,
+                        )
+                    self.assertEqual(rc, 1)
+                    ssh.assert_called_once()
+                    filters.assert_not_called()
+                    enable.assert_not_called()
+                    reboot.assert_not_called()
+                    self.assertEqual(config_path.read_text() if config_path.exists() else None, original)
+                    error = self.assert_single_terminal_event(collector, "error")
+                    self.assertEqual((error["code"], error["message"]), ("ssh_client_failed", str(failure)))
+                    recovery = error["recovery"]
+                    self.assertEqual(recovery["localization_key"], "ssh_client_failed")
+                    self.assertEqual(recovery["title"], "Local SSH client failed")
+                    self.assertEqual(recovery["actions"], [])
+                    self.assertEqual(recovery["action_ids"], [])
+                    self.assertIsNone(recovery["suggested_operation"])
+                    finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                    self.assertEqual(finished["error_code"], "ssh_client_failed")
+                    self.assertIn("probe_ssh_status=client_failed", finished["error"])
+
     def test_configure_reports_a_connection_this_mac_dropped_and_what_could_filter_it(self) -> None:
         collector = CollectingSink()
         message = f"{LOCAL_NETWORK_FILTERED_MESSAGE} (ssh: connect to host 192.168.1.22 port 22: Bad file descriptor)"
@@ -5897,6 +5972,7 @@ MaSt = (
             (SshAccessStatus.AUTH_REJECTED, AUTH_REJECTED_ERROR, "auth_failed"),
             (SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED, "no matching key exchange method found", "ssh_compatibility_failed"),
             (SshAccessStatus.TRANSPORT_FAILED, KEX_CLOSED_ERROR, "ssh_transport_failed"),
+            (SshAccessStatus.CLIENT_FAILED, "Upgrade OpenSSH", "ssh_client_failed"),
             (SshAccessStatus.LOCAL_NETWORK_FILTERED, LOCAL_NETWORK_FILTERED_MESSAGE, "local_network_filtered"),
             (SshAccessStatus.DEVICE_PROBE_FAILED, "Failed to determine remote device OS compatibility.", "device_probe_failed"),
         )

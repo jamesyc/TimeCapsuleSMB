@@ -126,9 +126,23 @@ select = [
 "os.system".msg = "use core.process.run_process"
 "os.popen".msg = "use core.process.run_process"
 "pty".msg = "pty.fork forks: a forked child can crash on macOS (issue #371)"
+"os.spawnl".msg = "use core.process.run_process"
+"os.spawnle".msg = "use core.process.run_process"
+"os.spawnlp".msg = "use core.process.run_process"
+"os.spawnlpe".msg = "use core.process.run_process"
+"os.spawnv".msg = "use core.process.run_process"
+"os.spawnve".msg = "use core.process.run_process"
+"os.spawnvp".msg = "use core.process.run_process"
+"os.spawnvpe".msg = "use core.process.run_process"
+"asyncio.create_subprocess_exec".msg = "use core.process.popen_process"
+"asyncio.create_subprocess_shell".msg = "use core.process.popen_process"
+"multiprocessing".msg = "do not fork the application process; use core.process"
+"platform.platform".msg = "may fork uname; use platform.system/release/machine"
+"platform.processor".msg = "may fork uname; use platform.machine"
 
 [tool.ruff.lint.per-file-ignores]
 # The helpers themselves; tests and the packaging tools run on the build host.
 "src/timecapsulesmb/core/process.py" = ["TID251"]
 "tests/**" = ["TID251"]
 "macos/**" = ["TID251"]
+"build/**" = ["TID251"]

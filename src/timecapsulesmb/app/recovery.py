@@ -153,6 +153,12 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
+    "ssh_client_failed": RecoveryInfo(
+        "Local SSH client failed",
+        "The SSH client on this computer could not complete the operation. Check the local SSH error in the operation log, then retry.",
+        (),
+        retryable=True,
+    ),
     "ssh_transport_failed": RecoveryInfo(
         "SSH connection dropped",
         "The device accepted the SSH connection, then closed it before login. "

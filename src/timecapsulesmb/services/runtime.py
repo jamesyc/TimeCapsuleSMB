@@ -33,6 +33,7 @@ PasswordProvider = Callable[[str], str]
 PROBE_STATUS_ERROR_CODES: dict[SshAccessStatus, str] = {
     SshAccessStatus.AUTH_REJECTED: "auth_failed",
     SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED: "ssh_compatibility_failed",
+    SshAccessStatus.CLIENT_FAILED: "ssh_client_failed",
     SshAccessStatus.TRANSPORT_FAILED: "ssh_transport_failed",
     SshAccessStatus.LOCAL_NETWORK_FILTERED: "local_network_filtered",
     SshAccessStatus.DEVICE_PROBE_FAILED: "device_probe_failed",

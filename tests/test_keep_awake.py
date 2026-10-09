@@ -99,7 +99,7 @@ class KeepSystemAwakeTests(unittest.TestCase):
         self.assertEqual(ran, [True])
 
     def test_operation_runs_when_caffeinate_cannot_start(self) -> None:
-        for error in (FileNotFoundError(CAFFEINATE), PermissionError(CAFFEINATE)):
+        for error in (FileNotFoundError(CAFFEINATE), PermissionError(CAFFEINATE), NotImplementedError("setsid"), ValueError("spawn")):
             with self.subTest(error=type(error).__name__):
                 ran = []
                 _spawn, kill, _waitpid = self.patched_spawn(spawn_error=error)

@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "Открыть сохранённое устройство «%@»";
 
 "discovery.reconnect_selected" = "При сохранении выбранное устройство будет повторно подключено к «%@» с сохранением его настроек.";
+
+"backend.error.ssh_client_failed" = "Локальный SSH-клиент не смог завершить операцию.";
+"backend.recovery.ssh_client_failed.title" = "Ошибка локального SSH-клиента";
+"backend.recovery.ssh_client_failed.message" = "SSH-клиент на этом компьютере не смог завершить операцию. Проверьте ошибку локального SSH в журнале операции и повторите попытку.";

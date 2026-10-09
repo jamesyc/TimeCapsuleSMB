@@ -25,7 +25,7 @@ from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_params,
 )
-from timecapsulesmb.transport.errors import is_ssh_timeout_error, SshLocalNetworkFilteredError, TransportError
+from timecapsulesmb.transport.errors import is_ssh_timeout_error, SshClientError, SshLocalNetworkFilteredError, TransportError
 
 
 # The result of an operation that exits cleanly without emitting its own.
@@ -140,7 +140,10 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         device_name = context.known_airport_display_name()
         # A connection this Mac dropped gets its own guidance, not the stage's
         # remote_error advice, which is about the device.
-        code = "local_network_filtered" if isinstance(exc, SshLocalNetworkFilteredError) else "remote_error"
+        if isinstance(exc, SshClientError):
+            code = "ssh_client_failed"
+        else:
+            code = "local_network_filtered" if isinstance(exc, SshLocalNetworkFilteredError) else "remote_error"
         recovery = (
             ssh_timeout_slow_device_recovery(device_name=device_name)
             if is_ssh_timeout_error(exc)

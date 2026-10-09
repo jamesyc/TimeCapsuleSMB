@@ -78,25 +78,32 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
                 pass
 
 
-def load_apple_firmware_catalog(*, cache_dir: Path) -> list[dict[str, object]]:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    catalog_path = cache_dir / "version.xml"
+def _parse_firmware_catalog(data: bytes) -> list[dict[str, object]]:
     try:
-        catalog_data = http_get(APPLE_FIRMWARE_CATALOG_URL, timeout=60, max_bytes=APPLE_FIRMWARE_CATALOG_MAX_BYTES)
-        _atomic_write_bytes(catalog_path, catalog_data)
-    except Exception as exc:
-        if not catalog_path.exists():
-            raise FlashAnalysisError(f"failed to download Apple firmware catalog: {exc}") from exc
-        catalog_data = catalog_path.read_bytes()
-
-    try:
-        catalog = plistlib.loads(catalog_data)
+        catalog = plistlib.loads(data)
     except Exception as exc:
         raise FlashAnalysisError("failed to parse Apple firmware catalog") from exc
     updates = catalog.get("firmwareUpdates") if isinstance(catalog, dict) else None
     if not isinstance(updates, list):
         raise FlashAnalysisError("Apple firmware catalog did not contain firmwareUpdates")
     return [entry for entry in updates if isinstance(entry, dict)]
+
+
+def load_apple_firmware_catalog(*, cache_dir: Path) -> list[dict[str, object]]:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = cache_dir / "version.xml"
+    try:
+        catalog_data = http_get(APPLE_FIRMWARE_CATALOG_URL, timeout=60, max_bytes=APPLE_FIRMWARE_CATALOG_MAX_BYTES)
+        # Never replace a usable cache with an incomplete or invalid catalog.
+        entries = _parse_firmware_catalog(catalog_data)
+        _atomic_write_bytes(catalog_path, catalog_data)
+        return entries
+    except Exception as exc:
+        if not catalog_path.exists():
+            if isinstance(exc, FlashAnalysisError):
+                raise
+            raise FlashAnalysisError(f"failed to download Apple firmware catalog: {exc}") from exc
+        return _parse_firmware_catalog(catalog_path.read_bytes())
 
 
 def firmware_template_cache_path(*, cache_dir: Path, product_id: str, version: str, url: str) -> Path:
@@ -151,7 +158,7 @@ def download_firmware_template_to_cache(
     try:
         data = http_get(url, timeout=120, max_bytes=APPLE_FIRMWARE_TEMPLATE_MAX_BYTES)
     except Exception as exc:
-        raise FlashAnalysisError(f"failed to download Apple firmware template {url}: {exc}") from exc
+        raise FlashAnalysisError(f"failed to download Apple firmware template: {exc}") from exc
     if expected_size is not None and len(data) != expected_size:
         raise FlashAnalysisError(
             f"downloaded Apple firmware template size mismatch for {url}: "

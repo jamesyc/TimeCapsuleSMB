@@ -325,6 +325,12 @@ def run_configure_flow(
             probe.error or "SSH algorithm negotiation failed.",
             code=PROBE_STATUS_ERROR_CODES[probe.ssh_status],
         )
+    elif probe.ssh_status == SshAccessStatus.CLIENT_FAILED:
+        callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
+        raise ConfigureFlowError(
+            probe.error or "Local SSH client failed.",
+            code=PROBE_STATUS_ERROR_CODES[probe.ssh_status],
+        )
     elif probe.ssh_status in (SshAccessStatus.TRANSPORT_FAILED, SshAccessStatus.LOCAL_NETWORK_FILTERED):
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
         raise ConfigureFlowError(probe.error or "SSH transport failed.", code=PROBE_STATUS_ERROR_CODES[probe.ssh_status])

@@ -9,7 +9,6 @@ from unittest import mock
 
 from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.device.migration_jobs import MigrationActivity
-from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
@@ -147,9 +146,6 @@ class FakeCommandContext:
             model=model if isinstance(model, str) else None,
             syap=syap if isinstance(syap, str) else None,
         )
-
-    def require_local_sshpass(self) -> bool:
-        return CommandContext.require_local_sshpass(self)  # type: ignore[arg-type]
 
     def set_stage(self, stage: str) -> None:
         self.stages.append(stage)

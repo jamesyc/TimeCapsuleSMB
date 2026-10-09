@@ -1091,6 +1091,32 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ssh_compatibility_failed")
         self.assertIn("no matching MAC found", str(raised.exception))
 
+    def test_run_configure_flow_preserves_local_client_failure_without_writing_config(self) -> None:
+        for message in ("Upgrade OpenSSH on this computer.", "", None):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                env_path = Path(tmp) / ".env"
+                env_path.write_text("original configuration")
+                state = ProbedDeviceState(
+                    probe_result=ProbeResult(
+                        ssh_status=SshAccessStatus.CLIENT_FAILED,
+                        error=message, os_name="", os_release="", arch="", elf_endianness="unknown",
+                    ),
+                    compatibility=None,
+                )
+                callbacks, stages, _logs, _debug, updates = self.callbacks()
+                writer = mock.Mock()
+                request = self.configure_request(env_path, mock.Mock(return_value=state), write_env=writer)
+                with mock.patch("timecapsulesmb.services.configure.enable_ssh_and_reprobe") as enable:
+                    with self.assertRaises(ConfigureFlowError) as raised:
+                        run_configure_flow(request, callbacks=callbacks)
+                self.assertEqual(raised.exception.code, "ssh_client_failed")
+                self.assertEqual(str(raised.exception), message or "Local SSH client failed.")
+                self.assertEqual(stages, ["ssh_probe"])
+                self.assertIn({"ssh_final_reachable": True}, updates)
+                writer.assert_not_called()
+                enable.assert_not_called()
+                self.assertEqual(env_path.read_text(), "original configuration")
+
     def test_run_configure_flow_reports_a_connection_this_mac_dropped_with_its_own_code(self) -> None:
         message = "This Mac dropped the connection before it reached the device. (ssh: ...)"
         probe_state = ProbedDeviceState(

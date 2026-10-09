@@ -158,7 +158,7 @@ class TelemetryClient:
             body = json.dumps(payload, default=str).encode("utf-8")
         except Exception:
             return
-        for attempt in range(MAX_SEND_ATTEMPTS):
+        for _ in range(MAX_SEND_ATTEMPTS):
             try:
                 status = http_post_json(
                     self.endpoint,

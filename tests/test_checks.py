@@ -1845,7 +1845,8 @@ class CheckTests(unittest.TestCase):
         def fake_exists(name: str) -> bool:
             return name == "ssh"
 
-        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=fake_exists):
+        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=fake_exists), \
+             mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"):
             results = check_required_local_tools()
         self.assertEqual([r.status for r in results], ["PASS", "FAIL", "PASS"])
         self.assertEqual(
@@ -2183,7 +2184,8 @@ class CheckTests(unittest.TestCase):
             for helper in (not_executable, Path(tmp) / "missing"):
                 with self.subTest(helper=helper.name):
                     with mock.patch("timecapsulesmb.checks.local_tools.command_exists", return_value=True), \
-                         mock.patch("timecapsulesmb.checks.local_tools.SSH_ASKPASS_PATH", helper):
+                         mock.patch("timecapsulesmb.checks.local_tools.SSH_ASKPASS_PATH", helper), \
+                         mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"):
                         results = check_required_local_tools()
                     self.assertEqual([r.status for r in results], ["PASS", "PASS", "FAIL"])
                     self.assertIn(f"is missing or not executable at {helper}; reinstall TimeCapsuleSMB", results[2].message)

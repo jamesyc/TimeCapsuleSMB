@@ -719,6 +719,22 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result.error, "Connection timed out")
         self.assertIsNone(result.mac_network_filters)
 
+    def test_local_client_failures_do_not_collect_network_filters(self) -> None:
+        from timecapsulesmb.transport.errors import SshClientConfigError, ssh_signal_error
+        import signal
+
+        errors = [SshClientConfigError("Upgrade OpenSSH"), *(ssh_signal_error(n) for n in (signal.SIGKILL, signal.SIGTERM, signal.SIGINT, 99))]
+        for error in errors:
+            with self.subTest(error=error), \
+                 mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True), \
+                 mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error), \
+                 mock.patch("timecapsulesmb.device.probe.mac_network_filters") as collect:
+                result = probe.probe_device_conn(SshConnection("root@10.0.0.2", "pw", ""))
+            self.assertEqual(result.ssh_status, SshAccessStatus.CLIENT_FAILED)
+            self.assertEqual(result.error, str(error))
+            self.assertIsNone(result.mac_network_filters)
+            collect.assert_not_called()
+
     def test_probe_device_conn_reports_a_connection_this_mac_dropped_with_its_filters(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         dropped = SshLocalNetworkFilteredError("This Mac dropped the connection ... (ssh: ...)")

@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "Apri il dispositivo salvato “%@”";
 
 "discovery.reconnect_selected" = "Il salvataggio riconnetterà il dispositivo selezionato a “%@” mantenendo le impostazioni salvate.";
+
+"backend.error.ssh_client_failed" = "Il client SSH locale non ha potuto completare l’operazione.";
+"backend.recovery.ssh_client_failed.title" = "Errore del client SSH locale";
+"backend.recovery.ssh_client_failed.message" = "Il client SSH su questo computer non ha potuto completare l’operazione. Controlla l’errore SSH locale nel registro dell’operazione, poi riprova.";

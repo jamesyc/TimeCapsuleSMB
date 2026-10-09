@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "Atidaryti išsaugotą įrenginį „%@“";
 
 "discovery.reconnect_selected" = "Išsaugojus pasirinktas įrenginys bus iš naujo susietas su „%@“, išlaikant išsaugotus nustatymus.";
+
+"backend.error.ssh_client_failed" = "Vietinis SSH klientas negalėjo užbaigti operacijos.";
+"backend.recovery.ssh_client_failed.title" = "Vietinio SSH kliento klaida";
+"backend.recovery.ssh_client_failed.message" = "Šio kompiuterio SSH klientas negalėjo užbaigti operacijos. Peržiūrėkite vietinio SSH klaidą operacijos žurnale ir bandykite dar kartą.";

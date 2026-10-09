@@ -101,7 +101,7 @@ Run:
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs the Python dependencies needed for discovery, deployment, and verification, and sets up the local `tcapsule` command into that virtualenv.
 
-If `smbclient` is missing, `bootstrap` will try to install it with Homebrew on macOS 14+ or the detected package manager on Linux. Older macOS versions can continue only when `smbclient` is already installed manually. On Intel Macs `bootstrap` skips `smbclient`, because Homebrew no longer builds it for Intel; deploy works without it, but `doctor` needs it (the macOS app includes it). SSH logins use the system `ssh` (OpenSSH 8.4 or newer) with TimeCapsuleSMB's own password helper, so no other tool is needed.
+If `ssh` or `smbclient` is missing, `bootstrap` will try to install it with Homebrew on macOS 14+ or the detected package manager on Linux. Bootstrap and doctor require OpenSSH 8.4 or newer; upgrade an older SSH client manually. Older macOS versions can continue only when `smbclient` is already installed manually. On Intel Macs `bootstrap` skips `smbclient`, because Homebrew no longer builds it for Intel; deploy works without it, but `doctor` needs it (the macOS app includes it). SSH logins use the system `ssh` (OpenSSH 8.4 or newer) with TimeCapsuleSMB's own password helper, so no other tool is needed.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 

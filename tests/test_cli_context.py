@@ -159,12 +159,12 @@ class JsonModeStdoutTests(unittest.TestCase):
         def body() -> None:
             print("Resolving deployment target...")
             print_json({"ok": True})
-            print("local tool sshpass is missing")
+            print("local tool ssh is missing")
 
         stdout, stderr = self.run_in_context(body, json_output=True)
 
         self.assertEqual(json.loads(stdout), {"ok": True})
-        self.assertEqual(stderr, "Resolving deployment target...\nlocal tool sshpass is missing\n")
+        self.assertEqual(stderr, "Resolving deployment target...\nlocal tool ssh is missing\n")
 
     def test_json_mode_sends_prompts_to_stderr(self) -> None:
         answers: list[str] = []

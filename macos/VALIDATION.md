@@ -1,5 +1,72 @@
 # Swift operation completion validation
 
+## 2026-10-09 — Configure local SSH error propagation
+
+Configure now preserves `CLIENT_FAILED` as `ssh_client_failed` through both the
+service and app adapter, retaining the original error and existing local-client
+recovery guidance. The new API regression exercises the real probe and Configure
+flow with unsupported/stopped SSH errors at the transport boundary, checks the
+terminal event and telemetry, and verifies that configuration files stay
+untouched and no SSH enable, reboot or network-filter collection occurs.
+
+- Before the fix, all seven new subcases reproduced the incorrect codes.
+  Log: `/tmp/tcapsule-configure-client-red.log`.
+- Configure service, CLI Configure, app API, probe, runtime and recovery-catalog
+  suites: 514 tests and 3,448 subtests passed.
+  Log: `/tmp/tcapsule-configure-client-tests.log`.
+- `make lint`, `ruff check .` and `git diff --check` passed.
+  Log: `/tmp/tcapsule-configure-client-lint.log`.
+- No device access, shared locks or payload changes for this follow-up.
+
+## 2026-10-09 — host spawn and SSH review fixes
+
+The host process wrapper rejects options and descriptor layouts that would
+silently fall back to fork. Its regression table exercises supported calls as
+well as rejected combinations, and proves the fork spy reaches CPython's actual
+fallback on both the 3.9 extension call and newer imported aliases.
+
+Bounded HTTP reads reject incomplete bodies, and downloaded firmware catalogs
+are parsed before replacing the cache. SSH checks OpenSSH 8.4 or newer before
+password authentication. External SSH termination and local configuration
+failures have local-client recovery guidance, without filter telemetry or
+device reboot advice. The askpass helper refuses passphrase and new-password
+prompts. Bootstrap, doctor, lint rules, test proxy isolation and dependency
+references now follow the same host-tool contract.
+
+Validation:
+
+- `make test-parallel`: native host compile/smoke checks and 4,043 Python tests
+  passed. Log: `/tmp/tcapsule-no-fork-full-tests.log`.
+- `swift test --parallel --package-path macos/TimeCapsuleSMB`: 692 tests passed.
+  Log: `/tmp/tcapsule-no-fork-swift.log`.
+- Focused process/HTTP/SSH/askpass/keep-awake tests: macOS Python 3.9 passed
+  176 tests; Linux amd64 Python 3.12 and 3.14 each passed 174 tests and 96
+  subtests, skipping only the two macOS caffeinate tests. Logs:
+  `/tmp/tcapsule-no-fork-py39-tests.log`,
+  `/tmp/tcapsule-no-fork-linux312.log`,
+  `/tmp/tcapsule-no-fork-linux314.log`.
+- The final SSH fixture change preserves OpenSSH's exec-failure diagnostic when
+  QEMU reports a missing helper as exit 127; all 106 Mac SSH tests and 40
+  subtests passed afterward. Log: `/tmp/tcapsule-no-fork-ssh-final.log`.
+- All 11 HTTP tests and two subtests passed with a deliberately invalid
+  `http_proxy`. Log: `/tmp/tcapsule-no-fork-proxy-tests.log`.
+- Native release app packaging with `--arch native --full-validation` passed,
+  including helper/tool smoke tests, resource checks, architecture checks and
+  signatures. Log: `/tmp/tcapsule-no-fork-package.log`.
+- Built the wheel and sdist; both contain the current askpass helper with mode
+  0755. The packaged app's helper also passed actual password/rejection prompt
+  checks. Logs: `/tmp/tcapsule-no-fork-distributions.log` and
+  `/tmp/tcapsule-no-fork-artifact-checks.log`.
+- NetBSD 6 and NetBSD 4 passed command, input-stream and local-forward SSH
+  banner checks using this worktree. No deploy or reboot; device locks were
+  released. Log: `/tmp/tcapsule-no-fork-device-smoke.log`.
+- The separate server checkout's dashboard-prefix change passed 18 tests.
+  Log: `/tmp/tcapsule-no-fork-server-tests.log`. It has not been
+  deployed; the checkout's existing divergent history has not been rewritten.
+- `make lint`, `ruff check .` and `git diff --check` passed. No NetBSD payload
+  source or binaries changed, and no shared resource locks remain held by this
+  work.
+
 ## 2026-10-02 — backend event ingress and uninstall ordering
 
 The stale-request regression now delivers through the fake helper's actual

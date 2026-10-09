@@ -15,6 +15,8 @@ from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.core.process import popen_process, run_process
 from timecapsulesmb.transport.local import find_command
+from timecapsulesmb.transport.ssh_client import require_local_ssh
+from timecapsulesmb.transport.errors import SshError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -426,9 +428,18 @@ def _install_macos_host_tools(missing_tools: list[str]) -> None:
     run([brew, "install", *packages])
 
 
+def _require_supported_ssh() -> None:
+    try:
+        require_local_ssh()
+    except SshError as exc:
+        raise BootstrapError(str(exc)) from exc
+
+
 def install_required_host_tools() -> list[str]:
     """Install missing host tools; return the ones skipped on purpose."""
     missing_tools = _missing_required_host_tools()
+    if "ssh" not in missing_tools:
+        _require_supported_ssh()
     if not missing_tools:
         print(f"Found required host tools: {_format_tools(list(REQUIRED_HOST_TOOLS))}", flush=True)
         return []
@@ -486,6 +497,7 @@ def install_required_host_tools() -> list[str]:
             f"Required host tools are still missing after install attempt: {_format_tools(still_missing)}",
             manual_command,
         )
+    _require_supported_ssh()
     print(f"Installed required host tools: {_format_tools(missing_tools)}", flush=True)
     return skipped
 

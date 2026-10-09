@@ -50,7 +50,8 @@ def _start_caffeinate() -> int | None:
                 # A terminal Ctrl-C must not end it while the command still runs.
                 setsid=True,
             )
-    except OSError:
+    except Exception:
+        # Sleep prevention is best effort, including unsupported spawn flags.
         return None
 
 

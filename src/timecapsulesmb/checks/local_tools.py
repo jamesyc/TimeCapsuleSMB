@@ -6,6 +6,8 @@ from pathlib import Path
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.transport.local import command_exists
+from timecapsulesmb.transport.ssh_client import require_local_ssh
+from timecapsulesmb.transport.errors import SshError
 from timecapsulesmb.transport.ssh import SSH_ASKPASS_PATH
 
 
@@ -13,6 +15,12 @@ def check_required_local_tools() -> list[CheckResult]:
     results: list[CheckResult] = []
     for tool in ("ssh", "smbclient"):
         if command_exists(tool):
+            if tool == "ssh":
+                try:
+                    require_local_ssh()
+                except SshError as exc:
+                    results.append(CheckResult("FAIL", str(exc)))
+                    continue
             results.append(CheckResult("PASS", f"found local tool {tool}"))
         else:
             results.append(CheckResult("FAIL", f"missing local tool {tool}, please install {tool} on your computer"))

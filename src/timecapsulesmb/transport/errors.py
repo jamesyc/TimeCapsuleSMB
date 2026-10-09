@@ -25,7 +25,11 @@ class SshAlgorithmNegotiationError(SshError):
         self.offered = offered
 
 
-class SshClientConfigError(SshError):
+class SshClientError(SshError):
+    """The local SSH client could not run or was stopped externally."""
+
+
+class SshClientConfigError(SshClientError):
     """Raised when the local SSH client rejects our options or user config."""
 
 
@@ -61,7 +65,7 @@ CRASH_SIGNALS = frozenset({signal.SIGSEGV, signal.SIGBUS, signal.SIGILL, signal.
 
 
 class SshClientCrashedError(SshLocalNetworkFilteredError):
-    """Raised when the local ssh program died from a signal.
+    """Raised when the local ssh program died from a crash signal.
 
     The one seen cause is a Network Extension on the Mac: our forked child
     crashed in Apple's fork handler before it could exec ssh (issue #371).
@@ -71,21 +75,34 @@ class SshClientCrashedError(SshLocalNetworkFilteredError):
     """
 
     def __init__(self, signal_number: int, *, platform: str = sys.platform) -> None:
-        try:
-            name = signal.Signals(signal_number).name
-        except ValueError:
-            name = f"signal {signal_number}"
+        name = _signal_name(signal_number)
         computer = "this Mac" if platform == "darwin" else "this computer"
-        if signal_number in CRASH_SIGNALS:
-            message = (
-                f"The ssh program on {computer} crashed ({name}) before it finished. "
-                "A VPN, firewall or security app can cause this; try again, or turn that app off and retry."
-            )
-        else:
-            # Something outside this process ended it: kill, a shutdown, memory pressure.
-            message = f"The ssh program on {computer} was stopped by {name} before it finished."
-        super().__init__(message)
+        super().__init__(
+            f"The ssh program on {computer} crashed ({name}) before it finished. "
+            "A VPN, firewall or security app can cause this; try again, or turn that app off and retry."
+        )
         self.signal_number = signal_number
+
+
+class SshClientStoppedError(SshClientError):
+    """Something outside ssh stopped it; this does not identify a network filter."""
+
+    def __init__(self, signal_number: int, *, platform: str = sys.platform) -> None:
+        computer = "this Mac" if platform == "darwin" else "this computer"
+        super().__init__(f"The ssh program on {computer} was stopped by {_signal_name(signal_number)} before it finished.")
+        self.signal_number = signal_number
+
+
+def _signal_name(number: int) -> str:
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return f"signal {number}"
+
+
+def ssh_signal_error(number: int, *, platform: str = sys.platform) -> SshError:
+    error_type = SshClientCrashedError if number in CRASH_SIGNALS else SshClientStoppedError
+    return error_type(number, platform=platform)
 
 
 class SshCommandTimeout(SshError):

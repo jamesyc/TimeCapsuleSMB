@@ -35,6 +35,9 @@ class DecodeTrapBytes(bytes):
 # module: subprocess.wait(timeout=...) also sleeps while reaping local probes.
 class SSHTransportTests(unittest.TestCase):
     def setUp(self) -> None:
+        client = mock.patch.object(ssh_transport, "require_local_ssh", return_value="/tested/ssh")
+        client.start()
+        self.addCleanup(client.stop)
         ssh_transport._ssh_option_supported.cache_clear()
         ssh_transport._local_ssh_macs.cache_clear()
         self._local_macs_patch = mock.patch("timecapsulesmb.transport.ssh._local_ssh_macs", return_value=())
@@ -702,7 +705,7 @@ class SSHTransportTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)) as run:
             self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw"), payload)
         command = run.call_args.args[0]
-        self.assertEqual(command[0], "ssh")
+        self.assertEqual(command[0], "/tested/ssh")
         self.assertIn("-n", command)
         self.assertIn("-T", command)
         self.assertIn("ControlMaster=auto", command)
@@ -849,9 +852,11 @@ class SSHTransportTests(unittest.TestCase):
     def test_an_ssh_killed_from_outside_is_reported_as_stopped_not_crashed(self) -> None:
         for number, name in ((signal.SIGKILL, "SIGKILL"), (signal.SIGTERM, "SIGTERM"), (99, "signal 99")):
             with self.subTest(name=name):
-                error = ssh_transport.SshClientCrashedError(number, platform="darwin")
+                error = transport_errors.ssh_signal_error(number, platform="darwin")
                 self.assertEqual(str(error), f"The ssh program on this Mac was stopped by {name} before it finished.")
                 self.assertEqual(error.signal_number, number)
+                self.assertIsInstance(error, transport_errors.SshClientStoppedError)
+                self.assertNotIsInstance(error, transport_errors.SshLocalNetworkFilteredError)
         self.assertIn("this computer crashed (SIGBUS)", str(ssh_transport.SshClientCrashedError(signal.SIGBUS, platform="linux")))
 
     def test_a_password_helper_that_cannot_run_is_a_damaged_install_not_a_wrong_password(self) -> None:
@@ -879,6 +884,9 @@ class SharedConnectionTests(unittest.TestCase):
     """Commands share one authenticated connection per device and process."""
 
     def setUp(self) -> None:
+        client = mock.patch.object(ssh_transport, "require_local_ssh", return_value="/tested/ssh")
+        client.start()
+        self.addCleanup(client.stop)
         directory = TemporaryDirectory(prefix="tcsmb-test-", dir="/tmp")
         self.addCleanup(directory.cleanup)
         self.control_dir = directory.name
@@ -1127,6 +1135,9 @@ class MigrationInputTransportTests(unittest.TestCase):
     # they run through each test's patched run_process only when no earlier
     # test filled the cache, so call counts would depend on test order.
     def setUp(self) -> None:
+        client = mock.patch.object(ssh_transport, "require_local_ssh", return_value="/tested/ssh")
+        client.start()
+        self.addCleanup(client.stop)
         ssh_transport._ssh_option_supported.cache_clear()
         ssh_transport._local_ssh_macs.cache_clear()
         self.addCleanup(ssh_transport._local_ssh_macs.cache_clear)
@@ -1394,6 +1405,9 @@ FAKE_SSH = r'''
 import json, os, signal, socket, subprocess, sys, time
 args = sys.argv[1:]
 scenario = json.load(open(os.environ["FAKE_SSH_SCENARIO"]))
+if "-V" in args:
+    print("OpenSSH_9.9p1", file=sys.stderr)
+    sys.exit(0)
 if "-E" not in args:  # a local option probe
     sys.exit(0)
 runs = scenario["runs"]
@@ -1411,12 +1425,17 @@ def say(line):
         out.write(line + "\n")
 if scenario.get("crash"):
     os.kill(os.getpid(), signal.SIGSEGV)
+if scenario.get("stop"):
+    os.kill(os.getpid(), signal.SIGTERM)
 if "BatchMode=yes" in args:
     reply, method = "", "publickey"
     authenticated = scenario.get("key_login", False)
 else:
     askpass = os.environ["SSH_ASKPASS"]
     try:
+        # Under QEMU, Python's posix_spawn can turn ENOENT into exit 127.
+        # Real ssh reports exec failure; keep this stand-in's log faithful.
+        os.stat(askpass)
         reply = subprocess.run([askpass, "root@device's password: "], capture_output=True, text=True).stdout
     except OSError as exc:
         say(f"ssh_askpass: exec({askpass}): {exc.strerror}")
@@ -1538,6 +1557,24 @@ class RealSshProcessTests(unittest.TestCase):
         [run] = self.recorded()
         self.assertIsNone(run["askpass"])
         self.assertIn("BatchMode=yes", run["args"])
+
+    def test_an_externally_stopped_ssh_is_not_retried_or_classified_as_a_filter(self) -> None:
+        self.scenario(stop=True)
+        with self.assertRaises(transport_errors.SshClientStoppedError) as raised:
+            ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pa ss$1", ""), "true")
+        self.assertNotIsInstance(raised.exception, transport_errors.SshLocalNetworkFilteredError)
+        self.assertEqual(len(self.recorded()), 1)
+        self.sleep.assert_not_called()
+
+    def test_an_externally_stopped_tunnel_is_a_local_client_failure(self) -> None:
+        self.scenario(stop=True)
+        with self.assertRaises(transport_errors.SshClientStoppedError):
+            with ssh_transport.ssh_local_forward(
+                ssh_transport.SshConnection("root@device", "pa ss$1", ""),
+                local_port=find_free_local_port(), remote_host="127.0.0.1", remote_port=445,
+            ):
+                self.fail("stopped tunnel became ready")
+        self.assertEqual(len(self.recorded()), 1)
 
     def test_a_crashed_ssh_raises_the_local_crash_error_once(self) -> None:
         self.scenario(crash=True)

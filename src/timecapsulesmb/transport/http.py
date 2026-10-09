@@ -30,6 +30,9 @@ def http_get(url: str, *, timeout: float, max_bytes: int, headers: Mapping[str, 
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = response.read(max_bytes + 1)
+            # A bounded read does not raise IncompleteRead on an early EOF.
+            if len(data) <= max_bytes and response.length:
+                raise http.client.IncompleteRead(data, response.length)
     except _REQUEST_ERRORS as exc:
         raise HttpError(f"{url}: {exc}") from exc
     if len(data) > max_bytes:

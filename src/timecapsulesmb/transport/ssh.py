@@ -21,7 +21,8 @@ from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
     SshClientConfigError,
-    SshClientCrashedError,
+    SshClientCrashedError as SshClientCrashedError,
+    ssh_signal_error,
     SshCommandTimeout,
     SshError,
     SshLocalNetworkFilteredError,
@@ -32,6 +33,7 @@ from timecapsulesmb.transport.errors import (
 from timecapsulesmb.core.process import popen_process, run_process
 
 from .local import tcp_open
+from .ssh_client import require_local_ssh
 
 
 @dataclass
@@ -660,11 +662,12 @@ def _run_ssh(
     stdin_kwargs: dict[str, object] = (
         {"stdin": subprocess.DEVNULL} if input_bytes is None else {"input": input_bytes}
     )
+    executable = require_local_ssh() if connection.password else "ssh"
     attempt = 0
     while True:
         with _ssh_client_log_path() as client_log:
             cmd = [
-                "ssh",
+                executable,
                 *_connection_ssh_args(
                     connection,
                     client_log=client_log,
@@ -694,7 +697,7 @@ def _run_ssh(
                 raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
             diagnostics = _read_ssh_client_diagnostics(client_log)
         if proc.returncode < 0:
-            raise SshClientCrashedError(-proc.returncode)
+            raise ssh_signal_error(-proc.returncode)
         client_error = _ssh_client_error_for_result(
             diagnostics,
             returncode=proc.returncode,
@@ -776,7 +779,7 @@ def ssh_local_forward(
         # A tunnel keeps its own connection: a forward opened through a
         # master belongs to the master and would outlive this tunnel.
         cmd = [
-            "ssh",
+            require_local_ssh() if connection.password else "ssh",
             *_connection_ssh_args(connection, client_log=client_log, stdin_null=True),
             "-N",
             "-L",
@@ -803,7 +806,7 @@ def ssh_local_forward(
                 returncode = child.poll()
                 if returncode is not None:
                     if returncode < 0:
-                        raise SshClientCrashedError(-returncode)
+                        raise ssh_signal_error(-returncode)
                     startup_output = child.stderr.read().decode("utf-8", errors="replace") if child.stderr else ""
                     startup_error = _classify_ssh_startup_error(startup_output) if not diagnostics.text else None
                     if startup_error is not None:

@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "打开已保存的设备“%@”";
 
 "discovery.reconnect_selected" = "保存后，所选设备将重新连接到“%@”，并保留其已保存的设置。";
+
+"backend.error.ssh_client_failed" = "本机 SSH 客户端未能完成操作。";
+"backend.recovery.ssh_client_failed.title" = "本机 SSH 客户端失败";
+"backend.recovery.ssh_client_failed.message" = "此电脑上的 SSH 客户端未能完成操作。请查看操作日志中的本机 SSH 错误，然后重试。";

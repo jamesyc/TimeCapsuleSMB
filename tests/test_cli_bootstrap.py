@@ -20,6 +20,12 @@ def MAC_SSH_ONLY(name: str) -> str | None:
 
 
 class CliBootstrapTests(CliTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        client = mock.patch.object(bootstrap, "require_local_ssh", return_value="/tested/ssh")
+        self.client = client.start()
+        self.addCleanup(client.stop)
+
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=True):

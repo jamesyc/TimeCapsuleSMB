@@ -1114,3 +1114,7 @@
 "discovery.open_saved_device" = "Opgeslagen apparaat ‘%@’ openen";
 
 "discovery.reconnect_selected" = "Bij het opslaan wordt het geselecteerde apparaat opnieuw verbonden met ‘%@’ en blijven de opgeslagen instellingen behouden.";
+
+"backend.error.ssh_client_failed" = "De lokale SSH-client kon de bewerking niet voltooien.";
+"backend.recovery.ssh_client_failed.title" = "Lokale SSH-client mislukt";
+"backend.recovery.ssh_client_failed.message" = "De SSH-client op deze computer kon de bewerking niet voltooien. Bekijk de lokale SSH-fout in het bewerkingslogboek en probeer het opnieuw.";

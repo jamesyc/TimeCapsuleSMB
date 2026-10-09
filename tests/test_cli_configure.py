@@ -830,16 +830,16 @@ class CliConfigureTests(CliTestCase):
 
     def test_configure_dependency_preflight_reports_first_missing_module_name(self) -> None:
         output = io.StringIO()
-        missing_pexpect = ("pexpect", ModuleNotFoundError("No module named 'pexpect'"))
+        missing_zeroconf = ("zeroconf", ModuleNotFoundError("No module named 'zeroconf'"))
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
-                with mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=missing_pexpect):
+                with mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=missing_zeroconf):
                     with redirect_stdout(output):
                         rc = configure.main([])
 
         self.assertEqual(rc, 1)
-        expected_prefix = "Failed to load pexpect. Install the Python package pexpect."
-        expected_error = "ModuleNotFoundError: No module named 'pexpect'"
+        expected_prefix = "Failed to load zeroconf. Install the Python package zeroconf."
+        expected_error = "ModuleNotFoundError: No module named 'zeroconf'"
         self.assertIn(expected_prefix, output.getvalue())
         self.assertIn(expected_error, output.getvalue())
         self.assertIn(expected_prefix, self.configure_finished_error())
