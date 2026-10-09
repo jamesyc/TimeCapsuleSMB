@@ -50,8 +50,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             device_came_back_after_reboot=False,
             post_uninstall_verified=False,
         )
-        if not command_context.require_local_sshpass():
-            return 1
         command_context.set_stage("validate_config")
         command_context.require_valid_config(profile="uninstall")
         if no_input_enabled(args) and not args.yes and not args.no_reboot and not args.dry_run:

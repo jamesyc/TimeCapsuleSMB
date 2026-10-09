@@ -643,6 +643,32 @@ def test_macho_tool_cache_reuses_output_across_runs_until_the_bytes_change(
     assert len(calls) == 4
 
 
+def test_macho_tool_cache_lets_the_tool_report_a_path_that_is_not_there(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # The tool layer is built and checked in a staging app that has no app
+    # executables; a rebuild after a bottle pin changed stopped there.
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="can't open input file")
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+    staging = tmp_path / "entry"
+    (staging / "Contents" / "Resources").mkdir(parents=True)
+
+    with package_app.macho_tool_cache():
+        assert package_app.macho_architectures(staging / "Contents" / "MacOS" / "TimeCapsuleSMB") == set()
+        package_app.assert_runtime_macho_architectures(staging, ("arm64",))
+    assert calls
+    # Nothing is kept for a path without bytes.
+    cache_dir = tmp_path / ".build" / "package-app" / package_app.MACHO_TOOL_CACHE_DIR
+    assert not cache_dir.exists() or not any(cache_dir.iterdir())
+
+
 def test_macho_tool_cache_shares_a_record_between_copies_at_other_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -900,7 +926,7 @@ def test_developer_id_signatures_are_reused_for_the_same_bytes_name_and_certific
     # Other bytes, another name (the default identifier) or another certificate sign again.
     signed.clear()
     app, (library, tool) = signature_cache_app(
-        package_app, tmp_path / "third", {"Frameworks/libtalloc.dylib": "talloc 2", "Resources/Tools/bin/sshpass": "smbclient"},
+        package_app, tmp_path / "third", {"Frameworks/libtalloc.dylib": "talloc 2", "Resources/Tools/bin/rpcclient": "smbclient"},
     )
     package_app.developer_id_codesign_app_bundle(app, identity, use_cache=True)
     assert sorted(signed[:-2]) == sorted([library, tool])
@@ -1607,7 +1633,7 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
 def test_copy_tools_from_sources_creates_arch_dispatch_wrappers(tmp_path: Path) -> None:
     package_app = load_package_app_module()
     sources: dict[tuple[str, str], Path] = {}
-    for tool in ("sshpass", "smbclient"):
+    for tool in package_app.REQUIRED_HOST_TOOLS:
         for architecture in ("arm64", "x86_64"):
             source = tmp_path / "kegs" / architecture / tool
             source.parent.mkdir(parents=True, exist_ok=True)
@@ -1618,26 +1644,26 @@ def test_copy_tools_from_sources_creates_arch_dispatch_wrappers(tmp_path: Path) 
     copies = package_app.copy_tools_from_sources(resources, ("arm64", "x86_64"), sources)
 
     tools_bin = resources / "Tools" / "bin"
-    assert "arm64) exec" in (tools_bin / "sshpass").read_text(encoding="utf-8")
+    assert "arm64) exec" in (tools_bin / "smbclient").read_text(encoding="utf-8")
     assert "x86_64) exec" in (tools_bin / "smbclient").read_text(encoding="utf-8")
     assert (tools_bin / "x86_64" / "smbclient").read_text(encoding="utf-8") == "smbclient x86_64"
     # Vendoring needs each copy's bottle file and architecture.
     assert copies == {tools_bin / architecture / tool: (sources[(tool, architecture)], architecture)
-                      for tool in ("sshpass", "smbclient") for architecture in ("arm64", "x86_64")}
+                      for tool in package_app.REQUIRED_HOST_TOOLS for architecture in ("arm64", "x86_64")}
     assert all(os.access(copy, os.X_OK) for copy in copies)
 
 
 def test_copy_tools_from_sources_copies_one_architecture_without_wrappers(tmp_path: Path) -> None:
     package_app = load_package_app_module()
     sources = {}
-    for tool in ("sshpass", "smbclient"):
+    for tool in package_app.REQUIRED_HOST_TOOLS:
         sources[(tool, "arm64")] = tmp_path / tool
         sources[(tool, "arm64")].write_text(tool, encoding="utf-8")
 
     copies = package_app.copy_tools_from_sources(tmp_path / "Resources", ("arm64",), sources)
 
     tools_bin = tmp_path / "Resources" / "Tools" / "bin"
-    assert copies == {tools_bin / tool: (sources[(tool, "arm64")], "arm64") for tool in ("sshpass", "smbclient")}
+    assert copies == {tools_bin / tool: (sources[(tool, "arm64")], "arm64") for tool in package_app.REQUIRED_HOST_TOOLS}
     assert not (tools_bin / "arm64").exists()
 
 
@@ -1669,7 +1695,6 @@ def test_homebrew_bottles_tool_is_the_formulas_bin_entry(tmp_path: Path) -> None
     bottles = fake_bottles(package_app, tmp_path, ("arm64", "x86_64"))
 
     assert package_app.bottle_tool_sources(bottles, ("x86_64",)) == {
-        ("sshpass", "x86_64"): tmp_path / "kegs" / "x86_64" / "sshpass" / "1.10" / "bin" / "sshpass",
         ("smbclient", "x86_64"): tmp_path / "kegs" / "x86_64" / "samba" / "4.24.6" / "bin" / "smbclient",
     }
     (tmp_path / "kegs" / "arm64" / "samba" / "4.24.6" / "bin" / "smbclient").unlink()
@@ -1726,7 +1751,7 @@ def test_copy_native_tools_layer_bundles_the_bottle_tools_and_reuses_the_layer(
     _, kegs, tool_sources = state.vendor_calls[0]
     assert kegs == {"arm64": state.bottles.kegs["arm64"]}
     assert sorted((source.name, architecture) for source, architecture in tool_sources.values()) == [
-        ("smbclient", "arm64"), ("sshpass", "arm64")]
+        ("smbclient", "arm64")]
     assert "Using cached native tool layer." in captured.err
     tools = tmp_path / "Second.app" / "Contents" / "Resources" / "Tools" / "bin"
     assert (tools / "smbclient").read_text(encoding="utf-8") == "smbclient arm64"
@@ -1934,11 +1959,10 @@ def test_resolve_bottle_rejects_a_formula_without_a_usable_bottle(case: str) -> 
 
 
 def pinned_registry(tag: str = "arm64_sonoma") -> FakeGhcr:
-    """samba and sshpass at their pins, with samba's recorded dependencies."""
+    """samba at its pin, with its recorded dependencies."""
     registry = FakeGhcr()
     registry.add("samba", "4.24.6", {f"4.24.6.{tag}": bottle_annotations(
         "1" * 64, [("gnutls", "3.8.13_2"), ("gmp", "6.3.0")])})
-    registry.add("sshpass", "1.10", {f"1.10.{tag}": bottle_annotations("2" * 64)})
     registry.add("gnutls", "3.8.13_2", {f"3.8.13_2.{tag}": bottle_annotations("3" * 64, [("gmp", "6.3.0")])})
     registry.add("gmp", "6.3.0", {f"6.3.0.{tag}": bottle_annotations("4" * 64)})
     return registry
@@ -1953,7 +1977,6 @@ def test_resolve_homebrew_bottles_follows_the_pinned_bottles_records() -> None:
         ("gmp", "6.3.0", "6.3.0.sonoma"),
         ("gnutls", "3.8.13_2", "3.8.13_2.sonoma"),
         ("samba", "4.24.6", "4.24.6.sonoma"),
-        ("sshpass", "1.10", "1.10.sonoma"),
     ]
 
 
@@ -1967,8 +1990,11 @@ def test_resolve_homebrew_bottles_rejects_an_inconsistent_set(case: str) -> None
             bottle_annotations("3" * 64, [("gmp", "6.3.0"), ("nettle", "4.0")]))
         expected = "gnutls needs nettle, which no pinned bottle records"
     elif case == "conflict":
-        registry.indexes[("sshpass", "1.10")][0]["annotations"].update(bottle_annotations("2" * 64, [("gmp", "6.2.1")]))
-        expected = "sshpass needs gmp 6.2.1, but 6.3.0 is already selected"
+        # One record naming two versions of a dependency (a second pin
+        # needing another version reaches the same check).
+        registry.indexes[("samba", "4.24.6")][0]["annotations"].update(bottle_annotations(
+            "1" * 64, [("gnutls", "3.8.13_2"), ("gmp", "6.3.0"), ("gmp", "6.2.1")]))
+        expected = "samba needs gmp 6.2.1, but 6.3.0 is already selected"
     else:
         registry.indexes[("samba", "4.24.6")][0]["annotations"]["sh.brew.tab"] = "{not json"
         expected = "Bottle of samba has no readable runtime dependency record"
@@ -2664,14 +2690,13 @@ def test_smoke_tools_runs_each_bundled_tool(tmp_path: Path) -> None:
 
     package_app.smoke_tools(app)
 
-    assert sorted(log.read_text(encoding="utf-8").splitlines()) == ["smbclient --version", "sshpass -V"]
+    assert sorted(log.read_text(encoding="utf-8").splitlines()) == ["smbclient --version"]
 
 
 def test_smoke_tools_rejects_a_tool_dyld_cannot_launch(tmp_path: Path) -> None:
     package_app = load_package_app_module()
     app = tmp_path / "TimeCapsuleSMB.app"
     tools = app / "Contents" / "Resources" / "Tools" / "bin"
-    write_tool(tools / "sshpass", "exit 0")
     write_tool(tools / "smbclient", 'echo "dyld: Library not loaded: @rpath/liblibsmb-private-samba.dylib" >&2; exit 134')
 
     with pytest.raises(RuntimeError, match=r"(?s)Bundled smbclient does not run \(rc=134\).*Library not loaded"):

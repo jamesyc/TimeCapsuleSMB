@@ -3,19 +3,18 @@ from __future__ import annotations
 import json
 import os
 import platform
-import subprocess
 import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.process import run_process
 from timecapsulesmb.core.release import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
 from timecapsulesmb.identity import load_install_identity
+from timecapsulesmb.transport.http import HttpError, http_post_json
 
 
 SCHEMA_VERSION = 5
@@ -161,24 +160,18 @@ class TelemetryClient:
             return
         for attempt in range(MAX_SEND_ATTEMPTS):
             try:
-                request = urllib.request.Request(
+                status = http_post_json(
                     self.endpoint,
-                    data=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.token}",
-                    },
-                    method="POST",
+                    body,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                    headers={"Authorization": f"Bearer {self.token}"},
                 )
-                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS):
-                    return
-            except urllib.error.HTTPError as exc:
-                if exc.code < 500 or attempt + 1 >= MAX_SEND_ATTEMPTS:
-                    return
-            except (OSError, urllib.error.URLError, ValueError):
-                if attempt + 1 >= MAX_SEND_ATTEMPTS:
-                    return
+            except HttpError:
+                continue
             except Exception:
+                return
+            # Only a server error is worth another try.
+            if status < 500:
                 return
 
 
@@ -217,7 +210,7 @@ def sys_platform_is_linux() -> bool:
 
 def run_text_command(command: list[str]) -> str | None:
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        proc = run_process(command, capture_output=True, text=True, check=False)
     except OSError:
         return None
     value = proc.stdout.strip()

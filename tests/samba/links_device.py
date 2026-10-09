@@ -83,8 +83,7 @@ class Device:
 
     def sh_bytes(self, command: str) -> bytes:
         """Raw stdout, for binary files (sh() decodes text)."""
-        return run_ssh_capture_bytes(self.connection, command, timeout=180,
-                                     missing_tool_message="reading binary output needs local sshpass")
+        return run_ssh_capture_bytes(self.connection, command, timeout=180)
 
     def put(self, path: str, data: bytes) -> None:
         run_ssh_input(self.connection, f"cat > {shlex.quote(path)}", input_bytes=data, timeout=180)

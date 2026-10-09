@@ -16,24 +16,7 @@ from timecapsulesmb.services.runtime import (
     require_device_password,
     resolve_validated_managed_target,
 )
-from timecapsulesmb.transport import local as local_transport
 from timecapsulesmb.transport.ssh import SshConnection
-
-
-def require_request_sshpass() -> None:
-    """Fail before touching the device when sshpass is missing.
-
-    The app puts its bundled tools first on PATH, but at launch it checks only
-    that their directory exists, and a helper run from a checkout uses the
-    Mac's own PATH. The check has no stage of its own: it takes microseconds,
-    fails only in a broken install, and a stage would add a row to every
-    operation's timeline in the app.
-    """
-    if local_transport.sshpass_missing():
-        raise AppOperationError(
-            "Local tool sshpass is missing; reinstall TimeCapsuleSMB.",
-            code="validation_failed",
-        )
 
 
 def load_request_config(params: dict[str, object], context: AppOperationContext) -> AppConfig:

@@ -91,7 +91,7 @@ APP_ICON_ENTRIES = [
     ("icon_512x512.png", 512),
     ("icon_512x512@2x.png", 1024),
 ]
-REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
+REQUIRED_HOST_TOOLS = ("smbclient",)
 # The bundled tools come from Homebrew bottles built on macOS 14 (Sonoma), not
 # from the packaging Mac's Homebrew: a Mac on a newer macOS gets bottles built
 # for it, which v3.1.2's first build shipped. samba 4.24.6 (homebrew-core
@@ -99,9 +99,9 @@ REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
 # architectures, and every runtime dependency its bottles record has Sonoma
 # bottles at those versions (checked 2026-09-30). The dependencies come from the
 # bottles' own records, so they are the versions samba was built against.
-HOMEBREW_BOTTLE_ROOTS = {"samba": "4.24.6", "sshpass": "1.10"}
+HOMEBREW_BOTTLE_ROOTS = {"samba": "4.24.6"}
 HOMEBREW_BOTTLE_TAGS = {"arm64": "arm64_sonoma", "x86_64": "sonoma"}
-HOMEBREW_TOOL_FORMULAE = {"sshpass": "sshpass", "smbclient": "samba"}
+HOMEBREW_TOOL_FORMULAE = {"smbclient": "samba"}
 HOMEBREW_BOTTLES_CACHE_VERSION = 1
 GHCR_URL = "https://ghcr.io"
 GHCR_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
@@ -258,7 +258,9 @@ def macho_tool_cache(enabled: bool = True) -> Iterator[None]:
 def macho_tool(args: list[str], path: Path, *, keep_pass: bool = True, keep_failure: bool = True) -> subprocess.CompletedProcess[str]:
     """Run a read-only Mach-O tool on path, or reuse its output for the same
     bytes during a packaging run (MachoToolCache)."""
-    cache = _MACHO_TOOL_CACHE.get()
+    # A path that is not there (the tool layer is checked without the app's
+    # executables) has no bytes to key on; the tool itself reports it.
+    cache = _MACHO_TOOL_CACHE.get() if path.is_file() else None
 
     def kept(completed: subprocess.CompletedProcess[str]) -> bool:
         return keep_pass if completed.returncode == 0 else keep_failure
@@ -2216,11 +2218,14 @@ def assert_python_dependencies_are_bundled(app: Path) -> None:
         python_home=python_home,
     )
     code = (
+        "import os\n"
         "from pathlib import Path\n"
-        "import certifi, Crypto, ifaddr, pexpect, timecapsulesmb, zeroconf, zopfli.gzip\n"
+        "import certifi, Crypto, ifaddr, timecapsulesmb, zeroconf, zopfli.gzip\n"
         f"site = Path({str(site_packages)!r}).resolve()\n"
-        "paths = [certifi.__file__, Crypto.__file__, ifaddr.__file__, pexpect.__file__, timecapsulesmb.__file__, zeroconf.__file__, zopfli.__file__]\n"
+        "paths = [certifi.__file__, Crypto.__file__, ifaddr.__file__, timecapsulesmb.__file__, zeroconf.__file__, zopfli.__file__]\n"
         "bad = [p for p in paths if not p or not Path(p).resolve().is_relative_to(site)]\n"
+        "askpass = Path(timecapsulesmb.__file__).parent / 'transport' / 'ssh-askpass'\n"
+        "bad += [] if os.access(askpass, os.X_OK) else [f'{askpass} is not executable']\n"
         "raise SystemExit('\\n'.join(bad) if bad else 0)\n"
     )
     completed = subprocess.run(
@@ -2532,7 +2537,7 @@ def smoke_test(app: Path) -> None:
 
 
 # Arguments that make each bundled tool print its version and exit 0.
-TOOL_VERSION_ARGS = {"smbclient": ["--version"], "sshpass": ["-V"]}
+TOOL_VERSION_ARGS = {"smbclient": ["--version"]}
 
 
 def smoke_tools(app: Path) -> None:

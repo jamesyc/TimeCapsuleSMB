@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.services.version_check import (
     DEFAULT_DOWNLOAD_URL,
     DEFAULT_UNSUPPORTED_MESSAGE,
+    MAX_VERSION_RESPONSE_BYTES,
     VERSION_CHECK_CACHE_SECONDS,
     VERSION_CHECK_TIMEOUT_SECONDS,
     VERSION_CHECK_URL,
@@ -24,20 +25,7 @@ from timecapsulesmb.services.version_check import (
     render_version_block_message,
     save_cached_payload,
 )
-
-
-class FakeResponse:
-    def __init__(self, body: bytes) -> None:
-        self.body = body
-
-    def __enter__(self) -> "FakeResponse":
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb) -> bool:
-        return False
-
-    def read(self, _size: int = -1) -> bytes:
-        return self.body
+from timecapsulesmb.transport.http import HttpError
 
 
 class VersionCheckTests(unittest.TestCase):
@@ -58,37 +46,40 @@ class VersionCheckTests(unittest.TestCase):
             "message": message,
         }
 
-    def opener_for_payload(self, payload: object, calls: list[tuple[object, float]]) -> object:
-        body = json.dumps(payload).encode("utf-8")
+    def serving(self, response: object, calls: list[tuple[str, dict[str, object]]]):
+        """Patch the version check's GET: return response (JSON-encoded unless
+        bytes) or raise it, recording each call."""
 
-        def fake_opener(request, timeout):
-            calls.append((request, timeout))
-            return FakeResponse(body)
+        def fake_get(url: str, **kwargs: object) -> bytes:
+            calls.append((url, kwargs))
+            if isinstance(response, BaseException):
+                raise response
+            return response if isinstance(response, bytes) else json.dumps(response).encode("utf-8")
 
-        return fake_opener
+        return mock.patch("timecapsulesmb.services.version_check.http_get", side_effect=fake_get)
 
     def test_supported_client_fetches_and_caches_successful_response(self) -> None:
         self.assertEqual(VERSION_CHECK_CACHE_SECONDS, 3 * 60 * 60)
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
-            calls: list[tuple[object, float]] = []
+            calls: list[tuple[str, dict[str, object]]] = []
 
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0,
-                opener=self.opener_for_payload(self.metadata(), calls),
-            )
+            with self.serving(self.metadata(), calls):
+                result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0)
 
             self.assertFalse(result.should_block)
             self.assertEqual(result.source, "network")
             self.assertEqual(result.current_version, 20004)
             self.assertEqual(result.min_supported_version, 20004)
             self.assertEqual(result.latest_tag, "v2.0.4")
-            self.assertEqual(len(calls), 1)
-            request, timeout = calls[0]
-            self.assertEqual(request.full_url, VERSION_CHECK_URL)
-            self.assertEqual(timeout, VERSION_CHECK_TIMEOUT_SECONDS)
+            self.assertEqual(
+                calls,
+                [(VERSION_CHECK_URL, {
+                    "timeout": VERSION_CHECK_TIMEOUT_SECONDS,
+                    "max_bytes": MAX_VERSION_RESPONSE_BYTES,
+                    "headers": {"Accept": "application/json"},
+                })],
+            )
             cache = json.loads(cache_path.read_text())
             self.assertEqual(cache["fetched_at"], 1000.0)
             self.assertEqual(cache["payload"]["min_supported_version"], 20004)
@@ -98,22 +89,16 @@ class VersionCheckTests(unittest.TestCase):
             cache_path = Path(tmp) / "version-cache.json"
             download_url = "https://example.invalid/releases/latest"
             message = "Please update before continuing."
-            calls: list[tuple[object, float]] = []
-
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0,
-                opener=self.opener_for_payload(
-                    self.metadata(
-                        current_version=20005,
-                        min_supported_version=20005,
-                        download_url=download_url,
-                        message=message,
-                    ),
-                    calls,
-                ),
+            calls: list[tuple[str, dict[str, object]]] = []
+            metadata = self.metadata(
+                current_version=20005,
+                min_supported_version=20005,
+                download_url=download_url,
+                message=message,
             )
+
+            with self.serving(metadata, calls):
+                result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0)
 
             self.assertTrue(result.should_block)
             self.assertEqual(result.message, message)
@@ -125,8 +110,11 @@ class VersionCheckTests(unittest.TestCase):
 
     def test_invalid_or_unreachable_version_metadata_fails_open(self) -> None:
         cases = (
-            ("timeout", TimeoutError("timed out")),
+            # http_get raises HttpError for a timeout, an error status and an
+            # oversized response alike.
+            ("unreachable_or_oversized", HttpError("timed out")),
             ("invalid_json", b"{"),
+            ("invalid_utf8", b"\xff"),
             ("non_object", []),
             ("unsupported_schema", {**self.metadata(), "schema": 2}),
             ("missing_current_version", {"schema": 1, "min_supported_version": 20005}),
@@ -138,28 +126,10 @@ class VersionCheckTests(unittest.TestCase):
             with self.subTest(name=name):
                 with tempfile.TemporaryDirectory() as tmp:
                     cache_path = Path(tmp) / "version-cache.json"
-                    calls: list[tuple[object, float]] = []
-                    if isinstance(case, BaseException):
+                    calls: list[tuple[str, dict[str, object]]] = []
 
-                        def opener(_request, timeout, exc=case):
-                            calls.append((_request, timeout))
-                            raise exc
-
-                    elif isinstance(case, bytes):
-
-                        def opener(_request, timeout, body=case):
-                            calls.append((_request, timeout))
-                            return FakeResponse(body)
-
-                    else:
-                        opener = self.opener_for_payload(case, calls)
-
-                    result = check_client_version(
-                        local_version_code=20004,
-                        cache_path=cache_path,
-                        now=1000.0,
-                        opener=opener,
-                    )
+                    with self.serving(case, calls):
+                        result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0)
 
                     self.assertFalse(result.should_block)
                     self.assertEqual(len(calls), 1)
@@ -168,19 +138,15 @@ class VersionCheckTests(unittest.TestCase):
     def test_blocking_result_uses_defaults_for_missing_text_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
-            calls: list[tuple[object, float]] = []
+            calls: list[tuple[str, dict[str, object]]] = []
             payload = {
                 "schema": 1,
                 "current_version": 20005,
                 "min_supported_version": 20005,
             }
 
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0,
-                opener=self.opener_for_payload(payload, calls),
-            )
+            with self.serving(payload, calls):
+                result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0)
 
             self.assertTrue(result.should_block)
             self.assertEqual(result.message, DEFAULT_UNSUPPORTED_MESSAGE)
@@ -190,19 +156,10 @@ class VersionCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
             save_cached_payload(self.metadata(min_supported_version=20003), cache_path=cache_path, now=1000.0)
-            calls: list[tuple[object, float]] = []
+            calls: list[tuple[str, dict[str, object]]] = []
 
-            def opener(_request, timeout):
-                calls.append((_request, timeout))
-                body = json.dumps(self.metadata(current_version=20005, min_supported_version=20005)).encode("utf-8")
-                return FakeResponse(body)
-
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0 + 60,
-                opener=opener,
-            )
+            with self.serving(self.metadata(current_version=20005, min_supported_version=20005), calls):
+                result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0 + 60)
 
             self.assertFalse(result.should_block)
             self.assertEqual(result.source, "cache")
@@ -213,17 +170,14 @@ class VersionCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
             save_cached_payload(self.metadata(min_supported_version=20003), cache_path=cache_path, now=1000.0)
-            calls: list[tuple[object, float]] = []
+            calls: list[tuple[str, dict[str, object]]] = []
 
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0 + VERSION_CHECK_CACHE_SECONDS + 1,
-                opener=self.opener_for_payload(
-                    self.metadata(current_version=20005, min_supported_version=20005),
-                    calls,
-                ),
-            )
+            with self.serving(self.metadata(current_version=20005, min_supported_version=20005), calls):
+                result = check_client_version(
+                    local_version_code=20004,
+                    cache_path=cache_path,
+                    now=1000.0 + VERSION_CHECK_CACHE_SECONDS + 1,
+                )
 
             self.assertTrue(result.should_block)
             self.assertEqual(len(calls), 1)
@@ -236,18 +190,10 @@ class VersionCheckTests(unittest.TestCase):
                 cache_path=cache_path,
                 now=1000.0,
             )
-            calls: list[tuple[object, float]] = []
+            calls: list[tuple[str, dict[str, object]]] = []
 
-            def opener(_request, timeout):
-                calls.append((_request, timeout))
-                raise TimeoutError("offline")
-
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0 + 60,
-                opener=opener,
-            )
+            with self.serving(HttpError("offline"), calls):
+                result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0 + 60)
 
             self.assertFalse(result.should_block)
             self.assertEqual(len(calls), 1)
@@ -255,14 +201,10 @@ class VersionCheckTests(unittest.TestCase):
     def test_cache_write_failure_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp)
-            calls: list[tuple[object, float]] = []
+            calls: list[tuple[str, dict[str, object]]] = []
 
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0,
-                opener=self.opener_for_payload(self.metadata(), calls),
-            )
+            with self.serving(self.metadata(), calls):
+                result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0)
 
             self.assertFalse(result.should_block)
             self.assertEqual(len(calls), 1)
@@ -271,32 +213,10 @@ class VersionCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
             with mock.patch("timecapsulesmb.services.version_check.load_fresh_cached_payload", side_effect=RuntimeError("boom")):
-                result = check_client_version(
-                    local_version_code=20004,
-                    cache_path=cache_path,
-                    now=1000.0,
-                    opener=self.opener_for_payload(self.metadata(current_version=20005, min_supported_version=20005), []),
-                )
+                with self.serving(self.metadata(current_version=20005, min_supported_version=20005), []):
+                    result = check_client_version(local_version_code=20004, cache_path=cache_path, now=1000.0)
 
             self.assertFalse(result.should_block)
-
-    def test_oversized_response_fails_open(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            cache_path = Path(tmp) / "version-cache.json"
-            body = b"{" + (b" " * (64 * 1024)) + b"}"
-
-            def opener(_request, timeout):
-                return FakeResponse(body)
-
-            result = check_client_version(
-                local_version_code=20004,
-                cache_path=cache_path,
-                now=1000.0,
-                opener=opener,
-            )
-
-            self.assertFalse(result.should_block)
-            self.assertFalse(cache_path.exists())
 
     def test_render_version_block_message_exposes_checked_url_and_download_url(self) -> None:
         result = VersionCheckResult(

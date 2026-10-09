@@ -1,0 +1,10 @@
+#!/bin/sh
+# ssh runs this with each of its prompts as $1 (SSH_ASKPASS_REQUIRE=force).
+# It answers the password from TCAPSULE_SSH_PASSWORD, accepts a new host key
+# as TimeCapsuleSMB always has, and refuses anything else, such as a key
+# passphrase, so ssh gives up on that prompt instead of waiting.
+case $1 in
+*"continue connecting"*) echo yes ;;
+*[Pp]assword*) [ -n "${TCAPSULE_SSH_PASSWORD:-}" ] && printf '%s\n' "$TCAPSULE_SSH_PASSWORD" ;;
+*) exit 1 ;;
+esac

@@ -35,9 +35,9 @@ You will need:
 For the python setup, you need:  
 - Python 3.9+
 - `smbclient` installed locally for `doctor`
-- Homebrew installed for macOS users (requires an Apple Silicon computer). Without Homebrew, use the macOS app, which includes `smbclient` and `sshpass`.
+- Homebrew installed for macOS users (requires an Apple Silicon computer). Without Homebrew, use the macOS app, which includes `smbclient`.
 
-If you have a Linux computer, then you must use the python CLI version. If you have an Intel Mac, you must use the universal macOS app, as Homebrew has dropped support for Intel. 
+If you have a Linux computer, then you must use the python CLI version. On an Intel Mac the CLI can deploy without Homebrew, but Homebrew no longer builds `smbclient` for Intel, so `doctor` cannot run its SMB checks there; the universal macOS app includes everything. 
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
@@ -101,7 +101,7 @@ Run:
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs the Python dependencies needed for discovery, deployment, and verification, and sets up the local `tcapsule` command into that virtualenv.
 
-If `smbclient` or `sshpass` is missing, `bootstrap` will try to install it with Homebrew on macOS 14+ or the detected package manager on Linux. Older macOS versions can continue only when `smbclient` and `sshpass` are already installed manually. On Intel Macs `bootstrap` installs only `sshpass`, because Homebrew no longer builds `smbclient` for Intel; deploy works without it, but `doctor` needs it (the macOS app includes it). `deploy`, `activate`, `uninstall`, `fsck` and `flash` require `sshpass` whatever the login method, and stop before contacting the device without it.
+If `smbclient` is missing, `bootstrap` will try to install it with Homebrew on macOS 14+ or the detected package manager on Linux. Older macOS versions can continue only when `smbclient` is already installed manually. On Intel Macs `bootstrap` skips `smbclient`, because Homebrew no longer builds it for Intel; deploy works without it, but `doctor` needs it (the macOS app includes it). SSH logins use the system `ssh` (OpenSSH 8.4 or newer) with TimeCapsuleSMB's own password helper, so no other tool is needed.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 

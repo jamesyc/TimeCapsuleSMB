@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
 
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
-from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE
+from timecapsulesmb.core.release import CLI_VERSION_CODE
+from timecapsulesmb.transport.http import HttpError, http_get
 
 
 VERSION_CHECK_URL = "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json"
@@ -41,9 +40,6 @@ class VersionCheckResult:
     min_supported_version: int | None = None
     latest_tag: str | None = None
     source: str = "unavailable"
-
-
-UrlOpen = Callable[..., Any]
 
 
 def _is_int(value: object) -> bool:
@@ -85,27 +81,11 @@ def fetch_version_payload(
     *,
     url: str = VERSION_CHECK_URL,
     timeout: float = VERSION_CHECK_TIMEOUT_SECONDS,
-    opener: UrlOpen = urllib.request.urlopen,
 ) -> object | None:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": f"TimeCapsuleSMB/{CLI_VERSION}",
-        },
-    )
     try:
-        with opener(request, timeout=timeout) as response:
-            raw = response.read(MAX_VERSION_RESPONSE_BYTES + 1)
-    except Exception:
-        return None
-    if not isinstance(raw, bytes):
-        return None
-    if len(raw) > MAX_VERSION_RESPONSE_BYTES:
-        return None
-    try:
+        raw = http_get(url, timeout=timeout, max_bytes=MAX_VERSION_RESPONSE_BYTES, headers={"Accept": "application/json"})
         return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (HttpError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
@@ -157,7 +137,6 @@ def check_client_version(
     timeout: float = VERSION_CHECK_TIMEOUT_SECONDS,
     cache_path: Path | None = None,
     now: float | None = None,
-    opener: UrlOpen = urllib.request.urlopen,
 ) -> VersionCheckResult:
     try:
         return _check_client_version(
@@ -166,7 +145,6 @@ def check_client_version(
             timeout=timeout,
             cache_path=cache_path or default_version_check_cache_path(),
             now=now,
-            opener=opener,
         )
     except Exception:
         return VersionCheckResult(should_block=False, checked_url=url, local_version_code=local_version_code)
@@ -179,7 +157,6 @@ def _check_client_version(
     timeout: float,
     cache_path: Path,
     now: float | None,
-    opener: UrlOpen,
 ) -> VersionCheckResult:
     timestamp = time.time() if now is None else now
     cached_payload = load_fresh_cached_payload(cache_path=cache_path, now=timestamp)
@@ -195,7 +172,7 @@ def _check_client_version(
             source="cache",
         )
 
-    fetched_payload = fetch_version_payload(url=url, timeout=timeout, opener=opener)
+    fetched_payload = fetch_version_payload(url=url, timeout=timeout)
     fetched_metadata = parse_version_metadata(fetched_payload)
     if fetched_metadata is None:
         return VersionCheckResult(should_block=False, checked_url=url, local_version_code=local_version_code)

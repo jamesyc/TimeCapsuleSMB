@@ -8,13 +8,17 @@ import re
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import urlopen
 
 from timecapsulesmb.core.paths import default_user_data_dir, safe_path_part
 from timecapsulesmb.flash import FlashAnalysisError, sha256_hex
+from timecapsulesmb.transport.http import http_get
 
 
 APPLE_FIRMWARE_CATALOG_URL = "https://apsu.apple.com/version.xml"
+# Far above what Apple serves: the catalog is about 40 KB, an AirPort
+# firmware 6 to 8 MB.
+APPLE_FIRMWARE_CATALOG_MAX_BYTES = 4 * 1024 * 1024
+APPLE_FIRMWARE_TEMPLATE_MAX_BYTES = 64 * 1024 * 1024
 FIRMWARE_KEY_ISSUE_URL = "https://github.com/jamesyc/TimeCapsuleSMB/issues"
 UNSUPPORTED_FIRMWARE_KEY_MESSAGE = (
     "We do not have firmware encryption keys for this AirPort firmware product yet. "
@@ -49,11 +53,6 @@ def normalize_syap(value: str | int | None) -> str:
         raise FlashAnalysisError(f"cannot select firmware template because syAP is invalid: {text!r}") from exc
 
 
-def download_url(url: str, *, timeout: int = 60) -> bytes:
-    with urlopen(url, timeout=timeout) as response:
-        return response.read()
-
-
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
@@ -83,7 +82,7 @@ def load_apple_firmware_catalog(*, cache_dir: Path) -> list[dict[str, object]]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     catalog_path = cache_dir / "version.xml"
     try:
-        catalog_data = download_url(APPLE_FIRMWARE_CATALOG_URL)
+        catalog_data = http_get(APPLE_FIRMWARE_CATALOG_URL, timeout=60, max_bytes=APPLE_FIRMWARE_CATALOG_MAX_BYTES)
         _atomic_write_bytes(catalog_path, catalog_data)
     except Exception as exc:
         if not catalog_path.exists():
@@ -150,7 +149,7 @@ def download_firmware_template_to_cache(
 ) -> FirmwareTemplateCandidate:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        data = download_url(url, timeout=120)
+        data = http_get(url, timeout=120, max_bytes=APPLE_FIRMWARE_TEMPLATE_MAX_BYTES)
     except Exception as exc:
         raise FlashAnalysisError(f"failed to download Apple firmware template {url}: {exc}") from exc
     if expected_size is not None and len(data) != expected_size:

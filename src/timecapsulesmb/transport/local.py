@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 import errno
 import os
 import re
@@ -14,23 +13,15 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from timecapsulesmb.core.net import ipv6_scope_index
+from timecapsulesmb.core.process import run_process
 
 
 def find_command(name: str) -> str | None:
     return shutil.which(name)
 
 
-def sshpass_missing() -> bool:
-    """Commands that reach the device stream data through local sshpass."""
-    return find_command("sshpass") is None
-
-
 def command_exists(name: str) -> bool:
-    if find_command(name):
-        return True
-    return subprocess.run(
-        ["/bin/sh", "-c", f"command -v {shlex.quote(name)} >/dev/null 2>&1"]
-    ).returncode == 0
+    return find_command(name) is not None
 
 
 def _connect_error(family: int, socktype: int, proto: int, sockaddr: tuple, timeout: float) -> str | None:
@@ -129,7 +120,7 @@ def run_local_capture(
     *,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    return run_process(cmd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
 SYSTEM_EXTENSIONS_COMMAND = ("/usr/bin/systemextensionsctl", "list")
@@ -169,13 +160,13 @@ def _vpn_services(output: str) -> list[str]:
 def mac_network_filters(
     *,
     platform: str = sys.platform,
-    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    run: Callable[..., subprocess.CompletedProcess[str]] = run_process,
 ) -> dict[str, object]:
     """Telemetry fields naming what on this Mac can filter or tunnel its connections.
 
-    Collected when SSH fails with SshLocalNetworkFilteredError, to learn which
-    VPN, firewall or security apps cause it. Service names are left out:
-    users name VPN services, sometimes after their employer.
+    Collected when SSH fails with SshLocalNetworkFilteredError, a crashed ssh
+    included, to learn which VPN, firewall or security apps cause it. Service
+    names are left out: users name VPN services, sometimes after their employer.
     """
     if platform != "darwin":
         return {}

@@ -71,7 +71,7 @@ class ReachabilityTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.services.reachability.resolve_host_ips", return_value=("10.0.0.2",)):
             with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
                 with mock.patch(
-                    "timecapsulesmb.services.reachability.subprocess.run",
+                    "timecapsulesmb.services.reachability.run_process",
                     return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
                 ):
                     with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
@@ -100,7 +100,7 @@ class ReachabilityTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
             with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
+                "timecapsulesmb.services.reachability.run_process",
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ):
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
@@ -124,7 +124,7 @@ class ReachabilityTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.services.reachability.resolve_host_ips", return_value=("10.0.0.2",)) as resolve:
             with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
                 with mock.patch(
-                    "timecapsulesmb.services.reachability.subprocess.run",
+                    "timecapsulesmb.services.reachability.run_process",
                     return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
                 ):
                     with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
@@ -148,7 +148,7 @@ class ReachabilityTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
             with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
+                "timecapsulesmb.services.reachability.run_process",
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ):
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
@@ -163,7 +163,7 @@ class ReachabilityTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
             with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
+                "timecapsulesmb.services.reachability.run_process",
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ):
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value="connection refused"):
@@ -178,7 +178,7 @@ class ReachabilityTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.services.reachability.resolve_host_ips", return_value=()):
             with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
                 with mock.patch(
-                    "timecapsulesmb.services.reachability.subprocess.run",
+                    "timecapsulesmb.services.reachability.run_process",
                     return_value=subprocess.CompletedProcess(["ping"], 1, stderr=b"timeout"),
                 ):
                     with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value="connection timed out"):
@@ -193,7 +193,7 @@ class ReachabilityTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
             with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
+                "timecapsulesmb.services.reachability.run_process",
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ) as ping:
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None) as tcp:
@@ -216,7 +216,7 @@ class ReachabilityTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", side_effect=which):
             with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
+                "timecapsulesmb.services.reachability.run_process",
                 return_value=subprocess.CompletedProcess(["ping6"], 0, stderr=b""),
             ) as ping:
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
@@ -233,7 +233,7 @@ class ReachabilityTests(unittest.TestCase):
                 # The host's own ping binaries do not matter here.
                 with mock.patch("timecapsulesmb.services.reachability.shutil.which", side_effect=lambda name: f"/sbin/{name}"):
                     with mock.patch(
-                        "timecapsulesmb.services.reachability.subprocess.run",
+                        "timecapsulesmb.services.reachability.run_process",
                         return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
                     ) as ping:
                         with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None) as tcp:
@@ -290,7 +290,7 @@ class ReachabilityTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
             with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
+                "timecapsulesmb.services.reachability.run_process",
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ) as ping:
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None) as tcp:
@@ -351,7 +351,7 @@ class ReachabilityTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
             with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
+                "timecapsulesmb.services.reachability.run_process",
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ):
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
@@ -404,7 +404,7 @@ class ReachabilityTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.app.ops.common.load_optional_env_config", return_value=base):
                     with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
                         with mock.patch(
-                            "timecapsulesmb.services.reachability.subprocess.run",
+                            "timecapsulesmb.services.reachability.run_process",
                             return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
                         ):
                             with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
@@ -425,7 +425,7 @@ class ReachabilityTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.app.ops.common.load_optional_env_config", return_value=config):
             with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
                 with mock.patch(
-                    "timecapsulesmb.services.reachability.subprocess.run",
+                    "timecapsulesmb.services.reachability.run_process",
                     return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
                 ):
                     with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):

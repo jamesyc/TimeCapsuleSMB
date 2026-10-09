@@ -16,12 +16,12 @@ import threading
 import time
 from pathlib import Path
 
-from timecapsulesmb.core.errors import missing_dependency_message
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
     SshClientConfigError,
+    SshClientCrashedError,
     SshCommandTimeout,
     SshError,
     SshLocalNetworkFilteredError,
@@ -29,7 +29,9 @@ from timecapsulesmb.transport.errors import (
     local_network_filtered_message,
 )
 
-from .local import find_command, tcp_open
+from timecapsulesmb.core.process import popen_process, run_process
+
+from .local import tcp_open
 
 
 @dataclass
@@ -67,7 +69,6 @@ LEGACY_AIRPORT_MACS = (
 
 # See SshLocalNetworkFilteredError for why EBADF means this computer dropped it.
 SSH_LOCAL_NETWORK_FILTERED_PATTERN = re.compile(r"^ssh: connect to host \S+ port \d+: Bad file descriptor$")
-SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/no/\[fingerprint\]\)\?"
 SSH_AUTH_FAILURE_PATTERNS = (
     re.compile(r"^Permission denied, please try again\.$", re.IGNORECASE),
     re.compile(r"^(?:.+:\s*)?Permission denied \([^\r\n()]+\)\.$", re.IGNORECASE),
@@ -79,6 +80,11 @@ SSH_STARTUP_CONFIG_ERROR_PATTERNS = (
     "unknown option -- e",
 )
 SSH_CLIENT_LOG_PREFIX = "timecapsulesmb-ssh-"
+# ssh runs this with each prompt; it answers the password from SSH_PASSWORD_ENV.
+SSH_ASKPASS_PATH = Path(__file__).with_name("ssh-askpass")
+SSH_PASSWORD_ENV = "TCAPSULE_SSH_PASSWORD"
+# ssh logs this when SSH_ASKPASS cannot run; it then sends an empty password.
+SSH_ASKPASS_EXEC_FAILURE = "ssh_askpass: exec("
 # Every command shares one authenticated SSH connection per device. A new
 # login costs about a second against a Time Capsule (key exchange on its CPU,
 # then password authentication), a shared session about 40 ms, and a deploy
@@ -183,6 +189,8 @@ def _classify_ssh_client_error_line(line: str) -> SshError | None:
     lowered = line.lower()
     if "bad configuration option" in lowered:
         return SshClientConfigError(f"Connecting to the device failed, SSH error: {line}")
+    if SSH_ASKPASS_EXEC_FAILURE in line:
+        return SshClientConfigError(f"The SSH password helper could not run; reinstall TimeCapsuleSMB. ({line})")
     if SSH_LOCAL_NETWORK_FILTERED_PATTERN.fullmatch(line):
         return SshLocalNetworkFilteredError(f"{local_network_filtered_message()} ({line})")
     if any(pattern in lowered for pattern in SSH_TRANSPORT_ERROR_PATTERNS):
@@ -293,60 +301,10 @@ def _ssh_client_error_for_result(
     return None
 
 
-def _spawn_with_password(
-    cmd: list[str],
-    password: str,
-    *,
-    client_log: Path,
-    timeout: int,
-    timeout_message: str,
-) -> tuple[int, str]:
-    try:
-        import pexpect
-    except Exception as e:
-        raise SshError(missing_dependency_message("pexpect", e)) from e
-
-    try:
-        child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=timeout)
-    except OSError as exc:
-        raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
-    output: list[str] = []
-    password_sent = False
-    force_close = False
-    try:
-        while True:
-            idx = child.expect([SSH_AUTHENTICITY_PROMPT, "[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-            diagnostics = _read_ssh_client_diagnostics(client_log)
-            if idx in {0, 1} and diagnostics.authenticated:
-                output.extend((child.before or "", child.after or ""))
-            elif idx == 0:
-                child.sendline("yes")
-            elif idx == 1:
-                if password_sent:
-                    force_close = True
-                    break
-                child.sendline(password)
-                password_sent = True
-            elif idx == 2:
-                output.append(child.before or "")
-                break
-            else:
-                output.append(child.before or "")
-                raise SshCommandTimeout(timeout_message)
-    finally:
-        try:
-            child.close(force=force_close)
-        except Exception:
-            pass
-
-    rc = child.exitstatus if child.exitstatus is not None else (child.signalstatus or 1)
-    return rc, "".join(output)
-
-
 @lru_cache(maxsize=None)
 def _ssh_option_supported(option_name: str) -> bool:
     try:
-        proc = subprocess.run(
+        proc = run_process(
             ["ssh", "-F", "/dev/null", "-G", "localhost", "-o", f"{option_name}=+ssh-rsa"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -362,7 +320,7 @@ def _ssh_option_supported(option_name: str) -> bool:
 @lru_cache(maxsize=None)
 def _local_ssh_macs() -> tuple[str, ...]:
     try:
-        proc = subprocess.run(
+        proc = run_process(
             ["ssh", "-Q", "mac"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -594,7 +552,7 @@ def close_ssh_masters(host: str | None = None) -> None:
         if not os.path.exists(path):
             continue
         try:
-            subprocess.run(
+            run_process(
                 ["ssh", "-F", "/dev/null", "-o", f"ControlPath={path}", "-O", "exit", "tcsmb-master"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -664,140 +622,49 @@ def _connection_ssh_args(
     ]
 
 
-def _run_over_master(
-    connection: SshConnection,
-    remote_cmd: str,
-    *,
-    timeout: int,
-    timeout_message: str,
-) -> subprocess.CompletedProcess[str] | None:
-    """Run a command through the device's live master over plain pipes.
+def _ssh_env(connection: SshConnection) -> dict[str, str] | None:
+    """The environment that gives ssh the password, or None to inherit ours.
 
-    A PTY costs about 250 ms a command (pexpect's spawn closes every possible
-    descriptor, and its close sleeps), several times the shared session
-    itself; a master never asks for a password, so pipes are enough. Like the
-    PTY, the output joins stdout and stderr. BatchMode keeps a master that
-    ended meanwhile from prompting: ssh then logs in itself and may be
-    refused. Returns None when neither the master nor such a login ran the
-    command, so the caller can log in with the password without running it
-    twice.
+    ssh asks SSH_ASKPASS for every prompt when SSH_ASKPASS_REQUIRE is force
+    (OpenSSH 8.4+), so it needs no terminal and starts like any other program.
+    Only this child's copy holds the password.
     """
-    if not os.path.exists(_control_path(connection)):
+    if not connection.password:
         return None
-    with _ssh_client_log_path() as client_log:
-        cmd = [
-            "ssh",
-            *_connection_ssh_args(
-                connection,
-                client_log=client_log,
-                stdin_null=True,
-                extra_args=("-o", "BatchMode=yes"),
-                shared=True,
-            ),
-            connection.host,
-            _with_client_hosts_line(remote_cmd),
-        ]
-        try:
-            proc = subprocess.run(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise SshCommandTimeout(timeout_message) from exc
-        except OSError as exc:
-            raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
-        diagnostics = _read_ssh_client_diagnostics(client_log)
-    if not diagnostics.authenticated:
-        return None
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout=proc.stdout.decode("utf-8", errors="replace"), stderr="")
+    return {
+        **os.environ,
+        "SSH_ASKPASS": str(SSH_ASKPASS_PATH),
+        "SSH_ASKPASS_REQUIRE": "force",
+        SSH_PASSWORD_ENV: connection.password,
+    }
 
 
-def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    timeout_message = (
-        "Timed out waiting for ssh command to finish: "
-        f"{_summarize_remote_command(remote_cmd)}"
-    )
-    shared = _run_over_master(connection, remote_cmd, timeout=timeout, timeout_message=timeout_message)
-    if shared is not None:
-        if check and shared.returncode != 0:
-            raise SshError(shared.stdout.strip() or f"ssh command failed with rc={shared.returncode}")
-        return shared
-    rc = 1
-    stdout = ""
-    cmd: list[str] = []
-    for attempt in range(3):
-        with _ssh_client_log_path() as client_log:
-            cmd = [
-                "ssh",
-                *_connection_ssh_args(connection, client_log=client_log, stdin_null=True, shared=True),
-                connection.host,
-                _with_client_hosts_line(remote_cmd),
-            ]
-            try:
-                rc, stdout = _spawn_with_password(
-                    cmd,
-                    connection.password,
-                    client_log=client_log,
-                    timeout=timeout,
-                    timeout_message=timeout_message,
-                )
-            except SshCommandTimeout:
-                diagnostics = _read_ssh_client_diagnostics(client_log)
-                if diagnostics.error is not None:
-                    raise diagnostics.error
-                raise
-            diagnostics = _read_ssh_client_diagnostics(client_log)
-        client_error = _ssh_client_error_for_result(
-            diagnostics,
-            returncode=rc,
-            startup_output=stdout,
-        )
-        if client_error is not None:
-            if _should_retry_password_auth(connection, diagnostics, attempt):
-                time.sleep(1)
-                continue
-            raise client_error
-        break
-    if check and rc != 0:
-        raise SshError(stdout.strip() or f"ssh command failed with rc={rc}")
-    return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
-
-
-def _run_piped_ssh(
+def _run_ssh(
     connection: SshConnection,
     remote_cmd: str,
     *,
     input_bytes: bytes | None = None,
+    merge_stderr: bool = False,
     timeout: int | None,
-    missing_tool_message: str,
     timeout_message: str,
-    raw_remote_status: bool = False,
     extra_ssh_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
-    env = dict(os.environ)
-    if connection.password:
-        if find_command("sshpass") is None:
-            raise SshError(missing_tool_message)
-        env["SSHPASS"] = connection.password
-        command_prefix = ["sshpass", "-e", "ssh"]
-    else:
-        command_prefix = ["ssh"]
-    proc: subprocess.CompletedProcess[bytes] | None = None
-    cmd: list[str] = []
-    # A rejected password is retried for every caller, raw_remote_status ones
-    # included: the remote command never started, so it cannot run twice. On
-    # macOS, sshpass sometimes starts ssh without a usable /dev/tty, and ssh
-    # then sends an empty password (2% of logins against a device, while the
-    # next login works); v3.1.x metadata migrations failed this way. Any other
-    # failure of a raw_remote_status call is still returned or raised at once.
-    for attempt in range(3):
+    """Run one remote command over the device's shared SSH connection.
+
+    ssh sends it over the live master, or logs in itself and becomes the
+    master (ControlMaster=auto), so the command runs once either way. A
+    rejected login is retried: the remote command never started, so it cannot
+    run twice. NetBSD 4 devices sometimes refuse the right password while
+    busy. Any other failure is returned or raised at once.
+    """
+    stdin_kwargs: dict[str, object] = (
+        {"stdin": subprocess.DEVNULL} if input_bytes is None else {"input": input_bytes}
+    )
+    attempt = 0
+    while True:
         with _ssh_client_log_path() as client_log:
             cmd = [
-                *command_prefix,
+                "ssh",
                 *_connection_ssh_args(
                     connection,
                     client_log=client_log,
@@ -809,12 +676,12 @@ def _run_piped_ssh(
                 _with_client_hosts_line(remote_cmd),
             ]
             try:
-                proc = subprocess.run(
+                proc = run_process(
                     cmd,
-                    input=input_bytes,
+                    **stdin_kwargs,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env,
+                    stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+                    env=_ssh_env(connection),
                     timeout=timeout,
                     check=False,
                 )
@@ -826,27 +693,36 @@ def _run_piped_ssh(
             except OSError as exc:
                 raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
             diagnostics = _read_ssh_client_diagnostics(client_log)
-        startup_output = _decode_remote_error_output(proc.stderr, include_stdout=False)
+        if proc.returncode < 0:
+            raise SshClientCrashedError(-proc.returncode)
         client_error = _ssh_client_error_for_result(
             diagnostics,
             returncode=proc.returncode,
-            startup_output=startup_output,
+            startup_output=_decode_remote_error_output(
+                proc.stdout if merge_stderr else proc.stderr, include_stdout=False
+            ),
         )
-        if client_error is not None:
-            if _should_retry_password_auth(connection, diagnostics, attempt):
-                time.sleep(1)
-                continue
+        if client_error is None:
+            return proc
+        if not _should_retry_password_auth(connection, diagnostics, attempt):
             raise client_error
-        if (
-            connection.password
-            and proc.returncode in {5, 6, 7}
-            and not diagnostics.authenticated
-        ):
-            raise SshError(startup_output.strip() or f"sshpass failed with rc={proc.returncode}")
-        break
-    if proc is None:
-        raise SshError("piped ssh command did not run")
-    return proc
+        attempt += 1
+        time.sleep(1)
+
+
+def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    """Run a command and return its stdout and stderr joined, as text."""
+    proc = _run_ssh(
+        connection,
+        remote_cmd,
+        merge_stderr=True,
+        timeout=timeout,
+        timeout_message=f"Timed out waiting for ssh command to finish: {_summarize_remote_command(remote_cmd)}",
+    )
+    stdout = proc.stdout.decode("utf-8", errors="replace")
+    if check and proc.returncode != 0:
+        raise SshError(stdout.strip() or f"ssh command failed with rc={proc.returncode}")
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout=stdout, stderr="")
 
 
 def run_ssh_input(
@@ -858,12 +734,13 @@ def run_ssh_input(
     raw_remote_status: bool = False,
     extra_ssh_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
-    """Send a bounded request without PTY echo, keeping stdout and logs separate."""
-    proc = _run_piped_ssh(
+    """Send a bounded request, keeping stdout and logs separate.
+
+    raw_remote_status returns a nonzero remote status instead of raising.
+    """
+    proc = _run_ssh(
         connection, remote_cmd, input_bytes=input_bytes, timeout=timeout,
-        missing_tool_message="Piped SSH requires local sshpass; run `./tcapsule bootstrap`.",
         timeout_message=f"Timed out waiting for ssh command to finish: {_summarize_remote_command(remote_cmd)}",
-        raw_remote_status=raw_remote_status,
         extra_ssh_args=extra_ssh_args,
     )
     if proc.returncode and not raw_remote_status:
@@ -872,30 +749,13 @@ def run_ssh_input(
     return proc
 
 
-def run_ssh_capture_bytes(
-    connection: SshConnection,
-    remote_cmd: str,
-    *,
-    timeout: int = 120,
-    missing_tool_message: str | None = None,
-) -> bytes:
-    """Run a remote command over SSH and return raw stdout bytes.
-
-    This intentionally uses a pipe instead of the pexpect PTY path because
-    firmware bank reads are binary and a PTY can transform byte streams.
-    """
-    proc = _run_piped_ssh(
+def run_ssh_capture_bytes(connection: SshConnection, remote_cmd: str, *, timeout: int = 120) -> bytes:
+    """Run a remote command over SSH and return raw stdout bytes, such as a firmware bank."""
+    proc = _run_ssh(
         connection,
         remote_cmd,
         timeout=timeout,
-        missing_tool_message=missing_tool_message or (
-            "Reading raw firmware banks requires local sshpass. "
-            "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule flash`."
-        ),
-        timeout_message=(
-            "Timed out waiting for ssh command to finish: "
-            f"{_summarize_remote_command(remote_cmd)}"
-        ),
+        timeout_message=f"Timed out waiting for ssh command to finish: {_summarize_remote_command(remote_cmd)}",
     )
     if proc.returncode != 0:
         detail = _decode_remote_error_output(proc.stderr, include_stdout=False).strip() or f"ssh command failed with rc={proc.returncode}"
@@ -912,11 +772,6 @@ def ssh_local_forward(
     remote_port: int,
     ready_timeout: int = 20,
 ):
-    try:
-        import pexpect
-    except Exception as e:
-        raise SshError(missing_dependency_message("pexpect", e)) from e
-
     with _ssh_client_log_path() as client_log:
         # A tunnel keeps its own connection: a forward opened through a
         # master belongs to the master and would outlive this tunnel.
@@ -929,51 +784,53 @@ def ssh_local_forward(
             connection.host,
         ]
         try:
-            child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=ready_timeout)
+            child = popen_process(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                # ssh logs to client_log; only a startup error comes here.
+                stderr=subprocess.PIPE,
+                env=_ssh_env(connection),
+            )
         except OSError as exc:
             raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
-        output: list[str] = []
-        start_time = time.time()
-        password_sent = False
         try:
+            deadline = time.monotonic() + ready_timeout
             while True:
-                idx = child.expect([SSH_AUTHENTICITY_PROMPT, "[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=1)
                 diagnostics = _read_ssh_client_diagnostics(client_log)
-                if idx in {0, 1} and diagnostics.authenticated:
-                    output.extend((child.before or "", child.after or ""))
-                elif idx == 0:
-                    child.sendline("yes")
-                elif idx == 1:
-                    if password_sent:
-                        raise diagnostics.error or SshAuthenticationError("SSH requested the password more than once")
-                    child.sendline(connection.password)
-                    password_sent = True
-                elif idx == 2:
-                    output.append(child.before or "")
-                    if diagnostics.error is not None:
-                        raise diagnostics.error
-                    startup_error = _classify_ssh_startup_error("".join(output)) if not diagnostics.text else None
+                if diagnostics.error is not None:
+                    raise diagnostics.error
+                returncode = child.poll()
+                if returncode is not None:
+                    if returncode < 0:
+                        raise SshClientCrashedError(-returncode)
+                    startup_output = child.stderr.read().decode("utf-8", errors="replace") if child.stderr else ""
+                    startup_error = _classify_ssh_startup_error(startup_output) if not diagnostics.text else None
                     if startup_error is not None:
                         raise startup_error
-                    raise SshError(_client_failure_detail(diagnostics) or "".join(output).strip() or "ssh tunnel exited before becoming ready")
-                else:
-                    output.append(child.before or "")
-                    if diagnostics.error is not None:
-                        raise diagnostics.error
-                    if tcp_open("127.0.0.1", local_port, timeout=0.2):
-                        break
-                    if child.isalive() and time.time() - start_time < ready_timeout:
-                        continue
+                    raise SshError(
+                        _client_failure_detail(diagnostics)
+                        or startup_output.strip()
+                        or "ssh tunnel exited before becoming ready"
+                    )
+                if tcp_open("127.0.0.1", local_port, timeout=0.2):
+                    break
+                if time.monotonic() >= deadline:
                     raise SshError(
                         "Timed out waiting for ssh tunnel to become ready: "
                         f"127.0.0.1:{local_port} -> {remote_host}:{remote_port} via {connection.host}"
                     )
+                time.sleep(0.2)
             yield
         finally:
+            child.terminate()
             try:
-                child.close(force=True)
-            except Exception:
-                pass
+                child.wait(timeout=SSH_CONTROL_EXIT_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+            if child.stderr is not None:
+                child.stderr.close()
 
 
 def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
@@ -988,15 +845,11 @@ def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int
     remote_script = f'dd of={quoted_dest} ibs=65536 obs=1048576 && set -- $(ls -l {quoted_dest}) && echo "$5"'
     expected_size = src.stat().st_size
     remote_cmd = f"/bin/sh -c {shlex.quote(remote_script)}"
-    proc = _run_piped_ssh(
+    proc = _run_ssh(
         connection,
         remote_cmd,
         input_bytes=src.read_bytes(),
         timeout=timeout,
-        missing_tool_message=(
-            "SSH uploads with a password require local sshpass. "
-            "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."
-        ),
         timeout_message=f"Timed out copying {src.name} to remote path {dest} over SSH",
     )
     if proc.returncode != 0:

@@ -7,7 +7,6 @@ import threading
 import time
 import unittest
 import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +36,8 @@ from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb import telemetry as telemetry_module
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient, TelemetryContext
 from timecapsulesmb.telemetry.debug import render_debug_mapping
+from timecapsulesmb.transport import http as http_transport
+from timecapsulesmb.transport.http import HttpError
 from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
@@ -47,9 +48,9 @@ def telemetry_client_from_values(
     return TelemetryClient.from_config(AppConfig.from_values(values or {}), **kwargs)
 
 
-# conftest blocks urlopen in every test; HeldStartedServer lets the client
-# reach it, and only it.
-_REAL_URLOPEN = urllib.request.urlopen
+# conftest blocks telemetry's POST in every test; HeldStartedServer lets the
+# client reach it, and only it.
+_REAL_HTTP_POST_JSON = http_transport.http_post_json
 
 
 class HeldStartedServer:
@@ -85,20 +86,20 @@ class HeldStartedServer:
 
     def __enter__(self) -> "HeldStartedServer":
         self.thread.start()
-        self.urlopen_patch = mock.patch("urllib.request.urlopen", self._loopback_urlopen)
-        self.urlopen_patch.start()
+        self.post_patch = mock.patch("timecapsulesmb.telemetry.http_post_json", self._loopback_post)
+        self.post_patch.start()
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self.release_started.set()
         self.server.shutdown()
         self.server.server_close()
-        self.urlopen_patch.stop()
+        self.post_patch.stop()
 
-    def _loopback_urlopen(self, request: urllib.request.Request, **kwargs: object) -> object:
+    def _loopback_post(self, url: str, body: bytes, **kwargs: object) -> int:
         port = self.server.server_address[1]
-        assert urllib.parse.urlsplit(request.full_url).netloc == f"127.0.0.1:{port}", request.full_url
-        return _REAL_URLOPEN(request, **kwargs)
+        assert urllib.parse.urlsplit(url).netloc == f"127.0.0.1:{port}", url
+        return _REAL_HTTP_POST_JSON(url, body, **kwargs)
 
     def client(self) -> TelemetryClient:
         context = TelemetryContext(
@@ -177,12 +178,26 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
                 client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
-                success_response = mock.MagicMock()
-                success_response.__enter__.return_value = success_response
-                success_response.__exit__.return_value = None
-                with mock.patch("urllib.request.urlopen", side_effect=[OSError("boom"), success_response]) as urlopen_mock:
+                with mock.patch(
+                    "timecapsulesmb.telemetry.http_post_json", side_effect=[HttpError("boom"), 202],
+                ) as post_mock:
                     client._send_payload({"event": "doctor_started"})
-        self.assertEqual(urlopen_mock.call_count, MAX_SEND_ATTEMPTS)
+        self.assertEqual(post_mock.call_count, MAX_SEND_ATTEMPTS)
+
+    def test_send_payload_retries_a_server_error_but_not_a_client_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
+                for statuses, sends in (([503, 202], MAX_SEND_ATTEMPTS), ([400], 1), ([202], 1)):
+                    with self.subTest(statuses=statuses):
+                        with mock.patch("timecapsulesmb.telemetry.http_post_json", side_effect=statuses) as post_mock:
+                            client._send_payload({"event": "doctor_started"})
+                        self.assertEqual(post_mock.call_count, sends)
+                        self.assertEqual(
+                            post_mock.call_args.kwargs["headers"], {"Authorization": "Bearer secret-token"}
+                        )
 
     def test_emit_does_not_raise_when_transport_has_unexpected_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -190,9 +205,11 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
                 client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
-                with mock.patch("urllib.request.urlopen", side_effect=RuntimeError("unexpected transport failure")) as urlopen_mock:
+                with mock.patch(
+                    "timecapsulesmb.telemetry.http_post_json", side_effect=RuntimeError("unexpected transport failure"),
+                ) as post_mock:
                     client.emit("deploy_finished", synchronous=True, result="failure", error="deploy failed")
-        self.assertEqual(urlopen_mock.call_count, 1)
+        self.assertEqual(post_mock.call_count, 1)
 
     def test_emit_stringifies_non_json_native_fields(self) -> None:
         class NonJsonValue:
@@ -204,13 +221,9 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
                 client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
-                success_response = mock.MagicMock()
-                success_response.__enter__.return_value = success_response
-                success_response.__exit__.return_value = None
-                with mock.patch("urllib.request.urlopen", return_value=success_response) as urlopen_mock:
+                with mock.patch("timecapsulesmb.telemetry.http_post_json", return_value=202) as post_mock:
                     client.emit("deploy_finished", synchronous=True, result="failure", error=NonJsonValue())
-        request = urlopen_mock.call_args.args[0]
-        self.assertIn(b"non-json-value", request.data)
+        self.assertIn(b"non-json-value", post_mock.call_args.args[1])
 
     def test_synchronous_emit_waits_for_a_background_send_still_in_flight(self) -> None:
         # The process exits after the synchronous finished event; a started

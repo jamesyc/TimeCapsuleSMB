@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 import sys
 
 
@@ -53,6 +54,38 @@ def local_network_filtered_message(*, platform: str = sys.platform) -> str:
 
 
 LOCAL_NETWORK_FILTERED_MESSAGE = local_network_filtered_message(platform="darwin")
+
+
+# The signals a program raises on itself when it crashes.
+CRASH_SIGNALS = frozenset({signal.SIGSEGV, signal.SIGBUS, signal.SIGILL, signal.SIGABRT, signal.SIGFPE, signal.SIGTRAP})
+
+
+class SshClientCrashedError(SshLocalNetworkFilteredError):
+    """Raised when the local ssh program died from a signal.
+
+    The one seen cause is a Network Extension on the Mac: our forked child
+    crashed in Apple's fork handler before it could exec ssh (issue #371).
+    Spawns no longer fork, but ssh itself forks and uses the same frameworks.
+    It is reported like a filtered connection, whose guidance names the same
+    apps.
+    """
+
+    def __init__(self, signal_number: int, *, platform: str = sys.platform) -> None:
+        try:
+            name = signal.Signals(signal_number).name
+        except ValueError:
+            name = f"signal {signal_number}"
+        computer = "this Mac" if platform == "darwin" else "this computer"
+        if signal_number in CRASH_SIGNALS:
+            message = (
+                f"The ssh program on {computer} crashed ({name}) before it finished. "
+                "A VPN, firewall or security app can cause this; try again, or turn that app off and retry."
+            )
+        else:
+            # Something outside this process ended it: kill, a shutdown, memory pressure.
+            message = f"The ssh program on {computer} was stopped by {name} before it finished."
+        super().__init__(message)
+        self.signal_number = signal_number
 
 
 class SshCommandTimeout(SshError):

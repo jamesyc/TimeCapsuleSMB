@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
+import time
 import unittest
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from pathlib import Path
@@ -17,11 +20,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.transport import errors as transport_errors
 from timecapsulesmb.transport import ssh as ssh_transport
+from timecapsulesmb.transport.local import find_free_local_port
 
 
-REAL_IMPORT = __import__
-MISSING_PEXPECT_PREFIX = "Failed to load pexpect. Install the Python package pexpect."
-MISSING_PEXPECT_ERROR = "ModuleNotFoundError: No module named 'pexpect'"
+AUTHENTICATED_LOG = 'Authenticated to device ([192.0.2.1]:22) using "password".\n'
 
 
 class DecodeTrapBytes(bytes):
@@ -61,27 +63,35 @@ class SSHTransportTests(unittest.TestCase):
     def test_is_ssh_timeout_error_ignores_other_transport_errors(self) -> None:
         self.assertFalse(transport_errors.is_ssh_timeout_error(ssh_transport.SshError("permission denied")))
 
-    def missing_pexpect_import(self, name: str, *args: object, **kwargs: object) -> object:
-        if name == "pexpect":
-            raise ModuleNotFoundError("No module named 'pexpect'")
-        return REAL_IMPORT(name, *args, **kwargs)
-
     @staticmethod
-    def authenticated_spawn(returncode: int = 0, output: str = "ok\n"):
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
-            return returncode, output
+    def ssh_runs(*runs):
+        """Fake ssh runs through run_process: each (returncode, output,
+        client_log) writes the log ssh would write and returns the output."""
+        runs = iter(runs)
 
-        return spawn
+        def run(command, **kwargs):
+            if "-E" not in command:  # a local ssh option probe
+                return subprocess.CompletedProcess(command, 0, "", "")
+            returncode, output, diagnostics = next(runs)
+            Path(command[command.index("-E") + 1]).write_text(diagnostics)
+            stdout = output.encode("utf-8") if isinstance(output, str) else output
+            stderr = None if kwargs.get("stderr") == subprocess.STDOUT else b""
+            return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+        return run
+
+    @classmethod
+    def authenticated(cls, returncode: int = 0, output: str | bytes = "ok\n"):
+        return cls.ssh_runs((returncode, output, AUTHENTICATED_LOG))
 
     @staticmethod
     def completed_run(process: subprocess.CompletedProcess[bytes], diagnostics: str | None = None):
-        client_text = diagnostics if diagnostics is not None else 'Authenticated to device ([192.0.2.1]:22) using "password".\n'
-
         def run(command, **_kwargs):
-            if "-E" not in command:
-                return subprocess.CompletedProcess(command, 0, b"", b"")
-            Path(command[command.index("-E") + 1]).write_text(client_text)
+            if "-E" not in command:  # a local ssh option probe
+                return subprocess.CompletedProcess(command, 0, "", "")
+            Path(command[command.index("-E") + 1]).write_text(
+                AUTHENTICATED_LOG if diagnostics is None else diagnostics
+            )
             return process
 
         return run
@@ -111,10 +121,7 @@ class SSHTransportTests(unittest.TestCase):
             "timecapsulesmb.transport.ssh._ssh_option_supported",
             side_effect=lambda name: name == "PubkeyAcceptedKeyTypes",
         ):
-            with mock.patch(
-                "timecapsulesmb.transport.ssh._spawn_with_password",
-                side_effect=self.authenticated_spawn(),
-            ) as spawn_mock:
+            with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.authenticated()) as run:
                 proc = ssh_transport.run_ssh(
                     ssh_transport.SshConnection("root@192.168.1.67", "pw", "-o PubkeyAcceptedAlgorithms=+ssh-rsa"),
                     "/bin/echo ok",
@@ -122,7 +129,7 @@ class SSHTransportTests(unittest.TestCase):
                     timeout=10,
                 )
         self.assertEqual(proc.returncode, 0)
-        cmd = spawn_mock.call_args.args[0]
+        cmd = run.call_args.args[0]
         self.assertIn("PubkeyAuthentication=no", cmd)
         self.assertIn("PubkeyAcceptedKeyTypes=+ssh-rsa", cmd)
         self.assertIn("NumberOfPasswordPrompts=1", cmd)
@@ -209,146 +216,29 @@ class SSHTransportTests(unittest.TestCase):
 
         self.assertIsInstance(error, ssh_transport.SshAuthenticationError)
 
-    def test_spawn_with_password_replaces_invalid_utf8_output(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        fake_child = mock.Mock()
-        fake_child.expect.side_effect = [2]
-        fake_child.before = "TimeCapsule�\n"
-        fake_child.exitstatus = 0
-        fake_child.signalstatus = None
-        with TemporaryDirectory() as directory:
-            client_log = Path(directory) / "client.log"
-            with mock.patch("pexpect.spawn", return_value=fake_child) as spawn_mock:
-                rc, output = ssh_transport._spawn_with_password(
-                    ["ssh", "host", "cmd"],
-                    "pw",
-                    client_log=client_log,
-                    timeout=10,
-                    timeout_message="timeout",
-                )
-        self.assertEqual(rc, 0)
-        self.assertEqual(output, "TimeCapsule�\n")
-        self.assertEqual(spawn_mock.call_args.kwargs["codec_errors"], "replace")
-
-    def test_spawn_with_password_accepts_first_connection_authenticity_prompt(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        fake_child = mock.Mock()
-        fake_child.expect.side_effect = [0, 1, 2]
-        fake_child.before = "NetBSD\n"
-        fake_child.exitstatus = 0
-        fake_child.signalstatus = None
-        with TemporaryDirectory() as directory:
-            client_log = Path(directory) / "client.log"
-            with mock.patch("pexpect.spawn", return_value=fake_child):
-                rc, output = ssh_transport._spawn_with_password(
-                    ["ssh", "host", "cmd"],
-                    "pw",
-                    client_log=client_log,
-                    timeout=10,
-                    timeout_message="timeout",
-                )
-        self.assertEqual(rc, 0)
-        self.assertEqual(output, "NetBSD\n")
-        self.assertEqual(fake_child.sendline.call_args_list, [mock.call("yes"), mock.call("pw")])
-
-    def test_spawn_with_password_timeout_raises_timeout_subtype(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        fake_child = mock.Mock()
-        fake_child.expect.side_effect = [3]
-        fake_child.before = "partial output"
-        with TemporaryDirectory() as directory:
-            client_log = Path(directory) / "client.log"
-            with mock.patch("pexpect.spawn", return_value=fake_child):
-                with self.assertRaises(ssh_transport.SshCommandTimeout) as exc:
-                    ssh_transport._spawn_with_password(
-                        ["ssh", "host", "cmd"],
-                        "pw",
-                        client_log=client_log,
-                        timeout=10,
-                        timeout_message="timeout",
-                    )
-        self.assertNotIsInstance(exc.exception, SystemExit)
-        self.assertEqual(str(exc.exception), "timeout")
-        fake_child.close.assert_called_once_with(force=False)
-
-    def test_spawn_with_password_does_not_answer_remote_password_text_after_auth(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        fake_child = mock.Mock()
-        events = iter([
-            (1, "remote says ", "Password:"),
-            (2, "\ndone\n", ""),
-        ])
-
-        def expect(*_args, **_kwargs):
-            index, before, after = next(events)
-            fake_child.before = before
-            fake_child.after = after
-            return index
-
-        fake_child.expect.side_effect = expect
-        fake_child.exitstatus = 0
-        fake_child.signalstatus = None
-        with TemporaryDirectory() as directory:
-            client_log = Path(directory) / "client.log"
-            client_log.write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
-            with mock.patch("pexpect.spawn", return_value=fake_child):
-                rc, output = ssh_transport._spawn_with_password(
-                    ["ssh", "device", "command"],
-                    "secret",
-                    client_log=client_log,
-                    timeout=10,
-                    timeout_message="timeout",
-                )
-        self.assertEqual(rc, 0)
-        self.assertEqual(output, "remote says Password:\ndone\n")
-        fake_child.sendline.assert_not_called()
-
     def test_run_ssh_retries_transient_permission_denied(self) -> None:
-        attempts = iter([
+        run = self.ssh_runs(
             (255, "", "Permission denied, please try again.\n"),
-            (0, "ok\n", 'Authenticated to device ([192.0.2.1]:22) using "password".\n'),
-        ])
-
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            rc, output, diagnostics = next(attempts)
-            Path(client_log).write_text(diagnostics)
-            return rc, output
-
+            (0, "ok\n", AUTHENTICATED_LOG),
+        )
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn) as spawn_mock, \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run) as run_mock, \
              mock.patch("timecapsulesmb.transport.ssh.time") as time_mock:
-            sleep_mock = time_mock.sleep
             proc = ssh_transport.run_ssh(
                 ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                 "/bin/echo ok",
                 check=False,
                 timeout=10,
             )
-        self.assertEqual(proc.returncode, 0)
-        self.assertEqual(spawn_mock.call_count, 2)
-        sleep_mock.assert_called_once_with(1)
+        self.assertEqual((proc.returncode, proc.stdout), (0, "ok\n"))
+        self.assertEqual(run_mock.call_count, 2)
+        time_mock.sleep.assert_called_once_with(1)
 
     def test_run_ssh_does_not_retry_passwordless_auth_rejection(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text("root@device: Permission denied (publickey).\n")
-            return 255, ""
-
+        run = self.ssh_runs((255, "", "root@device: Permission denied (publickey).\n"))
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn) as spawn_mock, \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run) as run_mock, \
              mock.patch("timecapsulesmb.transport.ssh.time") as time_mock:
-            sleep_mock = time_mock.sleep
             with self.assertRaises(ssh_transport.SshAuthenticationError):
                 ssh_transport.run_ssh(
                     ssh_transport.SshConnection("root@192.168.1.118", "", "-o StrictHostKeyChecking=no"),
@@ -357,13 +247,13 @@ class SSHTransportTests(unittest.TestCase):
                     timeout=10,
                 )
 
-        spawn_mock.assert_called_once()
-        sleep_mock.assert_not_called()
+        run_mock.assert_called_once()
+        time_mock.sleep.assert_not_called()
 
     def test_run_ssh_does_not_retry_remote_permission_denied(self) -> None:
-        spawn = self.authenticated_spawn(1, "mutation complete\nPermission denied\n")
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn) as run, \
+             mock.patch("timecapsulesmb.transport.ssh.run_process",
+                        side_effect=self.authenticated(1, "mutation complete\nPermission denied\n")) as run, \
              mock.patch("timecapsulesmb.transport.ssh.time") as time_mock:
             process = ssh_transport.run_ssh(
                 ssh_transport.SshConnection("device", "pw", ""),
@@ -377,14 +267,10 @@ class SSHTransportTests(unittest.TestCase):
         time_mock.sleep.assert_not_called()
 
     def test_run_ssh_check_false_returns_nonzero_process(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
-            return 7, "remote command failed\n"
-
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
             with mock.patch(
-                "timecapsulesmb.transport.ssh._spawn_with_password",
-                side_effect=spawn,
+                "timecapsulesmb.transport.ssh.run_process",
+                side_effect=self.authenticated(7, "remote command failed\n"),
             ):
                 proc = ssh_transport.run_ssh(
                     ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
@@ -396,14 +282,10 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(proc.stdout, "remote command failed\n")
 
     def test_run_ssh_check_true_raises_on_nonzero_process(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
-            return 7, "remote command failed\n"
-
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
             with mock.patch(
-                "timecapsulesmb.transport.ssh._spawn_with_password",
-                side_effect=spawn,
+                "timecapsulesmb.transport.ssh.run_process",
+                side_effect=self.authenticated(7, "remote command failed\n"),
             ):
                 with self.assertRaises(ssh_transport.SshError) as exc:
                     ssh_transport.run_ssh(
@@ -416,18 +298,13 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(str(exc.exception), "remote command failed")
 
     def test_run_ssh_check_true_uses_rc_fallback_when_remote_output_is_empty(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text(
-                "Warning: Permanently added device to the list of known hosts.\n"
-                'Authenticated to device ([192.0.2.1]:22) using "password".\n'
-            )
-            return 7, ""
-
+        run = self.ssh_runs((
+            7,
+            "",
+            "Warning: Permanently added device to the list of known hosts.\n" + AUTHENTICATED_LOG,
+        ))
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-            with mock.patch(
-                "timecapsulesmb.transport.ssh._spawn_with_password",
-                side_effect=spawn,
-            ):
+            with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
                 with self.assertRaises(ssh_transport.SshError) as exc:
                     ssh_transport.run_ssh(
                         ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
@@ -439,12 +316,12 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(str(exc.exception), "ssh command failed with rc=7")
 
     def test_run_ssh_timeout_error_includes_remote_command_summary(self) -> None:
-        def fake_spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            raise ssh_transport.SshCommandTimeout(timeout_message)
-
         remote_cmd = "/bin/sh -c 'echo one\necho two'"
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-            with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=fake_spawn):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh.run_process",
+                side_effect=subprocess.TimeoutExpired("ssh", 10),
+            ):
                 with self.assertRaises(ssh_transport.SshCommandTimeout) as exc:
                     ssh_transport.run_ssh(
                         ssh_transport.SshConnection("root@192.168.1.118", "secret-password", "-o StrictHostKeyChecking=no"),
@@ -473,15 +350,14 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(str(error), "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied")
 
     def test_run_ssh_raises_on_ssh_transport_warning_even_with_zero_exit(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text(
-                "bind [127.0.0.1]:108: Permission denied\n"
-                "channel_setup_fwd_listener_tcpip: cannot listen to port: 108\n"
-            )
-            return 0, "NetBSD\n6.0\nevbarm\n"
-
+        run = self.ssh_runs((
+            0,
+            "NetBSD\n6.0\nevbarm\n",
+            "bind [127.0.0.1]:108: Permission denied\n"
+            "channel_setup_fwd_listener_tcpip: cannot listen to port: 108\n",
+        ))
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn):
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
             with self.assertRaises(ssh_transport.SshError) as exc:
                 ssh_transport.run_ssh(
                     ssh_transport.SshConnection("root@192.168.1.67", "pw", "-o LocalForward=127.0.0.1:108:127.0.0.1:108"),
@@ -496,16 +372,15 @@ class SSHTransportTests(unittest.TestCase):
         )
 
     def test_run_ssh_keeps_client_warnings_out_of_remote_output(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text(
-                "Warning: Permanently added device to the list of known hosts.\n"
-                "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
-                'Authenticated to device ([192.0.2.1]:22) using "password".\n'
-            )
-            return 0, "NetBSD\n4.0_STABLE\nearmv4\n"
-
+        run = self.ssh_runs((
+            0,
+            "NetBSD\n4.0_STABLE\nearmv4\n",
+            "Warning: Permanently added device to the list of known hosts.\n"
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+            + AUTHENTICATED_LOG,
+        ))
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn):
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
             proc = ssh_transport.run_ssh(
                 ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                 "uname -s",
@@ -561,34 +436,22 @@ class SSHTransportTests(unittest.TestCase):
         )
 
     def test_run_ssh_preserves_proxyjump_options(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.transport.ssh._ssh_option_supported",
-            return_value=True,
-        ):
-            with mock.patch(
-                "timecapsulesmb.transport.ssh._spawn_with_password",
-                return_value=(0, "ok\n"),
-            ) as spawn_mock:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.authenticated()) as run:
                 ssh_transport.run_ssh(
                     ssh_transport.SshConnection("root@192.168.1.118", "pw", "-J jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123 -o HostKeyAlgorithms=+ssh-rsa"),
                     "/bin/echo ok",
                     check=False,
                     timeout=10,
                 )
-        cmd = spawn_mock.call_args.args[0]
+        cmd = run.call_args.args[0]
         self.assertIn("-J", cmd)
         self.assertIn("jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123", cmd)
         self.assertEqual(cmd[-2:], ["root@192.168.1.118", ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "/bin/echo ok"])
 
     def test_run_ssh_respects_explicit_identity_without_restricting_agent(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.transport.ssh._ssh_option_supported",
-            return_value=True,
-        ):
-            with mock.patch(
-                "timecapsulesmb.transport.ssh._spawn_with_password",
-                side_effect=self.authenticated_spawn(),
-            ) as spawn_mock:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.authenticated()) as run:
                 ssh_transport.run_ssh(
                     ssh_transport.SshConnection(
                         "root@192.168.1.67",
@@ -599,7 +462,7 @@ class SSHTransportTests(unittest.TestCase):
                     check=False,
                     timeout=10,
                 )
-        cmd = spawn_mock.call_args.args[0]
+        cmd = run.call_args.args[0]
         # Explicit key configuration keeps the caller's existing OpenSSH
         # behavior, including agent fallback.
         self.assertNotIn("IdentitiesOnly=yes", cmd)
@@ -756,7 +619,7 @@ class SSHTransportTests(unittest.TestCase):
 
     def test_ssh_option_supported_returns_false_for_bad_configuration_option(self) -> None:
         with mock.patch(
-            "timecapsulesmb.transport.ssh.subprocess.run",
+            "timecapsulesmb.transport.ssh.run_process",
             return_value=subprocess.CompletedProcess(
                 ["ssh"],
                 255,
@@ -767,154 +630,15 @@ class SSHTransportTests(unittest.TestCase):
             self.assertFalse(ssh_transport._ssh_option_supported("PubkeyAcceptedAlgorithms"))
 
     def test_ssh_option_supported_returns_false_when_ssh_binary_is_missing(self) -> None:
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=OSError("missing ssh")):
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=FileNotFoundError("missing ssh")):
             self.assertFalse(ssh_transport._ssh_option_supported("PubkeyAcceptedAlgorithms"))
-
-    def test_spawn_with_password_reports_missing_pexpect(self) -> None:
-        with mock.patch("builtins.__import__", side_effect=self.missing_pexpect_import):
-            with self.assertRaises(ssh_transport.SshError) as exc:
-                ssh_transport._spawn_with_password(
-                    ["ssh", "host", "cmd"],
-                    "pw",
-                    client_log=Path("/tmp/client.log"),
-                    timeout=10,
-                    timeout_message="timeout",
-                )
-        self.assertNotIsInstance(exc.exception, SystemExit)
-        self.assertIn(MISSING_PEXPECT_PREFIX, str(exc.exception))
-        self.assertIn(MISSING_PEXPECT_ERROR, str(exc.exception))
-
-    def test_ssh_local_forward_reports_missing_pexpect(self) -> None:
-        with mock.patch("builtins.__import__", side_effect=self.missing_pexpect_import):
-            with self.assertRaises(ssh_transport.SshError) as exc:
-                with ssh_transport.ssh_local_forward(
-                    ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
-                    local_port=10445,
-                    remote_host="127.0.0.1",
-                    remote_port=445,
-                    ready_timeout=5,
-                ):
-                    pass
-        self.assertNotIsInstance(exc.exception, SystemExit)
-        self.assertIn(MISSING_PEXPECT_PREFIX, str(exc.exception))
-        self.assertIn(MISSING_PEXPECT_ERROR, str(exc.exception))
-
-    def test_ssh_local_forward_waits_for_port_and_closes_child(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        fake_child = mock.Mock()
-        fake_child.expect.side_effect = [0, 1, 3]
-        fake_child.before = ""
-        fake_child.isalive.return_value = True
-        with mock.patch("pexpect.spawn", return_value=fake_child) as spawn_mock:
-            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=True) as tcp_open_mock:
-                    with ssh_transport.ssh_local_forward(
-                        ssh_transport.SshConnection("root@192.168.1.118", "pw", "-J jump.example"),
-                        local_port=10445,
-                        remote_host="127.0.0.1",
-                        remote_port=445,
-                        ready_timeout=5,
-                    ):
-                        pass
-        cmd = spawn_mock.call_args.args[0:2]
-        self.assertEqual(cmd[0], "ssh")
-        self.assertIn("-F", cmd[1])
-        self.assertIn("/dev/null", cmd[1])
-        self.assertIn("-J", cmd[1])
-        self.assertIn("jump.example", cmd[1])
-        self.assertEqual(fake_child.sendline.call_args_list, [mock.call("yes"), mock.call("pw")])
-        tcp_open_mock.assert_called_once_with("127.0.0.1", 10445, timeout=0.2)
-        fake_child.close.assert_called_once_with(force=True)
-        # The tunnel logs in on its own connection, never through a master.
-        self.assertEqual(cmd[1][cmd[1].index("-S") + 1], "none")
-        self.assertFalse(any(arg.startswith("Control") for arg in cmd[1]))
-
-    def test_ssh_local_forward_passes_the_forward_spec_and_target_host(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        for host in ("root@10.0.0.2", "root@fe80::1%en0"):
-            with self.subTest(host=host):
-                fake_child = mock.Mock()
-                fake_child.expect.side_effect = [1, 3]
-                fake_child.before = ""
-                with mock.patch("pexpect.spawn", return_value=fake_child) as spawn_mock:
-                    with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                        with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=True):
-                            with ssh_transport.ssh_local_forward(
-                                ssh_transport.SshConnection(host, "pw", ""),
-                                local_port=2445,
-                                remote_host="127.0.0.1",
-                                remote_port=445,
-                                ready_timeout=5,
-                            ):
-                                pass
-                args = spawn_mock.call_args.args[1]
-                self.assertEqual(args[args.index("-L") + 1], "2445:127.0.0.1:445")
-                self.assertEqual(args[-1], host)
-
-    def test_ssh_local_forward_reports_transport_error_before_ready(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        fake_child = mock.Mock()
-        fake_child.expect.side_effect = [2]
-        fake_child.before = "bind [127.0.0.1]:10445: Permission denied\n"
-        with mock.patch("pexpect.spawn", return_value=fake_child):
-            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                with self.assertRaises(ssh_transport.SshError) as exc:
-                    with ssh_transport.ssh_local_forward(
-                        ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
-                        local_port=10445,
-                        remote_host="127.0.0.1",
-                        remote_port=445,
-                        ready_timeout=5,
-                    ):
-                        pass
-        self.assertNotIsInstance(exc.exception, SystemExit)
-        self.assertIn("bind [127.0.0.1]:10445: Permission denied", str(exc.exception))
-        fake_child.close.assert_called_once_with(force=True)
-
-    def test_ssh_local_forward_timeout_reports_tunnel_target(self) -> None:
-        try:
-            import pexpect  # noqa: F401
-        except Exception:
-            self.skipTest("pexpect not available")
-        fake_child = mock.Mock()
-        fake_child.expect.side_effect = [3]
-        fake_child.before = ""
-        fake_child.isalive.return_value = False
-        with mock.patch("pexpect.spawn", return_value=fake_child):
-            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=False):
-                    with mock.patch("timecapsulesmb.transport.ssh.time.time", side_effect=[100.0, 106.0]):
-                        with self.assertRaises(ssh_transport.SshError) as exc:
-                            with ssh_transport.ssh_local_forward(
-                                ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
-                                local_port=10445,
-                                remote_host="10.0.1.1",
-                                remote_port=445,
-                                ready_timeout=5,
-                            ):
-                                pass
-        self.assertNotIsInstance(exc.exception, SystemExit)
-        self.assertEqual(
-            str(exc.exception),
-            "Timed out waiting for ssh tunnel to become ready: 127.0.0.1:10445 -> 10.0.1.1:445 via root@192.168.1.118",
-        )
-        fake_child.close.assert_called_once_with(force=True)
 
     def upload(self, stdout: bytes, content: bytes = b"hello") -> tuple[mock.Mock, Path]:
         process = subprocess.CompletedProcess(["ssh"], 0, stdout, b"5+0 records in\n")
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
             src.write_bytes(content)
-            with mock.patch("timecapsulesmb.transport.ssh._run_piped_ssh", return_value=process) as run:
+            with mock.patch("timecapsulesmb.transport.ssh._run_ssh", return_value=process) as run:
                 ssh_transport.upload_file(
                     ssh_transport.SshConnection("device", "pw", ""),
                     src,
@@ -954,7 +678,7 @@ class SSHTransportTests(unittest.TestCase):
             def run(_connection, remote_cmd, *, input_bytes, **_kwargs):
                 return subprocess.run(remote_cmd, shell=True, input=input_bytes, capture_output=True)
 
-            with mock.patch("timecapsulesmb.transport.ssh._run_piped_ssh", side_effect=run):
+            with mock.patch("timecapsulesmb.transport.ssh._run_ssh", side_effect=run):
                 ssh_transport.upload_file(ssh_transport.SshConnection("device", "pw", ""), src, str(dest))
             self.assertEqual(dest.read_bytes(), src.read_bytes())
 
@@ -963,7 +687,7 @@ class SSHTransportTests(unittest.TestCase):
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
             src.write_bytes(b"hello")
-            with mock.patch("timecapsulesmb.transport.ssh._run_piped_ssh", return_value=process):
+            with mock.patch("timecapsulesmb.transport.ssh._run_ssh", return_value=process):
                 with self.assertRaisesRegex(ssh_transport.SshError, "disk full"):
                     ssh_transport.upload_file(
                         ssh_transport.SshConnection("device", "pw", ""),
@@ -971,49 +695,37 @@ class SSHTransportTests(unittest.TestCase):
                         "/tmp/test-upload",
                     )
 
-    def test_upload_file_explains_missing_sshpass(self) -> None:
-        with NamedTemporaryFile() as tmp:
-            src = Path(tmp.name)
-            src.write_bytes(b"hello")
-            with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value=None):
-                with self.assertRaises(ssh_transport.SshError) as exc:
-                    ssh_transport.upload_file(
-                        ssh_transport.SshConnection("device", "pw", ""),
-                        src,
-                        "/tmp/test-upload",
-                    )
-        self.assertIn("password require local sshpass", str(exc.exception))
-        self.assertIn("tcapsule bootstrap", str(exc.exception))
-
     def test_run_ssh_capture_bytes_returns_binary_stdout(self) -> None:
         payload = b"\x00firmware\xff\n"
-        process = subprocess.CompletedProcess(["sshpass"], 0, payload, b"")
+        process = subprocess.CompletedProcess(["ssh"], 0, payload, b"")
         connection = ssh_transport.SshConnection("device", "pw", "")
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process)) as run:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)) as run:
             self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw"), payload)
         command = run.call_args.args[0]
-        self.assertEqual(command[:3], ["sshpass", "-e", "ssh"])
+        self.assertEqual(command[0], "ssh")
         self.assertIn("-n", command)
         self.assertIn("-T", command)
         self.assertIn("ControlMaster=auto", command)
+        # Binary stdout stays apart from ssh's own and the remote stderr.
+        self.assertEqual(run.call_args.kwargs["stderr"], subprocess.PIPE)
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
     def test_run_ssh_capture_bytes_without_password_uses_plain_ssh(self) -> None:
         payload = b"bank"
         process = subprocess.CompletedProcess(["ssh"], 0, payload, b"")
         connection = ssh_transport.SshConnection("device", "", "")
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", side_effect=AssertionError("must not need sshpass")), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process)) as run:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)) as run:
             self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "dd"), payload)
         command = run.call_args.args[0]
         self.assertEqual(command[0], "ssh")
         self.assertIn("BatchMode=yes", command)
+        # A key login needs no password helper: ssh inherits our environment.
+        self.assertIsNone(run.call_args.kwargs["env"])
 
     def test_run_ssh_capture_bytes_does_not_decode_successful_binary_stdout(self) -> None:
         payload = DecodeTrapBytes(b"\x00firmware\xff" * 4096)
-        process = subprocess.CompletedProcess(["sshpass"], 0, payload, b"")
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process)):
+        process = subprocess.CompletedProcess(["ssh"], 0, payload, b"")
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)):
             result = ssh_transport.run_ssh_capture_bytes(
                 ssh_transport.SshConnection("device", "pw", ""),
                 "dd",
@@ -1022,9 +734,8 @@ class SSHTransportTests(unittest.TestCase):
 
     def test_run_ssh_capture_bytes_does_not_decode_failed_binary_stdout(self) -> None:
         payload = DecodeTrapBytes(b"x" * (ssh_transport.SSH_ERROR_STDOUT_PREFIX_BYTES + 100))
-        process = subprocess.CompletedProcess(["sshpass"], 1, payload, b"")
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process)):
+        process = subprocess.CompletedProcess(["ssh"], 1, payload, b"")
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)):
             with self.assertRaisesRegex(ssh_transport.SshError, "ssh command failed with rc=1"):
                 ssh_transport.run_ssh_capture_bytes(
                     ssh_transport.SshConnection("device", "pw", ""),
@@ -1032,36 +743,23 @@ class SSHTransportTests(unittest.TestCase):
                 )
 
     def test_piped_ssh_retries_auth_failure_from_client_log(self) -> None:
-        processes = iter([
-            subprocess.CompletedProcess(["sshpass"], 255, b"", b""),
-            subprocess.CompletedProcess(["sshpass"], 0, b"ok", b""),
-        ])
-        logs = iter([
-            "root@device: Permission denied (password).\n",
-            'Authenticated to device ([192.0.2.1]:22) using "password".\n',
-        ])
-
-        def run(command, **_kwargs):
-            if "-E" not in command:
-                return subprocess.CompletedProcess(command, 0, b"", b"")
-            Path(command[command.index("-E") + 1]).write_text(next(logs))
-            return next(processes)
-
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run) as subprocess_run, \
+        run = self.ssh_runs(
+            (255, b"", "root@device: Permission denied (password).\n"),
+            (0, b"ok", AUTHENTICATED_LOG),
+        )
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run) as run_mock, \
              mock.patch("timecapsulesmb.transport.ssh.time") as time_mock:
             result = ssh_transport.run_ssh_capture_bytes(
                 ssh_transport.SshConnection("device", "pw", ""),
                 "dd",
             )
         self.assertEqual(result, b"ok")
-        self.assertEqual(sum("-E" in call.args[0] for call in subprocess_run.call_args_list), 2)
+        self.assertEqual(sum("-E" in call.args[0] for call in run_mock.call_args_list), 2)
         time_mock.sleep.assert_called_once_with(1)
 
     def test_remote_permission_denied_is_not_classified_or_retried(self) -> None:
-        process = subprocess.CompletedProcess(["sshpass"], 1, b"", b"cat: protected: Permission denied\n")
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process)) as run:
+        process = subprocess.CompletedProcess(["ssh"], 1, b"", b"cat: protected: Permission denied\n")
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)) as run:
             with self.assertRaisesRegex(ssh_transport.SshError, "Permission denied"):
                 ssh_transport.run_ssh_capture_bytes(
                     ssh_transport.SshConnection("device", "pw", ""),
@@ -1072,7 +770,7 @@ class SSHTransportTests(unittest.TestCase):
     def test_passwordless_auth_rejection_uses_client_log(self) -> None:
         process = subprocess.CompletedProcess(["ssh"], 255, b"", b"")
         diagnostics = "root@device: Permission denied (publickey).\n"
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process, diagnostics)) as run:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process, diagnostics)) as run:
             with self.assertRaises(ssh_transport.SshAuthenticationError):
                 ssh_transport.run_ssh_capture_bytes(
                     ssh_transport.SshConnection("device", "", ""),
@@ -1082,8 +780,7 @@ class SSHTransportTests(unittest.TestCase):
 
     def test_piped_ssh_sends_client_hosts_line_before_the_command(self) -> None:
         process = subprocess.CompletedProcess(["ssh"], 0, b"done\n", b"")
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=self.completed_run(process)) as run:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)) as run:
             proc = ssh_transport.run_ssh_input(
                 ssh_transport.SshConnection("root@device", "pw", ""),
                 "/bin/sh -c 'cat > /tmp/x'",
@@ -1092,28 +789,84 @@ class SSHTransportTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[-2:], ["root@device", ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "/bin/sh -c 'cat > /tmp/x'"])
         self.assertEqual(run.call_args.kwargs["input"], b"payload")
+        self.assertNotIn("stdin", run.call_args.kwargs)
+        self.assertNotIn("-n", command)
         self.assertEqual(proc.stdout, b"done\n")
 
     def test_piped_ssh_timeout_names_only_the_callers_command(self) -> None:
         def run(command, **_kwargs):
-            if "-E" not in command:  # local ssh option probes
-                return subprocess.CompletedProcess(command, 0, b"", b"")
+            if "-E" not in command:  # a local ssh option probe
+                return subprocess.CompletedProcess(command, 0, "", "")
             raise subprocess.TimeoutExpired(command, 5)
 
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
             with self.assertRaises(ssh_transport.SshCommandTimeout) as exc:
                 ssh_transport.run_ssh_input(ssh_transport.SshConnection("root@device", "pw", ""), "helper --flag", timeout=5)
         self.assertEqual(str(exc.exception), "Timed out waiting for ssh command to finish: helper --flag")
 
     def test_run_ssh_failure_reports_the_device_output_not_the_prefix(self) -> None:
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password",
-                        side_effect=self.authenticated_spawn(returncode=1, output="no such file\n")) as spawn:
+             mock.patch("timecapsulesmb.transport.ssh.run_process",
+                        side_effect=self.authenticated(1, "no such file\n")) as run:
             with self.assertRaises(ssh_transport.SshError) as exc:
                 ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "ls /missing", timeout=10)
-        self.assertEqual(spawn.call_args.args[0][-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "ls /missing")
+        self.assertEqual(run.call_args.args[0][-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "ls /missing")
         self.assertEqual(str(exc.exception), "no such file")
+
+    def test_run_ssh_joins_stderr_and_gives_ssh_the_password_through_the_helper(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.authenticated()) as run:
+            ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "secret", ""), "true", timeout=10)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
+        env = kwargs["env"]
+        self.assertEqual(env["SSH_ASKPASS"], str(ssh_transport.SSH_ASKPASS_PATH))
+        self.assertEqual(env["SSH_ASKPASS_REQUIRE"], "force")
+        self.assertEqual(env[ssh_transport.SSH_PASSWORD_ENV], "secret")
+        # Only the child's copy holds the password.
+        self.assertNotIn(ssh_transport.SSH_PASSWORD_ENV, os.environ)
+
+    def test_a_crashed_ssh_is_reported_as_a_local_failure_and_not_retried(self) -> None:
+        def crashed(command, **_kwargs):
+            Path(command[command.index("-E") + 1]).write_text("")
+            return subprocess.CompletedProcess(command, -11, b"", b"")
+
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=crashed) as run, \
+             mock.patch("timecapsulesmb.transport.ssh.time") as time_mock:
+            with self.assertRaises(ssh_transport.SshClientCrashedError) as raised:
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "true", timeout=10)
+        run.assert_called_once()
+        time_mock.sleep.assert_not_called()
+        self.assertEqual(raised.exception.signal_number, 11)
+        self.assertIn("crashed (SIGSEGV)", str(raised.exception))
+        self.assertIn("VPN, firewall or security app", str(raised.exception))
+        self.assertNotIn("rc=", str(raised.exception))
+        # It is guided like a connection this Mac dropped: same apps, same code.
+        self.assertIsInstance(raised.exception, transport_errors.SshLocalNetworkFilteredError)
+
+    def test_an_ssh_killed_from_outside_is_reported_as_stopped_not_crashed(self) -> None:
+        for number, name in ((signal.SIGKILL, "SIGKILL"), (signal.SIGTERM, "SIGTERM"), (99, "signal 99")):
+            with self.subTest(name=name):
+                error = ssh_transport.SshClientCrashedError(number, platform="darwin")
+                self.assertEqual(str(error), f"The ssh program on this Mac was stopped by {name} before it finished.")
+                self.assertEqual(error.signal_number, number)
+        self.assertIn("this computer crashed (SIGBUS)", str(ssh_transport.SshClientCrashedError(signal.SIGBUS, platform="linux")))
+
+    def test_a_password_helper_that_cannot_run_is_a_damaged_install_not_a_wrong_password(self) -> None:
+        log = (
+            f"ssh_askpass: exec({ssh_transport.SSH_ASKPASS_PATH}): No such file or directory\n"
+            "root@device: Permission denied (publickey,password,keyboard-interactive).\n"
+        )
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.ssh_runs((255, "", log))) as run, \
+             mock.patch("timecapsulesmb.transport.ssh.time") as time_mock:
+            with self.assertRaises(ssh_transport.SshClientConfigError) as raised:
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "true", timeout=10)
+        run.assert_called_once()
+        time_mock.sleep.assert_not_called()
+        self.assertIn("reinstall TimeCapsuleSMB", str(raised.exception))
 
 
 MUX_SESSION_LOG = (
@@ -1240,52 +993,27 @@ class SharedConnectionTests(unittest.TestCase):
         self.assertIsInstance(diagnostics.error, ssh_transport.SshAuthenticationError)
 
     def test_remote_exit_255_over_a_shared_session_is_the_commands_status(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text(MUX_SESSION_LOG)
-            return 255, "remote said no\n"
-
-        with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn) as spawned:
+        run = SSHTransportTests.ssh_runs((255, "remote said no\n", MUX_SESSION_LOG))
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run) as ran:
             proc = ssh_transport.run_ssh(
                 ssh_transport.SshConnection("root@device", "pw", ""), "exit 255", check=False,
             )
         self.assertEqual(proc.returncode, 255)
         self.assertEqual(proc.stdout, "remote said no\n")
-        self.assertEqual(spawned.call_count, 1)
+        self.assertEqual(ran.call_count, 1)
 
     def test_rc_255_with_neither_login_nor_shared_session_is_a_client_failure(self) -> None:
-        def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
-            Path(client_log).write_text("debug1: auto-mux: Trying existing master\nConnection closed by 10.0.0.2 port 22\n")
-            return 255, ""
-
-        with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=spawn):
+        run = SSHTransportTests.ssh_runs(
+            (255, "", "debug1: auto-mux: Trying existing master\nConnection closed by 10.0.0.2 port 22\n"),
+        )
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
             with self.assertRaises(ssh_transport.SshError):
                 ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "true", check=False)
 
-    def test_piped_shared_session_keeps_remote_status_that_looks_like_sshpass(self) -> None:
-        # sshpass reports its own failures as 5, 6 and 7; over a shared
-        # session these can only be the remote command's status.
-        for status in (5, 6, 7):
-            with self.subTest(status=status):
-                def run(command, **_kwargs):
-                    if "-E" not in command:
-                        return subprocess.CompletedProcess(command, 0, b"", b"")
-                    Path(command[command.index("-E") + 1]).write_text(MUX_SESSION_LOG)
-                    return subprocess.CompletedProcess(command, status, b"", b"")
-
-                with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-                     mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run) as subprocess_run:
-                    proc = ssh_transport.run_ssh_input(
-                        ssh_transport.SshConnection("root@device", "pw", ""),
-                        "helper", raw_remote_status=True,
-                    )
-                self.assertEqual(proc.returncode, status)
-                self.assertEqual(sum("-E" in call.args[0] for call in subprocess_run.call_args_list), 1)
-
     def test_piped_commands_use_the_shared_connection(self) -> None:
         # The empty source file arrives as an empty file on the device.
-        process = subprocess.CompletedProcess(["sshpass"], 0, b"0\n", b"")
-        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/sshpass"), \
-             mock.patch("timecapsulesmb.transport.ssh.subprocess.run",
+        process = subprocess.CompletedProcess(["ssh"], 0, b"0\n", b"")
+        with mock.patch("timecapsulesmb.transport.ssh.run_process",
                         side_effect=SSHTransportTests.completed_run(process)) as run:
             with NamedTemporaryFile() as source:
                 ssh_transport.upload_file(ssh_transport.SshConnection("root@device", "pw", ""), Path(source.name), "/tmp/x")
@@ -1293,93 +1021,38 @@ class SharedConnectionTests(unittest.TestCase):
         self.assertEqual(self.option(command, "ControlMaster"), "auto")
         self.assertEqual(os.path.dirname(self.option(command, "ControlPath")), self.control_dir)
 
-    def master_run(self, log: str, process: subprocess.CompletedProcess[bytes]):
-        commands: list[list[str]] = []
-
-        def run(command, **kwargs):
-            commands.append(command)
-            self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
-            self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
-            Path(command[command.index("-E") + 1]).write_text(log)
-            return process
-
-        return run, commands
-
-    def test_live_master_runs_commands_over_pipes_without_a_password_prompt(self) -> None:
+    def test_every_command_offers_ssh_the_shared_connection_and_the_password(self) -> None:
+        # ssh uses a live master, or logs in and becomes it: one invocation
+        # either way, so a command never runs twice.
+        run = SSHTransportTests.ssh_runs((3, "out\nerr\n", MUX_SESSION_LOG), (0, "made\n", AUTHENTICATED_LOG))
         connection = ssh_transport.SshConnection("root@device", "pw", "")
-        self.make_master("root@device")
-        run, commands = self.master_run(MUX_SESSION_LOG, subprocess.CompletedProcess([], 3, b"out\nerr\n"))
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
-            proc = ssh_transport.run_ssh(connection, "probe", check=False, timeout=7)
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run) as ran:
+            over_master = ssh_transport.run_ssh(connection, "probe", check=False, timeout=7)
+            logged_in = ssh_transport.run_ssh(connection, "mkdir /x")
 
-        spawn.assert_not_called()
-        self.assertEqual((proc.returncode, proc.stdout), (3, "out\nerr\n"))
-        [command] = commands
-        self.assertEqual(command[0], "ssh")
-        self.assertIn("BatchMode=yes", command)
-        self.assertEqual(self.option(command, "ControlMaster"), "auto")
-        self.assertEqual(command[-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "probe")
+        self.assertEqual((over_master.returncode, over_master.stdout), (3, "out\nerr\n"))
+        self.assertEqual(logged_in.stdout, "made\n")
+        self.assertEqual(ran.call_count, 2)
+        for call in ran.call_args_list:
+            command = call.args[0]
+            self.assertEqual(self.option(command, "ControlMaster"), "auto")
+            self.assertNotIn("BatchMode=yes", command)
+            self.assertEqual(call.kwargs["env"][ssh_transport.SSH_PASSWORD_ENV], "pw")
+        self.assertEqual(ran.call_args_list[0].args[0][-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "probe")
 
-    def test_live_master_failure_raises_with_the_device_output(self) -> None:
-        self.make_master("root@device")
-        run, _commands = self.master_run(MUX_SESSION_LOG, subprocess.CompletedProcess([], 1, b"no such file\n"))
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
+    def test_shared_session_failure_raises_with_the_device_output(self) -> None:
+        run = SSHTransportTests.ssh_runs((1, "no such file\n", MUX_SESSION_LOG))
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
             with self.assertRaisesRegex(ssh_transport.SshError, "^no such file$"):
                 ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "ls /missing")
-        spawn.assert_not_called()
 
-    def test_master_that_ended_falls_back_to_one_password_login(self) -> None:
-        # The master quit after the check; ssh's own batch login was refused,
-        # so the command never ran and the password login runs it once.
-        self.make_master("root@device")
-        refused = (
-            "debug1: auto-mux: Trying existing master at '/tmp/tcsmb-ssh-x/0123456789abcdef'\n"
-            "root@device: Permission denied (password,keyboard-interactive).\n"
-        )
-        run, commands = self.master_run(refused, subprocess.CompletedProcess([], 255, b""))
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password",
-                        side_effect=SSHTransportTests.authenticated_spawn(output="done\n")) as spawn:
-            proc = ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "mkdir /x")
-
-        self.assertEqual(len(commands), 1)
-        spawn.assert_called_once()
-        self.assertEqual(spawn.call_args.args[0][-1], ssh_transport.CLIENT_HOSTS_LINE_COMMAND + "mkdir /x")
-        self.assertEqual(proc.stdout, "done\n")
-
-    def test_master_that_ended_but_a_key_login_ran_the_command_is_not_rerun(self) -> None:
-        self.make_master("root@device", opts="-i ~/.ssh/id")
-        run, commands = self.master_run(
-            'Authenticated to device ([192.0.2.1]:22) using "publickey".\n',
-            subprocess.CompletedProcess([], 0, b"made\n"),
-        )
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
-            proc = ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", "-i ~/.ssh/id"), "mkdir /x")
-        spawn.assert_not_called()
-        self.assertEqual(len(commands), 1)
-        self.assertEqual(proc.stdout, "made\n")
-
-    def test_without_a_master_the_first_command_logs_in_with_the_password(self) -> None:
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run, \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password",
-                        side_effect=SSHTransportTests.authenticated_spawn()) as spawn:
-            ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "true")
-        run.assert_not_called()
-        spawn.assert_called_once()
-        # The login itself becomes the master for later commands.
-        self.assertEqual(self.option(spawn.call_args.args[0], "ControlMaster"), "auto")
-
-    def test_command_over_a_master_that_hangs_times_out_naming_the_command(self) -> None:
-        self.make_master("root@device")
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run",
-                        side_effect=subprocess.TimeoutExpired("ssh", 7)), \
-             mock.patch("timecapsulesmb.transport.ssh._spawn_with_password") as spawn:
+    def test_a_command_that_hangs_times_out_naming_the_command(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process",
+                        side_effect=subprocess.TimeoutExpired("ssh", 7)) as run:
             with self.assertRaises(ssh_transport.SshCommandTimeout) as raised:
                 ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pw", ""), "sleep 99", timeout=7)
-        spawn.assert_not_called()
+        run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
         self.assertEqual(str(raised.exception), "Timed out waiting for ssh command to finish: sleep 99")
 
     def make_master(self, host: str, *, opts: str = "", live: bool = True) -> str:
@@ -1405,7 +1078,7 @@ class SharedConnectionTests(unittest.TestCase):
         Path(other_login).touch()
         other_device = self.make_master("root@10.0.0.3")
 
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process") as run:
             ssh_transport.close_ssh_masters("root@10.0.0.2")
 
         self.assertCountEqual(self.exited(run), [device, other_login])
@@ -1414,7 +1087,7 @@ class SharedConnectionTests(unittest.TestCase):
 
     def test_closing_skips_masters_that_already_ended(self) -> None:
         self.make_master("root@10.0.0.2", live=False)
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process") as run:
             ssh_transport.close_ssh_masters("10.0.0.2")
         run.assert_not_called()
         self.assertEqual(ssh_transport._control_hosts, {})
@@ -1422,7 +1095,7 @@ class SharedConnectionTests(unittest.TestCase):
     def test_closing_everything_exits_every_master_and_removes_the_directory(self) -> None:
         first = self.make_master("root@10.0.0.2")
         second = self.make_master("root@10.0.0.3")
-        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run") as run:
+        with mock.patch("timecapsulesmb.transport.ssh.run_process") as run:
             ssh_transport.close_ssh_masters()
         self.assertCountEqual(self.exited(run), [first, second])
         self.assertFalse(os.path.exists(self.control_dir))
@@ -1440,7 +1113,7 @@ class SharedConnectionTests(unittest.TestCase):
         first = self.make_master("root@10.0.0.2")
         second = self.make_master("root@10.0.0.3")
         with mock.patch(
-            "timecapsulesmb.transport.ssh.subprocess.run",
+            "timecapsulesmb.transport.ssh.run_process",
             side_effect=[subprocess.TimeoutExpired("ssh", 5), OSError("no ssh")],
         ) as run:
             ssh_transport.close_ssh_masters()
@@ -1451,7 +1124,7 @@ class SharedConnectionTests(unittest.TestCase):
 
 class MigrationInputTransportTests(unittest.TestCase):
     # The local ssh capability checks are cached for the process. Unpatched,
-    # they run through each test's patched subprocess.run only when no earlier
+    # they run through each test's patched run_process only when no earlier
     # test filled the cache, so call counts would depend on test order.
     def setUp(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
@@ -1466,7 +1139,7 @@ class MigrationInputTransportTests(unittest.TestCase):
     def test_request_bytes_and_separate_output_use_existing_transport(self):
         connection = ssh_transport.SshConnection("device", "", "")
         process = subprocess.CompletedProcess(["ssh"], 0, b'{"version":1}\n', b'diagnostic\n')
-        with mock.patch.object(ssh_transport, "_run_piped_ssh", return_value=process) as run:
+        with mock.patch.object(ssh_transport, "_run_ssh", return_value=process) as run:
             result = ssh_transport.run_ssh_input(
                 connection,
                 "helper multi copy",
@@ -1478,76 +1151,60 @@ class MigrationInputTransportTests(unittest.TestCase):
         self.assertIs(result, process)
         self.assertEqual(run.call_args.kwargs["input_bytes"], b"TCMIGRATE1\nE\n")
         self.assertEqual(run.call_args.kwargs["timeout"], 900)
-        self.assertTrue(run.call_args.kwargs["raw_remote_status"])
         self.assertEqual(run.call_args.kwargs["extra_ssh_args"], ("-o", "ConnectTimeout=20"))
+        self.assertFalse(run.call_args.kwargs.get("merge_stderr", False))
 
     def test_raw_remote_status_is_single_attempt_and_keeps_native_stderr(self):
         connection = ssh_transport.SshConnection("device", "pw", "")
         process = subprocess.CompletedProcess(["ssh"], 4, b'{"version":1}', b"Permission denied in TDB")
-        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
-            with mock.patch(
-                "timecapsulesmb.transport.ssh.subprocess.run",
-                side_effect=SSHTransportTests.completed_run(process),
-            ) as run:
-                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
-                    result = ssh_transport.run_ssh_input(
-                        connection,
-                        "helper multi copy",
-                        raw_remote_status=True,
-                        extra_ssh_args=("-o", "ConnectTimeout=20"),
-                    )
+        with mock.patch(
+            "timecapsulesmb.transport.ssh.run_process",
+            side_effect=SSHTransportTests.completed_run(process),
+        ) as run:
+            with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                result = ssh_transport.run_ssh_input(
+                    connection,
+                    "helper multi copy",
+                    raw_remote_status=True,
+                    extra_ssh_args=("-o", "ConnectTimeout=20"),
+                )
         self.assertIs(result, process)
         run.assert_called_once()
         sleep.assert_not_called()
         command = run.call_args.args[0]
         self.assertLess(command.index("ConnectTimeout=20"), command.index("device"))
 
-    def test_raw_remote_status_rejects_sshpass_host_key_failures_without_retry(self):
+    def test_raw_remote_status_does_not_retry_a_host_key_failure(self):
         # The command may or may not be safe to rerun; only a rejected login
         # (retried below) proves it never started.
         connection = ssh_transport.SshConnection("device", "pw", "")
-        cases = (
-            (6, b"Host public key is unknown.\n", "", ssh_transport.SshError),
-            (7, b"IP public key changed.\n", "", ssh_transport.SshError),
-        )
-        for status, stderr, diagnostics, error in cases:
-            with self.subTest(status=status):
-                process = subprocess.CompletedProcess(["sshpass"], status, b"", stderr)
-                with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
-                    with mock.patch(
-                        "timecapsulesmb.transport.ssh.subprocess.run",
-                        side_effect=SSHTransportTests.completed_run(process, diagnostics),
-                    ) as run:
-                        with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
-                            with self.assertRaises(error):
-                                ssh_transport.run_ssh_input(
-                                    connection,
-                                    "helper multi copy",
-                                    raw_remote_status=True,
-                                )
-                run.assert_called_once()
-                sleep.assert_not_called()
+        process = subprocess.CompletedProcess(["ssh"], 255, b"", b"")
+        with mock.patch(
+            "timecapsulesmb.transport.ssh.run_process",
+            side_effect=SSHTransportTests.completed_run(process, "Host key verification failed.\n"),
+        ) as run:
+            with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                with self.assertRaisesRegex(ssh_transport.SshError, "Host key verification failed"):
+                    ssh_transport.run_ssh_input(connection, "helper multi copy", raw_remote_status=True)
+        run.assert_called_once()
+        sleep.assert_not_called()
 
     @staticmethod
     def login_sequence(outcomes):
-        """Fake sshpass+ssh runs: each outcome is ("rejected", None) for a
-        refused password, or ("ran", CompletedProcess) for a login that
-        reached the remote command. Records the stdin each run was given."""
+        """Fake ssh runs: each outcome is ("rejected", None) for a refused
+        password, or ("ran", CompletedProcess) for a login that reached the
+        remote command. Records the stdin each run was given."""
         outcomes = iter(outcomes)
         inputs = []
 
         def run(command, **kwargs):
-            if "-E" not in command:
-                return subprocess.CompletedProcess(command, 0, b"", b"")
             inputs.append(kwargs.get("input"))
             kind, process = next(outcomes)
             log = Path(command[command.index("-E") + 1])
             if kind == "rejected":
-                # What ssh logs after sending an empty password three times.
-                log.write_text("Permission denied, please try again.\n"
-                               "root@device: Permission denied (publickey,password,keyboard-interactive).\n")
-                return subprocess.CompletedProcess(command, 5, b"", b"")
-            log.write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
+                log.write_text("root@device: Permission denied (publickey,password,keyboard-interactive).\n")
+                return subprocess.CompletedProcess(command, 255, b"", b"")
+            log.write_text(AUTHENTICATED_LOG)
             return process
 
         return run, inputs
@@ -1556,17 +1213,16 @@ class MigrationInputTransportTests(unittest.TestCase):
         # A rejected login never started the migrator, so the request can be
         # sent again; v3.1.x deploys failed their migration here instead.
         connection = ssh_transport.SshConnection("device", "pw", "")
-        ran = subprocess.CompletedProcess(["sshpass"], 0, b'{"version":1}', b"")
+        ran = subprocess.CompletedProcess(["ssh"], 0, b'{"version":1}', b"")
         run, inputs = self.login_sequence([("rejected", None), ("ran", ran)])
-        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
-            with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
-                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
-                    result = ssh_transport.run_ssh_input(
-                        connection,
-                        "helper multi cleanup",
-                        input_bytes=b"TCMIGRATE1\nE\n",
-                        raw_remote_status=True,
-                    )
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
+            with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                result = ssh_transport.run_ssh_input(
+                    connection,
+                    "helper multi cleanup",
+                    input_bytes=b"TCMIGRATE1\nE\n",
+                    raw_remote_status=True,
+                )
         self.assertIs(result, ran)
         self.assertEqual(inputs, [b"TCMIGRATE1\nE\n", b"TCMIGRATE1\nE\n"])
         sleep.assert_called_once_with(1)
@@ -1574,11 +1230,10 @@ class MigrationInputTransportTests(unittest.TestCase):
     def test_raw_remote_status_gives_up_after_three_rejected_logins(self):
         connection = ssh_transport.SshConnection("device", "pw", "")
         run, inputs = self.login_sequence([("rejected", None)] * 3)
-        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
-            with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
-                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
-                    with self.assertRaises(ssh_transport.SshAuthenticationError):
-                        ssh_transport.run_ssh_input(connection, "helper multi copy", raw_remote_status=True)
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
+            with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                with self.assertRaises(ssh_transport.SshAuthenticationError):
+                    ssh_transport.run_ssh_input(connection, "helper multi copy", raw_remote_status=True)
         self.assertEqual(len(inputs), 3)
         self.assertEqual(sleep.call_count, 2)
 
@@ -1586,12 +1241,11 @@ class MigrationInputTransportTests(unittest.TestCase):
         # After a login the remote status is the migrator's own, even one that
         # mentions a denied permission; it is returned, never retried.
         connection = ssh_transport.SshConnection("device", "pw", "")
-        ran = subprocess.CompletedProcess(["sshpass"], 4, b"", b"lstat failed error=Permission denied\n")
+        ran = subprocess.CompletedProcess(["ssh"], 4, b"", b"lstat failed error=Permission denied\n")
         run, inputs = self.login_sequence([("ran", ran), ("ran", ran)])
-        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
-            with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=run):
-                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
-                    result = ssh_transport.run_ssh_input(connection, "helper multi copy", raw_remote_status=True)
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
+            with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                result = ssh_transport.run_ssh_input(connection, "helper multi copy", raw_remote_status=True)
         self.assertIs(result, ran)
         self.assertEqual(len(inputs), 1)
         sleep.assert_not_called()
@@ -1600,13 +1254,13 @@ class MigrationInputTransportTests(unittest.TestCase):
         connection = ssh_transport.SshConnection("device", "", "")
         process = subprocess.CompletedProcess(["ssh"], 0, b"ok", b"")
         with mock.patch(
-            "timecapsulesmb.transport.ssh.subprocess.run",
+            "timecapsulesmb.transport.ssh.run_process",
             side_effect=SSHTransportTests.completed_run(process),
         ) as run:
             ssh_transport.run_ssh_input(connection, "helper", timeout=None)
         self.assertIsNone(run.call_args.kwargs["timeout"])
         with mock.patch(
-            "timecapsulesmb.transport.ssh.subprocess.run",
+            "timecapsulesmb.transport.ssh.run_process",
             side_effect=SSHTransportTests.completed_run(process),
         ) as run:
             ssh_transport.run_ssh_input(connection, "helper")
@@ -1614,7 +1268,7 @@ class MigrationInputTransportTests(unittest.TestCase):
 
     def test_failed_remote_helper_cannot_look_like_a_json_success(self):
         process = subprocess.CompletedProcess(["ssh"], 4, b'{"version":1}', b'corrupt TDB')
-        with mock.patch.object(ssh_transport, "_run_piped_ssh", return_value=process):
+        with mock.patch.object(ssh_transport, "_run_ssh", return_value=process):
             with self.assertRaisesRegex(ssh_transport.SshError, "corrupt TDB"):
                 ssh_transport.run_ssh_input(ssh_transport.SshConnection("device", "", ""), "helper")
 
@@ -1730,3 +1384,229 @@ class ClientHostsLineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# A stand-in for ssh: it asks $SSH_ASKPASS as ssh does under
+# SSH_ASKPASS_REQUIRE=force, writes ssh's log lines to -E, then runs the
+# remote command in /bin/sh with the caller's stdin. A JSON scenario file
+# sets the device password and what goes wrong; every run is recorded.
+FAKE_SSH = r'''
+import json, os, signal, socket, subprocess, sys, time
+args = sys.argv[1:]
+scenario = json.load(open(os.environ["FAKE_SSH_SCENARIO"]))
+if "-E" not in args:  # a local option probe
+    sys.exit(0)
+runs = scenario["runs"]
+with open(runs, "a") as record:
+    record.write(json.dumps({
+        "args": args,
+        "pid": os.getpid(),
+        "askpass": os.environ.get("SSH_ASKPASS"),
+        "require": os.environ.get("SSH_ASKPASS_REQUIRE"),
+    }) + "\n")
+attempt = sum(1 for _ in open(runs))
+log = args[args.index("-E") + 1]
+def say(line):
+    with open(log, "a") as out:
+        out.write(line + "\n")
+if scenario.get("crash"):
+    os.kill(os.getpid(), signal.SIGSEGV)
+if "BatchMode=yes" in args:
+    reply, method = "", "publickey"
+    authenticated = scenario.get("key_login", False)
+else:
+    askpass = os.environ["SSH_ASKPASS"]
+    try:
+        reply = subprocess.run([askpass, "root@device's password: "], capture_output=True, text=True).stdout
+    except OSError as exc:
+        say(f"ssh_askpass: exec({askpass}): {exc.strerror}")
+        reply = ""
+    method = "password"
+    authenticated = reply == scenario["password"] + "\n" and attempt > scenario.get("rejections", 0)
+if not authenticated:
+    say("root@device: Permission denied (publickey,password,keyboard-interactive).")
+    sys.exit(255)
+say(f'Authenticated to device ([192.0.2.1]:22) using "{method}".')
+if "-N" in args:
+    port = int(args[args.index("-L") + 1].split(":")[0])
+    tunnel = scenario.get("tunnel", "ready")
+    if tunnel == "bind_error":
+        say(f"bind [127.0.0.1]:{port}: Permission denied")
+        sys.exit(255)
+    if tunnel == "crash":
+        os.kill(os.getpid(), signal.SIGSEGV)
+    if tunnel == "ready":
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", port))
+        listener.listen()
+    time.sleep(60)
+    sys.exit(0)
+sys.exit(subprocess.run(["/bin/sh", "-c", args[-1]]).returncode)
+'''
+
+
+class RealSshProcessTests(unittest.TestCase):
+    """The transport with a real ssh-like program, askpass helper and spawn."""
+
+    def setUp(self) -> None:
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "ssh"
+        fake.write_text(f"#!{sys.executable}\n{FAKE_SSH}")
+        fake.chmod(0o755)
+        self.runs = self.tmp / "runs.jsonl"
+        self.scenario_path = self.tmp / "scenario.json"
+        self.scenario()
+        env = mock.patch.dict(os.environ, {
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FAKE_SSH_SCENARIO": str(self.scenario_path),
+        })
+        env.start()
+        self.addCleanup(env.stop)
+        for name, value in (("_ssh_option_supported", True), ("_local_ssh_macs", ())):
+            patcher = mock.patch.object(ssh_transport, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # Skip the 1 s pause between login attempts, through the transport's
+        # own time reference: time.sleep itself is also what subprocess's
+        # wait(timeout=...) calls. The tunnel's short polls still sleep.
+        transport_time = mock.Mock(wraps=time)
+        transport_time.sleep = self.sleep = mock.Mock(side_effect=lambda seconds: seconds < 1 and time.sleep(seconds))
+        patcher = mock.patch.object(ssh_transport, "time", transport_time)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def scenario(self, **settings: object) -> None:
+        self.scenario_path.write_text(json.dumps({"runs": str(self.runs), "password": "pa ss$1", **settings}))
+
+    def recorded(self) -> list[dict[str, object]]:
+        if not self.runs.exists():
+            return []
+        return [json.loads(line) for line in self.runs.read_text().splitlines()]
+
+    def test_password_login_answers_through_the_helper_and_returns_the_output(self) -> None:
+        spawned = []
+        real_spawn = os.posix_spawn
+
+        def spy(path, *args, **kwargs):
+            spawned.append(path)
+            return real_spawn(path, *args, **kwargs)
+
+        with mock.patch.object(os, "posix_spawn", spy):
+            proc = ssh_transport.run_ssh(
+                ssh_transport.SshConnection("root@device", "pa ss$1", ""), "echo out; echo err >&2; exit 3",
+                check=False,
+            )
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(sorted(proc.stdout.splitlines()), ["err", "out"])
+        [run] = self.recorded()
+        self.assertEqual(run["askpass"], str(ssh_transport.SSH_ASKPASS_PATH))
+        self.assertEqual(run["require"], "force")
+        # ssh started through posix_spawn, never fork (issue #371).
+        self.assertIn(str(self.tmp / "bin" / "ssh"), spawned)
+
+    def test_request_bytes_reach_the_remote_command_with_separate_output(self) -> None:
+        proc = ssh_transport.run_ssh_input(
+            ssh_transport.SshConnection("root@device", "pa ss$1", ""),
+            "tr a-z A-Z; echo note >&2",
+            input_bytes=b"request\n",
+        )
+        self.assertEqual((proc.stdout, proc.stderr), (b"REQUEST\n", b"note\n"))
+
+    def test_wrong_password_is_refused_three_times(self) -> None:
+        with self.assertRaises(ssh_transport.SshAuthenticationError):
+            ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "wrong", ""), "true")
+        self.assertEqual(len(self.recorded()), 3)
+        self.assertEqual(self.sleep.call_count, 2)
+
+    def test_a_login_the_device_refused_once_succeeds_on_the_next_try(self) -> None:
+        self.scenario(rejections=1)
+        proc = ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pa ss$1", ""), "echo ran")
+        self.assertEqual(proc.stdout, "ran\n")
+        self.assertEqual(len(self.recorded()), 2)
+
+    def test_key_login_never_offers_the_password_helper(self) -> None:
+        self.scenario(key_login=True)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SSH_ASKPASS", None)
+            proc = ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "", ""), "echo key")
+        self.assertEqual(proc.stdout, "key\n")
+        [run] = self.recorded()
+        self.assertIsNone(run["askpass"])
+        self.assertIn("BatchMode=yes", run["args"])
+
+    def test_a_crashed_ssh_raises_the_local_crash_error_once(self) -> None:
+        self.scenario(crash=True)
+        with self.assertRaises(ssh_transport.SshClientCrashedError) as raised:
+            ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pa ss$1", ""), "true")
+        self.assertEqual(raised.exception.signal_number, signal.SIGSEGV)
+        self.assertEqual(len(self.recorded()), 1)
+
+    def test_a_missing_password_helper_is_reported_as_a_damaged_install(self) -> None:
+        missing = self.tmp / "gone" / "ssh-askpass"
+        with mock.patch.object(ssh_transport, "SSH_ASKPASS_PATH", missing):
+            with self.assertRaisesRegex(ssh_transport.SshClientConfigError, "reinstall TimeCapsuleSMB"):
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pa ss$1", ""), "true")
+        self.assertEqual(len(self.recorded()), 1)
+
+    def forward(self, *, ready_timeout: int = 20):
+        return ssh_transport.ssh_local_forward(
+            ssh_transport.SshConnection("root@fe80::1%en0", "pa ss$1", "-J jump.example"),
+            local_port=self.free_port(),
+            remote_host="127.0.0.1",
+            remote_port=445,
+            ready_timeout=ready_timeout,
+        )
+
+    @staticmethod
+    def free_port() -> int:
+        return find_free_local_port()
+
+    def test_tunnel_is_ready_once_its_port_listens_and_its_ssh_ends_with_the_block(self) -> None:
+        with self.forward():
+            [run] = self.recorded()
+            os.kill(run["pid"], 0)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(run["pid"], 0)
+        args = run["args"]
+        self.assertEqual(args[args.index("-S") + 1], "none")
+        self.assertFalse(any(arg.startswith("Control") for arg in args))
+        self.assertEqual(args[args.index("-L") + 1].split(":", 1)[1], "127.0.0.1:445")
+        self.assertEqual(args[-1], "root@fe80::1%en0")
+        self.assertIn("jump.example", args)
+
+    def test_tunnel_that_cannot_bind_reports_ssh_error(self) -> None:
+        self.scenario(tunnel="bind_error")
+        with self.assertRaisesRegex(ssh_transport.SshError, r"bind \[127.0.0.1\]:\d+: Permission denied"):
+            with self.forward():
+                pass
+
+    def test_tunnel_whose_ssh_crashes_raises_the_local_crash_error(self) -> None:
+        self.scenario(tunnel="crash")
+        with self.assertRaises(ssh_transport.SshClientCrashedError):
+            with self.forward():
+                pass
+
+    def test_tunnel_that_never_listens_times_out_naming_its_target(self) -> None:
+        self.scenario(tunnel="silent")
+        children = []
+        real_popen = ssh_transport.popen_process
+
+        def recording_popen(*args, **kwargs):
+            children.append(real_popen(*args, **kwargs))
+            return children[-1]
+
+        with mock.patch.object(ssh_transport, "popen_process", recording_popen):
+            with self.assertRaisesRegex(
+                ssh_transport.SshError,
+                r"^Timed out waiting for ssh tunnel to become ready: 127\.0\.0\.1:\d+ -> 127\.0\.0\.1:445 via root@fe80::1%en0$",
+            ):
+                with self.forward(ready_timeout=1):
+                    pass
+        # Its ssh was stopped and reaped, whether or not it had started yet.
+        [child] = children
+        self.assertIsNotNone(child.returncode)

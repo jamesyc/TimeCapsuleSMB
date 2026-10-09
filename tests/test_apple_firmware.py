@@ -62,7 +62,7 @@ class AppleFirmwareTests(unittest.TestCase):
             catalog_path = cache_dir / "version.xml"
             catalog_path.write_bytes(old_catalog)
 
-            with mock.patch("timecapsulesmb.apple_firmware.download_url", return_value=new_catalog):
+            with mock.patch("timecapsulesmb.apple_firmware.http_get", return_value=new_catalog):
                 with mock.patch("timecapsulesmb.apple_firmware.os.replace", side_effect=OSError("disk full")):
                     entries = load_apple_firmware_catalog(cache_dir=cache_dir)
 
@@ -78,7 +78,7 @@ class AppleFirmwareTests(unittest.TestCase):
             cache_dir = Path(tmp)
             path = cache_dir / "113" / "7.8.1.basebinary"
 
-            with mock.patch("timecapsulesmb.apple_firmware.download_url", return_value=b"template"):
+            with mock.patch("timecapsulesmb.apple_firmware.http_get", return_value=b"template"):
                 with mock.patch("timecapsulesmb.apple_firmware.os.replace", side_effect=OSError("disk full")):
                     with self.assertRaises(FlashAnalysisError) as raised:
                         download_firmware_template_to_cache(

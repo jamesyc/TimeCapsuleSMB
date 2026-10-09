@@ -259,7 +259,7 @@ class AppApiTests(unittest.TestCase):
         )
         # This tripwire catches future tests that accidentally bypass the app-service telemetry mock.
         self._telemetry_urlopen = self._exit_stack.enter_context(
-            mock.patch("timecapsulesmb.telemetry.urllib.request.urlopen", side_effect=AssertionError("tests must not send telemetry"))
+            mock.patch("timecapsulesmb.telemetry.http_post_json", side_effect=AssertionError("tests must not send telemetry"))
         )
         # activate first checks the device holds an install of this version;
         # tests that model a missing or other install set these return values.

@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 from timecapsulesmb.core.net import scoped_ip_literal, is_link_local_ipv6
+from timecapsulesmb.core.process import popen_process
 
 from timecapsulesmb.discovery.models import (
     BonjourDiscoverySnapshot,
@@ -169,14 +170,14 @@ class _ProcessOwner:
         self.cancel = cancel
         self.lock = threading.Lock()
         self.stopping = False
-        self.children: set[subprocess.Popen[bytes]] = set()
+        self.children: set[subprocess.Popen[bytes]] = set()  # noqa: TID251 (type only)
 
-    def launch(self, args: list[str]) -> subprocess.Popen[bytes]:
+    def launch(self, args: list[str]) -> subprocess.Popen[bytes]:  # noqa: TID251 (type only)
         if self.cancel.is_set():
             raise KeyboardInterrupt
         if self.stopping:
             raise subprocess.TimeoutExpired(args, 0)
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = popen_process(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         with self.lock:
             self.children.add(proc)
         if self.cancel.is_set() or self.stopping:

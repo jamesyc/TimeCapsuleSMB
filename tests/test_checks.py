@@ -1847,20 +1847,24 @@ class CheckTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=fake_exists):
             results = check_required_local_tools()
-        self.assertEqual([r.status for r in results], ["FAIL", "FAIL", "PASS"])
+        self.assertEqual([r.status for r in results], ["PASS", "FAIL", "PASS"])
         self.assertEqual(
             [r.message for r in results],
             [
-                "missing local tool sshpass, please install sshpass on your computer",
-                "missing local tool smbclient, please install smbclient on your computer",
                 "found local tool ssh",
+                "missing local tool smbclient, please install smbclient on your computer",
+                "found local tool ssh-askpass, the SSH password helper",
             ],
         )
 
-    def test_check_required_local_tools_warns_only_for_missing_ssh(self) -> None:
+    def test_check_required_local_tools_fails_missing_ssh(self) -> None:
+        # Every device command runs the system ssh.
         with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=lambda name: name != "ssh"):
             results = check_required_local_tools()
-        self.assertEqual([r.status for r in results], ["PASS", "PASS", "WARN"])
+        self.assertEqual(
+            results[0], CheckResult("FAIL", "missing local tool ssh, please install ssh on your computer"),
+        )
+        self.assertEqual([r.status for r in results[1:]], ["PASS", "PASS"])
 
     def test_discover_smb_services_detailed_returns_snapshot_and_diagnostics(self) -> None:
         snapshot = BonjourDiscoverySnapshot(
@@ -2169,17 +2173,23 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(run.results[0].status, "PASS")
         self.assertIn("configuration file exists", run.results[0].message)
 
-    def test_check_required_local_tools_fails_missing_sshpass(self) -> None:
-        # sshpass is required whatever the login method: deploy, activate,
-        # uninstall, fsck and flash refuse to start without it.
-        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=lambda name: name != "sshpass"):
-            results = check_required_local_tools()
-
-        self.assertEqual(results[0], CheckResult("FAIL", "missing local tool sshpass, please install sshpass on your computer"))
-        self.assertEqual([r.status for r in results[1:]], ["PASS", "PASS"])
+    def test_check_required_local_tools_fails_an_unusable_ssh_password_helper(self) -> None:
+        # ssh runs the helper for the device password; a copy that lost its
+        # executable bit, or is gone, means a damaged install.
+        with tempfile.TemporaryDirectory() as tmp:
+            not_executable = Path(tmp) / "ssh-askpass"
+            not_executable.write_text("#!/bin/sh\n")
+            not_executable.chmod(0o644)
+            for helper in (not_executable, Path(tmp) / "missing"):
+                with self.subTest(helper=helper.name):
+                    with mock.patch("timecapsulesmb.checks.local_tools.command_exists", return_value=True), \
+                         mock.patch("timecapsulesmb.checks.local_tools.SSH_ASKPASS_PATH", helper):
+                        results = check_required_local_tools()
+                    self.assertEqual([r.status for r in results], ["PASS", "PASS", "FAIL"])
+                    self.assertIn(f"is missing or not executable at {helper}; reinstall TimeCapsuleSMB", results[2].message)
 
     def test_run_doctor_checks_reports_local_tools_after_a_valid_config(self) -> None:
-        tools = [CheckResult("FAIL", "missing local tool sshpass, please install sshpass on your computer")]
+        tools = [CheckResult("FAIL", "missing local tool smbclient, please install smbclient on your computer")]
         run = self.run_doctor_with_mocks(
             local_tools=tools,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -2218,9 +2228,9 @@ class CheckTests(unittest.TestCase):
             [(r.status, r.message) for r in results],
             [
                 ("FAIL", f"missing required configuration file: {REPO_ROOT / '.env'}; run the `configure` command before running `doctor`"),
-                ("FAIL", "missing local tool sshpass, please install sshpass on your computer"),
-                ("FAIL", "missing local tool smbclient, please install smbclient on your computer"),
                 ("PASS", "found local tool ssh"),
+                ("FAIL", "missing local tool smbclient, please install smbclient on your computer"),
+                ("PASS", "found local tool ssh-askpass, the SSH password helper"),
             ],
         )
 
@@ -2232,7 +2242,7 @@ class CheckTests(unittest.TestCase):
 
         self.assertTrue(fatal)
         self.assertEqual([r.status for r in results], ["FAIL", "PASS", "PASS", "PASS"])
-        self.assertEqual(results[1].message, "found local tool sshpass")
+        self.assertEqual(results[1].message, "found local tool ssh")
 
     def test_run_doctor_checks_invalid_env_reports_errors_then_tools(self) -> None:
         values = self.valid_doctor_values()
@@ -2243,6 +2253,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(results[0].message, f"configuration file exists: {REPO_ROOT / '.env'}")
         tool_results = [r for r in results if "local tool" in r.message]
         self.assertEqual([r.status for r in tool_results], ["PASS", "FAIL", "PASS"])
+        self.assertEqual(tool_results[1].message, "missing local tool smbclient, please install smbclient on your computer")
         config_errors = results[1:results.index(tool_results[0])]
         self.assertTrue(config_errors)
         self.assertTrue(all(r.status == "FAIL" for r in config_errors))
@@ -2793,7 +2804,7 @@ class CheckTests(unittest.TestCase):
 
     def test_apply_startup_grace_keeps_persistent_failures_and_adds_recent_startup_note(self) -> None:
         results = [
-            CheckResult("FAIL", "missing local tool sshpass; password-based SSH uploads require sshpass"),
+            CheckResult("FAIL", "missing local tool smbclient, please install smbclient on your computer"),
             CheckResult(
                 "FAIL",
                 "Detected NetBSD 6.0 (earmv4) with big-endian binaries, "

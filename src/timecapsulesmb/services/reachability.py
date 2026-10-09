@@ -11,6 +11,7 @@ from timecapsulesmb.core.config import DEFAULTS, AppConfig
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host, parse_endpoint, resolve_host_ips
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.transport.errors import SshAuthenticationError, TransportError
+from timecapsulesmb.core.process import run_process
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
@@ -172,7 +173,7 @@ def check_ping(hosts: Sequence[str], *, timeout: float) -> ReachabilityCheck:
         if ping is None:
             return ReachabilityCheck(id="ping", status="SKIP", message="No ping command is available.")
         try:
-            proc = subprocess.run(
+            proc = run_process(
                 ping,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,

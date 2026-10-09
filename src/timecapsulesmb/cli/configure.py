@@ -57,7 +57,7 @@ from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.integrations.acp import ACPError
 from timecapsulesmb.cli.util import color_cyan, color_red
 
-REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect")
+REQUIRED_PYTHON_MODULES = ("zeroconf",)
 
 
 class ScriptedConfigureInputError(RuntimeError):

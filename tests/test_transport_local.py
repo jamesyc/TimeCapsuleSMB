@@ -14,7 +14,13 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.transport.local import mac_network_filters, run_local_capture, scoped_tcp_connect_errors, tcp_connect_error
+from timecapsulesmb.transport.local import (
+    command_exists,
+    mac_network_filters,
+    run_local_capture,
+    scoped_tcp_connect_errors,
+    tcp_connect_error,
+)
 
 
 class TcpConnectErrorTests(unittest.TestCase):
@@ -157,6 +163,17 @@ class LocalTransportTests(unittest.TestCase):
         proc = run_local_capture(["/bin/sh", "-c", "printf 'ok'"])
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "ok")
+
+    def test_command_exists_follows_the_spawn_lookup(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / "tc-test-tool"
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o755)
+            with mock.patch.dict("os.environ", {"PATH": tmp}):
+                self.assertTrue(command_exists("tc-test-tool"))
+                self.assertFalse(command_exists("tc-no-such-tool"))
 
 
 # Captured from macOS 26 with LuLu installed, plus an endpoint security

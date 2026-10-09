@@ -411,10 +411,6 @@ def _flash_files_holding_new_bytes(
             current = run_ssh_capture_bytes(
                 connection,
                 f"test ! -h {shlex.quote(transfer.destination)} && cat {shlex.quote(transfer.destination)}",
-                missing_tool_message=(
-                    "SSH with a password requires local sshpass. "
-                    "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."
-                ),
             )
         except SshError:
             continue

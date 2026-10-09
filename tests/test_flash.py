@@ -920,7 +920,7 @@ class FlashPayloadTests(unittest.TestCase):
                 )
             active = require_primary_patch_ready(inspection)
 
-            with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download) as download_mock:
+            with mock.patch("timecapsulesmb.apple_firmware.http_get", side_effect=fake_download) as download_mock:
                 payload = build_patch_payload_for_bank(
                     active,
                     syap="113",
@@ -982,7 +982,7 @@ class FlashPayloadTests(unittest.TestCase):
                 )
             active = require_primary_patch_ready(inspection)
 
-            with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
+            with mock.patch("timecapsulesmb.apple_firmware.http_get", side_effect=fake_download):
                 payload = build_patch_payload_for_bank(
                     active,
                     syap="113",
@@ -1041,7 +1041,7 @@ class FlashPayloadTests(unittest.TestCase):
                 )
             active = require_primary_patch_ready(inspection)
 
-            with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
+            with mock.patch("timecapsulesmb.apple_firmware.http_get", side_effect=fake_download):
                 match = find_apple_firmware_match(
                     active,
                     syap="113",

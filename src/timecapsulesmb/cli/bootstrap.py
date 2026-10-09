@@ -13,6 +13,7 @@ from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.core.process import popen_process, run_process
 from timecapsulesmb.transport.local import find_command
 
 
@@ -20,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-# The Mac app bundles its own sshpass and smbclient for both Mac architectures.
+# The Mac app bundles its own smbclient for both Mac architectures.
 MAC_APP_HINT = (
     "Or use the TimeCapsuleSMB Mac app, which includes these tools and needs no Homebrew: "
     "https://github.com/jamesyc/TimeCapsuleSMB/releases"
@@ -33,21 +34,21 @@ INTEL_SMBCLIENT_SKIPPED = (
     "Homebrew no longer builds smbclient for Intel Macs, so bootstrap skips it. "
     "Deploy works without it; `doctor` will report it missing and cannot run its SMB checks."
 )
-MACOS_SSHPASS_FORMULA = "sshpass"
-REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
+# ssh logs in to the device; every Mac has it, minimal Linux installs may not.
+REQUIRED_HOST_TOOLS = ("ssh", "smbclient")
 MIN_BOOTSTRAP_PYTHON = (3, 9)
 MIN_MACOS_AUTO_HOST_TOOL_INSTALL = (14, 0)
 PYTHON_VERSION_PROBE = "import sys; print('%d.%d.%d' % sys.version_info[:3])"
 MACOS_HOST_TOOL_PACKAGES = {
-    "sshpass": MACOS_SSHPASS_FORMULA,
+    "ssh": "openssh",
     "smbclient": "samba",
 }
 LINUX_HOST_TOOL_PACKAGES = {
-    "apt-get": {"sshpass": "sshpass", "smbclient": "smbclient"},
-    "dnf": {"sshpass": "sshpass", "smbclient": "samba-client"},
-    "yum": {"sshpass": "sshpass", "smbclient": "samba-client"},
-    "zypper": {"sshpass": "sshpass", "smbclient": "samba-client"},
-    "pacman": {"sshpass": "sshpass", "smbclient": "smbclient"},
+    "apt-get": {"ssh": "openssh-client", "smbclient": "smbclient"},
+    "dnf": {"ssh": "openssh-clients", "smbclient": "samba-client"},
+    "yum": {"ssh": "openssh-clients", "smbclient": "samba-client"},
+    "zypper": {"ssh": "openssh-clients", "smbclient": "samba-client"},
+    "pacman": {"ssh": "openssh", "smbclient": "smbclient"},
 }
 # Telemetry keeps the start and the end of a failed command's output: brew and
 # pip print their error last, but some brew errors come first.
@@ -95,15 +96,14 @@ def _command_output(chunks: list[bytes]) -> str:
     return _clean_command_output(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
-def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
+def run(cmd: list[str]) -> None:
     """Run cmd with its output shown as it arrives, keeping a copy for errors.
 
     Installing host tools can take minutes; output held until the command
     exits left the terminal silent, and users stopped bootstrap with Ctrl-C.
     """
-    proc = subprocess.Popen(
+    proc = popen_process(
         cmd,
-        cwd=str(cwd) if cwd else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
@@ -193,7 +193,7 @@ def _version_at_least(version: tuple[int, ...], minimum: tuple[int, ...]) -> boo
 
 def detect_selected_python_version(python: str) -> str:
     try:
-        proc = subprocess.run(
+        proc = run_process(
             [python, "-c", PYTHON_VERSION_PROBE],
             text=True,
             encoding="utf-8",
@@ -237,7 +237,7 @@ def validate_selected_python(python: str) -> str:
 
 def detect_macos_product_version() -> str | None:
     try:
-        proc = subprocess.run(
+        proc = run_process(
             ["sw_vers", "-productVersion"],
             text=True,
             encoding="utf-8",
@@ -258,7 +258,7 @@ def _macos_intel_host() -> bool:
     # hw.optional.arm64 is 1 on Apple Silicon, also for a process running
     # under Rosetta. Intel Macs do not have the key, so sysctl fails there.
     try:
-        proc = subprocess.run(
+        proc = run_process(
             ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
             text=True,
             capture_output=True,
@@ -300,7 +300,6 @@ def check_macos_host_tool_install_support(platform_label: str) -> dict[str, obje
         "macos_auto_host_tool_install_supported": auto_install_supported,
         "missing_host_tools": _format_tools(missing_tools),
         "smbclient_path": paths.get("smbclient"),
-        "sshpass_path": paths.get("sshpass"),
     }
     if auto_install_supported:
         return fields
@@ -317,7 +316,7 @@ def check_macos_host_tool_install_support(platform_label: str) -> dict[str, obje
         "then rerun './tcapsule bootstrap'."
     )
     print(color_red(message), flush=True)
-    print(color_red("Required host tools: smbclient and sshpass"), flush=True)
+    print(color_red("Required host tools: ssh and smbclient"), flush=True)
     raise BootstrapPreflightError(message, fields)
 
 
@@ -331,7 +330,7 @@ def ensure_venv(python: str) -> Path:
 
 
 def venv_has_pip(venv_python: Path) -> bool:
-    proc = subprocess.run(
+    proc = run_process(
         [str(venv_python), "-m", "pip", "--version"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -569,7 +568,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("complete")
         command_context.update_fields(
             smbclient_available_after=find_command("smbclient") is not None,
-            sshpass_available_after=find_command("sshpass") is not None,
             venv_exists_after=VENVDIR.exists(),
         )
         if skipped_tools:

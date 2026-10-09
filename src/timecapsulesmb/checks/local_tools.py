@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.transport.local import command_exists
+from timecapsulesmb.transport.ssh import SSH_ASKPASS_PATH
 
 
 def check_required_local_tools() -> list[CheckResult]:
     results: list[CheckResult] = []
-    for tool in ("sshpass", "smbclient", "ssh"):
+    for tool in ("ssh", "smbclient"):
         if command_exists(tool):
             results.append(CheckResult("PASS", f"found local tool {tool}"))
         else:
-            status = "WARN" if tool == "ssh" else "FAIL"
-            results.append(CheckResult(status, f"missing local tool {tool}, please install {tool} on your computer"))
+            results.append(CheckResult("FAIL", f"missing local tool {tool}, please install {tool} on your computer"))
+    # ssh gets the device password from this helper, installed with TimeCapsuleSMB.
+    if os.access(SSH_ASKPASS_PATH, os.X_OK):
+        results.append(CheckResult("PASS", "found local tool ssh-askpass, the SSH password helper"))
+    else:
+        results.append(CheckResult(
+            "FAIL",
+            f"local tool ssh-askpass, the SSH password helper, is missing or not executable at {SSH_ASKPASS_PATH}; "
+            "reinstall TimeCapsuleSMB",
+        ))
     return results
 
 

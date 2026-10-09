@@ -42,7 +42,6 @@ classifiers = [
 ]
 dependencies = [
   "ifaddr>=0.2.0",
-  "pexpect>=4.9.0",
   "pycryptodome>=3.20.0,<4",
   "zopfli>=0.2.3.post1",
   "zeroconf>=0.148.0",
@@ -76,6 +75,7 @@ package-dir = {"" = "src"}
 timecapsulesmb = [
   "assets/artifact-manifest.json",
   "assets/boot/samba4/*",
+  "transport/ssh-askpass",
 ]
 
 [tool.setuptools.packages.find]
@@ -109,4 +109,26 @@ select = [
   # Unused imports and variables hid code left over from removed features.
   "F401",
   "F841",
+  # Local programs start through core.process's posix_spawn helpers.
+  "TID251",
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"subprocess.run".msg = "use core.process.run_process: a forked child can crash on macOS (issue #371)"
+"subprocess.Popen".msg = "use core.process.popen_process: a forked child can crash on macOS (issue #371)"
+"subprocess.call".msg = "use core.process.run_process"
+"subprocess.check_call".msg = "use core.process.run_process"
+"subprocess.check_output".msg = "use core.process.run_process"
+"subprocess.getoutput".msg = "use core.process.run_process"
+"subprocess.getstatusoutput".msg = "use core.process.run_process"
+"os.fork".msg = "spawn with posix_spawn: a forked child can crash on macOS (issue #371)"
+"os.forkpty".msg = "spawn with posix_spawn: a forked child can crash on macOS (issue #371)"
+"os.system".msg = "use core.process.run_process"
+"os.popen".msg = "use core.process.run_process"
+"pty".msg = "pty.fork forks: a forked child can crash on macOS (issue #371)"
+
+[tool.ruff.lint.per-file-ignores]
+# The helpers themselves; tests and the packaging tools run on the build host.
+"src/timecapsulesmb/core/process.py" = ["TID251"]
+"tests/**" = ["TID251"]
+"macos/**" = ["TID251"]

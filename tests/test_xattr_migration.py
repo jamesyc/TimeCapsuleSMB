@@ -400,8 +400,8 @@ def test_native_stall_reports_saved_log_with_bounded_diagnostic_read(monkeypatch
 
 
 def test_native_call_survives_a_rejected_login(monkeypatch):
-    """sshpass on macOS sometimes sends ssh an empty password; the migrator
-    never started, so its request is sent again (v3.1.x deploys failed)."""
+    """A device that refuses a login now and then: the migrator never
+    started, so its request is sent again (v3.1.x deploys failed)."""
     from timecapsulesmb.transport import ssh as transport
     attempts = []
 
@@ -412,14 +412,13 @@ def test_native_call_survives_a_rejected_login(monkeypatch):
         log = Path(command[command.index("-E") + 1])
         if len(attempts) == 1:
             log.write_text("root@device: Permission denied (publickey,password,keyboard-interactive).\n")
-            return subprocess.CompletedProcess(command, 5, b"", b"")
+            return subprocess.CompletedProcess(command, 255, b"", b"")
         log.write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')
         return subprocess.CompletedProcess(command, 0, b'{"version":1,"entries":0}', b"")
 
-    monkeypatch.setattr(transport, "find_command", lambda _name: "/usr/bin/sshpass")
     monkeypatch.setattr(transport, "_ssh_option_supported", lambda _name: True)
     monkeypatch.setattr(transport, "_local_ssh_macs", lambda: ())
-    monkeypatch.setattr(transport.subprocess, "run", run)
+    monkeypatch.setattr(transport, "run_process", run)
     monkeypatch.setattr(transport.time, "sleep", lambda _seconds: None)
     report = m._native(SshConnection("root@device", "pw", ""), ["multi", "cleanup"], request=b"TCMIGRATE1\nE\n")
     assert report == {"version": 1, "entries": 0}

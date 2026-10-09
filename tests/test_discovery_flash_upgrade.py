@@ -72,7 +72,7 @@ class Device:
         monkeypatch.setattr(executor, 'upload_file', self.upload)
         monkeypatch.setattr(executor, 'run_ssh', self.ssh)
         monkeypatch.setattr(executor, 'ensure_volume_root_mounted_conn', self.mount)
-        monkeypatch.setattr('timecapsulesmb.transport.ssh._run_piped_ssh', self.piped)
+        monkeypatch.setattr('timecapsulesmb.transport.ssh._run_ssh', self.piped)
         monkeypatch.setattr('timecapsulesmb.services.deploy.run_ssh', self.ssh)
 
     def mount(self, *args, **kwargs):

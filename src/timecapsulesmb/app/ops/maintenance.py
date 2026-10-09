@@ -14,7 +14,6 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     require_request_device_password,
-    require_request_sshpass,
     resolve_request_connection,
     resolve_request_target,
 )
@@ -67,7 +66,6 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
     if dry_run:
         return OperationResult(True, activation_plan_payload(activation_plan_to_jsonable(plan)))
 
-    require_request_sshpass()
     config = load_request_config(params, context)
     confirmation_connection = resolve_request_connection(config, context, allow_empty_password=True)
     require_confirmation(
@@ -119,7 +117,6 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     no_reboot = bool_param(params, "no_reboot")
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-    require_request_sshpass()
     config = load_request_config(params, context)
     # The reboot goes through AirPort ACP, which needs the password.
     connection = resolve_request_connection(config, context, allow_empty_password=no_reboot or dry_run)
@@ -200,7 +197,6 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     if dry_run and list_volumes:
         raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code="validation_failed")
     rebooting = not (no_reboot or dry_run or list_volumes)
-    require_request_sshpass()
     connection = None
     if rebooting:
         # The reboot goes through ACP: refuse a password it would reject
