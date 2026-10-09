@@ -272,17 +272,18 @@
 0019-durable-allow-block-count-drift.patch|allow durable reconnect across HFS allocation-block drift
 # macOS reconnects SMB2 durable opens before the old smbd has finished tearing
 # down the lost connection and marked them disconnected; on these devices that
-# teardown takes 3-5 seconds. Check that live record like a disconnected one
+# teardown can take over a minute on a slow disk. Check that live record like a disconnected one
 # and, for the same durable open only, defer the create and retry every 150 ms
-# until 10 seconds after it arrived (upstream's poll-open deferral, made
+# until 90 seconds after it arrived (upstream's poll-open deferral, made
 # callable from smb2_create.c), instead of reporting the handle as missing.
 # Deferring rather than sleeping keeps this smbd reading its socket: a
 # sleeping smbd lets its TCP window close, and macOS answers that with short
 # WRITEs (0072). FILE_NOT_AVAILABLE is only the internal "still busy" signal:
-# once the 10 seconds run out the client gets OBJECT_NAME_NOT_FOUND, as
+# once the 90 seconds run out the client gets OBJECT_NAME_NOT_FOUND, as
 # upstream and MS-SMB2 3.3.5.9.12 give for an open still attached to a session
-# (macOS revokes the file on any reconnect error).
-0024-durable-open-live-retry.patch|defer live durable-open reconnects for up to 10 seconds
+# (macOS revokes the file on any reconnect error). Grant durable-v2 handles
+# 300 seconds so early releases survive while later opens finish closing.
+0024-durable-open-live-retry.patch|defer live durable-open reconnects for up to 90 seconds
 # Workaround for a macOS bug (issue 221): after the server's TCP window has
 # stayed shut for about 5 seconds, macOS can send an SMB2 WRITE whose data is
 # short, so the next request's header sits inside the data, and smbd writes

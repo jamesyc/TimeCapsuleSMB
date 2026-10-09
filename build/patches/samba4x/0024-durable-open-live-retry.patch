@@ -33,23 +33,23 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 +			/*
 +			 * The old smbd still holds this open: macOS reconnects
 +			 * before the old smbd has finished tearing down the lost
-+			 * connection, which takes 3-5 s on these devices. Defer
-+			 * the create and retry every 150 ms until 10 s after it
++			 * connection, which can take over a minute on a slow disk. Defer
++			 * the create and retry every 150 ms until 90 s after it
 +			 * arrived. Sleeping here instead would stop this smbd
 +			 * reading its socket; its TCP window then closes, and
 +			 * macOS answers that with short WRITEs (0072). Once the
-+			 * 10 s run out, answer as upstream and MS-SMB2
++			 * 90 s run out, answer as upstream and MS-SMB2
 +			 * 3.3.5.9.12 do for an open still attached to a session.
 +			 */
 +			if (!state->open_was_deferred) {
 +				DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
 +					   "%s is still attached to a live "
-+					   "smbd; deferring for up to 10s\n",
++					   "smbd; deferring for up to 90s\n",
 +					   state->fname);
 +			}
 +			TALLOC_FREE(state->open_rec); /* the previous try's */
 +			if (setup_poll_open(smb1req, NULL,
-+					    tevent_timeval_set(10, 0),
++					    tevent_timeval_set(90, 0),
 +					    tevent_timeval_set(0, 150000))) {
 +				return req;
 +			}
@@ -58,6 +58,41 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  		if (tevent_req_nterror(req, status)) {
  			DBG_NOTICE("smb2srv_open_recreate failed: %s\n",
  				   nt_errstr(status));
+@@ -1429,7 +1455,6 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
+ 	uint32_t tcon_caps = smb2req->tcon->capabilities;
+ 	const uint8_t *p = state->dh2q->data.data;
+ 	NTTIME now = timeval_to_nttime(&smb2req->request_time);
+-	uint32_t durable_v2_timeout = 0;
+ 	uint32_t durable_v2_flags = 0;
+ 	DATA_BLOB create_guid_blob;
+ 	const uint8_t *hdr = NULL;
+@@ -1446,7 +1471,6 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
+ 		return;
+ 	}
+ 
+-	durable_v2_timeout = IVAL(p, 0);
+ 	durable_v2_flags = IVAL(p, 4);
+ 	create_guid_blob = data_blob_const(p + 16, 16);
+ 
+@@ -1479,15 +1503,9 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
+ 	 * durable handle v2 request processed below
+ 	 */
+ 	state->durable_requested = true;
+-	state->durable_timeout_msec = MIN(durable_v2_timeout, 300*1000);
+-	if (state->durable_timeout_msec == 0) {
+-		/*
+-		 * Set the timeout to 1 min as default.
+-		 *
+-		 * This matches Windows 2012.
+-		 */
+-		state->durable_timeout_msec = (60*1000);
+-	}
++	/* Slow HFS teardown releases handles one by one. Keep the earlier
++	 * ones alive while the client waits for later durable reopens. */
++	state->durable_timeout_msec = 300 * 1000;
+ 
+ 	if ((durable_v2_flags & SMB2_DHANDLE_FLAG_PERSISTENT) &&
+ 	    (server_caps & SMB2_CAP_PERSISTENT_HANDLES) &&
 diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
 --- a/source3/smbd/smbXsrv_open.c
 +++ b/source3/smbd/smbXsrv_open.c

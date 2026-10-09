@@ -322,11 +322,12 @@ from a Mac (it needs `smbprotocol` on the host):
 
 It opens a file with a lease and a durable v2 request, drops the connection by
 FIN, by RST and half-open, and reconnects from a new connection. A half-open
-connection's open is refused with OBJECT_NAME_NOT_FOUND once 0024's 10 s
+connection's open is refused with OBJECT_NAME_NOT_FOUND once 0024's 90 s
 deferral runs out (the case checks the full wait too, as an immediate refusal
 has the same status) unless the new session names the old one;
-`half-open+reset` resets the old connection during the deferral, which must
-then take the open over. `short-write` sends a WRITE 4 KiB short with the next
+`half-open+reset` resets the old connection after 15 s (past the old 10 s
+limit), which must then take the open over. Durable-v2 grants must be 300 s
+for zero, short and over-limit client timeout requests. `short-write` sends a WRITE 4 KiB short with the next
 request inside it, as macOS did in issue 221: 0072 must write nothing, log
 `tc_desync:` and keep the connection open answering nothing, and the handle
 must reconnect after a reset. `smb-in-data` writes data holding SMB2 headers

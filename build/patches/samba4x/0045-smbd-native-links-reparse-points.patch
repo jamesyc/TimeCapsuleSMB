@@ -232,7 +232,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  			/*
  			 * Only open files and dirs without
  			 * FILE_OPEN_REPARSE_POINT
-@@ -1844,7 +1846,8 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+@@ -1836,7 +1838,8 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
  	state->out_file_attributes = fdos_mode(state->result);
  
  	if ((state->out_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT) &&

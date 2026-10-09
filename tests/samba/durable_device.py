@@ -14,10 +14,10 @@ it from a new connection with the same client GUID:
 - fin/rst: the client closes or resets TCP; the old smbd notices and marks the
   open disconnected.
 - half-open: the old connection stays up. Without PreviousSessionId the open is
-  still live, so 0024 defers the reconnect for 10 s and then answers
+  still live, so 0024 defers the reconnect for 90 s and then answers
   OBJECT_NAME_NOT_FOUND (MS-SMB2 3.3.5.9.12). An immediate refusal has the same
-  status, so the case also requires the full 10 s to have passed.
-- half-open+reset: as half-open, but the old connection is reset 2 s into the
+  status, so the case also requires the full 90 s to have passed.
+- half-open+reset: as half-open, but the old connection is reset 15 s into the
   wait; the deferred reconnect must then take the open over.
 - half-open+previous: naming the old session in the new session setup makes
   the old smbd close it.
@@ -77,8 +77,8 @@ from tests.samba.links_device import Device, Results, mount, unmount
 
 TEST_DIR = "__tc_durable_test__"
 STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
-# 0024 defers a reconnect to a live durable open until 10 s after it arrived.
-LIVE_WAIT_SECONDS = 10.0
+# 0024 defers a reconnect to a live durable open until 90 s after it arrived.
+LIVE_WAIT_SECONDS = 90.0
 # Slack for the device's reply after the deferral: an answer much later than
 # the window is not 0024's deferral running out.
 LIVE_WAIT_SLACK_SECONDS = 3
@@ -135,14 +135,14 @@ class DurableClient:
             contexts.append(context)
         return contexts
 
-    def open_durable(self, tree, path: str):
+    def open_durable(self, tree, path: str, timeout_msec: int = 30_000):
         """Create path with a durable v2 request; return (open, granted)."""
         from smbprotocol.create_contexts import CreateContextName, SMB2CreateDurableHandleRequestV2
         from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
                                       ImpersonationLevel, Open, ShareAccess)
 
         request = SMB2CreateDurableHandleRequestV2()
-        request["timeout"] = 0
+        request["timeout"] = timeout_msec
         request["create_guid"] = self.create_guid
         handle = Open(tree, path)
         response = handle.create(
@@ -152,7 +152,8 @@ class DurableClient:
             CreateOptions.FILE_NON_DIRECTORY_FILE,
             create_contexts=self._contexts((CreateContextName.SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2, request)),
             oplock_level=0xFF)
-        granted = any(type(c).__name__ == "SMB2CreateDurableHandleResponseV2" for c in response or [])
+        granted = any(type(c).__name__ == "SMB2CreateDurableHandleResponseV2"
+                      and c["timeout"].get_value() == 300_000 for c in response or [])
         return handle, granted
 
     def reconnect(self, tree, path: str, file_id: bytes):
@@ -235,8 +236,10 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
         sess1.connect()
         tree1 = TreeConnect(sess1, rf"\\{device.host}\{device.share}")
         tree1.connect()
-    handle, granted = client.open_durable(tree1, path)
-    r.check(f"{mode}: durable handle granted", lambda: granted)
+    # Exercise default, short and over-limit client requests; all get 300 s.
+    timeout_msec = {"fin": 0, "half-open+previous": 600_000}.get(mode, 30_000)
+    handle, granted = client.open_durable(tree1, path, timeout_msec)
+    r.check(f"{mode}: 300 s durable handle granted", lambda: granted)
     handle.write(payload, 0)
     if mode == "rst+ipc-tdis":
         _ipc_connect_disconnect(device, sess1)
@@ -264,7 +267,7 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
 
             r.check(f"{mode}: a live open is refused after the full deferral", refused)
         elif mode == "half-open+reset":
-            reset = threading.Timer(2, _reset, (conn1,))
+            reset = threading.Timer(15, _reset, (conn1,))
             reset.start()
 
             def taken_over() -> bool:
@@ -273,7 +276,7 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
                 data = again.read(0, len(payload))
                 again.close()
                 # Deferred until the reset, and answered before the window ran out.
-                return data == payload and 2 <= waited < LIVE_WAIT_SECONDS
+                return data == payload and 15 <= waited < LIVE_WAIT_SECONDS
 
             try:
                 r.check(f"{mode}: the deferred reconnect takes the open over once it is released", taken_over)
@@ -354,7 +357,7 @@ def write_case(r: Results, device: Device, mode: str) -> None:
     conn1, sess1, tree1 = client.connect()
     try:
         handle, granted = client.open_durable(tree1, path)
-        r.check(f"{mode}: durable handle granted", lambda: granted)
+        r.check(f"{mode}: 300 s durable handle granted", lambda: granted)
         if mode == "smb-in-data":
             # SMB2 headers inside ordinary data that 0072 must not take for the
             # next request: a far message ID, a wrong structure size, a response.
