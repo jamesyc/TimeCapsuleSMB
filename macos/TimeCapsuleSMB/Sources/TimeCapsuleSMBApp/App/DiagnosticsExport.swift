@@ -111,7 +111,7 @@ struct DiagnosticsExportBuilder {
                 append("Arch", value: profile.arch ?? "unknown", to: &lines)
                 append("Payload Family", value: profile.payloadFamily ?? "unknown", to: &lines)
                 append("Password State", value: profile.passwordState.title, to: &lines)
-                append("Last Checkup", value: profile.lastCheckup?.summary ?? "none", to: &lines)
+                append("Last Checkup", value: profile.lastCheckup?.diagnosticsSummary ?? "none", to: &lines)
                 append("Runtime State", value: profile.runtimeState?.localizedSummary ?? "unknown", to: &lines)
                 append("Last Deploy", value: profile.lastDeployState?.localizedSummary ?? "none", to: &lines)
                 if let deploy = profile.lastDeployState {

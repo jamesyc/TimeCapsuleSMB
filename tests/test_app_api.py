@@ -4422,6 +4422,52 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertEqual(checks[0]["details"], {"port": 445})
 
+    def test_doctor_tells_the_app_which_section_each_check_ran_in(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        results = [
+            CheckResult("PASS", "found local tool ssh", domain="computer"),
+            CheckResult("FAIL", "smbd is not bound to TCP 445", {"port": 445}, domain="device"),
+        ]
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            for result in results:
+                kwargs["on_result"](result)
+            return results, True
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+             mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+             mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")), \
+             mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+            service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
+
+        checks = collector.events_of_type("check")
+        self.assertEqual([check["details"].get("domain") for check in checks], ["computer", "device"])
+        self.assertEqual(checks[1]["details"]["port"], 445)
+        payload = collector.events_of_type("result")[-1]["payload"]
+        self.assertEqual([item["details"]["domain"] for item in payload["results"]], ["computer", "device"])
+        self.assertNotIn("domain", payload["results"][0])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["doctor_sections"]["device"]["status"], "fail")
+        self.assertEqual(finished["doctor_sections"]["computer"]["status"], "pass")
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(payload["sections"]["device"]["status"], "fail")
+
+    def test_doctor_passes_the_apps_local_network_permission_to_the_checks(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        for params, expected in (
+            ({"macos_local_network_preflight_result": "denied", "macos_local_network_preflight_duration_ms": 9}, "denied"),
+            ({}, None),
+        ):
+            with self.subTest(expected=expected):
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                     mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+                     mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")), \
+                     mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", return_value=([], False)) as checks:
+                    service.run_api_request({"operation": "doctor", "params": params}, collector.sink)
+                self.assertEqual(checks.call_args.kwargs["local_network_permission"], expected)
+
     def test_doctor_given_the_saved_mac_passes_its_one_read_to_the_checks(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})

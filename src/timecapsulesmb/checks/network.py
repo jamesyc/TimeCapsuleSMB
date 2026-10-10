@@ -8,7 +8,14 @@ from typing import Literal, Union
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.device.probe import probe_ssh_command_conn
-from timecapsulesmb.transport.errors import local_network_filtered_message
+from timecapsulesmb.transport.errors import (
+    SshAlgorithmNegotiationError,
+    SshAuthenticationError,
+    SshClientError,
+    SshLocalNetworkFilteredError,
+    TransportError,
+    local_network_filtered_message,
+)
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -234,9 +241,30 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
     )
     if result.ok:
         return CheckResult("PASS", f"SSH command works for {connection.host}")
+    details = {"code": ssh_login_failure_code(result.error)}
     if result.detail.startswith(("Connecting to the device failed, SSH error:", local_network_filtered_message())):
-        return CheckResult("FAIL", result.detail)
-    return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}")
+        return CheckResult("FAIL", result.detail, details)
+    return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}", details)
+
+
+def ssh_login_failure_code(error: TransportError | None) -> str:
+    """Name who an SSH login failure points at, for Checkup and telemetry:
+    a VPN or security app on this computer (a crashed ssh included), this
+    computer's ssh itself, the saved password, no algorithm both ends accept,
+    or a device or network that did not answer. Without an error, ssh ran and
+    the command failed.
+    """
+    if isinstance(error, SshLocalNetworkFilteredError):
+        return "local_network_filtered"
+    if isinstance(error, SshClientError):
+        return "ssh_client_failed"
+    if isinstance(error, SshAuthenticationError):
+        return "ssh_auth_rejected"
+    if isinstance(error, SshAlgorithmNegotiationError):
+        return "ssh_algorithm_negotiation_failed"
+    if error is not None:
+        return "ssh_unreachable"
+    return "ssh_command_failed"
 
 
 def check_smb_port(host: str) -> CheckResult:

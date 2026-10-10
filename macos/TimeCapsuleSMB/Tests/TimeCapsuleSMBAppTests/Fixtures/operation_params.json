@@ -64,6 +64,10 @@
     ],
     "doctor": [
       "bonjour_timeout",
+      "macos_local_network_preflight_duration_ms",
+      "macos_local_network_preflight_error",
+      "macos_local_network_preflight_result",
+      "macos_local_network_preflight_service",
       "skip_bonjour",
       "skip_smb",
       "skip_ssh",

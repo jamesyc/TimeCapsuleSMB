@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from timecapsulesmb.checks.bonjour import (
+    BONJOUR_INSTANCE_NOT_SEEN_CODE,
     BonjourExpectedIdentity,
     BonjourServiceTarget,
     build_bonjour_expected_identity,
@@ -38,7 +39,7 @@ from timecapsulesmb.checks.doctor_state import (
     StepDecision,
 )
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
-from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.models import DEVICE_NOT_CHECKED_CODE, DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
 from timecapsulesmb.checks.network import (
     IpNetwork,
     NetworkLinkResult,
@@ -124,8 +125,9 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot, BonjourResolvedService,
 )
 
-from timecapsulesmb.transport.local import find_free_local_port
+from timecapsulesmb.transport.local import command_exists, find_free_local_port
 from timecapsulesmb.transport.local import scoped_tcp_connect_errors
+from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, ssh_local_forward
 
 
@@ -173,6 +175,26 @@ DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
 # (its WAN side in router mode, its guest network), so nothing that checks
 # Bonjour or SMB from here can pass.
 DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK = "client_on_unshared_network"
+DOCTOR_CODE_LOCAL_NETWORK_DENIED = "local_network_denied"
+DOCTOR_CODE_SMB_PORT_UNREACHABLE = "smb_port_unreachable"
+DOCTOR_CODE_SMB_LISTING_FAILED = "smb_listing_failed"
+DOCTOR_CODE_SMB_LISTING_HOST_UNREACHABLE = "smb_listing_host_unreachable"
+# Samba rejected the saved password: the device works, the saved password does not.
+DOCTOR_CODE_SMB_LOGIN_REJECTED = "smb_login_rejected"
+# Samba rejected the AirPort admin password itself: the device has not applied
+# its current password to Samba.
+DOCTOR_CODE_DEVICE_SMB_PASSWORD_STALE = "device_smb_password_stale"
+# A problem on this computer kept the device's own SMB check from running.
+DOCTOR_CODE_DEVICE_SMB_NOT_CHECKED = "device_smb_not_checked"
+DOCTOR_CODE_DEVICE_SMB_TUNNEL_FAILED = "device_smb_tunnel_failed"
+# What the device's own SMB check found, for this computer's LAN checks.
+DEVICE_SMB_PASSED = "passed"
+DEVICE_SMB_FAILED = "failed"
+DEVICE_SMB_NOT_RUN = "not_run"            # SSH skipped or failed, or SMB checks skipped
+# Samba rejected the saved password, or would (it is known not to match), or
+# this computer has no smbclient: a LAN check would only fail the same way.
+DEVICE_SMB_BLOCKED = "blocked"
+SMB_LOGIN_REJECTED_TOKENS = ("NT_STATUS_LOGON_FAILURE", "NT_STATUS_WRONG_PASSWORD")
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_GRACE_SECONDS = 180
 STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
@@ -1602,16 +1624,18 @@ def _add_tunneled_authenticated_smb_results(
     smb_password: str,
     active_share_names: list[str],
     active_smb_conf_reason: str,
-    remote_port: int,
-    debug_prefix: str,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
     retry_delays: tuple[int, ...] = DOCTOR_TRANSIENT_RETRY_DELAYS,
-) -> bool:
+    password_matches: bool = False,
+) -> str:
+    """List and change files on the device's own smbd through an SSH tunnel;
+    return one of the DEVICE_SMB_* outcomes. password_matches: the saved
+    password is known to be the AirPort admin password."""
     local_port = find_free_local_port()
     if debug_fields is not None:
-        debug_fields[f"{debug_prefix}_listing_servers"] = ["127.0.0.1"]
-        debug_fields[f"{debug_prefix}_listing_active_shares"] = active_share_names
+        debug_fields["device_smb_listing_servers"] = ["127.0.0.1"]
+        debug_fields["device_smb_listing_active_shares"] = active_share_names
     try:
         with ssh_local_forward(
             connection,
@@ -1619,7 +1643,7 @@ def _add_tunneled_authenticated_smb_results(
             # The device resolves the forward's host: its own loopback, which
             # smbd's wildcard listener serves, works whatever address we used.
             remote_host="127.0.0.1",
-            remote_port=remote_port,
+            remote_port=445,
         ):
             listing_result = _authenticated_smb_listing_with_doctor_retries(
                 DEFAULT_SAMBA_AUTH_USER,
@@ -1629,10 +1653,30 @@ def _add_tunneled_authenticated_smb_results(
                 retry_delays=retry_delays,
             )
             if debug_fields is not None and listing_result.details.get("attempts"):
-                debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
+                debug_fields["device_smb_listing_attempts"] = listing_result.details["attempts"]
+            if _smb_login_rejected(listing_result):
+                if password_matches:
+                    # The manager gives Samba the AirPort password; rejecting it
+                    # means the device has not applied the current one.
+                    add_result(CheckResult(
+                        "FAIL",
+                        "Samba on the device rejected the saved password although it is the AirPort admin password; "
+                        f"the device has not applied its current password to Samba, restart the device ({listing_result.message})",
+                        {**listing_result.details, "code": DOCTOR_CODE_DEVICE_SMB_PASSWORD_STALE},
+                    ))
+                    return DEVICE_SMB_BLOCKED
+                add_result(CheckResult(
+                    "FAIL",
+                    "Samba on the device rejected the saved password; re-enter the device password "
+                    f"in the macOS app or with tcapsule configure ({listing_result.message})",
+                    {**listing_result.details, "code": DOCTOR_CODE_SMB_LOGIN_REJECTED},
+                    domain=DOMAIN_COMPUTER,
+                ))
+                add_result(_device_smb_not_checked("Samba rejected the saved password (see This computer)"))
+                return DEVICE_SMB_BLOCKED
             add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
             if listing_result.status != "PASS":
-                return False
+                return DEVICE_SMB_FAILED
             share_name = _select_smb_file_ops_share(
                 listing_result,
                 active_share_names,
@@ -1640,7 +1684,7 @@ def _add_tunneled_authenticated_smb_results(
                 add_result,
             )
             if share_name is None:
-                return False
+                return DEVICE_SMB_FAILED
 
             file_ops_ok = True
             for result in check_authenticated_smb_file_ops_detailed(
@@ -1653,23 +1697,51 @@ def _add_tunneled_authenticated_smb_results(
                 add_result(_tag_smb_startup_transient_if_connection_shaped(result))
                 if result.status == "FAIL":
                     file_ops_ok = False
-            return file_ops_ok
+            return DEVICE_SMB_PASSED if file_ops_ok else DEVICE_SMB_FAILED
+    except TransportError as e:
+        # The tunnel did not open. SSH works (the device checks ran), so it is
+        # the device's: deploy needs SSH just as much.
+        add_result(CheckResult(
+            "FAIL",
+            f"authenticated SMB checks failed through SSH tunnel: {e}",
+            {"code": DOCTOR_CODE_DEVICE_SMB_TUNNEL_FAILED},
+        ))
+        return DEVICE_SMB_FAILED
     except Exception as e:
-        add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
-        return False
+        add_result(CheckResult("FAIL", f"authenticated SMB checks on the device failed: {e}"))
+        return DEVICE_SMB_FAILED
+
+
+def _smb_login_rejected(result: CheckResult) -> bool:
+    return result.status == "FAIL" and any(
+        token in text for token in SMB_LOGIN_REJECTED_TOKENS for text in _smb_failure_texts(result)
+    )
+
+
+def _device_smb_not_checked(reason: str) -> CheckResult:
+    # Yellow, not red: nothing says the device is broken, only that this
+    # computer could not check its Samba.
+    return CheckResult(
+        "WARN",
+        f"Samba on the device was not checked: {reason}",
+        {"code": DOCTOR_CODE_DEVICE_SMB_NOT_CHECKED},
+        domain=DOMAIN_DEVICE,
+    )
 
 
 def _add_authenticated_smb_results(
-    connection: SshConnection,
     config: AppConfig,
     bonjour_target: BonjourServiceTarget | None,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     *,
-    host: str,
     smb_password: str,
     active_smb_conf: str | None,
     active_smb_conf_reason: str,
     direct_smb: DirectSmbState,
+    # File operations run once: on the device through SSH when it can be
+    # reached, otherwise over the LAN here.
+    include_file_ops: bool,
+    device_smb_passed: bool,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
     retry_delays: tuple[int, ...] = DOCTOR_TRANSIENT_RETRY_DELAYS,
@@ -1733,31 +1805,47 @@ def _add_authenticated_smb_results(
         )
     else:
         listing_result = listing_outcomes[0][1]
-    if listing_result.status != "PASS":
-        if _smb_listing_looks_like_local_route_failure(listing_result):
-            add_result(
-                CheckResult(
-                    "WARN",
-                    "direct local smbclient authenticated SMB check failed with NT_STATUS_HOST_UNREACHABLE, likely due to macOS permissions issue; retrying through SSH tunnel",
-                    {"direct_attempts": listing_result.details.get("attempts", [])},
-                )
-            )
-            if _add_tunneled_authenticated_smb_results(
-                connection,
+    if listing_result.status == "PASS":
+        if len(listing_outcomes) == 1:
+            add_result(listing_result)
+        if include_file_ops:
+            _add_lan_smb_file_ops_results(
+                listing_result,
                 smb_password=smb_password,
                 active_share_names=active_share_names,
                 active_smb_conf_reason=active_smb_conf_reason,
-                remote_port=445,
-                debug_prefix="authenticated_smb_tunnel",
-                debug_fields=debug_fields,
                 add_result=add_result,
-                retry_delays=retry_delays,
-            ):
-                return
-        add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
+            )
         return
-    if len(listing_outcomes) == 1:
-        add_result(listing_result)
+    if _smb_listing_looks_like_local_route_failure(listing_result):
+        # macOS refuses the connection itself when the app lacks Local Network
+        # permission. A warning only when the device's own SMB check passed:
+        # otherwise nothing showed that SMB works at all.
+        add_result(CheckResult(
+            "WARN" if device_smb_passed else "FAIL",
+            "smbclient on this computer could not reach the device's SMB service (NT_STATUS_HOST_UNREACHABLE); "
+            "on a Mac this usually means TimeCapsuleSMB lacks Local Network permission "
+            "(System Settings > Privacy & Security > Local Network)",
+            {**listing_result.details, "code": DOCTOR_CODE_SMB_LISTING_HOST_UNREACHABLE},
+        ))
+        return
+    if listing_result.status == "FAIL":
+        listing_result = CheckResult(
+            listing_result.status,
+            listing_result.message,
+            {**listing_result.details, "code": DOCTOR_CODE_SMB_LISTING_FAILED},
+        )
+    add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
+
+
+def _add_lan_smb_file_ops_results(
+    listing_result: CheckResult,
+    *,
+    smb_password: str,
+    active_share_names: list[str],
+    active_smb_conf_reason: str,
+    add_result: Callable[[CheckResult], None],
+) -> None:
     share_name = _select_smb_file_ops_share(
         listing_result,
         active_share_names,
@@ -1766,16 +1854,13 @@ def _add_authenticated_smb_results(
     )
     if share_name is None:
         return
-
     smb_server = listing_result.details.get("server")
     if not isinstance(smb_server, str) or not smb_server:
         add_result(CheckResult("FAIL", "authenticated SMB listing did not report the server used for file-ops checks"))
         return
     smb_ip_address = listing_result.details.get("ip_address")
-    if not isinstance(smb_ip_address, str) or not smb_ip_address:
-        smb_ip_address = None
     file_ops_kwargs = {}
-    if smb_ip_address is not None:
+    if isinstance(smb_ip_address, str) and smb_ip_address:
         file_ops_kwargs["ip_address"] = smb_ip_address
     for result in check_authenticated_smb_file_ops_detailed(
         DEFAULT_SAMBA_AUTH_USER,
@@ -1845,9 +1930,8 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
             CheckResult(
                 "WARN",
                 f"listing the device's processes timed out after {PROCESS_SNAPSHOT_TIMEOUT_SECONDS}s although "
-                "SSH login worked; the device may be running out of processes, so doctor tries SMB only once "
+                "SSH login worked; the device may be running out of processes, so doctor does not retry SMB "
                 "and does not read logs from the data disk",
-                {"domain": "Runtime"},
             )
         )
         return ProcessSnapshotState(timed_out=True)
@@ -1862,7 +1946,6 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
     unnamed = manager_unnamed_stuck_count(snapshot)
     if stuck:
         details: dict[str, object] = {
-            "domain": "Runtime",
             "stuck_processes": [
                 {"pid": p.pid, "name": p.name, "wchan": p.wchan, "sleep_seconds": p.sleep_seconds}
                 for p in stuck
@@ -2059,11 +2142,14 @@ def _apply_startup_grace(
         return results, ()
     if not 0 <= manager_started_seconds_ago < grace_seconds:
         return results, ()
-    # Waiting cannot move this computer onto another network, so that failure
-    # neither blocks the collapse nor gets a "may resolve" note.
+    # Waiting fixes nothing on this computer (its tools, its network, its
+    # settings), so those failures neither block the collapse nor get a "may
+    # resolve" note. Its view of a device service still starting can, and
+    # those failures say so with startup_grace=mask.
     failures = [
         result for result in results
-        if result.status == "FAIL" and result.details.get("code") != DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
+        if result.status == "FAIL"
+        and (result.domain != DOMAIN_COMPUTER or _startup_grace_can_mask_failure(result))
     ]
     if not failures:
         return results, ()
@@ -2073,10 +2159,10 @@ def _apply_startup_grace(
             f"device services started {int(manager_started_seconds_ago)}s ago; "
             "some failures above may resolve once startup completes",
             {
-                "domain": "Runtime",
                 "manager_started_seconds_ago": int(manager_started_seconds_ago),
                 "startup_grace_seconds": grace_seconds,
             },
+            domain=DOMAIN_DEVICE,
         )
         return [*results, recent_startup_note], (recent_startup_note,)
     masked = {id(result) for result in failures}
@@ -2085,7 +2171,7 @@ def _apply_startup_grace(
         if id(result) in masked:
             details = dict(result.details)
             details["masked_by"] = DOCTOR_CODE_DEVICE_STARTING_UP
-            transformed.append(CheckResult("INFO", result.message, details))
+            transformed.append(CheckResult("INFO", result.message, details, domain=result.domain))
         else:
             transformed.append(result)
     startup_fail = CheckResult(
@@ -2095,11 +2181,11 @@ def _apply_startup_grace(
         "wait a few minutes and run doctor again",
         {
             "code": DOCTOR_CODE_DEVICE_STARTING_UP,
-            "domain": "Runtime",
             "manager_started_seconds_ago": int(manager_started_seconds_ago),
             "startup_grace_seconds": grace_seconds,
             "masked_failures": [result.message for result in failures],
         },
+        domain=DOMAIN_DEVICE,
     )
     transformed.append(startup_fail)
     return transformed, (startup_fail,)
@@ -2169,23 +2255,34 @@ def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarge
             sink.add(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
         elif compatibility.supported:
             sink.add(CheckResult("PASS", render_compatibility_message(compatibility)))
-            _add_admin_password_result(target.connection, sink, inputs.device_reading)
         else:
             sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))
     except Exception as e:
         sink.add(CheckResult("FAIL", f"device compatibility check failed: {e}"))
 
 
-def _add_admin_password_result(connection: SshConnection, sink: DoctorSink, reading: AirportAcpReading | None = None) -> None:
+def _doctor_check_admin_password(inputs: DoctorInputs, target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> bool | None:
+    """Compare the saved password with the AirPort admin password, read from
+    this computer over the network (ACP); return whether they match (None:
+    unknown or not checked).
+
+    It runs before the device checks: a saved password that Samba will
+    reject is this computer's setup, not something wrong with the device."""
+    if not remote.remote_checks_enabled:
+        return None
+    return _add_admin_password_result(target.connection, sink, inputs.device_reading)
+
+
+def _add_admin_password_result(connection: SshConnection, sink: DoctorSink, reading: AirportAcpReading | None = None) -> bool | None:
     """Report a saved password that SSH accepts but ACP would reject.
 
     SSH checks only the first 8 characters, so such a password logs in, but the
-    commands that reboot through ACP refuse it. A warning, not a failure: the
-    authenticated SMB checks already fail with it (Samba's password comes from
-    the whole syPW), and this line says why.
+    commands that reboot through ACP refuse it. A warning, not a failure:
+    Samba's password comes from the whole syPW, so the device's SMB check is
+    skipped and says why. Return whether it matches (None: unknown).
     """
     if not connection.password:
-        return
+        return None
     if reading is None:
         reading = read_admin_password(connection)
     match = reading.password_matches
@@ -2202,6 +2299,7 @@ def _add_admin_password_result(connection: SshConnection, sink: DoctorSink, read
         ))
     else:
         sink.add(CheckResult("INFO", "could not compare the saved password with the AirPort admin password"))
+    return match
 
 
 def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
@@ -2248,9 +2346,11 @@ def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, si
         ))
 
 
-def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> bool | None:
+    """Return whether smbd is running and listening on TCP 445 (None when it
+    was not probed or the probe could not tell)."""
     if not remote.remote_checks_enabled:
-        return
+        return None
 
     smbd_probe = _run_doctor_retryable_check(
         lambda: probe_managed_smbd_conn(target.connection),
@@ -2266,15 +2366,16 @@ def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink:
         fallback_pass_message="managed smbd is ready",
         fallback_fail_message=f"managed smbd is not ready ({smbd_probe.detail})",
     )
+    return not set(_readiness_failure_details(smbd_probe)) & TRANSIENT_SMBD_READINESS_FAILURES
 
 
 def _doctor_check_managed_mdns(
     target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink,
-) -> tuple[bool | None, dict[str, object] | None]:
-    """Return whether native NBNS passed (None when it was not probed), and
-    the device's link plan when the probe read one."""
+) -> tuple[bool | None, bool | None, dict[str, object] | None]:
+    """Return whether native NBNS and Bonjour registration passed (None when
+    not probed), and the device's link plan when the probe read one."""
     if not remote.remote_checks_enabled:
-        return None, None
+        return None, None, None
 
     retries = 0
 
@@ -2301,9 +2402,32 @@ def _doctor_check_managed_mdns(
         fallback_fail_message=f"managed mDNS registrant is not active ({mdns_probe.detail})",
     )
     steps = getattr(mdns_probe, "steps", ())
-    nbns = next((step for step in steps if getattr(step, "id", None) == "native_nbns"), None) if isinstance(steps, (list, tuple)) else None
+    steps = steps if isinstance(steps, (list, tuple)) else ()
+
+    def passed(step_id: str) -> bool | None:
+        step = next((step for step in steps if getattr(step, "id", None) == step_id), None)
+        return None if step is None else step.status == "pass"
+
     link_plan = getattr(mdns_probe, "link_plan", None)
-    return (None if nbns is None else nbns.status == "pass"), (link_plan if isinstance(link_plan, dict) else None)
+    return passed("native_nbns"), passed("mdns_registered"), (link_plan if isinstance(link_plan, dict) else None)
+
+
+def _doctor_device_blocks(
+    smbd_serving: bool | None, native_nbns_ready: bool | None, bonjour_registered: bool | None,
+) -> dict[str, str]:
+    """This computer's failures that would only repeat what the device itself
+    reported down: Samba not running, NBNS or Bonjour registration not ready.
+    They are not this computer's or its network's fault."""
+    blocks: dict[str, str] = {}
+    if smbd_serving is False:
+        for code in (DOCTOR_CODE_SMB_PORT_UNREACHABLE, DOCTOR_CODE_SMB_LISTING_FAILED):
+            blocks[code] = "Samba is not running on the device"
+    if native_nbns_ready is False:
+        for code in (NBNS_QUERY_TIMEOUT_CODE, NBNS_NEGATIVE_RESPONSE_CODE):
+            blocks[code] = "NetBIOS (NBNS) is not ready on the device"
+    if bonjour_registered is False:
+        blocks[BONJOUR_INSTANCE_NOT_SEEN_CODE] = "the device's Bonjour registration is not ready"
+    return blocks
 
 
 def _add_usb_printer_results(
@@ -2565,7 +2689,10 @@ def _doctor_check_direct_smb_port(
                 sink.add(CheckResult(
                     "WARN" if reachable_families else "FAIL",
                     f"SMB {label} is not reachable at {', '.join(family_testable)}:445",
-                    {"tcp_attempts": {address: tcp_errors[address] for address in family_testable}},
+                    {
+                        "code": DOCTOR_CODE_SMB_PORT_UNREACHABLE,
+                        "tcp_attempts": {address: tcp_errors[address] for address in family_testable},
+                    },
                 ))
         hostname_testable = [address for address in testable_addresses if _smb_target_family(address) is None]
         if hostname_testable:
@@ -2643,18 +2770,50 @@ def _doctor_check_nbns(
         _add_remote_service_socket_debug(target, remote, sink)
 
 
-def _doctor_check_authenticated_smb(
+def _doctor_check_local_network_permission(inputs: DoctorInputs, sink: DoctorSink) -> None:
+    """Report the macOS app's Local Network permission, which the app checks
+    before Checkup. Without it macOS hides the device from Bonjour and refuses
+    connections to it from this Mac, while SSH-based device checks still work."""
+    permission = inputs.local_network_permission
+    if permission is None:
+        return
+    if permission == "allowed":
+        sink.add(CheckResult("PASS", "TimeCapsuleSMB has Local Network permission on this Mac"))
+    elif permission == "denied":
+        sink.add(CheckResult(
+            "FAIL",
+            "TimeCapsuleSMB does not have Local Network permission, so this Mac cannot find or reach the device; "
+            "turn it on in System Settings > Privacy & Security > Local Network",
+            {"code": DOCTOR_CODE_LOCAL_NETWORK_DENIED},
+        ))
+    else:
+        # The first preflight after launch can time out before macOS answers.
+        sink.add(CheckResult("INFO", "macOS did not say whether TimeCapsuleSMB has Local Network permission"))
+
+
+def _doctor_report_device_not_checked(remote: RemoteAccess, sink: DoctorSink) -> None:
+    if remote.ssh_checked and not remote.ssh_ok:
+        sink.add(CheckResult(
+            "SKIP",
+            "device checks skipped: this computer could not log in to the device over SSH",
+            {"code": DEVICE_NOT_CHECKED_CODE},
+        ))
+
+
+def _doctor_check_device_smb(
     inputs: DoctorInputs,
     target: DoctorTarget,
+    remote: RemoteAccess,
     smb_config: SmbConfigState,
-    naming: RuntimeNamingState,
-    bonjour_result: DoctorBonjourResult,
-    direct_smb: DirectSmbState,
     processes: ProcessSnapshotState,
+    password_match: bool | None,
     sink: DoctorSink,
-) -> None:
-    if inputs.options.skip_smb:
-        return
+) -> str:
+    """Log in to Samba and change files on the device through an SSH tunnel to
+    its own loopback, so the result does not depend on the network between
+    this computer and the device. Returns a DEVICE_SMB_* outcome."""
+    if inputs.options.skip_smb or not remote.remote_checks_enabled:
+        return DEVICE_SMB_NOT_RUN
     if processes.smbd_stuck:
         # Each new SMB connection forks an smbd child that blocks the same way
         # and cannot be killed; the kernel allows 84 processes in all.
@@ -2665,18 +2824,58 @@ def _doctor_check_authenticated_smb(
                 "and each new SMB connection would leave another stuck smbd process",
             )
         )
+        return DEVICE_SMB_FAILED
+    if not command_exists("smbclient"):
+        sink.add(_device_smb_not_checked("smbclient is missing on this computer (see This computer)"))
+        return DEVICE_SMB_BLOCKED
+    if password_match is False:
+        sink.add(_device_smb_not_checked(
+            "the saved password is not the AirPort admin password, so Samba would reject it (see This computer)"
+        ))
+        return DEVICE_SMB_BLOCKED
+    return _add_tunneled_authenticated_smb_results(
+        target.connection,
+        smb_password=target.smb_password,
+        active_share_names=parse_active_share_names(smb_config.text or ""),
+        active_smb_conf_reason=smb_config.reason,
+        debug_fields=sink.debug_fields,
+        add_result=sink.add,
+        # Without a process snapshot, retries could pile up stuck processes.
+        retry_delays=() if processes.timed_out else DOCTOR_TRANSIENT_RETRY_DELAYS,
+        password_matches=password_match is True,
+    )
+
+
+def _doctor_check_authenticated_smb(
+    inputs: DoctorInputs,
+    target: DoctorTarget,
+    remote: RemoteAccess,
+    smb_config: SmbConfigState,
+    naming: RuntimeNamingState,
+    bonjour_result: DoctorBonjourResult,
+    direct_smb: DirectSmbState,
+    processes: ProcessSnapshotState,
+    device_smb: str,
+    sink: DoctorSink,
+) -> None:
+    # A stuck smbd is reported by the device's own SMB check. Whatever kept that
+    # check from running (a saved password Samba rejects or that is known not
+    # to match, no smbclient here) would only fail again here.
+    if inputs.options.skip_smb or processes.smbd_stuck:
+        return
+    if device_smb == DEVICE_SMB_BLOCKED:
         return
 
     _add_authenticated_smb_results(
-        target.connection,
         inputs.config,
         bonjour_result.target,
         naming.identity,
-        host=target.host,
         smb_password=target.smb_password,
         active_smb_conf=smb_config.text,
         active_smb_conf_reason=smb_config.reason,
         direct_smb=direct_smb,
+        include_file_ops=device_smb == DEVICE_SMB_NOT_RUN,
+        device_smb_passed=device_smb == DEVICE_SMB_PASSED,
         debug_fields=sink.debug_fields,
         add_result=sink.add,
         # Without a process snapshot, retries could pile up stuck processes.

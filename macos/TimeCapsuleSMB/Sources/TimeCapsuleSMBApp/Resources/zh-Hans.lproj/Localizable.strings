@@ -192,7 +192,6 @@
 "dashboard.health.connection.refreshing" = "正在检查 DNS、SSH 和 SMB 的可达性…";
 "dashboard.health.connection.running" = "后台操作正在使用此配置。";
 "dashboard.health.checkup" = "检查";
-"dashboard.health.runtime" = "服务状态";
 "dashboard.health.runtime.activation_needed" = "文件共享未运行。“启动 SMB”会启动它。";
 "dashboard.health.runtime.installing" = "安装 / 更新正在运行。";
 "dashboard.health.runtime.not_installed" = "尚未通过此应用安装 Samba。";
@@ -289,8 +288,8 @@
 "doctor.check.payload_missing_from_disk" = "数据磁盘上缺少 Samba 文件夹；磁盘可能已被抹掉。请运行“安装 / 更新 Samba”以重新安装。";
 "doctor.check.metadata_migration_in_progress" = "设备上仍在运行元数据迁移。“安装 / 更新 Samba”会等待其完成后再安装。";
 "doctor.check.client_on_unshared_network" = "此 Mac 所在的网络中，设备不共享其磁盘，例如设备的互联网 (WAN) 一侧或访客网络。请通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的主网络，然后再次运行检查。";
-"doctor.domain.general" = "常规";
-"doctor.domain.runtime" = "服务状态";
+"doctor.domain.this_mac" = "此 Mac";
+"doctor.domain.device" = "设备";
 "event.summary.check" = "%@ %@";
 "event.summary.check.default_status" = "INFO";
 "event.summary.error" = "%@：%@";
@@ -439,6 +438,7 @@
 "checkup.status.info" = "信息";
 "checkup.status.passed" = "通过";
 "checkup.status.unknown" = "未知";
+"checkup.status.not_checked" = "未检查";
 "checkup.status.warning" = "警告";
 "checkup.timeline.title" = "进度";
 "maintenance.action.choose" = "选择";

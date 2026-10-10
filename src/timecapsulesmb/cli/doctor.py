@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from typing import Optional
 
 from timecapsulesmb.checks.doctor import run_doctor_checks
-from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.models import DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import add_config_argument, print_json
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.services.doctor import build_doctor_error, doctor_status_counts
+from timecapsulesmb.services.doctor import build_doctor_error, doctor_finished_fields
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.core.paths import resolve_app_paths
+
+
+SECTION_TITLES = {DOMAIN_COMPUTER: "This computer", DOMAIN_DEVICE: "Device"}
 
 
 def print_result(result: CheckResult) -> None:
@@ -22,6 +26,44 @@ def print_result(result: CheckResult) -> None:
     elif status == "FAIL":
         status = color_red(status)
     print(f"{status} {result.message}")
+
+
+def section_printer() -> Callable[[CheckResult], None]:
+    """Print results under a heading each time doctor moves between checking
+    this computer and checking the device."""
+    current: str | None = None
+    seen: set[str] = set()
+
+    def emit(result: CheckResult) -> None:
+        nonlocal current
+        if result.domain is not None and result.domain != current:
+            if current is not None:
+                print("")
+            title = SECTION_TITLES.get(result.domain, result.domain)
+            # This computer's network checks come after the device's (they use
+            # what the device reported); a few device results come last (the
+            # startup-grace verdict, a data disk that stopped answering).
+            if result.domain in seen:
+                title += " (network)" if result.domain == DOMAIN_COMPUTER else " (continued)"
+            print(f"== {title} ==")
+            current = result.domain
+            seen.add(result.domain)
+        print_result(result)
+
+    return emit
+
+
+def section_status_text(status: str) -> str:
+    return status.replace("_", " ").upper()
+
+
+def print_section_summary(fields: dict[str, object]) -> None:
+    sections = fields["doctor_sections"]
+    print("")
+    print("   ".join(
+        f"{SECTION_TITLES[name]}: {section_status_text(sections[name]['status'])}"
+        for name in (DOMAIN_COMPUTER, DOMAIN_DEVICE)
+    ) + f"   Overall: {section_status_text(fields['doctor_status'])}")
 
 
 def print_followup_help() -> None:
@@ -71,30 +113,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             skip_bonjour=args.skip_bonjour,
             skip_smb=args.skip_smb,
             startup_grace=not args.no_startup_grace,
-            on_result=None if args.json else print_result,
+            on_result=None if args.json else section_printer(),
             debug_fields=doctor_debug,
         )
+        finished = doctor_finished_fields(results, fatal, doctor_debug)
         command_context.add_debug_fields(**doctor_debug)
-        status_counts = doctor_status_counts(results)
-        command_context.update_fields(
-            fatal=fatal,
-            check_count=len(results),
-            pass_count=status_counts["PASS"],
-            warn_count=status_counts["WARN"],
-            fail_count=status_counts["FAIL"],
-            info_count=status_counts["INFO"],
-            # Debug fields reach telemetry only in a fatal run's error, and an
-            # off-subnet NBNS timeout or refusal is a SKIP, so its outcome rides on the event.
-            nbns_subnet=doctor_debug.get("nbns_subnet"),
-            # Likewise for Bonjour and printer checks skipped off the device's network.
-            bonjour_link=doctor_debug.get("bonjour_link"),
-        )
+        command_context.update_fields(**finished)
 
         if args.json:
             command_context.set_stage("render_json")
             print_json({
                 "fatal": fatal,
-                "results": [{"status": result.status, "message": result.message} for result in results],
+                "results": [
+                    {"status": result.status, "message": result.message, "section": result.domain}
+                    for result in results
+                ],
+                "status": finished["doctor_status"],
+                "sections": finished["doctor_sections"],
                 "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
             })
             if fatal:
@@ -107,6 +142,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1 if fatal else 0
 
         command_context.set_stage("render_results")
+        print_section_summary(finished)
         if fatal:
             print("\nSummary: doctor found one or more fatal problems.")
             print_followup_help()

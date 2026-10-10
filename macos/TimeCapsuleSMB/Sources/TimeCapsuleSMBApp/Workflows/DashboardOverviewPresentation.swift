@@ -182,7 +182,7 @@ enum DashboardHealthDomain: String, CaseIterable, Equatable, Identifiable {
         case .connection:
             return L10n.string("dashboard.health.connection")
         case .runtime:
-            return L10n.string("dashboard.health.runtime")
+            return L10n.string("doctor.domain.device")
         case .checkup:
             return L10n.string("dashboard.health.checkup")
         }
@@ -269,7 +269,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
 
     init(
         summary: DeviceDashboardSummary,
-        currentCheckupSummary: DoctorSummary? = nil,
         reachabilitySnapshot: DeviceReachabilitySnapshot? = nil,
         isReachabilityRunning: Bool = false
     ) {
@@ -285,7 +284,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         })
         self.healthSections = Self.healthSections(
             for: summary,
-            currentCheckupSummary: currentCheckupSummary,
             reachabilitySnapshot: reachabilitySnapshot,
             isReachabilityRunning: isReachabilityRunning
         )
@@ -299,7 +297,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
 
     private static func healthSections(
         for summary: DeviceDashboardSummary,
-        currentCheckupSummary: DoctorSummary?,
         reachabilitySnapshot: DeviceReachabilitySnapshot?,
         isReachabilityRunning: Bool
     ) -> [DashboardHealthSection] {
@@ -311,11 +308,48 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                     isReachabilityRunning: isReachabilityRunning
                 )
             ]),
-            DashboardHealthSection(domain: .runtime, rows: [runtimeRow(for: summary, currentCheckupSummary: currentCheckupSummary)]),
-            DashboardHealthSection(domain: .checkup, rows: [
-                checkupRow(summary: summary)
-            ])
+            DashboardHealthSection(domain: .runtime, rows: [runtimeRow(for: summary)]),
+            DashboardHealthSection(domain: .checkup, rows: [checkupRow(summary: summary)] + checkupSectionRows(for: summary))
         ]
+    }
+
+    /// Under the Checkup's overall row: this Mac's section (its setup and its
+    /// view of the device over the network) and a macOS release known to
+    /// break Time Machine. The device's section is the Device row above.
+    private static func checkupSectionRows(for summary: DeviceDashboardSummary) -> [DashboardHealthRow] {
+        var rows: [DashboardHealthRow] = []
+        if summary.displayStatus != .checking, let section = summary.profile.lastCheckup?.thisMac {
+            let status = sectionStatus(section.status)
+            rows.append(DashboardHealthRow(
+                id: "checkup-this-mac",
+                title: L10n.string("doctor.domain.this_mac"),
+                detail: section.localizedSummary,
+                status: status,
+                action: status == .good ? nil : .viewCheckup
+            ))
+        }
+        if let hostWarning = summary.hostWarning {
+            rows.append(DashboardHealthRow(
+                id: "checkup-host-warning",
+                title: hostWarning.title,
+                detail: hostWarning.message,
+                status: .warning
+            ))
+        }
+        return rows
+    }
+
+    private static func sectionStatus(_ status: DoctorSectionStatus) -> DashboardHealthStatus {
+        switch status {
+        case .pass:
+            return .good
+        case .warn:
+            return .warning
+        case .fail:
+            return .failed
+        case .notChecked:
+            return .unknown
+        }
     }
 
     private static func connectionRow(
@@ -406,8 +440,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
     }
 
     private static func runtimeRow(
-        for summary: DeviceDashboardSummary,
-        currentCheckupSummary: DoctorSummary?
+        for summary: DeviceDashboardSummary
     ) -> DashboardHealthRow {
         if summary.displayStatus == .installing {
             return DashboardHealthRow(
@@ -424,15 +457,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 detail: L10n.string("dashboard.health.runtime.activation_needed"),
                 status: .warning,
                 action: .startSMB
-            )
-        }
-        if let signal = checkupSignal(for: .runtime, summary: currentCheckupSummary) {
-            return DashboardHealthRow(
-                id: "runtime-checkup",
-                title: DashboardHealthDomain.runtime.title,
-                detail: signal.countSummary,
-                status: dashboardStatus(signal.severity),
-                action: dashboardStatus(signal.severity) == .good ? nil : .viewCheckup
             )
         }
         guard let runtimeState = summary.profile.runtimeState else {
@@ -512,14 +536,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: .viewCheckup
             )
         }
-        if let hostWarning = summary.hostWarning {
-            return DashboardHealthRow(
-                id: "checkup-host-warning",
-                title: DashboardHealthDomain.checkup.title,
-                detail: hostWarning.message,
-                status: .warning
-            )
-        }
         guard let lastCheckup = summary.profile.lastCheckup else {
             return DashboardHealthRow(
                 id: "checkup-unchecked",
@@ -536,26 +552,6 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             status: snapshotStatus(lastCheckup),
             action: snapshotStatus(lastCheckup) == .good ? nil : .viewCheckup
         )
-    }
-
-    private static func checkupSignal(
-        for domain: DoctorCheckDomain,
-        summary: DoctorSummary?
-    ) -> DoctorDomainSignal? {
-        DoctorCheckDomainPolicy.signal(for: domain, summary: summary)
-    }
-
-    private static func dashboardStatus(_ severity: DoctorCheckSeverity) -> DashboardHealthStatus {
-        switch severity {
-        case .failed:
-            return .failed
-        case .warning:
-            return .warning
-        case .passed:
-            return .good
-        case .unknown:
-            return .unknown
-        }
     }
 
     private static func snapshotStatus(_ snapshot: DeviceCheckupSnapshot) -> DashboardHealthStatus {

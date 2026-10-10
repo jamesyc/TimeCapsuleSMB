@@ -148,7 +148,7 @@ final class BackendEventTests: XCTestCase {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         let event = BackendEvent(type: "result", operation: "doctor", ok: false, payload: testDoctorPayload(fatal: true, checks: [
-            testDoctorCheck(status: "FAIL", message: "smbd is not running", domain: "Runtime")
+            testDoctorCheck(status: "FAIL", message: "smbd is not running", domain: "device")
         ]))
 
         L10n.apply(language: .simplifiedChinese)

@@ -12,7 +12,9 @@ enum DeviceDashboardSnapshotMapper {
             passCount: summary.passCount,
             warnCount: summary.warnCount,
             failCount: summary.failCount,
-            summary: ""
+            summary: "",
+            device: summary.sections[.device],
+            thisMac: summary.sections[.thisMac]
         )
     }
 
@@ -26,15 +28,24 @@ enum DeviceDashboardSnapshotMapper {
             return nil
         }
 
-        let countSummary = L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
+        // The device's health is its own section's: a problem on this Mac
+        // (its settings, its network, its saved password) leaves it green.
+        guard state == .passed || state == .warning || state == .failed,
+              let device = summary.sections[.device] else {
+            return nil
+        }
+        let countSummary = L10n.format("summary.checkup_counts", device.passCount, device.warnCount, device.failCount)
         let countSummaryRef = BackendSummary(
             key: "summary.checkup_counts",
-            arguments: [.int(summary.passCount), .int(summary.warnCount), .int(summary.failCount)],
+            arguments: [.int(device.passCount), .int(device.warnCount), .int(device.failCount)],
             text: countSummary
         )
         let payloadFamily = profile.runtimeState?.payloadFamily ?? profile.payloadFamily
-        switch state {
-        case .passed:
+        switch device.status {
+        case .notChecked:
+            // Nothing ran on the device: keep what was known about it.
+            return nil
+        case .pass:
             return DeviceRuntimeStateSnapshot(
                 state: .installedVerified,
                 source: .doctor,
@@ -46,7 +57,9 @@ enum DeviceDashboardSnapshotMapper {
                 errorMessage: nil,
                 recovery: nil
             )
-        case .warning:
+        case .warn,
+             // Still starting up is not broken; waiting fixes it.
+             .fail where summary.deviceStartingUp:
             return DeviceRuntimeStateSnapshot(
                 state: .installedUnverified,
                 source: .doctor,
@@ -59,7 +72,7 @@ enum DeviceDashboardSnapshotMapper {
                 errorMessage: nil,
                 recovery: nil
             )
-        case .failed:
+        case .fail:
             if summary.runtimeNotInstalled {
                 return DeviceRuntimeStateSnapshot(
                     state: .notInstalled,
@@ -86,8 +99,6 @@ enum DeviceDashboardSnapshotMapper {
                 errorMessage: nil,
                 recovery: nil
             )
-        case .idle, .running, .runFailed:
-            return nil
         }
     }
 

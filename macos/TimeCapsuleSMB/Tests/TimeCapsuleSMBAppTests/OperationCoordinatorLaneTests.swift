@@ -679,7 +679,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
 
     private func doctorPayload() -> JSONValue {
         testDoctorPayload(checks: [
-            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
         ])
     }
 

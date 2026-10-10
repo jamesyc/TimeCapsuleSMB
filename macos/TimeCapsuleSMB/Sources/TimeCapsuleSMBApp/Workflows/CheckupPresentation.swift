@@ -51,6 +51,8 @@ enum CheckupStatusPresentation: String, Equatable {
     case failed
     case info
     case unknown
+    /// A device section nothing ran on (SSH skipped or refused).
+    case notChecked
 
     init(status: String) {
         switch status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
@@ -80,6 +82,19 @@ enum CheckupStatusPresentation: String, Equatable {
         }
     }
 
+    init(section: DoctorSectionStatus) {
+        switch section {
+        case .pass:
+            self = .passed
+        case .warn:
+            self = .warning
+        case .fail:
+            self = .failed
+        case .notChecked:
+            self = .notChecked
+        }
+    }
+
     var title: String {
         switch self {
         case .passed:
@@ -92,6 +107,8 @@ enum CheckupStatusPresentation: String, Equatable {
             return L10n.string("checkup.status.info")
         case .unknown:
             return L10n.string("checkup.status.unknown")
+        case .notChecked:
+            return L10n.string("checkup.status.not_checked")
         }
     }
 
@@ -107,6 +124,8 @@ enum CheckupStatusPresentation: String, Equatable {
             return "info.circle"
         case .unknown:
             return "questionmark.circle"
+        case .notChecked:
+            return "minus.circle"
         }
     }
 }
@@ -134,11 +153,22 @@ struct CheckupDomainPresentation: Equatable, Identifiable {
     var id: String { domain.rawValue }
     var title: String { domain.title }
 
-    init(signal: DoctorDomainSignal) {
+    /// The group's status is its section's, as the helper decided it; the
+    /// checks' own severity covers a Checkup still running.
+    init(signal: DoctorDomainSignal, section: DoctorSection? = nil) {
         self.domain = signal.domain
-        self.status = CheckupStatusPresentation(severity: signal.severity)
+        self.status = section.map { CheckupStatusPresentation(section: $0.status) }
+            ?? CheckupStatusPresentation(severity: signal.severity)
         self.countSummary = signal.countSummary
         self.rows = signal.checks.enumerated().map { CheckupRowPresentation(index: $0.offset, check: $0.element) }
+    }
+
+    /// A section with no checks to list: the device when SSH was skipped.
+    init(notChecked domain: DoctorCheckDomain) {
+        self.domain = domain
+        self.status = .notChecked
+        self.countSummary = CheckupStatusPresentation.notChecked.title
+        self.rows = []
     }
 }
 
@@ -164,7 +194,17 @@ struct CheckupPresentation: Equatable {
         self.headline = Self.headline(for: state)
         self.primaryAction = state == .running ? nil : .runCheckup
         self.summaryRows = summary.map(Self.summaryRows) ?? []
-        self.domains = summary.map { DoctorCheckDomainPolicy.signals(from: $0).map(CheckupDomainPresentation.init) } ?? []
+        // While it runs, the checks reported so far, as Install shows its steps.
+        let checks = summary?.checks ?? (state == .running ? DoctorSummary.liveChecks(from: events) : [])
+        var domains = DoctorCheckDomainPolicy.signals(from: checks).map { signal in
+            CheckupDomainPresentation(signal: signal, section: summary?.sections[signal.domain])
+        }
+        // The device still gets its group when nothing ran on it, so the tab
+        // says what the dashboard says.
+        if summary?.sections[.device]?.status == .notChecked, !domains.contains(where: { $0.domain == .device }) {
+            domains.append(CheckupDomainPresentation(notChecked: .device))
+        }
+        self.domains = domains
         self.timeline = Self.timeline(events: events, currentStage: currentStage, state: state)
         self.hostWarning = hostWarning
     }

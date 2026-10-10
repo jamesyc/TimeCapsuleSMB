@@ -142,7 +142,18 @@ private struct CheckupDomainView: View {
     }
 
     private func iconColor(for status: CheckupStatusPresentation) -> Color {
-        status == .passed ? .green : .primary
+        switch status {
+        case .passed:
+            return .green
+        case .warning:
+            return .orange
+        case .failed:
+            return .red
+        case .notChecked:
+            return .secondary
+        case .info, .unknown:
+            return .primary
+        }
     }
 }
 

@@ -5,7 +5,7 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
     func testPassedCheckupMapsRuntimeToInstalledVerified() throws {
         let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
         let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
         ])
 
         let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
@@ -24,7 +24,7 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
     func testSkippedSSHCheckupDoesNotInventRuntimeState() throws {
         let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
         let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "PASS", message: "local checks passed", domain: "General")
+            testDoctorCheck(status: "PASS", message: "local checks passed", domain: "computer")
         ])
 
         let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
@@ -37,12 +37,114 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertNil(runtimeState)
     }
 
+    func testThisMacFailuresLeaveTheDeviceHealthy() throws {
+        // #372: this Mac's nsmb.conf turned off SMB 3 while the device passed
+        // every check of its own.
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device"),
+            testDoctorCheck(status: "PASS", message: "SMB file create works", domain: "device"),
+            testDoctorCheck(status: "FAIL", message: "/etc/nsmb.conf turns off SMB 3", domain: "computer"),
+            testDoctorCheck(status: "WARN", message: "Bonjour IPv6 not seen", domain: "computer")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+        let snapshot = DeviceDashboardSnapshotMapper.checkupSnapshot(
+            state: .failed, summary: summary, observedAt: Date(timeIntervalSince1970: 1))
+
+        XCTAssertEqual(runtimeState?.state, .installedVerified)
+        // The Checkup itself failed; each section keeps its own result.
+        XCTAssertEqual(snapshot.state, .failed)
+        XCTAssertEqual([snapshot.passCount, snapshot.warnCount, snapshot.failCount], [2, 1, 1])
+        XCTAssertEqual(snapshot.device?.status, .pass)
+        XCTAssertEqual(snapshot.device.map { [$0.passCount, $0.warnCount, $0.failCount] }, [2, 0, 0])
+        XCTAssertEqual(snapshot.thisMac?.status, .fail)
+        XCTAssertEqual(snapshot.thisMac.map { [$0.passCount, $0.warnCount, $0.failCount] }, [0, 1, 1])
+    }
+
+    func testDeviceFailuresStillMarkTheDeviceUnhealthy() throws {
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "FAIL", message: "managed smbd parent process is not running", domain: "device"),
+            testDoctorCheck(status: "FAIL", message: "SMB IPv4 is not reachable", domain: "computer")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+        let snapshot = DeviceDashboardSnapshotMapper.checkupSnapshot(
+            state: .failed, summary: summary, observedAt: Date(timeIntervalSince1970: 1))
+
+        XCTAssertEqual(runtimeState?.state, .unhealthy)
+        XCTAssertEqual(runtimeState?.summary, "PASS 0, WARN 0, FAIL 1")
+        XCTAssertEqual([snapshot.passCount, snapshot.warnCount, snapshot.failCount], [0, 0, 2])
+        XCTAssertEqual(snapshot.device?.status, .fail)
+    }
+
+    func testCheckupThatReachedNothingOnTheDeviceKeepsTheDevicesLastKnownHealth() throws {
+        // SSH refused (a VPN on this Mac, or the device off): nothing says the
+        // device is broken, so its saved health stays; the Connection row and
+        // the Checkup's own result show the failure.
+        var profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        profile.runtimeState = testRuntimeState(state: .installedVerified, payloadFamily: "netbsd6_samba4", verified: true)
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "FAIL", message: "ssh down", domain: "computer"),
+            testDoctorCheck(status: "SKIP", message: "device checks skipped", domain: "device", code: "device_not_checked")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+        let snapshot = DeviceDashboardSnapshotMapper.checkupSnapshot(
+            state: .failed, summary: summary, observedAt: Date(timeIntervalSince1970: 1))
+
+        XCTAssertNil(runtimeState)
+        XCTAssertEqual(snapshot.state, .failed)
+        XCTAssertEqual(snapshot.device?.status, .notChecked)
+        XCTAssertEqual(snapshot.thisMac?.status, .fail)
+    }
+
+    func testDeviceStillStartingUpIsUnverifiedNotUnhealthy() throws {
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "FAIL", message: "some checks failed while the device was still starting up",
+                            domain: "device", code: "device_starting_up")
+        ])
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .failed, summary: summary)
+        XCTAssertEqual(runtimeState?.state, .installedUnverified)
+    }
+
+    func testASectionDecodesWithoutItsTelemetryCodeLists() throws {
+        // fail_codes and warn_codes are for telemetry; the app reads only the
+        // status and counts.
+        let data = Data(#"{"status": "warn", "counts": {"WARN": 1}, "fail_codes": [], "warn_codes": ["x"]}"#.utf8)
+        let section = try JSONDecoder().decode(DoctorSection.self, from: data)
+        XCTAssertEqual(section, DoctorSection(status: .warn, counts: ["WARN": 1]))
+    }
+
+    func testTheHelpersSectionStatusesWinOverTheChecks() throws {
+        // The payload's sections decide; a device "not checked" from the helper
+        // keeps the saved health even with device rows present.
+        var payload = try testDoctorPayload(checks: [
+            testDoctorCheck(status: "PASS", message: "local tools", domain: "computer")
+        ]).decode(DoctorPayload.self)
+        payload.status = .warn
+        payload.sections = [
+            "computer": DoctorSection(status: .warn, counts: ["PASS": 1, "WARN": 1]),
+            "device": DoctorSection(status: .notChecked, counts: [:])
+        ]
+        let summary = DoctorSummary(payload: payload)
+
+        XCTAssertEqual(summary.overallStatus, .warn)
+        XCTAssertEqual(summary.sections[.thisMac]?.status, .warn)
+        XCTAssertNil(DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .warning, summary: summary))
+    }
     func testWarningCheckupOnNetBSD4IsInstalledUnverified() throws {
         // Doctor warnings come from a running runtime; a stopped one fails.
         var profile = try makeProfile(payloadFamily: "netbsd4le_samba4")
         profile.runtimeState = testRuntimeState(state: .installedVerified, payloadFamily: "netbsd4le_samba4", verified: true)
         let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "WARN", message: "NBNS check skipped: timed out", domain: "Runtime")
+            testDoctorCheck(status: "WARN", message: "NBNS check skipped: timed out", domain: "device")
         ])
 
         let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
@@ -56,7 +158,7 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
             testDoctorCheck(
                 status: "FAIL",
                 message: "managed runtime directory /mnt/Memory/samba4 is missing; run deploy or activate to start the managed runtime",
-                domain: "Runtime",
+                domain: "device",
                 code: "runtime_not_started"
             )
         ])
@@ -171,7 +273,7 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         defer { L10n.apply(language: originalLanguage) }
         let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
         let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime"),
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device"),
             testDoctorCheck(status: "WARN", message: "slow disk", domain: "Disk")
         ])
         L10n.apply(language: .english)
@@ -199,7 +301,7 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         defer { L10n.apply(language: originalLanguage) }
         let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
         let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime"),
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device"),
             testDoctorCheck(status: "FAIL", message: "share missing", domain: "SMB")
         ])
         L10n.apply(language: .english)

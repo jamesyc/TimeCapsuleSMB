@@ -7,7 +7,7 @@ from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.services.app import OperationResult, bool_param, config_path
-from timecapsulesmb.services.doctor import build_doctor_error, doctor_status_counts
+from timecapsulesmb.services.doctor import build_doctor_error, doctor_finished_fields, doctor_result_details
 
 
 def doctor_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -18,13 +18,14 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
     skip_smb = bool_param(params, "skip_smb")
     startup_grace = bool_param(params, "startup_grace", default=True)
     context.update_fields(skip_ssh=skip_ssh, skip_bonjour=skip_bonjour, skip_smb=skip_smb, startup_grace=startup_grace)
+    local_network_permission = params.get("macos_local_network_preflight_result")
     connection = None
     if not skip_ssh and config.has_value("TC_HOST"):
         connection = resolve_request_connection(config, context, allow_empty_password=True)
     debug_fields: dict[str, object] = {}
 
     def on_result(result: CheckResult) -> None:
-        context.check(status=result.status, message=result.message, details=result.details)
+        context.check(status=result.status, message=result.message, details=doctor_result_details(result))
 
     context.stage("run_checks")
     results, fatal = run_doctor_checks(
@@ -36,25 +37,14 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         skip_bonjour=skip_bonjour,
         skip_smb=skip_smb,
         startup_grace=startup_grace,
+        local_network_permission=local_network_permission if isinstance(local_network_permission, str) else None,
         on_result=on_result,
         debug_fields=debug_fields,
     )
     airport_mac = debug_fields.pop("airport_mac", None)
+    finished = doctor_finished_fields(results, fatal, debug_fields)
     context.add_debug_fields(**debug_fields)
-    status_counts = doctor_status_counts(results)
-    context.update_fields(
-        fatal=fatal,
-        check_count=len(results),
-        pass_count=status_counts["PASS"],
-        warn_count=status_counts["WARN"],
-        fail_count=status_counts["FAIL"],
-        info_count=status_counts["INFO"],
-        # Debug fields reach telemetry only in a fatal run's error, and an
-        # off-subnet NBNS timeout or refusal is a SKIP, so its outcome rides on the event.
-        nbns_subnet=debug_fields.get("nbns_subnet"),
-        # Likewise for Bonjour and printer checks skipped off the device's network.
-        bonjour_link=debug_fields.get("bonjour_link"),
-    )
+    context.update_fields(**finished)
     error = build_doctor_error(results, debug_fields) if fatal else None
     if error:
         context.set_error(error)

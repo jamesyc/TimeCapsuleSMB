@@ -192,7 +192,6 @@
 "dashboard.health.connection.refreshing" = "Tikrinamas DNS, SSH ir SMB pasiekiamumas...";
 "dashboard.health.connection.running" = "Foninė operacija naudoja šį profilį.";
 "dashboard.health.checkup" = "Patikrinimas";
-"dashboard.health.runtime" = "Aplinka";
 "dashboard.health.runtime.activation_needed" = "Failų bendrinimas neveikia. „Aktyvuoti“ jį paleidžia.";
 "dashboard.health.runtime.installing" = "Vyksta diegimas / atnaujinimas.";
 "dashboard.health.runtime.not_installed" = "Samba nebuvo įdiegta iš šios programos.";
@@ -289,8 +288,8 @@
 "doctor.check.payload_missing_from_disk" = "Duomenų diske trūksta Samba aplanko; diskas galėjo būti ištrintas. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
 "doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir paleiskite patikrinimą iš naujo.";
-"doctor.domain.general" = "Bendrieji";
-"doctor.domain.runtime" = "Aplinka";
+"doctor.domain.this_mac" = "Šis Mac";
+"doctor.domain.device" = "Įrenginys";
 "event.summary.check" = "%@ %@";
 "event.summary.check.default_status" = "INFORMACIJA";
 "event.summary.error" = "%@: %@";
@@ -439,6 +438,7 @@
 "checkup.status.info" = "Informacija";
 "checkup.status.passed" = "Pavyko";
 "checkup.status.unknown" = "Nežinoma";
+"checkup.status.not_checked" = "Nepatikrinta";
 "checkup.status.warning" = "Įspėjimas";
 "checkup.timeline.title" = "Pažanga";
 "maintenance.action.choose" = "Pasirinkti";

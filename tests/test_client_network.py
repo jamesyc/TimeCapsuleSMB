@@ -22,7 +22,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_unshared_network,
     client_on_unshared_network_message,
 )
-from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, host_networks, interface_kind, local_lan_networks
 from timecapsulesmb.device.probe import ReadinessProbeResult, _parse_link_plan, link_plan_networks
 from timecapsulesmb.integrations.acp import ACPConnectionError
@@ -339,7 +339,13 @@ class UnsharedNetworkCheckTests(unittest.TestCase):
 
 
 class StartupGraceTests(unittest.TestCase):
-    UNSHARED = CheckResult("FAIL", "this Mac is on the device's internet (WAN) side", {"code": DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK})
+    # Reported in the computer section, as doctor's run does.
+    UNSHARED = CheckResult(
+        "FAIL",
+        "this Mac is on the device's internet (WAN) side",
+        {"code": DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK},
+        domain=DOMAIN_COMPUTER,
+    )
     STARTING = CheckResult("FAIL", "managed smbd is not running", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK})
 
     def test_waiting_is_never_suggested_for_being_on_the_wrong_network(self) -> None:

@@ -184,9 +184,30 @@ struct DeviceCheckupSnapshot: Codable, Equatable {
     var warnCount: Int
     var failCount: Int
     var summary: String
+    /// Each Checkup section's result; absent in snapshots saved before Checkup
+    /// had sections.
+    var device: DoctorSection? = nil
+    var thisMac: DoctorSection? = nil
 
     var localizedSummary: String {
         L10n.format("summary.checkup_counts", passCount, warnCount, failCount)
+    }
+
+    /// For the diagnostics export, which support reads in English: the
+    /// Checkup's result and each section's, e.g. "failed (PASS 40, WARN 0,
+    /// FAIL 2) at 2026-10-11T03:43:00Z; device: pass (...); this Mac: fail (...)".
+    var diagnosticsSummary: String {
+        var parts = ["\(state.rawValue) (\(Self.counts(passCount, warnCount, failCount))) at \(ISO8601DateFormatter().string(from: checkedAt))"]
+        for (name, section) in [("device", device), ("this Mac", thisMac)] {
+            if let section {
+                parts.append("\(name): \(section.status.rawValue) (\(Self.counts(section.passCount, section.warnCount, section.failCount)))")
+            }
+        }
+        return parts.joined(separator: "; ")
+    }
+
+    private static func counts(_ pass: Int, _ warn: Int, _ fail: Int) -> String {
+        "PASS \(pass), WARN \(warn), FAIL \(fail)"
     }
 }
 

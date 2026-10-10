@@ -78,7 +78,7 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ]),
             .init(events: [
@@ -267,7 +267,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ])
         ])
@@ -489,7 +489,7 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ], pauseBeforeEvents: true)
         ])
@@ -519,12 +519,12 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ], pauseBeforeEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ])
         ])
@@ -564,7 +564,7 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime"),
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device"),
                     testDoctorCheck(status: "WARN", message: "bonjour missing", domain: "Bonjour")
                 ]))
             ]),
@@ -697,7 +697,7 @@ final class DashboardStoreTests: XCTestCase {
             ], pauseAfterEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ])
         ])
@@ -749,7 +749,7 @@ final class DashboardStoreTests: XCTestCase {
                     testDoctorCheck(
                         status: "FAIL",
                         message: "deployed payload config not found; please run deploy to install on your device",
-                        domain: "Runtime",
+                        domain: "device",
                         code: DoctorSummary.runtimeNotInstalledResultCode
                     )
                 ]))
@@ -863,7 +863,7 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ], pauseBeforeEvents: true)
         ])
@@ -904,11 +904,45 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(fixture.registry.profile(id: second.id)?.runtimeState)
     }
 
+    func testCheckupAsksForLocalNetworkPermissionFirstAndSendsTheAnswer() async throws {
+        let checker = GatedLocalNetworkPreflightChecker()
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "ok", domain: "device")
+                ]))
+            ])
+        ], checker: checker)
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState { checker.isWaiting }
+        // Running while macOS answers, and a second click starts nothing.
+        XCTAssertEqual(session.doctorStore.state, .running)
+        XCTAssertTrue(CheckupPresentation(summary: nil, state: session.doctorStore.state).primaryAction == nil)
+        session.runCheckup(profile: profile)
+        XCTAssertEqual(checker.checkCount, 1)
+        XCTAssertTrue(fixture.runner.calls.isEmpty)
+
+        checker.finish(.denied)
+        try await waitUntilStoreState { session.doctorStore.state == .passed }
+        XCTAssertEqual(fixture.runner.calls.count, 1)
+        XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_result"], .string("denied"))
+    }
+
     func testSkippedSSHCheckupDoesNotMarkRuntimeInstalled() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "local checks passed", domain: "General")
+                    testDoctorCheck(status: "PASS", message: "local checks passed", domain: "computer")
                 ]))
             ])
         ])
@@ -1065,7 +1099,7 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ]),
             .init(events: [
@@ -1109,7 +1143,7 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ])
         ])
@@ -1163,7 +1197,7 @@ final class DashboardStoreTests: XCTestCase {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                 ]))
             ]),
             .init(events: [
@@ -1234,7 +1268,10 @@ final class DashboardStoreTests: XCTestCase {
         appStore.operationCoordinator.isDeviceBusy(profile)
     }
 
-    private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> (
+    private func makeFixture(
+        responses: [StoreTestRunner.Response],
+        checker: LocalNetworkPreflightChecking? = nil
+    ) async throws -> (
         appStore: AppStore,
         registry: DeviceRegistryStore,
         passwordStore: InMemoryPasswordStore,
@@ -1250,7 +1287,8 @@ final class DashboardStoreTests: XCTestCase {
             appReadinessStore: AppReadinessStore(backend: coordinator.backend),
             deviceRegistry: registry,
             operationCoordinator: coordinator,
-            passwordStore: passwordStore
+            passwordStore: passwordStore,
+            localNetworkPreflightChecker: checker
         )
         return (appStore, registry, passwordStore, runner)
     }

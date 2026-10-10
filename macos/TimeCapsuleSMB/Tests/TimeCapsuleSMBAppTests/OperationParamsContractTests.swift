@@ -63,6 +63,7 @@ final class OperationParamsContractTests: XCTestCase {
             ("update-config-settings", OperationParams.Configure.updateSettings(.default)),
             ("update-config-settings", OperationParams.Configure.updateSettings(settingsWithoutStandby)),
             ("doctor", OperationParams.Doctor.run(skipSSH: true, skipBonjour: true, skipSMB: true)),
+            ("doctor", OperationParams.Doctor.run(localNetworkPreflight: preflight)),
             ("deploy", OperationParams.Deploy.params(noWait: true, debugLogging: true, ataIdleSeconds: 600, ataStandby: 5, mountWait: 30)),
             ("deploy", OperationParams.Deploy.params(noWait: false, debugLogging: false, ataIdleSeconds: 600, ataStandby: nil, mountWait: 30)),
             ("activate", OperationParams.Activation.params()),

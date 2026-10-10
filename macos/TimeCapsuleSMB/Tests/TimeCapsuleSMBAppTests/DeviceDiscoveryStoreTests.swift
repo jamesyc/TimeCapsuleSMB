@@ -154,7 +154,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "ok", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "ok", domain: "device")
                 ]))
             ], pauseAfterEvents: true),
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
@@ -176,7 +176,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                    testDoctorCheck(status: "PASS", message: "ok", domain: "Runtime")
+                    testDoctorCheck(status: "PASS", message: "ok", domain: "device")
                 ]))
             ], pauseAfterEvents: true),
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
@@ -274,7 +274,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
     }
 
     func testCancelledPreflightCannotLaunchLateDiscovery() async throws {
-        let checker = GatedDiscoveryPermissionChecker()
+        let checker = GatedLocalNetworkPreflightChecker()
         let fixture = try await makeReadyFixture(responses: [], checker: checker)
         fixture.monitor.startMonitoring()
         try await waitUntilStoreState { checker.isWaiting }
@@ -287,7 +287,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
     }
 
     func testToolbarCancelDuringDiscoveryPermissionProbeRestoresAddDeviceControls() async throws {
-        let checker = GatedDiscoveryPermissionChecker()
+        let checker = GatedLocalNetworkPreflightChecker()
         let fixture = try await makeReadyFixture(responses: [], checker: checker)
         let passwordStore = InMemoryPasswordStore()
         let app = AppStore(appReadinessStore: fixture.readiness, deviceRegistry: fixture.registry,
@@ -314,7 +314,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
     }
 
     func testConfigurePreflightOwnsItsUIWhileDiscoveryRefreshesAndAfterCancellation() async throws {
-        let checker = GatedDiscoveryPermissionChecker()
+        let checker = GatedLocalNetworkPreflightChecker()
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true,
                 payload: testDiscoverPayload(records: [testDeviceRecord()]))]),
@@ -342,7 +342,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
     }
 
     func testPreflightCompletionRechecksBusyLaneAndReusesResultWhenItResumes() async throws {
-        let checker = GatedDiscoveryPermissionChecker()
+        let checker = GatedLocalNetworkPreflightChecker()
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: []))], pauseAfterEvents: true),
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))])
@@ -487,23 +487,3 @@ private struct DiscoveryMonitorTestRuntimeResolver: AppRuntimeResolving {
     }
 }
 
-private final class GatedDiscoveryPermissionChecker: LocalNetworkPreflightChecking, @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    var checkCount: Int { lock.lock(); defer { lock.unlock() }; return count }
-    private var continuation: CheckedContinuation<LocalNetworkPreflightResult, Never>?
-    var isWaiting: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return continuation != nil
-    }
-    func check() async -> LocalNetworkPreflightResult {
-        await withCheckedContinuation { next in
-            lock.lock(); count += 1; continuation = next; lock.unlock()
-        }
-    }
-    func finish(_ status: LocalNetworkPreflightStatus) {
-        lock.lock(); let next = continuation; continuation = nil; lock.unlock()
-        next?.resume(returning: LocalNetworkPreflightResult(status: status, detail: nil,
-                      durationMilliseconds: 7, serviceType: "_airport._tcp"))
-    }
-}

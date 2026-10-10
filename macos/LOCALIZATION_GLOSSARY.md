@@ -88,10 +88,16 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Guest network | Gastnetzwerk | gastnetwerk | réseau invité | red de invitados |
 | Main network | Hauptnetzwerk | hoofdnetwerk | réseau principal | red principal |
 | LAN port | LAN-Anschluss | LAN-poort | port LAN | puerto LAN |
+| Checkup section: the device's own checks | Gerät | Apparaat | Appareil | Dispositivo |
+| Checkup section: this Mac's checks (the CLI says “This computer”) | Dieser Mac | Deze Mac | Ce Mac | Este Mac |
+| Checkup section status: nothing ran on the device | Nicht geprüft | Niet gecontroleerd | Non vérifié | No comprobado |
 
 | Concept | it | pt-BR | ru | zh-Hans | lt |
 |---|---|---|---|---|---|
 | Device profile | profilo del dispositivo | perfil do dispositivo | профиль устройства | 设备配置 | įrenginio profilis |
+| Checkup section: the device's own checks | Dispositivo | Dispositivo | Устройство | 设备 | Įrenginys |
+| Checkup section: this Mac's checks | Questo Mac | Este Mac | Этот Mac | 此 Mac | Šis Mac |
+| Checkup section status: nothing ran on the device | Non controllato | Não verificado | Не проверено | 未检查 | Nepatikrinta |
 | Save profile | Salva profilo | Salvar perfil | Сохранить профиль | 保存配置 | Išsaugoti profilį |
 | Install / Update Samba (button) | Installa/aggiorna Samba | Instalar/atualizar Samba | Установить/обновить Samba | 安装 / 更新 Samba | Įdiegti / atnaujinti Samba |
 | Install / Update (tab, timeline) | Installa/aggiorna | Instalar/atualizar | Установить/обновить | 安装 / 更新 | Diegti / atnaujinti |

@@ -6,7 +6,7 @@ import socket
 import struct
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,18 +40,21 @@ from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
 from timecapsulesmb.checks.doctor_state import DoctorSink
 from timecapsulesmb.checks.doctor_steps import (
     _add_admin_password_result,
+    DEVICE_SMB_PASSED,
     DOCTOR_CODE_DEVICE_STARTING_UP,
     DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK,
     DOCTOR_STARTUP_GRACE_SECONDS,
     STARTUP_GRACE_DETAIL_KEY,
     STARTUP_GRACE_MASK,
     _apply_startup_grace,
+    _doctor_device_blocks,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
 from tests.test_client_network import router_plan
 from tests.reboot_support import acp_password_answer, acp_reading
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.services.doctor import doctor_report
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login
 from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.checks.nbns import (
@@ -107,7 +110,14 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     BonjourServiceInstance,
 )
-from timecapsulesmb.transport.errors import SshLocalNetworkFilteredError
+from timecapsulesmb.transport.errors import (
+    SshAlgorithmNegotiationError,
+    SshAuthenticationError,
+    SshClientConfigError,
+    SshClientCrashedError,
+    SshLocalNetworkFilteredError,
+    SshNetworkError,
+)
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, parse_ssh_client_diagnostics
 
 
@@ -274,6 +284,8 @@ class CheckTests(unittest.TestCase):
         device_subnets_probe: DeviceIpv4SubnetsProbeResult = SAME_SUBNET_DEVICE_PROBE,
         local_networks=SAME_NETWORK_LOCAL_NETWORKS,
         extra_patches: dict[str, object] | None = None,
+        real_device_smb: bool = False,
+        local_network_permission: str | None = None,
     ):
         resolved_values = values or self.valid_doctor_values()
         mocks = SimpleNamespace()
@@ -308,6 +320,27 @@ class CheckTests(unittest.TestCase):
             if smb_file_ops is not None:
                 mocks.check_authenticated_smb_file_ops_detailed = stack.enter_context(
                     mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=smb_file_ops)
+                )
+            # The device's own SMB check reaches smbd through an SSH tunnel.
+            # Cases about this computer's LAN checks leave it out, so their
+            # smbclient mocks serve only the LAN listing.
+            # smbclient is on this computer unless a case says otherwise (CI's may lack it).
+            if "timecapsulesmb.checks.doctor_steps.command_exists" not in (extra_patches or {}):
+                mocks.command_exists = stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.doctor_steps.command_exists", return_value=True)
+                )
+            if not real_device_smb:
+                mocks.device_smb = stack.enter_context(mock.patch(
+                    "timecapsulesmb.checks.doctor_steps._add_tunneled_authenticated_smb_results",
+                    return_value=DEVICE_SMB_PASSED,
+                ))
+            if "timecapsulesmb.checks.doctor_steps.ssh_local_forward" not in (extra_patches or {}):
+                mocks.ssh_local_forward = stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.doctor_steps.ssh_local_forward", return_value=nullcontext())
+                )
+            if "timecapsulesmb.checks.doctor_steps.find_free_local_port" not in (extra_patches or {}):
+                mocks.find_free_local_port = stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.doctor_steps.find_free_local_port", return_value=2445)
                 )
             if run_ssh_side_effect is not None:
                 mocks.run_ssh = stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=run_ssh_side_effect))
@@ -411,6 +444,7 @@ class CheckTests(unittest.TestCase):
                 skip_bonjour=skip_bonjour,
                 skip_smb=skip_smb,
                 startup_grace=startup_grace,
+                local_network_permission=local_network_permission,
                 on_result=on_result,
                 debug_fields=debug_fields,
             )
@@ -1025,7 +1059,8 @@ class CheckTests(unittest.TestCase):
         ipv6_result = next(result for result in run.results if "fd00::2:445" in result.message)
         self.assertEqual(ipv6_result.status, "WARN")
         self.assertEqual(listing_mock.call_args.args[2], [SmbClientTarget("timecapsulesamba4.local", "10.0.0.2")])
-        file_ops_mock.assert_called_once_with("admin", "pw", "timecapsulesamba4.local", "Data", port=445, ip_address="10.0.0.2")
+        # SSH works, so the device changes files itself; the LAN only lists.
+        file_ops_mock.assert_not_called()
 
     def test_run_doctor_checks_fails_when_enabled_native_nbns_does_not_answer(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -2529,6 +2564,7 @@ class CheckTests(unittest.TestCase):
         debug_fields: dict[str, object] = {}
         log_tail_mock = mock.Mock(return_value=self.data_disk_log_tails())
         run = self.run_doctor_with_mocks(
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             smb_instance=[],
@@ -2558,6 +2594,7 @@ class CheckTests(unittest.TestCase):
             )
         )
         run = self.run_doctor_with_mocks(
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             smb_instance=[],
@@ -2590,6 +2627,9 @@ class CheckTests(unittest.TestCase):
         log_tail_mock = mock.Mock(return_value={})
         with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
             run = self.run_doctor_with_mocks(
+                # The device's own SMB check is what a short process table
+                # must protect, so these cases run it.
+                real_device_smb=True,
                 ssh_login=ssh_login or mock.Mock(status="PASS", message="ssh ok"),
                 smb_port=mock.Mock(status="PASS", message="445 ok"),
                 smb_instance=[],
@@ -2676,8 +2716,9 @@ class CheckTests(unittest.TestCase):
         stuck = [result for result in run.results if "blocked in the kernel" in result.message]
         self.assertEqual(len(stuck), 1)
         self.assertIn("mDNSResponder (pid 359) waiting on tstile for 125 s", stuck[0].message)
-        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
-        self.assertEqual([call.args[0] for call in run.sleep.call_args_list], [10, 15])
+        # Retried as usual, on the device and then over the LAN.
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 6)
+        self.assertEqual([call.args[0] for call in run.sleep.call_args_list], [10, 15, 10, 15])
 
     def test_run_doctor_checks_ignores_short_uninterruptible_sleeps_and_kernel_threads(self) -> None:
         snapshot = "\n".join(
@@ -2704,7 +2745,11 @@ class CheckTests(unittest.TestCase):
         warnings = [result for result in run.results if "listing the device's processes timed out" in result.message]
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0].status, "WARN")
-        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 1)
+        # Once on the device, once over the LAN: neither retries.
+        self.assertEqual(
+            [call.args[2] for call in run.mocks.check_authenticated_smb_listing.call_args_list][0], "127.0.0.1",
+        )
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 2)
         run.sleep.assert_not_called()
         self.assertEqual(
             run.log_tails.call_args.kwargs["skip_data_disk"],
@@ -2720,7 +2765,8 @@ class CheckTests(unittest.TestCase):
         )
 
         self.assertFalse(any(result.status == "WARN" and "processes" in result.message for result in run.results))
-        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
+        # Three tries on the device, three over the LAN.
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 6)
         self.assertIsNone(run.log_tails.call_args.kwargs["skip_data_disk"])
         self.assertIn("ssh command failed", run.debug_fields["remote_process_snapshot_error"])
 
@@ -2769,7 +2815,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("still starting up", startup_fail.message)
         self.assertIn("41s ago", startup_fail.message)
         self.assertEqual(startup_fail.details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
-        self.assertEqual(startup_fail.details["domain"], "Runtime")
+        self.assertEqual(startup_fail.domain, "device")
         self.assertEqual(startup_fail.details["manager_started_seconds_ago"], 41)
         self.assertEqual(startup_fail.details["startup_grace_seconds"], DOCTOR_STARTUP_GRACE_SECONDS)
         self.assertEqual(
@@ -3062,6 +3108,10 @@ class CheckTests(unittest.TestCase):
             mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
+            # The device's own login fails the same way: waiting cannot fix it.
+            real_device_smb=True,
+            # ACP did not answer, so whether the password is right is unknown.
+            device_reading=acp_reading(None),
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
                     return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
@@ -3071,19 +3121,17 @@ class CheckTests(unittest.TestCase):
             },
         )
 
-        failures = [result for result in run.results if result.status == "FAIL"]
-        self.assertTrue(any("NT_STATUS_LOGON_FAILURE" in result.message for result in failures))
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in failures))
-        self.assertEqual(
-            [result for result in run.results if result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP],
-            [],
-        )
-        self.assertTrue(
-            any(
-                result.status == "INFO" and "device services started 41s ago" in result.message
-                for result in run.results
-            )
-        )
+        # Samba rejecting the saved password is this computer's setup: waiting
+        # cannot fix it, so it stays a failure, while the device's startup
+        # failures still collapse into "starting up".
+        rejected = [result for result in run.results if result.details.get("code") == "smb_login_rejected"]
+        self.assertEqual([(result.status, result.domain) for result in rejected], [("FAIL", "computer")])
+        self.assertIn("NT_STATUS_LOGON_FAILURE", rejected[0].message)
+        self.assertTrue(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
+        self.assertFalse(any(
+            result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP and result.domain == "computer"
+            for result in run.results
+        ))
 
     def test_run_doctor_checks_masks_connection_shaped_smb_failure_during_startup_grace(self) -> None:
         connection_failure = CheckResult(
@@ -3301,6 +3349,7 @@ class CheckTests(unittest.TestCase):
         mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
 
         self.run_doctor_with_mocks(
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             smb_instance=[],
@@ -3706,14 +3755,13 @@ class CheckTests(unittest.TestCase):
                 failures = [result for result in run.results if result.status == "FAIL"]
                 if collapsed:
                     self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
-                    self.assertIn("NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137",
-                                  failures[0].details["masked_failures"])
-                    self.assertIn("discovery native NBNS is not ready", failures[0].details["masked_failures"])
+                    self.assertEqual(failures[0].details["masked_failures"], ["discovery native NBNS is not ready"])
                 else:
-                    self.assertEqual(
-                        {result.message for result in failures},
-                        {"discovery native NBNS is not ready", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137"},
-                    )
+                    self.assertEqual({result.message for result in failures}, {"discovery native NBNS is not ready"})
+                # The device reported NBNS not ready, so this computer's query
+                # timing out is not counted against it.
+                query = next(result for result in run.results if result.details.get("code") == NBNS_QUERY_TIMEOUT_CODE)
+                self.assertEqual(query.status, "SKIP")
 
     @staticmethod
     def _device_startup_age(output: str) -> mock.Mock:
@@ -3731,7 +3779,8 @@ class CheckTests(unittest.TestCase):
         # keeps it a startup failure. A manager that is old on that clock,
         # or that has no start (an older release), keeps the real failures.
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
-        nbns_failures = {"discovery native NBNS is not ready", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137"}
+        # This computer's query timing out is the device's NBNS, not counted as a failure here.
+        nbns_failures = {"discovery native NBNS is not ready"}
         cases = (
             ("stepped", "role=manager started=5", "60000", True, 55.0),
             ("old", "role=manager started=5", "4000000", False, 3995.0),
@@ -4208,6 +4257,206 @@ class CheckTests(unittest.TestCase):
             for result in run.results
         ))
 
+    def test_run_doctor_checks_reports_each_result_in_the_section_it_was_measured_in(self) -> None:
+        run = self.run_doctor_with_mocks(
+            local_tools=[CheckResult("PASS", "found local tool ssh")],
+            ssh_login=CheckResult("PASS", "ssh ok"),
+            smb_port=CheckResult("PASS", "445 ok"),
+            smb_instance=[CheckResult("PASS", "instance ok")],
+            smb_file_ops=[CheckResult("PASS", "file ops ok")],
+            real_device_smb=True,
+            device_reading=acp_reading(True),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
+            # A fresh result per listing: the device's and this computer's.
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing":
+                    mock.Mock(side_effect=lambda *_args, **_kwargs: self.smb_listing_result()),
+            },
+        )
+        domains = {result.message: result.domain for result in run.results}
+        # This computer: its tools and config, its SSH login, the saved
+        # password read over ACP, and everything it sees over the network.
+        for message in ("found local tool ssh", "ssh ok", "the saved password is the AirPort admin password",
+                        "Bonjour IPv4: instance ok", "SMB IPv4 reachable at 10.0.0.2:445"):
+            self.assertEqual(domains.get(message), "computer", message)
+        # The device: measured over SSH, its own SMB check included.
+        self.assertEqual(domains["file ops ok"], "device")
+        self.assertTrue(any(result.domain == "device" and "managed smbd" in result.message for result in run.results))
+        self.assertTrue(all(result.domain in ("computer", "device") for result in run.results))
+        # This computer's own setup, the device, then this computer's view of
+        # the device over the network: each section once.
+        sections = [result.domain for result in run.results]
+        changes = [section for index, section in enumerate(sections) if index == 0 or section != sections[index - 1]]
+        self.assertEqual(changes, ["computer", "device", "computer"])
+
+    def test_run_doctor_checks_reports_the_device_as_not_checked_when_ssh_login_fails(self) -> None:
+        run = self.run_doctor_with_mocks(
+            ssh_login=CheckResult("FAIL", "ssh down", {"code": "ssh_unreachable"}),
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            skip_bonjour=True,
+        )
+        device_results = [result for result in run.results if result.domain == "device"]
+        self.assertEqual(
+            [(result.status, result.details.get("code")) for result in device_results],
+            [("SKIP", "device_not_checked")],
+        )
+        run.mocks.device_smb.assert_not_called()
+        report = doctor_report(run.results)
+        # Nothing ran on the device: not checked, not failed.
+        self.assertEqual(report["sections"]["device"]["status"], "not_checked")
+        self.assertEqual(report["sections"]["computer"]["fail_codes"], ["ssh_unreachable"])
+        self.assertEqual(report["status"], "fail")
+
+    def test_run_doctor_checks_skip_ssh_reports_no_device_section(self) -> None:
+        # Skipping SSH is the user's choice, not a failure to report.
+        run = self.run_doctor_with_mocks(skip_ssh=True, skip_bonjour=True, smb_listing=self.smb_listing_result(), smb_file_ops=[])
+        self.assertFalse(any(result.domain == "device" for result in run.results))
+
+    def test_run_doctor_checks_reports_the_apps_local_network_permission(self) -> None:
+        cases = {
+            "allowed": ("PASS", None),
+            "denied": ("FAIL", "local_network_denied"),
+            "unknown": ("INFO", None),
+        }
+        for permission, (status, code) in cases.items():
+            with self.subTest(permission=permission):
+                run = self.run_doctor_with_mocks(
+                    local_network_permission=permission, skip_ssh=True, skip_bonjour=True, skip_smb=True,
+                )
+                result = next(result for result in run.results if "Local Network permission" in result.message)
+                self.assertEqual((result.status, result.details.get("code"), result.domain), (status, code, "computer"))
+                self.assertEqual(run.fatal, status == "FAIL")
+        # The CLI has no such permission and says nothing about it.
+        run = self.run_doctor_with_mocks(skip_ssh=True, skip_bonjour=True, skip_smb=True)
+        self.assertFalse(any("Local Network permission" in result.message for result in run.results))
+
+    def test_run_doctor_checks_reports_local_network_permission_even_without_a_config(self) -> None:
+        run = self.run_doctor_with_mocks(exists=False, local_network_permission="denied")
+        self.assertTrue(any(result.details.get("code") == "local_network_denied" for result in run.results))
+
+    def test_check_ssh_login_names_who_a_failure_points_at(self) -> None:
+        connection = SshConnection("root@10.0.0.5", "pw", "")
+        cases = (
+            (SshLocalNetworkFilteredError("filtered"), "local_network_filtered"),
+            (SshClientCrashedError(11, platform="darwin"), "local_network_filtered"),
+            (SshClientConfigError("ssh too old"), "ssh_client_failed"),
+            (SshAuthenticationError("denied"), "ssh_auth_rejected"),
+            (SshAlgorithmNegotiationError("no shared key exchange", algorithm="kex", offered=("diffie-hellman-group1-sha1",)),
+             "ssh_algorithm_negotiation_failed"),
+            (SshNetworkError("timed out"), "ssh_unreachable"),
+        )
+        for error, code in cases:
+            with self.subTest(code=code, error=type(error).__name__):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error):
+                    result = check_ssh_login(connection)
+                self.assertEqual((result.status, result.details["code"]), ("FAIL", code))
+        # ssh ran, and the command itself failed on the device.
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=1, stdout="")):
+            result = check_ssh_login(connection)
+        self.assertEqual(result.details["code"], "ssh_command_failed")
+
+    def test_apply_startup_grace_ignores_this_computers_own_failures(self) -> None:
+        starting = CheckResult("FAIL", "managed smbd parent process is not running", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK})
+        tools = CheckResult("FAIL", "missing local tool smbclient", domain="computer")
+        transformed, synthesized = _apply_startup_grace([starting, tools], 41.0)
+        # Waiting fixes nothing here, so it neither blocks the collapse nor gets the note.
+        self.assertEqual(synthesized[0].details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
+        self.assertEqual(synthesized[0].domain, "device")
+        self.assertIs(transformed[1], tools)
+        self.assertEqual(transformed[0].status, "INFO")
+
+        alone, note = _apply_startup_grace([tools], 41.0)
+        self.assertEqual((alone, note), ([tools], ()))
+
+    def test_apply_startup_grace_masks_this_computers_view_of_a_device_still_starting(self) -> None:
+        # The LAN listing timing out while smbd starts can resolve by waiting.
+        lan = CheckResult("FAIL", "listing timed out", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK}, domain="computer")
+        transformed, synthesized = _apply_startup_grace([lan], 41.0)
+        self.assertEqual(transformed[0].status, "INFO")
+        self.assertEqual(transformed[0].domain, "computer")
+        self.assertEqual(synthesized[0].details["masked_failures"], ["listing timed out"])
+
+    def test_doctor_sink_counts_a_failure_the_device_explains_against_the_device(self) -> None:
+        sink = DoctorSink(on_result=None, debug_fields=None)
+        sink.blocked_by_device = _doctor_device_blocks(False, True, None)
+        with sink.in_section("computer"):
+            sink.add(CheckResult("FAIL", "SMB IPv4 is not reachable at 10.0.0.2:445", {"code": "smb_port_unreachable"}))
+            sink.add(CheckResult("FAIL", "no discovered _smb._tcp instance", {"code": "bonjour_instance_not_seen"}))
+        sink.add(CheckResult("FAIL", "device failure", {"code": "smb_port_unreachable"}))
+
+        port, bonjour, device = sink.results
+        self.assertEqual((port.status, port.details["code"], port.details["blocked_by_device"]),
+                         ("SKIP", "smb_port_unreachable", True))
+        self.assertTrue(port.message.endswith("; not counted against this computer: Samba is not running on the device (see Device)"))
+        # Bonjour registration was not reported down, and device results are never changed.
+        self.assertEqual(bonjour.status, "FAIL")
+        self.assertEqual(device.status, "FAIL")
+
+    def test_run_doctor_checks_does_not_blame_this_computer_when_samba_is_down_on_the_device(self) -> None:
+        refused = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 10.0.0.2: NT_STATUS_CONNECTION_REFUSED",
+            {"attempts": []},
+        )
+        smbd_down = ReadinessProbeResult(
+            ready=False,
+            detail="managed smbd parent process is not running",
+            steps=(
+                ProbeStepResult("smbd_config", "pass", "managed runtime smb.conf present"),
+                ProbeStepResult("smbd_parent", "fail", "managed smbd parent process is not running"),
+            ),
+        )
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep"):
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_listing=refused,
+                smbd_probe=smbd_down,
+                skip_bonjour=True,
+            )
+
+        listing = next(result for result in run.results if result.details.get("code") == "smb_listing_failed")
+        self.assertEqual((listing.status, listing.domain), ("SKIP", "computer"))
+        self.assertIn("not counted against this computer: Samba is not running on the device", listing.message)
+        sections = doctor_report(run.results)["sections"]
+        self.assertEqual(sections["device"]["status"], "fail")
+        self.assertNotIn("smb_listing_failed", sections["computer"]["fail_codes"])
+
+    def test_doctor_device_blocks_name_only_services_the_device_reported_down(self) -> None:
+        self.assertEqual(_doctor_device_blocks(None, None, None), {})
+        self.assertEqual(_doctor_device_blocks(True, True, True), {})
+        self.assertEqual(set(_doctor_device_blocks(False, False, False)), {
+            "smb_port_unreachable", "smb_listing_failed", NBNS_QUERY_TIMEOUT_CODE, NBNS_NEGATIVE_RESPONSE_CODE,
+            "bonjour_instance_not_seen",
+        })
+
+    def test_doctor_report_sections_and_overall_status(self) -> None:
+        def report(*results):
+            return doctor_report(list(results))
+
+        computer_fail = CheckResult("FAIL", "a", {"code": "smb_port_unreachable"}, domain="computer")
+        computer_warn = CheckResult("WARN", "c", {"code": "smb_listing_host_unreachable"}, domain="computer")
+        device_pass = CheckResult("PASS", "d", domain="device")
+        not_checked = CheckResult("SKIP", "n", {"code": "device_not_checked"}, domain="device")
+
+        both = report(computer_fail, CheckResult(computer_fail.status, "b", computer_fail.details, domain="computer"),
+                      computer_warn, device_pass)
+        self.assertEqual(both["sections"]["computer"]["fail_codes"], ["smb_port_unreachable"])
+        self.assertEqual(both["sections"]["computer"]["warn_codes"], ["smb_listing_host_unreachable"])
+        self.assertEqual(both["sections"]["computer"]["counts"], {"PASS": 0, "WARN": 1, "FAIL": 2, "INFO": 0})
+        # A healthy device next to a failing computer: the device stays green.
+        self.assertEqual(both["sections"]["device"]["status"], "pass")
+        self.assertEqual(both["status"], "fail")
+
+        # An untagged result is the device's.
+        self.assertEqual(report(CheckResult("FAIL", "u"))["sections"]["device"]["status"], "fail")
+        self.assertEqual(report(device_pass, computer_warn)["status"], "warn")
+        # SSH skipped: nothing on the device, and that alone is no failure.
+        skipped = report(CheckResult("PASS", "tools", domain="computer"))
+        self.assertEqual((skipped["sections"]["device"]["status"], skipped["status"]), ("not_checked", "pass"))
+        # SSH refused: only the "not checked" note.
+        refused = report(CheckResult("FAIL", "ssh", {"code": "ssh_unreachable"}, domain="computer"), not_checked)
+        self.assertEqual((refused["sections"]["device"]["status"], refused["status"]), ("not_checked", "fail"))
     def test_check_ssh_login_uses_configured_ssh_transport(self) -> None:
         connection = SshConnection("root@192.168.1.118", "pw", "-o ProxyCommand=jump")
         with mock.patch(
@@ -4371,6 +4620,7 @@ class CheckTests(unittest.TestCase):
         ]
         run = self.run_doctor_with_mocks(
             values,
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
@@ -4379,7 +4629,17 @@ class CheckTests(unittest.TestCase):
             skip_bonjour=True,
         )
         self.assertFalse(run.fatal)
-        self.assertEqual([result.message for result in run.results[-10:]], [result.message for result in smb_results])
+        # The device's own SMB check changes files through the SSH tunnel to
+        # its loopback; this computer's LAN check only lists shares.
+        messages = [result.message for result in run.results]
+        start = messages.index(smb_results[0].message)
+        self.assertEqual(messages[start:start + 10], [result.message for result in smb_results])
+        run.mocks.check_authenticated_smb_file_ops_detailed.assert_called_once_with(
+            "admin", "pw", "127.0.0.1", "Data", port=2445,
+        )
+        run.mocks.ssh_local_forward.assert_called_once_with(
+            mock.ANY, local_port=2445, remote_host="127.0.0.1", remote_port=445,
+        )
 
     def test_run_doctor_checks_emits_naming_diagnostics(self) -> None:
         values = {
@@ -4469,7 +4729,9 @@ class CheckTests(unittest.TestCase):
             path = /Volumes/dk2/ShareRoot
         """
 
-        with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
+        with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]), \
+             mock.patch("timecapsulesmb.checks.doctor_steps._add_tunneled_authenticated_smb_results",
+                        return_value=DEVICE_SMB_PASSED):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
                     with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
@@ -4960,6 +5222,7 @@ class CheckTests(unittest.TestCase):
         }
         run = self.run_doctor_with_mocks(
             values,
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
@@ -4968,18 +5231,18 @@ class CheckTests(unittest.TestCase):
             runtime_naming_identity=self.runtime_identity_from_values(values),
         )
         self.assertFalse(run.fatal)
-        run.mocks.check_authenticated_smb_listing.assert_called_once_with(
-            "admin",
-            "pw",
-            [SmbClientTarget("timecapsulesamba4.local", "10.0.0.2")],
-            port=445,
-        )
+        # The device lists and changes files through the SSH tunnel first;
+        # this computer then lists the shares over the LAN.
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_args_list, [
+            mock.call("admin", "pw", "127.0.0.1", port=2445),
+            mock.call("admin", "pw", [SmbClientTarget("timecapsulesamba4.local", "10.0.0.2")], port=445),
+        ])
         run.mocks.check_authenticated_smb_file_ops_detailed.assert_called_once_with(
             "admin",
             "pw",
-            "timecapsulesamba4.local",
+            "127.0.0.1",
             "Data",
-            port=445,
+            port=2445,
         )
         self.assertTrue(any(result.status == "PASS" and "includes active share 'Data'" in result.message for result in run.results))
 
@@ -5001,6 +5264,7 @@ class CheckTests(unittest.TestCase):
         active_smb_conf = DEFAULT_ACTIVE_SMB_CONF.replace("[Data]", "[Nicholas  McBride's Time Ca]")
         run = self.run_doctor_with_mocks(
             values,
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             skip_bonjour=True,
             smb_listing=self.smb_listing_result(disk_shares=["Nicholas McBride's Time Ca"]),
@@ -5014,9 +5278,9 @@ class CheckTests(unittest.TestCase):
         run.mocks.check_authenticated_smb_file_ops_detailed.assert_called_once_with(
             "admin",
             "pw",
-            "timecapsulesamba4.local",
+            "127.0.0.1",
             "Nicholas McBride's Time Ca",
-            port=445,
+            port=2445,
         )
         self.assertIn(
             "authenticated SMB listing includes active share \"Nicholas McBride's Time Ca\"",
@@ -5028,6 +5292,7 @@ class CheckTests(unittest.TestCase):
         file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
 
         run = self.run_doctor_with_mocks(
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             skip_bonjour=True,
@@ -5423,7 +5688,10 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["authenticated_smb_listing_active_shares"], ["Data"])
         self.assertEqual(debug_fields["authenticated_smb_listing_attempts"], listing_attempts)
 
-    def test_run_doctor_checks_retries_host_unreachable_smbclient_through_ssh_tunnel(self) -> None:
+    def test_run_doctor_checks_warns_when_this_mac_cannot_reach_smb_that_works_on_the_device(self) -> None:
+        # macOS refuses the LAN connection (NT_STATUS_HOST_UNREACHABLE) when the
+        # app lacks Local Network permission; the device's own SMB check
+        # through SSH still passes, so the device stays healthy.
         debug_fields: dict[str, object] = {}
         direct_attempts = [
             {
@@ -5438,72 +5706,187 @@ class CheckTests(unittest.TestCase):
             "authenticated SMB listing failed after 1 attempt(s): attempt 1 timecapsulesamba4.local via 10.0.0.2: NT_STATUS_HOST_UNREACHABLE",
             {"attempts": direct_attempts},
         )
-        listing_mock = mock.Mock(side_effect=[direct_failure, self.smb_listing_result("127.0.0.1")])
-        file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
-        tunnel_mock = mock.MagicMock()
-        tunnel_mock.return_value.__enter__.return_value = None
-        tunnel_mock.return_value.__exit__.return_value = None
+        listing_mock = mock.Mock(side_effect=[self.smb_listing_result("127.0.0.1"), direct_failure])
+        file_ops_mock = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
 
         run = self.run_doctor_with_mocks(
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.find_free_local_port": mock.Mock(return_value=2445),
-                "timecapsulesmb.checks.doctor_steps.ssh_local_forward": tunnel_mock,
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
             },
         )
 
         self.assertFalse(run.fatal)
-        self.assertFalse(any(result.status == "FAIL" for result in run.results))
-        self.assertTrue(any(result.status == "WARN" and "retrying through SSH tunnel" in result.message for result in run.results))
-        tunnel_mock.assert_called_once_with(mock.ANY, local_port=2445, remote_host="127.0.0.1", remote_port=445)
-        self.assertEqual(listing_mock.call_count, 2)
-        self.assertEqual(listing_mock.call_args_list[1].args[2], "127.0.0.1")
-        self.assertEqual(listing_mock.call_args_list[1].kwargs["port"], 2445)
+        run.mocks.ssh_local_forward.assert_called_once_with(mock.ANY, local_port=2445, remote_host="127.0.0.1", remote_port=445)
+        self.assertEqual(listing_mock.call_args_list[0], mock.call("admin", "pw", "127.0.0.1", port=2445))
         file_ops_mock.assert_called_once_with("admin", "pw", "127.0.0.1", "Data", port=2445)
+        self.assertEqual(next(r for r in run.results if r.message == "file ops ok").domain, "device")
+        warning = next(result for result in run.results if result.details.get("code") == "smb_listing_host_unreachable")
+        self.assertEqual((warning.status, warning.domain), ("WARN", "computer"))
+        self.assertIn("Local Network permission", warning.message)
         self.assertEqual(debug_fields["authenticated_smb_listing_attempts"], direct_attempts)
-        self.assertEqual(debug_fields["authenticated_smb_tunnel_listing_servers"], ["127.0.0.1"])
+        self.assertEqual(debug_fields["device_smb_listing_servers"], ["127.0.0.1"])
 
-    def test_run_doctor_checks_keeps_host_unreachable_smbclient_fatal_when_tunnel_fails(self) -> None:
-        direct_failure = CheckResult(
-            "FAIL",
-            "authenticated SMB listing failed after 1 attempt(s): attempt 1 timecapsulesamba4.local via 10.0.0.2: NT_STATUS_HOST_UNREACHABLE",
-            {
-                "attempts": [
-                    {
-                        "server": "timecapsulesamba4.local",
-                        "ip_address": "10.0.0.2",
-                        "outcome": "error",
-                        "failure": "NT_STATUS_HOST_UNREACHABLE",
-                    }
-                ]
-            },
-        )
-        tunnel_failure = CheckResult("FAIL", "authenticated SMB listing failed through tunnel", {"attempts": []})
-        listing_mock = mock.Mock(side_effect=[direct_failure, tunnel_failure])
-        tunnel_mock = mock.MagicMock()
-        tunnel_mock.return_value.__enter__.return_value = None
-        tunnel_mock.return_value.__exit__.return_value = None
-
-        run = self.run_doctor_with_mocks(
+    def device_smb_run(self, listing, **kwargs):
+        return self.run_doctor_with_mocks(
+            real_device_smb=True,
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.find_free_local_port": mock.Mock(return_value=2446),
-                "timecapsulesmb.checks.doctor_steps.ssh_local_forward": tunnel_mock,
-                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing,
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": mock.Mock(return_value=[]),
+                **kwargs.pop("extra_patches", {}),
+            },
+            **kwargs,
+        )
+
+    def test_run_doctor_checks_blames_the_device_when_samba_rejects_the_airport_password(self) -> None:
+        # The password check said the saved password is the AirPort admin
+        # password, so Samba rejecting it means the device has not applied it.
+        rejected = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 127.0.0.1: NT_STATUS_LOGON_FAILURE",
+            {"attempts": []},
+        )
+        listing = mock.Mock(return_value=rejected)
+        run = self.device_smb_run(listing, device_reading=acp_reading(True))
+
+        failure = next(result for result in run.results if result.details.get("code") == "device_smb_password_stale")
+        self.assertEqual((failure.status, failure.domain), ("FAIL", "device"))
+        self.assertIn("restart the device", failure.message)
+        self.assertNotIn("smb_login_rejected", doctor_report(run.results)["sections"]["computer"]["fail_codes"])
+        listing.assert_called_once()
+
+    def test_run_doctor_checks_reports_other_errors_on_the_device_without_blaming_the_tunnel(self) -> None:
+        def listing(username, password, server, port=None):
+            # Only the device's listing, through the tunnel, breaks.
+            if server == "127.0.0.1":
+                raise RuntimeError("smbclient crashed")
+            return self.smb_listing_result()
+
+        run = self.device_smb_run(mock.Mock(side_effect=listing))
+
+        failure = next(result for result in run.results if "smbclient crashed" in result.message)
+        self.assertEqual((failure.status, failure.domain), ("FAIL", "device"))
+        self.assertEqual(failure.message, "authenticated SMB checks on the device failed: smbclient crashed")
+        self.assertNotIn("code", failure.details)
+
+    def test_run_doctor_checks_blames_this_computer_when_samba_rejects_the_saved_password(self) -> None:
+        rejected = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 127.0.0.1: NT_STATUS_LOGON_FAILURE",
+            {"attempts": []},
+        )
+        listing = mock.Mock(return_value=rejected)
+        # ACP did not answer, so whether the password is right is unknown.
+        run = self.device_smb_run(listing, device_reading=acp_reading(None))
+
+        self.assertTrue(run.fatal)
+        sections = doctor_report(run.results)["sections"]
+        self.assertEqual(sections["computer"]["fail_codes"], ["smb_login_rejected"])
+        # The device is not broken, only not checked: yellow.
+        self.assertEqual(sections["device"]["status"], "warn")
+        self.assertEqual(sections["device"]["warn_codes"], ["device_smb_not_checked"])
+        # The LAN listing would only be rejected again.
+        listing.assert_called_once_with("admin", "pw", "127.0.0.1", port=2445)
+
+    def test_run_doctor_checks_does_not_check_samba_with_a_password_known_not_to_match(self) -> None:
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        run = self.device_smb_run(listing, device_reading=acp_reading(False))
+
+        listing.assert_not_called()
+        run.mocks.ssh_local_forward.assert_not_called()
+        warning = next(result for result in run.results if result.details.get("code") == "device_smb_not_checked")
+        self.assertEqual((warning.status, warning.domain), ("WARN", "device"))
+        self.assertIn("not the AirPort admin password", warning.message)
+        mismatch = next(result for result in run.results if "not the AirPort admin password" in result.message
+                        and result is not warning)
+        self.assertEqual((mismatch.status, mismatch.domain), ("WARN", "computer"))
+        # It runs with this computer's setup, before anything on the device.
+        self.assertLess(run.results.index(mismatch), next(
+            index for index, result in enumerate(run.results) if result.domain == "device"
+        ))
+
+    def test_run_doctor_checks_reports_the_device_not_checked_without_smbclient_here(self) -> None:
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        run = self.device_smb_run(
+            listing,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.command_exists": mock.Mock(return_value=False)},
+        )
+
+        run.mocks.ssh_local_forward.assert_not_called()
+        sections = doctor_report(run.results)["sections"]
+        self.assertEqual(sections["device"]["status"], "warn")
+        self.assertEqual(sections["device"]["warn_codes"], ["device_smb_not_checked"])
+        # The LAN listing would only report the missing tool a second time.
+        listing.assert_not_called()
+        self.assertNotIn("smb_listing_failed", sections["computer"]["fail_codes"])
+
+    def test_run_doctor_checks_fails_the_device_when_its_ssh_tunnel_cannot_open(self) -> None:
+        # Deploy needs SSH too, so the device is not green without it.
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        run = self.device_smb_run(
+            listing,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.ssh_local_forward": mock.Mock(side_effect=SshError("tunnel refused")),
+            },
+        )
+
+        failure = next(result for result in run.results if result.details.get("code") == "device_smb_tunnel_failed")
+        self.assertEqual((failure.status, failure.domain), ("FAIL", "device"))
+        self.assertIn("tunnel refused", failure.message)
+        # This computer's LAN listing still runs, without file operations.
+        listing.assert_called_once()
+
+    def test_run_doctor_checks_fails_an_unreachable_lan_listing_when_nothing_checked_smb(self) -> None:
+        # Without SSH, a refused LAN connection is all doctor knows about SMB.
+        unreachable = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 10.0.0.2: NT_STATUS_HOST_UNREACHABLE",
+            {"attempts": []},
+        )
+        run = self.run_doctor_with_mocks(
+            skip_ssh=True,
+            skip_bonjour=True,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": mock.Mock(return_value=unreachable)},
+        )
+
+        result = next(result for result in run.results if result.details.get("code") == "smb_listing_host_unreachable")
+        self.assertEqual((result.status, result.domain), ("FAIL", "computer"))
+        self.assertTrue(run.fatal)
+
+    def test_run_doctor_checks_fails_the_device_when_its_own_smb_listing_fails(self) -> None:
+        # The listing through SSH reaches smbd on the device's loopback: its
+        # failure is the device's, whatever this computer's LAN listing says.
+        tunnel_failure = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 127.0.0.1: NT_STATUS_BAD_NETWORK_NAME",
+            {"attempts": []},
+        )
+        listing_mock = mock.Mock(side_effect=[tunnel_failure, self.smb_listing_result()])
+        file_ops_mock = mock.Mock(return_value=[])
+
+        run = self.run_doctor_with_mocks(
+            real_device_smb=True,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
             },
         )
 
         self.assertTrue(run.fatal)
-        messages = [result.message for result in run.results]
-        self.assertTrue(any("retrying through SSH tunnel" in message for message in messages))
-        self.assertIn("authenticated SMB listing failed through tunnel", messages)
-        self.assertIn(direct_failure.message, messages)
+        failure = next(result for result in run.results if result.message == tunnel_failure.message)
+        self.assertEqual(failure.domain, "device")
+        file_ops_mock.assert_not_called()
+        sections = doctor_report(run.results)["sections"]
+        self.assertEqual(sections["device"]["status"], "fail")
+        self.assertEqual(sections["computer"]["status"], "pass")
 
     def test_check_authenticated_smb_file_ops_detailed_reports_each_step(self) -> None:
         def fake_run_local_capture(args, timeout=15, **kwargs):
@@ -6427,14 +6810,8 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             ],
         )
         self.assertTrue(all(call.kwargs["port"] == 445 for call in listing_mock.call_args_list))
-        file_ops_mock.assert_called_once_with(
-            "admin",
-            "pw",
-            "timecapsulesamba4.local",
-            "Data",
-            port=445,
-            ip_address="10.0.0.2",
-        )
+        # SSH works, so the device changes files itself; the LAN only lists.
+        file_ops_mock.assert_not_called()
 
     def test_run_doctor_checks_warns_when_only_routable_ipv6_authenticated_listing_fails(self) -> None:
         listing_v4 = CheckResult(
@@ -6479,14 +6856,8 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
         ipv6_warning = next(result for result in run.results if "authenticated SMB IPv6 listing failed" in result.message)
         self.assertEqual(ipv6_warning.status, "WARN")
         self.assertEqual(listing_mock.call_count, 2)
-        file_ops_mock.assert_called_once_with(
-            "admin",
-            "pw",
-            "timecapsulesamba4.local",
-            "Data",
-            port=445,
-            ip_address="10.0.0.2",
-        )
+        # SSH works, so the device changes files itself; the LAN only lists.
+        file_ops_mock.assert_not_called()
 
     def test_run_doctor_checks_uses_working_ipv6_when_client_has_no_ipv4_route(self) -> None:
         routes = {
@@ -6527,15 +6898,41 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             listing_mock.call_args.args[2],
             [SmbClientTarget("timecapsulesamba4.local", "fd00::2")],
         )
+        # SSH works, so the device changes files itself; the LAN only lists.
+        file_ops_mock.assert_not_called()
+
+
+    def test_run_doctor_checks_changes_files_over_the_lan_pinned_to_the_listed_address_without_ssh(self) -> None:
+        # Without SSH nothing checks file operations on the device, so this
+        # computer runs them over the LAN, on the address its listing used.
+        listing_result = CheckResult(
+            "PASS",
+            "authenticated SMB listing works for admin@timecapsulesamba4.local via 10.0.0.2",
+            {"server": "timecapsulesamba4.local", "ip_address": "10.0.0.2", "disk_shares": ["Data"], "attempts": []},
+        )
+        file_ops_mock = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            skip_ssh=True,
+            skip_bonjour=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": mock.Mock(return_value=listing_result),
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        run.mocks.device_smb.assert_not_called()
         file_ops_mock.assert_called_once_with(
             "admin",
             "pw",
             "timecapsulesamba4.local",
             "Data",
             port=445,
-            ip_address="fd00::2",
+            ip_address="10.0.0.2",
         )
-
+        file_ops_result = next(result for result in run.results if result.message == "file ops ok")
+        self.assertEqual(file_ops_result.domain, "computer")
     def test_run_doctor_checks_browses_once_and_evaluates_both_families(self):
         run, _debug, browse, _diagnostics = self.run_selected_bonjour(self.selected_snapshot())
         self.assertFalse(run.fatal)

@@ -192,7 +192,6 @@
 "dashboard.health.connection.refreshing" = "Erreichbarkeit von DNS, SSH und SMB wird geprüft…";
 "dashboard.health.connection.running" = "Ein Hintergrundvorgang verwendet dieses Profil.";
 "dashboard.health.checkup" = "Überprüfung";
-"dashboard.health.runtime" = "Dienststatus";
 "dashboard.health.runtime.activation_needed" = "Die Dateifreigabe läuft nicht. „Aktivieren“ startet sie.";
 "dashboard.health.runtime.installing" = "Installation / Aktualisierung läuft.";
 "dashboard.health.runtime.not_installed" = "Samba wurde nicht über diese App installiert.";
@@ -289,8 +288,8 @@
 "doctor.check.payload_missing_from_disk" = "Der Samba-Ordner fehlt auf dem Datenträger; dieser wurde möglicherweise gelöscht. Führen Sie „Samba installieren / aktualisieren“ zur Neuinstallation aus.";
 "doctor.check.metadata_migration_in_progress" = "Auf dem Gerät läuft noch eine Metadaten-Migration. „Samba installieren / aktualisieren“ wartet, bis sie abgeschlossen ist, und installiert erst dann.";
 "doctor.check.client_on_unshared_network" = "Dieser Mac ist in einem Netzwerk, in dem das Gerät seine Festplatten nicht freigibt, etwa am Internetanschluss (WAN) des Geräts oder in seinem Gastnetzwerk. Verbinden Sie diesen Mac per Wi-Fi oder über einen LAN-Anschluss des Geräts mit dessen Hauptnetzwerk und führen Sie die Überprüfung erneut aus.";
-"doctor.domain.general" = "Allgemein";
-"doctor.domain.runtime" = "Dienststatus";
+"doctor.domain.this_mac" = "Dieser Mac";
+"doctor.domain.device" = "Gerät";
 "event.summary.check" = "%@ %@";
 "event.summary.check.default_status" = "INFO";
 "event.summary.error" = "%@: %@";
@@ -439,6 +438,7 @@
 "checkup.status.info" = "Info";
 "checkup.status.passed" = "Bestanden";
 "checkup.status.unknown" = "Unbekannt";
+"checkup.status.not_checked" = "Nicht geprüft";
 "checkup.status.warning" = "Warnung";
 "checkup.timeline.title" = "Fortschritt";
 "maintenance.action.choose" = "Wählen";

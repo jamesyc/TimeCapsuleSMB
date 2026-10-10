@@ -155,6 +155,12 @@ def build_expected_smb_instance(instance_name: str) -> BonjourServiceInstance:
     )
 
 
+# This computer did not find the device's _smb record over Bonjour: none was
+# seen, or only under other names. With the device's own registration ready,
+# the network between them likely drops multicast.
+BONJOUR_INSTANCE_NOT_SEEN_CODE = "bonjour_instance_not_seen"
+
+
 def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]:
     if selection.instance is not None:
         return [
@@ -167,6 +173,7 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
         CheckResult(
             "FAIL",
             f"no discovered _smb._tcp instance matched expected device instance {selection.expected_instance_name!r}",
+            {"code": BONJOUR_INSTANCE_NOT_SEEN_CODE},
         ),
         CheckResult(
             "INFO",

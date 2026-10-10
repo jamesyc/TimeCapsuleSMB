@@ -106,7 +106,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             responses: [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                        testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                        testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
                     ]))
                 ])
             ],
@@ -116,7 +116,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             responses: [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                        testDoctorCheck(status: "WARN", message: "SMB needs attention", domain: "Runtime")
+                        testDoctorCheck(status: "WARN", message: "SMB needs attention", domain: "device")
                     ]))
                 ])
             ],
@@ -126,7 +126,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             responses: [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: false, payload: testDoctorPayload(fatal: true, checks: [
-                        testDoctorCheck(status: "FAIL", message: "smbd is not running", domain: "Runtime")
+                        testDoctorCheck(status: "FAIL", message: "smbd is not running", domain: "device")
                     ]))
                 ])
             ],

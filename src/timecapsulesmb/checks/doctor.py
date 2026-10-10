@@ -19,10 +19,15 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_add_bonjour_naming_info,
     _doctor_apply_startup_grace,
     _doctor_check_active_smb_conf,
+    _doctor_check_admin_password,
     _doctor_check_authenticated_smb,
     _doctor_check_deployed_config,
     _doctor_check_running_migration,
     _doctor_check_deployed_version,
+    _doctor_device_blocks,
+    _doctor_check_device_smb,
+    _doctor_check_local_network_permission,
+    _doctor_report_device_not_checked,
     _doctor_check_device_compatibility,
     _doctor_check_direct_smb_port,
     _doctor_check_managed_mdns,
@@ -39,7 +44,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_probe_startup_age,
     _doctor_validate_config,
 )
-from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
 from timecapsulesmb.core.smb_config import parse_active_share_names
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState
@@ -57,6 +62,7 @@ def run_doctor_checks(
     skip_bonjour: bool = False,
     skip_smb: bool = False,
     startup_grace: bool = True,
+    local_network_permission: str | None = None,
     on_result: Optional[Callable[[CheckResult], None]] = None,
     debug_fields: dict[str, object] | None = None,
 ) -> tuple[list[CheckResult], bool]:
@@ -72,17 +78,25 @@ def run_doctor_checks(
         precomputed_probe_state=precomputed_probe_state,
         options=options,
         device_reading=device_reading,
+        local_network_permission=local_network_permission,
     )
     sink = DoctorSink(
         on_result=on_result,
         debug_fields=debug_fields,
     )
 
-    if _doctor_validate_config(inputs, sink).stop:
-        return sink.results, sink.fatal()
-
-    target = _build_doctor_target(inputs)
-    remote = _doctor_check_ssh_login(target, options, sink)
+    # This computer's own setup first: it decides whether anything else can run.
+    with sink.in_section(DOMAIN_COMPUTER):
+        config_decision = _doctor_validate_config(inputs, sink)
+        _doctor_check_local_network_permission(inputs, sink)
+        if config_decision.stop:
+            return sink.results, sink.fatal()
+        target = _build_doctor_target(inputs)
+        remote = _doctor_check_ssh_login(target, options, sink)
+        password_match = _doctor_check_admin_password(inputs, target, remote, sink)
+    # The device, measured on the device over SSH: its verdict does not depend
+    # on the network between this computer and the device.
+    _doctor_report_device_not_checked(remote, sink)
     processes = _doctor_check_stuck_processes(target, remote, sink)
 
     if _doctor_check_running_migration(target, remote, sink).stop:
@@ -99,34 +113,41 @@ def run_doctor_checks(
     naming = _doctor_check_runtime_naming_identity(target, remote, sink)
     _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_device_hostname(target, remote, sink)
-    _doctor_check_managed_smbd(target, remote, sink)
-    native_nbns_ready, link_plan = _doctor_check_managed_mdns(target, remote, sink)
+    smbd_serving = _doctor_check_managed_smbd(target, remote, sink)
+    native_nbns_ready, bonjour_registered, link_plan = _doctor_check_managed_mdns(target, remote, sink)
     _doctor_check_managed_rsync(target, remote, sink)
     _doctor_check_diskd_rpc(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
-    _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
-    # Everything below checks the device from this computer over the network.
-    if not _doctor_check_unshared_network(remote, link_plan, sink):
-        network = DoctorNetworkProbe(target, remote, sink.debug_fields)
-        bonjour_result = _add_bonjour_results(
-            inputs.config,
-            naming.identity,
-            skip_bonjour=inputs.options.skip_bonjour,
-            active_share_names=parse_active_share_names(smb_config.text or ""),
-            add_result=sink.add,
-            network=network,
-        )
-        direct_smb = _doctor_check_direct_smb_port(target, remote, bonjour_result.addresses, sink)
-        _add_bonjour_debug_fields(
-            sink.debug_fields,
-            bonjour_debug_needed=bonjour_result.debug_needed,
-            bonjour_expected_debug=bonjour_result.expected_debug,
-            bonjour_discovery_debug=bonjour_result.discovery_debug,
-        )
-        _doctor_add_bonjour_naming_info(bonjour_result, sink)
-        _doctor_check_usb_printer(target, remote, bonjour_result, sink, network)
-        _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns_ready, network)
-        _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, direct_smb, processes, sink)
+    if remote.remote_checks_enabled:
+        _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
+    device_smb = _doctor_check_device_smb(inputs, target, remote, smb_config, processes, password_match, sink)
+    # Everything below checks the device from this computer over the network;
+    # what the device already reported down is not counted against it.
+    sink.blocked_by_device = _doctor_device_blocks(smbd_serving, native_nbns_ready, bonjour_registered)
+    with sink.in_section(DOMAIN_COMPUTER):
+        if not _doctor_check_unshared_network(remote, link_plan, sink):
+            network = DoctorNetworkProbe(target, remote, sink.debug_fields)
+            bonjour_result = _add_bonjour_results(
+                inputs.config,
+                naming.identity,
+                skip_bonjour=inputs.options.skip_bonjour,
+                active_share_names=parse_active_share_names(smb_config.text or ""),
+                add_result=sink.add,
+                network=network,
+            )
+            direct_smb = _doctor_check_direct_smb_port(target, remote, bonjour_result.addresses, sink)
+            _add_bonjour_debug_fields(
+                sink.debug_fields,
+                bonjour_debug_needed=bonjour_result.debug_needed,
+                bonjour_expected_debug=bonjour_result.expected_debug,
+                bonjour_discovery_debug=bonjour_result.discovery_debug,
+            )
+            _doctor_add_bonjour_naming_info(bonjour_result, sink)
+            _doctor_check_usb_printer(target, remote, bonjour_result, sink, network)
+            _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns_ready, network)
+            _doctor_check_authenticated_smb(
+                inputs, target, remote, smb_config, naming, bonjour_result, direct_smb, processes, device_smb, sink,
+            )
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
     _doctor_apply_startup_grace(sink, startup_age, enabled=startup_grace)

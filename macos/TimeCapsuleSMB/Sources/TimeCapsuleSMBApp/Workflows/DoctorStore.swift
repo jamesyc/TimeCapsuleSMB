@@ -27,18 +27,20 @@ enum DoctorWorkflowState: String, CaseIterable, Equatable, Codable {
     }
 }
 
-struct DoctorCheckGroup: Identifiable, Equatable {
-    let domain: String
-    let checks: [DoctorCheckPayload]
-
-    var id: String {
-        domain
-    }
+/// A Checkup section's verdict: either section failing fails the Checkup,
+/// but each says on its own whether the device or this Mac is at fault.
+enum DoctorSectionStatus: String, Equatable, Codable {
+    case pass
+    case warn
+    case fail
+    /// Nothing ran on the device: SSH was skipped or refused.
+    case notChecked = "not_checked"
 }
 
 struct DoctorSummary: Equatable {
     static let runtimeNotInstalledResultCode = "runtime_not_installed"
     static let runtimeNotStartedResultCode = "runtime_not_started"
+    static let deviceStartingUpResultCode = "device_starting_up"
 
     let passCount: Int
     let warnCount: Int
@@ -46,7 +48,18 @@ struct DoctorSummary: Equatable {
     let infoCount: Int
     let runtimeNotInstalled: Bool
     let runtimeNotStarted: Bool
-    let groups: [DoctorCheckGroup]
+    let deviceStartingUp: Bool
+    let checks: [DoctorCheckPayload]
+    let sections: [DoctorCheckDomain: DoctorSection]
+    /// nil only for a payload without one, which the bundled helper never sends.
+    let overallStatus: DoctorSectionStatus?
+
+    /// The checks a running Checkup has reported so far, shown as they arrive.
+    static func liveChecks(from events: [BackendEvent]) -> [DoctorCheckPayload] {
+        events
+            .filter { $0.type == "check" && $0.operation == "doctor" }
+            .map { DoctorCheckPayload(status: $0.status ?? "", message: $0.message ?? "", details: $0.details ?? .object([:])) }
+    }
 
     init(payload: DoctorPayload) {
         self.passCount = Self.count(status: "PASS", in: payload)
@@ -55,7 +68,13 @@ struct DoctorSummary: Equatable {
         self.infoCount = Self.count(status: "INFO", in: payload)
         self.runtimeNotInstalled = Self.containsResultCode(Self.runtimeNotInstalledResultCode, in: payload)
         self.runtimeNotStarted = Self.containsResultCode(Self.runtimeNotStartedResultCode, in: payload)
-        self.groups = Self.group(payload.results)
+        self.deviceStartingUp = Self.containsResultCode(Self.deviceStartingUpResultCode, in: payload)
+        self.checks = payload.results
+        self.sections = Dictionary(
+            (payload.sections ?? [:]).map { (DoctorCheckDomainPolicy.domain(for: $0.key), $0.value) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        self.overallStatus = payload.status
     }
 
     private static func count(status: String, in payload: DoctorPayload) -> Int {
@@ -66,29 +85,6 @@ struct DoctorSummary: Equatable {
         payload.results.contains { check in
             check.details.stringValue(for: "code") == code
         }
-    }
-
-    private static func group(_ checks: [DoctorCheckPayload]) -> [DoctorCheckGroup] {
-        let grouped = Dictionary(grouping: checks) { check in
-            check.details.stringValue(for: "domain") ?? "General"
-        }
-        return grouped
-            .map { DoctorCheckGroup(domain: $0.key, checks: $0.value) }
-            .sorted { left, right in
-                severityRank(left.checks) == severityRank(right.checks)
-                    ? left.domain < right.domain
-                    : severityRank(left.checks) < severityRank(right.checks)
-            }
-    }
-
-    private static func severityRank(_ checks: [DoctorCheckPayload]) -> Int {
-        if checks.contains(where: { $0.status == "FAIL" }) {
-            return 0
-        }
-        if checks.contains(where: { $0.status == "WARN" }) {
-            return 1
-        }
-        return 2
     }
 }
 
@@ -163,7 +159,11 @@ final class DoctorStore: ObservableObject {
     }
 
     @discardableResult
-    func runDoctor(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+    func runDoctor(
+        password: String,
+        profile: DeviceProfile? = nil,
+        localNetworkPreflight: LocalNetworkPreflightResult? = nil
+    ) -> OperationStartResult {
         guard !isBusy else {
             rejectRun(.operationAlreadyRunning)
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
@@ -174,7 +174,8 @@ final class DoctorStore: ObservableObject {
             params: OperationParams.Doctor.run(
                 skipSSH: skipSSH,
                 skipBonjour: skipBonjour,
-                skipSMB: skipSMB
+                skipSMB: skipSMB,
+                localNetworkPreflight: localNetworkPreflight
             ),
             context: profile?.runtimeContext,
             activeDeviceID: profile?.id,
@@ -190,14 +191,29 @@ final class DoctorStore: ObservableObject {
             return start
         }
         operationObserver.start(operation)
+        resetForRun()
+        passwordInvalidProfileID = nil
+        process(backend.events)
+        return start
+    }
+
+    /// Shows the Checkup as running while the app asks macOS about Local
+    /// Network permission, before the helper starts: it neither looks idle
+    /// nor offers to start again.
+    func beginPreparing() {
+        guard !isBusy else {
+            return
+        }
+        backend.clear()
+        resetForRun()
+    }
+
+    private func resetForRun() {
         state = .running
         payload = nil
         summary = nil
         error = nil
         currentStage = nil
-        passwordInvalidProfileID = nil
-        process(backend.events)
-        return start
     }
 
     func clear() {
@@ -263,12 +279,13 @@ final class DoctorStore: ObservableObject {
             payload = decoded
             summary = DoctorSummary(payload: decoded)
             error = nil
-            if decoded.fatal || event.ok == false {
+            switch summary?.overallStatus {
+            case .fail?:
                 state = .failed
-            } else if summary?.warnCount ?? 0 > 0 {
+            case .warn?:
                 state = .warning
-            } else {
-                state = .passed
+            default:
+                state = decoded.fatal || event.ok == false ? .failed : .passed
             }
             operationObserver.finish()
         } catch {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.models import DEVICE_NOT_CHECKED_CODE, DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
 
 
 BONJOUR_INSTANCE_FAILURE_PREFIX = "no discovered _smb._tcp instance matched"
@@ -14,6 +14,72 @@ def doctor_status_counts(results: list[CheckResult]) -> dict[str, int]:
         status: sum(1 for result in results if result.status == status)
         for status in ("PASS", "WARN", "FAIL", "INFO")
     }
+
+
+def doctor_result_details(result: CheckResult) -> dict[str, object]:
+    """A result's details as the app reads them, with the section it ran in."""
+    if result.domain is None:
+        return dict(result.details)
+    return {**result.details, "domain": result.domain}
+
+
+def doctor_report(results: list[CheckResult]) -> dict[str, object]:
+    """Checkup's two sections and its overall status, as the app, the CLI and
+    telemetry read them. Either section failing fails the whole Checkup, but
+    each says on its own whether the device or this computer is at fault: a
+    healthy device with a network, VPN or setting problem on this computer is
+    common (a campus network that drops multicast, a Mac that turns off SMB 3).
+
+    A section's status is fail or warn as its results say, pass otherwise, and
+    not_checked for a device nothing ran on (SSH skipped or refused)."""
+    sections: dict[str, dict[str, object]] = {}
+    for section in (DOMAIN_COMPUTER, DOMAIN_DEVICE):
+        section_results = [result for result in results if (result.domain or DOMAIN_DEVICE) == section]
+        counts = doctor_status_counts(section_results)
+        checked = section == DOMAIN_COMPUTER or any(
+            result.details.get("code") != DEVICE_NOT_CHECKED_CODE for result in section_results
+        )
+        status = "fail" if counts["FAIL"] else "warn" if counts["WARN"] else "pass" if checked else "not_checked"
+        sections[section] = {
+            "status": status,
+            "counts": counts,
+            "fail_codes": _codes(section_results, "FAIL"),
+            "warn_codes": _codes(section_results, "WARN"),
+        }
+    statuses = [section["status"] for section in sections.values()]
+    overall = "fail" if "fail" in statuses else "warn" if "warn" in statuses else "pass"
+    return {"status": overall, "sections": sections}
+
+
+def doctor_finished_fields(
+    results: list[CheckResult], fatal: bool, debug_fields: dict[str, object],
+) -> dict[str, object]:
+    """The CLI's and the app's telemetry fields for a finished doctor run.
+    Debug fields reach telemetry only in a fatal run's error, so the outcomes
+    every run should report ride on the event."""
+    counts = doctor_status_counts(results)
+    report = doctor_report(results)
+    return {
+        "fatal": fatal,
+        "check_count": len(results),
+        "pass_count": counts["PASS"],
+        "warn_count": counts["WARN"],
+        "fail_count": counts["FAIL"],
+        "info_count": counts["INFO"],
+        # An off-subnet NBNS timeout or refusal is a SKIP.
+        "nbns_subnet": debug_fields.get("nbns_subnet"),
+        # Likewise for Bonjour and printer checks skipped off the device's network.
+        "bonjour_link": debug_fields.get("bonjour_link"),
+        "doctor_status": report["status"],
+        "doctor_sections": report["sections"],
+    }
+
+
+def _codes(results: list[CheckResult], status: str) -> list[str]:
+    return sorted({
+        code for result in results
+        if result.status == status and isinstance(code := result.details.get("code"), str)
+    })
 
 
 def _mapping_value(value: object, key: str) -> object | None:

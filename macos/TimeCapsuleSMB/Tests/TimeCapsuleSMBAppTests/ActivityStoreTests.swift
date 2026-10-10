@@ -175,7 +175,7 @@ final class ActivityStoreTests: XCTestCase {
                         description: "Run local and remote diagnostic checks."
                     ),
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
-                        testDoctorCheck(status: "PASS", message: "ok", domain: "Runtime")
+                        testDoctorCheck(status: "PASS", message: "ok", domain: "device")
                     ]))
                 ], pauseBeforeEvents: true)
             ]
@@ -529,7 +529,7 @@ final class ActivityStoreTests: XCTestCase {
 
     private func doctorPayload() -> JSONValue {
         testDoctorPayload(checks: [
-            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "device")
         ])
     }
 

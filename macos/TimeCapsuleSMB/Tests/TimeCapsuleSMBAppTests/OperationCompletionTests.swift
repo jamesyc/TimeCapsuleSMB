@@ -498,7 +498,7 @@ final class OperationCompletionTests: XCTestCase {
             ]
             let result = BackendEvent(type: "result", operation: nextOperation, ok: true,
                                       payload: nextOperation == "deploy" ? testDeployResultPayload() : testDoctorPayload(checks: [
-                                        testDoctorCheck(status: "PASS", message: "Running", domain: "Runtime")
+                                        testDoctorCheck(status: "PASS", message: "Running", domain: "device")
                                       ]))
             responses[.init(nextOperation), default: []].append(.init(events: [result]))
             let fixture = try await makeFixture(responses: responses, fileManager: files)
@@ -530,7 +530,7 @@ final class OperationCompletionTests: XCTestCase {
         let files = BlockingRegistryFileManager()
         let fixture = try await makeFixture(responses: [
             .init("doctor"): [.init(events: [BackendEvent(type: "result", operation: "doctor", ok: true,
-                payload: testDoctorPayload(checks: [testDoctorCheck(status: "PASS", message: "Running", domain: "Runtime")]))])],
+                payload: testDoctorPayload(checks: [testDoctorCheck(status: "PASS", message: "Running", domain: "device")]))])],
             .init("deploy"): [.init(events: [confirmation("deploy", id: "new-install")])]
         ], fileManager: files)
         defer { files.release(); fixture.runner.finishAll() }
@@ -863,7 +863,7 @@ final class OperationCompletionTests: XCTestCase {
     func testCheckupReplacesOrphanedInstallingStateAndSurvivesReload() async throws {
         let fixture = try await makeFixture(responses: [
             .init("doctor"): [.init(events: [BackendEvent(type: "result", operation: "doctor", ok: true,
-                payload: testDoctorPayload(checks: [testDoctorCheck(status: "PASS", message: "Running", domain: "Runtime")]))])]
+                payload: testDoctorPayload(checks: [testDoctorCheck(status: "PASS", message: "Running", domain: "device")]))])]
         ])
         let registry = fixture.app.deviceRegistry
         await registry.updateInstallOperationState(

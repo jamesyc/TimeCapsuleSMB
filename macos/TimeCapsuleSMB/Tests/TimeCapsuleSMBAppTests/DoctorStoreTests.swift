@@ -19,10 +19,10 @@ final class DoctorStoreTests: XCTestCase {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "stage", operation: "doctor", stage: "run_checks", risk: "remote_read", cancellable: true),
-                BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload(
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(
                     fatal: false,
                     checks: [
-                        check(status: "PASS", message: "smbd is running", domain: "Runtime"),
+                        check(status: "PASS", message: "smbd is running", domain: "device"),
                         check(status: "INFO", message: "bonjour visible", domain: "Bonjour")
                     ]
                 ))
@@ -50,9 +50,9 @@ final class DoctorStoreTests: XCTestCase {
     func testPublishesWhenBackendFinishesAfterTerminalResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload(
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(
                     fatal: false,
-                    checks: [check(status: "PASS", message: "runtime ok", domain: "Runtime")]
+                    checks: [check(status: "PASS", message: "runtime ok", domain: "device")]
                 ))
             ])
         ])
@@ -106,7 +106,7 @@ final class DoctorStoreTests: XCTestCase {
     func testWarningResultMovesToWarning() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload(
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(
                     fatal: false,
                     checks: [check(status: "WARN", message: "NBNS skipped", domain: "Discovery")]
                 ))
@@ -123,11 +123,11 @@ final class DoctorStoreTests: XCTestCase {
     func testFatalPayloadMovesToFailedAndGroupsFatalFirst() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "doctor", ok: false, payload: doctorPayload(
+                BackendEvent(type: "result", operation: "doctor", ok: false, payload: testDoctorPayload(
                     fatal: true,
                     checks: [
                         check(status: "PASS", message: "local tools exist", domain: "Local"),
-                        check(status: "FAIL", message: "smbd is not running", domain: "Runtime"),
+                        check(status: "FAIL", message: "smbd is not running", domain: "device"),
                         check(status: "WARN", message: "bonjour missing", domain: "Bonjour")
                     ]
                 ))
@@ -139,13 +139,14 @@ final class DoctorStoreTests: XCTestCase {
 
         try await waitUntilStoreState { store.state == .failed }
         XCTAssertEqual(store.summary?.failCount, 1)
-        XCTAssertEqual(store.summary?.groups.first?.domain, "Runtime")
+        // Every domain but "computer" is the device's.
+        XCTAssertEqual(store.summary.map { DoctorCheckDomainPolicy.signals(from: $0.checks) }?.map(\.domain), [.device])
     }
 
-    func testMissingDomainGroupsAsGeneral() async throws {
+    func testMissingDomainCountsAsTheDevice() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload(
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(
                     fatal: false,
                     checks: [.object([
                         "status": .string("PASS"),
@@ -160,7 +161,7 @@ final class DoctorStoreTests: XCTestCase {
         store.runDoctor(password: "")
 
         try await waitUntilStoreState { store.state == .passed }
-        XCTAssertEqual(store.summary?.groups.first?.domain, "General")
+        XCTAssertEqual(store.summary.map { DoctorCheckDomainPolicy.signals(from: $0.checks) }?.map(\.domain), [.device])
     }
 
     func testBackendErrorMovesToRunFailedWithRecovery() async throws {
@@ -201,9 +202,9 @@ final class DoctorStoreTests: XCTestCase {
     func testClearResetsDoctorState() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload(
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(
                     fatal: false,
-                    checks: [check(status: "PASS", message: "ok", domain: "General")]
+                    checks: [check(status: "PASS", message: "ok", domain: "computer")]
                 ))
             ])
         ])
@@ -218,26 +219,6 @@ final class DoctorStoreTests: XCTestCase {
         XCTAssertNil(store.summary)
         XCTAssertNil(store.error)
         XCTAssertNil(store.currentStage)
-    }
-
-    private func doctorPayload(fatal: Bool, checks: [JSONValue]) -> JSONValue {
-        let pass = checks.filter { $0.stringValue(for: "status") == "PASS" }.count
-        let warn = checks.filter { $0.stringValue(for: "status") == "WARN" }.count
-        let fail = checks.filter { $0.stringValue(for: "status") == "FAIL" }.count
-        let info = checks.filter { $0.stringValue(for: "status") == "INFO" }.count
-        return .object([
-            "schema_version": .number(1),
-            "fatal": .bool(fatal),
-            "results": .array(checks),
-            "counts": .object([
-                "PASS": .number(Double(pass)),
-                "WARN": .number(Double(warn)),
-                "FAIL": .number(Double(fail)),
-                "INFO": .number(Double(info))
-            ]),
-            "error": fatal ? .string("doctor failed") : .null,
-            "summary": .string(fatal ? "Doctor found one or more fatal problems." : "Doctor checks passed.")
-        ])
     }
 
     private func check(status: String, message: String, domain: String) -> JSONValue {

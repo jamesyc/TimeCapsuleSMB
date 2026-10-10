@@ -5,7 +5,7 @@ from typing import Mapping
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.summaries import Summary, english_count
 from timecapsulesmb.services.app import jsonable
-from timecapsulesmb.services.doctor import doctor_status_counts
+from timecapsulesmb.services.doctor import doctor_report, doctor_result_details, doctor_status_counts
 from timecapsulesmb.services.reachability import ReachabilityResult
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
 from timecapsulesmb.services.version_check import VersionCheckResult
@@ -561,13 +561,19 @@ def doctor_payload(
     error: str | None = None,
     airport_mac: str | None = None,
 ) -> dict[str, object]:
-    result_payload = [jsonable(result) for result in results]
+    result_payload = [
+        jsonable({"status": result.status, "message": result.message, "details": doctor_result_details(result)})
+        for result in results
+    ]
     counts = doctor_status_counts(results)
     payload: dict[str, object] = {
         "fatal": fatal,
         "airport_mac": airport_mac,
         "results": result_payload,
         "counts": counts,
+        # The overall status and each section's, so the app shows the device
+        # and this Mac apart without working them out again.
+        **doctor_report(results),
         **(Summary("doctor_found_fatal", "Doctor found one or more fatal problems.") if fatal
            else Summary("doctor_checks_passed", "Doctor checks passed.")).fields(),
     }

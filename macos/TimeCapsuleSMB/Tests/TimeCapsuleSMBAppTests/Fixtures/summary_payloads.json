@@ -846,6 +846,31 @@
         "fatal": false,
         "results": [],
         "schema_version": 1,
+        "sections": {
+          "computer": {
+            "counts": {
+              "FAIL": 0,
+              "INFO": 0,
+              "PASS": 0,
+              "WARN": 0
+            },
+            "fail_codes": [],
+            "status": "pass",
+            "warn_codes": []
+          },
+          "device": {
+            "counts": {
+              "FAIL": 0,
+              "INFO": 0,
+              "PASS": 0,
+              "WARN": 0
+            },
+            "fail_codes": [],
+            "status": "not_checked",
+            "warn_codes": []
+          }
+        },
+        "status": "pass",
         "summary": "Doctor checks passed.",
         "summary_args": [],
         "summary_key": "doctor_checks_passed"
@@ -878,6 +903,31 @@
           }
         ],
         "schema_version": 1,
+        "sections": {
+          "computer": {
+            "counts": {
+              "FAIL": 0,
+              "INFO": 0,
+              "PASS": 0,
+              "WARN": 0
+            },
+            "fail_codes": [],
+            "status": "pass",
+            "warn_codes": []
+          },
+          "device": {
+            "counts": {
+              "FAIL": 1,
+              "INFO": 0,
+              "PASS": 0,
+              "WARN": 0
+            },
+            "fail_codes": [],
+            "status": "fail",
+            "warn_codes": []
+          }
+        },
+        "status": "fail",
         "summary": "Doctor found one or more fatal problems.",
         "summary_args": [],
         "summary_key": "doctor_found_fatal"

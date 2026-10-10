@@ -117,6 +117,85 @@ class CliDoctorTests(CliTestCase):
         self.assertEqual(finished["bonjour_link"], bonjour_link)
         self.assertIsNone(finished.get("error"))
 
+    def section_results(self) -> list:
+        return [
+            doctor.CheckResult("PASS", "found local tool ssh", domain="computer"),
+            doctor.CheckResult("PASS", "SSH command works", domain="computer"),
+            doctor.CheckResult("PASS", "managed smbd parent process is running", domain="device"),
+            doctor.CheckResult("PASS", "authenticated SMB listing works for admin@127.0.0.1", domain="device"),
+            doctor.CheckResult(
+                "FAIL", "no discovered _smb._tcp instance matched", {"code": "bonjour_instance_not_seen"}, domain="computer",
+            ),
+        ]
+
+    def test_doctor_prints_a_heading_each_time_it_moves_between_this_computer_and_the_device(self) -> None:
+        results = self.section_results()
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            for result in results:
+                kwargs["on_result"](result)
+            return results, True
+
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks), \
+             redirect_stdout(output):
+            self.assertEqual(doctor.main([]), 1)
+
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[0], "== This computer ==")
+        self.assertTrue(lines[1].endswith("found local tool ssh"))
+        self.assertEqual(
+            [line for line in output.getvalue().splitlines() if line.startswith("== ")],
+            ["== This computer ==", "== Device ==", "== This computer (network) =="],
+        )
+        # A device result after the network checks gets a heading of its own.
+        late = doctor.CheckResult("FAIL", "some checks failed while the device was still starting up", domain="device")
+
+        def with_late_device_result(*_args, **kwargs):
+            reported = fake_run_doctor_checks(**kwargs)
+            kwargs["on_result"](late)
+            return reported
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=with_late_device_result), \
+             redirect_stdout(io.StringIO()) as late_output:
+            doctor.main([])
+        self.assertEqual(
+            [line for line in late_output.getvalue().splitlines() if line.startswith("== ")][-1],
+            "== Device (continued) ==",
+        )
+        # Each section's verdict, then the whole Checkup's.
+        self.assertIn("This computer: FAIL   Device: PASS   Overall: FAIL", lines)
+
+    def test_doctor_telemetry_separates_a_failing_computer_from_a_healthy_device(self) -> None:
+        # A campus network that drops multicast: the device passes its own
+        # checks, and only this computer's view of it fails.
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=(self.section_results(), True)), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.main([]), 1)
+
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["doctor_status"], "fail")
+        sections = finished["doctor_sections"]
+        self.assertEqual(sections["computer"]["status"], "fail")
+        self.assertEqual(sections["device"]["status"], "pass")
+        self.assertEqual(sections["computer"]["fail_codes"], ["bonjour_instance_not_seen"])
+        self.assertEqual(sections["device"]["fail_codes"], [])
+        self.assertEqual(sections["device"]["counts"], {"PASS": 2, "WARN": 0, "FAIL": 0, "INFO": 0})
+        self.assertEqual(sections["computer"]["counts"], {"PASS": 2, "WARN": 0, "FAIL": 1, "INFO": 0})
+
+    def test_doctor_json_names_each_results_section(self) -> None:
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=(self.section_results()[:3], False)), \
+             redirect_stdout(output):
+            self.assertEqual(doctor.main(["--json"]), 0)
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual([item["section"] for item in payload["results"]], ["computer", "computer", "device"])
+
     def test_doctor_telemetry_omits_nbns_subnet_when_the_device_was_not_probed(self) -> None:
         with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
             with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([], False)):

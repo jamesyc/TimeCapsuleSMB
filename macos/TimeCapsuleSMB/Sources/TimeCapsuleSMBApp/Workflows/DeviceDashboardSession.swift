@@ -22,6 +22,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     private var handledSSHFailures: [String: String] = [:]
     // By event, not request: a confirmed replay reuses its confirmation's request ID.
     private var checkedAddressOutcomes: Set<UUID> = []
+    // A Checkup waiting for the Local Network preflight before it starts.
+    private var checkupPreflightTask: Task<Void, Never>?
 
     var events: [BackendEvent] {
         lane.backend.events
@@ -271,7 +273,29 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         }
         profileEditorStore.clearPasswordAttention()
         selectedTab = .checkup
-        if case .started(let operation) = doctorStore.runDoctor(password: password, profile: profile) {
+        guard checkupPreflightTask == nil else {
+            return
+        }
+        guard let checker = appStore.localNetworkPreflightChecker else {
+            startCheckup(password: password, profile: profile, localNetworkPreflight: nil)
+            return
+        }
+        // Checkup's This Mac section reports whether macOS lets the app reach
+        // the local network; asking takes milliseconds once macOS has answered.
+        doctorStore.beginPreparing()
+        checkupPreflightTask = Task { [weak self] in
+            let result = await checker.check()
+            guard let self else {
+                return
+            }
+            self.checkupPreflightTask = nil
+            self.startCheckup(password: password, profile: profile, localNetworkPreflight: result)
+        }
+    }
+
+    private func startCheckup(password: String, profile: DeviceProfile, localNetworkPreflight: LocalNetworkPreflightResult?) {
+        let start = doctorStore.runDoctor(password: password, profile: profile, localNetworkPreflight: localNetworkPreflight)
+        if case .started(let operation) = start {
             stateSynchronizer.trackCheckupStart(operation)
         }
     }

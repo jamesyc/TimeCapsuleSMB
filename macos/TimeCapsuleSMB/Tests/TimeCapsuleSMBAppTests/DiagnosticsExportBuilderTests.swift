@@ -27,6 +27,29 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Pending Confirmation: none"))
     }
 
+    func testExportShowsTheLastCheckupAndEachSection() {
+        var context = makeContext()
+        context.selectedProfile?.lastCheckup = DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 0),
+            state: .failed,
+            passCount: 40,
+            warnCount: 1,
+            failCount: 2,
+            summary: "",
+            device: DoctorSection(status: .pass, counts: ["PASS": 30, "WARN": 0, "FAIL": 0]),
+            thisMac: DoctorSection(status: .fail, counts: ["PASS": 10, "WARN": 1, "FAIL": 2])
+        )
+
+        let text = DiagnosticsExportBuilder().build(context: context)
+
+        XCTAssertTrue(text.contains(
+            "- Last Checkup: failed (PASS 40, WARN 1, FAIL 2) at 1970-01-01T00:00:00Z; "
+                + "device: pass (PASS 30, WARN 0, FAIL 0); this Mac: fail (PASS 10, WARN 1, FAIL 2)"
+        ), text)
+        // A device that has never been checked says so.
+        XCTAssertTrue(DiagnosticsExportBuilder().build(context: makeContext()).contains("- Last Checkup: none"))
+    }
+
     func testExportRedactsSecretsInSettingsEventsAndErrors() {
         var context = makeContext()
         context.eventLanes = [

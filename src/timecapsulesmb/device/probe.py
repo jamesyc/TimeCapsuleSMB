@@ -357,6 +357,8 @@ class ElfEndiannessProbeResult:
 class SshCommandProbeResult:
     ok: bool
     detail: str
+    # The transport failure, when ssh did not run the command at all.
+    error: TransportError | None = None
 
 
 @dataclass(frozen=True)
@@ -627,7 +629,7 @@ def probe_ssh_command_conn(
     try:
         proc = run_ssh(connection, command, check=False, timeout=timeout)
     except TransportError as exc:
-        return SshCommandProbeResult(ok=False, detail=str(exc))
+        return SshCommandProbeResult(ok=False, detail=str(exc), error=exc)
     if proc.returncode == 0:
         stdout = proc.stdout.strip()
         if expected_stdout_suffix is None or stdout.endswith(expected_stdout_suffix):

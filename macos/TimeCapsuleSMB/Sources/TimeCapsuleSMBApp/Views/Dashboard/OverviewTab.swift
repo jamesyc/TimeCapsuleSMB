@@ -17,7 +17,6 @@ struct OverviewTab: View {
         let summary = session.summary(for: profile)
         let presentation = DeviceDashboardOverviewPresentation(
             summary: summary,
-            currentCheckupSummary: session.doctorStore.summary,
             reachabilitySnapshot: reachabilityStore.snapshot(for: profile),
             isReachabilityRunning: reachabilityStore.isRunning(profile: profile)
         )

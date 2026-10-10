@@ -192,7 +192,6 @@
 "dashboard.health.connection.refreshing" = "Vérification de l’accessibilité de DNS, SSH et SMB...";
 "dashboard.health.connection.running" = "Une opération en arrière-plan utilise ce profil.";
 "dashboard.health.checkup" = "Vérification";
-"dashboard.health.runtime" = "État des services";
 "dashboard.health.runtime.activation_needed" = "Le partage de fichiers n’est pas actif. « Activer » le démarre.";
 "dashboard.health.runtime.installing" = "Installation/Mise à jour en cours d’exécution.";
 "dashboard.health.runtime.not_installed" = "Samba n’a pas été installé depuis cette app.";
@@ -289,8 +288,8 @@
 "doctor.check.payload_missing_from_disk" = "Le dossier Samba est absent du disque de données ; le disque a peut-être été effacé. Exécutez « Installer / mettre à jour Samba » pour réinstaller.";
 "doctor.check.metadata_migration_in_progress" = "Une migration des métadonnées est encore en cours sur l’appareil. « Installer / mettre à jour Samba » attend qu’elle se termine avant d’installer.";
 "doctor.check.client_on_unshared_network" = "Ce Mac est sur un réseau où l’appareil ne partage pas ses disques, comme son côté Internet (WAN) ou son réseau invité. Connectez ce Mac au réseau principal de l’appareil en Wi-Fi ou par l’un de ses ports LAN, puis relancez la vérification.";
-"doctor.domain.general" = "Général";
-"doctor.domain.runtime" = "État des services";
+"doctor.domain.this_mac" = "Ce Mac";
+"doctor.domain.device" = "Appareil";
 "event.summary.check" = "%@ %@";
 "event.summary.check.default_status" = "INFO";
 "event.summary.error" = "%@ : %@";
@@ -439,6 +438,7 @@
 "checkup.status.info" = "Infos";
 "checkup.status.passed" = "Réussi";
 "checkup.status.unknown" = "Inconnu";
+"checkup.status.not_checked" = "Non vérifié";
 "checkup.status.warning" = "Avertissement";
 "checkup.timeline.title" = "Progression";
 "maintenance.action.choose" = "Choisir";

@@ -160,13 +160,21 @@ enum OperationParams {
         static func run(
             skipSSH: Bool = false,
             skipBonjour: Bool = false,
-            skipSMB: Bool = false
+            skipSMB: Bool = false,
+            localNetworkPreflight: LocalNetworkPreflightResult? = nil
         ) -> [String: JSONValue] {
-            [
+            var params: [String: JSONValue] = [
                 "skip_ssh": .bool(skipSSH),
                 "skip_bonjour": .bool(skipBonjour),
                 "skip_smb": .bool(skipSMB)
             ]
+            // Checkup reports the result in its This Mac section.
+            if let localNetworkPreflight {
+                for (key, value) in localNetworkPreflight.telemetryFields {
+                    params[key] = value
+                }
+            }
+            return params
         }
     }
 

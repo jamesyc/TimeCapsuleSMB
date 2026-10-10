@@ -227,6 +227,28 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
     }
 }
 
+/// Answers the Local Network preflight only when a test says so.
+final class GatedLocalNetworkPreflightChecker: LocalNetworkPreflightChecking, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var checkCount: Int { lock.lock(); defer { lock.unlock() }; return count }
+    private var continuation: CheckedContinuation<LocalNetworkPreflightResult, Never>?
+    var isWaiting: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return continuation != nil
+    }
+    func check() async -> LocalNetworkPreflightResult {
+        await withCheckedContinuation { next in
+            lock.lock(); count += 1; continuation = next; lock.unlock()
+        }
+    }
+    func finish(_ status: LocalNetworkPreflightStatus) {
+        lock.lock(); let next = continuation; continuation = nil; lock.unlock()
+        next?.resume(returning: LocalNetworkPreflightResult(status: status, detail: nil,
+                      durationMilliseconds: 7, serviceType: "_airport._tcp"))
+    }
+}
+
 final class FixedLocalNetworkPreflightChecker: LocalNetworkPreflightChecking {
     private let result: LocalNetworkPreflightResult
     private(set) var checkCount = 0
@@ -807,21 +829,40 @@ func testConfiguredDevice(
     ).decode(ConfigurePayload.self))
 }
 
+/// A doctor result as the helper sends it, with the counts, each section's
+/// status and the overall status that services/doctor.py's doctor_report
+/// works out for these checks.
 func testDoctorPayload(fatal: Bool = false, checks: [JSONValue]) -> JSONValue {
-    let pass = checks.filter { $0.stringValue(for: "status") == "PASS" }.count
-    let warn = checks.filter { $0.stringValue(for: "status") == "WARN" }.count
-    let fail = checks.filter { $0.stringValue(for: "status") == "FAIL" }.count
-    let info = checks.filter { $0.stringValue(for: "status") == "INFO" }.count
+    func counts(_ checks: [JSONValue]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: ["PASS", "WARN", "FAIL", "INFO"].map { status in
+            (status, checks.filter { $0.stringValue(for: "status") == status }.count)
+        })
+    }
+    func details(_ check: JSONValue) -> JSONValue? {
+        guard case .object(let fields) = check else { return nil }
+        return fields["details"]
+    }
+    func json(_ counts: [String: Int]) -> JSONValue {
+        .object(counts.mapValues { .number(Double($0)) })
+    }
+    var sections: [String: JSONValue] = [:]
+    var statuses: [String] = []
+    for (name, domain) in [("computer", DoctorCheckDomain.thisMac), ("device", .device)] {
+        let own = checks.filter { DoctorCheckDomainPolicy.domain(for: details($0)?.stringValue(for: "domain")) == domain }
+        let ownCounts = counts(own)
+        let checked = domain == .thisMac || own.contains { details($0)?.stringValue(for: "code") != "device_not_checked" }
+        let status = ownCounts["FAIL"]! > 0 ? "fail" : ownCounts["WARN"]! > 0 ? "warn" : checked ? "pass" : "not_checked"
+        statuses.append(status)
+        sections[name] = .object(["status": .string(status), "counts": json(ownCounts)])
+    }
+    let overall = statuses.contains("fail") ? "fail" : statuses.contains("warn") ? "warn" : "pass"
     return .object([
         "schema_version": .number(1),
         "fatal": .bool(fatal),
         "results": .array(checks),
-        "counts": .object([
-            "PASS": .number(Double(pass)),
-            "WARN": .number(Double(warn)),
-            "FAIL": .number(Double(fail)),
-            "INFO": .number(Double(info))
-        ]),
+        "counts": json(counts(checks)),
+        "status": .string(overall),
+        "sections": .object(sections),
         "error": fatal ? .string("doctor failed") : .null,
         "summary": .string(fatal ? "Doctor found one or more fatal problems." : "Doctor checks passed."),
         "summary_key": .string(fatal ? "doctor_found_fatal" : "doctor_checks_passed"),

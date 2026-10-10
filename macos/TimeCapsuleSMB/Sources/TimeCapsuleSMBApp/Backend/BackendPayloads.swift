@@ -461,6 +461,10 @@ struct DoctorPayload: Decodable, Equatable {
     let summary: String
     var summaryKey: String? = nil
     var summaryArgs: [JSONValue]? = nil
+    /// The overall status ("pass", "warn" or "fail") and each section's
+    /// ("computer" and "device"), as the helper worked them out.
+    var status: DoctorSectionStatus? = nil
+    var sections: [String: DoctorSection]? = nil
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -472,6 +476,24 @@ struct DoctorPayload: Decodable, Equatable {
         case summary
         case summaryKey = "summary_key"
         case summaryArgs = "summary_args"
+        case status
+        case sections
+    }
+}
+
+/// A Checkup section's verdict and counts, as the helper reported them; the
+/// device's profile keeps the last one. The helper also sends fail_codes and
+/// warn_codes, for telemetry only.
+struct DoctorSection: Codable, Equatable {
+    let status: DoctorSectionStatus
+    let counts: [String: Int]
+
+    var passCount: Int { counts["PASS"] ?? 0 }
+    var warnCount: Int { counts["WARN"] ?? 0 }
+    var failCount: Int { counts["FAIL"] ?? 0 }
+
+    var localizedSummary: String {
+        L10n.format("summary.checkup_counts", passCount, warnCount, failCount)
     }
 }
 
@@ -479,6 +501,12 @@ struct DoctorCheckPayload: Decodable, Equatable {
     let status: String
     let message: String
     let details: JSONValue
+
+    init(status: String, message: String, details: JSONValue) {
+        self.status = status
+        self.message = message
+        self.details = details
+    }
 
     var code: String? {
         details.stringValue(for: "code")

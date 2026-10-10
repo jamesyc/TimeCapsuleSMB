@@ -1,19 +1,20 @@
 import Foundation
 
-// The backend tags only its startup-grace checks with details["domain"] = "Runtime";
-// every other check has no domain and is grouped as general.
+// The backend tags every check with details["domain"]: "computer" for this
+// Mac's own setup and its view of the device over the network, "device" for
+// what it measured on the device over SSH. An untagged check is the device's.
 enum DoctorCheckDomain: String, CaseIterable, Equatable, Hashable, Identifiable {
-    case runtime
-    case general
+    case device
+    case thisMac
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .runtime:
-            return L10n.string("doctor.domain.runtime")
-        case .general:
-            return L10n.string("doctor.domain.general")
+        case .device:
+            return L10n.string("doctor.domain.device")
+        case .thisMac:
+            return L10n.string("doctor.domain.this_mac")
         }
     }
 }
@@ -60,15 +61,15 @@ enum DoctorCheckDomainPolicy {
         let normalized = rawDomain?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        return normalized == "runtime" ? .runtime : .general
+        return normalized == "computer" ? .thisMac : .device
     }
 
     static func domain(for check: DoctorCheckPayload) -> DoctorCheckDomain {
         domain(for: check.details.stringValue(for: "domain"))
     }
 
-    static func signals(from summary: DoctorSummary) -> [DoctorDomainSignal] {
-        let grouped = Dictionary(grouping: summary.groups.flatMap(\.checks), by: domain(for:))
+    static func signals(from checks: [DoctorCheckPayload]) -> [DoctorDomainSignal] {
+        let grouped = Dictionary(grouping: checks, by: domain(for:))
         return grouped
             .map { signal(domain: $0.key, checks: $0.value) }
             .sorted { left, right in
@@ -76,19 +77,6 @@ enum DoctorCheckDomainPolicy {
                     ? left.domain.title < right.domain.title
                     : left.severity < right.severity
             }
-    }
-
-    static func signal(for domain: DoctorCheckDomain, summary: DoctorSummary?) -> DoctorDomainSignal? {
-        guard let summary else {
-            return nil
-        }
-        let checks = summary.groups
-            .flatMap(\.checks)
-            .filter { self.domain(for: $0) == domain }
-        guard !checks.isEmpty else {
-            return nil
-        }
-        return signal(domain: domain, checks: checks)
     }
 
     private static func signal(domain: DoctorCheckDomain, checks: [DoctorCheckPayload]) -> DoctorDomainSignal {
