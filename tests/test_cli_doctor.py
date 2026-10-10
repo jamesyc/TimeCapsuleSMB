@@ -186,6 +186,21 @@ class CliDoctorTests(CliTestCase):
         self.assertEqual(sections["device"]["counts"], {"PASS": 2, "WARN": 0, "FAIL": 0, "INFO": 0})
         self.assertEqual(sections["computer"]["counts"], {"PASS": 2, "WARN": 0, "FAIL": 1, "INFO": 0})
 
+    def test_doctor_telemetry_carries_this_macs_nsmb_conf_on_a_passing_run(self) -> None:
+        summary = {"global": {"present": False}, "user": {"present": True, "sections": []}}
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["nsmb_conf"] = summary
+            return [doctor.CheckResult("PASS", "this Mac's SMB client allows SMB 3", domain="computer")], False
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
+             mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.main([]), 0)
+
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["nsmb_conf"], summary)
+
     def test_doctor_json_names_each_results_section(self) -> None:
         output = io.StringIO()
         with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \

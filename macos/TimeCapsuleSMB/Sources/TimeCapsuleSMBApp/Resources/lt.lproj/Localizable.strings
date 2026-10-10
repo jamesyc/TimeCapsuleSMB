@@ -288,6 +288,8 @@
 "doctor.check.payload_missing_from_disk" = "Duomenų diske trūksta Samba aplanko; diskas galėjo būti ištrintas. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
 "doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir paleiskite patikrinimą iš naujo.";
+"doctor.check.mac_smb3_disabled" = "%@ išjungia SMB 3 (protocol_vers_map), o Time Machine reikia SMB 3. Ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
+"doctor.check.mac_smb3_disabled_for_server" = "%1$@ išjungia SMB 3 serveriui [%2$@]. Jei tai šis įrenginys, ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.domain.this_mac" = "Šis Mac";
 "doctor.domain.device" = "Įrenginys";
 "event.summary.check" = "%@ %@";

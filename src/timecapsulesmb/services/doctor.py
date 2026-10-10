@@ -56,7 +56,7 @@ def doctor_finished_fields(
 ) -> dict[str, object]:
     """The CLI's and the app's telemetry fields for a finished doctor run.
     Debug fields reach telemetry only in a fatal run's error, so the outcomes
-    every run should report ride on the event."""
+    every run should report ride on the event; nsmb_conf leaves debug_fields."""
     counts = doctor_status_counts(results)
     report = doctor_report(results)
     return {
@@ -70,6 +70,7 @@ def doctor_finished_fields(
         "nbns_subnet": debug_fields.get("nbns_subnet"),
         # Likewise for Bonjour and printer checks skipped off the device's network.
         "bonjour_link": debug_fields.get("bonjour_link"),
+        "nsmb_conf": debug_fields.pop("nsmb_conf", None),
         "doctor_status": report["status"],
         "doctor_sections": report["sections"],
     }

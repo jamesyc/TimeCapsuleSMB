@@ -300,6 +300,10 @@ class CheckTests(unittest.TestCase):
             mocks.check_required_artifacts = stack.enter_context(
                 mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[] if artifacts is None else artifacts)
             )
+            # This Mac's own nsmb.conf stays out of doctor-flow cases.
+            mocks.check_nsmb_conf = stack.enter_context(
+                mock.patch("timecapsulesmb.checks.doctor_steps.check_nsmb_conf", return_value=([], None))
+            )
             if ssh_login is not None:
                 mocks.check_ssh_login = stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", return_value=ssh_login))
             if smb_port is DEFAULT_SMB_PORT_CHECK:
@@ -2246,7 +2250,8 @@ class CheckTests(unittest.TestCase):
 
     def _doctor_without_usable_config(self, config: AppConfig, tool_present):
         ssh_login = mock.Mock()
-        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=tool_present):
+        with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=tool_present), \
+             mock.patch("timecapsulesmb.checks.doctor_steps.check_nsmb_conf", return_value=([], None)):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", ssh_login):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts") as artifacts:
                     results, fatal = run_doctor_checks(config, repo_root=REPO_ROOT)
@@ -4335,6 +4340,30 @@ class CheckTests(unittest.TestCase):
         run = self.run_doctor_with_mocks(exists=False, local_network_permission="denied")
         self.assertTrue(any(result.details.get("code") == "local_network_denied" for result in run.results))
 
+    def test_run_doctor_checks_reports_this_macs_nsmb_conf_in_the_computer_section(self) -> None:
+        nsmb_fail = CheckResult("FAIL", "/etc/nsmb.conf sets protocol_vers_map=2", {"code": "mac_smb3_disabled"})
+        summary = {"global": {"present": True, "sections": [{"kind": "default", "protocol_vers_map": "2"}]}}
+        for exists in (True, False):
+            with self.subTest(config_exists=exists):
+                debug_fields: dict[str, object] = {}
+                run = self.run_doctor_with_mocks(
+                    exists=exists,
+                    skip_ssh=True,
+                    skip_bonjour=True,
+                    skip_smb=True,
+                    debug_fields=debug_fields,
+                    extra_patches={
+                        "timecapsulesmb.checks.doctor_steps.check_nsmb_conf": mock.Mock(
+                            return_value=([CheckResult(nsmb_fail.status, nsmb_fail.message, nsmb_fail.details)], summary)
+                        ),
+                    },
+                )
+                # Reported even before a configuration exists.
+                result = next(result for result in run.results if result.details.get("code") == "mac_smb3_disabled")
+                self.assertEqual((result.status, result.domain), ("FAIL", "computer"))
+                self.assertTrue(run.fatal)
+                self.assertEqual(debug_fields["nsmb_conf"], summary)
+
     def test_check_ssh_login_names_who_a_failure_points_at(self) -> None:
         connection = SshConnection("root@10.0.0.5", "pw", "")
         cases = (
@@ -4730,6 +4759,7 @@ class CheckTests(unittest.TestCase):
         """
 
         with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]), \
+             mock.patch("timecapsulesmb.checks.doctor_steps.check_nsmb_conf", return_value=([], None)), \
              mock.patch("timecapsulesmb.checks.doctor_steps._add_tunneled_authenticated_smb_results",
                         return_value=DEVICE_SMB_PASSED):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):

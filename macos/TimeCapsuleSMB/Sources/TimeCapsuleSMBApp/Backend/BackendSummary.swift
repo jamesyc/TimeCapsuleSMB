@@ -248,6 +248,14 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.metadata_migration_in_progress")
         case "client_on_unshared_network":
             return L10n.string("doctor.check.client_on_unshared_network")
+        case "mac_smb3_disabled":
+            guard let path = details.stringValue(for: "path") else { return message }
+            return L10n.format("doctor.check.mac_smb3_disabled", path)
+        case "mac_smb3_disabled_for_server":
+            guard let path = details.stringValue(for: "path"), let section = details.stringValue(for: "section") else {
+                return message
+            }
+            return L10n.format("doctor.check.mac_smb3_disabled_for_server", path, section)
         default:
             return message
         }

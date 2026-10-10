@@ -4453,6 +4453,25 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["status"], "fail")
         self.assertEqual(payload["sections"]["device"]["status"], "fail")
 
+    def test_doctor_telemetry_carries_this_macs_nsmb_conf(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        summary = {"global": {"present": True, "sections": [{"kind": "default", "protocol_vers_map": "2"}]}}
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["nsmb_conf"] = summary
+            return [CheckResult("FAIL", "/etc/nsmb.conf turns off SMB 3", {"code": "mac_smb3_disabled"}, domain="computer")], True
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+             mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+             mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")), \
+             mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+            service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
+
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["nsmb_conf"], summary)
+        self.assertEqual(finished["doctor_sections"]["computer"]["fail_codes"], ["mac_smb3_disabled"])
+
     def test_doctor_passes_the_apps_local_network_permission_to_the_checks(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})

@@ -185,6 +185,18 @@ sudo security delete-generic-password -l "Bob's MacBook Pro.sparsebundle" /Libra
 
 If it still fails, check Keychain Access for older Time Machine entries that refer to the same Time Capsule or backup and remove only entries you recognize as related to this backup.
 
+#### Time Machine says the disk "does not support the necessary functions"
+
+The full message is "The selected network backup disk does not support the required capabilities" (or "the necessary functions"). Time Machine needs SMB 3, and the usual cause is a line in this Mac's `/etc/nsmb.conf` that turns SMB 3 off, such as `protocol_vers_map=2` ([#181](https://github.com/jamesyc/TimeCapsuleSMB/issues/181), [#372](https://github.com/jamesyc/TimeCapsuleSMB/issues/372)). Checkup reports it in its This Mac section.
+
+Check the file, and the one in your user folder:
+
+```bash
+cat /etc/nsmb.conf ~/Library/Preferences/nsmb.conf
+```
+
+Delete the `protocol_vers_map` line (`sudo nano /etc/nsmb.conf`), or the whole file if that line is all it has (`sudo rm /etc/nsmb.conf`). Then remove the disk in Time Machine settings and add it again; restart the Mac if it is still rejected. With the share mounted in Finder, `smbutil statshares -a` should show `SMB_VERSION` as `SMB_3.x`.
+
 #### The Time Capsule doesn't show up in Finder
 
 It should work with mDNS/Bonjour after you install. Try restarting the device and/or restarting your Mac.

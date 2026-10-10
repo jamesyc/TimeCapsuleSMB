@@ -40,6 +40,7 @@ from timecapsulesmb.checks.doctor_state import (
 )
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import DEVICE_NOT_CHECKED_CODE, DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
+from timecapsulesmb.checks.nsmb_conf import check_nsmb_conf
 from timecapsulesmb.checks.network import (
     IpNetwork,
     NetworkLinkResult,
@@ -1879,7 +1880,18 @@ def _doctor_validate_config(inputs: DoctorInputs, sink: DoctorSink) -> StepDecis
         repo_root=inputs.repo_root,
         add_result=sink.add,
     )
+    _doctor_check_nsmb_conf(sink)
     return StepDecision(stop=not config_valid)
+
+
+def _doctor_check_nsmb_conf(sink: DoctorSink) -> None:
+    """A Mac whose nsmb.conf turns off SMB 3 cannot use the device for Time
+    Machine, whatever the device does; reported even without a config."""
+    results, summary = check_nsmb_conf()
+    for result in results:
+        sink.add(result)
+    if summary is not None and sink.debug_fields is not None:
+        sink.debug_fields["nsmb_conf"] = summary
 
 
 def _build_doctor_target(inputs: DoctorInputs) -> DoctorTarget:

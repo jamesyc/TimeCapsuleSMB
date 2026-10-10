@@ -1146,6 +1146,8 @@ Important mode restrictions:
 
 `tcapsule doctor` runs local and remote diagnostics without deploying, rebooting, or changing managed configuration. It validates config and local tools, checks artifact presence and checksums, probes SSH/network/runtime state, checks Bonjour and NBNS visibility, runs authenticated SMB listing and temporary CRUD checks, and verifies that Samba xattr state points at persistent storage.
 
+Results come in two sections, each with its own status: **This computer** (its tools, `nsmb.conf`, SSH login, and its view of the device over the network) and **Device** (checked on the device over SSH, including the authenticated SMB checks through an SSH tunnel to the device's own smbd). Either section failing fails doctor. A failure on this computer that only repeats a device service the device reported down is a SKIP, and a device nothing ran on (SSH skipped or refused) is `not_checked`. `--json` adds `status` and `sections`.
+
 Arguments:
 - `--config PATH`: use a non-default config
 - `--skip-ssh`: skip SSH reachability and remote checks

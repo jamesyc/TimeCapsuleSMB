@@ -208,6 +208,55 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(row.message.hasPrefix("Ce Mac est sur un réseau où l’appareil ne partage pas ses disques"), row.message)
     }
 
+    func testCheckupPresentationLocalizesThisMacsNsmbConfChecks() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "/etc/nsmb.conf sets protocol_vers_map=2, which turns off SMB 3 on this Mac (sudo nano /etc/nsmb.conf)",
+                domain: "computer",
+                code: "mac_smb3_disabled",
+                extraDetails: ["path": .string("/etc/nsmb.conf")]
+            ),
+            testDoctorCheck(
+                status: "WARN",
+                message: "/etc/nsmb.conf sets protocol_vers_map=2 for the server [NAS]",
+                domain: "computer",
+                code: "mac_smb3_disabled_for_server",
+                extraDetails: ["path": .string("/Users/me/Library/Preferences/nsmb.conf"), "section": .string("NAS")]
+            ),
+            testDoctorCheck(status: "FAIL", message: "helper text without its path", domain: "computer", code: "mac_smb3_disabled")
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        L10n.apply(language: .english)
+        let rows = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first { $0.domain == .thisMac }).rows
+        XCTAssertEqual(
+            rows.map(\.message),
+            [
+                "/etc/nsmb.conf turns off SMB 3 (protocol_vers_map), and Time Machine needs SMB 3. Delete that line, then remove the disk in Time Machine settings and add it again.",
+                "/Users/me/Library/Preferences/nsmb.conf turns off SMB 3 for the server [NAS]. If that is this device, delete that line, then remove the disk in Time Machine settings and add it again.",
+                // Without the file it names, the helper's own sentence stays.
+                "helper text without its path"
+            ]
+        )
+
+        L10n.apply(language: .german)
+        let german = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first { $0.domain == .thisMac }).rows
+        XCTAssertTrue(german.contains { $0.message.hasPrefix("/etc/nsmb.conf deaktiviert SMB 3 (protocol_vers_map)") })
+        // Two placeholders, rendered in order in every language.
+        XCTAssertTrue(german.contains {
+            $0.message.hasPrefix("/Users/me/Library/Preferences/nsmb.conf deaktiviert SMB 3 für den Server [NAS].")
+        })
+        L10n.apply(language: .simplifiedChinese)
+        let chinese = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first { $0.domain == .thisMac }).rows
+        XCTAssertTrue(chinese.contains {
+            $0.message.hasPrefix("/Users/me/Library/Preferences/nsmb.conf 为服务器 [NAS] 关闭了 SMB 3。")
+        })
+    }
+
     func testDeviceOffNetworkErrorUsesTheAppsTextForConfigureAndEnableSSH() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

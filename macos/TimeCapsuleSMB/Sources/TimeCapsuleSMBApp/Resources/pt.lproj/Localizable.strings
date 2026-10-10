@@ -288,6 +288,8 @@
 "doctor.check.payload_missing_from_disk" = "A pasta Samba está ausente do disco de dados; o disco pode ter sido apagado. Execute “Instalar/atualizar Samba” para reinstalar.";
 "doctor.check.metadata_migration_in_progress" = "Uma migração de metadados ainda está em andamento no dispositivo. “Instalar/atualizar Samba” aguarda a conclusão antes de instalar.";
 "doctor.check.client_on_unshared_network" = "Este Mac está em uma rede em que o dispositivo não compartilha seus discos, como o lado da internet (WAN) ou a rede de convidados do dispositivo. Conecte este Mac à rede principal do dispositivo por Wi-Fi ou por uma de suas portas LAN e execute a verificação novamente.";
+"doctor.check.mac_smb3_disabled" = "%@ desativa o SMB 3 (protocol_vers_map), e o Time Machine precisa do SMB 3. Apague essa linha, depois remova o disco nos ajustes do Time Machine e adicione-o novamente.";
+"doctor.check.mac_smb3_disabled_for_server" = "%1$@ desativa o SMB 3 para o servidor [%2$@]. Se for este dispositivo, apague essa linha, depois remova o disco nos ajustes do Time Machine e adicione-o novamente.";
 "doctor.domain.this_mac" = "Este Mac";
 "doctor.domain.device" = "Dispositivo";
 "event.summary.check" = "%@ %@";
