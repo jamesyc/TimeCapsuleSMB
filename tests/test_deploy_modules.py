@@ -1264,10 +1264,14 @@ class DeployModuleTests(unittest.TestCase):
     def test_runtime_verification_measurement_keeps_advisory_native_nbns_result(self) -> None:
         detail = "discovery native NBNS is not ready; NetBIOS name lookups may fail, SMB and Bonjour are unaffected"
         smbd = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        bonjour = "Apple mDNSResponder accepted all 2 Bonjour registrations"
         cases = (
             ((ProbeStepResult("native_nbns", "info", detail),), {"native_nbns_status": "info", "native_nbns_detail": detail, "info_step_count": 1}),
             ((ProbeStepResult("native_nbns", "skip", "native NBNS is still starting; deploy does not wait for it"),), {"native_nbns_status": "skip", "info_step_count": 0}),
-            ((), {"native_nbns_status": "none", "info_step_count": 0}),
+            ((), {"native_nbns_status": "none", "native_mdns_status": "none", "info_step_count": 0}),
+            # Bonjour registration rides along the same way.
+            ((ProbeStepResult("mdns_registered", "pass", bonjour),),
+             {"native_nbns_status": "none", "native_mdns_status": "pass", "native_mdns_detail": bonjour}),
         )
         for nbns_steps, expected in cases:
             with self.subTest(expected["native_nbns_status"]):
@@ -1747,7 +1751,7 @@ describe_managed_smbd_status "" ""
     PS_V31 = (
         "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n"
         "559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
-        "916 408 S 0:00 service service: role=discovery nbns=ready mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n"
+        "916 408 S 0:00 service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n"
         "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n"
     )
     FSTAT_V31 = (
@@ -1766,20 +1770,67 @@ describe_managed_smbd_status "" ""
         "link: name=bridge1 index=10 role=isolated mask=none\n"
     )
 
-    def _run_mdns_probe(self, responses: list[object], native_nbns: str = "required") -> tuple[object, mock.Mock]:
+    def _run_mdns_probe(self, responses: list[object], native_nbns: str = "required",
+                        bonjour_registrations: str = "required") -> tuple[object, mock.Mock]:
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=responses) as run_ssh_mock:
-            result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"), native_nbns=native_nbns)
+            result = probe_managed_mdns_conn(
+                SshConnection("host", "pw", "-o foo"),
+                native_nbns=native_nbns,
+                bonjour_registrations=bonjour_registrations,
+            )
         return result, run_ssh_mock
 
     def _mdns_probe_with(self, ps_out: str, fstat_out: str | None = None, plan: str | None = None,
-                         native_nbns: str = "required") -> object:
+                         native_nbns: str = "required", bonjour_registrations: str = "required") -> object:
         result, _ = self._run_mdns_probe([
             mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31 if fstat_out is None else fstat_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31 if plan is None else plan, stderr=""),
-        ], native_nbns=native_nbns)
+        ], native_nbns=native_nbns, bonjour_registrations=bonjour_registrations)
         return result
+
+    def test_probe_managed_mdns_reads_bonjour_registration_from_the_discovery_title(self) -> None:
+        def title(mdns: str) -> str:
+            return self.PS_V31.replace("mdns=ready:2/2", mdns)
+
+        cases = [
+            ("ready", title("mdns=ready:2/2"), None, "PASS:Apple mDNSResponder accepted all 2 Bonjour registrations"),
+            ("starting", title("mdns=starting:1/2"), None, "FAIL:discovery Bonjour registrations are still starting"),
+            # Just after the plan granted SMB, before the first registration.
+            ("waiting with SMB", title("mdns=waiting:0/0"), None, "FAIL:discovery Bonjour registrations are still starting"),
+            ("waiting without SMB", title("mdns=waiting:0/0"),
+             self.PLAN_V31.replace("mask=smb,adisk", "mask=none").replace("status=validated", "status=incomplete reason=mode"),
+             "PASS:no Bonjour registrations are due (diskless, or no link grants SMB)"),
+            ("degraded", title("mdns=degraded:1/2"), None,
+             "FAIL:Apple mDNSResponder has not accepted every Bonjour registration; discovery retries them "
+             "(a name conflict or registration error, see discovery.log)"),
+            ("unreachable", title("mdns=unreachable:0/2"), None,
+             "FAIL:Apple mDNSResponder is not answering discovery's Bonjour registrations; nothing restarts it, reboot the device"),
+            # A runtime from before the field existed.
+            ("no state", title("").replace("  ", " "), None, "FAIL:discovery Bonjour registration state is not available yet"),
+        ]
+        for name, ps_out, plan, line in cases:
+            with self.subTest(name):
+                result = self._mdns_probe_with(ps_out, plan=plan)
+                self.assertIn(line, result.lines)
+                step = next(step for step in result.steps if step.id == "mdns_registered")
+                self.assertEqual(step.status, line.split(":", 1)[0].lower())
+
+    def test_probe_managed_mdns_advisory_reports_bonjour_registration_without_blocking_deploy(self) -> None:
+        cases = [
+            ("starting", "mdns=starting:1/2", "SKIP:discovery Bonjour registrations are still starting"),
+            ("degraded", "mdns=degraded:1/2", "INFO:Apple mDNSResponder has not accepted every Bonjour registration; "
+                                             "discovery retries them (a name conflict or registration error, see discovery.log)"),
+            ("ready", "mdns=ready:2/2", "PASS:Apple mDNSResponder accepted all 2 Bonjour registrations"),
+        ]
+        for name, mdns, line in cases:
+            with self.subTest(name):
+                result = self._mdns_probe_with(
+                    self.PS_V31.replace("mdns=ready:2/2", mdns), native_nbns="advisory", bonjour_registrations="advisory",
+                )
+                self.assertTrue(result.ready, result.lines)
+                self.assertIn(line, result.lines)
 
     def test_probe_managed_mdns_hands_on_the_link_plan_it_read(self) -> None:
         # Doctor uses it to tell whether this computer is on a network where
@@ -1826,7 +1877,7 @@ describe_managed_smbd_status "" ""
              "SKIP:native NBNS is still starting; deploy does not wait for it"),
             ("ready without its ports", self.PS_V31, no_wcifsnd_fstat, None,
              "INFO:discovery native NBNS is not ready" + unlisted),
-            ("no state", self.PS_V31.replace("nbns=ready mode=payload ", ""), None, None,
+            ("no state", self.PS_V31.replace("nbns=ready ", ""), None, None,
              "INFO:discovery NBNS state is not available yet" + unlisted),
             ("mismatch", self.PS_V31.replace("nbns=ready", "nbns=waiting"), None,
              self.PLAN_V31.replace("addr=192.168.1.10", "addr=239.1.2.3"),
@@ -1873,7 +1924,7 @@ describe_managed_smbd_status "" ""
         ps_out = (
             "878 1 ZWa 0:00 (mDNSResponder) (mDNSResponder)\n"
             "232 1 S 0:00 diskd /sbin/diskd -i  -d local.\n"
-            "916 408 S 0:00 service service: role=discovery nbns=ready mode=payload\n"
+            "916 408 S 0:00 service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload\n"
         )
         result, run_ssh_mock = self._run_mdns_probe([
             mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
@@ -1902,8 +1953,8 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_accepts_diskless_registrant_without_smb_links(self) -> None:
         ps_out = self.PS_V31.replace(
-            "nbns=ready mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n917 916 S 0:00 wcifsnd /sbin/wcifsnd",
-            "nbns=waiting mode=diskless --diskless",
+            "nbns=ready mdns=ready:2/2 mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n917 916 S 0:00 wcifsnd /sbin/wcifsnd",
+            "nbns=waiting mdns=waiting:0/0 mode=diskless --diskless",
         )
         plan = self.PLAN_V31.replace("mask=smb,adisk", "mask=none").replace("diskless=0", "diskless=1")
         result, _ = self._run_mdns_probe([
@@ -1928,7 +1979,7 @@ describe_managed_smbd_status "" ""
         self.assertIn("FAIL:mdns link plan output could not be parsed", result.lines)
 
     def test_probe_managed_mdns_rejects_controller_without_native_nbns_state(self) -> None:
-        ps_out = self.PS_V31.replace("nbns=ready mode=payload ", "")
+        ps_out = self.PS_V31.replace("nbns=ready ", "")
         result, _ = self._run_mdns_probe([
             mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),

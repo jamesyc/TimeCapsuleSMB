@@ -14,18 +14,24 @@ static void on_signal(int signo) {
 }
 
 /* Native process titles expose only current in-memory readiness. Doctor also
- * checks the child's PPID and sockets; no stale status/PID file is needed. */
-static void publish_readiness(const struct wcifsnd *nbns, const struct config *cfg,
-                              const char *netbios) {
+ * checks the child's PPID and sockets; no stale status/PID file is needed.
+ * mdns= is the registrant's state and how many of its desired registrations
+ * mDNSResponder accepted, so doctor can tell a device that registered from a
+ * network that hides its records from the Mac. */
+static void publish_readiness(const struct wcifsnd *nbns, const struct registrant *reg,
+                              const struct config *cfg, const char *netbios) {
 #if defined(__NetBSD__)
+    unsigned registered, desired;
+    const char *mdns = registrant_readiness(reg, &registered, &desired);
     const char *state = nbns->phase == WC_ACTIVE ? "ready" :
         nbns->phase != WC_OFF ? "starting" :
         cfg->diskless ? "disabled" : "waiting";
-    setproctitle("role=discovery nbns=%s mode=%s %s--netbios-name %s", state,
+    setproctitle("role=discovery nbns=%s mdns=%s:%u/%u mode=%s %s--netbios-name %s", state,
+                 mdns, registered, desired,
                  cfg->diskless ? "diskless" : "payload",
                  cfg->diskless ? "--diskless " : "", netbios);
 #else
-    (void)nbns; (void)cfg; (void)netbios;
+    (void)nbns; (void)reg; (void)cfg; (void)netbios;
 #endif
 }
 
@@ -85,7 +91,6 @@ int tc_discovery_main(int argc, char **argv) {
 
     if (!cfg.diskless && !netbios[0]) { usage(argv[0]); return EXIT_USAGE; }
     wcifsnd_init(&nbns, netbios);
-    publish_readiness(&nbns, &cfg, netbios);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -93,6 +98,7 @@ int tc_discovery_main(int argc, char **argv) {
     registrant_install_ipc_fence();
 
     registrant_init(&reg, &cfg);
+    publish_readiness(&nbns, &reg, &cfg, netbios);
     parent_fd = tc_parent_pipe();
     if (parent_fd >= 0 && getpgrp() == getpid())
         acp_set_scope(1, collect_cancelled);
@@ -129,8 +135,10 @@ int tc_discovery_main(int argc, char **argv) {
         /* Native NBNS retries preserve Bonjour; only unsafe child cleanup
          * escalates to the manager's whole-process recovery. */
         if (wcifsnd_dispatch(&nbns, &reads, now) < 0) { result = EXIT_DAEMON_STALLED; break; }
-        publish_readiness(&nbns, &cfg, netbios);
         registrant_dispatch(&reg, &reads, now);
+        /* After both dispatches, so a registration this wake confirmed shows
+         * now rather than at the next wake, up to a plan poll later. */
+        publish_readiness(&nbns, &reg, &cfg, netbios);
     }
 
     fprintf(stderr, "discovery stopping; deregistering everything\n");

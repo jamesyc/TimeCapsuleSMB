@@ -1260,6 +1260,36 @@ def link_plan_networks(
     return tuple(dict.fromkeys(served)), tuple(dict.fromkeys(unserved))
 
 
+MDNS_REGISTRATIONS_STILL_STARTING = "discovery Bonjour registrations are still starting"
+MDNS_REGISTRATION_STATE_UNAVAILABLE = "discovery Bonjour registration state is not available yet"
+# A registration that failed or conflicted waits for discovery's retry (1 to
+# 30 s), so doctor retries before reporting it.
+MDNS_REGISTRATIONS_DEGRADED = (
+    "Apple mDNSResponder has not accepted every Bonjour registration; discovery retries them "
+    "(a name conflict or registration error, see discovery.log)"
+)
+
+
+def _bonjour_registration_step(title: str, *, expected: bool) -> tuple[str, str]:
+    """discovery's mdns=<state>:<accepted>/<desired>: whether Apple's
+    mDNSResponder accepted the _smb/_adisk registrations, read on the device,
+    so a network that hides them from the Mac is not mistaken for this."""
+    marker = re.search(r"\bmdns=(unreachable|degraded|ready|starting|waiting):(\d+)/(\d+)\b", title)
+    if not marker:
+        return "fail", MDNS_REGISTRATION_STATE_UNAVAILABLE
+    state, desired = marker.group(1), int(marker.group(3))
+    if state == "ready":
+        return "pass", f"Apple mDNSResponder accepted all {desired} Bonjour registrations"
+    if state == "unreachable":
+        return "fail", "Apple mDNSResponder is not answering discovery's Bonjour registrations; nothing restarts it, reboot the device"
+    if state == "degraded":
+        return "fail", MDNS_REGISTRATIONS_DEGRADED
+    if state == "waiting" and not expected:
+        return "pass", "no Bonjour registrations are due (diskless, or no link grants SMB)"
+    # "starting", or "waiting" just after a plan grants SMB.
+    return "fail", MDNS_REGISTRATIONS_STILL_STARTING
+
+
 def probe_managed_mdns_conn(
     connection: SshConnection,
     *,
@@ -1268,6 +1298,7 @@ def probe_managed_mdns_conn(
     plan_timeout_seconds: int = MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
     fstat_timeout_seconds: int = MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
     native_nbns: NativeNbnsCheck = "required",
+    bonjour_registrations: NativeNbnsCheck = "required",
 ) -> ReadinessProbeResult:
     """v3.1.0 mDNS health (guide C.9): Apple's mDNSResponder is the only
     responder on the device, diskd runs on loopback, and our registrant is
@@ -1275,7 +1306,9 @@ def probe_managed_mdns_conn(
 
     Doctor requires native NBNS. Deploy only reports it ("advisory"): NetBIOS
     is rarely used, and registration may still be running when Samba and
-    Bonjour are already up, so it must never fail or delay a deploy."""
+    Bonjour are already up, so it must never fail or delay a deploy. Bonjour
+    registration (discovery's mdns= title field) is the same: doctor requires
+    it, deploy reports it."""
     steps: list[ProbeStepResult] = []
     not_ready = "managed mDNS registrant not active"
 
@@ -1489,6 +1522,13 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
                 nbns_status = "info"
                 nbns_detail += "; NetBIOS name lookups may fail, SMB and Bonjour are unaffected"
         _append_step(steps, "native_nbns", nbns_status, nbns_detail)
+        mdns_status, mdns_detail = _bonjour_registration_step(
+            title,
+            expected=not diskless and status == "validated" and bool(smb_links),
+        )
+        if bonjour_registrations == "advisory" and mdns_status == "fail":
+            mdns_status = "skip" if mdns_detail == MDNS_REGISTRATIONS_STILL_STARTING else "info"
+        _append_step(steps, "mdns_registered", mdns_status, mdns_detail)
 
     ready = all(step.status in {"pass", "skip", "info"} for step in steps)
     result = _readiness_result_from_steps(
@@ -1774,12 +1814,12 @@ def probe_managed_runtime_once_conn(
     smbd = probe_managed_smbd_conn(connection, timeout_seconds=smbd_timeout_seconds)
     if not smbd.ready and smbd_mdns_stagger_seconds > 0:
         time.sleep(smbd_mdns_stagger_seconds)
-    mdns = probe_managed_mdns_conn(connection, native_nbns="advisory")
+    mdns = probe_managed_mdns_conn(connection, native_nbns="advisory", bonjour_registrations="advisory")
     rsync = probe_managed_rsync_conn(connection)
 
     if smbd.ready and mdns.ready and rsync.ready:
         time.sleep(mdns_settle_seconds)
-        settled_mdns = probe_managed_mdns_conn(connection, native_nbns="advisory")
+        settled_mdns = probe_managed_mdns_conn(connection, native_nbns="advisory", bonjour_registrations="advisory")
         if settled_mdns.ready:
             return ManagedRuntimeProbeResult(
                 ready=True,

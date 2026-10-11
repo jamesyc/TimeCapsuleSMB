@@ -71,4 +71,10 @@ void registrant_dispatch(struct registrant *reg, const fd_set *reads, long long 
 /* Deallocates every ref (the daemon sends goodbyes). */
 void registrant_shutdown(struct registrant *reg);
 const char *reg_service_regtype(enum reg_service service);
+/* Bonjour readiness for discovery's process title, which doctor reads as it
+ * reads nbns=: "unreachable" (mDNSResponder is gone), "degraded" (a
+ * registration failed or conflicted and is retrying), "ready" (the daemon
+ * accepted every desired registration), "starting" (some still pending), or
+ * "waiting" (nothing to register yet). Sets the accepted and desired counts. */
+const char *registrant_readiness(const struct registrant *reg, unsigned *registered, unsigned *desired);
 #endif

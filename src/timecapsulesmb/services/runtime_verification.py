@@ -133,6 +133,11 @@ def _runtime_verification_measurement(
     measurement["native_nbns_status"] = "none" if nbns is None else nbns.status
     if nbns is not None:
         measurement["native_nbns_detail"] = nbns.detail
+    # Bonjour registration is reported the same way.
+    bonjour = next((step for step in verification.mdns.steps if step.id == "mdns_registered"), None)
+    measurement["native_mdns_status"] = "none" if bonjour is None else bonjour.status
+    if bonjour is not None:
+        measurement["native_mdns_detail"] = bonjour.detail
     if final_blocker is not None:
         measurement.update(
             final_blocker_step=final_blocker.id,

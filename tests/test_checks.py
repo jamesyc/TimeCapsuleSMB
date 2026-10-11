@@ -90,6 +90,7 @@ from timecapsulesmb.device.probe import (
     DeviceHostnameProbeResult,
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
+    MDNS_REGISTRATIONS_DEGRADED,
     ManagerStartupAgeProbeResult,
     probe_manager_startup_age_conn,
     ProbedDeviceState,
@@ -3678,6 +3679,38 @@ class CheckTests(unittest.TestCase):
                 },
             )
         return run, [call.args[0] for call in sleep_mock.call_args_list]
+
+    def test_run_doctor_checks_retries_a_bonjour_registration_waiting_for_discoverys_retry(self) -> None:
+        degraded = ReadinessProbeResult(
+            ready=False,
+            detail=MDNS_REGISTRATIONS_DEGRADED,
+            steps=(
+                ProbeStepResult("mdns_process", "pass", "discovery process is running"),
+                ProbeStepResult("mdns_registered", "fail", MDNS_REGISTRATIONS_DEGRADED),
+            ),
+        )
+        ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        mdns_mock = mock.Mock(side_effect=[degraded, ready])
+        nbns_mock = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
+
+        run, sleeps = self._run_doctor_nbns(mdns_mock, nbns_mock)
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10])
+        self.assertEqual(mdns_mock.call_count, 2)
+
+    def test_run_doctor_checks_does_not_blame_this_computer_for_nbns_the_device_reports_not_ready(self) -> None:
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        nbns_mock = mock.Mock(return_value=self._nbns_query_timeout())
+
+        run, _sleeps = self._run_doctor_nbns(mock.Mock(return_value=not_ready), nbns_mock)
+
+        query = next(result for result in run.results if result.details.get("code") == NBNS_QUERY_TIMEOUT_CODE)
+        self.assertEqual((query.status, query.domain), ("SKIP", "computer"))
+        self.assertIn("not counted against this computer: NetBIOS (NBNS) is not ready on the device", query.message)
+        sections = doctor_report(run.results)["sections"]
+        self.assertEqual(sections["device"]["status"], "fail")
+        self.assertNotIn(NBNS_QUERY_TIMEOUT_CODE, sections["computer"]["fail_codes"])
 
     def test_run_doctor_checks_waits_up_to_apple_budget_while_native_nbns_starts(self) -> None:
         starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")

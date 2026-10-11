@@ -106,6 +106,22 @@ def test_registrant_keeps_shared_txt_state_below_device_budget():
     assert int(run_case("registrant_size")) < 16 * 1024
 
 
+def test_readiness_counts_what_mdnsresponder_accepted():
+    # Discovery's title carries this as mdns=<state>:<registered>/<desired>;
+    # doctor fails the device on anything but ready.
+    lines = dict(line.split(" ", 1) for line in run_case("registrant_readiness").splitlines())
+    assert lines == {
+        "empty": "waiting 0/0",
+        "pending": "starting 1/2",
+        "all": "ready 2/2",
+        "unused": "ready 2/2",
+        "conflict": "degraded 2/3",
+        "degraded": "degraded 2/3",
+        "unreachable": "unreachable 2/3",
+        "unreachable-empty": "unreachable 0/0",
+    }
+
+
 def test_adisk_txt_normalizes_lowercase_wama():
     assert run_case("adisk_txt_normalizes_wama").strip() == "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010"
 

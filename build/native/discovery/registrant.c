@@ -317,6 +317,32 @@ void registrant_apply_plan(struct registrant *reg, const struct device_plan *pla
     }
 }
 
+const char *registrant_readiness(const struct registrant *reg, unsigned *registered, unsigned *desired) {
+    size_t i;
+    int failing = 0;
+
+    *registered = 0;
+    *desired = 0;
+    /* Every desired registration has an in-use entry, ref-less while it waits
+     * for a retry. */
+    for (i = 0; i < REG_MAX_ENTRIES; i++) {
+        const struct reg_entry *entry = &reg->entries[i];
+        if (!entry->in_use) {
+            continue;
+        }
+        (*desired)++;
+        if (entry->status == REG_REGISTERED) {
+            (*registered)++;
+        } else if (entry->status == REG_CONFLICT || entry->status == REG_DEGRADED) {
+            failing = 1;
+        }
+    }
+    if (reg->daemon_unreachable) return "unreachable";
+    if (*desired == 0) return "waiting";
+    if (failing) return "degraded";
+    return *registered == *desired ? "ready" : "starting";
+}
+
 void registrant_prepare(struct registrant *reg, fd_set *reads, int *maxfd, long long *deadline_ms) {
     size_t i;
     for (i = 0; i < REG_MAX_ENTRIES; i++) {
