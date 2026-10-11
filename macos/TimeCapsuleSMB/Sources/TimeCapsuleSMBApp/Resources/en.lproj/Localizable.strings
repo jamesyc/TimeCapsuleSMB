@@ -432,7 +432,7 @@
 "discovery_monitor.state.waiting_for_readiness" = "Waiting for app readiness";
 "checkup.advanced_options" = "Advanced Options";
 "checkup.option.skip_bonjour" = "Skip Bonjour checks";
-"checkup.option.skip_smb" = "Skip SMB checks";
+"checkup.option.skip_smb" = "Skip SMB login and file checks";
 "checkup.option.skip_ssh" = "Skip SSH checks";
 "checkup.status.failed" = "Failed";
 "checkup.status.info" = "Info";

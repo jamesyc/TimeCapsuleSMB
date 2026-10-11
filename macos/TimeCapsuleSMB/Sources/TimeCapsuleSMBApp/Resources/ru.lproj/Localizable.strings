@@ -434,7 +434,7 @@
 "discovery_monitor.state.waiting_for_readiness" = "Ожидание готовности приложения";
 "checkup.advanced_options" = "Дополнительные параметры";
 "checkup.option.skip_bonjour" = "Пропустить проверки Bonjour";
-"checkup.option.skip_smb" = "Пропустить проверки SMB";
+"checkup.option.skip_smb" = "Пропустить вход по SMB и проверки файлов";
 "checkup.option.skip_ssh" = "Пропустить проверки SSH";
 "checkup.status.failed" = "Ошибка";
 "checkup.status.info" = "Информация";

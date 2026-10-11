@@ -80,7 +80,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     add_config_argument(parser)
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
     parser.add_argument("--skip-bonjour", action="store_true", help="Skip Bonjour browse/resolve checks")
-    parser.add_argument("--skip-smb", action="store_true", help="Skip authenticated SMB listing check")
+    parser.add_argument("--skip-smb", action="store_true", help="Skip the SMB login and file checks (they write a test folder through SMB)")
     parser.add_argument("--no-startup-grace", action="store_true", help="Show raw startup-window failures instead of collapsing known transient checks")
     parser.add_argument("--json", action="store_true", help="Output doctor results as JSON")
     args = parser.parse_args(argv)

@@ -194,6 +194,10 @@ DOCTOR_CODE_DEVICE_SMB_PASSWORD_STALE = "device_smb_password_stale"
 # A problem on this computer kept the device's own SMB check from running.
 DOCTOR_CODE_DEVICE_SMB_NOT_CHECKED = "device_smb_not_checked"
 DOCTOR_CODE_DEVICE_SMB_TUNNEL_FAILED = "device_smb_tunnel_failed"
+# The user turned the SMB login and file checks off (--skip-smb, the app's
+# Checkup option); each section that would have run them says so.
+DOCTOR_CODE_SMB_CHECKS_SKIPPED = "smb_checks_skipped"
+SMB_CHECKS_SKIPPED_MESSAGE = "SMB login and file checks skipped (Checkup option)"
 # What the device's own SMB check found, for this computer's LAN checks.
 DEVICE_SMB_PASSED = "passed"
 DEVICE_SMB_FAILED = "failed"
@@ -2821,7 +2825,10 @@ def _doctor_check_device_smb(
     """Log in to Samba and change files on the device through an SSH tunnel to
     its own loopback, so the result does not depend on the network between
     this computer and the device. Returns a DEVICE_SMB_* outcome."""
-    if inputs.options.skip_smb or not remote.remote_checks_enabled:
+    if not remote.remote_checks_enabled:
+        return DEVICE_SMB_NOT_RUN
+    if inputs.options.skip_smb:
+        sink.add(CheckResult("SKIP", SMB_CHECKS_SKIPPED_MESSAGE, {"code": DOCTOR_CODE_SMB_CHECKS_SKIPPED}))
         return DEVICE_SMB_NOT_RUN
     if processes.smbd_stuck:
         # Each new SMB connection forks an smbd child that blocks the same way
@@ -2870,9 +2877,10 @@ def _doctor_check_authenticated_smb(
     # A stuck smbd is reported by the device's own SMB check. Whatever kept that
     # check from running (a saved password Samba rejects or that is known not
     # to match, no smbclient here) would only fail again here.
-    if inputs.options.skip_smb or processes.smbd_stuck:
+    if inputs.options.skip_smb:
+        sink.add(CheckResult("SKIP", SMB_CHECKS_SKIPPED_MESSAGE, {"code": DOCTOR_CODE_SMB_CHECKS_SKIPPED}))
         return
-    if device_smb == DEVICE_SMB_BLOCKED:
+    if processes.smbd_stuck or device_smb == DEVICE_SMB_BLOCKED:
         return
 
     _add_authenticated_smb_results(

@@ -434,7 +434,7 @@
 "discovery_monitor.state.waiting_for_readiness" = "正在等待应用就绪";
 "checkup.advanced_options" = "高级选项";
 "checkup.option.skip_bonjour" = "跳过 Bonjour 检查";
-"checkup.option.skip_smb" = "跳过 SMB 检查";
+"checkup.option.skip_smb" = "跳过 SMB 登录和文件检查";
 "checkup.option.skip_ssh" = "跳过 SSH 检查";
 "checkup.status.failed" = "失败";
 "checkup.status.info" = "信息";

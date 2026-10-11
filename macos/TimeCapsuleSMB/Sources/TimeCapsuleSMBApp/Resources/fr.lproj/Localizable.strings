@@ -434,7 +434,7 @@
 "discovery_monitor.state.waiting_for_readiness" = "En attente de la préparation de l’app";
 "checkup.advanced_options" = "Options avancées";
 "checkup.option.skip_bonjour" = "Ignorer les vérifications Bonjour";
-"checkup.option.skip_smb" = "Ignorer les vérifications SMB";
+"checkup.option.skip_smb" = "Ignorer la connexion SMB et les vérifications de fichiers";
 "checkup.option.skip_ssh" = "Ignorer les vérifications SSH";
 "checkup.status.failed" = "Échec";
 "checkup.status.info" = "Infos";

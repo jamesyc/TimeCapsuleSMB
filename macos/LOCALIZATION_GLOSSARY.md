@@ -91,6 +91,7 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Checkup section: the device's own checks | Gerät | Apparaat | Appareil | Dispositivo |
 | Checkup section: this Mac's checks (the CLI says “This computer”) | Dieser Mac | Deze Mac | Ce Mac | Este Mac |
 | Checkup section status: nothing ran on the device | Nicht geprüft | Niet gecontroleerd | Non vérifié | No comprobado |
+| SMB login (signing in to a share) | SMB-Anmeldung | SMB-aanmelding | connexion SMB | inicio de sesión SMB |
 
 | Concept | it | pt-BR | ru | zh-Hans | lt |
 |---|---|---|---|---|---|
@@ -98,6 +99,7 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Checkup section: the device's own checks | Dispositivo | Dispositivo | Устройство | 设备 | Įrenginys |
 | Checkup section: this Mac's checks | Questo Mac | Este Mac | Этот Mac | 此 Mac | Šis Mac |
 | Checkup section status: nothing ran on the device | Non controllato | Não verificado | Не проверено | 未检查 | Nepatikrinta |
+| SMB login (signing in to a share) | accesso SMB | login SMB | вход по SMB | SMB 登录 | SMB prisijungimas |
 | Save profile | Salva profilo | Salvar perfil | Сохранить профиль | 保存配置 | Išsaugoti profilį |
 | Install / Update Samba (button) | Installa/aggiorna Samba | Instalar/atualizar Samba | Установить/обновить Samba | 安装 / 更新 Samba | Įdiegti / atnaujinti Samba |
 | Install / Update (tab, timeline) | Installa/aggiorna | Instalar/atualizar | Установить/обновить | 安装 / 更新 | Diegti / atnaujinti |

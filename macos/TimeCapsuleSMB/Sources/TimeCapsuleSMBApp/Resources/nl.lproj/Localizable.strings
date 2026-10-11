@@ -434,7 +434,7 @@
 "discovery_monitor.state.waiting_for_readiness" = "Wachten tot de app gereed is";
 "checkup.advanced_options" = "Geavanceerde opties";
 "checkup.option.skip_bonjour" = "Bonjour-controles overslaan";
-"checkup.option.skip_smb" = "SMB-controles overslaan";
+"checkup.option.skip_smb" = "SMB-aanmelding en bestandscontroles overslaan";
 "checkup.option.skip_ssh" = "SSH-controles overslaan";
 "checkup.status.failed" = "Mislukt";
 "checkup.status.info" = "Info";

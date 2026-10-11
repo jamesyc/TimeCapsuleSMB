@@ -5807,6 +5807,29 @@ class CheckTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_run_doctor_checks_says_in_each_section_that_the_smb_checks_were_skipped(self) -> None:
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        run = self.device_smb_run(listing, skip_smb=True)
+
+        listing.assert_not_called()
+        run.mocks.ssh_local_forward.assert_not_called()
+        skipped = [result for result in run.results if result.details.get("code") == "smb_checks_skipped"]
+        self.assertEqual(
+            [(result.status, result.domain, result.message) for result in skipped],
+            [
+                ("SKIP", "device", "SMB login and file checks skipped (Checkup option)"),
+                ("SKIP", "computer", "SMB login and file checks skipped (Checkup option)"),
+            ],
+        )
+        self.assertFalse(run.fatal)
+
+        # Without SSH only this computer would have run them.
+        run = self.run_doctor_with_mocks(skip_ssh=True, skip_bonjour=True, skip_smb=True)
+        self.assertEqual(
+            [result.domain for result in run.results if result.details.get("code") == "smb_checks_skipped"],
+            ["computer"],
+        )
+
     def test_run_doctor_checks_blames_the_device_when_samba_rejects_the_airport_password(self) -> None:
         # The password check said the saved password is the AirPort admin
         # password, so Samba rejecting it means the device has not applied it.

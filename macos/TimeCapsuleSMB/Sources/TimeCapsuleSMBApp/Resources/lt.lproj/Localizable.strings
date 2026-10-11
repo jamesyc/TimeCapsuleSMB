@@ -434,7 +434,7 @@
 "discovery_monitor.state.waiting_for_readiness" = "Laukiama programos parengties";
 "checkup.advanced_options" = "Išplėstinės parinktys";
 "checkup.option.skip_bonjour" = "Praleisti Bonjour patikrinimus";
-"checkup.option.skip_smb" = "Praleisti SMB patikrinimus";
+"checkup.option.skip_smb" = "Praleisti SMB prisijungimą ir failų patikrinimus";
 "checkup.option.skip_ssh" = "Praleisti SSH patikrinimus";
 "checkup.status.failed" = "Nepavyko";
 "checkup.status.info" = "Informacija";
