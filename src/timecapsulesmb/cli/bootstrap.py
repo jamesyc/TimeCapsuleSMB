@@ -369,6 +369,24 @@ def _macos_manual_install_command(missing_tools: list[str]) -> str:
     return f"brew install {' '.join(packages)}"
 
 
+def _python_venv_package(python: str, python_version: str) -> str | None:
+    """The apt package that gives `python` the ensurepip its venv needs.
+
+    Debian and Ubuntu split ensurepip into pythonX.Y-venv, so `python -m venv`
+    fails there until it is installed. Other distributions ship it in Python.
+    None without apt, when `python` imports ensurepip, or when .venv already
+    has pip: bootstrap needs ensurepip only to create .venv or to repair it.
+    """
+    venv_python = VENVDIR / "bin" / "python"
+    if find_command("apt-get") is None or (venv_python.exists() and venv_has_pip(venv_python)):
+        return None
+    probe = run_process([python, "-c", "import ensurepip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if probe.returncode == 0:
+        return None
+    major, minor = python_version.split(".")[:2]
+    return f"python{major}.{minor}-venv"
+
+
 def _linux_package_manager() -> str | None:
     return next((manager for manager in LINUX_HOST_TOOL_PACKAGES if find_command(manager) is not None), None)
 
@@ -427,6 +445,13 @@ def _install_with_linux_package_manager(names: str, manager: str, packages: list
     print(f"Installing {names} with {manager}", flush=True)
     _run_install_commands(names, commands, manual_command)
     return manual_command
+
+
+def install_python_venv_package(package: str) -> None:
+    """Install the apt package `_python_venv_package` named."""
+    print(f"Missing {package}, which Python needs to create or repair .venv", flush=True)
+    _install_with_linux_package_manager(package, "apt-get", [package])
+    print(f"Installed {package}", flush=True)
 
 
 def _install_macos_host_tools(missing_tools: list[str], manual_command: str) -> None:
@@ -555,6 +580,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             command_context.set_stage("check_host_support")
             command_context.update_fields(**check_macos_host_tool_install_support(platform_label))
+            command_context.set_stage("check_python_venv")
+            venv_package = _python_venv_package(args.python, selected_python_version) if platform_label == "Linux" else None
+            if venv_package:
+                # .venv cannot be created or repaired without it, so it comes
+                # first. The host tools still come last: a failure there (no
+                # Homebrew, no sudo, a package apt refuses) leaves a .venv
+                # that can deploy.
+                command_context.update_fields(python_venv_package=venv_package)
+                command_context.set_stage("install_python_venv_package")
+                install_python_venv_package(venv_package)
             command_context.set_stage("ensure_venv")
             venv_python = ensure_venv(args.python)
             command_context.update_fields(venv_python=str(venv_python))

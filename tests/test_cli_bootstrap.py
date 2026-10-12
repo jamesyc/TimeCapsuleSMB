@@ -13,6 +13,10 @@ from timecapsulesmb.cli import bootstrap
 
 from tests.cli_support import CliTestCase
 
+# setUp stubs the ensurepip check so main() never probes this host's Python;
+# its own tests call the real one.
+REAL_PYTHON_VENV_PACKAGE = bootstrap._python_venv_package
+
 
 def MAC_SSH_ONLY(name: str) -> str | None:
     """Every Mac has /usr/bin/ssh; nothing else is installed."""
@@ -25,6 +29,9 @@ class CliBootstrapTests(CliTestCase):
         client = mock.patch.object(bootstrap, "require_local_ssh", return_value="/tested/ssh")
         self.client = client.start()
         self.addCleanup(client.stop)
+        venv_package = mock.patch.object(bootstrap, "_python_venv_package", return_value=None)
+        venv_package.start()
+        self.addCleanup(venv_package.stop)
 
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
@@ -702,6 +709,149 @@ class CliBootstrapTests(CliTestCase):
         # Output piped to a reader that exited is not a failed install.
         with self.assertRaises(BrokenPipeError):
             self._linux_install("apt-get", euid=0, run_error=BrokenPipeError(32, "Broken pipe"))
+
+    def _venv_package(
+        self, *, apt: bool = True, probe_returncode: int = 1, venv_has_pip: bool | None = None,
+    ) -> tuple[str | None, mock.Mock]:
+        """The real _python_venv_package, with `.venv` absent (venv_has_pip None) or present."""
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / ".venv"
+            if venv_has_pip is not None:
+                (venv / "bin").mkdir(parents=True)
+                (venv / "bin" / "python").touch()
+            with mock.patch("timecapsulesmb.cli.bootstrap.VENVDIR", venv), \
+                 mock.patch(
+                     "timecapsulesmb.cli.bootstrap.find_command",
+                     side_effect=lambda name: "/usr/bin/apt-get" if apt and name == "apt-get" else None,
+                 ), \
+                 mock.patch("timecapsulesmb.cli.bootstrap.venv_has_pip", return_value=bool(venv_has_pip)), \
+                 mock.patch(
+                     "timecapsulesmb.cli.bootstrap.run_process",
+                     return_value=subprocess.CompletedProcess([], probe_returncode),
+                 ) as run_process:
+                return REAL_PYTHON_VENV_PACKAGE("/usr/bin/python3", "3.12.3"), run_process
+
+    def test_python_venv_package_names_the_versioned_package_when_ensurepip_is_missing(self) -> None:
+        for venv_has_pip in (None, False):  # no .venv, or one a failed run left without pip
+            with self.subTest(venv_has_pip=venv_has_pip):
+                package, run_process = self._venv_package(venv_has_pip=venv_has_pip)
+                self.assertEqual(package, "python3.12-venv")
+                self.assertEqual(run_process.call_args.args[0], ["/usr/bin/python3", "-c", "import ensurepip"])
+
+    def test_python_venv_package_is_none_when_ensurepip_imports(self) -> None:
+        package, _ = self._venv_package(probe_returncode=0)
+        self.assertIsNone(package)
+
+    def test_python_venv_package_is_none_without_apt(self) -> None:
+        package, run_process = self._venv_package(apt=False)
+        self.assertIsNone(package)
+        run_process.assert_not_called()
+
+    def test_python_venv_package_is_none_when_the_venv_already_has_pip(self) -> None:
+        package, run_process = self._venv_package(venv_has_pip=True)
+        self.assertIsNone(package)
+        run_process.assert_not_called()
+
+    def _install_venv_package(
+        self, *, euid: int, has_sudo: bool = True, run_error: BaseException | None = None,
+    ) -> tuple[list[list[str]], str, bootstrap.BootstrapError | None]:
+        """install_python_venv_package: the commands run, its output, and its error."""
+        commands: list[list[str]] = []
+
+        def fake_run(cmd):
+            commands.append(cmd)
+            if run_error is not None:
+                raise run_error
+
+        output = io.StringIO()
+        with mock.patch(
+                 "timecapsulesmb.cli.bootstrap.find_command",
+                 side_effect=lambda name: f"/usr/bin/{name}" if name == "apt-get" or (has_sudo and name == "sudo") else None,
+             ), \
+             mock.patch("timecapsulesmb.cli.bootstrap.os.geteuid", return_value=euid), \
+             mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run), \
+             redirect_stdout(output):
+            try:
+                bootstrap.install_python_venv_package("python3.13-venv")
+            except bootstrap.BootstrapError as exc:
+                return commands, output.getvalue(), exc
+        return commands, output.getvalue(), None
+
+    def test_install_python_venv_package_installs_only_that_package(self) -> None:
+        for euid, prefix in ((1000, ["sudo"]), (0, [])):
+            with self.subTest(euid=euid):
+                commands, text, error = self._install_venv_package(euid=euid)
+                self.assertIsNone(error)
+                self.assertEqual(
+                    commands,
+                    [[*prefix, "apt-get", "update"], [*prefix, "apt-get", "install", "-y", "python3.13-venv"]],
+                )
+                self.assertIn("Missing python3.13-venv, which Python needs to create or repair .venv", text)
+                self.assertIn("Installing python3.13-venv with apt-get", text)
+                self.assertIn("Installed python3.13-venv", text)
+                self.assertNotIn("host tools", text)
+
+    def test_install_python_venv_package_failures_show_the_manual_command(self) -> None:
+        commands, text, error = self._install_venv_package(euid=1000, has_sudo=False)
+        self.assertEqual(commands, [])
+        self.assertIn("Installing python3.13-venv needs root, and sudo is not installed", str(error))
+        self.assertEqual(text.splitlines()[-1], "apt-get update && apt-get install -y python3.13-venv")
+
+        command_error = bootstrap.BootstrapCommandError(["sudo", "apt-get", "update"], 100, "no network\n")
+        _, text, error = self._install_venv_package(euid=1000, run_error=command_error)
+        self.assertIn("Failed to install python3.13-venv automatically (exit code 100)", str(error))
+        self.assertEqual(text.splitlines()[-1], "sudo apt-get update && sudo apt-get install -y python3.13-venv")
+        self.assertNotIn("Installed python3.13-venv", text)
+
+    def test_bootstrap_installs_the_venv_package_first_and_host_tools_last(self) -> None:
+        cases = (
+            ("Linux", "python3.11-venv", ["install_python_venv_package", "ensure_venv", "install_python_requirements"]),
+            ("Linux", None, ["ensure_venv", "install_python_requirements"]),
+            ("macOS", None, ["ensure_venv", "install_python_requirements"]),
+        )
+        for label, venv_package, steps in cases:
+            with self.subTest(label=label, venv_package=venv_package):
+                calls = mock.Mock()
+                calls.ensure_venv.return_value = bootstrap.VENVDIR / "bin" / "python"
+                calls.install_required_host_tools.return_value = []
+                with mock.patch("pathlib.Path.exists", return_value=True), \
+                     mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"), \
+                     mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value=label), \
+                     mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"), \
+                     mock.patch("timecapsulesmb.cli.bootstrap.check_macos_host_tool_install_support", return_value={}), \
+                     mock.patch("timecapsulesmb.cli.bootstrap._python_venv_package", return_value=venv_package) as probe, \
+                     mock.patch("timecapsulesmb.cli.bootstrap.install_python_venv_package", calls.install_python_venv_package), \
+                     mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", calls.ensure_venv), \
+                     mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements", calls.install_python_requirements), \
+                     mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools", calls.install_required_host_tools), \
+                     redirect_stdout(io.StringIO()):
+                    self.assertEqual(bootstrap.main([]), 0)
+                self.assertEqual(
+                    [name for name, _args, _kwargs in calls.mock_calls],
+                    [*steps, "install_required_host_tools"],
+                )
+                if venv_package:
+                    calls.install_python_venv_package.assert_called_once_with(venv_package)
+                self.assertEqual(probe.called, label == "Linux")
+                finished = self.telemetry_payload("bootstrap_finished")
+                self.assertEqual(finished.get("python_venv_package"), venv_package)
+
+    def test_bootstrap_a_failed_venv_package_install_stops_before_the_venv(self) -> None:
+        stderr = io.StringIO()
+        with mock.patch("pathlib.Path.exists", return_value=True), \
+             mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"), \
+             mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"), \
+             mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"), \
+             mock.patch("timecapsulesmb.cli.bootstrap._python_venv_package", return_value="python3.11-venv"), \
+             mock.patch(
+                 "timecapsulesmb.cli.bootstrap.install_python_venv_package",
+                 side_effect=bootstrap.BootstrapError("Failed to install python3.11-venv automatically (exit code 100)"),
+             ), \
+             mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv") as ensure_venv, \
+             redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            self.assertEqual(bootstrap.main([]), 1)
+        ensure_venv.assert_not_called()
+        self.assertIn("stage=install_python_venv_package", self.telemetry_payload("bootstrap_finished")["error"])
 
     def test_bootstrap_reports_a_missing_program_without_a_traceback(self) -> None:
         stderr = io.StringIO()
