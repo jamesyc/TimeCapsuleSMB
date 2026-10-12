@@ -28,6 +28,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_device_smb,
     _doctor_check_local_network_permission,
     _doctor_report_device_not_checked,
+    _doctor_airport_mac,
     _doctor_check_device_compatibility,
     _doctor_check_direct_smb_port,
     _doctor_check_managed_mdns,
@@ -113,7 +114,7 @@ def run_doctor_checks(
     startup_age = _doctor_probe_startup_age(target, remote, sink)
 
     naming = _doctor_check_runtime_naming_identity(target, remote, sink)
-    _doctor_check_device_compatibility(inputs, target, remote, sink)
+    probed_mac = _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_device_hostname(target, remote, sink)
     smbd_serving = _doctor_check_managed_smbd(target, remote, sink)
     native_nbns_ready, bonjour_registered, link_plan = _doctor_check_managed_mdns(target, remote, sink)
@@ -136,6 +137,7 @@ def run_doctor_checks(
                 active_share_names=parse_active_share_names(smb_config.text or ""),
                 add_result=sink.add,
                 network=network,
+                airport_mac=_doctor_airport_mac(inputs, probed_mac),
             )
             direct_smb = _doctor_check_direct_smb_port(target, remote, bonjour_result.addresses, sink)
             _add_bonjour_debug_fields(

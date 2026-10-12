@@ -465,9 +465,12 @@ guard that runs the real binary, hard-linked as `/usr/libexec/diskd`, only for
 `0`, so Apple's mDNSResponder owns the shared default service name and resolves
 conflicts. A stock-device test on 2026-09-19 showed `diskd` renaming both SMB and
 ADisk to "Name (2)" after an SMB-only conflict, while `syNm` and the hostname
-remained unchanged. Registration callbacks accept that name. Doctor identifies
-the device through its resolved endpoint and checks for multiple registrations
-on that device, rather than rejecting a suffix shared with an unrelated peer.
+remained unchanged. Registration callbacks accept that name. Doctor finds the
+device's own records by its MAC: the `_airport` and `_adisk` TXT carry `waMA`,
+the MAC ACP reports, and all of one device's services share one host. Without
+a MAC it uses the `_smb` record at the saved address. Both address families are
+checked against that host, Apple's renames of the device's own names are
+accepted, and another device holding the same name is a warning (Bonjour Names).
 
 | Process | Owner | Role |
 | --- | --- | --- |
@@ -495,7 +498,9 @@ What Apple publishes vs what we publish:
 The hostname is Apple's (`AirPort-Time-Capsule.local`, from `syDN`, else
 `syNm`, else `Base-Station-<raMA, else waMA>`), so SRV targets of our
 registrations resolve through Apple's host records. The doctor compares host
-labels case-insensitively.
+labels as mDNSCore does (ASCII case only) and accepts Apple's conflict rename
+`label-N` only on this device's own host: "Office 2" has the label `Office-2`
+of its own.
 
 ### Discovery policy and Samba networking
 
@@ -544,10 +549,64 @@ Local Bonjour discovery is intentionally service-centric. `timecapsulesmb.discov
 
 That distinction matters:
 - `_airport._tcp.local.` is the Apple device identity and is the only service configure uses for the interactive device list
-- `_smb._tcp.local.` is the managed Samba service identity and is what doctor Bonjour checks use
+- `_smb._tcp.local.` is the managed Samba service identity and is what doctor Bonjour checks use; doctor also reads `waMA` from `_airport`/`_adisk` TXT to find the device's own host, and checks that `_smb` carries the same name as that host's `_airport`
 - `_device-info._tcp.local.` may share the same name, hostname, and IP as `_smb._tcp.local.`, but it must remain a separate raw record
 
 Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.discover_snapshot_merged_detailed()`. Merging service records creates ambiguous objects with one name/hostname but multiple meanings, and it causes duplicate-looking or misleading configure/doctor output. The stored `service_type` should remain the raw observed value. Callers should filter raw discovery results by the service prefix they actually need, such as `_airport` for configure and `_smb` for doctor. Prefix filtering intentionally matches both `_smb._tcp.local.` and `_smb._tcp.local`.
+
+## Bonjour Names
+
+These are Apple's rules, read from the ACPd firmware (7.8.1 NetBSD 4 LE/BE and
+7.9.1 NetBSD 6, which embed mDNSResponder-397.32) and emulated on test names
+(2026-10-12). `device/probe.py` (`apple_conflict_rename`, `apple_conflict_base`,
+`apple_name_key`, `apple_bonjour_host_label`) and the app's `AppleBonjourName`
+implement them, checked against `Fixtures/apple_mdns_names.json`, which holds the
+firmware's own answers.
+
+- **Service name.** ACPd's `_airport`, our discovery role's `_smb`/`_adisk` and
+  loopback `diskd` all register with `name=NULL`, so they share the daemon's one
+  default name and are renamed together. It is `syNm` byte for byte, spaces
+  included, when it fits 63 bytes (ACPd copies it with CFStringGetPascalString,
+  all or nothing, LE `0x45102c`). A longer `syNm` gets a name of Apple's own,
+  built from the `Hardware` model string and the MAC; doctor then reads the
+  name from the device's `_airport` record rather than predicting it.
+- **Host label.** From `syDN`, else `syNm`, else `Base-Station-<raMA, else
+  waMA>` (LE `0x42e110`). ASCII letters and digits keep their case, an
+  apostrophe is dropped, and every other byte becomes one `-` (LE `0x442194`).
+  So names that differ only in non-ASCII letters share a label: "Café" and
+  "Cafè" are both `Caf`, "Office Ä" and "Office Ö" both `Office`, and a name
+  with no ASCII at all falls back to `Base-Station-…`. A host label is weak
+  evidence of which device this is; two service names are strong.
+- **Conflict rename** (mDNSCore IncrementLabelSuffix, LE `0x2c0330`). A service
+  name becomes "Name (2)", a host label `label-2`. An existing suffix is raised:
+  2 to 9 by one, from 10 at random. Trailing spaces go before " (N)", and the
+  name is cut on a UTF-8 boundary to fit 63 bytes. Apple never makes "(1)" or
+  "-1". A name that really ends in " (N)" cannot be told from a rename.
+- **Comparison.** mDNSCore's SameDomainLabel (LE `0x2ba0b8`, BE `0x2929e4`,
+  NetBSD 6 `0x2e9a44`) folds ASCII A-Z and compares every other byte exactly,
+  as RFC 6762 section 16 requires: "Home" and "home" conflict, "Été" and "été"
+  do not, and neither do composed and decomposed "é". macOS's mDNSResponder
+  behaves the same (`dns-sd -R` test). Code that compares names uses
+  `apple_name_key` or `AppleBonjourName.key`, never Unicode case folding,
+  normalization or Swift's `==`.
+- **Renames are not saved on an AirPort.** ACPd's mDNSPreferencesSetNames
+  helper is a stub (LE `0x298418`). The next configuration reload (SIGHUP, a
+  network change, a restart) registers `syNm` again, so two devices with one
+  name can swap names, and Time Machine can reach the wrong one. **macOS saves
+  its renames** (mDNSResponderHelper PreferencesSetName writes ComputerName and
+  LocalHostName), so a Mac's "Name (2)" or `Name-2` is its own name from then on.
+
+Doctor's conflict check runs once per run, on this device's own record. Another
+host (and, when known, another MAC) shares this device's name when its service
+name, in a service type this device registers, is this device's original name,
+or when its host label is this device's original label. On another AirPort (a
+host with an `_airport` record), whose renames are unsaved too, Apple's rename
+counts as well: a service name that is the original plus " (N)", or a label
+`label-N` when that AirPort's own name would give `label` (so "Office 2" beside
+"Office" is no conflict). A Mac's suffixed name is one it saved, so only an
+exact match counts there. That is a warning; a renamed name nobody else
+advertises is an info line. It makes no host lookups: a `.local` name nobody
+owns takes 10 s to fail.
 
 ## Registered mDNS Records
 
@@ -1312,6 +1371,7 @@ It checks:
 - active Samba share names
 - SMB reachability
 - `_smb._tcp` browse and resolve
+- this device's own Bonjour records, found by its MAC in every address family; Apple's conflict renames of its names; and another device on the link with the same name, a warning because Apple's unsaved renames let the two swap names after a restart (Bonjour Names)
 - NBNS name resolution when a reachable IPv4 SMB address and NetBIOS name are available. A query that times out from a computer outside every device subnet is skipped, not failed: Apple's `wcifsnd` answers such a client from UDP `922` instead of `137`, and routers differ in whether that answer arrives. Doctor reads the device's subnets with `/sbin/ifconfig -a` only after a timeout and applies `wcifsnd`'s own match (`(source & mask) | ~mask` equals the interface broadcast). It uses this computer's source address, so a router that translates addresses between the subnets, or `wcifsnd` still holding an address from before a renumber, can make the result differ from what `wcifsnd` saw
 - authenticated `smbclient -L` listing
 - authenticated SMB CRUD operations via `smbclient`

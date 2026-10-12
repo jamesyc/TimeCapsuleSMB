@@ -788,12 +788,11 @@ def test_device_config_rejects_overlong_physical_line_continuations(tmp_path):
 
 # ---------------------------------------------------------------- identity ----
 
-# The service trims its display name; doctor keeps syNm's surrounding whitespace
-# because Apple's Bonjour label does. They share the 63-byte cut and the
-# control-character mapping, so the inputs have no leading or trailing whitespace.
+# Both follow Apple's default Bonjour name: syNm byte for byte, surrounding
+# whitespace included, and nothing when it is empty or over 63 bytes.
 @pytest.mark.parametrize("value", ["AirPort Time Capsule", "James's  Time.Capsule", "Über Kapsel ünïcödé " + "x" * 80,
                                    "ctrl\x01char\x7f", "Time\tCapsule", "é" * 40, "x" * 63 + "yz",
-                                   "AirPort Time\u00a0Capsule"])
+                                   "AirPort Time\u00a0Capsule", "  Capsule  ", "   ", "x" * 63, "x" * 64, "é" * 31 + "a"])
 def test_identity_instance_name_matches_probe_py(value):
     from timecapsulesmb.device.probe import normalize_runtime_mdns_instance_name
     expected = normalize_runtime_mdns_instance_name(value)
@@ -844,6 +843,17 @@ def test_identity_aborted_read_keeps_previous_name_and_wama(tmp_path, key):
     cold, = build_plans(tmp_path, aborted)
     expected = {"instance": "airport-time-capsule", "wama": "E8:8D:28:58:F1:5C"} if key == "syNm" else {"instance": "My Capsule", "wama": "unavailable"}
     assert {k: ident(cold)[k] for k in ("instance", "wama")} == expected
+
+
+def test_identity_instance_is_apples_name_for_syNm(tmp_path):
+    """The plan reports the name Apple advertises: syNm with its whitespace.
+    A name mDNSResponder cannot take whole (over 63 bytes) leaves the plan
+    naming the device by its host label."""
+    ident = lambda text: next(f for kind, f in build_plans(tmp_path, text)[0] if kind == "identity")
+    spaced = ident(facts_text(acp={**MODE["bridge"], "syNm": "  Capsule  "}, hostname="capsule.local"))
+    assert spaced["instance"] == "  Capsule  "
+    long = ident(facts_text(acp={**MODE["bridge"], "syNm": "x" * 64}, hostname="capsule.local"))
+    assert long["instance"] == "capsule"
 
 
 def test_identity_ignores_deprecated_overrides_and_uses_synm_then_hostname(tmp_path):

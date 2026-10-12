@@ -456,7 +456,7 @@ class AirportIdentityProbeResult:
 class RuntimeNamingIdentityProbeResult:
     system_name: str | None
     hostname: str | None
-    mdns_instance_name: str
+    mdns_instance_name: str | None
     mdns_host_label: str
     netbios_name: str
     detail: str
@@ -847,10 +847,19 @@ def _hostname_first_label(value: str) -> str:
 
 
 def normalize_runtime_mdns_instance_name(value: str) -> str:
-    # Apple advertises syNm as its default Bonjour name byte for byte, so
-    # surrounding whitespace is part of the label (NetBSD 4 LE, 2026-10-03).
+    """The default Bonjour name Apple's mDNSResponder takes from syNm, or "".
+
+    Apple advertises syNm byte for byte, so surrounding whitespace is part of
+    the label (NetBSD 4 LE, 2026-10-03). mDNSResponder copies it into its
+    64-byte label all or nothing (CFStringGetPascalString, LE ACPd 0x45102c):
+    an empty name or one over 63 bytes gets mDNSResponder's own
+    "<model>-<MAC>" name instead, which "" stands for. Control characters
+    become "-" so zeroconf can query the name; no device is known to hold one.
+    """
     normalized = "".join("-" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in value)
-    return _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES)
+    if len(normalized.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
+        return ""
+    return normalized
 
 
 def normalize_runtime_mdns_host_label(value: str) -> str:
@@ -884,6 +893,100 @@ def apple_bonjour_host_label(name: str) -> str:
             out.append(0x2D)
         index += 1
     return out.decode("ascii").rstrip("-")
+
+
+# Apple's mDNSCore renames a name that another device on the link already uses
+# (DNSCommon.c IncrementLabelSuffix, unchanged since mDNSResponder-108 and
+# matched by emulating it from the 7.8.1 and 7.9.1 firmware): a service name
+# gets " (N)", a host label "-N". An existing suffix is taken off and its
+# number raised; the first rename is 2, 2-9 go up by one and from 10 the
+# number jumps at random. Before " (N)" trailing spaces are dropped, and the
+# name is cut on a UTF-8 boundary so that it and the suffix fit 63 bytes.
+def _apple_label_suffix(label: bytes, rich_text: bool) -> tuple[bytes, int] | None:
+    """The label without the suffix mDNSCore adds, and its number (LabelContainsSuffix, RemoveLabelSuffix)."""
+    end = len(label)
+    if rich_text:
+        if end < 4 or label[end - 1] != 0x29 or not 0x30 <= label[end - 2] <= 0x39:
+            return None
+        start = end - 2
+        while start > 2 and 0x30 <= label[start - 1] <= 0x39:
+            start -= 1
+        if label[start - 1] != 0x28 or label[start - 2] != 0x20:
+            return None
+        return label[:start - 2], int(label[start:end - 1])
+    if end < 2 or not 0x30 <= label[end - 1] <= 0x39:
+        return None
+    start = end - 1
+    while start > 2 and 0x30 <= label[start - 1] <= 0x39:
+        start -= 1
+    if label[start - 1] != 0x2D:
+        return None
+    return label[:start - 1], int(label[start:end])
+
+
+def _apple_truncate_utf8(label: bytes, max_bytes: int) -> bytes:
+    """mDNSCore's TruncateUTF8ToLength: cut on a character boundary, then drop trailing whitespace."""
+    if len(label) <= max_bytes:
+        return label
+    length = max_bytes
+    after = label[length]
+    following = label[length + 1] if length + 1 < len(label) else 0xB0
+    while length > 0 and ((after & 0xC0) == 0x80 or (after == 0xED and (following & 0xF0) == 0xB0)):
+        following = after
+        length -= 1
+        after = label[length]
+    while length > 0 and label[length - 1] <= 0x20:
+        length -= 1
+    return label[:length]
+
+
+def apple_conflict_name(name: str, number: int, *, host_label: bool) -> str:
+    """The name mDNSCore gives `name` once its conflict number reaches `number` (AppendLabelSuffix)."""
+    base = name.encode("utf-8")
+    suffix = _apple_label_suffix(base, not host_label)
+    if suffix is not None:
+        base = suffix[0]
+    if not host_label:
+        base = base.rstrip(b" ")
+    text = f"-{number}" if host_label else f" ({number})"
+    return (_apple_truncate_utf8(base, MAX_DNS_LABEL_BYTES - len(text)) + text.encode("ascii")).decode("utf-8")
+
+
+def apple_conflict_rename(advertised: str, original: str, *, host_label: bool) -> bool:
+    """Whether Apple's mDNSResponder renames `original` to `advertised` after name conflicts.
+
+    Host labels compare without case, as DNS names do. The number only goes
+    up, so a name already ending in one is never renamed to a lower one.
+    """
+    renamed = _apple_label_suffix(advertised.encode("utf-8"), not host_label)
+    if renamed is None:
+        return False
+    number = renamed[1]
+    own = _apple_label_suffix(original.encode("utf-8"), not host_label)
+    if number < max(2, (own[1] if own is not None else 0) + 1):
+        return False
+    expected = apple_conflict_name(original, number, host_label=host_label)
+    return apple_name_key(expected) == apple_name_key(advertised) if host_label else expected == advertised
+
+
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def apple_name_key(name: str) -> str:
+    """`name` as mDNSCore compares it: SameDomainLabel folds ASCII A-Z and
+    nothing else (ACPd 0x2ba0b8 4 LE, 0x2e9a44 NetBSD 6), so "Home" and
+    "home" conflict while "É" and "é" do not."""
+    return name.translate(_ASCII_LOWER)
+
+
+def apple_conflict_base(name: str, *, host_label: bool) -> str:
+    """`name` without the suffix mDNSCore adds after a conflict, for telling
+    whether two names collide. Its numbers start at 2, so "Office-1" and
+    "Office (1)" are names of their own. Host labels come back as compared."""
+    suffix = _apple_label_suffix(name.encode("utf-8"), not host_label)
+    if suffix is not None and suffix[1] >= 2:
+        name = suffix[0].decode("utf-8", "replace")
+    return apple_name_key(name) if host_label else name.rstrip(" ")
 
 
 def normalize_runtime_netbios_name(value: str) -> str:
@@ -925,9 +1028,9 @@ def derive_runtime_naming_identity(
     if not mdns_host_label:
         mdns_host_label = "timecapsule"
 
-    mdns_instance_name = normalize_runtime_mdns_instance_name(raw_system_name or "")
-    if not mdns_instance_name:
-        mdns_instance_name = mdns_host_label
+    # None: mDNSResponder advertises its own default name, which this
+    # computer cannot predict (normalize_runtime_mdns_instance_name).
+    mdns_instance_name = normalize_runtime_mdns_instance_name(raw_system_name or "") or None
 
     netbios_name = normalize_runtime_netbios_name(raw_hostname or "")
     if not netbios_name:

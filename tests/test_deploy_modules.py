@@ -482,12 +482,17 @@ class DeployModuleTests(unittest.TestCase):
                                                         radio_mac="E8:8D:28:61:9B:7D").mdns_host_label,
                          "base-station-619b7d")
 
-    def test_runtime_naming_identity_falls_back_only_without_a_name(self) -> None:
+    def test_runtime_naming_identity_without_a_name_leaves_the_instance_unknown(self) -> None:
+        # Without syNm mDNSResponder advertises its own "<model>-<MAC>" name:
+        # the host label still falls back, the instance name is not guessed.
         for name in (None, ""):
             with self.subTest(name=name):
                 result = derive_runtime_naming_identity(name, "base-station-edffbf")
                 self.assertIsNone(result.system_name)
-                self.assertEqual(result.mdns_instance_name, "base-station-edffbf")
+                self.assertIsNone(result.mdns_instance_name)
+                self.assertEqual(result.mdns_host_label, "base-station-edffbf")
+        named = derive_runtime_naming_identity("Office", "base-station-edffbf")
+        self.assertEqual((named.mdns_instance_name, named.mdns_host_label), ("Office", "office"))
 
     def test_probe_remote_runtime_naming_identity_keeps_syNm_bytes(self) -> None:
         import shlex

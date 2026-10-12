@@ -19,6 +19,7 @@ from timecapsulesmb.checks.bonjour import (
     check_smb_service_target,
     discover_printer_services_detailed,
     discover_smb_services_detailed,
+    own_bonjour_host,
     resolve_expected_smb_record,
     resolve_smb_instance,
     resolve_smb_service_target,
@@ -105,6 +106,10 @@ from timecapsulesmb.device.probe import (
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
     UsbPrinterProbeResult,
+    apple_bonjour_host_label,
+    apple_conflict_base,
+    apple_conflict_rename,
+    apple_name_key,
     flash_runtime_config_present_conn,
     limit_remote_log_tail,
     link_plan_networks,
@@ -563,7 +568,18 @@ def _add_expected_bonjour_host_label_result(
     target: BonjourServiceTarget,
     expected_host_label: str | None,
     add_result: Callable[[CheckResult], None],
+    *,
+    own_host: str | None = None,
+    record_ips: list[str] | None = None,
+    target_ip: str | None = None,
 ) -> bool:
+    """The advertised host label against the one ACPd builds from syDN/syNm.
+
+    Apple's mDNSResponder renames the label to label-2 while another host uses
+    it (apple_conflict_rename). "Office 2" also becomes Office-2, so the
+    renamed form is this device only on its own host (own_bonjour_host), or
+    without one, when the record has the saved address.
+    """
     if not expected_host_label:
         return False
     actual_host_label = target.host_label()
@@ -572,6 +588,14 @@ def _add_expected_bonjour_host_label_result(
         return True
     if actual_host_label.lower() == expected_host_label.lower():
         add_result(CheckResult("PASS", f"_smb._tcp target host label matches runtime mDNS host label {expected_host_label!r}"))
+        return False
+    if (apple_conflict_rename(actual_host_label, expected_host_label, host_label=True)
+            and _host_is_this_device(target.hostname, own_host, record_ips or [], target_ip)):
+        add_result(CheckResult(
+            "PASS",
+            f"_smb._tcp target host label {actual_host_label!r} is Apple's conflict rename of runtime mDNS host label "
+            f"{expected_host_label!r}, at this device's address",
+        ))
         return False
     add_result(
         CheckResult(
@@ -836,6 +860,124 @@ def _add_bonjour_host_ip_results(
     return host_ip_result
 
 
+def _host_is_this_device(hostname: str | None, own_host: str | None, record_ips: list[str], target_ip: str | None) -> bool:
+    if own_host:
+        return _canonical_bonjour_host(hostname) == own_host
+    return bool(target_ip) and any(same_scoped_ip(ip, target_ip) for ip in record_ips)
+
+
+def _add_bonjour_name_conflict_results(
+    records: list[BonjourResolvedService],
+    own: BonjourResolvedService,
+    expected: BonjourExpectedIdentity,
+    add: Callable[[CheckResult], None],
+    *,
+    airport_mac: str | None = None,
+) -> None:
+    """Another device on the link with this device's name.
+
+    Apple renames one of them (" (2)", "-2") and never saves it; whoever
+    registers first after a restart keeps the plain name, so the two can swap
+    names and Time Machine can reach the wrong one. Renaming one device in
+    AirPort Utility ends it. A renamed name with no other owner is a stale record.
+
+    Two names collide as mDNSCore compares them (apple_name_key), and only
+    within a service type this device registers. A suffix is a live rename
+    only on another AirPort (a host with an `_airport` record), whose renames
+    are never saved either; macOS saves its own (mDNSResponderHelper
+    PreferencesSetName), so a Mac's "Office (2)" or Office-2 is just its name
+    and only an exact match is a conflict. On an AirPort, a host label
+    "label-N" is Apple's rename only when the device's own name does not
+    already give it: "Office 2" has the host label Office-2 of its own. A
+    service name that really ends in " (N)" (N >= 2) cannot be told from
+    Apple's rename, so an AirPort named "Office (2)" counts as a rename of "Office".
+    """
+    own_host = _canonical_bonjour_host(own.hostname)
+    own_ips = _record_ips(own) + ([expected.target_ip] if expected.target_ip else [])
+    own_types = {r.service_type for r in records if _canonical_bonjour_host(r.hostname) == own_host} | {own.service_type}
+    own_label = _bonjour_host_label(own.hostname)
+    name = expected.instance_name or apple_conflict_base(own.name, host_label=False)
+    name_key = apple_name_key(apple_conflict_base(name, host_label=False))
+    label = expected.host_label or (apple_conflict_base(own_label, host_label=True) if own_label else None)
+    label_key = apple_name_key(label) if label else None
+
+    def another_device(record: BonjourResolvedService) -> bool:
+        # A record without addresses (_device-info, an unresolved one) proves nothing.
+        ips = _record_ips(record)
+        if not ips or _canonical_bonjour_host(record.hostname) == own_host:
+            return False
+        if airport_mac and record.airport_mac == airport_mac:
+            return False
+        return not all(any(same_scoped_ip(ip, mine) for mine in own_ips) for ip in ips)
+
+    airport_hosts = {_canonical_bonjour_host(r.hostname) for r in records
+                     if _bonjour_service_label(r.service_type) == "_airport"}
+
+    def shares_name(record: BonjourResolvedService) -> bool:
+        renames = _canonical_bonjour_host(record.hostname) in airport_hosts
+        record_name = apple_conflict_base(record.name, host_label=False)
+        if record.service_type in own_types and (
+                apple_name_key(record.name) == apple_name_key(name)
+                or (renames and apple_name_key(record_name) == name_key)):
+            return True
+        record_label = _bonjour_host_label(record.hostname)
+        if not label_key or not record_label:
+            return False
+        if apple_name_key(record_label) == label_key:
+            return True
+        return (renames and apple_conflict_base(record_label, host_label=True) == label_key
+                and apple_name_key(apple_bonjour_host_label(record_name)) == label_key)
+
+    others: dict[tuple[str, str], tuple[str, list[str]]] = {}
+    for record in records:
+        if another_device(record) and shares_name(record):
+            host, ips = others.setdefault((record.name, _canonical_bonjour_host(record.hostname)),
+                                          (record.hostname or "an unknown host", []))
+            ips.extend(ip for ip in _record_ips(record) if ip not in ips)
+    if others:
+        entries = [f"{other!r} on {host} at {', '.join(ips)}" for (other, _), (host, ips) in others.items()]
+        add(CheckResult(
+            "WARN",
+            "another device on this network uses this device's Bonjour name: " + "; ".join(entries)
+            + ". Apple renames one of them and they can swap names after a restart, so Time Machine may reach "
+            "the wrong one; give one of them a different name in AirPort Utility",
+            {"code": "bonjour_name_conflict", "others": entries},
+        ))
+        return
+    renamed_instance = bool(expected.instance_name and apple_conflict_rename(
+        own.name, expected.instance_name, host_label=False))
+    renamed_host = bool(expected.host_label and own_label
+                        and apple_conflict_rename(own_label, expected.host_label, host_label=True))
+    if renamed_instance or renamed_host:
+        renamed = ", ".join(repr(value) for value, flag in ((own.name, renamed_instance), (own_label, renamed_host)) if flag)
+        add(CheckResult(
+            "INFO",
+            f"Apple renamed this device's Bonjour name to {renamed} after a name conflict; "
+            "no other device advertises the original name now",
+        ))
+
+
+def _add_own_bonjour_name_result(
+    records: list[BonjourResolvedService],
+    own: BonjourResolvedService,
+    add: Callable[[CheckResult], None],
+) -> bool:
+    """The `_smb` name against this device's `_airport` one: both take the
+    default name ACPd's mDNSResponder renames together (regservice_callback,
+    LE 0x2cb8a4), including the name it makes for a syNm over 63 bytes."""
+    host = _canonical_bonjour_host(own.hostname)
+    airport = next((r for r in records if _bonjour_service_label(r.service_type) == "_airport"
+                    and _canonical_bonjour_host(r.hostname) == host), None)
+    if airport is None or not host:
+        return False
+    if airport.name == own.name:
+        add(CheckResult("PASS", f"_smb._tcp instance {own.name!r} is this device's Bonjour name (its _airport service)"))
+        return False
+    add(CheckResult("FAIL", f"_smb._tcp instance {own.name!r} is not this device's Bonjour name {airport.name!r} "
+                    "(its _airport service)"))
+    return True
+
+
 def _record_ips(record: object) -> list[str]:
     ips: list[str] = []
     for ip in list(getattr(record, "ipv4", []) or []) + list(getattr(record, "ipv6", []) or []):
@@ -885,6 +1027,7 @@ class _BonjourAttemptOutcome:
     debug_needed: bool = False
     identity_mismatch: bool = False
     addresses: tuple[str, ...] = ()
+    record: BonjourResolvedService | None = None
     # Nothing on the network answered for this device: no record with its
     # instance name, host or address. Off the device's network that is
     # expected, while a record that does not match is a real problem.
@@ -937,6 +1080,7 @@ def _evaluate_bonjour_snapshot(
     resolver: Callable[..., tuple[BonjourResolvedService | None, CheckResult | None]],
     browse_miss_message: str,
     targeted_resolve_pass_message: str,
+    own_host: str | None = None,
 ) -> _BonjourAttemptOutcome:
     results: list[CheckResult] = []
     outcome = _BonjourAttemptOutcome(results=results, service_targets={})
@@ -969,6 +1113,7 @@ def _evaluate_bonjour_snapshot(
             smb_records,
             expected_instance_name=bonjour_expected.instance_name,
             expected_host_label=bonjour_expected.host_label,
+            own_host=own_host,
             target_ip=target_ip,
             family=family,
             interfaces=interfaces,
@@ -995,15 +1140,20 @@ def _evaluate_bonjour_snapshot(
         elif resolution.record is None:
             outcome.debug_needed = True
         resolved_record = resolution.record if resolution.error is None else None
-    elif target_ip is not None:
-        resolved_record = select_resolved_smb_record_by_ip(smb_records, target_ip)
+    elif target_ip is not None or own_host is not None:
+        # No name to look for (a syNm over 63 bytes, or no naming probe):
+        # this device's host or the saved address picks the record.
+        resolved_record = next((r for r in smb_records if own_host and _canonical_bonjour_host(r.hostname) == own_host), None)
+        if resolved_record is None and target_ip is not None:
+            resolved_record = select_resolved_smb_record_by_ip(smb_records, target_ip)
+        where = f"target IP {target_ip}" if target_ip is not None else f"this device's host {own_host}"
         if resolved_record is None:
             outcome.debug_needed = True
             outcome.nothing_seen = True
-            outcome.reason = f"no resolved _smb._tcp service matched target IP {target_ip}"
+            outcome.reason = f"no resolved _smb._tcp service matched {where}"
             add(CheckResult("FAIL", outcome.reason))
         else:
-            add(CheckResult("PASS", f"discovered _smb._tcp service matching target IP {target_ip}"))
+            add(CheckResult("PASS", f"discovered _smb._tcp service matching {where}"))
     else:
         resolved_record = None
 
@@ -1011,6 +1161,7 @@ def _evaluate_bonjour_snapshot(
         return outcome
 
     outcome.instance = resolved_record.name
+    outcome.record = resolved_record
     records_for_targets = list(smb_snapshot.resolved)
     records_for_targets.append(resolved_record)
     outcome.identity_mismatch = _add_bonjour_observation_conflicts(records_for_targets, resolved_record, add)
@@ -1039,7 +1190,10 @@ def _evaluate_bonjour_snapshot(
         if _add_bonjour_target_host_label_result("_smb", target.hostname, add):
             outcome.debug_needed = True
             outcome.identity_mismatch = True
-        if _add_expected_bonjour_host_label_result(target, bonjour_expected.host_label, add):
+        if _add_expected_bonjour_host_label_result(
+            target, bonjour_expected.host_label, add, own_host=own_host,
+            record_ips=_record_ips(resolved_record), target_ip=bonjour_expected.target_ip,
+        ):
             outcome.debug_needed = True
             outcome.identity_mismatch = True
         host_ip_result = _add_bonjour_host_ip_results(
@@ -1068,6 +1222,8 @@ def _evaluate_bonjour_snapshot(
         add_result=add,
     ):
         outcome.debug_needed = True
+    if own_host and _add_own_bonjour_name_result(records_for_targets, resolved_record, add):
+        outcome.debug_needed = True
     return outcome
 
 
@@ -1081,6 +1237,7 @@ def _evaluate_bonjour_attempt(
     interfaces: list[str] | None,
     active_share_names: list[str],
     resolver: Callable[..., tuple[BonjourResolvedService | None, CheckResult | None]] | None = None,
+    own_host: str | None = None,
 ) -> _BonjourAttemptOutcome:
     if discovery_error is not None:
         return _BonjourAttemptOutcome(
@@ -1105,6 +1262,7 @@ def _evaluate_bonjour_attempt(
             "targeted resolve succeeded"
         ),
         targeted_resolve_pass_message=f"resolved expected _smb._tcp instance {expected_name!r} by targeted query",
+        own_host=own_host,
     )
 
 
@@ -1116,7 +1274,10 @@ def _add_bonjour_results(
     active_share_names: list[str] | None = None,
     add_result: Callable[[CheckResult], None],
     network: DoctorNetworkProbe | None = None,
+    airport_mac: str | None = None,
 ) -> DoctorBonjourResult:
+    """`airport_mac` is the device's MAC, which finds its own records
+    (own_bonjour_host) whatever Apple renamed them to."""
     bonjour_instance: str | None = None
     bonjour_target: BonjourServiceTarget | None = None
     bonjour_reason = "Bonjour check not run"
@@ -1135,8 +1296,12 @@ def _add_bonjour_results(
                 "host_label": bonjour_expected.host_label,
                 "target_ip": bonjour_expected.target_ip,
             }
-            if bonjour_expected.instance_name is None and bonjour_expected.target_ip is None:
-                bonjour_reason = "Bonjour identity check skipped; device naming probe unavailable and TC_HOST is not a literal IP"
+            if bonjour_expected.instance_name is None and bonjour_expected.target_ip is None and not airport_mac:
+                if runtime_naming_identity is not None and runtime_naming_identity.system_name:
+                    bonjour_reason = ("Bonjour identity check skipped; the device name is over 63 bytes, so Apple "
+                                      "advertises a name of its own, and TC_HOST is not a literal IP")
+                else:
+                    bonjour_reason = "Bonjour identity check skipped; device naming probe unavailable and TC_HOST is not a literal IP"
                 add_result(CheckResult("SKIP", bonjour_reason))
                 return DoctorBonjourResult(
                     instance=None,
@@ -1152,6 +1317,9 @@ def _add_bonjour_results(
                 include_related=True, target_ip=bonjour_expected.target_ip, query=query,
             )
             attempts = _bonjour_family_attempts(bonjour_expected.target_ip)
+            own_host = (own_bonjour_host(smb_snapshot.resolved, airport_mac=airport_mac,
+                                         target_ip=bonjour_expected.target_ip)
+                        if smb_snapshot is not None else None)
             outcomes: list[tuple[str, _BonjourAttemptOutcome]] = []
             bonjour_reason = ""
             for family, target_ip, interfaces in attempts:
@@ -1160,6 +1328,7 @@ def _add_bonjour_results(
                     target_ip=target_ip, family=family, interfaces=interfaces,
                     active_share_names=active_share_names,
                     resolver=lambda instance, **kwargs: resolve_smb_instance(instance, query=query, **kwargs),
+                    own_host=own_host,
                 )
                 outcomes.append((family, chosen_outcome))
                 if chosen_outcome.reason:
@@ -1208,6 +1377,14 @@ def _add_bonjour_results(
                     continue
                 for result in outcome.results:
                     add_result(_prefixed_check_result(result, prefix))
+            # One verdict for the device, not one per address family.
+            own = next((outcome.record for _, outcome in outcomes if outcome.record is not None
+                        and (not own_host or _canonical_bonjour_host(outcome.record.hostname) == own_host)), None)
+            if own is not None and smb_snapshot is not None:
+                _add_bonjour_name_conflict_results(
+                    list(smb_snapshot.resolved), own, bonjour_expected,
+                    lambda result: add_result(_prefixed_check_result(result, "Bonjour: ")), airport_mac=airport_mac,
+                )
         except Exception as e:
             bonjour_reason = str(e)
             bonjour_debug_needed = True
@@ -2300,9 +2477,10 @@ def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAc
         return RuntimeNamingState(identity=None)
 
 
-def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> str | None:
+    """Report whether the device is supported; return the MAC the probe read."""
     if not remote.remote_checks_enabled:
-        return
+        return None
 
     try:
         probed_state = inputs.precomputed_probe_state or probe_connection_state(target.connection)
@@ -2316,8 +2494,22 @@ def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarge
             sink.add(CheckResult("PASS", render_compatibility_message(compatibility)))
         else:
             sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))
+        return probe_result.airport_mac if probe_result.ssh_authenticated else None
     except Exception as e:
         sink.add(CheckResult("FAIL", f"device compatibility check failed: {e}"))
+        return None
+
+
+def _doctor_airport_mac(inputs: DoctorInputs, probed_mac: str | None) -> str | None:
+    """The MAC Bonjour finds this device's records by: the one SSH reached,
+    else the read at the saved address that took the password, else the saved one."""
+    reading = inputs.device_reading
+    read_mac = reading.airport_mac if reading is not None and reading.password_matches else None
+    for value in (probed_mac, read_mac, inputs.config.get("TC_AIRPORT_MAC")):
+        mac = normalize_airport_mac(value)
+        if mac:
+            return mac
+    return None
 
 
 def _doctor_check_admin_password(inputs: DoctorInputs, target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> bool | None:

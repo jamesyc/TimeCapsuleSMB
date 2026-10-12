@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import io
 import json
+import unicodedata
 from contextlib import redirect_stdout
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -15,15 +17,18 @@ from tests.fixtures.bonjour import (
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.discovery import discover_operation
+from timecapsulesmb.checks import doctor_steps
 from timecapsulesmb.checks.bonjour import (
-    BonjourExpectedIdentity, build_expected_smb_instance, resolve_expected_smb_record,
+    BonjourExpectedIdentity, build_expected_smb_instance, own_bonjour_host, resolve_expected_smb_record,
+    resolve_smb_service_target,
 )
-from timecapsulesmb.checks.doctor_steps import _evaluate_bonjour_snapshot
+from timecapsulesmb.checks.doctor_steps import _add_expected_bonjour_host_label_result, _evaluate_bonjour_snapshot
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.discover import run_cli
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.discovery import bonjour, native_dns_sd as native, zeroconf_backend
 from timecapsulesmb.discovery.devices import device_candidates_from_records
-from timecapsulesmb.device.probe import derive_runtime_naming_identity
+from timecapsulesmb.device.probe import apple_bonjour_host_label, derive_runtime_naming_identity
 from timecapsulesmb.discovery.models import (
     BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance, _merge_snapshots,
 )
@@ -263,25 +268,46 @@ def test_doctor_reports_a_missing_label_although_its_trimmed_spelling_is_adverti
     assert result.record is None and result.error == missing and result.source == "targeted_resolve"
 
 
+# Apple's renames of these labels, from its own mDNSCore code in the firmware
+# (Fixtures/apple_mdns_names.json): trailing ASCII spaces go before " (2)",
+# other whitespace stays.
+APPLE_WHITESPACE_RENAMES = {
+    "AirPort Time\u00a0Capsule ": "AirPort Time\u00a0Capsule (2)",
+    " Capsule ": " Capsule (2)",
+    "\u00a0Capsule\u00a0": "\u00a0Capsule\u00a0 (2)",
+    "   ": " (2)",
+}
+
+
 @pytest.mark.parametrize("label", WHITESPACE_LABELS)
 def test_doctor_follows_apples_conflict_rename_of_a_whitespace_label(label):
-    # mDNSCore appends " (2)" without trimming the label first.
-    renamed = service(f"{label} (2)")
+    renamed = service(APPLE_WHITESPACE_RENAMES[label])
     resolver = mock.Mock(return_value=(renamed, None))
     result = resolve_expected_smb_record([instance(renamed)], [], expected_instance_name=label,
         expected_host_label="host", target_ip="192.0.2.10", resolver=resolver)
-    assert [c.args[0].name for c in resolver.call_args_list] == [f"{label} (2)"]
-    assert result.record == renamed and result.instance.name == f"{label} (2)"
+    assert [c.args[0].name for c in resolver.call_args_list] == [renamed.name]
+    assert result.record == renamed and result.instance.name == renamed.name
 
 
-def test_doctor_does_not_follow_the_rename_of_a_trimmed_spelling():
-    other = service("Capsule (2)")
+@pytest.mark.parametrize("seen", ["Capsule  (2)", "Capsule(2)", "Capsule (1)"])
+def test_doctor_does_not_follow_a_suffix_apple_would_not_give(seen):
+    other = service(seen)
     missing = CheckResult("FAIL", "not found")
     resolver = mock.Mock(side_effect=lambda i, **kw: (other, None) if i.name == other.name else (None, missing))
     result = resolve_expected_smb_record([instance(other)], [], expected_instance_name="Capsule ",
         expected_host_label="host", target_ip="192.0.2.10", resolver=resolver)
     assert [c.args[0].name for c in resolver.call_args_list] == ["Capsule "]
     assert result.record is None and result.error == missing
+
+
+def test_doctor_follows_apples_rename_only_to_this_devices_address():
+    renamed = service("Capsule (2)", address="192.0.2.99", hostname="peer.local")
+    missing = CheckResult("FAIL", "not found")
+    resolver = mock.Mock(side_effect=lambda i, **kw: (renamed, None) if i.name == renamed.name else (None, missing))
+    result = resolve_expected_smb_record([instance(renamed)], [], expected_instance_name="Capsule ",
+        expected_host_label="host", target_ip="192.0.2.10", resolver=resolver)
+    assert [c.args[0].name for c in resolver.call_args_list][0] == "Capsule (2)"
+    assert result.record is None
 
 
 @pytest.mark.parametrize("radio_mac, host_failures", [("E8:8D:28:61:9B:7D", 0), (None, 1)])
@@ -424,3 +450,289 @@ def test_native_fragmented_utf8_label_and_separate_newline_reach_resolution(monk
     assert snapshot.resolved[0].ipv4 == ["192.0.2.10"]
     assert diagnostics.errors == {}
     assert all(p.poll() is not None for p in children)
+
+
+def evaluate(observed, *, host_label="home", instance_name="Home", resolved=None, target_ip="192.0.2.10"):
+    """Doctor's Bonjour evaluation of `observed`; `resolved` maps host names to addresses."""
+    lookup = (lambda host: tuple((resolved or {}).get(host.rstrip(".").lower(), ())))
+    with mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ips", side_effect=lookup), \
+            mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", side_effect=lookup):
+        return _evaluate_bonjour_snapshot(BonjourDiscoverySnapshot([instance(r) for r in observed], observed),
+            BonjourExpectedIdentity(instance_name=instance_name, host_label=host_label, target_ip=target_ip,
+                                    advertise_afp=False),
+            target_ip=target_ip, family="ipv4", interfaces=None, active_share_names=["Data"],
+            resolver=mock.Mock(return_value=(None, CheckResult("FAIL", "no reply"))),
+            browse_miss_message="browse missed", targeted_resolve_pass_message="resolved")
+
+
+OUR_MAC = "02:00:00:00:00:10"
+TWIN_MAC = "02:00:00:00:00:99"
+
+
+def adisk_for(smb, mac=OUR_MAC):
+    return replace(smb, service_type="_adisk._tcp.local.", services={"_adisk._tcp.local."}, port=9,
+        fullname=f"{smb.name}._adisk._tcp.local.", properties={"sys": f"waMA={mac},adVF=0x1010",
+            "dk2": "adVF=0x82,adVN=Data,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852"})
+
+
+def airport_for(smb, mac=OUR_MAC):
+    return replace(smb, service_type="_airport._tcp.local.", services={"_airport._tcp.local."}, port=5009,
+                   fullname=f"{smb.name}._airport._tcp.local.", properties={"waMA": mac.replace(":", "-")})
+
+
+def device(smb, mac=OUR_MAC):
+    """The records one AirPort advertises: _smb, _adisk and _airport on one host."""
+    return [smb, adisk_for(smb, mac), airport_for(smb, mac)]
+
+
+def messages(outcome, status):
+    return [r.message for r in outcome.results if r.status == status]
+
+
+def doctor_bonjour(observed, *, mac=OUR_MAC, target_ip="192.0.2.10", instance_name="Home", host_label="home",
+                   resolved=None, naming=None):
+    """Doctor's whole Bonjour step over `observed`, both address families.
+
+    Returns its results and the host names it looked up; `resolved` maps host
+    names to their addresses.
+    """
+    results, lookups = [], []
+
+    def lookup(host):
+        lookups.append(host.rstrip(".").lower())
+        return tuple((resolved or {}).get(host.rstrip(".").lower(), ()))
+
+    snapshot = BonjourDiscoverySnapshot([instance(r) for r in observed], observed)
+    expected = BonjourExpectedIdentity(instance_name, host_label, target_ip, advertise_afp=False)
+    with mock.patch.object(doctor_steps, "build_bonjour_expected_identity", return_value=expected), \
+            mock.patch.object(doctor_steps, "discover_smb_services_detailed", return_value=(snapshot, None, None)), \
+            mock.patch.object(doctor_steps, "resolve_host_ips", side_effect=lookup), \
+            mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", side_effect=lookup), \
+            mock.patch.object(doctor_steps, "resolve_smb_instance",
+                              return_value=(None, CheckResult("FAIL", "no reply"))):
+        result = doctor_steps._add_bonjour_results(
+            AppConfig(values={"TC_HOST": target_ip or "capsule.example"}), naming, skip_bonjour=False,
+            active_share_names=["Data"], add_result=results.append, airport_mac=mac,
+        )
+    return SimpleNamespace(results=results, result=result, lookups=lookups)
+
+
+def warnings(run):
+    return [r for r in run.results if r.status == "WARN"]
+
+
+def test_doctor_accepts_apples_renamed_host_at_this_devices_address():
+    # Another host took home.local, so Apple advertises this device on home-2.local.
+    ours = service("Home", hostname="Home-2.local")
+    outcome = evaluate([ours, adisk_for(ours)], resolved={"home-2.local": ("192.0.2.10",)})
+    assert not messages(outcome, "FAIL"), outcome.results
+    assert any("'Home-2' is Apple's conflict rename of runtime mDNS host label 'home'" in m for m in messages(outcome, "PASS"))
+    # The holder of home.local is the conflict: a Mac whose SMB share has another name.
+    mac = service("Mac mini", hostname="Home.local", address="192.0.2.77")
+    run = doctor_bonjour([*device(ours), mac], resolved={"home-2.local": ("192.0.2.10",)})
+    assert not [r for r in run.results if r.status == "FAIL"], run.results
+    [warning] = warnings(run)
+    assert warning.details["code"] == "bonjour_name_conflict"
+    assert warning.details["others"] == ["'Mac mini' on Home.local at 192.0.2.77"]
+
+
+def test_doctor_rejects_a_renamed_host_that_is_not_at_this_devices_address():
+    # "Home 2" is a real name whose host label is Home-2: a suffix alone proves nothing.
+    peer = service("Home", hostname="Home-2.local", address="192.0.2.99")
+    outcome = evaluate([peer, adisk_for(peer)], resolved={"home-2.local": ("192.0.2.99",)})
+    assert any("belongs to another device" in m for m in messages(outcome, "FAIL")), outcome.results
+    assert not any("conflict rename" in m for m in messages(outcome, "PASS"))
+    # The label check alone refuses it too, on another host and at another address.
+    target = resolve_smb_service_target(peer, expected_instance_name="Home")
+    for kwargs in ({"own_host": "home.local"}, {"record_ips": ["192.0.2.99"], "target_ip": "192.0.2.10"}):
+        results = []
+        assert _add_expected_bonjour_host_label_result(target, "home", results.append, **kwargs)
+        assert results[0].status == "FAIL" and "does not match runtime mDNS host label 'home'" in results[0].message
+
+
+def test_a_rename_nobody_else_explains_is_a_stale_record_found_without_lookups():
+    ours = service("Home (2)", hostname="Home-2.local")
+    run = doctor_bonjour(device(ours), resolved={"home-2.local": ("192.0.2.10",)})
+    assert not [r for r in run.results if r.status in ("FAIL", "WARN")], run.results
+    assert any("Apple renamed this device's Bonjour name to 'Home (2)', 'Home-2'" in r.message
+               and "no other device advertises the original name now" in r.message for r in run.results)
+    # Nobody owns home.local: looking it up would take 10 s per try.
+    assert "home.local" not in run.lookups
+
+
+def test_doctor_warns_when_another_device_shares_the_name_this_device_kept():
+    # This device kept the plain name; its twin advertises the renamed one.
+    ours = service("Home", hostname="Home.local")
+    twin = service("Home (2)", hostname="Home-2.local", address="192.0.2.99")
+    run = doctor_bonjour([*device(ours), *device(twin, TWIN_MAC)], resolved={"home.local": ("192.0.2.10",)})
+    assert not [r for r in run.results if r.status == "FAIL"], run.results
+    [warning] = warnings(run)
+    assert warning.details["others"] == ["'Home (2)' on Home-2.local at 192.0.2.99"]
+    assert "AirPort Utility" in warning.message
+
+
+@pytest.mark.parametrize("with_mac", [True, False])
+def test_both_address_families_check_this_device_when_its_twin_kept_the_name(with_mac):
+    # Apple renamed this device; the IPv6 pass has no address of its own to go
+    # by, and the twin's records carry the plain name.
+    ours = replace(service("Home (2)", hostname="Home-2.local"), ipv6=["fd00::10"])
+    twin = replace(service("Home", hostname="Home.local", address="192.0.2.99"), ipv6=["fd00::99"])
+    run = doctor_bonjour([*device(ours), *device(twin, TWIN_MAC)], mac=OUR_MAC if with_mac else None,
+                         resolved={"home-2.local": ("192.0.2.10", "fd00::10"), "home.local": ("192.0.2.99", "fd00::99")})
+    assert not [r for r in run.results if r.status == "FAIL"], run.results
+    assert run.result.instance == "Home (2)" and run.result.target.hostname == "Home-2.local"
+    assert set(run.result.addresses) == {"192.0.2.10", "fd00::10"}
+    # One verdict for the device, naming only the other one.
+    [warning] = warnings(run)
+    assert warning.details["others"] == ["'Home' on Home.local at 192.0.2.99, fd00::99"]
+
+
+@pytest.mark.parametrize("ours, other", [
+    # The household of two numbered Time Capsules: neither name is a rename.
+    (("AirPort Time Capsule 3", "AirPort-Time-Capsule-3"), ("AirPort Time Capsule 1", "AirPort-Time-Capsule-1")),
+    # "Office 2" has the host label Office-2 of its own.
+    (("Office", "Office"), ("Office 2", "Office-2")),
+    (("Office", "Office"), ("Office (1)", "Office-1")),
+    # mDNSCore folds ASCII case only: "Été" and "été" are two names.
+    (("Été", "Ete"), ("été", "Other")),
+])
+def test_numbered_and_other_names_are_no_conflict(ours, other):
+    name, label = ours
+    mine = service(name, hostname=f"{label}.local")
+    theirs = service(other[0], hostname=f"{other[1]}.local", address="192.0.2.99")
+    run = doctor_bonjour([*device(mine), *device(theirs, TWIN_MAC)], instance_name=name, host_label=label,
+                         resolved={f"{label.lower()}.local": ("192.0.2.10",)})
+    assert not warnings(run), run.results
+    assert not any("renamed" in r.message for r in run.results)
+
+
+@pytest.mark.parametrize("other, others", [
+    # Renamed by Apple because of this device: its name and host label both.
+    (("Office (2)", "Office-2"), ["'Office (2)' on Office-2.local at 192.0.2.99"]),
+    # Only its host label renamed: its own name gives the label Office, so Office-2 is Apple's rename.
+    (("Office", "Office-2"), ["'Office' on Office-2.local at 192.0.2.99"]),
+    # Names that differ only in ASCII case collide.
+    (("OFFICE", "Mac-mini"), ["'OFFICE' on Mac-mini.local at 192.0.2.99"]),
+])
+def test_names_apple_would_collide_are_a_conflict(other, others):
+    mine = service("Office", hostname="Office.local")
+    theirs = service(other[0], hostname=f"{other[1]}.local", address="192.0.2.99")
+    run = doctor_bonjour([*device(mine), *device(theirs, TWIN_MAC)], instance_name="Office", host_label="Office",
+                         resolved={"office.local": ("192.0.2.10",)})
+    [warning] = warnings(run)
+    assert warning.details["others"] == others
+
+
+@pytest.mark.parametrize("mac_name, mac_host, others, airport_others", [
+    # macOS saves its renames, so a Mac that once lost "Office" keeps "Office (2)"
+    # and Office-2 as its own names: they never swap back. On an AirPort the
+    # same names are Apple's unsaved rename.
+    ("Office (2)", "Office-2", [], ["'Office (2)' on Office-2.local at 192.0.2.70"]),
+    # Office-2 is no rename of "Office Mac"'s own label on either.
+    ("Office Mac", "Office-2", [], []),
+    # The plain name itself is a live conflict, Mac or not.
+    ("Office", "Mac-mini", ["'Office' on Mac-mini.local at 192.0.2.70"], ["'Office' on Mac-mini.local at 192.0.2.70"]),
+    ("OFFICE", "Mac-mini", ["'OFFICE' on Mac-mini.local at 192.0.2.70"], ["'OFFICE' on Mac-mini.local at 192.0.2.70"]),
+])
+def test_a_mac_conflicts_only_on_the_name_itself(mac_name, mac_host, others, airport_others):
+    ours = service("Office", hostname="Office.local")
+    other = service(mac_name, hostname=f"{mac_host}.local", address="192.0.2.70")
+    # A Mac advertises _smb but no _airport.
+    for records, expected in (([other], others), (device(other, TWIN_MAC), airport_others)):
+        run = doctor_bonjour([*device(ours), *records], instance_name="Office", host_label="Office",
+                             resolved={"office.local": ("192.0.2.10",)})
+        assert [w.details["others"] for w in warnings(run)] == ([expected] if expected else []), run.results
+
+
+def test_a_name_in_a_service_type_this_device_does_not_register_is_no_conflict():
+    ours = service("Home", hostname="Home.local")
+    printer = service("Home", hostname="Printer.local", address="192.0.2.60", stype="_ipp._tcp.local.")
+    run = doctor_bonjour([*device(ours), printer], resolved={"home.local": ("192.0.2.10",)})
+    assert not warnings(run), run.results
+
+
+def test_a_device_name_over_63_bytes_is_checked_by_this_devices_mac():
+    # Apple advertises a name of its own for such a syNm; the _airport record has it too.
+    ours = service("AirPort Time Capsule-58f15c", hostname="Long.local")
+    run = doctor_bonjour(device(ours), instance_name=None, host_label="Long", target_ip=None,
+                         resolved={"long.local": ("192.0.2.10",)})
+    assert not [r for r in run.results if r.status == "FAIL"], run.results
+    assert any("is this device's Bonjour name (its _airport service)" in r.message for r in run.results)
+    assert run.result.instance == "AirPort Time Capsule-58f15c"
+    # An _smb name the _airport record does not share is not Apple's default name.
+    wrong = [replace(ours, name="Capsule"), adisk_for(ours), airport_for(ours)]
+    run = doctor_bonjour(wrong, instance_name=None, host_label="Long", target_ip=None,
+                         resolved={"long.local": ("192.0.2.10",)})
+    assert any(r.status == "FAIL" and "is not this device's Bonjour name 'AirPort Time Capsule-58f15c'" in r.message
+               for r in run.results), run.results
+
+
+def test_without_a_mac_address_or_name_the_check_says_why_it_is_skipped():
+    naming = derive_runtime_naming_identity("x" * 64, "capsule")
+    run = doctor_bonjour([], mac=None, instance_name=None, host_label="capsule", target_ip=None, naming=naming)
+    [skip] = run.results
+    assert skip.status == "SKIP" and "over 63 bytes" in skip.message
+    run = doctor_bonjour([], mac=None, instance_name=None, host_label=None, target_ip=None)
+    assert "device naming probe unavailable" in run.results[0].message
+
+
+def test_this_devices_host_is_found_by_its_mac_or_its_saved_address():
+    ours = service("Home (2)", hostname="Home-2.local.")
+    twin = service("Home", hostname="Home.local", address="192.0.2.99")
+    records = [*device(ours), *device(twin, TWIN_MAC)]
+    assert own_bonjour_host(records, airport_mac=OUR_MAC, target_ip=None) == "home-2.local"
+    assert own_bonjour_host(records, airport_mac=TWIN_MAC, target_ip="192.0.2.10") == "home.local"
+    assert own_bonjour_host(records, airport_mac=None, target_ip="192.0.2.10") == "home-2.local"
+    assert own_bonjour_host(records, airport_mac="02:00:00:00:00:42", target_ip=None) is None
+    assert own_bonjour_host(records, airport_mac=None, target_ip="192.0.2.42") is None
+
+
+def test_a_mac_on_two_hosts_picks_the_one_with_this_devices_smb_record():
+    # An _airport record cached from before a host rename still carries the MAC.
+    stale = airport_for(service("Home", hostname="Home.local", address="192.0.2.10"))
+    current = service("Home", hostname="Home-2.local", address="192.0.2.10")
+    records = [stale, *device(current)]
+    assert own_bonjour_host(records, airport_mac=OUR_MAC, target_ip="192.0.2.10") == "home-2.local"
+    assert own_bonjour_host(records, airport_mac=OUR_MAC, target_ip=None) == "home-2.local"
+    # Two hosts with _smb records: the one at the saved address.
+    other = service("Home", hostname="Home-3.local", address="192.0.2.77")
+    records = [*device(other), *device(current)]
+    assert own_bonjour_host(records, airport_mac=OUR_MAC, target_ip="192.0.2.10") == "home-2.local"
+
+
+@pytest.mark.parametrize("mine, theirs, others", [
+    # ACPd turns each non-ASCII byte into "-", so these share the host label Caf
+    # and Office: Apple renamed one host label, though the names differ.
+    (("Café", "Caf"), ("Cafè", "Caf-2"), ["'Cafè' on Caf-2.local at 192.0.2.99"]),
+    (("Office Ä", "Office-2"), ("Office Ö", "Office"), ["'Office Ö' on Office.local at 192.0.2.99"]),
+    # Bonjour compares non-ASCII bytes exactly (RFC 6762 section 16): no conflict.
+    (("Жук", "Base-Station-000010"), ("жук", "Base-Station-000099"), []),
+    (("Café", "Caf"), (unicodedata.normalize("NFD", "Café"), "Mac-mini"), []),
+])
+def test_international_names_collide_only_where_apple_says(mine, theirs, others):
+    name, label = mine
+    ours = service(name, hostname=f"{label}.local")
+    twin = service(theirs[0], hostname=f"{theirs[1]}.local", address="192.0.2.99")
+    expected_label = apple_bonjour_host_label(name) or label
+    run = doctor_bonjour([*device(ours), *device(twin, TWIN_MAC)], instance_name=name, host_label=expected_label,
+                         resolved={f"{label.lower()}.local": ("192.0.2.10",)})
+    assert [w.details["others"] for w in warnings(run)] == ([others] if others else []), run.results
+    # This device's own label, renamed or not, is Apple's for its name.
+    assert not [r for r in run.results if r.status == "FAIL"], run.results
+
+
+def test_this_devices_own_records_are_no_conflict():
+    ours = service("Home", hostname="Home.local")
+    # A second interface's address of the same host, and a record with no address.
+    other_link = replace(ours, ipv4=["192.0.2.10"], interface_index=15)
+    device_info = BonjourResolvedService("Home", "", "_device-info._tcp.local.", 0, fullname="Home._device-info._tcp.local.")
+    run = doctor_bonjour([*device(ours), other_link, device_info], resolved={"home.local": ("192.0.2.10",)})
+    assert not warnings(run), run.results
+    assert not any("renamed" in r.message for r in run.results)
+
+
+def test_a_differently_named_device_is_no_conflict():
+    ours = service("Home", hostname="Home.local")
+    office = service("Office", hostname="Office.local", address="192.0.2.50")
+    run = doctor_bonjour([*device(ours), office], resolved={"home.local": ("192.0.2.10",)})
+    assert not warnings(run), run.results

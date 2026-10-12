@@ -1,8 +1,7 @@
 #include "plan.h"
 
-/* Mirrors probe.py normalize_runtime_mdns_instance_name(): control
- * characters -> '-', trim ASCII whitespace, truncate to 63 UTF-8 bytes on a
- * character boundary. */
+/* Samba's server string: control characters -> '-', trim ASCII whitespace,
+ * truncate to max_bytes on a UTF-8 character boundary. */
 static int normalize_display_name(char *out, size_t out_len, const char *value, size_t max_bytes) {
     char work[512];
     size_t len, start, end, i, cut;
@@ -47,8 +46,28 @@ static int normalize_display_name(char *out, size_t out_len, const char *value, 
     return 0;
 }
 
+/* Mirrors probe.py normalize_runtime_mdns_instance_name(): the default
+ * Bonjour name Apple's mDNSResponder takes from syNm. It is syNm byte for
+ * byte, whitespace included, and copied whole or not at all: an empty name
+ * or one over 63 bytes gets mDNSResponder's own "<model>-<MAC>" name (ACPd
+ * 0x45102c, 7.8.1 LE). Control characters become '-' as in probe.py. */
 int normalize_instance_name(char *out, size_t out_len, const char *value) {
-    return normalize_display_name(out, out_len, value, 63);
+    size_t len, i;
+
+    out[0] = '\0';
+    if (value == NULL) {
+        return -1;
+    }
+    len = strlen(value);
+    if (len == 0 || len > 63 || len >= out_len) {
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)value[i];
+        out[i] = (ch < 0x20 || ch == 0x7f) ? '-' : (char)ch;
+    }
+    out[len] = '\0';
+    return 0;
 }
 
 int normalize_server_string(char *out, size_t out_len, const char *value) {
@@ -167,7 +186,9 @@ void identity_derive(struct identity *out, const struct device_facts *facts) {
         (void)normalize_instance_name(out->instance, sizeof(out->instance), synm);
     }
     if (out->instance[0] == '\0') {
-        /* Same fallback chain as the doctor's derive_runtime_naming_identity. */
+        /* No Apple name to report: the plan names the device by its host
+         * label instead (mDNSResponder advertises "<model>-<MAC>", which the
+         * plan does not predict, and the doctor treats as unknown). */
         (void)normalize_host_label(out->instance, sizeof(out->instance), facts->hostname);
     }
     if (out->instance[0] == '\0' && synm != NULL) {

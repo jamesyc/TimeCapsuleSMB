@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-import re
 import time
 from typing import Literal
 
@@ -24,7 +23,7 @@ from timecapsulesmb.discovery.bonjour import (
     discover_snapshot_detailed,
     resolve_service_instance,
 )
-from timecapsulesmb.device.probe import RuntimeNamingIdentityProbeResult
+from timecapsulesmb.device.probe import RuntimeNamingIdentityProbeResult, apple_conflict_rename
 
 
 @dataclass(frozen=True)
@@ -187,6 +186,10 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
     ]
 
 
+def is_smb_record(record: BonjourResolvedService) -> bool:
+    return record.service_type == SMB_SERVICE or record.service_type.startswith(f"{SMB_SERVICE}.")
+
+
 def select_resolved_smb_record_by_ip(
     records: list[BonjourResolvedService],
     target_ip: str,
@@ -194,12 +197,42 @@ def select_resolved_smb_record_by_ip(
     matches = [
         record
         for record in records
-        if (record.service_type == SMB_SERVICE or record.service_type.startswith(f"{SMB_SERVICE}."))
+        if is_smb_record(record)
         and any(same_scoped_ip(target_ip, ip) for ip in [*record.ipv4, *record.ipv6])
     ]
     if not matches:
         return None
     return sorted(matches, key=lambda record: (record.name or "", record.hostname or "", record.fullname or ""))[0]
+
+
+def bonjour_host_key(hostname: str | None) -> str:
+    return (hostname or "").strip().rstrip(".").lower()
+
+
+def own_bonjour_host(
+    records: list[BonjourResolvedService],
+    *,
+    airport_mac: str | None,
+    target_ip: str | None,
+) -> str | None:
+    """The host this device advertises on, whatever Apple renamed it to.
+
+    Its `_airport` and `_adisk` TXT carry waMA, the MAC ACP reports, and all
+    of its services share one host (both LAN devices, 2026-10-12), so the MAC
+    names the device's records in both address families. Without one, the
+    `_smb` record at the saved address does. Should the MAC show on two hosts
+    (a record cached from before a rename), the one with the `_smb` record at
+    the saved address wins, then one with any `_smb` record.
+    """
+    at_target = select_resolved_smb_record_by_ip(records, target_ip) if target_ip else None
+    target_host = bonjour_host_key(at_target.hostname) if at_target is not None else ""
+    if airport_mac:
+        hosts = [bonjour_host_key(r.hostname) for r in records
+                 if r.airport_mac == airport_mac and bonjour_host_key(r.hostname)]
+        smb_hosts = {bonjour_host_key(r.hostname) for r in records if is_smb_record(r)}
+        if hosts:
+            return min(dict.fromkeys(hosts), key=lambda host: (host != target_host, host not in smb_hosts))
+    return target_host or None
 
 
 def select_resolved_smb_record(
@@ -258,6 +291,7 @@ def resolve_expected_smb_record(
     expected_instance_name: str,
     target_ip: str | None = None,
     expected_host_label: str | None = None,
+    own_host: str | None = None,
     family: BonjourIPFamily | None = None,
     interfaces: list[str] | None = None,
     resolver: Callable[..., tuple[BonjourResolvedService | None, CheckResult | None]] = resolve_smb_instance,
@@ -266,8 +300,7 @@ def resolve_expected_smb_record(
     # (NetBSD 4 LE capture, 2026-09-19). The display name is only a lookup hint;
     # prefer the service that resolves to this device, even if a peer owns the
     # original name. The caller still checks host, port, addresses and ADisk.
-    records = [record for record in records if record.service_type == SMB_SERVICE
-               or record.service_type.startswith(f"{SMB_SERVICE}.")]
+    records = [record for record in records if is_smb_record(record)]
 
     def host_matches(record: BonjourResolvedService) -> bool:
         if not expected_host_label:
@@ -275,14 +308,22 @@ def resolve_expected_smb_record(
         actual = (record.hostname or "").rstrip(".").lower().removesuffix(".local")
         return actual == expected_host_label.rstrip(".").lower().removesuffix(".local")
 
+    def on_own_host(record: BonjourResolvedService) -> bool:
+        return bool(own_host) and bonjour_host_key(record.hostname) == own_host
+
     def foreign_record(record: BonjourResolvedService | None) -> bool:
+        if record is not None and own_host:
+            # Another host's record under this device's name: the device
+            # itself is the one Apple renamed (own_bonjour_host).
+            return not on_own_host(record)
         return bool(record is not None and target_ip and expected_host_label
                     and not host_matches(record)
                     and not select_resolved_smb_record_by_ip([record], target_ip))
 
     def foreign_error() -> CheckResult:
+        device = f"the expected device {target_ip}" if target_ip else f"this device's host {own_host}"
         return CheckResult("FAIL", f"_smb._tcp instance {expected_instance_name!r} belongs to another device; "
-                           f"no service resolved to the expected device {target_ip}")
+                           f"no service resolved to {device}")
 
     def resolved_identity(record: BonjourResolvedService) -> BonjourExpectedSmbResolution:
         instance = BonjourServiceInstance(record.service_type, record.name,
@@ -292,6 +333,9 @@ def resolve_expected_smb_record(
             instance=instance, record=record, source="browse", error=None,
         )
 
+    for record in records:
+        if on_own_host(record):
+            return resolved_identity(record)
     verified = select_resolved_smb_record_by_ip(records, target_ip) if target_ip else None
     if verified is not None:
         return resolved_identity(verified)
@@ -302,10 +346,10 @@ def resolve_expected_smb_record(
     # Browse may have found a suffixed instance before its SRV/address reply.
     # Resolve observed variants within one bounded budget; a suffix alone is
     # never sufficient evidence that the service belongs to this device.
-    if target_ip or expected_host_label:
+    if target_ip or expected_host_label or own_host:
         deadline = time.monotonic() + FINAL_PENDING_RESOLVE_TIMEOUT_MS / 1000
         for instance in instances:
-            if not re.fullmatch(re.escape(expected_instance_name) + r" \(\d+\)", instance.name):
+            if not apple_conflict_rename(instance.name, expected_instance_name, host_label=False):
                 continue
             if select_resolved_smb_record(records, instance) is not None:
                 continue
@@ -315,7 +359,8 @@ def resolve_expected_smb_record(
             record, _error = resolver(instance, timeout_ms=remaining_ms, target_ip=target_ip,
                                       family=family, interfaces=interfaces)
             if record is not None and (
-                (target_ip and select_resolved_smb_record_by_ip([record], target_ip) is not None)
+                on_own_host(record)
+                or (target_ip and select_resolved_smb_record_by_ip([record], target_ip) is not None)
                 or host_matches(record)
             ):
                 return resolved_identity(record)

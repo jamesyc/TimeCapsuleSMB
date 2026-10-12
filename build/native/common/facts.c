@@ -56,7 +56,9 @@ static void facts_requests(struct acp_request *requests, struct device_facts *fa
     memset(requests, 0, sizeof(*requests) * ACP_KEY_COUNT);
     for (i = 0; i < ACP_KEY_COUNT; i++) {
         requests[i].key = device_acp_keys[i];
-        requests[i].trim_whitespace = 1;
+        /* syNm keeps its whitespace: Apple's default Bonjour name is syNm
+         * byte for byte (identity.c normalize_instance_name). */
+        requests[i].trim_whitespace = i != ACP_KEY_syNm;
         requests[i].output = facts->acp[i].text;
         requests[i].capacity = sizeof(facts->acp[i].text);
     }

@@ -1,5 +1,6 @@
 """The same ACP process engine serves scalar, multiline, password and MaSt reads."""
 import os
+import socket
 import subprocess
 
 import pytest
@@ -157,6 +158,27 @@ def test_samba_identity_uses_observed_model(capture_tools, tmp_path, value, mode
     header, netbios, server, actual_model = result.stdout.splitlines()
     assert header == "samba-identity 1" and netbios
     assert server == "Test Capsule" and actual_model == model
+
+
+def test_samba_server_string_falls_back_to_the_host_label_for_a_blank_name(capture_tools, tmp_path):
+    # The Bonjour name keeps a blank syNm's spaces; Samba's server string
+    # names the device by its host label instead, as it always has.
+    from timecapsulesmb.device.probe import normalize_runtime_mdns_host_label
+    result = subprocess.run([str(capture_tools[1]), "--print-samba-identity"], env=raw_env(tmp_path, b"   \n", key="syNm"),
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0
+    server = result.stdout.splitlines()[2]
+    assert server == (normalize_runtime_mdns_host_label(socket.gethostname()) or "timecapsule")
+
+
+def test_live_plan_reports_syNm_with_its_whitespace(capture_tools):
+    # The live collector trims other ACP values, but Apple advertises syNm
+    # byte for byte, so the plan's instance name keeps its spaces.
+    env = {**os.environ, "TC_TEST_ACP_MODE": "value", "TC_TEST_ACP_KEY": "syNm", "TC_TEST_ACP_VALUE": "  Capsule  "}
+    result = subprocess.run([str(capture_tools[1]), "--print-link-plan"], env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    identity = next(line for line in result.stdout.splitlines() if line.startswith("identity: "))
+    assert identity.startswith('identity: instance="  Capsule  " '), identity
 
 
 def test_child_that_already_exited_is_reaped_on_the_pump_that_reads_eof(capture_tools):

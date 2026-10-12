@@ -66,8 +66,11 @@ int tc_samba_identity_read(struct tc_samba_identity *out, const char *hostname) 
     syap.status = requests[1].status; syam.status = requests[2].status;
     snprintf(facts.hostname, sizeof(facts.hostname), "%s", hostname);
     identity_derive(&id, &facts);
-    if (normalize_server_string(server, sizeof(server), facts.acp[ACP_KEY_syNm].text) != 0)
-        strcpy(server, id.instance);
+    /* A blank syNm names the server by the host label, as before the
+     * instance name kept syNm's whitespace. */
+    if (normalize_server_string(server, sizeof(server), facts.acp[ACP_KEY_syNm].text) != 0 &&
+        normalize_host_label(server, sizeof(server), facts.hostname) != 0)
+        strcpy(server, "timecapsule");
     model_id = acp_u32(&syap);
     for (i = 0; i < sizeof(models) / sizeof(models[0]); i++) {
         if (model_id.available && strtoul(strchr(models[i], ',') + 1, NULL, 10) == model_id.value) {

@@ -35,7 +35,7 @@ from timecapsulesmb.checks.bonjour import (
     select_smb_instance,
 )
 from timecapsulesmb.checks.doctor import run_doctor_checks
-from timecapsulesmb.checks.doctor_steps import check_xattr_tdb_persistence
+from timecapsulesmb.checks.doctor_steps import _add_bonjour_results, check_xattr_tdb_persistence
 from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
 from timecapsulesmb.checks.doctor_state import DoctorSink
 from timecapsulesmb.checks.doctor_steps import (
@@ -4318,6 +4318,29 @@ class CheckTests(unittest.TestCase):
         )
         self.assertTrue(run.fatal)
         self.assertTrue(any(result.status == "FAIL" and "unknown-endian" in result.message for result in run.results))
+
+    def test_run_doctor_checks_finds_bonjour_records_by_the_mac_ssh_reached(self) -> None:
+        probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(ssh_status=SshAccessStatus.OPEN_AUTHENTICATED, error=None, os_name="NetBSD",
+                                     os_release="6.0", arch="earmv4", elf_endianness="little",
+                                     airport_mac="02:00:00:00:00:10"),
+            compatibility=DeviceCompatibility(os_name="NetBSD", os_release="6.0", arch="earmv4",
+                                              elf_endianness="little", payload_family="netbsd6_samba4",
+                                              device_generation="gen5", supported=True,
+                                              reason_code="supported_netbsd6"),
+        )
+        bonjour = mock.Mock(wraps=_add_bonjour_results)
+        self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
+            extra_patches={"timecapsulesmb.checks.doctor_steps.probe_connection_state": mock.Mock(return_value=probe_state),
+                           "timecapsulesmb.checks.doctor._add_bonjour_results": bonjour},
+        )
+        self.assertEqual(bonjour.call_args.kwargs["airport_mac"], "02:00:00:00:00:10")
 
     def test_run_doctor_checks_fails_airport_express_on_processor(self) -> None:
         probe_result = ProbeResult(

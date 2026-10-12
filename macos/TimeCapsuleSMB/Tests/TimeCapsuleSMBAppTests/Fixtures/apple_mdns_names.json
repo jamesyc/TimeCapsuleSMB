@@ -1,0 +1,279 @@
+{
+ "source": "Produced 2026-10-12 by running Apple's own code from AirPort firmware 7.8.1 (NetBSD 4, little- and big-endian) and 7.9.1 (NetBSD 6) under emulation; the three builds agree. renames: mDNSCore IncrementLabelSuffix, a service name (rich text) or a host label after one more name conflict. host_labels: ACPd's conversion of syDN or syNm to its Bonjour host label.",
+ "renames": [
+  {
+   "name": "AirPort Time Capsule",
+   "service_name": true,
+   "renamed": "AirPort Time Capsule (2)"
+  },
+  {
+   "name": "AirPort Time Capsule (2)",
+   "service_name": true,
+   "renamed": "AirPort Time Capsule (3)"
+  },
+  {
+   "name": "AirPort Time Capsule (9)",
+   "service_name": true,
+   "renamed": "AirPort Time Capsule (10)"
+  },
+  {
+   "name": "Capsule ",
+   "service_name": true,
+   "renamed": "Capsule (2)"
+  },
+  {
+   "name": "Capsule   ",
+   "service_name": true,
+   "renamed": "Capsule (2)"
+  },
+  {
+   "name": " Capsule",
+   "service_name": true,
+   "renamed": " Capsule (2)"
+  },
+  {
+   "name": "Capsule ",
+   "service_name": true,
+   "renamed": "Capsule  (2)"
+  },
+  {
+   "name": "Capsule (1)",
+   "service_name": true,
+   "renamed": "Capsule (2)"
+  },
+  {
+   "name": "Capsule (0)",
+   "service_name": true,
+   "renamed": "Capsule (2)"
+  },
+  {
+   "name": "Capsule(2)",
+   "service_name": true,
+   "renamed": "Capsule(2) (2)"
+  },
+  {
+   "name": "Capsule 2",
+   "service_name": true,
+   "renamed": "Capsule 2 (2)"
+  },
+  {
+   "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "service_name": true,
+   "renamed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (2)"
+  },
+  {
+   "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "service_name": true,
+   "renamed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (2)"
+  },
+  {
+   "name": "éééééééééééééééééééééééééééééééa",
+   "service_name": true,
+   "renamed": "ééééééééééééééééééééééééééééé (2)"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa éé",
+   "service_name": true,
+   "renamed": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (2)"
+  },
+  {
+   "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  yz",
+   "service_name": true,
+   "renamed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (2)"
+  },
+  {
+   "name": "(2)",
+   "service_name": true,
+   "renamed": "(2) (2)"
+  },
+  {
+   "name": " (2)",
+   "service_name": true,
+   "renamed": " (3)"
+  },
+  {
+   "name": "",
+   "service_name": true,
+   "renamed": " (2)"
+  },
+  {
+   "name": "airport-time-capsule",
+   "service_name": false,
+   "renamed": "airport-time-capsule-2"
+  },
+  {
+   "name": "airport-time-capsule-2",
+   "service_name": false,
+   "renamed": "airport-time-capsule-3"
+  },
+  {
+   "name": "airport-time-capsule-9",
+   "service_name": false,
+   "renamed": "airport-time-capsule-10"
+  },
+  {
+   "name": "airport-time-capsule-3",
+   "service_name": false,
+   "renamed": "airport-time-capsule-4"
+  },
+  {
+   "name": "office-1",
+   "service_name": false,
+   "renamed": "office-2"
+  },
+  {
+   "name": "office-0",
+   "service_name": false,
+   "renamed": "office-2"
+  },
+  {
+   "name": "office2",
+   "service_name": false,
+   "renamed": "office2-2"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "service_name": false,
+   "renamed": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-2"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "service_name": false,
+   "renamed": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-2"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-xy",
+   "service_name": false,
+   "renamed": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--2"
+  },
+  {
+   "name": "-2",
+   "service_name": false,
+   "renamed": "-3"
+  },
+  {
+   "name": "2",
+   "service_name": false,
+   "renamed": "2-2"
+  },
+  {
+   "name": "",
+   "service_name": false,
+   "renamed": "-2"
+  }
+ ],
+ "host_labels": [
+  {
+   "name": "AirPort Time Capsule",
+   "label": "AirPort-Time-Capsule"
+  },
+  {
+   "name": "James's AirPort Time Capsule",
+   "label": "Jamess-AirPort-Time-Capsule"
+  },
+  {
+   "name": "James’s Capsule",
+   "label": "Jamess-Capsule"
+  },
+  {
+   "name": "Café",
+   "label": "Caf"
+  },
+  {
+   "name": "Café",
+   "label": "Cafe"
+  },
+  {
+   "name": "  Office  ",
+   "label": "Office"
+  },
+  {
+   "name": "Office-2",
+   "label": "Office-2"
+  },
+  {
+   "name": "Office 2",
+   "label": "Office-2"
+  },
+  {
+   "name": "Office (2)",
+   "label": "Office-2"
+  },
+  {
+   "name": "a--b",
+   "label": "a--b"
+  },
+  {
+   "name": "-lead",
+   "label": "lead"
+  },
+  {
+   "name": "trail-",
+   "label": "trail"
+  },
+  {
+   "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "name": "éééééééééééééééééééééééééééééééééééééééé",
+   "label": ""
+  },
+  {
+   "name": "Dn Test.Name’s",
+   "label": "Dn-Test-Names"
+  },
+  {
+   "name": "Time.Capsule",
+   "label": "Time-Capsule"
+  },
+  {
+   "name": "under_score",
+   "label": "under-score"
+  },
+  {
+   "name": "tab\there",
+   "label": "tab-here"
+  },
+  {
+   "name": "ALLCAPS",
+   "label": "ALLCAPS"
+  },
+  {
+   "name": "123",
+   "label": "123"
+  },
+  {
+   "name": "   ",
+   "label": ""
+  },
+  {
+   "name": "",
+   "label": ""
+  },
+  {
+   "name": "日本語のタイムカプセル",
+   "label": ""
+  },
+  {
+   "name": "emoji 😀 name",
+   "label": "emoji-name"
+  },
+  {
+   "name": "a'b",
+   "label": "ab"
+  },
+  {
+   "name": "a‘b",
+   "label": "a-b"
+  },
+  {
+   "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé",
+   "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-y",
+   "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+ ]
+}

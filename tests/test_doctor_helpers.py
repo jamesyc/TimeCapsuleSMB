@@ -27,7 +27,7 @@ from timecapsulesmb.core.smb_config import (  # noqa: E402
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers  # noqa: E402
 from timecapsulesmb.core.config import AppConfig  # noqa: E402
-from timecapsulesmb.device.probe import RuntimeNamingIdentityProbeResult  # noqa: E402
+from timecapsulesmb.device.probe import AirportAcpReading, RuntimeNamingIdentityProbeResult  # noqa: E402
 from timecapsulesmb.checks import doctor_steps
 from timecapsulesmb.checks.bonjour import BonjourExpectedIdentity
 from timecapsulesmb.checks.doctor_state import DoctorSink
@@ -205,6 +205,25 @@ class DoctorHelperTests(unittest.TestCase):
                     )
                 self.assertEqual([result.status for result in sink.results], statuses)
                 self.assertEqual(sink.fatal(), fatal)
+
+    def test_bonjour_finds_this_device_by_the_mac_ssh_reached_then_the_read_then_the_saved_one(self):
+        def inputs(saved="", reading=None):
+            return SimpleNamespace(config=AppConfig(values={"TC_HOST": "10.0.1.1", "TC_AIRPORT_MAC": saved}),
+                                   device_reading=reading)
+
+        probed, read, saved = "02:00:00:00:00:01", "02:00:00:00:00:02", "02:00:00:00:00:03"
+        good_read = AirportAcpReading(password_matches=True, airport_mac=read)
+        cases = [
+            ("the device SSH reached", inputs(saved, good_read), probed, probed),
+            ("the read that took the password", inputs(saved, good_read), None, read),
+            # A read the password did not open says nothing about which device it is.
+            ("the saved MAC", inputs(saved.upper().replace(":", "-"),
+                                     AirportAcpReading(password_matches=False, airport_mac=read)), None, saved),
+            ("none", inputs("not-a-mac"), None, None),
+        ]
+        for label, given, probe_mac, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(doctor_steps._doctor_airport_mac(given, probe_mac), expected)
 
     def test_bonjour_merge_preserves_same_link_local_address_on_two_interfaces(self):
         results = []
