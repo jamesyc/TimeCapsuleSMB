@@ -114,6 +114,8 @@ class ProcessSnapshotState:
     # ps did not answer: the device may be out of processes, so doctor starts
     # as few new ones as it can.
     timed_out: bool = False
+    # The listing itself, when ps answered.
+    snapshot: str | None = None
 
     @property
     def smbd_stuck(self) -> bool:

@@ -14,6 +14,7 @@ from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.summaries import Summary
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.app import AppOperationError, OperationResult, config_path
 from timecapsulesmb.services.runtime import load_optional_env_config
@@ -225,20 +226,24 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         )
         return 1
     except Exception as exc:
-        message = f"{type(exc).__name__}: {exc}"
+        # A device error that names its cause (such as acpd_broken from a disk
+        # read) keeps that code wherever an operation let it through.
+        device_code = getattr(exc, "code", None) if isinstance(exc, DeviceError) else None
+        code = device_code if isinstance(device_code, str) and device_code else "operation_failed"
+        message = str(exc) if code != "operation_failed" else f"{type(exc).__name__}: {exc}"
         sink.error(
             operation,
             message,
-            code="operation_failed",
+            code=code,
             debug=context.failure_debug(exc, include_traceback=True),
-            recovery=recovery_for(operation, "operation_failed", stage=context.current_stage),
+            recovery=recovery_for(operation, code, stage=context.current_stage),
         )
         _finish_api_telemetry(
             telemetry_session,
             context,
             result="failure",
             error=context.diagnostic_error(message) or message,
-            error_code="operation_failed",
+            error_code=code,
         )
         return 1
     payload_error = _payload_error(result.payload) if not result.ok else None

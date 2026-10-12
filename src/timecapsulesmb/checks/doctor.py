@@ -40,6 +40,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_runtime_ram_root,
     _doctor_check_ssh_login,
     _doctor_check_stuck_processes,
+    _doctor_check_apple_acpd,
     _doctor_check_unshared_network,
     _doctor_probe_startup_age,
     _doctor_validate_config,
@@ -98,6 +99,7 @@ def run_doctor_checks(
     # on the network between this computer and the device.
     _doctor_report_device_not_checked(remote, sink)
     processes = _doctor_check_stuck_processes(target, remote, sink)
+    _doctor_check_apple_acpd(target, remote, processes, sink)
 
     if _doctor_check_running_migration(target, remote, sink).stop:
         return sink.results, sink.fatal()

@@ -845,6 +845,7 @@ def finish_validated_write(
         wait=wait,
         callbacks=callbacks,
         no_down_message=FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE,
+        ssh=target.connection,
     )
     if not wait:
         return

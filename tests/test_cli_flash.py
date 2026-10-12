@@ -259,6 +259,22 @@ class CliFlashTests(CliTestCase):
         self.assertNotIn("device_model", command_context.finish.call_args.kwargs)
         self.assertIn("Backed up firmware banks to:", output.getvalue())
 
+    def test_flash_refuses_a_broken_apple_acpd_before_reading_the_banks(self) -> None:
+        from timecapsulesmb.services.runtime import DeviceAccessError
+
+        for mode in (["--read-only"], ["--check-apple"], ["--patch", "--yes"], ["--restore", "--yes"]):
+            with self.subTest(mode=mode[0]):
+                command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+                with tempfile.TemporaryDirectory() as tmp, zopfli_available(), self.flash_cli(command_context), \
+                        mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=[352]), \
+                        mock.patch("timecapsulesmb.services.flash.read_flash_inputs") as read_inputs, \
+                        redirect_stdout(io.StringIO()):
+                    with self.assertRaises(DeviceAccessError) as raised:
+                        cli_flash.main([*mode, "--backup-dir", str(Path(tmp) / "backup")])
+
+                self.assertEqual(raised.exception.code, "acpd_broken")
+                read_inputs.assert_not_called()
+
     def test_flash_read_only_leaves_inactive_secondary_unmodified_when_it_fits(self) -> None:
         output = io.StringIO()
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")

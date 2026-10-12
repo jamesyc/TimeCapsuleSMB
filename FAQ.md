@@ -227,9 +227,21 @@ What we know about the cause: the AirPort settings live on the same tiny flash p
 
 For more information, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177
 
+A device that goes offline and stays offline without resetting its settings is a different problem: see "Install says *Apple ACPd is broken*" below.
+
+#### Install says "Apple ACPd is broken"
+
+ACPd is Apple's AirPort service on the device: AirPort Utility, file sharing setup and every restart go through it. Occasionally it gets stuck. This is a bug in Apple's firmware, not in TimeCapsuleSMB. A stuck ACPd can leave the device off the network after a restart, even though its light may stay green, and AirPort Utility cannot reach it.
+
+To fix it, unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, then run Install or Checkup again.
+
+Install, Uninstall, Disk Repair, turning SSH off and the firmware tools check ACPd before they change anything, and stop with "Nothing was changed" when it is stuck. If ACPd gets stuck during the restart at the end of an install, the update is already in place and starts when the device starts up again. On a NetBSD 4 device (Gen 1-4) without the firmware startup hook, run Activate once it has started up.
+
 #### I get a "MaSt" error
 
-We use ACP `MaSt` to check what hard drives are connected to the device. If you see the message `No internal disk was detected after 10 MaSt queries spaced 3 seconds apart`, that means we checked 10 times and the hard drive never loaded. 
+We use ACP `MaSt` to check what hard drives are connected to the device. If the error says **Apple ACPd is broken**, the disks were not the problem: ACPd itself did not answer. See the previous question.
+
+If you see the message `No internal disk was detected after 10 MaSt queries spaced 3 seconds apart`, ACPd answered, but no hard drive showed up in any of the 10 checks.
 
 - If you are using an AirPort Extreme with an external hard drive, make sure it is plugged in.
 - If you are using an external hard drive, make sure it's properly formatted with HFS+

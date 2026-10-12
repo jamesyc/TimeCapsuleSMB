@@ -44,6 +44,18 @@ class FakeAcpDevice:
     uptime: float = 3600.0
     # Whether a reboot request makes the device reboot.
     reboots: bool = True
+    # Apple's ACPd takes the request, tears itself down (ACP stops answering
+    # after shutdown_after) and never runs shutdown: the old kernel and its
+    # sshd keep running (DETAIL.md, "Apple ACPd can hang during its own restart").
+    acpd_hangs: bool = False
+    # Host seconds after the request during which a shutdown process is listed
+    # while the old kernel still runs (a slow but real restart).
+    shutdown_listed_until: float = 0.0
+    # Host seconds a torn-down ACPd's syUT read takes to give up: the worst
+    # case is the device ending both acpd_answers attempts (2 x 15 s).
+    syut_silent_seconds: float = 30.0
+    # Host seconds each SSH read of device.acpd takes otherwise.
+    ssh_read_seconds: float = 1.0
     # Seconds from the request until ACP stops answering, and until the new
     # kernel starts (uptime 0).
     shutdown_after: float = 10.0
@@ -76,6 +88,9 @@ class FakeAcpDevice:
     # Hosts whose shared SSH connections were closed, and whether the reboot
     # request had been sent at the time.
     ssh_master_closes: list[tuple[str, bool]] = field(default_factory=list)
+    # The device.acpd reads over SSH ("restart evidence", "acpd answers"),
+    # each with whether a reboot had been requested; calls keeps ACP traffic.
+    ssh_reads: list[tuple[str, bool]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._boot_at = self.now - self.uptime / self.device_rate
@@ -96,14 +111,15 @@ class FakeAcpDevice:
 
     # Device state.
     def _new_kernel_at(self) -> float | None:
-        if self.requested_at is None or not self.reboots:
+        if self.requested_at is None or not self.reboots or self.acpd_hangs:
             return None
         return self.requested_at + self.kernel_after
 
     def _acp_up(self) -> bool:
         kernel = self._new_kernel_at()
         if kernel is None:
-            return True
+            return not (self.acpd_hangs and self.requested_at is not None
+                        and self.now >= self.requested_at + self.shutdown_after)
         if self.now < self.requested_at + self.shutdown_after:
             return True
         return self.now >= kernel + self.acp_up_after_boot
@@ -174,6 +190,40 @@ class FakeAcpDevice:
             return False
         return self.now >= kernel + self.ssh_up_after_boot
 
+    def _ssh_answers(self, host: str) -> bool:
+        kernel = self._new_kernel_at()
+        if not self._answers_at(host):
+            return False
+        if kernel is None or self.requested_at is None or self.now < self.requested_at + self.shutdown_after:
+            return self.ssh_open
+        return self.ssh_up_after_boot is not None and self.now >= kernel + self.ssh_up_after_boot
+
+    def restart_evidence(self, connection):
+        """device.acpd.read_restart_evidence: the running kernel's tick count
+        (100 a second since its boot, never the wall clock) and whether a
+        shutdown is listed, while SSH answers."""
+        from timecapsulesmb.device.acpd import RestartEvidence
+
+        self.ssh_reads.append(("restart evidence", self.requested_at is not None))
+        evidence = None
+        if self._ssh_answers(connection.host.removeprefix("root@")):
+            shutting_down = self.requested_at is not None and self.now < self.requested_at + self.shutdown_listed_until
+            evidence = RestartEvidence(self.device_uptime() * 100, shutting_down)
+        self.now += self.ssh_read_seconds
+        return evidence
+
+    def acpd_answers(self, connection) -> bool:
+        """device.acpd.acpd_answers: the device's own acp reads syUT, except
+        from a torn-down ACPd."""
+        self.ssh_reads.append(("acpd answers", self.requested_at is not None))
+        if not self._ssh_answers(connection.host.removeprefix("root@")):
+            from timecapsulesmb.transport.errors import SshError
+
+            raise SshError("Connection refused")
+        silent = self.acpd_hangs and self.requested_at is not None and self.now >= self.requested_at + self.shutdown_after
+        self.now += self.syut_silent_seconds if silent else self.ssh_read_seconds
+        return not silent
+
     @contextlib.contextmanager
     def patched(self):
         clock = SimpleNamespace(monotonic=self.monotonic, sleep=self.sleep)
@@ -188,6 +238,8 @@ class FakeAcpDevice:
             ),
             mock.patch("timecapsulesmb.integrations.acp.reboot", side_effect=self.reboot),
             mock.patch("timecapsulesmb.services.reboot.tcp_open", side_effect=self.tcp_open),
+            mock.patch("timecapsulesmb.device.acpd.read_restart_evidence", side_effect=self.restart_evidence),
+            mock.patch("timecapsulesmb.device.acpd.acpd_answers", side_effect=self.acpd_answers),
             mock.patch(
                 "timecapsulesmb.services.reboot.close_ssh_masters",
                 side_effect=lambda host: self.ssh_master_closes.append((host, self.requested_at is not None)),

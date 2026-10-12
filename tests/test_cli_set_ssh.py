@@ -336,6 +336,18 @@ class CliSetSshTests(CliTestCase):
         self.assertEqual(finished["set_ssh_action"], "disable_ssh")
         self.assertIn("stage=wait_for_reboot_up", finished["error"])
 
+    def test_set_ssh_disable_whose_reboot_leaves_apple_acpd_torn_down_says_to_unplug(self) -> None:
+        # The old boot's sshd still answers: that is the hang, not SSH reopening.
+        self.device.acpd_hangs = True
+        rc, text, _disable, _input = self.run_disable([])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Apple ACPd is broken", text)
+        self.assertNotIn("Disable did not persist", text)
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("stage=wait_for_reboot_up", finished["error"])
+
     def test_set_ssh_disable_fails_when_ssh_reopens(self) -> None:
         self.device.ssh_up_after_boot = 10.0
         rc, text, disable_ssh_mock, _input = self.run_disable([])

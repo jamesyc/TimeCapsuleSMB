@@ -204,6 +204,7 @@ def disable_set_ssh(
         callbacks=callbacks,
         expect_ssh=False,
         up_timeout_message="Device went down after disable request but did not come back within timeout.",
+        ssh=connection,
     ) or target_host)
     if no_wait:
         return SetSshResult(

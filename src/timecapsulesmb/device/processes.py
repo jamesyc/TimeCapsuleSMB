@@ -130,6 +130,25 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
     return list(by_pid.values())
 
 
+# ps's wait channel for nanosleep: NetBSD 6 names it nanoslp, and NetBSD 4's
+# ps cuts nanosleep to eight characters.
+NANOSLEEP_WCHANS = frozenset({"nanoslp", "nanoslee"})
+
+
+def acpd_stuck_children(ps_output: str) -> list[int]:
+    """PIDs of ACPd's own forks asleep in nanosleep, in PROCESS_SNAPSHOT_COMMAND output.
+
+    A healthy device runs one ACPd. A second one, ACPd's child that never went
+    on to exec, predicted every v3.4.0 reboot that tore ACPd down without
+    restarting the kernel. A fork on its way to exec is never in nanosleep.
+    Matched on ucomm: sshd and the other daemons are ACPd's children too.
+    """
+    rows = [line.split(None, 7) for line in ps_output.splitlines()]
+    rows = [fields for fields in rows if len(fields) >= 7 and fields[6] == "ACPd"]
+    acpd = {fields[0] for fields in rows}
+    return [int(fields[0]) for fields in rows if fields[1] in acpd and fields[5] in NANOSLEEP_WCHANS]
+
+
 def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = SUPERVISOR_STOP_SECONDS) -> str:
     # Stop every launcher before its workers, including launchers forked during
     # shutdown. Apple's daemons and unrelated `service` processes are not ours.

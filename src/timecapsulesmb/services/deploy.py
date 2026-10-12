@@ -96,9 +96,9 @@ from timecapsulesmb.device.storage import (
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbsd4_runtime_after_reboot
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import followed, reboot_device
+from timecapsulesmb.services.reboot import ACPD_STOPPED_MESSAGE, followed, reboot_device
 from timecapsulesmb.device.probe import AirportAcpReading
-from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_device_password
+from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_acpd_ready
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
 )
@@ -118,10 +118,19 @@ DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
     "  1. Wait a few more minutes.\n"
     "  2. If the device is reachable at a new IP, update TC_HOST or rerun configure.\n"
     "  3. Make sure you are connected to the same network/wifi as the device.\n"
-    "  4. On NetBSD 4 devices, run `tcapsule activate` once SSH is reachable; "
+    "  4. If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.\n"
+    "  5. On NetBSD 4 devices, run `tcapsule activate` once SSH is reachable; "
     "deploy did not get far enough to activate Samba after reboot.\n"
-    "  5. If your device resets itself, see "
+    "  6. If your device resets itself, see "
     "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
+)
+DEPLOY_ACPD_STOPPED_MESSAGE = (
+    f"{ACPD_STOPPED_MESSAGE} The update is installed and starts when the device starts up again; "
+    "then run `tcapsule doctor`."
+)
+# A NetBSD 4 device without the firmware startup hook starts nothing at boot.
+DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE = (
+    f"{ACPD_STOPPED_MESSAGE} The update is installed; once the device has started up again, run `tcapsule activate`."
 )
 DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not restart.\n"
@@ -138,7 +147,7 @@ MANAGER_STOP_TIMEOUT_MESSAGE = (
 )
 PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
     "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. "
-    "Run Disk Repair; if this keeps happening, the disk may need replacing."
+    "Run `tcapsule fsck`; if this keeps happening, the disk may need replacing."
 )
 XATTR_MIGRATION_TIMEOUT_MESSAGE = (
     "Timed out migrating Samba metadata into native HFS attributes. "
@@ -640,9 +649,10 @@ def prepare_deploy_preflight(
     callbacks.stage("check_compatibility")
     compatibility = require_supported_payload(target, allow_unsupported=options.allow_unsupported)
     if not options.dry_run:
-        # Deploy ends in an ACP reboot: refuse a password ACP would reject
-        # before the confirmation, not after the upload has stopped the runtime.
-        require_device_password(connection, callbacks, reading=device_reading)
+        # Deploy ends in an ACP reboot: refuse a password ACP would reject, or
+        # an ACPd that would not restart the device, before the confirmation,
+        # not after the upload has stopped the runtime.
+        require_acpd_ready(connection, callbacks, reading=device_reading)
     payload_context = prepare_deploy_payload_context(
         connection,
         compatibility,
@@ -1405,6 +1415,12 @@ def complete_deployment_after_upload(
         callbacks=callbacks,
         no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
         up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+        stopped_message=(
+            DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE
+            if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE and not payload_context.rc_local_autostart
+            else DEPLOY_ACPD_STOPPED_MESSAGE
+        ),
+        ssh=connection,
     ))
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:

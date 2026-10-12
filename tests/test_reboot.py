@@ -8,6 +8,7 @@ from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services import reboot as reboot_service
 from timecapsulesmb.services.reboot import RebootFlowError, reboot_device
+from timecapsulesmb.transport.errors import SshError
 from timecapsulesmb.transport.ssh import SshConnection
 from tests.reboot_support import NETWORK_CONTEXT, FakeAcpDevice, RecordingCallbacks
 
@@ -568,3 +569,124 @@ class RebootFollowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AcpdHangTests(unittest.TestCase):
+    """Apple's ACPd takes the request, tears itself down and never restarts
+    the device: ACP goes quiet as in a reboot, while the old kernel keeps
+    running (DETAIL.md, "Apple ACPd can hang during its own restart"). The
+    kernel's tick count, read before the request and again over SSH, tells the
+    same kernel from a new one without any clock."""
+
+    SSH = SshConnection("root@10.0.0.2", "pw", "")
+
+    def test_a_kernel_that_never_restarted_is_reported_as_broken_acpd(self) -> None:
+        for expect_ssh in (True, False):
+            with self.subTest(expect_ssh=expect_ssh):
+                device = FakeAcpDevice(acpd_hangs=True)
+                started = device.now
+                error, recorder = run(device, ssh=self.SSH, expect_ssh=expect_ssh)
+
+                # Not "SSH still enabled": the tick count shows the same kernel.
+                self.assertEqual((error.code, str(error)), ("acpd_broken", reboot_service.ACPD_STOPPED_MESSAGE))
+                cycle = recorder.measurement("reboot_cycle")
+                self.assertEqual(cycle["result"], "acpd_stopped_without_reboot")
+                self.assertEqual(cycle["acpd_hang_checks"], 2)
+                self.assertEqual(cycle["cpu_ticks_before"], 360000)
+                self.assertGreater(cycle["cpu_ticks_at_check"], cycle["cpu_ticks_before"])
+                self.assertEqual(cycle["hang_check_last"], "acpd_silent")
+                # The baseline, then two checks from 90 s after ACP went quiet,
+                # each held 30 s by the syUT reads the device ends.
+                self.assertEqual(device.ssh_reads.count(("restart evidence", True)), 2)
+                self.assertEqual(device.ssh_reads[0], ("restart evidence", False))
+                self.assertLess(device.now - started, 200)
+                self.assertEqual(device.calls.count("request"), 1)
+                self.assertNotIn("device_came_back_after_reboot", recorder.fields)
+
+    def test_the_baseline_is_read_before_the_request(self) -> None:
+        device = FakeAcpDevice(acpd_hangs=True)
+        run(device, ssh=self.SSH)
+
+        self.assertEqual(device.ssh_reads[0], ("restart evidence", False))
+
+    def test_the_caller_names_what_the_unplug_finishes(self) -> None:
+        device = FakeAcpDevice(acpd_hangs=True)
+        error, _recorder = run(device, ssh=self.SSH, stopped_message="unplug to finish the update")
+
+        self.assertEqual((error.code, str(error)), ("acpd_broken", "unplug to finish the update"))
+
+    def test_a_syut_read_that_fails_at_once_still_takes_two_checks(self) -> None:
+        # ACPd's IPC fails fast instead of hanging: the checks keep their 30 s.
+        device = FakeAcpDevice(acpd_hangs=True, syut_silent_seconds=1.0)
+        started = device.now
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertEqual(recorder.measurement("reboot_cycle")["acpd_hang_checks"], 2)
+        self.assertLess(device.now - started, 160)
+
+    def test_an_ssh_failure_while_asking_acpd_is_not_a_hang(self) -> None:
+        device = FakeAcpDevice(acpd_hangs=True)
+
+        def ssh_drops(connection) -> bool:
+            raise SshError("Connection reset by peer")
+
+        device.acpd_answers = ssh_drops
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(recorder.measurement("reboot_cycle")["hang_check_last"], "ssh_failed")
+
+    def test_without_ssh_the_hang_still_ends_at_the_up_limit(self) -> None:
+        device = FakeAcpDevice(acpd_hangs=True)
+        error, recorder = run(device)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(recorder.measurement("reboot_cycle")["result"], "did_not_come_back_up")
+        self.assertEqual(device.ssh_reads, [])
+        self.assertNotIn("hang_check_last", recorder.measurement("reboot_cycle"))
+
+    def test_an_unreadable_baseline_turns_the_check_off(self) -> None:
+        device = FakeAcpDevice(acpd_hangs=True, ssh_open=False)
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertIsNone(recorder.measurement("reboot_cycle")["cpu_ticks_before"])
+        self.assertEqual(device.ssh_reads, [("restart evidence", False)])
+
+    def test_a_shutdown_under_way_is_never_reported_as_a_hang(self) -> None:
+        # The old kernel still runs a long shutdown: its count has not reset.
+        device = FakeAcpDevice(acpd_hangs=True, shutdown_listed_until=10_000.0)
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertNotIn(("acpd answers", True), device.ssh_reads)
+        self.assertEqual(recorder.measurement("reboot_cycle")["hang_check_last"], "shutting_down")
+
+    def test_an_acpd_that_still_answers_syut_is_not_a_hang(self) -> None:
+        # The same kernel, but ACPd is not the one that stopped.
+        device = FakeAcpDevice(acpd_hangs=True)
+        device.acpd_answers = lambda connection: True
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertEqual(error.code, "reboot_not_finished")
+        self.assertEqual(recorder.measurement("reboot_cycle")["hang_check_last"], "acpd_answers")
+
+    def test_a_new_boot_older_than_the_old_one_was_is_not_a_hang(self) -> None:
+        # Up 60 s before the request, the new boot passes that count while its
+        # ACP is slow to answer: its ACPd still answers syUT over SSH.
+        device = FakeAcpDevice(uptime=60.0, kernel_after=20.0, acp_up_after_boot=200.0, ssh_up_after_boot=5.0)
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertIsNone(error)
+        self.assertEqual(recorder.measurement("reboot_cycle")["result"], "success")
+        self.assertEqual(recorder.measurement("reboot_cycle")["hang_check_last"], "acpd_answers")
+
+    def test_a_slow_real_reboot_is_never_reported_as_a_hang(self) -> None:
+        # The new kernel takes 8 minutes, and its sshd answers before its ACPd.
+        device = FakeAcpDevice(kernel_after=480.0, acp_up_after_boot=60.0, ssh_up_after_boot=10.0)
+        error, recorder = run(device, ssh=self.SSH)
+
+        self.assertIsNone(error)
+        self.assertEqual(recorder.measurement("reboot_cycle")["result"], "success")
+        self.assertEqual(recorder.measurement("reboot_cycle")["hang_check_last"], "new_kernel")

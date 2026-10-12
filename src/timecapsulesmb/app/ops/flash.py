@@ -7,6 +7,7 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.app.contracts import flash_backup_payload, flash_plan_payload, flash_write_payload
 from timecapsulesmb.app.ops.common import (
     load_request_config,
+    require_request_acpd_ready,
     resolve_request_target,
 )
 from timecapsulesmb.app.ops.deploy import device_operation_error
@@ -105,7 +106,7 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> Fl
         # unreachable, password rejected); it says nothing about the model.
         raise device_operation_error(context, exc) from exc
     try:
-        return require_netbsd4_flash_target(
+        flash_target = require_netbsd4_flash_target(
             target.connection,
             compatibility,
             update_fields=context.update_fields,
@@ -113,6 +114,10 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> Fl
         )
     except DeviceError as exc:
         raise AppOperationError(str(exc), code="unsupported_device") from exc
+    # Every flash read and write goes through ACPd, and a restore ends in an
+    # ACP reboot: refuse a stuck ACPd before the first read.
+    require_request_acpd_ready(context, target.connection)
+    return flash_target
 
 
 def _backup_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:

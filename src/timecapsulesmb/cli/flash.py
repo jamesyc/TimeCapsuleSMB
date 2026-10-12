@@ -46,7 +46,7 @@ from timecapsulesmb.services.flash import (
     write_stage_for_plan,
 )
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config
+from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshError
 
@@ -319,6 +319,9 @@ def _resolve_flash_target(
         compatibility,
         update_fields=command_context.update_fields,
     )
+    # Every flash read and write goes through ACPd, and a restore ends in an
+    # ACP reboot: refuse a stuck ACPd before the first read.
+    require_acpd_ready(connection, command_context.to_operation_callbacks())
     emit_progress(log, f"Using ACP host {flash_target.acp_host}.")
     return flash_target
 

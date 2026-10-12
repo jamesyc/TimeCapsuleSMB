@@ -13,7 +13,7 @@ from timecapsulesmb.app.contracts import (
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.ops.common import (
     load_request_config,
-    require_request_device_password,
+    require_request_acpd_ready,
     resolve_request_connection,
     resolve_request_target,
 )
@@ -121,7 +121,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     # The reboot goes through AirPort ACP, which needs the password.
     connection = resolve_request_connection(config, context, allow_empty_password=no_reboot or dry_run)
     if not dry_run and not no_reboot:
-        require_request_device_password(context, connection)
+        require_request_acpd_ready(context, connection)
     if not dry_run:
         presentation_id = "uninstall.no_reboot" if no_reboot else "uninstall.reboot"
         presentation_values = {
@@ -199,10 +199,10 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     rebooting = not (no_reboot or dry_run or list_volumes)
     connection = None
     if rebooting:
-        # The reboot goes through ACP: refuse a password it would reject
-        # before the confirmation and before the disk is touched.
+        # The reboot goes through ACP: check ACPd and the password before the
+        # confirmation and before the disk is touched.
         connection = _fsck_connection(params, context, rebooting=True)
-        require_request_device_password(context, connection)
+        require_request_acpd_ready(context, connection)
     if not dry_run and not list_volumes:
         presentation_id = "fsck.no_reboot" if no_reboot else "fsck.reboot"
         volume = string_param(params, "volume")

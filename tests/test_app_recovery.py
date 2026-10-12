@@ -92,6 +92,20 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertEqual(recovery["action_ids"], ["open_ssh_access"])
         self.assertEqual(recovery["actions"][0], "Disable SSH again in SSH Access.")
 
+    def test_broken_acpd_says_try_again_only_where_nothing_was_installed(self) -> None:
+        # The check before any change refuses with nothing installed.
+        for operation, stage in (("deploy", "check_compatibility"), ("fsck", "wait_for_reboot_up"), ("uninstall", None)):
+            with self.subTest(operation=operation, stage=stage):
+                recovery = recovery_for(operation, "acpd_broken", stage=stage)
+                self.assertEqual(recovery["localization_key"], "acpd_broken")
+                self.assertIn("then try again", recovery["actions"][1])
+        # Deploy's reboot: the update is on the device; the user checks it instead.
+        recovery = recovery_for("deploy", "acpd_broken", stage="wait_for_reboot_up")
+        self.assertEqual(recovery["localization_key"], "deploy.acpd_broken.wait_for_reboot_up")
+        self.assertIn("The update is installed", recovery["message"])
+        self.assertIn("run Activate", recovery["actions"][2])
+        self.assertFalse(recovery["retryable"])
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 
@@ -108,13 +122,14 @@ class AppRecoveryTests(unittest.TestCase):
                 "Wait a few more minutes.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
                 (
-                    "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "
+                    "On NetBSD 4 devices, run Activate once SSH is reachable; deploy did not get far "
                     "enough to activate Samba after reboot."
                 ),
                 (
                     "If your device resets itself, see "
                     "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
                 ),
+                "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
             ],
         )
 

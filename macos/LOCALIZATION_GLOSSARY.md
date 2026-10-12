@@ -17,7 +17,7 @@ This is an editorial guide, not a global search-and-replace dictionary. Keep the
 
 Keep `TimeCapsuleSMB`, `Samba`, `Netatalk`, `Bonjour`, `NetBSD`, `macOS`, `AirPort`, `AirPort Extreme`, `AirPort Express`, `SMB`, `SMB1`, `SMB2/3`, `AFP`, `SSH`, `ACP`, `NBNS`, `NetBIOS`, `DNS`, `DHCP`, `TCP`, `UDP`, `IPv4`, `IPv6`, `HFS`, `APFS`, `ACL`, `ATA`, `API`, `URL`, `UUID`, and `SHA-256` recognizable and correctly capitalized.
 
-Keep literal `rsync`, `fsck`, `smbd`, `wcifsnd`, `mDNSResponder`, `vfs_aio_fork`, `ShareRoot`, `rc.local`, `xattr.tdb`, `.env`, and command/parameter spelling unchanged. Translate the surrounding verbs: Dutch `fsck uitvoeren`, French `Exécuter fsck`, Chinese `运行 fsck`.
+Keep literal `ACPd`, `rsync`, `fsck`, `smbd`, `wcifsnd`, `mDNSResponder`, `vfs_aio_fork`, `ShareRoot`, `rc.local`, `xattr.tdb`, `.env`, and command/parameter spelling unchanged. Translate the surrounding verbs: Dutch `fsck uitvoeren`, French `Exécuter fsck`, Chinese `运行 fsck`.
 
 Preserve `%@`, `%d`, `%lld`, positional specifiers, `%%`, URLs, backticks, and intentional `\n` escapes. If a translation needs argument reordering, use supported positional specifiers and verify it with a rendered example; never reorder bare placeholders casually. Do not translate literal backend status codes in raw logs. Translate the labels in the app's own status summary.
 

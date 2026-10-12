@@ -57,7 +57,7 @@ def device_off_network_message(
     )
 
 
-def _client_networks_if_off_network(host: str) -> list[IpNetwork] | None:
+def client_networks_if_off_network(host: str) -> list[IpNetwork] | None:
     """This computer's networks when `host` is on none of them, else None.
 
     Only explains a failure: an address on another network can still be
@@ -173,7 +173,7 @@ def _probe_acp_port(
     )
     _record_port_probe_context(host, record, callbacks)
     failure = f"Could not connect to ACP on {host}:{ACP_PORT}. "
-    client_networks = _client_networks_if_off_network(host)
+    client_networks = client_networks_if_off_network(host)
     if client_networks:
         raise ACPDeviceOffNetworkError(failure + device_off_network_message(host, client_networks))
     raise ACPConnectionError(failure + "Check the device IP address or hostname.")

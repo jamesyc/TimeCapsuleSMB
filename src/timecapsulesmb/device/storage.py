@@ -9,8 +9,10 @@ import shlex
 import time
 import uuid
 
+from timecapsulesmb.device import acpd
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
+from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 
 
@@ -24,9 +26,14 @@ DISKD_USE_VOLUME_GUARD_ATTEMPTS = 2
 DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at deploy time"
 DRY_RUN_DEVICE_PATH_PLACEHOLDER = "resolved from MaSt at deploy time"
 UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at uninstall time"
+# acp's text for any failed get; it blames ACPd only when syUT fails too.
+MAST_GET_FAILED_TEXT = "### get 'MaSt' failed"
+ACPD_DISKS_UNREADABLE_MESSAGE = acpd.acpd_broken_message(
+    "the AirPort service on this device is not answering", note="Its disks cannot be read. ",
+)
 DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE = (
     "The disk did not respond when tested. It may be failing or unable to spin up. "
-    "Run Disk Repair; if this keeps happening, the disk may need replacing."
+    "Run `tcapsule fsck`; if this keeps happening, the disk may need replacing."
 )
 
 
@@ -97,6 +104,8 @@ class MaStDiscoveryResult:
 class MaStReadResult:
     volumes: tuple[MaStVolume, ...]
     raw_output: str
+    # acp printed its failed-get text: ACPd, or MaSt itself, did not answer.
+    get_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -385,9 +394,32 @@ def parse_mast_inventory(content: str | bytes) -> tuple[MaStDiskSnapshot, ...]:
     return _disk_snapshots_from_plist_root(_mast_root(content))
 
 
-def read_mast_volumes_with_output_conn(connection: SshConnection) -> MaStReadResult:
-    proc = run_ssh(connection, MAST_ACP_COMMAND, timeout=60)
-    return MaStReadResult(parse_mast_plist(proc.stdout), proc.stdout)
+def raise_if_acpd_silent(connection: SshConnection, *, after: SshCommandTimeout | None = None) -> None:
+    """After an acp call failed or hung: raise acpd_broken when ACPd itself does
+    not answer syUT. `after` is the hang being explained: when SSH cannot run
+    the syUT read either, that hang is re-raised, with the SSH error as its cause."""
+    try:
+        answers = acpd.acpd_answers(connection)
+    except TransportError as exc:
+        if after is None:
+            raise
+        raise after from exc
+    if not answers:
+        raise StorageDeviceError(ACPD_DISKS_UNREADABLE_MESSAGE, code="acpd_broken")
+
+
+def read_mast_volumes_with_output_conn(connection: SshConnection, *, check_acpd: bool = True) -> MaStReadResult:
+    """One MaSt read. A failed get is checked against ACPd unless the caller
+    already checked it (`check_acpd`); a read that hangs always is."""
+    try:
+        proc = run_ssh(connection, MAST_ACP_COMMAND, timeout=60)
+    except SshCommandTimeout as exc:
+        raise_if_acpd_silent(connection, after=exc)
+        raise
+    get_failed = MAST_GET_FAILED_TEXT in proc.stdout
+    if get_failed and check_acpd:
+        raise_if_acpd_silent(connection)
+    return MaStReadResult(parse_mast_plist(proc.stdout), proc.stdout, get_failed)
 
 
 def read_mast_volumes_conn(connection: SshConnection) -> tuple[MaStVolume, ...]:
@@ -454,8 +486,11 @@ def wait_for_mast_volumes_conn(
         attempts = 1
     volumes: tuple[MaStVolume, ...] = ()
     raw_output = ""
+    # One syUT check per wait: ACPd that answered it once is not asked again.
+    acpd_checked = False
     for attempt in range(1, attempts + 1):
-        read_result = read_mast_volumes_with_output_conn(connection)
+        read_result = read_mast_volumes_with_output_conn(connection, check_acpd=not acpd_checked)
+        acpd_checked = acpd_checked or read_result.get_failed
         volumes = read_result.volumes
         raw_output = read_result.raw_output
         if volumes:
@@ -568,7 +603,14 @@ def ensure_volume_root_mounted_conn(
 ) -> VolumeMountResult:
     script = render_ensure_volume_root_mounted_script(volume_root, device_path, wait_seconds)
     timeout = max(30, wait_seconds * DISKD_USE_VOLUME_GUARD_ATTEMPTS + 45)
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=timeout)
+    try:
+        proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=timeout)
+    except SshCommandTimeout as exc:
+        raise_if_acpd_silent(connection, after=exc)
+        raise
+    if proc.returncode != 0:
+        # diskd.useVolume goes through ACPd; diskd's own refusals leave syUT answering.
+        raise_if_acpd_silent(connection)
     lines = (proc.stdout or "").strip().splitlines()
     return VolumeMountResult(proc.returncode == 0, lines[-1].strip() if lines else "")
 

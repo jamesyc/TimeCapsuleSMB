@@ -1583,6 +1583,10 @@ class AppApiTests(unittest.TestCase):
             ("config-error", ConfigError("bad config"), "config_error"),
             ("transport-error", TransportError("remote failed"), "remote_error"),
             ("unexpected-error", RuntimeError("boom"), "operation_failed"),
+            # A device error keeps the cause it names, and only that.
+            ("uncoded-device-error", DeviceError("device said no"), "operation_failed"),
+            ("empty-code-device-error", StorageDeviceError("device said no", code=""), "operation_failed"),
+            ("coded-device-error", StorageDeviceError("Apple ACPd is broken", code="acpd_broken"), "acpd_broken"),
         )
         for operation, exception, code in cases:
             with self.subTest(code=code):
@@ -5472,7 +5476,9 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("ACP reboot request failed: refused", errors[0]["message"])
         self.assertEqual(collector.events_of_type("result"), [])
 
-    def test_deploy_reboot_up_timeout_uses_app_recovery_guidance(self) -> None:
+    def run_deploy_with_reboot_failure(self, failure: RebootFlowError):
+        """A confirmed NetBSD 6 deploy whose reboot wait fails as `failure`
+        once the device went down."""
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
@@ -5501,7 +5507,7 @@ class AppApiTests(unittest.TestCase):
             if callbacks is not None:
                 callbacks.stage("wait_for_reboot_up")
                 callbacks.update(device_came_back_after_reboot=False)
-            raise RebootFlowError("Timed out waiting for SSH after reboot.", "reboot_not_finished")
+            raise failure
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
@@ -5525,13 +5531,32 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         reboot_wait.assert_called_once()
-        errors = collector.events_of_type("error")
+        self.assertEqual(collector.events_of_type("result"), [])
+        return collector.events_of_type("error")
+
+    def test_deploy_reboot_up_timeout_uses_app_recovery_guidance(self) -> None:
+        errors = self.run_deploy_with_reboot_failure(
+            RebootFlowError("Timed out waiting for SSH after reboot.", "reboot_not_finished"),
+        )
         self.assertEqual(errors[0]["code"], "reboot_not_finished")
         self.assertEqual(errors[0]["message"], "Timed out waiting for SSH after reboot.")
         self.assertEqual(errors[0]["recovery"]["localization_key"], "deploy.reboot_not_finished")
         # The app looks for the device again itself; no step asks the user to.
         self.assertFalse(any("Discover" in action for action in errors[0]["recovery"]["actions"]))
-        self.assertEqual(collector.events_of_type("result"), [])
+
+    def test_deploy_whose_acpd_stopped_says_the_update_is_installed(self) -> None:
+        from timecapsulesmb.services.deploy import DEPLOY_ACPD_STOPPED_MESSAGE
+
+        errors = self.run_deploy_with_reboot_failure(RebootFlowError(DEPLOY_ACPD_STOPPED_MESSAGE, "acpd_broken"))
+
+        self.assertEqual(errors[0]["code"], "acpd_broken")
+        recovery = errors[0]["recovery"]
+        # Not the refusal's "try again": the payload is on the device already.
+        self.assertEqual(recovery["localization_key"], "deploy.acpd_broken.wait_for_reboot_up")
+        self.assertIn("The update is installed", recovery["message"])
+        self.assertEqual(recovery["actions"][1], "Wait 2 minutes for the device to start up, then run Checkup.")
+        self.assertFalse(any("try again" in action for action in recovery["actions"]))
+        self.assertEqual(recovery["action_ids"], ["run_checkup"])
 
     def test_deploy_reboot_records_lifecycle_fields(self) -> None:
         collector = CollectingSink()
@@ -6358,13 +6383,13 @@ MaSt = (
                     self.assertEqual(error["code"], "auth_failed" if matches is False else "confirmation_required")
 
     def test_a_read_taken_at_another_address_is_not_reused(self) -> None:
-        from timecapsulesmb.app.ops.common import require_request_device_password
+        from timecapsulesmb.app.ops.common import require_request_acpd_ready
 
         context = AppOperationContext("uninstall", CollectingSink().sink)
         context.device_reading = ("root@10.0.0.9", acp_reading(False))
         compare = acp_password_answer(True)
         with mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare):
-            require_request_device_password(context, SshConnection("root@10.0.0.2", "pw", ""))
+            require_request_acpd_ready(context, SshConnection("root@10.0.0.2", "pw", ""))
 
         compare.assert_called_once()
 
@@ -6512,6 +6537,70 @@ MaSt = (
         self.assertEqual(error["code"], "auth_failed")
         self.assertEqual(error["message"], AIRPORT_PASSWORD_MISMATCH_MESSAGE)
         mount.assert_not_called()
+
+    def test_fsck_refuses_a_broken_apple_acpd_before_asking(self) -> None:
+        # The reboot would leave ACPd torn down and the device running.
+        for patch, value in (
+            ("timecapsulesmb.device.acpd.read_acpd_stuck_children", [352]),
+            ("timecapsulesmb.device.acpd.acpd_answers", False),
+        ):
+            with self.subTest(patch=patch):
+                collector = CollectingSink()
+                config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+                connection = SshConnection("root@10.0.0.2", "pw", "")
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                        mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection), \
+                        mock.patch(patch, return_value=value), \
+                        mock.patch(
+                            "timecapsulesmb.app.ops.maintenance.storage_service.mount_mast_volumes_with_diagnostics",
+                        ) as mount:
+                    rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "acpd_broken")
+                self.assertIn("Nothing was changed", error["message"])
+                self.assertEqual(error["recovery"]["localization_key"], "acpd_broken")
+                self.assertEqual(collector.events_of_type("confirmation_required"), [])
+                mount.assert_not_called()
+
+    def test_a_disk_read_that_finds_apple_acpd_broken_keeps_its_code(self) -> None:
+        # Listing volumes is not guarded by a reboot check; the disk read
+        # itself names the cause, and the app shows its own recovery for it.
+        from timecapsulesmb.device.storage import StorageDeviceError
+
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        broken = StorageDeviceError("Apple ACPd is broken: disks cannot be read.", code="acpd_broken")
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection), \
+                mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", side_effect=broken):
+            rc = service.run_api_request({"operation": "fsck", "params": {"list_volumes": True}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual((error["code"], error["message"]), ("acpd_broken", "Apple ACPd is broken: disks cannot be read."))
+        self.assertEqual(error["recovery"]["localization_key"], "acpd_broken")
+
+    def test_flash_refuses_a_broken_apple_acpd_before_reading_the_banks(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values(
+            {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"},
+            file_values={"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"},
+        )
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                mock.patch(
+                    "timecapsulesmb.app.ops.flash.require_connection_compatibility",
+                    return_value=supported_compatibility("netbsd4be_samba4"),
+                ), \
+                mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=[352]), \
+                mock.patch("timecapsulesmb.app.ops.flash.backup_flash") as backup:
+            rc = service.run_api_request({"operation": "flash", "params": {"action": "backup"}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "acpd_broken")
+        backup.assert_not_called()
 
     def test_fsck_without_reboot_requires_question_form_confirmation(self) -> None:
         collector = CollectingSink()

@@ -19,7 +19,9 @@ from timecapsulesmb.device.probe import (
     probe_connection_state,
 )
 from timecapsulesmb.device import probe as device_probe
+from timecapsulesmb.device import acpd
 from timecapsulesmb.integrations.acp import ACP_PORT
+from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network_message
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
 from timecapsulesmb.transport.ssh import SshConnection
@@ -62,25 +64,52 @@ AIRPORT_PASSWORD_MISMATCH_MESSAGE = (
 )
 
 
-def require_device_password(
+# Apple's firmware, not ours: ACPd serves every ACP request, and a stuck ACPd
+# tears itself down at a reboot request without restarting the device
+# (DETAIL.md, "Apple ACPd can hang during its own restart").
+ACPD_BROKEN_MESSAGE = acpd.acpd_broken_message(
+    "the AirPort service on this device is stuck", note="Nothing was changed. ",
+)
+ACP_UNREACHABLE_MESSAGE = (
+    "This computer cannot reach AirPort ACP (port 5009) on {host}, although the device's own ACP works. "
+    "This command needs ACP from this computer, so nothing was changed. Connect this computer to the "
+    "device's network by Wi-Fi or one of its LAN ports, and turn off any VPN or firewall that filters "
+    "local traffic, then try again."
+)
+
+
+def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,
     *,
     reading: device_probe.AirportAcpReading | None = None,
 ) -> None:
-    """Refuse a password the device's ACP would reject, before anything changes.
+    """Refuse, before anything changes, a device whose ACPd cannot take the work.
 
-    Every reboot goes through ACP, so a command that reboots checks the
-    password first instead of failing at the reboot with its work half done.
-    `reading` is this command's earlier read of the device at this address
-    (confirm_device_address); an unanswered one is not read again, as the
-    second read would only repeat the same retry.
+    Every reboot and every flash command goes through Apple's ACPd: the
+    password must be the one ACP takes, ACPd must answer this computer and the
+    device's own acp, and no stuck fork of ACPd may be waiting to hang the
+    next reboot. `reading` is this command's earlier network read of the
+    device at this address (confirm_device_address); an unanswered one is not
+    read again, as the second read would only repeat the same retry.
     """
     if reading is None:
         reading = read_admin_password(connection)
     callbacks.debug(**password_check_fields(reading))
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
+    answers = acpd.acpd_answers(connection)
+    stuck = acpd.read_acpd_stuck_children(connection) if answers else []
+    if not answers or stuck:
+        callbacks.debug(acpd_answers=answers, acpd_stuck_children=stuck)
+        raise DeviceAccessError(ACPD_BROKEN_MESSAGE, code="acpd_broken")
+    if reading.password_matches is None and reading.error:
+        # The device's own ACP works, so the path from here is what is blocked.
+        host = endpoint_host(connection.host)
+        client_networks = client_networks_if_off_network(host)
+        if client_networks is not None:
+            raise DeviceAccessError(device_off_network_message(host, client_networks), code="device_off_network")
+        raise DeviceAccessError(ACP_UNREACHABLE_MESSAGE.format(host=host), code="acp_unreachable")
 
 
 def confirm_device_address(

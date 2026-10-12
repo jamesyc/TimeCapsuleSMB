@@ -13,7 +13,7 @@ from timecapsulesmb.services.runtime import (
     load_env_config,
     load_optional_env_config,
     resolve_env_connection,
-    require_device_password,
+    require_acpd_ready,
     resolve_validated_managed_target,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -104,9 +104,9 @@ def request_device_reading(context: AppOperationContext, connection: SshConnecti
     return reading if endpoint_host(host) == endpoint_host(connection.host) else None
 
 
-def require_request_device_password(context: AppOperationContext, connection: SshConnection) -> None:
-    """Refuse a password the device's ACP would reject, as `auth_failed`."""
+def require_request_acpd_ready(context: AppOperationContext, connection: SshConnection) -> None:
+    """services.runtime.require_acpd_ready, raising its code as an AppOperationError."""
     try:
-        require_device_password(connection, context.to_operation_callbacks(), reading=request_device_reading(context, connection))
+        require_acpd_ready(connection, context.to_operation_callbacks(), reading=request_device_reading(context, connection))
     except DeviceAccessError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc

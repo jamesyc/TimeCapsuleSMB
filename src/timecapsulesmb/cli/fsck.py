@@ -23,7 +23,7 @@ from timecapsulesmb.services.maintenance import (
     select_fsck_target,
 )
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import load_env_config, require_device_password
+from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -76,8 +76,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if connection.password:
             command_context.start_optional_airport_identity_probe(connection)
         if not args.no_reboot:
-            # The reboot goes through ACP: check the password before the disk is touched.
-            require_device_password(connection, command_context.to_operation_callbacks())
+            # The reboot goes through ACP: check ACPd and the password before the disk is touched.
+            require_acpd_ready(connection, command_context.to_operation_callbacks())
 
         mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,

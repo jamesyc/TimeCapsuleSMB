@@ -4,11 +4,13 @@ import time
 from dataclasses import replace
 
 from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.device import acpd
 from timecapsulesmb.discovery.models import normalize_airport_mac
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.services import acp_diagnostics
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import LocateResult, locate_airport
+from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, close_ssh_masters
 
@@ -49,10 +51,25 @@ SSH_PORT = 22
 # starts 47-175 s after the request, so earlier looks find nothing.
 FOLLOW_AFTER_DOWN_SECONDS = 60
 FOLLOW_INTERVAL_SECONDS = 30
+# Apple's ACPd can take a reboot request, tear itself down and never run
+# shutdown (DETAIL.md, "Apple ACPd can hang during its own restart"): ACP goes
+# quiet as in a reboot, but the old kernel and its sshd keep running. No clock
+# can tell: the Mac may sleep through the wait, and NTP steps the device's
+# clock by weeks just after a boot. The kernel's tick counter can: it starts
+# from zero at every boot, so a count no smaller than the one read before the
+# request is the same kernel. A new boot older than the old one was could pass
+# that, and its ACPd answers syUT; a restart under way lists shutdown. So the
+# hang is: ACP quiet, the count not reset, no shutdown, and syUT silent, twice.
+HANG_CHECK_AFTER_DOWN_SECONDS = 90
+HANG_CHECK_INTERVAL_SECONDS = 30
+HANG_CHECK_SILENT_CHECKS = 2
 
 REBOOT_NO_DOWN_MESSAGE = "Reboot was requested but the device did not restart."
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 SSH_STILL_OPEN_MESSAGE = "SSH reopened after reboot. Disable did not persist."
+ACPD_STOPPED_MESSAGE = acpd.acpd_broken_message(
+    "the AirPort service on this device stopped but did not restart the device", then="",
+)
 
 
 class RebootFlowError(RuntimeError):
@@ -74,12 +91,16 @@ def reboot_device(
     up_timeout_seconds: int = REBOOT_UP_TIMEOUT_SECONDS,
     no_down_message: str = REBOOT_NO_DOWN_MESSAGE,
     up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
+    stopped_message: str = ACPD_STOPPED_MESSAGE,
+    ssh: SshConnection | None = None,
 ) -> str | None:
     """Reboot the device through ACP and, with `wait`, prove it rebooted.
 
     The new boot must answer ACP within `up_timeout_seconds` of the first
     unanswered read. Then SSH must open within REBOOT_SSH_TIMEOUT_SECONDS of
     the new boot being seen (`expect_ssh`), or must stay closed.
+    `ssh`, when SSH works before the request, also watches for a reboot
+    that never happens: ACPd quiet while the same kernel still answers SSH.
     Returns the device's SSH target when the new boot came up at another
     address (see services.locate), else None. Raises RebootFlowError.
     """
@@ -88,6 +109,8 @@ def reboot_device(
     if not wait:
         _request(host, password, callbacks, raise_errors=True)
         return None
+    # The running kernel's tick count, before it is asked to restart.
+    before = acpd.read_restart_evidence(ssh) if ssh is not None else None
     u0, airport_mac, error = _read_uptime(host, password)
     if u0 is None:
         code = "auth_failed" if isinstance(error, acp.ACPAuthError) else "device_unreachable"
@@ -107,6 +130,9 @@ def reboot_device(
         up_timeout_seconds=up_timeout_seconds,
         no_down_message=no_down_message,
         up_timeout_message=up_timeout_message,
+        stopped_message=stopped_message,
+        ssh=ssh,
+        ticks_before=None if before is None else before.cpu_ticks,
     )
 
 
@@ -209,6 +235,9 @@ def _wait(
     up_timeout_seconds: int,
     no_down_message: str,
     up_timeout_message: str,
+    stopped_message: str,
+    ssh: SshConnection | None,
+    ticks_before: int | None,
 ) -> str | None:
     fields: dict[str, object] = {
         "start_timeout_sec": start_timeout_seconds,
@@ -216,6 +245,8 @@ def _wait(
         "expect_ssh": expect_ssh,
         "u0_sec": u0,
     }
+    if ssh is not None:
+        fields["cpu_ticks_before"] = ticks_before
     moved: str | None = None
     rejected: LocateResult | None = None
     # Each kind of failed read, and when it was first and last seen: refused
@@ -238,10 +269,29 @@ def _wait(
     def is_new_boot(uptime: int | None, read_started: float) -> bool:
         return uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started)
 
+    def hang_check(connection: SshConnection, baseline: int) -> str:
+        """Why this look is, or is not, the hang: "acpd_silent" is the hang."""
+        if not tcp_open(host, SSH_PORT):
+            return "ssh_closed"
+        evidence = acpd.read_restart_evidence(connection)
+        if evidence is None:
+            return "no_evidence"
+        fields["cpu_ticks_at_check"] = evidence.cpu_ticks
+        if evidence.cpu_ticks < baseline:
+            return "new_kernel"
+        if evidence.shutting_down:
+            return "shutting_down"
+        try:
+            return "acpd_answers" if acpd.acpd_answers(connection) else "acpd_silent"
+        except TransportError:
+            return "ssh_failed"
+
     callbacks.message("Waiting for the device to restart...")
     callbacks.stage("wait_for_reboot_down")
     down_since: float | None = None
     next_follow = 0.0
+    next_hang_check = 0.0
+    silent_checks = 0
     up_stage = False
     while True:
         time.sleep(REBOOT_POLL_SECONDS)
@@ -271,6 +321,18 @@ def _wait(
             up_stage = True
             callbacks.message("Device went down; waiting for it to come back up...")
             callbacks.stage("wait_for_reboot_up")
+        if (
+            ssh is not None and ticks_before is not None
+            and now - down_since >= HANG_CHECK_AFTER_DOWN_SECONDS and now >= next_hang_check
+        ):
+            # Start to start: a hung syUT read alone takes ACPD_READ_DEADLINE_SECONDS twice.
+            next_hang_check = now + HANG_CHECK_INTERVAL_SECONDS
+            reason = hang_check(ssh, ticks_before)
+            silent_checks = silent_checks + 1 if reason == "acpd_silent" else 0
+            fields["acpd_hang_checks"] = int(fields.get("acpd_hang_checks", 0)) + 1
+            fields["hang_check_last"] = reason
+            if silent_checks >= HANG_CHECK_SILENT_CHECKS:
+                finish("acpd_stopped_without_reboot", "acpd_broken", stopped_message)
         if airport_mac and now - down_since >= FOLLOW_AFTER_DOWN_SECONDS and now >= next_follow:
             next_follow = now + FOLLOW_INTERVAL_SECONDS
             # One read per candidate: a device still booting fails every read,

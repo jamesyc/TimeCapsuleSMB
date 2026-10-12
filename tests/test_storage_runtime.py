@@ -359,7 +359,8 @@ MaSt = (
         self.assertEqual(result.volumes, ())
         self.assertEqual(result.attempts, 1)
         self.assertEqual(result.raw_output, raw_output)
-        read_mock.assert_called_once_with(connection)
+        # The first read still checks a failed get against ACPd.
+        read_mock.assert_called_once_with(connection, check_acpd=True)
         sleep_mock.assert_not_called()
 
     def test_wait_for_mast_volumes_stops_when_disk_has_empty_partition_table(self) -> None:
@@ -391,7 +392,8 @@ MaSt = (
         self.assertEqual(inventory[0].name, "Seagate Expansion HDD")
         self.assertEqual(inventory[0].size, "8000000000000")
         self.assertEqual(inventory[0].partitions, ())
-        read_mock.assert_called_once_with(connection)
+        # The first read still checks a failed get against ACPd.
+        read_mock.assert_called_once_with(connection, check_acpd=True)
         sleep_mock.assert_not_called()
 
     def test_probe_mast_diagnostics_records_empty_success(self) -> None:
@@ -1156,3 +1158,121 @@ if sys.argv[1] == "df":
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AcpdDiskReadTests(unittest.TestCase):
+    """A failed or hung MaSt or diskd.useVolume blames Apple's ACPd only when
+    the device's own acp cannot read syUT either; acp prints the same failed-get
+    text for any property and exits 0."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+    FAILED_GET = "### get 'MaSt' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>\n"
+
+    def read(self, outcome, *, answers: bool):
+        from timecapsulesmb.device import storage
+
+        run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(
+            return_value=subprocess.CompletedProcess(["ssh"], 0, stdout=outcome, stderr=""))
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", run), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as answer:
+            try:
+                return storage.read_mast_volumes_with_output_conn(self.CONNECTION), answer
+            except Exception as exc:  # noqa: BLE001 - the test inspects what was raised
+                return exc, answer
+
+    def test_a_failed_mast_get_with_a_silent_acpd_is_broken_acpd(self) -> None:
+        from timecapsulesmb.device.storage import StorageDeviceError
+
+        error, answer = self.read(self.FAILED_GET, answers=False)
+        self.assertIsInstance(error, StorageDeviceError)
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertIn("Apple ACPd is broken", str(error))
+        answer.assert_called_once_with(self.CONNECTION)
+
+    def test_a_failed_mast_get_with_a_working_acpd_is_an_empty_read(self) -> None:
+        result, _answer = self.read(self.FAILED_GET, answers=True)
+        self.assertEqual(result.volumes, ())
+
+    def test_a_valid_empty_mast_never_asks_acpd(self) -> None:
+        result, answer = self.read("MaSt=[]\n", answers=False)
+        self.assertEqual(result.volumes, ())
+        answer.assert_not_called()
+
+    def test_a_hung_mast_read_blames_acpd_only_when_syut_fails(self) -> None:
+        timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: /usr/bin/acp MaSt")
+        for answers, code in ((False, "acpd_broken"), (True, None)):
+            with self.subTest(answers=answers):
+                error, _answer = self.read(timeout, answers=answers)
+                self.assertEqual(getattr(error, "code", None), code)
+                if code is None:
+                    self.assertIs(error, timeout)
+
+    def test_broken_acpd_stops_the_mast_retries(self) -> None:
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=subprocess.CompletedProcess(
+                ["ssh"], 0, stdout=self.FAILED_GET, stderr="")) as run, \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False), \
+                mock.patch("timecapsulesmb.device.storage.time.sleep") as sleep:
+            with self.assertRaises(Exception) as raised:
+                wait_for_mast_volumes_conn(self.CONNECTION, attempts=10, delay_seconds=3)
+        self.assertEqual(getattr(raised.exception, "code", None), "acpd_broken")
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+
+    def mount(self, outcome, *, answers: bool):
+        from timecapsulesmb.device.storage import ensure_volume_root_mounted_conn
+
+        run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", run), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as answer:
+            try:
+                return ensure_volume_root_mounted_conn(self.CONNECTION, "/Volumes/dk2", "/dev/dk2", wait_seconds=1), answer
+            except Exception as exc:  # noqa: BLE001 - the test inspects what was raised
+                return exc, answer
+
+    def test_a_refused_use_volume_is_diskd_s_answer_while_acpd_works(self) -> None:
+        refused = subprocess.CompletedProcess(
+            ["ssh"], 1, stdout="use_volume_rcs=22,22 mounted=no use_volume_errors=-6727,-6727\n", stderr="")
+        result, answer = self.mount(refused, answers=True)
+        self.assertFalse(result)
+        self.assertEqual(result.detail, "use_volume_rcs=22,22 mounted=no use_volume_errors=-6727,-6727")
+        answer.assert_called_once_with(self.CONNECTION)
+        error, _answer = self.mount(refused, answers=False)
+        self.assertEqual(error.code, "acpd_broken")
+
+    def test_a_hung_use_volume_with_a_silent_acpd_is_broken_acpd(self) -> None:
+        error, _answer = self.mount(SshCommandTimeout("Timed out waiting for ssh command to finish"), answers=False)
+        self.assertEqual(error.code, "acpd_broken")
+
+    def test_a_claimed_volume_never_asks_acpd(self) -> None:
+        claimed = subprocess.CompletedProcess(["ssh"], 0, stdout="use_volume_rcs=0 mounted=yes use_volume_errors=0\n", stderr="")
+        result, answer = self.mount(claimed, answers=False)
+        self.assertTrue(result)
+        answer.assert_not_called()
+
+    def test_a_hang_whose_syut_check_cannot_run_raises_the_hang(self) -> None:
+        from timecapsulesmb.device import storage
+        from timecapsulesmb.transport.errors import SshError
+
+        timeout = SshCommandTimeout("Timed out waiting for ssh command to finish: /usr/bin/acp MaSt")
+        lost = SshError("Connection reset by peer")
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", side_effect=timeout), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", side_effect=lost):
+            with self.assertRaises(SshCommandTimeout) as raised:
+                storage.read_mast_volumes_with_output_conn(self.CONNECTION)
+        self.assertIs(raised.exception, timeout)
+        self.assertIs(raised.exception.__cause__, lost)
+
+    def test_one_mast_wait_asks_acpd_once(self) -> None:
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=subprocess.CompletedProcess(
+                ["ssh"], 0, stdout=self.FAILED_GET, stderr="")) as run, \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True) as answer, \
+                mock.patch("timecapsulesmb.device.storage.time.sleep"):
+            result = wait_for_mast_volumes_conn(self.CONNECTION, attempts=10, delay_seconds=3)
+        self.assertEqual(result.volumes, ())
+        self.assertEqual(run.call_count, 10)
+        answer.assert_called_once_with(self.CONNECTION)
+
+    def test_a_single_failed_mast_read_asks_acpd_at_once(self) -> None:
+        result, answer = self.read(self.FAILED_GET, answers=True)
+        self.assertTrue(result.get_failed)
+        answer.assert_called_once_with(self.CONNECTION)

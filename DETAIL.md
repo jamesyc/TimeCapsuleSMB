@@ -1659,6 +1659,39 @@ rests on these measured facts.
 | F15 | Device shell quirks: NetBSD 4 `sed` has no `\|` alternation; `reboot`, `ifconfig` need full paths in non-login shells; `/etc` edits do not persist; `/mnt/Memory` is the 15 MB RAM staging area; `/mnt/Flash` is ≈1 MB. |
 | F16 | ACPd keeps one table of `diskd.*` RPC names. A second diskd's duplicate registration is rejected, but when it exits ACPd deletes the names it tried, which are the first diskd's, in registration order (`getHomeVolumeInfo`, `getVolumeCounts`, `useVolume`, ...). `acp rpc` exits 22 for every failure; stderr carries the code (-6727 for a missing name). Measured on NetBSD 4 LE, 2026-10-03. |
 
+### Apple ACPd can hang during its own restart
+
+Seen in v3.4.0 telemetry (installs 809f4968, 14e606f2, 26282dfa, TimeCapsule8,119) and in every older release:
+
+- **What happens:** ACPd accepts the `acRB` reboot request and starts its own teardown. It stops mDNSResponder, diskd, printd, afpserver, iCloudd, link_local and rtsold, and stops answering port 5009, but never runs `/sbin/shutdown`.
+  - The kernel keeps running, so the process list after the "reboot" shows the same PIDs as before.
+  - sshd is ACPd's child and is stopped late in that path, so it survives and SSH still works.
+  - The device stays off the network until it is unplugged.
+- **What predicts it:** before the request, ACPd had a child process also named `ACPd`, asleep in nanosleep (`ps` shows `nanoslp`; NetBSD 4 truncates it to `nanoslee`). On 809f4968 it had been there since early boot (PID 352). A healthy device runs one ACPd, whose parent is init; 535 telemetry process listings showed the child only on these devices.
+- **A related state:** ACPd stops answering its local IPC, so the device's own `/usr/bin/acp` fails or hangs while the device otherwise runs.
+- **How acp reports a failed get:** it prints `### get 'X' failed: <<UNKNOWN FORMAT CONVERSION CODE %m>>` to stderr and exits 0, for an unknown property as well (the `%m` is a format Apple's printf does not support). That text alone proves nothing. `syUT` always exists, so a `syUT` read that fails, or that the device ends at its 15 s deadline twice, is what blames ACPd.
+  - The read runs `acp` in the background with a shell watchdog that kills it after 15 s, so a hung `acp` is never left running on the device and answers with empty output. An SSH session that itself hangs (a slow device, a dropped network) never reaches ACPd at all: it times out after 30 s on this computer and is reported as the SSH failure it is, not as ACPd. v3.4.0 telemetry has such sessions: `/bin/echo ok` timed out on 7 installs.
+
+What TimeCapsuleSMB does about it:
+
+- **`require_acpd_ready`** (`services/runtime.py`) runs before every flash command and every ACP reboot that SSH can see beforehand (all but set-ssh enable, whose device has SSH off), before anything changes. It refuses with `acpd_broken` ("Nothing was changed") when the device's own `acp -q syUT` does not answer, or when the stuck child is present.
+  - When network ACP does not answer but the device's own ACP does, the path from this computer is blocked: `device_off_network` or `acp_unreachable`, with no unplug advice.
+- **The reboot wait** (`services/reboot.py`) reads `sysctl -n kern.cp_time` over SSH just before the request: the statistics clock's ticks since boot, which only grow while the kernel runs and start again from zero at boot. No clock is trusted: NTP steps the device's clock by weeks just after boot, and the Mac may sleep during the wait.
+  - Once ACP has been quiet for 90 s, two checks in a row end the wait as `acpd_broken` (`reboot_cycle` result `acpd_stopped_without_reboot`). Each check needs all of: the tick count at least the one read before the request (the same kernel), no `shutdown` or `reboot` process, and the device's own `acp -q syUT` not answering.
+  - The checks start at least 30 s apart. A `syUT` read that hangs holds each one about 30 s (two 15 s tries), so the wait ends after about 2.5 minutes, or about 2 when `syUT` fails at once, instead of 10.
+  - `reboot_cycle` reports `hang_check_last`, why the last check did or did not find the hang: `ssh_closed`, `no_evidence`, `new_kernel`, `shutting_down`, `ssh_failed`, `acpd_answers` or `acpd_silent`.
+  - A real reboot runs `/sbin/shutdown -r now` (ACPd's reboot path, issue #177), whose `reboot` step kills sshd before the kernel syncs, so the old kernel stops answering SSH. A new kernel's count starts from zero, below the old one unless the device had been up for less time than the new boot has; then its ACPd still has to fail `syUT` twice, so a healthy new boot does not pass.
+  - Without SSH (the set-ssh enable path, or a failed first read) the wait keeps its usual 10-minute timeout.
+- **MaSt and `diskd.useVolume`** (`device/storage.py`): a failed or hung call is confirmed with one `syUT` check per disk wait. A failing one raises `acpd_broken`; an answering one keeps the usual disk handling, and a hung call stays a timeout with the SSH error as its cause when SSH itself fails.
+- **Doctor** has its own step right after the stuck-process step, reusing that step's process list. It FAILs the stuck child and a `syUT` read that does not answer (code `apple_acpd_broken`, never masked by startup grace) and reports `acpd_child_count`. It skips when SSH checks are off or the process list timed out.
+- **No automatic fix:** nothing sends a second `acRB` or reboots the OS itself; the user unplugs the device.
+
+Checked on 2026-10-11 on NetBSD 6 and NetBSD 4 LE, with no NetBSD 4 BE device available:
+
+- `/sbin/sysctl` and `/usr/bin/acp` are present; `hw.ncpu` is 1 on both.
+- `sysctl -n kern.cp_time` prints `user = N, nice = N, sys = N, intr = N, idle = N`; the sum grows 100 a second (`kern.clockrate` hz=100) and runs a constant offset behind `acp -q syUT` (8.1 s on NetBSD 6, 0.2 s on NetBSD 4).
+- `acp -q syUT` and `acp -A MaSt` answer in under 1 s.
+
 ### Non-root Unix identity handling is risky
 
 Earlier Samba attempts on this firmware ran into privilege-switch and identity issues with non-root mappings.
@@ -1675,6 +1708,7 @@ That is why the current authenticated design still maps to `root`.
   - HFS partition identifiers beginning with `dk`, discovered through Apple `MaSt` metadata
   - the internal-volume `ShareRoot` layout
 - Apple firmware behavior may still change runtime mount timing or disk state in edge cases.
+- Apple's ACPd can hang during its own restart and leave the device off the network until it is unplugged (see "Apple ACPd can hang during its own restart"); TimeCapsuleSMB refuses to reboot a device that shows the warning sign and says to unplug it when the hang happens anyway.
 
 ## Verification Commands
 

@@ -360,7 +360,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             actions: [
                 "Wait a few more minutes.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
-                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.",
+                "On NetBSD 4 devices, run Activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.",
                 "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
             ],
             actionIDs: ["run_checkup"],

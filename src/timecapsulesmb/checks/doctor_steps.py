@@ -90,7 +90,8 @@ from timecapsulesmb.core.net import (
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
-from timecapsulesmb.device.processes import manager_unnamed_stuck_count, stuck_processes
+from timecapsulesmb.device import acpd
+from timecapsulesmb.device.processes import acpd_stuck_children, manager_unnamed_stuck_count, stuck_processes
 from timecapsulesmb.device.probe import (
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
@@ -197,7 +198,7 @@ DOCTOR_CODE_DEVICE_SMB_TUNNEL_FAILED = "device_smb_tunnel_failed"
 # The user turned the SMB login and file checks off (--skip-smb, the app's
 # Checkup option); each section that would have run them says so.
 DOCTOR_CODE_SMB_CHECKS_SKIPPED = "smb_checks_skipped"
-SMB_CHECKS_SKIPPED_MESSAGE = "SMB login and file checks skipped (Checkup option)"
+SMB_CHECKS_SKIPPED_MESSAGE = "SMB login and file checks skipped (Checkup option in the macOS app, or --skip-smb)"
 # What the device's own SMB check found, for this computer's LAN checks.
 DEVICE_SMB_PASSED = "passed"
 DEVICE_SMB_FAILED = "failed"
@@ -705,7 +706,8 @@ def _add_time_machine_adisk_results(
             CheckResult(
                 "FAIL",
                 f"_adisk._tcp TXT advertises AFP ({', '.join(afp_mismatches)}) although Advertise AFP over Bonjour is off; "
-                "macOS 26.x/27 hides Time Capsules that advertise AFP; run Install / Update Samba",
+                "macOS 26.x/27 hides Time Capsules that advertise AFP; run \"Install / Update Samba\" in the macOS app, "
+                "or tcapsule deploy from the command line",
             )
         )
     elif afp_mismatches:
@@ -714,7 +716,7 @@ def _add_time_machine_adisk_results(
             CheckResult(
                 "FAIL",
                 f"_adisk._tcp TXT advertises SMB only ({', '.join(afp_mismatches)}) although Advertise AFP over Bonjour is on; "
-                "run Install / Update Samba",
+                "run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line",
             )
         )
     elif afp_checked:
@@ -1979,7 +1981,51 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
                 details,
             )
         )
-    return ProcessSnapshotState(stuck=stuck)
+    return ProcessSnapshotState(stuck=stuck, snapshot=snapshot)
+
+
+APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
+
+
+def _doctor_check_apple_acpd(
+    target: DoctorTarget, remote: RemoteAccess, processes: ProcessSnapshotState, sink: DoctorSink,
+) -> None:
+    """Apple's ACPd: a stuck fork of it hangs the next reboot, and one that does
+    not answer syUT serves no ACP at all (DETAIL.md, "Apple ACPd can hang
+    during its own restart"). Neither clears by waiting, so startup grace
+    leaves both alone. Read from the stuck-process step's listing; a device
+    whose ps did not answer is asked nothing more."""
+    if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
+        return
+    children = acpd_stuck_children(processes.snapshot)
+    if sink.debug_fields is not None:
+        sink.debug_fields["acpd_child_count"] = len(children)
+    if children:
+        sink.add(
+            CheckResult(
+                "FAIL",
+                acpd.acpd_broken_message(
+                    f"its helper process (pid {', '.join(map(str, children))}) is stuck",
+                    note="Sharing may work now, but the next restart will leave the device offline until it is unplugged. ",
+                    then=", then check again",
+                ).removesuffix("."),
+                {"code": APPLE_ACPD_BROKEN_CODE, "acpd_stuck_children": children},
+            )
+        )
+    try:
+        answers = acpd.acpd_answers(target.connection)
+    except TransportError:
+        return
+    if not answers:
+        sink.add(
+            CheckResult(
+                "FAIL",
+                acpd.acpd_broken_message(
+                    "the device's own acp cannot read its uptime (syUT)", then=", then check again",
+                ).removesuffix("."),
+                {"code": APPLE_ACPD_BROKEN_CODE},
+            )
+        )
 
 
 def _doctor_check_running_migration(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
@@ -2307,7 +2353,8 @@ def _add_admin_password_result(connection: SshConnection, sink: DoctorSink, read
         sink.add(CheckResult(
             "WARN",
             "the saved password logs in over SSH but is not the AirPort admin password; "
-            "Install / Update, disk repair, uninstall and SSH changes refuse it until it is re-entered "
+            "Install / Update Samba, Disk Repair, Uninstall and SSH Access (tcapsule deploy, fsck, uninstall "
+            "and set-ssh) refuse it until it is re-entered "
             "in the macOS app or with tcapsule configure",
         ))
     else:

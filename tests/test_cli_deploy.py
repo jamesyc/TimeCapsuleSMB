@@ -10,8 +10,12 @@ from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
 from timecapsulesmb.cli import deploy
-from timecapsulesmb.services.deploy import DEPLOY_REBOOT_NO_DOWN_MESSAGE
-from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
+from timecapsulesmb.services.deploy import (
+    DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE,
+    DEPLOY_ACPD_STOPPED_MESSAGE,
+    DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+)
+from timecapsulesmb.services.runtime import ACPD_BROKEN_MESSAGE, AIRPORT_PASSWORD_MISMATCH_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.compat import DeviceCompatibility, classify_device_compatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
@@ -991,6 +995,66 @@ class CliDeployTests(CliTestCase):
         self.assertNotIn("request", result.mocks.device.calls)
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
+
+    def test_deploy_refuses_a_broken_apple_acpd_before_asking(self) -> None:
+        # Its reboot would stop the services and never restart the device.
+        input_mock = mock.Mock(side_effect=AssertionError("deploy must not ask before the ACPd check"))
+        with mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=[352]):
+            result = self.run_deploy_cli(
+                [],
+                artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
+                patch_actions=True,
+                patch_upload=True,
+                input_side_effect=input_mock,
+                raises=SystemExit,
+            )
+
+        self.assertIn(ACPD_BROKEN_MESSAGE, str(result.exception.code))
+        input_mock.assert_not_called()
+        self.assertNotIn("request", result.mocks.device.calls)
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+
+    def test_deploy_whose_reboot_leaves_apple_acpd_torn_down_says_to_unplug(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            device=FakeAcpDevice(acpd_hangs=True),
+            verify_runtime=self.managed_runtime_probe(True),
+        )
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn(DEPLOY_ACPD_STOPPED_MESSAGE, result.text)
+        self.assertEqual(result.mocks.device.calls.count("request"), 1)
+        result.mocks.verify_managed_runtime.assert_not_called()
+        self.assertEqual(self.telemetry_payload("deploy_finished")["result"], "failure")
+
+    def test_the_unplug_message_names_activate_only_where_nothing_starts_at_boot(self) -> None:
+        cases = (
+            ("NetBSD 4 without the startup hook", "smbd-netbsd4le", self.make_supported_netbsd4_compatibility(), False,
+             DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE),
+            ("NetBSD 4 with the startup hook", "smbd-netbsd4le", self.make_supported_netbsd4_compatibility(), True,
+             DEPLOY_ACPD_STOPPED_MESSAGE),
+            ("NetBSD 6", "smbd", None, False, DEPLOY_ACPD_STOPPED_MESSAGE),
+        )
+        for name, artifact, compatibility, autostart, message in cases:
+            with self.subTest(name):
+                result = self.run_deploy_cli(
+                    ["--yes"],
+                    artifacts=[(artifact, True, "ok"), ("discovery", True, "ok")],
+                    compatibility=compatibility,
+                    login_autostart_enabled=autostart,
+                    patch_actions=True,
+                    patch_upload=True,
+                    device=FakeAcpDevice(acpd_hangs=True),
+                    verify_runtime=self.managed_runtime_probe(True),
+                )
+                self.assertEqual(result.rc, 1)
+                self.assertIn(message, result.text)
+                other = DEPLOY_ACPD_STOPPED_MESSAGE if message != DEPLOY_ACPD_STOPPED_MESSAGE else DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE
+                self.assertNotIn(other, result.text)
 
     def test_deploy_reboot_timeout_returns_failure(self) -> None:
         result = self.run_deploy_cli(

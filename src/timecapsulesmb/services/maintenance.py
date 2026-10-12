@@ -244,6 +244,7 @@ def run_fsck(
                 wait=wait,
                 callbacks=callbacks,
                 start_timeout_seconds=120,
+                ssh=connection,
             ))
     except RebootFlowError as exc:
         if failure is None:
@@ -334,6 +335,7 @@ def reboot_after_uninstall(connection: SshConnection, plan: UninstallPlan, *, ca
         wait=plan.wait_after_reboot,
         callbacks=callbacks,
         no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
+        ssh=connection,
     ))
     if not plan.wait_after_reboot:
         return False

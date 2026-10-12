@@ -74,6 +74,20 @@ def device_password_matches(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def apple_acpd_healthy(monkeypatch: pytest.MonkeyPatch):
+    # Reboots, flash and doctor ask the device over SSH whether Apple's ACPd
+    # answers syUT and has no stuck fork, and a reboot wait reads the kernel's
+    # tick count over SSH (timecapsulesmb.device.acpd). Tests answer "healthy"
+    # and "no count"; a test that needs another answer patches that function.
+    from timecapsulesmb.device import acpd
+
+    monkeypatch.setattr(acpd, "acpd_answers", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(acpd, "read_acpd_stuck_children", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(acpd, "read_restart_evidence", lambda *_args, **_kwargs: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
     # Tests use made-up device addresses such as 10.0.0.2 and capsule.local.
     # A real TCP connect to one, a UDP datagram to it (an NBNS query), or a

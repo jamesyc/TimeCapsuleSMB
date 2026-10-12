@@ -2792,6 +2792,58 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any("blocked in the kernel" in result.message for result in failures))
         self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in failures))
 
+    STUCK_ACPD_ROWS = "\n".join((
+        "  119     1     2 Sl       0 kqueue   ACPd     /sbin/ACPd",
+        "  352   119     2 S        1 nanoslp  ACPd     /sbin/ACPd",
+    ))
+
+    def apple_acpd_failures(self, run) -> list[CheckResult]:
+        return [result for result in run.results if result.details.get("code") == "apple_acpd_broken"]
+
+    def test_run_doctor_checks_fails_a_stuck_fork_of_apple_acpd_even_in_startup_grace(self) -> None:
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_ACPD_ROWS]), manager_started_seconds_ago=41.0,
+        )
+
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual([result.status for result in failures], ["FAIL"])
+        self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: its helper process (pid 352) is stuck"))
+        self.assertIn("bug in Apple's firmware", failures[0].message)
+        self.assertEqual(failures[0].domain, "device")
+        self.assertEqual(run.debug_fields["acpd_child_count"], 1)
+        self.assertTrue(run.fatal)
+
+    def test_run_doctor_checks_fails_an_apple_acpd_that_does_not_answer_syut(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False):
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: the device's own acp cannot read its uptime"))
+        self.assertEqual(run.debug_fields["acpd_child_count"], 0)
+
+    def test_run_doctor_checks_passes_a_healthy_apple_acpd(self) -> None:
+        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_ACPD_ROWS.splitlines()[0]]))
+
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertEqual(run.debug_fields["acpd_child_count"], 0)
+
+    def test_run_doctor_checks_asks_apple_acpd_nothing_when_ps_did_not_answer(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers") as answer:
+            run = self.run_doctor_with_process_snapshot(SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/ps"))
+
+        answer.assert_not_called()
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertNotIn("acpd_child_count", run.debug_fields)
+
+    def test_run_doctor_checks_skips_apple_acpd_when_ssh_cannot_ask(self) -> None:
+        from timecapsulesmb.transport.errors import SshError
+
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", side_effect=SshError("Connection reset")):
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+
+        self.assertEqual(self.apple_acpd_failures(run), [])
+
     def test_apply_startup_grace_masks_failures_within_grace_window(self) -> None:
         results = [
             CheckResult("PASS", "ssh ok"),
@@ -5817,8 +5869,8 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(
             [(result.status, result.domain, result.message) for result in skipped],
             [
-                ("SKIP", "device", "SMB login and file checks skipped (Checkup option)"),
-                ("SKIP", "computer", "SMB login and file checks skipped (Checkup option)"),
+                ("SKIP", "device", "SMB login and file checks skipped (Checkup option in the macOS app, or --skip-smb)"),
+                ("SKIP", "computer", "SMB login and file checks skipped (Checkup option in the macOS app, or --skip-smb)"),
             ],
         )
         self.assertFalse(run.fatal)

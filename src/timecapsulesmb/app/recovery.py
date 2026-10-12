@@ -199,10 +199,35 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         (
             "Wait a few more minutes.",
             "Make sure you are connected to the same network or Wi-Fi as the device.",
+            "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
         ),
         retryable=True,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
+    ),
+    # Apple's firmware, not ours: a stuck ACPd refused before anything changed,
+    # tore itself down without restarting the device, or stopped answering
+    # syUT (services.runtime.require_acpd_ready, services.reboot).
+    "acpd_broken": RecoveryInfo(
+        "Apple ACPd is broken",
+        "Apple's AirPort service (ACPd) on the device is stuck. This is a bug in Apple's firmware, not TimeCapsuleSMB.",
+        (
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then try again.",
+        ),
+        retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
+    # The device's own ACP answers, but not this Mac: the path is blocked.
+    "acp_unreachable": RecoveryInfo(
+        "AirPort ACP not reachable",
+        "This Mac cannot reach AirPort ACP (port 5009) on the device, although the device's own ACP works.",
+        (
+            "Connect this Mac to the device's network by Wi-Fi or one of its LAN ports.",
+            "Turn off any VPN or firewall that filters local network traffic, then try again.",
+        ),
+        retryable=True,
     ),
     # fsck: the reboot finished, but the installed runtime did not start again
     # (services.activation.start_netbsd4_runtime_after_reboot).
@@ -262,13 +287,14 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
             "Wait a few more minutes.",
             "Make sure you are connected to the same network or Wi-Fi as the device.",
             (
-                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "
+                "On NetBSD 4 devices, run Activate once SSH is reachable; deploy did not get far "
                 "enough to activate Samba after reboot."
             ),
             (
                 "If your device resets itself, see "
                 "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
             ),
+            "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
         ),
         retryable=True,
         suggested_operation="doctor",
@@ -527,6 +553,23 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Retry install/update.", "Run doctor for detailed runtime checks."),
         retryable=True,
         suggested_operation="deploy",
+        action_ids=("run_checkup",),
+    ),
+    # ACPd tore itself down at the deploy's reboot request: unlike the
+    # refusal before the upload, the update is on the device already.
+    ("deploy", "acpd_broken", "wait_for_reboot_up"): RecoveryInfo(
+        "Apple ACPd is broken",
+        (
+            "The update is installed, but Apple's AirPort service (ACPd) stopped without restarting the device. "
+            "This is a bug in Apple's firmware, not TimeCapsuleSMB."
+        ),
+        (
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then run Checkup.",
+            "On NetBSD 4 devices, run Activate if Checkup says Samba is not running.",
+        ),
+        retryable=False,
+        suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
     ("uninstall", "remote_error", "verify_post_uninstall"): RecoveryInfo(
