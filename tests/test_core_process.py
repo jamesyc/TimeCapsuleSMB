@@ -1,4 +1,4 @@
-"""core.process: local programs start with posix_spawn, never fork (issue #371)."""
+"""core.process: local programs start with posix_spawn, never fork on macOS (issue #371)."""
 from __future__ import annotations
 
 import errno
@@ -107,12 +107,14 @@ class SpawnTests(unittest.TestCase):
             with self.subTest(cmd=cmd), self.assertRaisesRegex(TypeError, "nonempty sequence"):
                 run_process(cmd)
 
-    def test_a_python_without_spawn_support_does_not_fork(self) -> None:
+    def test_a_python_without_posix_spawn_starts_programs_through_popen(self) -> None:
+        # musl and pre-2.24 glibc Linux: CPython forks, which is safe off macOS.
+        # The spy stops the fork, so the test never forks on the Mac running it.
         with mock.patch.object(subprocess, "_USE_POSIX_SPAWN", False), \
              mock.patch(FORK_TARGET, side_effect=AssertionError("forked")) as fork:
-            with self.assertRaisesRegex(OSError, "without fork"):
-                run_process(["/usr/bin/true"])
-        fork.assert_not_called()
+            with self.assertRaisesRegex(AssertionError, "forked"):
+                run_process(["tc-test-tool"], env=self.env)
+        fork.assert_called_once()
 
     def test_closed_standard_descriptors_fail_without_forking(self) -> None:
         # Isolate closing descriptors from pytest and its own capture pipes.

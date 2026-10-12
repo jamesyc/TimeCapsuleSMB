@@ -1,4 +1,4 @@
-"""Start local programs with posix_spawn, never fork.
+"""Start local programs with posix_spawn, never fork on macOS.
 
 A forked child on macOS runs Apple's fork handlers before exec, and
 Network.framework's handler crashes once a Network Extension (a VPN, filter or
@@ -6,6 +6,9 @@ proxy) has set up state in this process; any name lookup installs that handler
 (issue #371). CPython spawns with posix_spawn only for an absolute program path
 with close_fds off and compatible redirections. Only the supported options
 below are accepted; new subprocess options must be checked before adding them.
+CPython always spawns on macOS (unless _PYTHON_SUBPROCESS_USE_POSIX_SPAWN=0
+overrides it). On Linux it spawns only with glibc 2.24 or newer and otherwise
+forks (musl, older glibc), which is safe there: the crash is macOS's.
 
 With close_fds off the child keeps every descriptor not marked close-on-exec.
 macOS has no pipe2, so os.pipe() marks its pipes in a second step: a child
@@ -46,8 +49,6 @@ def popen_process(cmd: Sequence[str], **kwargs) -> subprocess.Popen:
     unsupported = kwargs.keys() - SPAWN_OPTIONS
     if unsupported:
         raise TypeError(f"unsupported spawn options: {', '.join(sorted(unsupported))}")
-    if not subprocess._USE_POSIX_SPAWN:
-        raise OSError("This Python cannot start local programs without fork; use a supported macOS or Linux Python")
     argv = _spawn_argv(cmd, kwargs.get("env"))
     with SPAWN_LOCK:
         # Closed standard descriptors can be reused for a pipe or /dev/null,
