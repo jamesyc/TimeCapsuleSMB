@@ -180,6 +180,7 @@
 "dashboard.health.check_counts" = "Superati %d, Avvisi %d, Non superati %d";
 "dashboard.health.connection" = "Connessione";
 "stale_endpoint.message" = "Questo profilo usa %@, ma Bonjour rileva il dispositivo all’indirizzo %@. Aggiorna l’indirizzo configurato prima di eseguire operazioni sul dispositivo.";
+"stale_endpoint.name_match" = "Trovato solo in base al nome, %@. Verifica che sia il tuo dispositivo prima di aggiornare l’indirizzo.";
 "stale_endpoint.title" = "%@ è ora a %@";
 "stale_endpoint.update_action" = "Aggiorna indirizzo configurato";
 "ssh_access_notice.enable_action" = "Abilita SSH";

@@ -63,12 +63,16 @@ enum OperationParams {
             ataIdleSeconds: Int? = nil,
             ataStandby: Int? = nil,
             includeAtaStandby: Bool = false,
-            localNetworkPreflight: LocalNetworkPreflightResult? = nil
+            localNetworkPreflight: LocalNetworkPreflightResult? = nil,
+            addressSource: AddressSource? = nil
         ) -> [String: JSONValue] {
             var params: [String: JSONValue] = [
                 "password": .string(password),
                 "persist_password": .bool(false)
             ]
+            if let addressSource {
+                params["address_source"] = .string(addressSource.rawValue)
+            }
             if let selectedRecord {
                 params["selected_record"] = selectedRecord
             } else {
@@ -325,4 +329,13 @@ enum OperationParams {
             params["firmware_template"] = .string(trimmedTemplate)
         }
     }
+}
+
+/// How the app found a profile's changed address, for telemetry: the device
+/// with the saved MAC is at it, the device with the saved name is (the
+/// address banner of a profile without a MAC), or the user typed it.
+enum AddressSource: String {
+    case mac
+    case name
+    case manual
 }

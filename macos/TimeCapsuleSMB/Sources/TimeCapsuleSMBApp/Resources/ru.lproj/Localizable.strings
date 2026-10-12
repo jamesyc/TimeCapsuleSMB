@@ -180,6 +180,7 @@
 "dashboard.health.check_counts" = "Успешно %d, Предупреждения %d, Ошибки %d";
 "dashboard.health.connection" = "Соединение";
 "stale_endpoint.message" = "Этот профиль настроен на %@, но Bonjour обнаружил устройство по адресу %@. Обновите адрес перед выполнением операций на устройстве.";
+"stale_endpoint.name_match" = "Найдено только по имени %@. Прежде чем обновлять адрес, убедитесь, что это ваше устройство.";
 "stale_endpoint.title" = "%@ сейчас находится в %@";
 "stale_endpoint.update_action" = "Обновить настроенный адрес";
 "ssh_access_notice.enable_action" = "Включить SSH";

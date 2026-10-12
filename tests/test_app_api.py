@@ -2542,6 +2542,19 @@ class AppApiTests(unittest.TestCase):
                     # Saved for commands that look for the device after DHCP moves it.
                     self.assertIn("TC_AIRPORT_MAC=02:aa:bb:cc:dd:ee", path.read_text())
 
+    def test_configure_telemetry_says_how_a_changed_address_was_found(self) -> None:
+        for source, recorded in (("name", "name"), ("mac", "mac"), ("guess", None), (None, None)):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as tmp:
+                self._telemetry_client.emit.reset_mock()
+                params = {"config": str(Path(tmp) / ".env"), "host": "root@10.0.0.2", "password": "pw"}
+                if source is not None:
+                    params["address_source"] = source
+                with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                    rc = service.run_api_request({"operation": "configure", "params": params}, CollectingSink().sink)
+                self.assertEqual(rc, 0)
+                finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+                self.assertEqual(finished.get("address_source"), recorded)
+
     def run_configure_for_a_saved_device(self, airport_mac: object, reading: AirportAcpReading):
         """Configure as the profile editor sends it: with the profile's saved MAC."""
         collector = CollectingSink()

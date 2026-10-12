@@ -42,6 +42,9 @@ struct StaleEndpointNotice: Equatable {
     let configuredHost: String
     let currentHost: String
     let discoveredDevice: DiscoveredDevice
+    /// Found by the saved Bonjour name, for a profile saved before its MAC
+    /// was: configure's password and MAC check is what confirms it.
+    var matchedByName = false
 }
 
 @MainActor
@@ -155,7 +158,8 @@ final class DeviceDiscoveryStore: ObservableObject {
     }
 
     func staleEndpointNotice(for profile: DeviceProfile) -> StaleEndpointNotice? {
-        guard let device = currentDiscoveredDevice(for: profile),
+        let matched = currentDiscoveredDevice(for: profile)
+        guard let device = matched ?? nameMatchedDevice(for: profile),
               let configuredHost = DeviceEndpointPolicy.hostComponent(profile.host),
               let currentHost = DeviceEndpointPolicy.hostComponent(device.connectionTarget),
               let configuredFamily = DeviceEndpointPolicy.addressFamily(for: configuredHost),
@@ -170,8 +174,16 @@ final class DeviceDiscoveryStore: ObservableObject {
             deviceName: profile.title,
             configuredHost: configuredHost,
             currentHost: currentHost,
-            discoveredDevice: device
+            discoveredDevice: device,
+            matchedByName: matched == nil
         )
+    }
+
+    /// A profile without a MAC cannot follow its device to a new address by
+    /// it; the saved name finds the device when nothing else shares it.
+    private func nameMatchedDevice(for profile: DeviceProfile) -> DiscoveredDevice? {
+        guard profile.network.airportMAC == nil else { return nil }
+        return devices.first { registry.suggestedProfile(for: $0, among: devices)?.id == profile.id }
     }
 
     func lastSeenText(for profile: DeviceProfile) -> String? {

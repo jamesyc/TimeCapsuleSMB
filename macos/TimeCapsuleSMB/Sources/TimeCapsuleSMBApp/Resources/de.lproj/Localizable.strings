@@ -180,6 +180,7 @@
 "dashboard.health.check_counts" = "Bestanden %d, Warnungen %d, Fehlgeschlagen %d";
 "dashboard.health.connection" = "Verbindung";
 "stale_endpoint.message" = "Dieses Profil ist für %@ konfiguriert, aber Bonjour erkennt das Gerät unter %@. Aktualisieren Sie die konfigurierte Adresse vor weiteren Gerätevorgängen.";
+"stale_endpoint.name_match" = "Nur anhand des Namens %@ gefunden. Prüfen Sie, ob dies Ihr Gerät ist, bevor Sie die Adresse aktualisieren.";
 "stale_endpoint.title" = "%@ ist jetzt bei %@";
 "stale_endpoint.update_action" = "Konfigurierte Adresse aktualisieren";
 "ssh_access_notice.enable_action" = "SSH aktivieren";

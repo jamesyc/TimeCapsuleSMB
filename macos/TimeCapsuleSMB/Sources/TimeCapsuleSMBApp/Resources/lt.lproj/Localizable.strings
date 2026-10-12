@@ -180,6 +180,7 @@
 "dashboard.health.check_counts" = "PAVYKO %d, ĮSPĖJIMAS %d, NEPAVYKO %d";
 "dashboard.health.connection" = "Ryšys";
 "stale_endpoint.message" = "Šis profilis sukonfigūruotas %@, tačiau Bonjour mato įrenginį adresu %@. Atnaujinkite sukonfigūruotą adresą prieš vykdydami įrenginio operacijas.";
+"stale_endpoint.name_match" = "Rastas tik pagal pavadinimą %@. Prieš atnaujindami adresą įsitikinkite, kad tai jūsų įrenginys.";
 "stale_endpoint.title" = "%@ dabar yra %@";
 "stale_endpoint.update_action" = "Atnaujinti sukonfigūruotą adresą";
 "ssh_access_notice.enable_action" = "Įjungti SSH";

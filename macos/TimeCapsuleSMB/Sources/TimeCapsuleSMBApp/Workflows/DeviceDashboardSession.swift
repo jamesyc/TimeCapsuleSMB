@@ -473,17 +473,34 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     /// banner offers the current one. The helper never saves an address itself.
     private func refreshDiscoveryAfterAddressOutcome() {
         var refresh = false
+        var refreshSSH = false
         for event in addressOutcomeEvents() {
             guard checkedAddressOutcomes.insert(event.id).inserted else { continue }
             // A result carries the new address in its payload, a failure in its debug fields.
             let movedTo = event.payload?.stringValue(for: "current_host") ?? event.debug?.stringValue(for: "current_host")
-            if movedTo != nil || Self.addressOutcomeCodes.contains(event.code ?? "") {
+            // Checkup reports a failed check in its result, not as an error.
+            let checkCodes = Self.checkCodes(in: event)
+            if movedTo != nil || Self.addressOutcomeCodes.contains(event.code ?? "") || checkCodes.contains("device_unreachable") {
                 refresh = true
             }
+            refreshSSH = refreshSSH || checkCodes.contains("ssh_disabled")
         }
         if refresh {
             appStore.deviceDiscovery.refresh()
         }
+        if refreshSSH, let profile = appStore.deviceRegistry.profile(id: id) {
+            // Shows the SSH banner, whose button turns SSH on.
+            appStore.sshAccessStore.refresh(profile: profile)
+        }
+    }
+
+    private static func checkCodes(in event: BackendEvent) -> Set<String> {
+        guard event.operation == "doctor", case .object(let payload)? = event.payload,
+              case .array(let results)? = payload["results"] else { return [] }
+        return Set(results.compactMap { result in
+            guard case .object(let check) = result, case .object(let details)? = check["details"] else { return nil }
+            return details["code"].flatMap { if case .string(let code) = $0 { return code } else { return nil } }
+        })
     }
 
     /// Each finished lane's outcome. The revision moves on every event of every

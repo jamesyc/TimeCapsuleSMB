@@ -185,6 +185,11 @@ private struct DashboardStaleEndpointNoticeView: View {
                 Text(L10n.format("stale_endpoint.message", notice.configuredHost, notice.currentHost))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if notice.matchedByName {
+                    Text(L10n.format("stale_endpoint.name_match", notice.discoveredDevice.name))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Button {
                     update()
                 } label: {

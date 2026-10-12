@@ -180,6 +180,7 @@
 "dashboard.health.check_counts" = "通过 %d，警告 %d，失败 %d";
 "dashboard.health.connection" = "连接";
 "stale_endpoint.message" = "此配置当前使用 %@，但 Bonjour 发现设备位于 %@。请先更新地址，再运行设备操作。";
+"stale_endpoint.name_match" = "仅按名称 %@ 找到。更新地址前，请确认这是您的设备。";
 "stale_endpoint.title" = "%@ 现在位于 %@";
 "stale_endpoint.update_action" = "更新配置地址";
 "ssh_access_notice.enable_action" = "启用 SSH";

@@ -151,8 +151,16 @@ def update_config_settings_operation(
     })
 
 
+# How the app found a changed address: by the saved MAC, by the saved name
+# (a profile from before the MAC was saved), or typed in. Telemetry only.
+ADDRESS_SOURCES = frozenset({"mac", "name", "manual"})
+
+
 def configure_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     add_local_network_preflight_debug_fields(params, context)
+    address_source = params.get("address_source")
+    if address_source in ADDRESS_SOURCES:
+        context.update_fields(address_source=address_source)
     if local_network_preflight_denied(params):
         context.stage("local_network_preflight")
         raise AppOperationError(

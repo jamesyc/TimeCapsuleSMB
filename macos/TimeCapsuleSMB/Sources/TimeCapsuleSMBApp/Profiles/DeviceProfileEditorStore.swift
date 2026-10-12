@@ -446,7 +446,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func startReconfigure(profile: DeviceProfile, password: String, settings: DeviceProfileSettings) {
-        let discoveredDevice = currentDiscoveredDeviceMatchingDraftHost(for: profile)
+        let (discoveredDevice, addressSource) = discoveredDeviceMatchingDraftHost(for: profile)
         let targetHost = discoveredDevice?.connectionTarget ?? draft.trimmedHost
         let editableFields = DeviceProfileEditableFields(displayName: draft.displayName, settings: settings)
         let configureDraft: ConfigureProfileDraft
@@ -482,6 +482,7 @@ final class DeviceProfileEditorStore: ObservableObject {
                         settings: settings,
                         editableFields: editableFields,
                         discoveredDevice: discoveredDevice,
+                        addressSource: addressSource,
                         targetHost: targetHost,
                         configureDraft: configureDraft,
                         localNetworkPreflight: result
@@ -497,6 +498,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             settings: settings,
             editableFields: editableFields,
             discoveredDevice: discoveredDevice,
+            addressSource: addressSource,
             targetHost: targetHost,
             configureDraft: configureDraft,
             localNetworkPreflight: nil
@@ -509,6 +511,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         settings: DeviceProfileSettings,
         editableFields: DeviceProfileEditableFields,
         discoveredDevice: DiscoveredDevice?,
+        addressSource: AddressSource,
         targetHost: String,
         configureDraft: ConfigureProfileDraft,
         localNetworkPreflight: LocalNetworkPreflightResult?
@@ -529,7 +532,8 @@ final class DeviceProfileEditorStore: ObservableObject {
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,
             includeAtaStandby: true,
-            localNetworkPreflight: localNetworkPreflight
+            localNetworkPreflight: localNetworkPreflight,
+            addressSource: addressSource
         )
         let start = coordinator.run(
             operation: "configure",
@@ -561,12 +565,21 @@ final class DeviceProfileEditorStore: ObservableObject {
         process(lane.backend.events)
     }
 
-    private func currentDiscoveredDeviceMatchingDraftHost(for profile: DeviceProfile) -> DiscoveredDevice? {
-        guard let device = appStore.deviceDiscovery.currentDiscoveredDevice(for: profile),
+    /// The discovered device at the draft's address, and how the new address
+    /// was found (the editor runs this only when the address changed).
+    private func discoveredDeviceMatchingDraftHost(for profile: DeviceProfile) -> (DiscoveredDevice?, AddressSource) {
+        let discovery = appStore.deviceDiscovery
+        let notice = discovery.staleEndpointNotice(for: profile)
+        guard let device = notice?.discoveredDevice ?? discovery.currentDiscoveredDevice(for: profile),
               DeviceEndpointPolicy.normalizedHostKey(draft.trimmedHost) == DeviceEndpointPolicy.normalizedHostKey(device.connectionTarget) else {
-            return nil
+            return (nil, .manual)
         }
-        return device
+        if notice?.matchedByName == true {
+            return (device, .name)
+        }
+        // A device matched by its old address only gives no evidence for the new one.
+        let saved = profile.network.airportMAC
+        return (device, saved != nil && device.airportMAC == saved ? .mac : .manual)
     }
 
     private func process(_ events: [BackendEvent]) {
@@ -679,6 +692,18 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func applyError(_ event: BackendEvent) {
+        // A device with SSH off asks to turn it on: the app's confirmation
+        // dialog runs configure again with the same request, so this save
+        // keeps everything it is waiting with.
+        if event.code == "confirmation_required" {
+            error = nil
+            return
+        }
+        if event.code == "confirmation_cancelled" {
+            clearPendingOperation()
+            updateDraftChangeState()
+            return
+        }
         error = BackendErrorViewModel(event: event)
         switch event.code {
         case "auth_failed":

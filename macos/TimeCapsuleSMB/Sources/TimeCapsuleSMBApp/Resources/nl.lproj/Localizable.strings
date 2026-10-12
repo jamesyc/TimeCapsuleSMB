@@ -180,6 +180,7 @@
 "dashboard.health.check_counts" = "Geslaagd %d, Waarschuwingen %d, Mislukt %d";
 "dashboard.health.connection" = "Verbinding";
 "stale_endpoint.message" = "Dit profiel is geconfigureerd voor %@, maar Bonjour ziet het apparaat op %@. Werk het adres bij voordat u apparaatbewerkingen uitvoert.";
+"stale_endpoint.name_match" = "Alleen op naam gevonden, %@. Controleer of dit uw apparaat is voordat u het adres bijwerkt.";
 "stale_endpoint.title" = "%@ is nu op %@";
 "stale_endpoint.update_action" = "Geconfigureerd adres bijwerken";
 "ssh_access_notice.enable_action" = "SSH inschakelen";

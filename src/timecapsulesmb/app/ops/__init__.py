@@ -73,6 +73,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
         "configure",
         configure_operation,
         MANAGED_SETTING_PARAMS | frozenset(LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS) | frozenset({
+            "address_source",
             "enable_ssh",
             "host",
             "persist_password",

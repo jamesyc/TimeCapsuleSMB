@@ -13,6 +13,7 @@
     ],
     "capabilities": [],
     "configure": [
+      "address_source",
       "any_protocol",
       "ata_idle_seconds",
       "ata_standby",
