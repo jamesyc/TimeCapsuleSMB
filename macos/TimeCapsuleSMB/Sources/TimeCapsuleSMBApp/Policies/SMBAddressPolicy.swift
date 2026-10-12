@@ -1,5 +1,10 @@
 import Foundation
 
+/// The SMB address the app hands Finder. Our own connections never come from
+/// here: every one goes through `DeviceProfile.connectionTarget`, the address
+/// configure verified (TC_HOST for the helper). Finder gets the Bonjour
+/// service name, as its own Bonjour browsing does: Finder resolves it itself
+/// and it follows the device to a new IP address.
 enum SMBAddressPolicy {
     static func url(for profile: DeviceProfile, account: String? = nil) -> URL? {
         guard let host = preferredHost(for: profile) else {
@@ -9,6 +14,11 @@ enum SMBAddressPolicy {
     }
 
     static func preferredHost(for profile: DeviceProfile) -> String? {
+        // A saved name Apple renamed for a conflict ("Name (2)") can belong to
+        // the other device after a restart, and so can its host name.
+        if let label = profile.network.savedServiceName, AppleBonjourName.hasConflictSuffix(label) {
+            return normalizedAddressHost(profile.connectionTarget)
+        }
         if let serviceHost = bonjourSMBServiceHost(for: profile) {
             return serviceHost
         }
@@ -24,6 +34,7 @@ enum SMBAddressPolicy {
         return normalizedAddressHost(profile.host)
     }
 
+    /// Names the SMB password may be saved under in the keychain: a lookup, not a connection.
     static func credentialServerCandidates(for profile: DeviceProfile) -> [String] {
         unique([
             normalizedAddressHost(profile.hostname),
@@ -31,16 +42,8 @@ enum SMBAddressPolicy {
         ] + profile.network.addresses.map { normalizedAddressHost($0.value) })
     }
 
-    static func reachabilityHostCandidates(for profile: DeviceProfile) -> [String] {
-        unique([
-            preferredHost(for: profile),
-            normalizedAddressHost(profile.hostname),
-            normalizedAddressHost(profile.host)
-        ] + profile.network.addresses.map { normalizedAddressHost($0.value) })
-    }
-
     private static func bonjourSMBServiceHost(for profile: DeviceProfile) -> String? {
-        guard let label = bonjourLabel(for: profile) else {
+        guard let label = profile.network.savedServiceName else {
             return nil
         }
         // macOS's SMB client splits the service host at unescaped dots, so the
@@ -50,25 +53,6 @@ enum SMBAddressPolicy {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: ".", with: "\\.")
         return "\(escaped)._smb._tcp.local"
-    }
-
-    private static func bonjourLabel(for profile: DeviceProfile) -> String? {
-        if let fullname = profile.bonjourFullname,
-           !fullname.isEmpty {
-            // Remove only the DNS root separator, never any part of the label.
-            let trimmed = fullname.hasSuffix(".") ? String(fullname.dropLast()) : fullname
-            let lowercased = trimmed.lowercased()
-            for service in ["._smb._tcp.local", "._airport._tcp.local", "._adisk._tcp.local", "._device-info._tcp.local"]
-            where lowercased.hasSuffix(service) {
-                return String(trimmed.dropLast(service.count))
-            }
-        }
-
-        guard let bonjourName = profile.bonjourName,
-              !bonjourName.isEmpty else {
-            return nil
-        }
-        return bonjourName
     }
 
     private static func url(host: String, account: String?) -> URL? {

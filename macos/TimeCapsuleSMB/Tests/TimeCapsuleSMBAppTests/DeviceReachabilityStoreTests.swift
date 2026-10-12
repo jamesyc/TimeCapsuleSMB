@@ -20,6 +20,8 @@ final class DeviceReachabilityStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.map(\.operation), ["reachability"])
         XCTAssertEqual(runner.calls[0].context?.profileID, profile.id)
         XCTAssertEqual(runner.calls[0].params["ssh_host"], .string("root@10.0.0.2"))
+        // Only the saved target: the helper checks SMB there as well.
+        XCTAssertNil(runner.calls[0].params["smb_hosts"])
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(store.snapshot(for: profile)?.payload.status, "reachable")
         XCTAssertEqual(store.snapshot(for: profile)?.refreshedAt, Date(timeIntervalSince1970: 123))

@@ -17,6 +17,20 @@ final class SMBAddressPolicyTests: XCTestCase {
         )
     }
 
+    func testARenamedSavedNameGivesFinderTheSavedAddress() {
+        // Apple renamed the device for a name conflict when it was saved: the
+        // name, and its renamed host name, can be the other device's now.
+        for name in ["AirPort Time Capsule (2)", "AirPort Time Capsule (12)"] {
+            let profile = makeProfile(host: "root@10.0.0.2", bonjourName: name, bonjourFullname: "\(name)._airport._tcp.local.",
+                                      hostname: "AirPort-Time-Capsule-2.local.")
+            XCTAssertEqual(SMBAddressPolicy.url(for: profile)?.absoluteString, "smb://10.0.0.2", name)
+        }
+        // A number that is part of the name is no rename.
+        let numbered = makeProfile(host: "root@10.0.0.2", bonjourName: "Capsule 2", bonjourFullname: "Capsule 2._airport._tcp.local.",
+                                   hostname: "Capsule-2.local.")
+        XCTAssertEqual(SMBAddressPolicy.preferredHost(for: numbered), "Capsule 2._smb._tcp.local")
+    }
+
     func testFallsBackToConfiguredHostWhenBonjourHostnameIsMissing() {
         let profile = makeProfile(host: "root@10.0.0.2", bonjourName: nil, bonjourFullname: nil, hostname: nil)
 

@@ -25,8 +25,9 @@ enum OperationParams {
     enum Reachability {
         static func check(profile: DeviceProfile) -> [String: JSONValue] {
             [
+                // The saved target only: the helper checks SMB at TC_HOST too,
+                // and a Bonjour service name is no host a TCP connect can reach.
                 "ssh_host": .string(DeviceEndpointPolicy.rootSSHTarget(profile.host)),
-                "smb_hosts": .array(SMBAddressPolicy.reachabilityHostCandidates(for: profile).map(JSONValue.string)),
                 "tcp_timeout": .number(2),
                 "ssh_timeout": .number(8)
             ]

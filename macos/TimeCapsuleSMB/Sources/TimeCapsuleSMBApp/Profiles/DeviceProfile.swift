@@ -454,8 +454,10 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         set { network.setAddressValues(newValue) }
     }
 
-    /// The host SSH uses: the saved target, which the backend chose by
-    /// reachability, not a guess from the advertised addresses.
+    /// The one address the app and helper connect through: the saved target,
+    /// which configure verified and the helper gets as TC_HOST (it follows the
+    /// saved MAC from there). Names and advertised addresses are for matching
+    /// and display, never for connecting.
     var connectionTarget: String {
         DeviceEndpointPolicy.hostComponent(network.configuredSSHTarget) ?? network.preferredSetupTarget
     }
