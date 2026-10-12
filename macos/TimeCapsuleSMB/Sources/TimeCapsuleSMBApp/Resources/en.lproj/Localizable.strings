@@ -633,10 +633,10 @@
 "backend.error.activate.runtime_outdated" = "The TimeCapsuleSMB installed on this device is too old for this app to start. Run “Install / Update Samba” first.";
 "backend.error.activate.client_outdated" = "The TimeCapsuleSMB installed on this device is from a newer major version than this app. Update TimeCapsuleSMB, then try again.";
 "backend.error.ssh_enable_timeout" = "The device accepted the setting, but SSH hasn't come up yet. Wait a few minutes (or restart the device) and try again.";
-"backend.error.disk_write_test_unresponsive" = "The disk did not respond when tested. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.";
+"backend.error.disk_write_test_unresponsive" = "The disk did not respond when tested. It may be failing or unable to spin up. Run “Disk Repair”; if this keeps happening, the disk may need replacing.";
 "backend.error.manager_stop_timeout" = "A service on the device is stuck, often due to a failing disk. Unplug the device, plug it back in, and try again.";
 "backend.error.previous_migration_stalled" = "A metadata migration left on the device by an earlier installation stopped making progress, often due to a failing disk. Unplug the device, plug it back in, and try again.";
-"backend.error.payload_upload_timeout" = "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.";
+"backend.error.payload_upload_timeout" = "Copying the SMB installation files timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow, such as a weak Wi-Fi link. Run “Disk Repair”, or connect this Mac or the device by Ethernet, then try again. If this keeps happening, the disk may need replacing.";
 "backend.error.ssh_disabled" = "SSH is turned off on this device.";
 "backend.error.device_unreachable" = "The device isn't answering on SSH or AirPort ACP.";
 "backend.error.local_network_filtered" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";

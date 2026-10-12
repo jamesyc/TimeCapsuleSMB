@@ -283,7 +283,7 @@ final class BackendPayloadTests: XCTestCase {
         let error = BackendErrorViewModel(event: event)
         let diagnosticText = error.diagnosticText ?? ""
 
-        XCTAssertEqual(error.message, "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.")
+        XCTAssertEqual(error.message, "Copying the SMB installation files timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow, such as a weak Wi-Fi link. Run “Disk Repair”, or connect this Mac or the device by Ethernet, then try again. If this keeps happening, the disk may need replacing.")
         XCTAssertTrue(diagnosticText.contains("upload failed at /Volumes/Data"))
         XCTAssertTrue(diagnosticText.contains("password: <redacted>"))
         XCTAssertTrue(diagnosticText.contains("remote_manager_log_tail:"))

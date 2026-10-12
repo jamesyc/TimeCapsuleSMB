@@ -92,6 +92,8 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Checkup section: this Mac's checks (the CLI says “This computer”) | Dieser Mac | Deze Mac | Ce Mac | Este Mac |
 | Checkup section status: nothing ran on the device | Nicht geprüft | Niet gecontroleerd | Non vérifié | No comprobado |
 | SMB login (signing in to a share) | SMB-Anmeldung | SMB-aanmelding | connexion SMB | inicio de sesión SMB |
+| Disk Repair (the fsck operation) | Festplattenreparatur | Schijfreparatie | Réparation de disque | Reparación de disco |
+| Wi-Fi / Ethernet | Wi-Fi / Ethernet | Wi-Fi / Ethernet | Wi-Fi / Ethernet | Wi-Fi / Ethernet |
 
 | Concept | it | pt-BR | ru | zh-Hans | lt |
 |---|---|---|---|---|---|
@@ -100,6 +102,8 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Checkup section: this Mac's checks | Questo Mac | Este Mac | Этот Mac | 此 Mac | Šis Mac |
 | Checkup section status: nothing ran on the device | Non controllato | Não verificado | Не проверено | 未检查 | Nepatikrinta |
 | SMB login (signing in to a share) | accesso SMB | login SMB | вход по SMB | SMB 登录 | SMB prisijungimas |
+| Disk Repair (the fsck operation) | Riparazione disco | Reparo de disco | Исправление диска | 磁盘修复 | Disko taisymas |
+| Wi-Fi / Ethernet | Wi-Fi / Ethernet | Wi-Fi / Ethernet | Wi-Fi / Ethernet | Wi-Fi / 以太网 | Wi-Fi / Ethernet |
 | Save profile | Salva profilo | Salvar perfil | Сохранить профиль | 保存配置 | Išsaugoti profilį |
 | Install / Update Samba (button) | Installa/aggiorna Samba | Instalar/atualizar Samba | Установить/обновить Samba | 安装 / 更新 Samba | Įdiegti / atnaujinti Samba |
 | Install / Update (tab, timeline) | Installa/aggiorna | Instalar/atualizar | Установить/обновить | 安装 / 更新 | Diegti / atnaujinti |
@@ -146,6 +150,9 @@ Notes on the new rows:
 - **Firewall:** Apple's own word in each language's "Block connections to your Mac with a firewall" help page ([fr](https://support.apple.com/fr-fr/guide/mac-help/mh34041/mac), [es](https://support.apple.com/es-es/guide/mac-help/mh34041/mac), [ru](https://support.apple.com/ru-ru/guide/mac-help/mh34041/mac), [zh-cn](https://support.apple.com/zh-cn/guide/mac-help/mh34041/mac)). French is *coupe-feu*, not *pare-feu*. Lithuanian has no Apple localization and uses the common *užkarda*. `VPN` stays `VPN` everywhere.
 - **Security app:** other software on the Mac that filters or routes its network traffic, named next to VPN and firewall. Lithuanian says *saugos programa*, not *saugos programinė įranga*, which reads as firmware (see the next note).
 - **Internet (WAN) side, guest network, main network, LAN port:** the networks of an AirPort in router mode. The internet side is the network on its WAN port. It shares disks there and on its guest network only with "Share disks over WAN"; its main network is the one on its LAN ports and main Wi-Fi. German says *Internetanschluss*, never *Internetseite*, which means a web page. `WAN` and `LAN` stay as they are.
+- **Disk Repair:** this app's own fsck operation, not an Apple application, so every language translates it, Lithuanian included (*Disko taisymas*, never `Disk Repair`). A sentence that tells the user to run it quotes the operation's label: `Run “Disk Repair”`, `Führen Sie die „Festplattenreparatur“ aus`, `Lancez « Réparation de disque »`, `请运行“磁盘修复”`. Lithuanian puts the label after a noun, where it stays nominative: `Paleiskite operaciją „Disko taisymas“`. A sentence that only describes the operation running or finishing (`Disk repair completed with fsck.`) uses the ordinary noun, unquoted.
+- **Wi-Fi and Ethernet:** `Wi-Fi` in every language. Apple's German documentation says *WLAN*, but this catalog has always said *Wi-Fi*; keep the one form. `Ethernet` everywhere except Chinese, which uses Apple's **以太网**.
+- **German disk:** *Festplatte* is the physical disk: it fails, spins up, is tested, repaired or replaced (*Festplattenreparatur*). *Datenträger* is a volume that is found, mounted or unmounted (`HFS-Datenträger`, `Datenträger nicht eingebunden`).
 - **Lithuanian firmware:** the human translation uses *programinė įranga* for firmware, which also means "software" in general. Keep it for firmware (the flash screens need it), and say *įdiegta programinė įranga* or *diegimo failai* for our installed software so the two do not collide.
 
 Technical borrowings can be correct: Dutch `share`, Italian `log`, and Portuguese `snapshot` are acceptable in this app. Do not replace them with awkward literal inventions merely to remove English. Conversely, `Profile`, `Diagnostics`, `running`, and `bundled` are not protected names.

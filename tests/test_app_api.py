@@ -5864,7 +5864,7 @@ MaSt = (
         self.assertEqual(rc, 1)
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "payload_upload_timeout")
-        self.assertIn("The disk did not respond while copying the SMB payload.", error["message"])
+        self.assertIn("Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow", error["message"])
         self.assertEqual(error["debug"]["cause"], "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")

@@ -55,6 +55,7 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
+    PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
     build_uninstall_plan,
 )
@@ -120,7 +121,8 @@ from timecapsulesmb.services.deploy import (
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.transport.errors import SshUploadTimeout
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, upload_timeout_seconds
 
 
 def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
@@ -633,6 +635,14 @@ class DeployModuleTests(unittest.TestCase):
     def test_upload_and_verify_deployment_payload_records_upload_measurements(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
         connection = SshConnection("host", "pw", "-o foo")
+        # Sparse stand-ins at the shipped sizes, so the timeouts are real.
+        binaries = tempfile.TemporaryDirectory()
+        self.addCleanup(binaries.cleanup)
+        smbd, rsync = Path(binaries.name) / "smbd", Path(binaries.name) / "rsync"
+        for path, size in ((smbd, 10_296_644), (rsync, 1_037_780)):
+            with path.open("wb") as file:
+                file.truncate(size)
+        prepared_plan = replace(prepared_plan, plan=replace(prepared_plan.plan, smbd_path=smbd, rsync_path=rsync))
         measurements: list[tuple[str, dict[str, object]]] = []
 
         def fake_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
@@ -664,6 +674,13 @@ class DeployModuleTests(unittest.TestCase):
         )
         self.assertEqual([fields["destination_kind"] for fields in upload_measurements], ["memory", "payload", "payload", "flash", "flash"])
         self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
+        # Each measurement keeps the timeout upload_file applied, which grows
+        # with the file: the 10 MB smbd past its planned 180 s, rsync not.
+        by_source = {fields["source_id"]: fields for fields in upload_measurements}
+        smbd = by_source[BINARY_SMBD_SOURCE]
+        self.assertEqual(smbd["timeout_sec"], upload_timeout_seconds(smbd["bytes"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS))
+        self.assertGreater(smbd["timeout_sec"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
+        self.assertEqual(by_source[BINARY_RSYNC_SOURCE]["timeout_sec"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
         self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
         self.assertEqual(batch_measurements[0]["result"], "success")
 
@@ -1172,32 +1189,49 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIsInstance(raised.exception.__cause__, SshError)
 
     def test_upload_and_verify_deployment_payload_codes_payload_upload_timeout(self) -> None:
-        prepared_plan = self._prepared_deploy_plan()
-        connection = SshConnection("host", "pw", "-o foo")
+        # An upload's own timeout says how much reached the device, and the
+        # upload measurement keeps it; any other SSH timeout has no such field.
+        message = "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH"
+        cases = (
+            (SshUploadTimeout(message, bytes_on_device=4_194_304), {"bytes_on_device": 4_194_304}),
+            (SshUploadTimeout(message, bytes_on_device=None), {"bytes_on_device": None}),
+            (SshCommandTimeout(message), {}),
+        )
+        for error, expected_fields in cases:
+            with self.subTest(error=type(error).__name__, fields=expected_fields):
+                prepared_plan = self._prepared_deploy_plan()
+                measurements: list[tuple[str, dict[str, object]]] = []
 
-        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if plan.uploads == [plan.migration_upload]:
-                return
-            if on_uploading is not None:
-                on_uploading(plan.uploads[0])
-            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH")
+                def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+                    if plan.uploads == [plan.migration_upload]:
+                        return
+                    if on_uploading is not None:
+                        on_uploading(plan.uploads[0])
+                    raise error
 
-        with self.assertRaises(DeployDeviceError) as raised:
-            upload_and_verify_deployment_payload(
-                AppConfig.from_values({}),
-                connection,
-                prepared_plan,
-                DeployRuntimeConfig(),
-                callbacks=OperationCallbacks(),
-                run_remote_actions_func=mock.Mock(),
-                upload_payload_func=timeout_upload,
-                migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
-                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
-            )
+                with self.assertRaises(DeployDeviceError) as raised:
+                    upload_and_verify_deployment_payload(
+                        AppConfig.from_values({}),
+                        SshConnection("host", "pw", "-o foo"),
+                        prepared_plan,
+                        DeployRuntimeConfig(),
+                        callbacks=OperationCallbacks(
+                            record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))
+                        ),
+                        run_remote_actions_func=mock.Mock(),
+                        upload_payload_func=timeout_upload,
+                        migrate_xattrs_func=mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
+                        probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    )
 
-        self.assertEqual(raised.exception.code, "payload_upload_timeout")
-        self.assertIn("The disk did not respond while copying the SMB payload.", str(raised.exception))
-        self.assertIsInstance(raised.exception.__cause__, SshCommandTimeout)
+                self.assertEqual(raised.exception.code, "payload_upload_timeout")
+                self.assertIn("Copying the SMB payload timed out.", str(raised.exception))
+                self.assertIn("connect this computer or the device by Ethernet", str(raised.exception))
+                self.assertIn("the disk may need replacing", str(raised.exception))
+                self.assertIs(raised.exception.__cause__, error)
+                [upload] = [fields for kind, fields in measurements if kind == "upload" and fields["result"] == "failure"]
+                self.assertEqual(upload["error_type"], type(error).__name__)
+                self.assertEqual({key: upload[key] for key in upload if key == "bytes_on_device"}, expected_fields)
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
@@ -2457,8 +2491,8 @@ describe_managed_smbd_status "" ""
         self.assertNotIn("generated smbpasswd", text)
         self.assertNotIn("generated:username.map", text)
         self.assertIn("upload generated flash runtime config -> /mnt/Flash/tcapsulesmb.conf", text)
-        self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, timeout 180s) -> {payload_dir}/rsync", text)
-        self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, timeout 120s) -> {payload_dir}/rsyncd.conf", text)
+        self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, timeout 180s or 16 KiB/s, whichever is longer) -> {payload_dir}/rsync", text)
+        self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, timeout 120s or 16 KiB/s, whichever is longer) -> {payload_dir}/rsyncd.conf", text)
         self.assertIn("/usr/bin/pkill '^rsync$' >/dev/null 2>&1 || true", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4le", text)

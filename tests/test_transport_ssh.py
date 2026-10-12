@@ -659,6 +659,80 @@ class SSHTransportTests(unittest.TestCase):
         self.assertTrue(script.startswith("dd of=/Volumes/dk2/.samba4/smbd ibs=65536 obs=1048576 && "))
         self.assertIn("ls -l /Volumes/dk2/.samba4/smbd", script)
 
+    def test_upload_file_gives_large_files_at_least_the_minimum_rate(self) -> None:
+        # A 10 MB smbd over a slow disk or Wi-Fi link needed more than 180 s;
+        # the timeout grows with the size, and small files keep the caller's.
+        size = 10_296_644
+        self.assertEqual(ssh_transport.upload_timeout_seconds(size, 180), size // ssh_transport.UPLOAD_MIN_BYTES_PER_SECOND)
+        self.assertGreater(ssh_transport.upload_timeout_seconds(size, 180), 600)
+        self.assertEqual(ssh_transport.upload_timeout_seconds(5, 180), 180)
+        with mock.patch.object(ssh_transport, "upload_timeout_seconds", return_value=628) as floor:
+            run, _src = self.upload(b"5\n")
+        floor.assert_called_once_with(5, 180)
+        self.assertEqual(run.call_args.kwargs["timeout"], 628)
+
+    def timed_out_upload(self, size_probe) -> tuple[ssh_transport.SshUploadTimeout, mock.Mock]:
+        """Time out an upload; `size_probe` runs the size probe's command or fails it."""
+        def run(_connection, remote_cmd, **kwargs):
+            if "input_bytes" in kwargs:
+                raise ssh_transport.SshCommandTimeout("Timed out copying hello over SSH")
+            if isinstance(size_probe, Exception):
+                raise size_probe
+            return size_probe(remote_cmd)
+
+        with TemporaryDirectory() as tmp:
+            src = Path(tmp) / "smbd"
+            src.write_bytes(b"x" * 3_000_000)
+            self.dest = Path(tmp) / "dest dir" / "smbd"
+            with mock.patch("timecapsulesmb.transport.ssh._run_ssh", side_effect=run) as ssh:
+                with self.assertRaises(ssh_transport.SshUploadTimeout) as raised:
+                    ssh_transport.upload_file(ssh_transport.SshConnection("device", "pw", ""), src, str(self.dest))
+        return raised.exception, ssh
+
+    def run_locally(self, remote_cmd: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(remote_cmd, shell=True, capture_output=True)
+
+    def test_upload_timeout_reports_how_much_reached_the_device(self) -> None:
+        def partial_upload(remote_cmd):
+            # What dd had written when the upload was cut off.
+            self.dest.parent.mkdir()
+            self.dest.write_bytes(b"x" * 1_048_576)
+            return self.run_locally(remote_cmd)
+
+        error, ssh = self.timed_out_upload(partial_upload)
+        self.assertEqual(error.bytes_on_device, 1_048_576)
+        self.assertIn("(1048576 of 3000000 bytes reached the device)", str(error))
+        self.assertIsInstance(error.__cause__, ssh_transport.SshCommandTimeout)
+        probe = ssh.call_args_list[1].kwargs
+        # Not over the shared connection, which may still be sending the
+        # abandoned upload.
+        self.assertIs(probe["shared"], False)
+        self.assertEqual(probe["timeout"], ssh_transport.UPLOAD_SIZE_PROBE_TIMEOUT_SECONDS)
+
+    def test_upload_timeout_without_a_readable_size_still_times_out(self) -> None:
+        # Nothing on the device yet, or the device stopped answering: the
+        # upload still fails as a timeout, with the size unknown.
+        for probe in (
+            self.run_locally,
+            ssh_transport.SshCommandTimeout("Timed out reading an upload's size"),
+            ssh_transport.SshError("connection reset"),
+        ):
+            with self.subTest(probe=probe):
+                error, _ssh = self.timed_out_upload(probe)
+                self.assertIsNone(error.bytes_on_device)
+                self.assertIn("(unknown of 3000000 bytes reached the device)", str(error))
+
+    def test_unshared_command_logs_in_on_its_own_connection(self) -> None:
+        process = subprocess.CompletedProcess(["ssh"], 0, b"", b"")
+        with mock.patch("timecapsulesmb.transport.ssh.run_process", return_value=process) as run:
+            ssh_transport._run_ssh(
+                ssh_transport.SshConnection("root@device", "pw", ""), "true",
+                timeout=5, timeout_message="timed out", shared=False,
+            )
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("-S") + 1], "none")
+        self.assertNotIn("ControlMaster=auto", args)
+
     def test_upload_file_rejects_a_short_file(self) -> None:
         with self.assertRaises(ssh_transport.SshError) as exc:
             self.upload(b"3\n")
@@ -921,7 +995,8 @@ class SharedConnectionTests(unittest.TestCase):
         # The DEBUG1 log carries the shared-session marker.
         self.assertEqual(self.option(args, "LogLevel"), "DEBUG1")
         self.assertEqual(self.option(args, "ServerAliveInterval"), "15")
-        self.assertEqual(self.option(args, "ServerAliveCountMax"), "3")
+        # 90 s: an upload's device replies only after each 1 MiB it takes in.
+        self.assertEqual(self.option(args, "ServerAliveCountMax"), "6")
         self.assertNotIn("-S", args)
 
     def test_unshared_args_keep_their_own_connection(self) -> None:

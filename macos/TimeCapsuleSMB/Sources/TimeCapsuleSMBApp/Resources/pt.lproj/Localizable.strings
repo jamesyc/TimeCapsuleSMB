@@ -635,10 +635,10 @@
 "backend.error.activate.runtime_outdated" = "O TimeCapsuleSMB instalado neste dispositivo é antigo demais para que este app possa iniciá-lo. Execute primeiro “Instalar/atualizar Samba”.";
 "backend.error.activate.client_outdated" = "O TimeCapsuleSMB instalado neste dispositivo é de uma versão principal mais recente que a deste app. Atualize o TimeCapsuleSMB e tente de novo.";
 "backend.error.ssh_enable_timeout" = "O dispositivo aceitou a configuração, mas o SSH ainda não ficou disponível. Aguarde alguns minutos (ou reinicie o dispositivo) e tente novamente.";
-"backend.error.disk_write_test_unresponsive" = "O disco não respondeu durante o teste. Ele pode estar falhando ou não conseguir girar. Execute o Reparo de Disco; se isso continuar acontecendo, talvez seja necessário substituir o disco.";
+"backend.error.disk_write_test_unresponsive" = "O disco não respondeu durante o teste. Ele pode estar falhando ou não conseguir girar. Execute “Reparo de disco”; se isso continuar acontecendo, talvez seja necessário substituir o disco.";
 "backend.error.manager_stop_timeout" = "Um serviço no dispositivo está travado, muitas vezes por causa de um disco com falha. Desconecte o dispositivo da tomada, conecte-o novamente e tente de novo.";
 "backend.error.previous_migration_stalled" = "Uma migração de metadados deixada no dispositivo por uma instalação anterior parou de avançar, muitas vezes por causa de um disco com falha. Desconecte o dispositivo da tomada, conecte-o novamente e tente de novo.";
-"backend.error.payload_upload_timeout" = "O disco não respondeu ao copiar os arquivos de instalação SMB. Ele pode estar falhando ou não conseguir girar. Execute o reparo do disco; se o problema persistir, talvez seja necessário substituí-lo.";
+"backend.error.payload_upload_timeout" = "A cópia dos arquivos de instalação SMB excedeu o tempo limite. O disco pode estar falhando ou não conseguir girar, ou a conexão de rede com o dispositivo pode estar lenta demais, como um sinal Wi-Fi fraco. Execute “Reparo de disco” ou conecte este Mac ou o dispositivo por Ethernet e tente novamente. Se isso continuar acontecendo, talvez seja necessário substituir o disco.";
 "backend.error.ssh_disabled" = "O SSH está desativado neste dispositivo.";
 "backend.error.device_unreachable" = "O dispositivo não responde por SSH nem por AirPort ACP.";
 "backend.error.local_network_filtered" = "Este Mac interrompeu a conexão antes que ela chegasse ao dispositivo. Uma VPN, um firewall ou um software de segurança está filtrando o tráfego da rede local.";

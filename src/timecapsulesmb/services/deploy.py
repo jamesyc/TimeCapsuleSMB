@@ -106,8 +106,9 @@ from timecapsulesmb.transport.ssh import (
     SshConnection,
     run_ssh,
     run_ssh_capture_bytes,
+    upload_timeout_seconds,
 )
-from timecapsulesmb.transport.errors import SshError, TransportError, is_ssh_timeout_error
+from timecapsulesmb.transport.errors import SshError, SshUploadTimeout, TransportError, is_ssh_timeout_error
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
@@ -146,8 +147,9 @@ MANAGER_STOP_TIMEOUT_MESSAGE = (
     "Unplug the device, plug it back in, and try again."
 )
 PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
-    "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. "
-    "Run `tcapsule fsck`; if this keeps happening, the disk may need replacing."
+    "Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network "
+    "connection to the device may be too slow, such as a weak Wi-Fi link. Run `tcapsule fsck`, or connect "
+    "this computer or the device by Ethernet, then try again. If this keeps happening, the disk may need replacing."
 )
 XATTR_MIGRATION_TIMEOUT_MESSAGE = (
     "Timed out migrating Samba metadata into native HFS attributes. "
@@ -560,6 +562,19 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
 
 def _manager_stop_timed_out(exc: BaseException) -> bool:
     return MANAGER_STOP_TIMEOUT_SENTINEL in str(exc)
+
+
+def _upload_timeout_sec(transfer: FileTransfer, sources: Mapping[str, Path]) -> int | None:
+    """The timeout upload_file applied, which grows with the file."""
+    source = sources.get(transfer.source_id)
+    if transfer.timeout_seconds is None or source is None or not source.exists():
+        return transfer.timeout_seconds
+    return upload_timeout_seconds(source.stat().st_size, transfer.timeout_seconds)
+
+
+def _upload_timeout_fields(exc: BaseException) -> dict[str, object]:
+    # With duration_sec, how much arrived tells a slow disk or link from a stuck one.
+    return {"bytes_on_device": exc.bytes_on_device} if isinstance(exc, SshUploadTimeout) else {}
 
 
 def _payload_upload_timed_out(exc: BaseException, transfer: FileTransfer | None, plan: DeploymentPlan) -> bool:
@@ -1162,7 +1177,7 @@ def upload_and_verify_deployment_payload(
                 source_id=transfer.source_id,
                 transport="ssh_pipe",
                 destination_kind=_upload_destination_kind(transfer, plan),
-                timeout_sec=transfer.timeout_seconds,
+                timeout_sec=_upload_timeout_sec(transfer, upload_sources),
                 bytes=source.stat().st_size if source is not None and source.exists() else None,
                 duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
                 result="success",
@@ -1191,10 +1206,11 @@ def upload_and_verify_deployment_payload(
                     source_id=migration_transfer.source_id,
                     transport="ssh_pipe",
                     destination_kind=_upload_destination_kind(migration_transfer, plan),
-                    timeout_sec=migration_transfer.timeout_seconds,
+                    timeout_sec=_upload_timeout_sec(migration_transfer, upload_sources),
                     duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
                     result="failure",
                     error_type=type(exc).__name__,
+                    **_upload_timeout_fields(exc),
                 )
                 if _payload_upload_timed_out(exc, migration_transfer, plan):
                     raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc
@@ -1296,10 +1312,11 @@ def upload_and_verify_deployment_payload(
                     source_id=active_upload.source_id,
                     transport="ssh_pipe",
                     destination_kind=_upload_destination_kind(active_upload, plan),
-                    timeout_sec=active_upload.timeout_seconds,
+                    timeout_sec=_upload_timeout_sec(active_upload, upload_sources),
                     duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
                     result="failure",
                     error_type=type(exc).__name__,
+                    **_upload_timeout_fields(exc),
                 )
             if _payload_upload_timed_out(exc, active_upload, plan):
                 raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc

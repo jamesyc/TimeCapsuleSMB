@@ -119,7 +119,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         )
         XCTAssertEqual(
             writeTest.message,
-            "The disk did not respond when tested. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing."
+            "The disk did not respond when tested. It may be failing or unable to spin up. Run “Disk Repair”; if this keeps happening, the disk may need replacing."
         )
         XCTAssertEqual(
             managerStop.message,
@@ -127,14 +127,14 @@ final class RecoveryActionMapperTests: XCTestCase {
         )
         XCTAssertEqual(
             upload.message,
-            "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing."
+            "Copying the SMB installation files timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow, such as a weak Wi-Fi link. Run “Disk Repair”, or connect this Mac or the device by Ethernet, then try again. If this keeps happening, the disk may need replacing."
         )
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(noHFS.message, "已找到磁盘，但未检测到有效的 HFS 分区。请重试，或在 AirPort 实用工具中抹掉磁盘，将其格式化为适用于 Time Capsule 的格式。注意：某些设备无法检测部分大于 2 TB 的分区。")
         XCTAssertEqual(writeTest.message, "磁盘在测试时没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
         XCTAssertEqual(managerStop.message, "设备上的某项服务卡住了，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。")
-        XCTAssertEqual(upload.message, "复制 SMB 安装文件时磁盘没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
+        XCTAssertEqual(upload.message, "复制 SMB 安装文件超时。磁盘可能出现故障或无法转动，也可能是与设备之间的网络连接太慢，例如 Wi-Fi 信号较弱。请运行“磁盘修复”，或通过以太网连接此 Mac 或设备，然后重试。如果问题持续发生，可能需要更换磁盘。")
     }
 
     func testRecoveryGuidancePresentationLocalizesConfigureAuthFailure() throws {

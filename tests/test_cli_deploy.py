@@ -1134,11 +1134,11 @@ class CliDeployTests(CliTestCase):
             raises=SystemExit,
         )
 
-        self.assertIn("The disk did not respond while copying the SMB payload.", str(result.exception))
+        self.assertIn("Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow", str(result.exception))
         self.assertNotIn(timeout, str(result.exception))
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["result"], "failure")
-        self.assertIn("The disk did not respond while copying the SMB payload.", finished["error"])
+        self.assertIn("Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow", finished["error"])
         self.assertIn(f"Caused by: {timeout}", finished["error"])
 
     def test_deploy_finished_telemetry_reports_ssh_pipe_upload_transport(self) -> None:

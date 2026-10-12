@@ -109,6 +109,18 @@ class SshCommandTimeout(SshError):
     """Raised when the local SSH client times out waiting for command completion."""
 
 
+class SshUploadTimeout(SshCommandTimeout):
+    """An upload that timed out, with how many bytes reached the device.
+
+    With the elapsed time, the size tells a slow disk or link from a stuck
+    one. It is None when the device could not be asked.
+    """
+
+    def __init__(self, message: str, *, bytes_on_device: int | None) -> None:
+        super().__init__(message)
+        self.bytes_on_device = bytes_on_device
+
+
 SSH_TIMEOUT_SLOW_DEVICE_FALLBACK_DEVICE_NAME = "device"
 
 

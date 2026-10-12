@@ -27,6 +27,7 @@ from timecapsulesmb.transport.errors import (
     SshError,
     SshLocalNetworkFilteredError,
     SshNetworkError,
+    SshUploadTimeout,
     local_network_filtered_message,
 )
 
@@ -95,11 +96,14 @@ SSH_ASKPASS_EXEC_FAILURE = "ssh_askpass: exec("
 # commands open sessions over it, and once it is gone ssh logs in afresh.
 # A master quits after ControlPersist idle seconds, when this process exits,
 # and before every reboot request; ServerAlive ends one whose device vanished
-# some other way, so commands then reconnect instead of waiting on it.
+# some other way, so commands then reconnect instead of waiting on it. During
+# an upload the device answers only when it opens more window, after each
+# 1 MiB it takes in, so a slow link or disk can go a minute without a reply:
+# ServerAlive allows 90 s.
 SSH_CONTROL_DIR_PREFIX = "tcsmb-ssh-"
 SSH_CONTROL_PERSIST_SECONDS = 180
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 15
-SSH_SERVER_ALIVE_COUNT_MAX = 3
+SSH_SERVER_ALIVE_COUNT_MAX = 6
 SSH_CONTROL_EXIT_TIMEOUT_SECONDS = 5
 # A session over a master never authenticates itself, so its log has no
 # "Authenticated to" line; at DEBUG1 ssh logs this line for it instead.
@@ -107,6 +111,10 @@ SSH_MUX_SESSION_MARKER = "mux_client_request_session: master session id:"
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
+# Uploads get at least their size at this rate: a slow disk or Wi-Fi link moved
+# the 10 MB smbd under 57 KB/s (telemetry install c7d5d991).
+UPLOAD_MIN_BYTES_PER_SECOND = 16384
+UPLOAD_SIZE_PROBE_TIMEOUT_SECONDS = 30
 DEVICE_HOSTS_PATH = "/etc/hosts"
 
 
@@ -650,8 +658,11 @@ def _run_ssh(
     timeout: int | None,
     timeout_message: str,
     extra_ssh_args: tuple[str, ...] = (),
+    shared: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run one remote command over the device's shared SSH connection.
+
+    `shared=False` logs in on a connection of its own instead.
 
     ssh sends it over the live master, or logs in itself and becomes the
     master (ControlMaster=auto), so the command runs once either way. A
@@ -673,7 +684,7 @@ def _run_ssh(
                     client_log=client_log,
                     stdin_null=input_bytes is None,
                     extra_args=extra_ssh_args,
-                    shared=True,
+                    shared=shared,
                 ),
                 connection.host,
                 _with_client_hosts_line(remote_cmd),
@@ -836,6 +847,29 @@ def ssh_local_forward(
                 child.stderr.close()
 
 
+def upload_timeout_seconds(size: int, timeout: int) -> int:
+    """How long an upload of `size` bytes may take: `timeout`, or longer at UPLOAD_MIN_BYTES_PER_SECOND."""
+    return max(timeout, size // UPLOAD_MIN_BYTES_PER_SECOND)
+
+
+def _remote_size(connection: SshConnection, quoted_dest: str) -> int | None:
+    # A connection of its own: the shared one can still be sending up to the
+    # ssh window (2 MiB) of the abandoned upload, a minute on a slow link.
+    script = f'set -- $(ls -l {quoted_dest}) && echo "$5"'
+    try:
+        proc = _run_ssh(
+            connection,
+            f"/bin/sh -c {shlex.quote(script)}",
+            timeout=UPLOAD_SIZE_PROBE_TIMEOUT_SECONDS,
+            timeout_message="Timed out reading an upload's size",
+            shared=False,
+        )
+    except SshError:
+        return None
+    sizes = re.findall(rb"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
+    return int(sizes[-1]) if proc.returncode == 0 and sizes else None
+
+
 def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
     """Write src to dest on the device and check the written size.
 
@@ -843,18 +877,30 @@ def upload_file(connection: SshConnection, src: Path, dest: str, *, timeout: int
     /mnt/Flash synchronously, so every write is a flash write, and cat's small
     ones took the 333 KB service 124 s against 99 s. The same command prints
     the size the device then has, so a short file fails here.
+
+    A slow disk or Wi-Fi link can move the 10 MB smbd at tens of KB/s, so the
+    timeout grows with the file (upload_timeout_seconds). A timeout reports how
+    much reached the device.
     """
     quoted_dest = shlex.quote(dest)
     remote_script = f'dd of={quoted_dest} ibs=65536 obs=1048576 && set -- $(ls -l {quoted_dest}) && echo "$5"'
     expected_size = src.stat().st_size
     remote_cmd = f"/bin/sh -c {shlex.quote(remote_script)}"
-    proc = _run_ssh(
-        connection,
-        remote_cmd,
-        input_bytes=src.read_bytes(),
-        timeout=timeout,
-        timeout_message=f"Timed out copying {src.name} to remote path {dest} over SSH",
-    )
+    message = f"Timed out copying {src.name} to remote path {dest} over SSH"
+    try:
+        proc = _run_ssh(
+            connection,
+            remote_cmd,
+            input_bytes=src.read_bytes(),
+            timeout=upload_timeout_seconds(expected_size, timeout),
+            timeout_message=message,
+        )
+    except SshCommandTimeout as exc:
+        on_device = _remote_size(connection, quoted_dest)
+        reached = "unknown" if on_device is None else str(on_device)
+        raise SshUploadTimeout(
+            f"{message} ({reached} of {expected_size} bytes reached the device)", bytes_on_device=on_device,
+        ) from exc
     if proc.returncode != 0:
         stdout = _decode_remote_error_output(proc.stderr, proc.stdout).strip()
         raise SshError(stdout or f"SSH upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")

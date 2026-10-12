@@ -13,6 +13,7 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.device.probe import NETBSD4_LOGIN_PATH, NETBSD4_LOGIN_RC_LOCAL_MARKER
 from timecapsulesmb.services.reboot import REBOOT_STRATEGY
+from timecapsulesmb.transport.ssh import UPLOAD_MIN_BYTES_PER_SECOND
 
 
 NETBSD4_AUTOSTART_MARKER = NETBSD4_LOGIN_RC_LOCAL_MARKER.decode("ascii")
@@ -86,6 +87,13 @@ def _activation_plan_probe_json() -> dict[str, object]:
     }
 
 
+def _upload_timeout_text(timeout: int | None) -> str:
+    # upload_file waits longer for a large file (upload_timeout_seconds).
+    if timeout is None:
+        return ""
+    return f", timeout {timeout}s or {UPLOAD_MIN_BYTES_PER_SECOND // 1024} KiB/s, whichever is longer"
+
+
 def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines: list[str] = []
     lines.append("Dry run: deployment plan")
@@ -104,11 +112,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         lines.append(f"  {command}")
     lines.append("")
     migration_upload = plan.migration_upload
-    migration_timeout = (
-        f", timeout {migration_upload.timeout_seconds}s"
-        if migration_upload.timeout_seconds is not None
-        else ""
-    )
+    migration_timeout = _upload_timeout_text(migration_upload.timeout_seconds)
     lines.append("Inventory legacy metadata before replacing software:")
     lines.append(
         f"  upload {migration_upload.description} "
@@ -129,7 +133,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("")
     lines.append("Uploads:")
     for upload in plan.uploads:
-        timeout = f", timeout {upload.timeout_seconds}s" if upload.timeout_seconds is not None else ""
+        timeout = _upload_timeout_text(upload.timeout_seconds)
         lines.append(f"  {upload.description} ({upload.source_id}{timeout}) -> {upload.destination}")
     lines.append("")
     lines.append("Remote actions (post-upload):")

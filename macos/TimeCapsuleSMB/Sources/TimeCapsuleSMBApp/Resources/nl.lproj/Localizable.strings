@@ -635,10 +635,10 @@
 "backend.error.activate.runtime_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is te oud om door deze app te worden gestart. Voer eerst ‘Samba installeren / bijwerken’ uit.";
 "backend.error.activate.client_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is van een nieuwere hoofdversie dan deze app. Werk TimeCapsuleSMB bij en probeer het daarna opnieuw.";
 "backend.error.ssh_enable_timeout" = "Het apparaat heeft de instelling geaccepteerd, maar SSH is nog niet beschikbaar. Wacht een paar minuten (of start het apparaat opnieuw op) en probeer het opnieuw.";
-"backend.error.disk_write_test_unresponsive" = "De schijf reageerde niet tijdens de test. Deze is mogelijk defect of kan niet gaan draaien. Voer Schijfreparatie uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
+"backend.error.disk_write_test_unresponsive" = "De schijf reageerde niet tijdens de test. Deze is mogelijk defect of kan niet gaan draaien. Voer ‘Schijfreparatie’ uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "backend.error.manager_stop_timeout" = "Een service op het apparaat zit vast, vaak door een defecte schijf. Haal de stekker uit het apparaat, sluit het opnieuw aan en probeer het opnieuw.";
 "backend.error.previous_migration_stalled" = "Een metadatamigratie die een eerdere installatie op het apparaat heeft achtergelaten, komt niet meer vooruit, vaak door een defecte schijf. Haal de stekker uit het apparaat, sluit het opnieuw aan en probeer het opnieuw.";
-"backend.error.payload_upload_timeout" = "De schijf reageerde niet tijdens het kopiëren van de SMB-installatiebestanden. Deze is mogelijk defect of kan niet gaan draaien. Voer Schijfreparatie uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
+"backend.error.payload_upload_timeout" = "Het kopiëren van de SMB-installatiebestanden duurde te lang. De schijf is mogelijk defect of kan niet gaan draaien, of de netwerkverbinding met het apparaat is mogelijk te traag, zoals een zwakke Wi-Fi-verbinding. Voer ‘Schijfreparatie’ uit of verbind deze Mac of het apparaat via Ethernet en probeer het opnieuw. Bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "backend.error.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
 "backend.error.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
 "backend.error.local_network_filtered" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";

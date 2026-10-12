@@ -638,7 +638,7 @@
 "backend.error.disk_write_test_unresponsive" = "磁盘在测试时没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";
 "backend.error.manager_stop_timeout" = "设备上的某项服务卡住了，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。";
 "backend.error.previous_migration_stalled" = "之前一次安装留在设备上的元数据迁移已停止进展，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。";
-"backend.error.payload_upload_timeout" = "复制 SMB 安装文件时磁盘没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";
+"backend.error.payload_upload_timeout" = "复制 SMB 安装文件超时。磁盘可能出现故障或无法转动，也可能是与设备之间的网络连接太慢，例如 Wi-Fi 信号较弱。请运行“磁盘修复”，或通过以太网连接此 Mac 或设备，然后重试。如果问题持续发生，可能需要更换磁盘。";
 "backend.error.ssh_disabled" = "此设备上的 SSH 已禁用。";
 "backend.error.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
 "backend.error.local_network_filtered" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
