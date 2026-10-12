@@ -37,6 +37,7 @@ from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
 
 from tests.cli_support import app_config, valid_env
+from timecapsulesmb.checks.network import PORT_CHECK_TIMEOUT_SECONDS
 from timecapsulesmb.services.credentials import overlay_request_airport_mac, saved_airport_mac
 from timecapsulesmb.services.locate import LocateResult
 from tests.reboot_support import DEVICE_AIRPORT_MAC, RecordingCallbacks, acp_password_answer, acp_reading
@@ -338,24 +339,24 @@ class ProbeFailureErrorTests(unittest.TestCase):
     def failed_probe(status: SshAccessStatus, error: str = "SSH is not reachable yet.") -> ProbeResult:
         return ProbeResult(ssh_status=status, error=error, os_name="", os_release="", arch="", elf_endianness="unknown")
 
+    @staticmethod
+    def probe_failure_with(args, connect):
+        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", connect):
+            return service_runtime.probe_failure_error(*args)
+
     def test_closed_ssh_with_acp_answering_means_ssh_is_turned_off(self) -> None:
         acp_probe = mock.Mock(return_value=None)
 
-        error = service_runtime.probe_failure_error(
-            self.failed_probe(SshAccessStatus.CLOSED), "root@10.0.0.2", tcp_connect_error_func=acp_probe,
-        )
+        error = self.probe_failure_with((self.failed_probe(SshAccessStatus.CLOSED), "root@10.0.0.2"), acp_probe)
 
-        acp_probe.assert_called_once_with("10.0.0.2", 5009, service_runtime.ACP_PORT_CHECK_TIMEOUT_SECONDS)
+        acp_probe.assert_called_once_with("10.0.0.2", 5009, PORT_CHECK_TIMEOUT_SECONDS)
         self.assertIsInstance(error, DeviceError)
         self.assertEqual(error.code, "ssh_disabled")
         self.assertIn("SSH is turned off on 10.0.0.2", str(error))
 
     def test_closed_ssh_with_acp_silent_means_the_device_is_unreachable(self) -> None:
-        error = service_runtime.probe_failure_error(
-            self.failed_probe(SshAccessStatus.CLOSED),
-            "root@10.0.0.2",
-            tcp_connect_error_func=mock.Mock(return_value="[Errno 64] Host is down"),
-        )
+        error = self.probe_failure_with((self.failed_probe(SshAccessStatus.CLOSED),
+            "root@10.0.0.2"), mock.Mock(return_value="[Errno 64] Host is down"))
 
         self.assertEqual(error.code, "device_unreachable")
         self.assertIn("not answering at 10.0.0.2", str(error))
@@ -369,9 +370,7 @@ class ProbeFailureErrorTests(unittest.TestCase):
         ):
             with self.subTest(host=host):
                 acp_probe = mock.Mock(return_value=None)
-                service_runtime.probe_failure_error(
-                    self.failed_probe(SshAccessStatus.CLOSED), host, tcp_connect_error_func=acp_probe,
-                )
+                self.probe_failure_with((self.failed_probe(SshAccessStatus.CLOSED), host), acp_probe)
                 self.assertEqual(acp_probe.call_args.args[0], expected)
 
     def test_login_failures_keep_the_probe_message_and_get_their_own_code(self) -> None:
@@ -386,16 +385,12 @@ class ProbeFailureErrorTests(unittest.TestCase):
         for status, code in cases:
             with self.subTest(status=status):
                 acp_probe = mock.Mock(side_effect=AssertionError("only a closed port checks ACP"))
-                error = service_runtime.probe_failure_error(
-                    self.failed_probe(status, "the probe's own text"), "root@10.0.0.2", tcp_connect_error_func=acp_probe,
-                )
+                error = self.probe_failure_with((self.failed_probe(status, "the probe's own text"), "root@10.0.0.2"), acp_probe)
                 self.assertEqual((error.code, str(error)), (code, "the probe's own text"))
 
     def test_no_probe_failure_is_reported_as_an_unsupported_model(self) -> None:
         codes = {
-            service_runtime.probe_failure_error(
-                self.failed_probe(status), "root@10.0.0.2", tcp_connect_error_func=mock.Mock(return_value=acp_error),
-            ).code
+            self.probe_failure_with((self.failed_probe(status), "root@10.0.0.2"), mock.Mock(return_value=acp_error)).code
             for status in SshAccessStatus
             if status != SshAccessStatus.OPEN_AUTHENTICATED
             for acp_error in (None, "timed out")
@@ -419,7 +414,7 @@ class ProbeFailureErrorTests(unittest.TestCase):
         state = ProbedDeviceState(probe_result=self.failed_probe(SshAccessStatus.CLOSED), compatibility=None)
         # The closed-port recheck has its own tests; this is the state it ends in.
         with mock.patch.object(service_runtime, "probe_managed_connection_state", return_value=state):
-            with mock.patch.object(service_runtime, "tcp_connect_error", return_value=None):
+            with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=None):
                 with self.assertRaises(service_runtime.DeviceAccessError) as raised:
                     service_runtime.require_connection_compatibility(SshConnection("root@10.0.0.2", "pw", ""))
 

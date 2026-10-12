@@ -43,6 +43,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_stuck_processes,
     _doctor_check_apple_acpd,
     _doctor_check_unshared_network,
+    _doctor_report_unanswered_device,
     _doctor_probe_startup_age,
     _doctor_validate_config,
 )
@@ -128,7 +129,9 @@ def run_doctor_checks(
     # what the device already reported down is not counted against it.
     sink.blocked_by_device = _doctor_device_blocks(smbd_serving, native_nbns_ready, bonjour_registered)
     with sink.in_section(DOMAIN_COMPUTER):
-        if not _doctor_check_unshared_network(remote, link_plan, sink):
+        if remote.device_unreachable:
+            _doctor_report_unanswered_device(inputs, target, sink)
+        elif not _doctor_check_unshared_network(remote, link_plan, sink):
             network = DoctorNetworkProbe(target, remote, sink.debug_fields)
             bonjour_result = _add_bonjour_results(
                 inputs.config,

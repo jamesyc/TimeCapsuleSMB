@@ -167,7 +167,8 @@ class CommandContext:
             if telemetry_message and not self.error_lines:
                 self.set_error(telemetry_message)
             self.finish(result=self.result, **self.finish_fields)
-            raise SystemExit(display_message) from exc
+            hint = self._device_error_hint(getattr(exc, "code", None))
+            raise SystemExit(f"{display_message}\n{hint}" if hint else display_message) from exc
         elif exc_type is SystemExit:
             message = system_exit_message(exc)
             if message and message not in {"0", "None"}:
@@ -182,6 +183,20 @@ class CommandContext:
                 self.set_error(f"{exc_name}: {message}" if message else exc_name)
         self.finish(result=self.result, **self.finish_fields)
         return False
+
+    def _device_error_hint(self, code: object) -> str | None:
+        """What to run next after the device did not answer or had SSH off."""
+        if code == "ssh_disabled":
+            return "Turn SSH on with `tcapsule set-ssh --enable`."
+        if code != "device_unreachable":
+            return None
+        hint = "Run `tcapsule doctor` to see which AirPorts answer on this network."
+        if self.config is not None and not self.config.get("TC_AIRPORT_MAC"):
+            hint += (
+                " This configuration has no AirPort MAC: run `tcapsule configure` once, so commands "
+                "find the device when its address changes."
+            )
+        return hint
 
     def succeed(self) -> None:
         self.result = "success"

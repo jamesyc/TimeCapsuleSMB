@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 
+from timecapsulesmb.checks.network import closed_ssh_port_error
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
@@ -21,12 +22,11 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device import acpd
-from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network_message
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
 from timecapsulesmb.transport.ssh import SshConnection
-from timecapsulesmb.transport.local import tcp_connect_error, tcp_open
+from timecapsulesmb.transport.local import tcp_open
 
 PasswordProvider = Callable[[str], str]
 
@@ -41,7 +41,6 @@ PROBE_STATUS_ERROR_CODES: dict[SshAccessStatus, str] = {
     SshAccessStatus.LOCAL_NETWORK_FILTERED: "local_network_filtered",
     SshAccessStatus.DEVICE_PROBE_FAILED: "device_probe_failed",
 }
-ACP_PORT_CHECK_TIMEOUT_SECONDS = 2.0
 # How long a probe of an already set up device keeps trying a closed SSH port.
 # The probe tries port 22 once, for 2 s; in v3.1.2 telemetry several deploys
 # stopped on that one timeout although SSH was on.
@@ -228,33 +227,12 @@ def follow_saved_device(
     return moved, device_reading
 
 
-def probe_failure_error(
-    probe_result: ProbeResult,
-    host: str,
-    *,
-    tcp_connect_error_func: Callable[[str, int, float], str | None] | None = None,
-) -> DeviceAccessError:
-    """The error for a probe that did not log in.
-
-    A closed SSH port has two causes the user fixes differently: SSH is off
-    (after a reset, or turned off in SSH Access) while the device still
-    answers AirPort ACP, or the device is not answering at this address at
-    all. One TCP connect to the ACP port tells them apart.
-    """
+def probe_failure_error(probe_result: ProbeResult, host: str) -> DeviceAccessError:
+    """The error for a probe that did not log in; a closed SSH port says why
+    (checks.network.closed_ssh_port_error)."""
     if probe_result.ssh_status == SshAccessStatus.CLOSED:
-        target = endpoint_host(host)
-        connect_error = tcp_connect_error_func or tcp_connect_error
-        acp_error = connect_error(target, ACP_PORT, ACP_PORT_CHECK_TIMEOUT_SECONDS)
-        if acp_error is None:
-            return DeviceAccessError(
-                f"SSH is turned off on {target}: AirPort ACP answers on port {ACP_PORT}, but SSH port 22 is closed.",
-                code="ssh_disabled",
-            )
-        return DeviceAccessError(
-            f"The device is not answering at {target}: neither SSH port 22 nor AirPort ACP port {ACP_PORT} "
-            f"is reachable ({acp_error}).",
-            code="device_unreachable",
-        )
+        code, message, _details = closed_ssh_port_error(endpoint_host(host))
+        return DeviceAccessError(message, code=code)
     return DeviceAccessError(
         probe_result.error or "Failed to probe device compatibility.",
         code=PROBE_STATUS_ERROR_CODES.get(probe_result.ssh_status, "remote_error"),

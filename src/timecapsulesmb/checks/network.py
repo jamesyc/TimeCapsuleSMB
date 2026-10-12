@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, resolve_host_ips
+from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.device.probe import probe_ssh_command_conn
+from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
     SshAuthenticationError,
@@ -232,6 +233,32 @@ def classify_network_link(
     return NetworkLinkResult(verdict, device, local, source, detail)
 
 
+PORT_CHECK_TIMEOUT_SECONDS = 2.0
+
+
+def closed_ssh_port_error(host: str) -> tuple[str, str, dict[str, object]]:
+    """Why SSH port 22 is closed: the code, message and details.
+
+    The user fixes the two causes differently: SSH is off (after a reset, or
+    turned off in SSH Access) while the device still answers AirPort ACP, or
+    nothing answers at this address at all (the device is off, or DHCP gave
+    it another address). One TCP connect to the ACP port tells them apart.
+    """
+    acp_error = tcp_connect_error(host, ACP_PORT, PORT_CHECK_TIMEOUT_SECONDS)
+    if acp_error is None:
+        return (
+            "ssh_disabled",
+            f"SSH is turned off on {host}: AirPort ACP answers on port {ACP_PORT}, but SSH port 22 is closed.",
+            {},
+        )
+    return (
+        "device_unreachable",
+        f"The device is not answering at {host}: neither SSH port 22 nor AirPort ACP port {ACP_PORT} "
+        f"is reachable ({acp_error}).",
+        {"acp_port_error": acp_error},
+    )
+
+
 def check_ssh_login(connection: SshConnection) -> CheckResult:
     result = probe_ssh_command_conn(
         connection,
@@ -242,9 +269,26 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
     if result.ok:
         return CheckResult("PASS", f"SSH command works for {connection.host}")
     details = {"code": ssh_login_failure_code(result.error)}
+    if details["code"] == "ssh_unreachable" and (unanswered := _unanswered_ssh_port(connection.host)) is not None:
+        return unanswered
     if result.detail.startswith(("Connecting to the device failed, SSH error:", local_network_filtered_message())):
         return CheckResult("FAIL", result.detail, details)
     return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}", details)
+
+
+def _unanswered_ssh_port(target: str) -> CheckResult | None:
+    """Why SSH did not get through, when its port does not answer.
+
+    ssh waits out its own connect timeout, so an address nothing answers at
+    otherwise looks like a command that timed out. None when port 22 answers:
+    the session itself is what hung.
+    """
+    host = endpoint_host(target)
+    ssh_error = tcp_connect_error(host, 22, PORT_CHECK_TIMEOUT_SECONDS)
+    if ssh_error is None:
+        return None
+    code, message, details = closed_ssh_port_error(host)
+    return CheckResult("FAIL", message, {"code": code, "ssh_port_error": ssh_error, **details})
 
 
 def ssh_login_failure_code(error: TransportError | None) -> str:

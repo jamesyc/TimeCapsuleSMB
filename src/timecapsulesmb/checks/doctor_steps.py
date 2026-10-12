@@ -131,9 +131,12 @@ from timecapsulesmb.device.probe import (
     runtime_ram_root_present_conn,
 )
 from timecapsulesmb.discovery.bonjour import (
+    AIRPORT_SERVICE,
     BonjourQuery,
     BonjourDiscoverySnapshot, BonjourResolvedService,
 )
+from timecapsulesmb.discovery.devices import device_candidates_from_records
+from timecapsulesmb.discovery.models import normalize_airport_mac
 
 from timecapsulesmb.transport.local import command_exists, find_free_local_port
 from timecapsulesmb.transport.local import scoped_tcp_connect_errors
@@ -188,6 +191,9 @@ DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
 # (its WAN side in router mode, its guest network), so nothing that checks
 # Bonjour or SMB from here can pass.
 DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK = "client_on_unshared_network"
+DOCTOR_CODE_NETWORK_NOT_CHECKED = "network_not_checked"
+# A browse always runs its full timeout; 2 s found every LAN AirPort (services.locate).
+AIRPORT_BROWSE_SECONDS = 2.0
 DOCTOR_CODE_LOCAL_NETWORK_DENIED = "local_network_denied"
 DOCTOR_CODE_SMB_PORT_UNREACHABLE = "smb_port_unreachable"
 DOCTOR_CODE_SMB_LISTING_FAILED = "smb_listing_failed"
@@ -2106,7 +2112,40 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         ssh_ok=ssh_ok,
         remote_checks_enabled=ssh_ok,
         active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
+        device_unreachable=ssh_result.details.get("code") == "device_unreachable",
     )
+
+
+def _doctor_report_unanswered_device(inputs: DoctorInputs, target: DoctorTarget, sink: DoctorSink) -> None:
+    """Nothing answers at the saved address, so Bonjour, SMB and NBNS checks of
+    it would only fail the same way. Say which AirPorts this computer sees
+    instead: DHCP may have given the device another address."""
+    sink.add(CheckResult(
+        "SKIP",
+        f"Bonjour, SMB and NBNS checks skipped: nothing answers at {target.host}",
+        {"code": DOCTOR_CODE_NETWORK_NOT_CHECKED},
+    ))
+    if inputs.options.skip_bonjour:
+        return
+    try:
+        snapshot, _diagnostics = BonjourQuery().browse(AIRPORT_SERVICE, timeout=AIRPORT_BROWSE_SECONDS)
+    except Exception as exc:
+        sink.add(CheckResult("INFO", f"could not list the AirPorts this computer sees: {exc}"))
+        return
+    airports = device_candidates_from_records(snapshot.resolved)
+    if not airports:
+        sink.add(CheckResult("INFO", "no AirPort answers Bonjour on this computer's networks"))
+        return
+    saved_mac = normalize_airport_mac(inputs.config.get("TC_AIRPORT_MAC") or None)
+    seen = [
+        {"name": airport.name, "address": airport.host, "airport_mac": airport.airport_mac}
+        for airport in airports
+    ]
+    listed = "; ".join(
+        f"{item['name']} at {item['address']}" + (" (this device)" if saved_mac and item["airport_mac"] == saved_mac else "")
+        for item in seen
+    )
+    sink.add(CheckResult("INFO", f"AirPorts this computer sees: {listed}", {"airports": seen}))
 
 
 def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> ProcessSnapshotState:

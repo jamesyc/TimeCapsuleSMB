@@ -1680,6 +1680,78 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any(message.startswith("active Samba share names:") for message in messages), messages)
         self.assertTrue(any(message == "discovery process is running" for message in messages), messages)
 
+    UNREACHABLE = CheckResult(
+        "FAIL",
+        "The device is not answering at 10.0.0.2: neither SSH port 22 nor AirPort ACP port 5009 is reachable (timed out).",
+        {"code": "device_unreachable"},
+    )
+
+    def run_doctor_against_a_dead_address(self, airports, *, values=None, skip_bonjour=False):
+        query = mock.Mock()
+        query.return_value.browse.return_value = (BonjourDiscoverySnapshot([], airports), None)
+        smb_browse = mock.Mock()
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=self.UNREACHABLE,
+            skip_bonjour=skip_bonjour,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.BonjourQuery": query,
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": smb_browse,
+            },
+        )
+        return run, query, smb_browse
+
+    def airport(self, name: str, address: str, mac: str) -> BonjourResolvedService:
+        return BonjourResolvedService(
+            name=name, hostname=f"{name.replace(' ', '-')}.local", service_type="_airport._tcp.local.", port=5009,
+            ipv4=[address], services={"_airport._tcp.local."}, properties={"waMA": mac}, fullname=f"{name}._airport._tcp.local.",
+        )
+
+    def test_doctor_at_a_dead_address_lists_the_airports_instead_of_repeating_the_failure(self) -> None:
+        # Telemetry install 079bca09: the device had moved, and Bonjour and SMB
+        # checks of its old address failed again without saying where it was.
+        values = {**self.valid_doctor_values(), "TC_AIRPORT_MAC": "64-A5-C3-62-74-71"}
+        run, query, smb_browse = self.run_doctor_against_a_dead_address([
+            self.airport("AirPort Time Capsule 1", "192.168.178.193", "90:72:40:0A:6F:C0"),
+            self.airport("AirPort Time Capsule 3", "192.168.178.75", "64:A5:C3:62:74:71"),
+        ], values=values)
+
+        self.assertTrue(run.fatal)
+        self.assertEqual([r.details.get("code") for r in run.results if r.status == "FAIL"], ["device_unreachable"])
+        skipped = next(r for r in run.results if r.details.get("code") == "network_not_checked")
+        self.assertEqual((skipped.status, skipped.message), ("SKIP", "Bonjour, SMB and NBNS checks skipped: nothing answers at 10.0.0.2"))
+        smb_browse.assert_not_called()
+        run.mocks.check_smb_port.assert_not_called()
+        query.return_value.browse.assert_called_once_with("_airport", timeout=2.0)
+        seen = next(r for r in run.results if r.message.startswith("AirPorts this computer sees:"))
+        self.assertEqual(seen.message, (
+            "AirPorts this computer sees: AirPort Time Capsule 1 at 192.168.178.193; "
+            "AirPort Time Capsule 3 at 192.168.178.75 (this device)"
+        ))
+        self.assertEqual(seen.details["airports"][1]["airport_mac"], "64:a5:c3:62:74:71")
+
+    def test_doctor_at_a_dead_address_still_finishes_when_the_airport_list_fails(self) -> None:
+        # The list is only a hint: a browse that fails says so and doctor goes on.
+        query = mock.Mock()
+        query.return_value.browse.side_effect = OSError("dns-sd exited with status 1")
+        run = self.run_doctor_with_mocks(
+            None,
+            ssh_login=self.UNREACHABLE,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.BonjourQuery": query},
+        )
+        self.assertEqual([r.details.get("code") for r in run.results if r.status == "FAIL"], ["device_unreachable"])
+        self.assertIn("could not list the AirPorts this computer sees: dns-sd exited with status 1",
+                      [r.message for r in run.results if r.status == "INFO"])
+        self.assertTrue(any(r.details.get("code") == "network_not_checked" for r in run.results))
+
+    def test_doctor_at_a_dead_address_says_when_no_airport_answers_or_bonjour_is_skipped(self) -> None:
+        run, _query, _smb = self.run_doctor_against_a_dead_address([])
+        self.assertIn("no AirPort answers Bonjour on this computer's networks", [r.message for r in run.results])
+
+        run, query, _smb = self.run_doctor_against_a_dead_address([], skip_bonjour=True)
+        query.assert_not_called()
+        self.assertTrue(any(r.details.get("code") == "network_not_checked" for r in run.results))
+
     def test_doctor_from_the_wan_side_fails_even_when_bonjour_and_smb_are_skipped(self) -> None:
         run, calls = self._run_doctor_against_router(local_networks=self.WAN_SIDE, skip_bonjour=True, skip_smb=True)
         self.assertTrue(run.fatal)
@@ -4485,7 +4557,9 @@ class CheckTests(unittest.TestCase):
         )
         for error, code in cases:
             with self.subTest(code=code, error=type(error).__name__):
-                with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error):
+                # Port 22 answers: the failure is the SSH session's.
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error), \
+                        mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=None):
                     result = check_ssh_login(connection)
                 self.assertEqual((result.status, result.details["code"]), ("FAIL", code))
         # ssh ran, and the command itself failed on the device.
@@ -4614,13 +4688,57 @@ class CheckTests(unittest.TestCase):
         with mock.patch(
             "timecapsulesmb.checks.network.probe_ssh_command_conn",
             return_value=mock.Mock(ok=False, detail="Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied"),
-        ):
+        ), mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=None):
             result = check_ssh_login(connection)
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(
             result.message,
             "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
         )
+
+    def check_unanswered_ssh(self, ports: dict[int, str | None]):
+        connection = SshConnection("root@10.0.0.5", "pw", "")
+        connect = mock.Mock(side_effect=lambda _host, port, _timeout: ports[port])
+        timed_out = SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/echo ok")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=timed_out), \
+                mock.patch("timecapsulesmb.checks.network.tcp_connect_error", connect):
+            return check_ssh_login(connection), connect
+
+    def test_an_address_nothing_answers_at_is_unreachable_not_a_slow_command(self) -> None:
+        # ssh waits out its connect timeout, so a dead address looked like a
+        # command that timed out (telemetry install 079bca09, a device DHCP moved).
+        result, connect = self.check_unanswered_ssh({22: "timed out", 5009: "timed out"})
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.details["code"], "device_unreachable")
+        self.assertEqual(
+            result.message,
+            "The device is not answering at 10.0.0.5: neither SSH port 22 nor AirPort ACP port 5009 is reachable (timed out).",
+        )
+        self.assertEqual((result.details["ssh_port_error"], result.details["acp_port_error"]), ("timed out", "timed out"))
+        self.assertEqual([call.args[:2] for call in connect.call_args_list], [("10.0.0.5", 22), ("10.0.0.5", 5009)])
+
+    def test_ssh_off_with_acp_answering_says_so(self) -> None:
+        result, _connect = self.check_unanswered_ssh({22: "Connection refused", 5009: None})
+
+        self.assertEqual(result.details["code"], "ssh_disabled")
+        self.assertEqual(result.message, "SSH is turned off on 10.0.0.5: AirPort ACP answers on port 5009, but SSH port 22 is closed.")
+
+    def test_an_answering_ssh_port_keeps_the_session_failure(self) -> None:
+        result, connect = self.check_unanswered_ssh({22: None, 5009: None})
+
+        self.assertEqual(result.details["code"], "ssh_unreachable")
+        self.assertIn("Timed out waiting for ssh command to finish", result.message)
+        connect.assert_called_once()
+
+    def test_a_password_or_filter_failure_does_not_probe_the_ports(self) -> None:
+        connection = SshConnection("root@10.0.0.5", "pw", "")
+        for error in (SshAuthenticationError("denied"), SshLocalNetworkFilteredError("filtered")):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error), \
+                        mock.patch("timecapsulesmb.checks.network.tcp_connect_error") as connect:
+                    check_ssh_login(connection)
+                connect.assert_not_called()
 
     def test_check_ssh_login_reports_a_connection_this_mac_dropped_as_it_is(self) -> None:
         connection = SshConnection("root@10.0.0.5", "pw", "")

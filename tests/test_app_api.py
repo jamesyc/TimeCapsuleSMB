@@ -6171,7 +6171,7 @@ MaSt = (
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
-                        with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=acp_error) as acp_probe:
+                        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=acp_error) as acp_probe:
                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions", side_effect=AssertionError("no remote actions")):
                                 rc = service.run_api_request({"operation": "deploy", "params": {"dry_run": True}}, collector.sink)
         return rc, collector, acp_probe
@@ -6277,7 +6277,7 @@ MaSt = (
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.40", "TC_PASSWORD": "pw"})
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
-                with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=acp_error):
+                with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=acp_error):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as remote_actions:
                         rc = service.run_api_request({"operation": "activate", "params": params}, collector.sink)
         remote_actions.assert_not_called()
@@ -6310,7 +6310,7 @@ MaSt = (
                 # A closed port is rechecked first; it stays closed here.
                 with mock.patch("timecapsulesmb.services.runtime.tcp_open", return_value=False), \
                         mock.patch("timecapsulesmb.services.runtime.CLOSED_SSH_RECHECK_WINDOW_SECONDS", 0.0):
-                    with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=acp_error):
+                    with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=acp_error):
                         with mock.patch("timecapsulesmb.app.ops.flash.backup_flash") as backup_mock:
                             rc = service.run_api_request(
                                 {"operation": "flash", "params": {"action": "backup", "credentials": {"password": "pw"}}},

@@ -146,6 +146,33 @@ class CommandContextHelperTests(unittest.TestCase):
             context.resolve_env_connection()
         self.assertIn("TC_AIRPORT_MAC", str(raised.exception))
 
+    def test_a_device_that_does_not_answer_says_what_to_run_next(self) -> None:
+        from timecapsulesmb.services.runtime import DeviceAccessError
+
+        cases = {
+            ("device_unreachable", ""): ("Run `tcapsule doctor`", "has no AirPort MAC"),
+            ("device_unreachable", "02:00:00:00:00:0a"): ("Run `tcapsule doctor`", None),
+            ("ssh_disabled", ""): ("tcapsule set-ssh --enable", None),
+            ("auth_failed", ""): (None, None),
+        }
+        for (code, mac), (expected, extra) in cases.items():
+            with self.subTest(code=code, mac=mac):
+                context = self.cli_context_with({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": mac})
+                with self.assertRaises(SystemExit) as raised:
+                    with context:
+                        raise DeviceAccessError("The device is not answering at 10.0.0.2.", code=code)
+                message = str(raised.exception.code)
+                self.assertTrue(message.startswith("The device is not answering at 10.0.0.2."))
+                if expected is None:
+                    self.assertEqual(message, "The device is not answering at 10.0.0.2.")
+                else:
+                    self.assertIn(expected, message)
+                self.assertEqual(extra is not None and extra in message, extra is not None)
+                # Telemetry keeps the error as it was, without the hint.
+                error = context.telemetry.emit.call_args.kwargs["error"]
+                self.assertTrue(error.startswith("The device is not answering at 10.0.0.2."))
+                self.assertNotIn("tcapsule", error)
+
     def test_configure_saves_the_new_address_so_it_prints_no_hint(self) -> None:
         context = CommandContext(mock.Mock(), "configure", "configure_started", "configure_finished")
         with redirect_stdout(io.StringIO()) as output:
@@ -180,7 +207,7 @@ class CommandContextHelperTests(unittest.TestCase):
             compatibility=None,
         )
 
-        with mock.patch("timecapsulesmb.services.runtime.tcp_connect_error", return_value=None):
+        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=None):
             with self.assertRaises(DeviceError) as raised:
                 context.require_compatibility()
 

@@ -106,6 +106,8 @@ class RemoteAccess:
     ssh_ok: bool
     remote_checks_enabled: bool
     active_smb_conf_reason: str
+    # Neither SSH nor ACP answered at the saved address (network.check_ssh_login).
+    device_unreachable: bool = False
 
 
 @dataclass(frozen=True)

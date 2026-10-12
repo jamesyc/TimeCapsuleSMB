@@ -208,6 +208,34 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(row.message.hasPrefix("Ce Mac est sur un réseau où l’appareil ne partage pas ses disques"), row.message)
     }
 
+    func testCheckupPresentationLocalizesAnAddressThatDoesNotAnswer() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "The device is not answering at 10.0.1.9: neither SSH port 22 nor AirPort ACP port 5009 is reachable (timed out).",
+                domain: "computer",
+                code: "device_unreachable"
+            ),
+            testDoctorCheck(
+                status: "FAIL",
+                message: "SSH is turned off on 10.0.1.9: AirPort ACP answers on port 5009, but SSH port 22 is closed.",
+                domain: "computer",
+                code: "ssh_disabled"
+            ),
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        L10n.apply(language: .german)
+        let rows = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows)
+        XCTAssertEqual(rows.map(\.message), [
+            "Das Gerät antwortet weder über SSH noch über AirPort ACP.",
+            "SSH ist auf diesem Gerät deaktiviert.",
+        ])
+    }
+
     func testCheckupPresentationLocalizesThisMacsNsmbConfChecks() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
