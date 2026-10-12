@@ -126,7 +126,8 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
     unsigned char buffer[32768];
     struct stat before, after, output_stat;
     int input = -1, output = -1, result = -1;
-    off_t total = 0;
+    off_t total = 0, size = -1;
+    long long started = acp_monotonic_ms();
     ssize_t count;
     const char *operation = "open source";
     int saved_errno;
@@ -135,6 +136,7 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
     input = open(source, O_RDONLY);
     if (input < 0 || fstat(input, &before))
         goto out;
+    size = before.st_size;
     if (!S_ISREG(before.st_mode)) {
         errno = EINVAL;
         goto out;
@@ -150,6 +152,8 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
     for (;;) {
         size_t offset = 0;
         if (tc_worker_cancelled()) {
+            /* Not the read or write before it: the manager stopped this job. */
+            operation = "cancel";
             errno = ECANCELED;
             goto out;
         }
@@ -169,8 +173,8 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
             if (n <= 0)
                 goto out;
             offset += n;
+            total += n;
         }
-        total += count;
     }
     operation = "verify copied bytes";
     if (fstat(input, &after) || fstat(output, &output_stat))
@@ -200,8 +204,16 @@ out:
     if (output >= 0)
         close(output);
     if (result) {
-        fprintf(stderr, "copy %s failed: %s -> %s: %s\n", operation, source, destination,
-                strerror(saved_errno));
+        /* The bytes and time say whether the disk was slow or stuck (a 10 MB
+         * smbd normally copies in seconds). The size is unknown when the
+         * source could not be opened. */
+        long long seconds = (acp_monotonic_ms() - started) / 1000;
+        if (size < 0)
+            fprintf(stderr, "copy %s failed: %s -> %s: %s (copied %lld bytes in %lld s)\n", operation, source,
+                    destination, strerror(saved_errno), (long long)total, seconds);
+        else
+            fprintf(stderr, "copy %s failed: %s -> %s: %s (copied %lld of %lld bytes in %lld s)\n", operation,
+                    source, destination, strerror(saved_errno), (long long)total, (long long)size, seconds);
         unlink(destination);
     }
     errno = saved_errno;

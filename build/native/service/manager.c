@@ -16,6 +16,9 @@
 #define SETTINGS_MS 30000
 #define INVENTORY_MS 10000
 #define AUDIT_MS 30000
+/* Staging copies smbd from the disk, and reads can be slow for the first
+ * minutes after boot while the disk spins up and settles. */
+#define STAGE_JOB_MS 240000
 /* Host tests shorten these two; the device uses the defaults. */
 #ifndef JOB_RETRY_MS
 #define JOB_RETRY_MS 5000
@@ -972,7 +975,7 @@ static void pump_stage(struct manager *m, long long now) {
         m->binary_valid = 0;
     if (m->copy_rsync)
         m->rsync_valid = 0;
-    if (tc_child_fork(&m->stage_job, stage_job, m, MANAGER_LOG, NULL, 0, now + 120000))
+    if (tc_child_fork(&m->stage_job, stage_job, m, MANAGER_LOG, NULL, 0, now + STAGE_JOB_MS))
         m->stage_at = now + JOB_RETRY_MS;
 }
 static void reconcile_discovery(struct manager *m, long long now) {

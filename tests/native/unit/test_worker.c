@@ -33,6 +33,33 @@ int main(int argc, char **argv) {
         assert(lstat("prepared", &st) < 0 && errno == ENOENT);
         assert(tc_copy_file("source", "directory", 0600) < 0);
         assert(!lstat("directory", &st) && S_ISDIR(st.st_mode));
+    } else if (!strcmp(argv[1], "report")) {
+        /* A failed copy says how far it got: the bytes and time tell a slow
+         * disk from a stuck one in the manager log. stderr goes to a pipe,
+         * which the file-size limit that fails the copy does not cover. */
+        struct rlimit limit = {4, 4};
+        char log[256], *line;
+        long long copied = -1, size = -1, seconds = -1;
+        int captured[2];
+        ssize_t n;
+        assert(!pipe(captured) && dup2(captured[1], STDERR_FILENO) >= 0);
+        assert(tc_copy_file("missing", "prepared", 0600) < 0);
+        contents("source", "payload too large for limit");
+        signal(SIGXFSZ, SIG_IGN);
+        assert(!setrlimit(RLIMIT_FSIZE, &limit));
+        assert(tc_copy_file("source", "prepared", 0600) < 0);
+        close(captured[1]);
+        close(STDERR_FILENO);
+        assert((n = read(captured[0], log, sizeof(log) - 1)) > 0);
+        log[n] = 0;
+        assert(strstr(log, "copy open source failed: missing -> prepared: ") == log);
+        /* An unopened source has no size to report. */
+        assert(strstr(log, "(copied 0 bytes in 0 s)\n"));
+        assert(!strstr(log, " of 0 bytes"));
+        assert((line = strstr(log, "\ncopy write failed: source -> prepared: ")));
+        assert(sscanf(line + 1, "copy write failed: source -> prepared: %*[^(](copied %lld of %lld bytes in %lld s)",
+                      &copied, &size, &seconds) == 3);
+        assert(copied >= 0 && copied <= 4 && size == 27 && seconds == 0);
     } else if (!strcmp(argv[1], "directories")) {
         assert(!tc_make_dir("directory", 0700));
         assert(!tc_make_dir("directory", 0700));
