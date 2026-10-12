@@ -98,8 +98,8 @@ def test_bootstrap_checks_existing_skipped_and_newly_installed_clients(missing, 
     with mock.patch.object(bootstrap, "_missing_required_host_tools", side_effect=[missing, []]), \
          mock.patch.object(bootstrap, "current_platform_label", return_value="macOS" if intel else "Linux"), \
          mock.patch.object(bootstrap, "_macos_intel_host", return_value=intel), \
-         mock.patch.object(bootstrap, "_linux_install_plan", return_value=([["apt-get", "install", "openssh-client"]], "install ssh")), \
-         mock.patch.object(bootstrap, "run") as install, \
+         mock.patch.object(bootstrap, "_linux_package_manager", return_value="apt-get"), \
+         mock.patch.object(bootstrap, "_install_with_linux_package_manager", return_value="apt-get install openssh-client") as install, \
          mock.patch.object(bootstrap, "require_local_ssh", side_effect=SshClientConfigError("Upgrade OpenSSH")) as check:
         with pytest.raises(bootstrap.BootstrapError, match="Upgrade OpenSSH"):
             bootstrap.install_required_host_tools()

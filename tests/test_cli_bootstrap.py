@@ -599,116 +599,126 @@ class CliBootstrapTests(CliTestCase):
                     self.assertEqual(bootstrap._macos_intel_host(), intel)
                 self.assertEqual(run_mock.call_args.args[0], ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"])
 
-    def test_bootstrap_installs_missing_host_tools_via_apt_on_linux(self) -> None:
+    def _linux_install(
+        self,
+        manager: str,
+        *,
+        euid: int,
+        has_sudo: bool = True,
+        run_error: BaseException | None = None,
+        output: io.StringIO | None = None,
+    ) -> tuple[list[list[str]], bootstrap.BootstrapError | None]:
+        """install_required_host_tools on Linux with only `manager` installed.
+
+        Returns the commands run and the BootstrapError raised, if any. Each
+        install command puts the tools it names on the fake PATH, as a real
+        one would.
+        """
+        tools_by_package = {
+            package: tool for packages in bootstrap.LINUX_HOST_TOOL_PACKAGES.values() for tool, package in packages.items()
+        }
         installed: set[str] = set()
+        commands: list[list[str]] = []
 
         def fake_which(name: str):
-            if name in installed:
-                return f"/usr/bin/{name}"
-            if name == "apt-get":
-                return "/usr/bin/apt-get"
-            return None
+            found = name == manager or name in installed or (has_sudo and name == "sudo")
+            return f"/usr/bin/{name}" if found else None
 
         def fake_run(cmd):
-            if cmd[:3] == ["sudo", "/usr/bin/apt-get", "install"]:
-                installed.update("ssh" if package == "openssh-client" else package for package in cmd[4:])
+            commands.append(cmd)
+            if run_error is not None:
+                raise run_error
+            installed.update(tools_by_package[arg] for arg in cmd if arg in tools_by_package)
 
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
-                    bootstrap.install_required_host_tools()
-        self.assertEqual(
-            run_mock.call_args_list,
-            [
-                mock.call(["sudo", "/usr/bin/apt-get", "update"]),
-                mock.call(["sudo", "/usr/bin/apt-get", "install", "-y", "openssh-client", "smbclient"]),
-            ],
-        )
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"), \
+             mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which), \
+             mock.patch("timecapsulesmb.cli.bootstrap.os.geteuid", return_value=euid), \
+             mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run), \
+             redirect_stdout(output or io.StringIO()):
+            try:
+                bootstrap.install_required_host_tools()
+            except bootstrap.BootstrapError as exc:
+                return commands, exc
+        return commands, None
 
-    def test_bootstrap_installs_missing_host_tools_via_zypper_on_linux(self) -> None:
-        installed: set[str] = set()
+    def test_bootstrap_installs_linux_host_tools_with_sudo_unless_root(self) -> None:
+        expected = {
+            "apt-get": [["apt-get", "update"], ["apt-get", "install", "-y", "openssh-client", "smbclient"]],
+            "dnf": [["dnf", "install", "-y", "openssh-clients", "samba-client"]],
+            "zypper": [["zypper", "install", "-y", "openssh-clients", "samba-client"]],
+            "pacman": [["pacman", "-S", "--needed", "openssh", "smbclient"]],
+        }
+        self.assertEqual(set(expected), set(bootstrap.LINUX_HOST_TOOL_PACKAGES))
+        for manager, commands in expected.items():
+            for euid, has_sudo, prefix in ((1000, True, ["sudo"]), (0, True, []), (0, False, [])):
+                with self.subTest(manager=manager, euid=euid, has_sudo=has_sudo):
+                    output = io.StringIO()
+                    ran, error = self._linux_install(manager, euid=euid, has_sudo=has_sudo, output=output)
+                    self.assertIsNone(error)
+                    self.assertEqual(ran, [[*prefix, *command] for command in commands])
+                    self.assertIn(f"Installing ssh, smbclient with {manager}", output.getvalue())
+                    self.assertIn("Installed required host tools: ssh, smbclient", output.getvalue())
 
-        def fake_which(name: str):
-            if name in installed:
-                return f"/usr/bin/{name}"
-            if name == "zypper":
-                return "/usr/bin/zypper"
-            return None
+    def test_bootstrap_linux_install_failure_prints_the_manual_command_and_keeps_output(self) -> None:
+        command_error = bootstrap.BootstrapCommandError(["apt-get", "update"], 100, "apt repository failure\n")
+        for euid, manual in (
+            (1000, "sudo apt-get update && sudo apt-get install -y openssh-client smbclient"),
+            (0, "apt-get update && apt-get install -y openssh-client smbclient"),
+        ):
+            with self.subTest(euid=euid):
+                output = io.StringIO()
+                _, error = self._linux_install("apt-get", euid=euid, run_error=command_error, output=output)
+                self.assertIn("Failed to install ssh, smbclient automatically (exit code 100)", str(error))
+                self.assertIn("output:\napt repository failure", str(error))
+                self.assertEqual(output.getvalue().splitlines()[-1], manual)
+                self.assertIn("\033[31m", output.getvalue())
 
-        def fake_run(cmd):
-            if cmd[:3] == ["sudo", "/usr/bin/zypper", "install"]:
-                names = {"openssh-clients": "ssh", "samba-client": "smbclient"}
-                installed.update(names[package] for package in cmd[4:])
-
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
-                    bootstrap.install_required_host_tools()
-        self.assertEqual(
-            run_mock.call_args_list,
-            [mock.call(["sudo", "/usr/bin/zypper", "install", "-y", "openssh-clients", "samba-client"])],
-        )
-
-    def test_bootstrap_installs_missing_host_tools_via_pacman_on_linux(self) -> None:
-        installed: set[str] = set()
-
-        def fake_which(name: str):
-            if name in installed:
-                return f"/usr/bin/{name}"
-            if name == "pacman":
-                return "/usr/bin/pacman"
-            return None
-
-        def fake_run(cmd):
-            if cmd[:3] == ["sudo", "/usr/bin/pacman", "-S"]:
-                installed.update("ssh" if package == "openssh" else package for package in cmd[4:])
-
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
-                    bootstrap.install_required_host_tools()
-        self.assertEqual(
-            run_mock.call_args_list,
-            [mock.call(["sudo", "/usr/bin/pacman", "-S", "--needed", "openssh", "smbclient"])],
-        )
-
-    def test_bootstrap_prints_manual_install_when_linux_host_tool_install_fails(self) -> None:
+    def test_bootstrap_without_sudo_shows_the_root_command_and_runs_nothing(self) -> None:
         output = io.StringIO()
-
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=lambda name: "/usr/bin/apt-get" if name == "apt-get" else None):
-                with mock.patch(
-                    "timecapsulesmb.cli.bootstrap.run",
-                    side_effect=subprocess.CalledProcessError(100, ["sudo", "/usr/bin/apt-get", "update"]),
-                ):
-                    with self.assertRaises(bootstrap.BootstrapError):
-                        with redirect_stdout(output):
-                            bootstrap.install_required_host_tools()
-        text = output.getvalue()
-        self.assertIn("Failed to install missing host tools automatically", text)
-        self.assertIn("sudo apt-get update && sudo apt-get install -y openssh-client smbclient", text)
-        self.assertIn("\033[31m", text)
-
-    def test_bootstrap_host_tool_install_error_keeps_command_output(self) -> None:
-        output = io.StringIO()
-        command_error = bootstrap.BootstrapCommandError(
-            ["sudo", "/usr/bin/apt-get", "update"],
-            100,
-            "apt repository failure\n",
+        ran, error = self._linux_install("apt-get", euid=1000, has_sudo=False, output=output)
+        self.assertEqual(ran, [])
+        self.assertIn("Installing ssh, smbclient needs root, and sudo is not installed", str(error))
+        self.assertEqual(
+            output.getvalue().splitlines()[-1],
+            "apt-get update && apt-get install -y openssh-client smbclient",
         )
 
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=lambda name: "/usr/bin/apt-get" if name == "apt-get" else None):
-                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=command_error):
-                    with self.assertRaises(bootstrap.BootstrapError) as raised:
-                        with redirect_stdout(output):
-                            bootstrap.install_required_host_tools()
+    def test_bootstrap_missing_package_manager_program_fails_cleanly(self) -> None:
+        output = io.StringIO()
+        _, error = self._linux_install(
+            "apt-get",
+            euid=0,
+            run_error=FileNotFoundError(2, "No such file or directory", "apt-get"),
+            output=output,
+        )
+        self.assertIn("Failed to install ssh, smbclient automatically", str(error))
+        self.assertIn("No such file or directory: 'apt-get'", str(error))
+        self.assertEqual(
+            output.getvalue().splitlines()[-1],
+            "apt-get update && apt-get install -y openssh-client smbclient",
+        )
 
-        self.assertIn("Failed to install missing host tools automatically", output.getvalue())
-        message = str(raised.exception)
-        self.assertIn("Command failed with exit code 100", message)
-        self.assertIn("output:", message)
-        self.assertIn("apt repository failure", message)
+    def test_bootstrap_lets_a_closed_terminal_end_the_install_unreported(self) -> None:
+        # Output piped to a reader that exited is not a failed install.
+        with self.assertRaises(BrokenPipeError):
+            self._linux_install("apt-get", euid=0, run_error=BrokenPipeError(32, "Broken pipe"))
+
+    def test_bootstrap_reports_a_missing_program_without_a_traceback(self) -> None:
+        stderr = io.StringIO()
+        missing = FileNotFoundError(2, "No such file or directory", "python")
+        with mock.patch("pathlib.Path.exists", return_value=True), \
+             mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"), \
+             mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"), \
+             mock.patch("timecapsulesmb.cli.bootstrap.validate_selected_python", return_value="3.11.9"), \
+             mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", side_effect=missing), \
+             redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            rc = bootstrap.main([])
+        self.assertEqual(rc, 1)
+        self.assertIn("FileNotFoundError: [Errno 2] No such file or directory: 'python'", stderr.getvalue())
+        finished = self.telemetry_payload("bootstrap_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("FileNotFoundError", finished["error"])
+        self.assertIn("stage=ensure_venv", finished["error"])
 
     def test_bootstrap_fails_when_linux_package_manager_missing_for_required_host_tools(self) -> None:
         output = io.StringIO()

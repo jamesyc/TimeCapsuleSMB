@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.util import color_red
@@ -48,7 +49,6 @@ MACOS_HOST_TOOL_PACKAGES = {
 LINUX_HOST_TOOL_PACKAGES = {
     "apt-get": {"ssh": "openssh-client", "smbclient": "smbclient"},
     "dnf": {"ssh": "openssh-clients", "smbclient": "samba-client"},
-    "yum": {"ssh": "openssh-clients", "smbclient": "samba-client"},
     "zypper": {"ssh": "openssh-clients", "smbclient": "samba-client"},
     "pacman": {"ssh": "openssh", "smbclient": "smbclient"},
 }
@@ -369,41 +369,67 @@ def _macos_manual_install_command(missing_tools: list[str]) -> str:
     return f"brew install {' '.join(packages)}"
 
 
-def _linux_install_plan(missing_tools: list[str]) -> tuple[list[list[str]], str] | None:
-    for manager, packages_by_tool in LINUX_HOST_TOOL_PACKAGES.items():
-        executable = find_command(manager)
-        if executable is None:
-            continue
-        packages = [packages_by_tool[tool] for tool in missing_tools]
-        if manager == "apt-get":
-            return (
-                [
-                    ["sudo", executable, "update"],
-                    ["sudo", executable, "install", "-y", *packages],
-                ],
-                f"sudo apt-get update && sudo apt-get install -y {' '.join(packages)}",
-            )
-        if manager == "pacman":
-            return (
-                [["sudo", executable, "-S", "--needed", *packages]],
-                f"sudo pacman -S --needed {' '.join(packages)}",
-            )
-        return (
-            [["sudo", executable, "install", "-y", *packages]],
-            f"sudo {manager} install -y {' '.join(packages)}",
-        )
-    return None
+def _linux_package_manager() -> str | None:
+    return next((manager for manager in LINUX_HOST_TOOL_PACKAGES if find_command(manager) is not None), None)
 
 
-def _raise_host_tool_install_error(message: str, manual_command: str | None = None) -> None:
+def _linux_install_commands(manager: str, packages: list[str], *, sudo: bool) -> list[list[str]]:
+    """The `manager` commands that install `packages`, by name, after sudo if `sudo`."""
+    prefix = ["sudo"] if sudo else []
+    if manager == "apt-get":
+        return [[*prefix, manager, "update"], [*prefix, manager, "install", "-y", *packages]]
+    if manager == "pacman":
+        return [[*prefix, manager, "-S", "--needed", *packages]]
+    return [[*prefix, manager, "install", "-y", *packages]]
+
+
+def _raise_host_tool_install_error(message: str, manual_command: str | None = None, detail: str | None = None) -> NoReturn:
     print(color_red(message), flush=True)
     if manual_command:
-        print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+        print(color_red("Install them manually, then rerun './tcapsule bootstrap':"), flush=True)
         print(manual_command, flush=True)
-    raise BootstrapError(message)
+    raise BootstrapError(f"{message}\n\n{detail}" if detail else message)
 
 
-def _install_macos_host_tools(missing_tools: list[str]) -> None:
+def _run_install_commands(names: str, commands: list[list[str]], manual_command: str) -> None:
+    """Run the package manager `commands` that install `names`, or say how to by hand."""
+    try:
+        for command in commands:
+            run(command)
+    except BootstrapCommandError as exc:
+        _raise_host_tool_install_error(
+            f"Failed to install {names} automatically (exit code {exc.returncode})",
+            manual_command,
+            _format_command_error(exc),
+        )
+    except BrokenPipeError:
+        # The terminal showing the output went away; the install did not fail.
+        raise
+    except OSError as exc:
+        # A program that is missing or cannot run, such as the package manager.
+        _raise_host_tool_install_error(f"Failed to install {names} automatically ({exc})", manual_command)
+
+
+def _install_with_linux_package_manager(names: str, manager: str, packages: list[str]) -> str:
+    """Install `packages` with `manager` as root; return the command to do it by hand.
+
+    Root, usually in a container that has no sudo, runs the commands directly.
+    """
+    as_user = os.geteuid() != 0
+    has_sudo = find_command("sudo") is not None
+    commands = _linux_install_commands(manager, packages, sudo=as_user and has_sudo)
+    manual_command = " && ".join(shlex.join(command) for command in commands)
+    if as_user and not has_sudo:
+        _raise_host_tool_install_error(
+            f"Installing {names} needs root, and sudo is not installed. Run the command below as root.",
+            manual_command,
+        )
+    print(f"Installing {names} with {manager}", flush=True)
+    _run_install_commands(names, commands, manual_command)
+    return manual_command
+
+
+def _install_macos_host_tools(missing_tools: list[str], manual_command: str) -> None:
     brew = find_command("brew")
     if brew is None:
         print(
@@ -425,7 +451,7 @@ def _install_macos_host_tools(missing_tools: list[str]) -> None:
 
     packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
     print(f"Installing missing host tools via Homebrew: {_format_tools(missing_tools)}", flush=True)
-    run([brew, "install", *packages])
+    _run_install_commands(_format_tools(missing_tools), [[brew, "install", *packages]], manual_command)
 
 
 def _require_supported_ssh() -> None:
@@ -455,41 +481,24 @@ def install_required_host_tools() -> list[str]:
         print(INTEL_SMBCLIENT_SKIPPED, flush=True)
         if not missing_tools:
             return skipped
-    manual_command: str | None = None
-    try:
-        if platform_label == "macOS":
-            manual_command = _macos_manual_install_command(missing_tools)
-            _install_macos_host_tools(missing_tools)
-        elif platform_label == "Linux":
-            plan = _linux_install_plan(missing_tools)
-            if plan is None:
-                _raise_host_tool_install_error(
-                    f"No supported Linux package manager found to install missing host tools: {_format_tools(missing_tools)}",
-                    f"Install {_format_tools(missing_tools)} with your distro package manager.",
-                )
-            commands, manual_command = plan
-            print(f"Installing missing host tools via Linux package manager: {_format_tools(missing_tools)}", flush=True)
-            for command in commands:
-                run(command)
-        else:
+    tools = _format_tools(missing_tools)
+    if platform_label == "macOS":
+        manual_command = _macos_manual_install_command(missing_tools)
+        _install_macos_host_tools(missing_tools, manual_command)
+    elif platform_label == "Linux":
+        manager = _linux_package_manager()
+        if manager is None:
             _raise_host_tool_install_error(
-                f"Automatic host tool installation is not implemented for {platform_label}.",
-                f"Install {_format_tools(missing_tools)} with your OS package manager.",
+                f"No supported Linux package manager found to install missing host tools: {tools}",
+                f"Install {tools} with your distro package manager.",
             )
-    except BootstrapCommandError as exc:
-        message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
-        print(color_red(message), flush=True)
-        if manual_command:
-            print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
-            print(manual_command, flush=True)
-        raise BootstrapError(f"{message}\n\n{_format_command_error(exc)}") from exc
-    except subprocess.CalledProcessError as exc:
-        message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
-        print(color_red(message), flush=True)
-        if manual_command:
-            print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
-            print(manual_command, flush=True)
-        raise BootstrapError(message) from exc
+        packages = [LINUX_HOST_TOOL_PACKAGES[manager][tool] for tool in missing_tools]
+        manual_command = _install_with_linux_package_manager(tools, manager, packages)
+    else:
+        _raise_host_tool_install_error(
+            f"Automatic host tool installation is not implemented for {platform_label}.",
+            f"Install {tools} with your OS package manager.",
+        )
 
     still_missing = [tool for tool in _missing_required_host_tools() if tool not in skipped]
     if still_missing:
@@ -498,7 +507,7 @@ def install_required_host_tools() -> list[str]:
             manual_command,
         )
     _require_supported_ssh()
-    print(f"Installed required host tools: {_format_tools(missing_tools)}", flush=True)
+    print(f"Installed required host tools: {tools}", flush=True)
     return skipped
 
 
@@ -560,11 +569,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(message, file=sys.stderr)
             command_context.fail_with_error(message)
             return e.returncode or 1
-        except subprocess.CalledProcessError as e:
-            message = f"Command failed with exit code {e.returncode}: {e.cmd}"
-            print(message, file=sys.stderr)
-            command_context.fail_with_error(message)
-            return e.returncode or 1
         except KeyboardInterrupt as e:
             output = _format_command_output("output", getattr(e, "command_output", ""))
             if output is not None:
@@ -575,6 +579,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.update_fields(**e.fields)
             print(str(e), file=sys.stderr)
             command_context.fail_with_error(str(e))
+            return 1
+        except OSError as e:
+            # A program bootstrap starts is missing or cannot run.
+            message = f"{type(e).__name__}: {e}"
+            print(message, file=sys.stderr)
+            command_context.fail_with_error(message)
             return 1
 
         command_context.set_stage("complete")
