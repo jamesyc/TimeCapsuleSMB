@@ -66,7 +66,10 @@ final class DeviceProfilePersistenceService {
             discoveredDevice: discoveredDevice,
             targetHost: targetHost,
             settings: settings,
-            context: DeviceRuntimeContext(profileID: profileID, configURL: stagedConfigURL)
+            // A saved device keeps its MAC: configure refuses another AirPort
+            // at the address before ACP turns SSH on there and reboots it.
+            context: DeviceRuntimeContext(profileID: profileID, configURL: stagedConfigURL,
+                                          airportMAC: existingProfile?.network.airportMAC)
         )
     }
 

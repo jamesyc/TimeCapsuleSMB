@@ -559,7 +559,6 @@ def doctor_payload(
     fatal: bool,
     results: list[CheckResult],
     error: str | None = None,
-    airport_mac: str | None = None,
 ) -> dict[str, object]:
     result_payload = [
         jsonable({"status": result.status, "message": result.message, "details": doctor_result_details(result)})
@@ -568,7 +567,6 @@ def doctor_payload(
     counts = doctor_status_counts(results)
     payload: dict[str, object] = {
         "fatal": fatal,
-        "airport_mac": airport_mac,
         "results": result_payload,
         "counts": counts,
         # The overall status and each section's, so the app shows the device

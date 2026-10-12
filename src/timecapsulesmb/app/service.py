@@ -4,6 +4,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 
 from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.services.context import DEVICE_UPDATE_FIELDS
 from timecapsulesmb.app.events import ClientDisconnected, EventSink
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS, OPERATION_PARAMS, OPERATIONS, TELEMETRY_OPERATIONS, unknown_params
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
@@ -248,11 +249,15 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         return 1
     payload_error = _payload_error(result.payload) if not result.ok else None
     payload = result.payload
-    current_host = context.finish_fields.get("current_host")
-    if isinstance(payload, dict) and isinstance(current_host, str):
-        # The device answered at another address than the saved one; the app
-        # offers to save it there.
-        payload = {**payload, "current_host": current_host}
+    # Every device fact update_fields learned is a debug field; the names are only there.
+    device_fields = {
+        key: context.diagnostics.debug_fields[key] for key in DEVICE_UPDATE_FIELDS
+        if isinstance(context.diagnostics.debug_fields.get(key), str)
+    }
+    if isinstance(payload, dict) and device_fields:
+        # The device answered at another address than the saved one, which the
+        # app offers to save, or with the identity it saves with the profile.
+        payload = {**payload, **device_fields}
     context.emit_result(
         ok=result.ok,
         payload=payload,

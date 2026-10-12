@@ -36,6 +36,7 @@ from timecapsulesmb.services.configure import (
     write_configure_env_file,
 )
 from timecapsulesmb.services.configure_target import resolve_configure_target
+from timecapsulesmb.services.credentials import request_airport_mac
 from timecapsulesmb.core.summaries import Summary
 
 
@@ -241,6 +242,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 discovered_airport_syap=target.discovered_airport_syap,
                 selected_record_airport_syap=target.selected_record_airport_syap,
                 selected_record=target.target_record,
+                expected_airport_mac=request_airport_mac(params),
                 enable_ssh=bool_param(params, "enable_ssh", True),
                 internal_share_use_disk_root=bool_param(
                     params,

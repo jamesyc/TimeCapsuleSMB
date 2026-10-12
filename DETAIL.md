@@ -608,6 +608,50 @@ exact match counts there. That is a warning; a renamed name nobody else
 advertises is an info line. It makes no host lookups: a `.local` name nobody
 owns takes 10 s to fail.
 
+## Saved Device Identity
+
+`TC_HOST` is the one address every connection of a command uses; names never
+connect. `TC_AIRPORT_MAC` is the device's `waMA`, which configure saves. The
+app's device registry owns each profile's MAC and sends it as `airport_mac`
+with every operation, so the profile's `.env` copy is not trusted.
+
+- **Following a moved device.** A command first reads `waMA`, `syNm` and `syDN`
+  in one network ACP request at `TC_HOST` (`services.runtime.confirm_device_address`).
+  The saved MAC answering with the password means the command goes ahead there.
+  Another MAC, no answer, or a rejected password sends `services.locate` to
+  browse `_airport` for that MAC and read the candidate with the password. A
+  device found elsewhere is used at that address for this command only: the
+  app offers to save it, the CLI says to run `tcapsule configure`. Another
+  AirPort at the address with the saved one not found is
+  `device_identity_mismatch`.
+- **Configure of a saved device** makes the same check before anything changes,
+  with one read, so another AirPort that took the address (households often
+  share one admin password) is never given SSH and rebooted. When SSH answers
+  at the address that read reached, it is also configure's ACP password check.
+- **Learning the MAC (app only).** A profile saved before MACs were learns one
+  from a read that took the password: the background SSH check reads devices
+  seen at their saved address, and doctor and every command that goes through
+  ACPd (deploy, flash, fsck, uninstall, SSH changes) report what they reached
+  (`airport_mac`, `airport_instance_name`, `airport_host_label`,
+  `airport_host_label_source`). A saved MAC never changes; the registry refuses
+  another. Without one, the names decide (`DeviceNetworkIdentity.nameEvidence`):
+  two known service names decide; a host label counts only when one side has no
+  service name, or when it came from `syDN`, which a rename of `syNm` leaves
+  alone. A name with Apple's suffix, another visible device on the same host
+  label (a conflict not renamed yet), or any device or other profile with the
+  same service name leaves it ambiguous; another saved profile's host label
+  does not, as it is only what that device held when saved. A profile with no
+  saved name learns only while discovery shows no other AirPort.
+- **Moved-device banner.** Discovery finds a profile's device at a new address
+  by its MAC, or for a profile without one by the same name rules. The
+  telemetry field `address_source` (`mac`, `name`, `manual`) says which, and
+  saving the new address turns SSH on if needed.
+- **Telemetry.** `airport_mac` and `current_host` are telemetry fields. The
+  names and `airport_host_label_source` go to the app only
+  (`services.context.DEVICE_APP_ONLY_FIELDS`), in results and debug fields but
+  never in telemetry fields or the debug text of a failure. A fatal doctor
+  run's debug text still includes its naming probe.
+
 ## Registered mDNS Records
 
 Current behavior:

@@ -77,7 +77,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.start_optional_airport_identity_probe(connection)
         if not args.no_reboot:
             # The reboot goes through ACP: check ACPd and the password before the disk is touched.
-            require_acpd_ready(connection, command_context.to_operation_callbacks())
+            require_acpd_ready(connection, command_context.to_operation_callbacks(),
+                               reading=command_context.reading_at(connection))
 
         mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,

@@ -37,7 +37,7 @@ from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
 
 from tests.cli_support import app_config, valid_env
-from timecapsulesmb.services.credentials import request_airport_mac
+from timecapsulesmb.services.credentials import overlay_request_airport_mac, saved_airport_mac
 from timecapsulesmb.services.locate import LocateResult
 from tests.reboot_support import DEVICE_AIRPORT_MAC, RecordingCallbacks, acp_password_answer, acp_reading
 
@@ -816,6 +816,122 @@ class ConfirmDeviceAddressTests(unittest.TestCase):
                 self.assertEqual(result, expected)
 
 
+class AirportIdentityTests(unittest.TestCase):
+    """The device identity commands report, for the app to save with its profile."""
+
+    def test_the_fields_carry_the_mac_and_the_names_apple_advertises(self) -> None:
+        cases = {
+            "name": (("Gregory's AirPort Time Capsule", None), {
+                "airport_instance_name": "Gregory's AirPort Time Capsule",
+                # ACPd drops the apostrophe and keeps case; the app compares lowercased.
+                "airport_host_label": "gregorys-airport-time-capsule", "airport_host_label_source": "syNm",
+            }),
+            # ACPd takes the host label from syDN before syNm; such a label stays when syNm changes.
+            "dns name": (("Office", "Den Capsule"), {"airport_instance_name": "Office", "airport_host_label": "den-capsule",
+                                                     "airport_host_label_source": "syDN"}),
+            # A syDN with nothing ACPd keeps (all non-ASCII) leaves the label to syNm.
+            "unusable dns name": (("Office", "日本"), {"airport_instance_name": "Office", "airport_host_label": "office",
+                                                     "airport_host_label_source": "syNm"}),
+            # Over 63 bytes mDNSResponder advertises a name of its own.
+            "long name": (("x" * 64, None), {"airport_host_label": "x" * 63, "airport_host_label_source": "syNm"}),
+            # No name of its own: Base-Station-... names no device.
+            "no name": ((None, None), {}),
+            "non-ASCII name": (("日本語", None), {"airport_instance_name": "日本語"}),
+        }
+        for case, ((name, dns_name), expected) in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(service_runtime.airport_identity_fields(DEVICE_AIRPORT_MAC, name, dns_name),
+                                 {"airport_mac": DEVICE_AIRPORT_MAC, **expected})
+        self.assertEqual(service_runtime.airport_identity_fields(None, "Office"), {})
+
+    def test_only_a_read_that_took_the_password_is_reported(self) -> None:
+        named = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
+        cases = {
+            "match": (named, {"airport_mac": DEVICE_AIRPORT_MAC, "airport_instance_name": "Office", "airport_host_label": "office",
+                              "airport_host_label_source": "syNm"}),
+            "rejected": (AirportAcpReading(password_matches=False), {}),
+            "unanswered": (acp_reading(None), {}),
+            "no mac": (AirportAcpReading(password_matches=True, airport_name="Office"), {}),
+        }
+        for case, (reading, expected) in cases.items():
+            with self.subTest(case=case):
+                recorder = RecordingCallbacks()
+                service_runtime.report_airport_identity(recorder.callbacks(), reading)
+                self.assertEqual(recorder.fields, expected)
+
+    def test_the_password_check_before_a_reboot_reports_the_device(self) -> None:
+        recorder = RecordingCallbacks()
+        reading = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=[]):
+            service_runtime.require_acpd_ready(SshConnection("root@10.0.0.2", "pw", ""), recorder.callbacks(), reading=reading)
+        self.assertEqual(recorder.fields["airport_mac"], DEVICE_AIRPORT_MAC)
+        self.assertEqual(recorder.fields["airport_instance_name"], "Office")
+
+    def test_a_rejected_password_check_reports_nothing(self) -> None:
+        recorder = RecordingCallbacks()
+        with self.assertRaises(service_runtime.DeviceAccessError):
+            service_runtime.require_acpd_ready(SshConnection("root@10.0.0.2", "pw", ""), recorder.callbacks(), reading=acp_reading(False))
+        self.assertEqual(recorder.fields, {})
+
+    def test_the_saved_device_at_its_address_is_reported_another_airport_is_not(self) -> None:
+        named = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
+        other = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:02", airport_name="Den")
+        for reading, reported in ((named, True), (other, False)):
+            with self.subTest(reading=reading):
+                recorder = RecordingCallbacks()
+                with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading) as read, \
+                        mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=LocateResult("not_found")):
+                    try:
+                        service_runtime.confirm_device_address("root@10.0.0.2", "pw", DEVICE_AIRPORT_MAC, recorder.callbacks())
+                    except service_runtime.DeviceAccessError:
+                        pass
+                # Commands read twice before looking elsewhere; configure once.
+                read.assert_called_once_with("root@10.0.0.2", "pw", attempts=2)
+                self.assertEqual("airport_mac" in recorder.fields, reported)
+                self.assertNotIn("Den", recorder.fields.values())
+
+    def test_learning_reads_once(self) -> None:
+        recorder = RecordingCallbacks()
+        reading = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
+        with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading) as read:
+            service_runtime.learn_airport_identity("root@10.0.0.2", "pw", recorder.callbacks())
+        read.assert_called_once_with("root@10.0.0.2", "pw", attempts=1)
+        self.assertEqual(recorder.fields["airport_mac"], DEVICE_AIRPORT_MAC)
+
+
+class FollowSavedDeviceTests(unittest.TestCase):
+    """The saved device reached where it answers now, for the app and the CLI."""
+
+    def follow(self, values: dict[str, str], airport_mac, *, host="root@10.0.0.2", reading=None):
+        config = app_config(values)
+        result = (host, reading or acp_reading(True))
+        with mock.patch("timecapsulesmb.services.runtime.confirm_device_address", return_value=result) as confirm:
+            followed, device_reading = service_runtime.follow_saved_device(config, airport_mac, RecordingCallbacks().callbacks())
+        return config, followed, device_reading, confirm
+
+    def test_without_a_mac_or_a_password_nothing_is_read(self) -> None:
+        for values, mac in ((valid_env(), None), ({**valid_env(), "TC_PASSWORD": ""}, DEVICE_AIRPORT_MAC)):
+            with self.subTest(mac=mac):
+                config, followed, device_reading, confirm = self.follow(values, mac)
+                self.assertIs(followed, config)
+                self.assertIsNone(device_reading)
+                confirm.assert_not_called()
+
+    def test_a_device_at_its_saved_address_keeps_the_config(self) -> None:
+        values = valid_env()
+        config, followed, device_reading, _confirm = self.follow(values, DEVICE_AIRPORT_MAC, host=values["TC_HOST"])
+        self.assertIs(followed, config)
+        self.assertEqual(device_reading, (values["TC_HOST"], acp_reading(True)))
+
+    def test_a_moved_device_changes_only_this_commands_copy(self) -> None:
+        config, followed, device_reading, _confirm = self.follow(valid_env(), DEVICE_AIRPORT_MAC, host="root@10.0.0.9")
+        self.assertEqual(followed.get("TC_HOST"), "root@10.0.0.9")
+        self.assertNotEqual(config.get("TC_HOST"), "root@10.0.0.9")
+        self.assertEqual(followed.path, config.path)
+        self.assertEqual(device_reading, ("root@10.0.0.9", acp_reading(True)))
+
+
 class SavedHostnameTests(unittest.TestCase):
     def test_a_profile_saved_by_hostname_is_not_looked_for_elsewhere(self) -> None:
         # A hostname resolves to wherever the device is now.
@@ -831,11 +947,21 @@ class SavedHostnameTests(unittest.TestCase):
         self.assertTrue(recorder.measurement("host_follow")["saved_hostname"])
 
 
-class RequestAirportMacTests(unittest.TestCase):
-    def test_the_apps_mac_is_normalized_and_a_malformed_one_refused(self) -> None:
-        self.assertIsNone(request_airport_mac({}))
-        self.assertEqual(request_airport_mac({"airport_mac": "02-00-00-00-00-0A"}), "02:00:00:00:00:0a")
-        for value in ("02:00:00", "", 42, "01:00:5e:00:00:01"):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError):
-                    request_airport_mac({"airport_mac": value})
+class SavedAirportMacTests(unittest.TestCase):
+    def test_the_saved_mac_is_the_configs(self) -> None:
+        saved = app_config({**valid_env(), "TC_AIRPORT_MAC": "02-00-00-00-00-0B"})
+        self.assertEqual(saved_airport_mac(saved), "02:00:00:00:00:0b")
+        self.assertIsNone(saved_airport_mac(app_config({**valid_env(), "TC_AIRPORT_MAC": ""})))
+        self.assertIsNone(saved_airport_mac(app_config(valid_env())))
+        with self.assertRaises(ValueError):
+            saved_airport_mac(app_config({**valid_env(), "TC_AIRPORT_MAC": "not-a-mac"}))
+
+    def test_the_app_owns_its_profiles_mac(self) -> None:
+        # The app's registry, not the .env configure wrote, says which device a profile is.
+        saved = app_config({**valid_env(), "TC_AIRPORT_MAC": "02:00:00:00:00:0b"})
+        overlaid = overlay_request_airport_mac(saved, {"airport_mac": "02-00-00-00-00-0A"})
+        self.assertEqual(saved_airport_mac(overlaid), "02:00:00:00:00:0a")
+        self.assertIsNone(saved_airport_mac(overlay_request_airport_mac(saved, {})))
+        self.assertEqual(overlaid.path, saved.path)
+        with self.assertRaises(ValueError):
+            overlay_request_airport_mac(saved, {"airport_mac": "not-a-mac"})

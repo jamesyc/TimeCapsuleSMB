@@ -187,14 +187,31 @@ final class DeviceRegistryStore: ObservableObject {
         }
     }
 
+    /// Record a checkup. `observedMAC` is the MAC the checkup read over SSH:
+    /// a checkup of another AirPort is not this profile's and is not kept.
     func updateCheckup(
         _ snapshot: DeviceCheckupSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot?,
-        airportMAC: String? = nil,
+        observedMAC: String? = nil,
         for profileID: DeviceProfile.ID
     ) async {
         await applyBackgroundMutation {
-            try await repository.updateCheckup(snapshot, runtimeState: runtimeState, airportMAC: airportMAC, for: profileID)
+            try await repository.updateCheckup(snapshot, runtimeState: runtimeState, observedMAC: observedMAC, for: profileID)
+        }
+    }
+
+    /// Save the AirPort MAC an operation confirmed, for a profile without one,
+    /// so later operations find the device after DHCP moves it. `visible` is
+    /// what discovery sees now. Every identity an operation reports comes
+    /// here (AppStore); a MAC another profile owns becomes the registry's
+    /// error, whose recovery merges the two. A profile with a MAC keeps it.
+    func confirmAirportIdentity(
+        _ identity: AirportIdentityObservation,
+        for profileID: DeviceProfile.ID,
+        visible: [DeviceNetworkIdentity] = []
+    ) async {
+        await applyBackgroundMutation {
+            try await repository.confirmAirportIdentity(identity, for: profileID, visible: visible)
         }
     }
 
@@ -276,10 +293,22 @@ final class DeviceRegistryStore: ObservableObject {
         profileMatch(for: device).profile
     }
 
-    func suggestedProfile(for device: DiscoveredDevice) -> DeviceProfile? {
+    /// The one saved profile a device no profile matches by MAC or address
+    /// names (DeviceNetworkIdentity.nameEvidence). `devices` is what
+    /// discovery sees now: a name another of them shares names neither.
+    func suggestedProfile(for device: DiscoveredDevice, among devices: [DiscoveredDevice] = []) -> DeviceProfile? {
         guard case .none = profileMatch(for: device) else { return nil }
-        let identity = device.observedIdentity
-        let suggestions = profiles.filter { $0.network.sharesName(with: identity) }
+        let names = device.observedIdentity.savedNames
+        // Another record of the device itself (its MAC) is no competitor. Ids
+        // come from the Bonjour full name, which two devices can share.
+        let otherDevices = devices.filter { other in
+            other != device && !(other.airportMAC != nil && other.airportMAC == device.airportMAC)
+        }.map(\.observedIdentity.savedNames)
+        let suggestions = profiles.filter { profile in
+            if let left = profile.network.airportMAC, let right = device.airportMAC, left != right { return false }
+            let others = profiles.filter { $0.id != profile.id }.map(\.network.savedNames)
+            return profile.network.nameEvidence(for: names, visible: otherDevices, saved: others) == .same
+        }
         return suggestions.count == 1 ? suggestions[0] : nil
     }
 
@@ -502,18 +531,20 @@ private actor DeviceRegistryRepository {
     func updateCheckup(
         _ snapshot: DeviceCheckupSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot?,
-        airportMAC: String? = nil,
+        observedMAC: String? = nil,
         for profileID: DeviceProfile.ID
     ) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
-        let confirmed = DeviceNetworkIdentity.normalizedAirportMAC(airportMAC)
+        // Another AirPort answered the checkup (one with the same password at
+        // this address): its results are not this device's. confirmAirportIdentity
+        // reports the contradiction for the same result.
+        if let saved = profiles[index].network.airportMAC,
+           let observed = DeviceNetworkIdentity.normalizedAirportMAC(observedMAC), observed != saved {
+            return nil
+        }
         var updatedProfiles = profiles
-        if let confirmed { updatedProfiles[index].network.airportMAC = confirmed }
-        // Checkups learn identity through the same actor-owned validation as saves.
-        // Reject the whole mutation before writing snapshots or persistent state.
-        try validateProfileIdentity(updatedProfiles[index])
         if runtimeState != nil {
             // Finish an orphaned attempt too, so reload cannot undo this fresh
             // SSH-backed observation. Dashboard updates are enqueued in order.
@@ -523,6 +554,50 @@ private actor DeviceRegistryRepository {
         if let runtimeState {
             updatedProfiles[index].runtimeState = runtimeState
         }
+        updatedProfiles[index].updatedAt = now()
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
+    }
+
+    func confirmAirportIdentity(
+        _ identity: AirportIdentityObservation,
+        for profileID: DeviceProfile.ID,
+        visible: [DeviceNetworkIdentity]
+    ) throws -> [DeviceProfile]? {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            return nil
+        }
+        let profile = profiles[index]
+        if profile.network.airportMAC != nil {
+            // The saved MAC decides. A different one is another device, which
+            // the operation itself refused (configure, follow_saved_device).
+            return nil
+        }
+        // Two AirPorts of one household often share the admin password, and
+        // the saved address may now belong to the other one: without a MAC
+        // only the names can tell. A profile saved by address has none, and
+        // its address is all there is. A profile already owning this MAC is
+        // left to validation, which reports the two entries for one device.
+        let otherDevices = visible.filter { $0.airportMAC != identity.mac }.map(\.savedNames)
+        let otherProfiles = profiles.filter { $0.id != profileID && $0.network.airportMAC != identity.mac }
+            .map(\.network.savedNames)
+        switch profile.network.nameEvidence(for: identity.names, visible: otherDevices, saved: otherProfiles) {
+        case .same:
+            break
+        case .noName:
+            // Only its address says which device it is, and DHCP may have
+            // given that to another AirPort that shares the password: a wrong
+            // MAC would stay for good. So it is learned only while discovery
+            // shows no other AirPort; one discovery does not see (another
+            // subnet, Wi-Fi client isolation) is not ruled out.
+            guard visible.allSatisfy({ $0.airportMAC == identity.mac }) else { return nil }
+        case .different, .ambiguous:
+            return nil
+        }
+        var updatedProfiles = profiles
+        updatedProfiles[index].network.airportMAC = identity.mac
+        try validateProfileIdentity(updatedProfiles[index])
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
         profiles = updatedProfiles

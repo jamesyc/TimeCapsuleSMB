@@ -321,7 +321,7 @@ def _resolve_flash_target(
     )
     # Every flash read and write goes through ACPd, and a restore ends in an
     # ACP reboot: refuse a stuck ACPd before the first read.
-    require_acpd_ready(connection, command_context.to_operation_callbacks())
+    require_acpd_ready(connection, command_context.to_operation_callbacks(), reading=command_context.reading_at(connection))
     emit_progress(log, f"Using ACP host {flash_target.acp_host}.")
     return flash_target
 

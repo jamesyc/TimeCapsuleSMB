@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
@@ -8,8 +9,21 @@ from timecapsulesmb.telemetry.execution import ExecutionTelemetryRecorder
 
 if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
-    from timecapsulesmb.device.probe import ProbedDeviceState
+    from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState
+    from timecapsulesmb.services.callbacks import OperationCallbacks
+    from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.transport.ssh import SshConnection
+
+
+# Facts an operation learned about the saved device: an address it moved to,
+# and the identity it answered with (services.runtime.airport_identity_fields).
+# The app saves them with the profile, failures included.
+DEVICE_UPDATE_FIELDS = ("current_host", "airport_mac", "airport_instance_name", "airport_host_label",
+                        "airport_host_label_source")
+# The names the user gave the device, and which name the host label came
+# from, go to the app only, not to telemetry: not as operation fields, nor in
+# the debug text of a failure.
+DEVICE_APP_ONLY_FIELDS = ("airport_instance_name", "airport_host_label", "airport_host_label_source")
 
 
 COMMAND_VALUE_BLACKLIST = {
@@ -28,8 +42,10 @@ COMMAND_VALUE_BLACKLIST = {
     "TC_AIRPORT_SYAP",
 }
 COMMAND_FIELD_BLACKLIST = {
-    # Confirmed appliance identity belongs in the local profile, not telemetry.
+    # A top-level telemetry field already (DEVICE_UPDATE_FIELDS); the debug
+    # text does not repeat it.
     "airport_mac",
+    *DEVICE_APP_ONLY_FIELDS,
     # These are already first-class operation fields.
     "configure_id",
     "device_model",
@@ -109,12 +125,86 @@ class OperationContext:
         self.debug_fields: dict[str, object] = {}
         self.connection: SshConnection | None = None
         self.probe_state: ProbedDeviceState | None = None
+        # The SSH target and network ACP read follow_saved_device took of the
+        # saved device, so the command's password check need not read again.
+        self.device_reading: tuple[str, AirportAcpReading] | None = None
         self.execution = ExecutionTelemetryRecorder()
 
     def update_fields(self, **fields: object) -> None:
         for key, value in fields.items():
-            if value is not None:
+            if value is not None and key not in DEVICE_APP_ONLY_FIELDS:
                 self.finish_fields[key] = value
+        # What the command learned about the saved device reaches the app on
+        # failures too: every error carries the debug fields.
+        device_fields = {key: fields[key] for key in DEVICE_UPDATE_FIELDS if isinstance(fields.get(key), str)}
+        if device_fields:
+            self.add_debug_fields(**device_fields)
+        # A device found at another address (services.locate) is reached
+        # there from now on, and failures report that address.
+        current_host = device_fields.get("current_host")
+        if isinstance(current_host, str) and self.connection is not None:
+            self.connection = replace(self.connection, host=current_host)
+
+    def follow_saved_device(self, callbacks: OperationCallbacks) -> None:
+        """Point this operation's config at where the saved device answers now.
+
+        TC_HOST of this config is the one address every connection of the
+        operation uses; names never are. Raises ValueError for a malformed
+        TC_AIRPORT_MAC and services.runtime.DeviceAccessError for another
+        AirPort at the saved address.
+        """
+        from timecapsulesmb.services.credentials import saved_airport_mac
+        from timecapsulesmb.services.runtime import follow_saved_device
+
+        airport_mac = saved_airport_mac(self.config) if self.config is not None else None
+        if self.config is None or airport_mac is None:
+            return
+        self.config, self.device_reading = follow_saved_device(self.config, airport_mac, callbacks)
+
+    def reading_at(self, connection: SshConnection | None) -> AirportAcpReading | None:
+        """The read follow_saved_device took, when it was of this connection's address."""
+        from timecapsulesmb.core.net import endpoint_host
+
+        if self.device_reading is None or connection is None:
+            return None
+        host, reading = self.device_reading
+        return reading if endpoint_host(host) == endpoint_host(connection.host) else None
+
+    def apply_managed_target(self, target: ManagedTargetState) -> ManagedTargetState:
+        self.connection = target.connection
+        if target.probe_state is not None:
+            self.apply_probe_state(target.probe_state)
+        return target
+
+    def apply_probe_state(self, probe_state: ProbedDeviceState) -> None:
+        """Record the probed device's model, OS and payload family."""
+        from timecapsulesmb.telemetry import build_device_os_version
+
+        self.probe_state = probe_state
+        probe = probe_state.probe_result
+        self.update_fields(device_model=probe.airport_model, device_syap=probe.airport_syap)
+        compatibility = probe_state.compatibility
+        if compatibility is not None:
+            self.update_fields(
+                device_os_version=build_device_os_version(
+                    compatibility.os_name,
+                    compatibility.os_release,
+                    compatibility.arch,
+                ),
+                device_family=compatibility.payload_family,
+            )
+
+    def known_airport_display_name(self) -> str | None:
+        from timecapsulesmb.core.config import airport_exact_display_name_from_identity
+
+        model = self.finish_fields.get("device_model")
+        syap = self.finish_fields.get("device_syap")
+        if not isinstance(model, str) and not isinstance(syap, str):
+            return None
+        return airport_exact_display_name_from_identity(
+            model=model if isinstance(model, str) else None,
+            syap=syap if isinstance(syap, str) else None,
+        )
 
     def set_stage(self, stage: str) -> None:
         self.debug_stage = stage

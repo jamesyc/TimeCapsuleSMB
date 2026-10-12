@@ -469,6 +469,31 @@ class CliDoctorTests(CliTestCase):
         self.assertIs(checks_kwargs["connection"], command_context.connection)
         self.assertIs(checks_kwargs["precomputed_probe_state"], probe_state)
 
+    def test_doctor_checks_a_moved_device_where_ssh_reaches_it(self) -> None:
+        # Bonjour and SMB checks read TC_HOST from the config doctor passes:
+        # the followed one, so they look where SSH finds the device now.
+        from timecapsulesmb.device.probe import AirportAcpReading
+
+        values = {**self.make_valid_env(), "TC_HOST": "root@10.0.0.2", "TC_AIRPORT_MAC": "02:00:00:00:00:0a"}
+        moved = self.make_app_config({**values, "TC_HOST": "root@10.0.0.9"})
+        reading = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:0a")
+        with tempfile.NamedTemporaryFile() as env_file:
+            with mock.patch("timecapsulesmb.cli.doctor.load_env_config",
+                            return_value=self.make_app_config(values, path=Path(env_file.name))), \
+                    mock.patch("timecapsulesmb.cli.doctor.TelemetryClient.from_config", return_value=mock.Mock()), \
+                    mock.patch("timecapsulesmb.services.runtime.follow_saved_device",
+                               return_value=(moved, ("root@10.0.0.9", reading))), \
+                    mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([], False)) as checks_mock, \
+                    redirect_stdout(io.StringIO()):
+                rc = doctor.main(["--skip-bonjour"])
+
+        self.assertEqual(rc, 0)
+        config = checks_mock.call_args.args[0]
+        self.assertEqual(config.get("TC_HOST"), "root@10.0.0.9")
+        self.assertEqual(checks_mock.call_args.kwargs["connection"].host, "root@10.0.0.9")
+        # The follow's ACP read is the password check's: no second read.
+        self.assertIs(checks_mock.call_args.kwargs["device_reading"], reading)
+
     def test_doctor_streams_results_in_human_mode(self) -> None:
         output = io.StringIO()
         streamed_result = doctor.CheckResult("PASS", "streamed")

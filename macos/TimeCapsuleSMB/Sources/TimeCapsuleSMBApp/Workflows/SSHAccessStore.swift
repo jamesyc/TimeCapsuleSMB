@@ -32,10 +32,12 @@ final class DeviceSSHAccessStore: ObservableObject {
     }
 
     func refresh(profile: DeviceProfile) {
-        runRefresh(profile: profile)
+        runRefresh(profile: profile, password: nil)
     }
 
-    func refreshIfNeeded(profile: DeviceProfile) {
+    /// `password` lets the check also read the MAC of a profile without one.
+    /// It is read from the keychain only when the check runs.
+    func refreshIfNeeded(profile: DeviceProfile, password: @autoclosure () -> String? = nil) {
         guard !coordinator.isDeviceBusy(profile.id) else {
             return
         }
@@ -43,10 +45,10 @@ final class DeviceSSHAccessStore: ObservableObject {
            now().timeIntervalSince(snapshot.refreshedAt) < Self.automaticRefreshInterval {
             return
         }
-        runRefresh(profile: profile)
+        runRefresh(profile: profile, password: password())
     }
 
-    private func runRefresh(profile: DeviceProfile) {
+    private func runRefresh(profile: DeviceProfile, password: String?) {
         let laneKey = OperationLaneKey.deviceWorkflow(profile.id, .sshAccess)
         let lane = coordinator.lane(for: laneKey)
         observeLane(for: profile.id, lane: lane)
@@ -63,6 +65,7 @@ final class DeviceSSHAccessStore: ObservableObject {
             params: OperationParams.SetSSH.status(),
             context: profile.runtimeContext,
             activeDeviceID: profile.id,
+            password: password,
             laneKey: laneKey
         ) {
         case .started(let operation):

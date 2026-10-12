@@ -100,6 +100,52 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.finish_fields["current_host"], "root@10.0.0.9")
         self.assertIn("Run `tcapsule configure` to save the device's new address (root@10.0.0.9).", output.getvalue())
 
+    def cli_context_with(self, values: dict[str, str]) -> CommandContext:
+        from tests.cli_support import app_config
+
+        context = CommandContext(mock.Mock(), "deploy", "deploy_started", "deploy_finished", config=app_config(values))
+        return context
+
+    def test_a_cli_command_reaches_the_device_where_it_moved_by_the_saved_mac(self) -> None:
+        from tests.cli_support import app_config
+
+        context = self.cli_context_with({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": "02-00-00-00-00-0A"})
+        moved = app_config({"TC_HOST": "root@10.0.0.9", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": "02-00-00-00-00-0A"})
+        with mock.patch("timecapsulesmb.services.runtime.follow_saved_device", return_value=(moved, None)) as follow:
+            first = context.resolve_env_connection()
+            second = context.resolve_env_connection()
+
+        # Looked for once, with the normalized MAC, before the first connection.
+        follow.assert_called_once()
+        self.assertEqual(follow.call_args.args[1], "02:00:00:00:00:0a")
+        self.assertEqual((first.host, second.host), ("root@10.0.0.9", "root@10.0.0.9"))
+
+    def test_the_preflight_check_reuses_the_read_that_found_the_device(self) -> None:
+        # Without it a CLI command reads the password twice, and when ACP does
+        # not answer waits out both reads' retries.
+        from tests.cli_support import app_config
+        from timecapsulesmb.device.probe import AirportAcpReading
+        reading = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:0a")
+        context = self.cli_context_with({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": "02:00:00:00:00:0a"})
+        moved = app_config({"TC_HOST": "root@10.0.0.9", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": "02:00:00:00:00:0a"})
+        with mock.patch("timecapsulesmb.services.runtime.follow_saved_device", return_value=(moved, ("root@10.0.0.9", reading))):
+            connection = context.resolve_env_connection()
+        self.assertIs(context.reading_at(connection), reading)
+        self.assertIsNone(context.reading_at(SshConnection("root@10.0.0.2", "pw", "")))
+
+    def test_a_cli_configuration_without_a_mac_is_not_looked_for(self) -> None:
+        context = self.cli_context_with({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        with mock.patch("timecapsulesmb.services.runtime.follow_saved_device") as follow:
+            connection = context.resolve_env_connection()
+        follow.assert_not_called()
+        self.assertEqual(connection.host, "root@10.0.0.2")
+
+    def test_a_malformed_saved_mac_is_a_configuration_error(self) -> None:
+        context = self.cli_context_with({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": "80:ea"})
+        with self.assertRaises(ConfigError) as raised:
+            context.resolve_env_connection()
+        self.assertIn("TC_AIRPORT_MAC", str(raised.exception))
+
     def test_configure_saves_the_new_address_so_it_prints_no_hint(self) -> None:
         context = CommandContext(mock.Mock(), "configure", "configure_started", "configure_finished")
         with redirect_stdout(io.StringIO()) as output:

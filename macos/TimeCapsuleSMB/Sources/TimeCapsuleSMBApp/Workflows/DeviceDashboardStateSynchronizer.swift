@@ -107,7 +107,7 @@ final class DeviceDashboardStateSynchronizer {
         }
         let observedAt = Date()
         let skipSSH = doctorStore.skipSSH
-        let airportMAC = doctorStore.payload?.airportMAC
+        let observedMAC = doctorStore.payload?.airportMAC
         appStore.deviceRegistry.enqueueOperationUpdate { [self] in
             let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
                 profile: appStore.deviceRegistry.profile(id: profileID),
@@ -122,7 +122,7 @@ final class DeviceDashboardStateSynchronizer {
                     observedAt: observedAt
                 ),
                 runtimeState: runtimeState,
-                airportMAC: airportMAC,
+                observedMAC: observedMAC,
                 for: profileID
             )
         }

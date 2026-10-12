@@ -9,7 +9,8 @@ from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.runtime import resolve_env_connection
+from timecapsulesmb.services.credentials import saved_airport_mac
+from timecapsulesmb.services.runtime import learn_airport_identity, resolve_env_connection
 from timecapsulesmb.services.set_ssh import (
     disable_set_ssh,
     enable_set_ssh,
@@ -26,6 +27,9 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
         context.stage("probe_ssh")
         result = probe_set_ssh_status(host)
         _update_status_fields(context, result)
+        password = config.get("TC_PASSWORD")
+        if result.acp_port_reachable and password and saved_airport_mac(config) is None:
+            learn_airport_identity(host, password, context.to_operation_callbacks())
         return OperationResult(True, set_ssh_payload(result))
 
     if action not in {"enable", "disable"}:

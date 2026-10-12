@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from dataclasses import replace
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
@@ -20,7 +19,6 @@ from timecapsulesmb.services.context import (
     OperationContext,
 )
 from timecapsulesmb.services import runtime as service_runtime
-from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.operation import (
     OperationTelemetrySession,
     client_from_environment,
@@ -37,7 +35,7 @@ from timecapsulesmb.transport.errors import (
 if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.compat import DeviceCompatibility
-    from timecapsulesmb.device.probe import ProbedDeviceState
+    from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState
     from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
@@ -73,6 +71,8 @@ class CommandContext:
         self._optional_airport_identity: tuple[str | None, str | None] | None = None
         # The stage and time of the last progress line printed.
         self._last_progress_print: tuple[str, float] | None = None
+        # The saved device is looked for once, before the first connection.
+        self._followed = False
         self.telemetry_session = OperationTelemetrySession(
             telemetry,
             command_name,
@@ -219,11 +219,7 @@ class CommandContext:
 
     def update_fields(self, **fields: object) -> None:
         self.operation_context.update_fields(**fields)
-        # A device found at another address (services.locate) is reached there
-        # from now on, and failures report that address.
         current_host = fields.get("current_host")
-        if isinstance(current_host, str) and self.connection is not None:
-            self.connection = replace(self.connection, host=current_host)
         # The CLI follows the device only for this command; configure saves the
         # address it ends at, every other command leaves the saved one as it was.
         if isinstance(current_host, str) and self.command_name != "configure":
@@ -231,13 +227,6 @@ class CommandContext:
 
     def _update_device_identity_fields(self, *, model: str | None, syap: str | None) -> None:
         self.update_fields(device_model=model, device_syap=syap)
-
-    def _update_device_identity_from_probe_state(self, probe_state: ProbedDeviceState) -> None:
-        probe = probe_state.probe_result
-        self._update_device_identity_fields(
-            model=probe.airport_model,
-            syap=probe.airport_syap,
-        )
 
     def start_optional_airport_identity_probe(self, connection: SshConnection | None = None) -> None:
         if self.finish_fields.get("device_model") or self.finish_fields.get("device_syap"):
@@ -283,14 +272,11 @@ class CommandContext:
 
     def known_airport_display_name(self) -> str | None:
         self.harvest_optional_airport_identity_probe(timeout_seconds=0.0)
-        model = self.finish_fields.get("device_model")
-        syap = self.finish_fields.get("device_syap")
-        if not isinstance(model, str) and not isinstance(syap, str):
-            return None
-        return airport_exact_display_name_from_identity(
-            model=model if isinstance(model, str) else None,
-            syap=syap if isinstance(syap, str) else None,
-        )
+        return self.operation_context.known_airport_display_name()
+
+    def reading_at(self, connection: SshConnection | None) -> AirportAcpReading | None:
+        """The ACP read following the saved device took at this connection's address."""
+        return self.operation_context.reading_at(connection)
 
     def set_stage(self, stage: str) -> None:
         self.operation_context.set_stage(stage)
@@ -319,6 +305,7 @@ class CommandContext:
     ) -> SshConnection:
         if self.config is None:
             raise RuntimeError("CommandContext config is not set.")
+        self._follow_saved_device()
         self.connection = service_runtime.resolve_env_connection(
             self.config,
             required_keys=required_keys,
@@ -326,6 +313,20 @@ class CommandContext:
             password_provider=self._password_provider(),
         )
         return self.connection
+
+    def _follow_saved_device(self) -> None:
+        """Reach the device where it answers now, by the MAC configure saved.
+
+        The CLI never saves what it finds: without TC_AIRPORT_MAC there is
+        nothing to look for, and a new address is saved by `tcapsule configure`.
+        """
+        if self._followed or self.config is None:
+            return
+        self._followed = True
+        try:
+            self.operation_context.follow_saved_device(self.to_operation_callbacks())
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
 
     def require_valid_config(self, *, profile: str) -> None:
         if self.config is None:
@@ -338,25 +339,15 @@ class CommandContext:
         )
 
     def _apply_managed_target_state(self, target: ManagedTargetState) -> ManagedTargetState:
-        self.connection = target.connection
+        self.operation_context.apply_managed_target(target)
         if target.probe_state is not None:
-            self.probe_state = target.probe_state
             self.compatibility = target.probe_state.compatibility
-            self._update_device_identity_from_probe_state(target.probe_state)
-            if self.compatibility is not None:
-                self.update_fields(
-                    device_os_version=build_device_os_version(
-                        self.compatibility.os_name,
-                        self.compatibility.os_release,
-                        self.compatibility.arch,
-                    ),
-                    device_family=self.compatibility.payload_family,
-                )
         return target
 
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.config is None:
             raise RuntimeError("CommandContext config is not set.")
+        self._follow_saved_device()
         target = service_runtime.resolve_validated_managed_target(
             self.config,
             command_name=self.command_name,
@@ -376,13 +367,7 @@ class CommandContext:
             # rejected) rather than leave it to look like an unsupported device.
             raise service_runtime.probe_failure_error(self.probe_state.probe_result, self.connection.host)
         self.compatibility = self.probe_state.compatibility
-        self._update_device_identity_from_probe_state(self.probe_state)
-        self.update_fields(device_os_version=build_device_os_version(
-            self.compatibility.os_name,
-            self.compatibility.os_release,
-            self.compatibility.arch,
-        ))
-        self.update_fields(device_family=self.compatibility.payload_family)
+        self.operation_context.apply_probe_state(self.probe_state)
         return self.compatibility
 
     def finish(self, *, result: str, **fields: object) -> None:

@@ -877,6 +877,26 @@ class CliMaintenanceTests(CliTestCase):
         run_ssh.assert_not_called()
         self.assertEqual(self.device.calls, [])
 
+    def test_fsck_reads_the_password_once_when_it_follows_the_saved_device(self) -> None:
+        # The read that looks for the device by its MAC is also the password
+        # check before the reboot: a second read would repeat its retries.
+        from timecapsulesmb.services.locate import LocateResult
+
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo",
+                  "TC_AIRPORT_MAC": "02:00:00:00:00:0a"}
+        compare = acp_password_answer(False)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck")
+            stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            stack.enter_context(mock.patch("timecapsulesmb.device.probe.read_airport_acp", compare))
+            stack.enter_context(mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=LocateResult("not_found")))
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                fsck.main(["--yes"])
+
+        self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(compare.call_count, 1)
+
     def test_fsck_without_reboot_does_not_compare_the_password(self) -> None:
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw-secretzz", "TC_SSH_OPTS": "-o foo"}
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\ntcapsule-fsck: fsck_hfs exit status 0\n", returncode=0)

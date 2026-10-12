@@ -112,7 +112,7 @@ final class BonjourServiceLabelTests: XCTestCase {
         let plain = DeviceNetworkIdentity(configuredSSHTarget: "10.0.0.2", bonjourFullname: "Capsule._airport._tcp.local.")
         for label in [" Capsule", "Capsule ", "\u{00A0}Capsule"] {
             let other = DeviceNetworkIdentity(configuredSSHTarget: "10.0.0.9", bonjourFullname: "\(label)._airport._tcp.local.")
-            XCTAssertFalse(plain.sharesName(with: other))
+            XCTAssertEqual(plain.nameEvidence(for: other.savedNames, visible: [], saved: []), .different)
             XCTAssertFalse(plain.matches(other))
         }
     }

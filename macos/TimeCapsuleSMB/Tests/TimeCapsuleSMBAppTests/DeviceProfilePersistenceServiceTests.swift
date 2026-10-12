@@ -3,6 +3,27 @@ import XCTest
 
 @MainActor
 final class DeviceProfilePersistenceServiceTests: XCTestCase {
+    func testConfigureOfASavedDeviceCarriesItsMAC() async throws {
+        // BackendClient sends the context's MAC as airport_mac: configure then
+        // refuses another AirPort at the address before ACP turns SSH on there.
+        let temp = try TemporaryDirectory()
+        let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await registry.load()
+        let service = DeviceProfilePersistenceService(registry: registry, passwordStore: InMemoryPasswordStore())
+        let saved = try await registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", airportMAC: "02:aa:bb:cc:dd:ee"),
+            discoveredDevice: nil, passwordState: .available, preferredID: "saved")
+        let edit = try service.prepareConfigureTarget(targetHost: "10.0.0.3", discoveredDevice: nil,
+            existingProfile: saved, preferredID: saved.id, settings: .default)
+        XCTAssertEqual(edit.context.airportMAC, "02:aa:bb:cc:dd:ee")
+        // A new device has no MAC yet, so configure reads whichever answers.
+        let added = try service.prepareConfigureTarget(targetHost: "10.0.0.4", discoveredDevice: nil,
+            existingProfile: nil, preferredID: "new", settings: .default)
+        XCTAssertNil(added.context.airportMAC)
+        service.discardConfigureDraft(edit)
+        service.discardConfigureDraft(added)
+    }
+
     func testKeychainFailureDoesNotPersistProfile() async throws {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)

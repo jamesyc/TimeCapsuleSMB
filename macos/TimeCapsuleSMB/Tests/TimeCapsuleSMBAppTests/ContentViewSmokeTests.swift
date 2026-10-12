@@ -8,10 +8,10 @@ final class ContentViewSmokeTests: XCTestCase {
         let first = try await fixture.saveProfile(id: "known", host: "root@192.0.2.10")
         let second = try await fixture.saveProfile(id: "alias", host: "root@fd00::10")
         let registry = fixture.appStore.deviceRegistry
-        let snapshot = DeviceCheckupSnapshot(checkedAt: Date(timeIntervalSince1970: 1000), state: .passed,
-            passCount: 1, warnCount: 0, failCount: 0, summary: "passed")
-        await registry.updateCheckup(snapshot, runtimeState: nil, airportMAC: "02:aa:bb:cc:dd:ee", for: first.id)
-        await registry.updateCheckup(snapshot, runtimeState: nil, airportMAC: "02:aa:bb:cc:dd:ee", for: second.id)
+        // Operations against both entries report the same AirPort.
+        let observation = try XCTUnwrap(AirportIdentityObservation(mac: "02:aa:bb:cc:dd:ee"))
+        await registry.confirmAirportIdentity(observation, for: first.id)
+        await registry.confirmAirportIdentity(observation, for: second.id)
         XCTAssertEqual(registry.identityErrorMessage, L10n.format("discovery.identity_owned", first.title))
         let recoveryProfile = try XCTUnwrap(registry.conflictingProfile)
         fixture.appStore.select(recoveryProfile)

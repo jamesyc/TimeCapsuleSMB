@@ -104,10 +104,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.start_optional_airport_identity_probe(connection)
         command_context.set_stage("run_checks")
         doctor_debug: dict[str, object] = {}
+        # The followed config: Bonjour and SMB checks look where SSH reaches the device.
         results, fatal = run_doctor_checks(
-            config,
+            command_context.config or config,
             repo_root=app_paths.distribution_root,
             connection=command_context.connection,
+            device_reading=command_context.reading_at(command_context.connection),
             precomputed_probe_state=command_context.probe_state,
             skip_ssh=args.skip_ssh,
             skip_bonjour=args.skip_bonjour,

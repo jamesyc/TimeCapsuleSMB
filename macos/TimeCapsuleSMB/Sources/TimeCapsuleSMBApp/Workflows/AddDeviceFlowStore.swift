@@ -146,11 +146,8 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     var suggestedProfile: DeviceProfile? {
-        guard let device = selectedDevice, reconnectProfileID == nil,
-              let suggestion = registry.suggestedProfile(for: device) else { return nil }
-        // A name shared by several current appliances cannot suggest one profile.
-        let peers = devices.filter { suggestion.network.sharesName(with: $0.observedIdentity) }
-        return peers.count == 1 ? suggestion : nil
+        guard let device = selectedDevice, reconnectProfileID == nil else { return nil }
+        return registry.suggestedProfile(for: device, among: devices)
     }
 
     var reconnectMessage: String? {

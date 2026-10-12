@@ -231,6 +231,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 app_paths.distribution_root,
                 deploy_options,
                 callbacks=command_context.to_operation_callbacks(),
+                device_reading=command_context.reading_at(connection),
             )
         except DeployArtifactValidationError as exc:
             raise SystemExit(str(exc)) from exc
@@ -322,7 +323,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         try:
             upload_and_verify_deployment_payload(
-                config,
+                command_context.config or config,
                 connection=connection,
                 prepared_plan=prepared_plan,
                 runtime_config=DeployRuntimeConfig(

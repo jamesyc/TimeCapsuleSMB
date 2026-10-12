@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Mapping
@@ -721,7 +722,6 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(str(raised.exception), SSH_ENABLE_TIMEOUT_MESSAGE)
 
     def test_confirmed_mac_is_returned_and_mismatched_bonjour_never_writes_config(self) -> None:
-        from dataclasses import replace
         base = self.make_probe_state()
         state = replace(base, probe_result=replace(base.probe_result, airport_mac="02:aa:bb:cc:dd:ee"))
         for advertised in (None, "02-AA-BB-CC-DD-EE", "02:aa:bb:cc:dd:ff"):
@@ -1038,6 +1038,84 @@ class ConfigureServiceTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "device_identity_mismatch")
         self.assertEqual(str(raised.exception), "A different AirPort answers at 10.0.0.2.")
+
+    def run_saved_profile_configure(self, reading: AirportAcpReading, located: LocateResult, probe_state=None):
+        """Configure for a profile whose saved MAC is DEVICE_AIRPORT_MAC, typed at 10.0.0.2."""
+        probed: list[str] = []
+
+        def probe(connection: SshConnection) -> ProbedDeviceState:
+            probed.append(connection.host)
+            return probe_state or self.make_probe_state()
+
+        writer = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading) as read, \
+                mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=located) as locate, \
+                mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable:
+            request = self.configure_request(Path(tmp) / ".env", mock.Mock(side_effect=probe), write_env=writer,
+                                             expected_airport_mac=DEVICE_AIRPORT_MAC)
+            try:
+                result = run_configure_flow(request)
+            except ConfigureFlowError as exc:
+                result = exc
+        return SimpleNamespace(result=result, probed=probed, writer=writer, read=read, locate=locate, enable=enable)
+
+    def test_a_saved_profile_never_turns_on_ssh_at_another_airport(self) -> None:
+        # The household's other AirPort took the address and shares the password.
+        other = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:99")
+        run = self.run_saved_profile_configure(other, LocateResult("not_found"))
+
+        self.assertIsInstance(run.result, ConfigureFlowError)
+        self.assertEqual(run.result.code, "device_identity_mismatch")
+        run.enable.assert_not_called()
+        self.assertEqual(run.probed, [])
+        run.writer.assert_not_called()
+
+    def test_a_saved_profile_is_configured_where_its_device_moved(self) -> None:
+        other = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:99")
+        run = self.run_saved_profile_configure(other, LocateResult("found", host="root@10.0.0.40"))
+
+        self.assertEqual(run.locate.call_args.args[0], DEVICE_AIRPORT_MAC)
+        self.assertEqual(run.probed, ["root@10.0.0.40"])
+        self.assertEqual(run.result.host, "root@10.0.0.40")
+        self.assertEqual(run.writer.call_args.args[1]["TC_HOST"], "root@10.0.0.40")
+
+    def test_a_saved_profile_at_its_own_address_is_configured_there(self) -> None:
+        run = self.run_saved_profile_configure(acp_reading(True), LocateResult("not_found"))
+
+        # One read: configure's ACP preflight is what waits for a slow device.
+        run.read.assert_called_once_with("root@10.0.0.2", "pw", attempts=1)
+        run.locate.assert_not_called()
+        self.assertEqual(run.probed, ["root@10.0.0.2"])
+        self.assertEqual(run.result.host, "root@10.0.0.2")
+
+    def test_a_saved_profiles_identity_read_also_checks_the_password(self) -> None:
+        # SSH takes the first 8 characters; the identity read already asked ACP.
+        rejected = AirportAcpReading(password_matches=False)
+        run = self.run_saved_profile_configure(rejected, LocateResult("not_found"))
+
+        self.assertIsInstance(run.result, ConfigureFlowError)
+        self.assertEqual(run.result.code, "auth_failed")
+        run.read.assert_called_once_with("root@10.0.0.2", "pw", attempts=1)
+        # The device found elsewhere: SSH is checked at the new address, and so is the password.
+        other = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:99")
+        run = self.run_saved_profile_configure(other, LocateResult("found", host="root@10.0.0.40"))
+        self.assertEqual(run.read.call_count, 1)
+        self.assertEqual(run.result.host, "root@10.0.0.40")
+
+    def test_a_saved_profile_refuses_another_mac_its_ssh_probe_reads(self) -> None:
+        # ACP gave no MAC, so only the SSH probe says which device this is.
+        probe_state = self.make_probe_state()
+        probe_state = ProbedDeviceState(
+            probe_result=replace(probe_state.probe_result, airport_mac="02:00:00:00:00:99"),
+            compatibility=probe_state.compatibility,
+        )
+        run = self.run_saved_profile_configure(AirportAcpReading(password_matches=True, airport_mac=None),
+                                               LocateResult("not_found"), probe_state=probe_state)
+
+        self.assertIsInstance(run.result, ConfigureFlowError)
+        self.assertEqual(run.result.code, "device_identity_mismatch")
+        run.writer.assert_not_called()
 
     def test_password_ssh_rejects_is_not_compared_with_the_device(self) -> None:
         compare = acp_password_answer(True)

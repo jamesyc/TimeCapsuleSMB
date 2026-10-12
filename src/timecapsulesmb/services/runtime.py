@@ -14,6 +14,7 @@ from timecapsulesmb.device.probe import (
     ProbeResult,
     ProbedDeviceState,
     SshAccessStatus,
+    apple_bonjour_host_label,
     password_check_fields,
     read_admin_password,
     probe_connection_state,
@@ -78,6 +79,40 @@ ACP_UNREACHABLE_MESSAGE = (
 )
 
 
+def airport_identity_fields(
+    airport_mac: str | None,
+    system_name: str | None,
+    system_dns_name: str | None = None,
+) -> dict[str, object]:
+    """The device identity a command reports, for the app to save with its profile.
+
+    The app saves the MAC only for a profile without one, and only when the
+    names match the ones the profile was saved with (DeviceRegistryStore). The
+    names are the ones Apple advertises before any conflict rename: the
+    instance name from syNm and ACPd's host label from syDN or syNm, so the
+    app needs no copy of Apple's rules. A device with no name sends none.
+    `airport_host_label_source` says which one: a label from syDN stays when
+    the device is renamed, so it still names the device then.
+    """
+    if not airport_mac:
+        return {}
+    fields: dict[str, object] = {"airport_mac": airport_mac}
+    naming = device_probe.derive_runtime_naming_identity(system_name, None, system_dns_name=system_dns_name)
+    if naming.mdns_instance_name:
+        fields["airport_instance_name"] = naming.mdns_instance_name
+    from_dns_name = bool(apple_bonjour_host_label(system_dns_name or ""))
+    if from_dns_name or apple_bonjour_host_label(system_name or ""):
+        fields["airport_host_label"] = naming.mdns_host_label
+        fields["airport_host_label_source"] = "syDN" if from_dns_name else "syNm"
+    return fields
+
+
+def report_airport_identity(callbacks: OperationCallbacks, reading: device_probe.AirportAcpReading) -> None:
+    """Report the device a read with the right password reached."""
+    if reading.password_matches:
+        callbacks.update(**airport_identity_fields(reading.airport_mac, reading.airport_name, reading.airport_dns_name))
+
+
 def require_acpd_ready(
     connection: SshConnection,
     callbacks: OperationCallbacks,
@@ -98,6 +133,7 @@ def require_acpd_ready(
     callbacks.debug(**password_check_fields(reading))
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
+    report_airport_identity(callbacks, reading)
     answers = acpd.acpd_answers(connection)
     stuck = acpd.read_acpd_stuck_children(connection) if answers else []
     if not answers or stuck:
@@ -112,21 +148,35 @@ def require_acpd_ready(
         raise DeviceAccessError(ACP_UNREACHABLE_MESSAGE.format(host=host), code="acp_unreachable")
 
 
+def learn_airport_identity(host: str, password: str, callbacks: OperationCallbacks) -> None:
+    """Report what answers at a saved address that has no MAC yet.
+
+    The app's background SSH check runs this for each saved device it sees at
+    its address, so an old profile learns the MAC before DHCP moves the device.
+    One try: a device that does not answer is looked at again next time.
+    """
+    report_airport_identity(callbacks, device_probe.read_airport_acp(host, password, attempts=1))
+
+
 def confirm_device_address(
     host: str,
     password: str,
     airport_mac: str,
     callbacks: OperationCallbacks,
+    *,
+    attempts: int = 2,
 ) -> tuple[str, device_probe.AirportAcpReading]:
     """The SSH target of the AirPort with this MAC, and the read that showed it.
 
     A saved address goes stale when DHCP gives the device another one, and
     another AirPort may then answer at it. Either way the device is looked
     for by its MAC (services.locate). Where it is not found, `host` stays and
-    the command's own checks report what answers there.
+    the command's own checks report what answers there. `attempts` is how
+    many times the address is read before that.
     """
-    reading = device_probe.read_airport_acp(host, password)
+    reading = device_probe.read_airport_acp(host, password, attempts=attempts)
     if reading.password_matches and reading.airport_mac in (None, airport_mac):
+        report_airport_identity(callbacks, reading)
         return host, reading
     if reading.password_matches is None:
         trigger = "unreachable"
@@ -148,6 +198,34 @@ def confirm_device_address(
             code="device_identity_mismatch",
         )
     return host, reading
+
+
+def follow_saved_device(
+    config: AppConfig,
+    airport_mac: str | None,
+    callbacks: OperationCallbacks,
+) -> tuple[AppConfig, tuple[str, device_probe.AirportAcpReading] | None]:
+    """The config with TC_HOST where the saved device answers now, and that read.
+
+    Only this command's copy changes: the app saves a new address after the
+    user confirms it, the CLI with `tcapsule configure`. Without a saved MAC
+    or a password nothing is read, and the read is None.
+    """
+    host = config.get("TC_HOST")
+    password = config.get("TC_PASSWORD")
+    if not airport_mac or not host or not password:
+        return config, None
+    current, reading = confirm_device_address(host, password, airport_mac, callbacks)
+    device_reading = (current, reading)
+    if current == host:
+        return config, device_reading
+    moved = AppConfig.from_values(
+        {**config.values, "TC_HOST": current},
+        path=config.path,
+        exists=config.exists,
+        file_values=config.file_values,
+    )
+    return moved, device_reading
 
 
 def probe_failure_error(

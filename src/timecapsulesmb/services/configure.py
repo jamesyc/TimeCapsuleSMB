@@ -25,6 +25,7 @@ from timecapsulesmb.device.compat import (
     unsupported_syap_message,
 )
 from timecapsulesmb.device.probe import (
+    AirportAcpReading,
     ProbedDeviceState,
     SshAccessStatus,
     password_check_fields,
@@ -36,7 +37,12 @@ from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
 from timecapsulesmb.services.reboot import RebootFlowError, followed, reboot_device
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, PROBE_STATUS_ERROR_CODES
+from timecapsulesmb.services.runtime import (
+    AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
+    PROBE_STATUS_ERROR_CODES,
+    DeviceAccessError,
+    confirm_device_address,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -82,6 +88,10 @@ class ConfigureFlowRequest:
     selected_record_airport_syap: str | None = None
     # The Bonjour record the host came from, for ACP probe telemetry.
     selected_record: BonjourResolvedService | None = None
+    # The MAC of the saved device whose settings these are (the app's
+    # profile). Another AirPort at the host is refused before ACP enables SSH
+    # and reboots it, and the device is looked for where it moved.
+    expected_airport_mac: str | None = None
     enable_ssh: bool = True
     internal_share_use_disk_root: bool | None = None
     smb_browse_compatibility: bool | None = None
@@ -258,7 +268,19 @@ def run_configure_flow(
     )
 
     callbacks.stage("ssh_probe")
-    connection = SshConnection(request.host, request.password, request.ssh_opts)
+    host = request.host
+    confirmed: tuple[str, AirportAcpReading] | None = None
+    if request.expected_airport_mac:
+        try:
+            # One read: configure's own ACP preflight waits for a slow device,
+            # and a second try would add 10 s before an address that is dead.
+            confirmed = confirm_device_address(host, request.password, request.expected_airport_mac,
+                                               callbacks, attempts=1)
+            host = confirmed[0]
+        except DeviceAccessError as exc:
+            raise ConfigureFlowError(str(exc), code=exc.code) from exc
+        values["TC_HOST"] = host
+    connection = SshConnection(host, request.password, request.ssh_opts)
     probe_connection = request.probe or probe_connection_state
     probed_state = probe_connection(connection)
     if hooks.after_probe is not None:
@@ -302,7 +324,13 @@ def run_configure_flow(
     password_rejected = probe.ssh_status == SshAccessStatus.AUTH_REJECTED
     password_error = probe.error
     if probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
-        password_reading = read_admin_password(connection)
+        # The identity read above already told whether ACP takes the password,
+        # when it reached the address SSH did.
+        if (confirmed is not None and confirmed[1].password_matches is not None
+                and endpoint_host(confirmed[0]) == endpoint_host(connection.host)):
+            password_reading = confirmed[1]
+        else:
+            password_reading = read_admin_password(connection)
         callbacks.debug(**password_check_fields(password_reading))
         if password_reading.password_matches is False:
             password_rejected = True
@@ -354,11 +382,15 @@ def run_configure_flow(
         discovered_airport_syap=request.discovered_airport_syap,
     )
     airport_mac = probe.airport_mac if probe.ssh_authenticated else None
-    if (request.selected_record is not None and request.selected_record.airport_mac
-            and airport_mac and request.selected_record.airport_mac != airport_mac):
+    expected_mac = request.expected_airport_mac or (
+        request.selected_record.airport_mac if request.selected_record is not None else None)
+    if expected_mac and airport_mac and expected_mac != airport_mac:
         raise ConfigureFlowError("The device identity could not be confirmed. Refresh discovery and reconnect the saved device.", code="device_identity_mismatch")
     if identity.syap is not None:
         values["TC_AIRPORT_SYAP"] = identity.syap
+    # Empty when the device could not say: a MAC kept from an earlier device
+    # would send later commands looking for that one.
+    values["TC_AIRPORT_MAC"] = airport_mac or ""
 
     for removed_key, removed_reason in REMOVED_ENV_FILE_KEYS.items():
         if removed_key in request.existing:

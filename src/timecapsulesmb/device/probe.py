@@ -568,15 +568,26 @@ PASSWORD_CHECK_RESULTS = {True: "match", False: "mismatch", None: "unknown"}
 
 @dataclass(frozen=True)
 class AirportAcpReading:
-    """One network ACP read of the AirPort's MAC.
+    """One network ACP read of the AirPort's MAC, name (syNm) and DNS name (syDN).
 
     `password_matches` is None when ACP did not answer either read.
-    `airport_mac` is None when the device answered but could not read waMA.
+    `airport_mac` is None when the device answered but could not read waMA;
+    the names are None when the device has none or could not read them.
     """
 
     password_matches: bool | None
     airport_mac: str | None = None
     error: str | None = None
+    airport_name: str | None = None
+    airport_dns_name: str | None = None
+
+
+# Every read asks for the names that identify a device as well: one request,
+# and ACPd answers a name it cannot read with an error element while the rest
+# still follow (integrations.acp.get_properties). syDN comes last: an unset one
+# is the error element seen on both firmware families. ACPd builds its Bonjour
+# host label from syDN, else syNm (derive_runtime_naming_identity).
+AIRPORT_IDENTITY_PROPERTIES = ("waMA", "syNm", "syDN")
 
 
 def read_airport_acp(host: str, password: str, *, attempts: int = 2) -> AirportAcpReading:
@@ -587,7 +598,8 @@ def read_airport_acp(host: str, password: str, *, attempts: int = 2) -> AirportA
         if attempt:
             time.sleep(ACP_IDENTITY_RETRY_DELAY_SECONDS)
         try:
-            values = acp.get_properties(target, password, ("waMA",), timeout=ACP_IDENTITY_READ_TIMEOUT_SECONDS)
+            values = acp.get_properties(target, password, AIRPORT_IDENTITY_PROPERTIES,
+                                        timeout=ACP_IDENTITY_READ_TIMEOUT_SECONDS)
         except acp.ACPAuthError:
             return AirportAcpReading(password_matches=False)
         except acp.ACPError as exc:
@@ -597,8 +609,20 @@ def read_airport_acp(host: str, password: str, *, attempts: int = 2) -> AirportA
         return AirportAcpReading(
             password_matches=True,
             airport_mac=normalize_airport_mac(mac.hex(":")) if isinstance(mac, bytes) else None,
+            airport_name=_acp_text(values.get("syNm")),
+            airport_dns_name=_acp_text(values.get("syDN")),
         )
     return AirportAcpReading(password_matches=None, error=error)
+
+
+def _acp_text(value: object) -> str | None:
+    """An ACP string property, without the NUL padding some firmware adds.
+
+    Other whitespace stays: Apple advertises syNm byte for byte.
+    """
+    if not isinstance(value, bytes):
+        return None
+    return value.decode("utf-8", "replace").rstrip("\0") or None
 
 
 def read_admin_password(connection: SshConnection) -> AirportAcpReading:

@@ -86,6 +86,8 @@ class FakeCommandContext:
         self.error: str | None = None
         self.finish = mock.Mock()
         self.connection = connection or SshConnection("root@10.0.0.2", "pw", "-o foo")
+        # The command's own config is the one it loaded: nothing was followed.
+        self.config = None
         self.probe_state = None
         self.compatibility = compatibility or DeviceCompatibility(
             os_name="NetBSD",
@@ -133,6 +135,10 @@ class FakeCommandContext:
 
     def start_optional_airport_identity_probe(self, _connection=None) -> None:
         pass
+
+    def reading_at(self, _connection) -> None:
+        # No saved device was followed, so there is no earlier ACP read.
+        return None
 
     def harvest_optional_airport_identity_probe(self, *, timeout_seconds: float = 0.0) -> None:
         pass

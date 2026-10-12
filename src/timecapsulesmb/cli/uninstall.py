@@ -69,7 +69,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.start_optional_airport_identity_probe(connection)
         if not args.no_reboot and not args.dry_run:
             # The reboot goes through ACP: check ACPd and the password before anything is removed.
-            require_acpd_ready(connection, command_context.to_operation_callbacks())
+            require_acpd_ready(connection, command_context.to_operation_callbacks(),
+                               reading=command_context.reading_at(connection))
 
         plan = prepare_uninstall(
             connection,

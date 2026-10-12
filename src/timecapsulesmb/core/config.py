@@ -82,6 +82,9 @@ ENV_FILE_KEYS = [
     "TC_ATA_IDLE_SECONDS",
     "TC_ATA_STANDBY",
     "TC_CONFIGURE_ID",
+    # The AirPort MAC configure confirmed, so commands find the device again
+    # after DHCP moves it (services.locate).
+    "TC_AIRPORT_MAC",
 ]
 # Identity settings now come from the device. `configure` strips these
 # obsolete overrides from an existing .env with a notice.

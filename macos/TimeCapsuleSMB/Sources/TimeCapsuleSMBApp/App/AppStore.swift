@@ -19,6 +19,8 @@ final class AppStore: ObservableObject {
     let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
 
     private var cancellables: Set<AnyCancellable> = []
+    /// The last finished event of each lane the learner has seen.
+    private var checkedIdentityEvents: [OperationLaneKey: UUID] = [:]
 
     convenience init() {
         let coordinator = OperationCoordinator()
@@ -73,9 +75,16 @@ final class AppStore: ObservableObject {
                 self?.syncSelection(profiles: profiles)
             }
             .store(in: &cancellables)
+        // @Published sends before the property changes: read the new state on
+        // the next main-actor turn, or the first discovery's devices are missed.
         self.deviceDiscovery.$devices
             .sink { [weak self] _ in
-                self?.refreshSSHAccessForDiscoveredProfiles()
+                Task { @MainActor in self?.refreshSSHAccessForDiscoveredProfiles() }
+            }
+            .store(in: &cancellables)
+        operationCoordinator.$lanesRevision
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.saveConfirmedAirportIdentities() }
             }
             .store(in: &cancellables)
     }
@@ -310,7 +319,28 @@ final class AppStore: ObservableObject {
 
     private func refreshSSHAccessForDiscoveredProfiles() {
         for profile in deviceRegistry.profiles where deviceDiscovery.currentDiscoveredDevice(for: profile) != nil {
-            sshAccessStore.refreshIfNeeded(profile: profile)
+            // With the password, the check of a device seen at its saved
+            // address also reads its MAC, which an old profile does not have.
+            // Read only if the check runs: not on every discovery change.
+            sshAccessStore.refreshIfNeeded(profile: profile,
+                                           password: profile.network.airportMAC == nil ? self.password(for: profile) : nil)
+        }
+    }
+
+    /// The identity a finished operation confirmed, saved with its profile.
+    /// Every lane counts, checkups and the background SSH check before any
+    /// dashboard opens included; the registry decides whether the device is
+    /// the saved one, against what discovery sees now.
+    private func saveConfirmedAirportIdentities() {
+        for lane in operationCoordinator.allLanes where !lane.backend.isRunning {
+            guard let profileID = lane.key.deviceProfileID,
+                  let event = lane.backend.events.last(where: { $0.type == "error" || $0.type == "result" }),
+                  checkedIdentityEvents.updateValue(event.id, forKey: lane.key) != event.id,
+                  let identity = AirportIdentityObservation(event: event) else { continue }
+            let visible = deviceDiscovery.devices.map(\.observedIdentity)
+            deviceRegistry.enqueueOperationUpdate { [deviceRegistry] in
+                await deviceRegistry.confirmAirportIdentity(identity, for: profileID, visible: visible)
+            }
         }
     }
 }

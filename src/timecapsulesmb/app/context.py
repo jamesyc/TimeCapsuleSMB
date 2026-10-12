@@ -2,24 +2,21 @@ from __future__ import annotations
 
 import traceback
 from collections.abc import Mapping
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.stage_policy import stage_policy
-from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.core.redaction import SENSITIVE_KEY_PARTS, redact_sensitive_fields
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import OperationContext, exception_cause_detail
-from timecapsulesmb.telemetry import build_device_os_version
 
 if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
-    from timecapsulesmb.device.probe import AirportAcpReading
-    from timecapsulesmb.device.probe import ProbedDeviceState
+    from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState
     from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.transport.ssh import SshConnection
+
 
 
 class AppOperationContext:
@@ -31,9 +28,6 @@ class AppOperationContext:
         self.diagnostics = OperationContext(operation)
         self.result = "failure"
         self.error: str | None = None
-        # The SSH target and network ACP read load_request_config took of the
-        # saved device, so the command's password check need not read again.
-        self.device_reading: tuple[str, AirportAcpReading] | None = None
 
     @property
     def current_stage(self) -> str | None:
@@ -127,14 +121,6 @@ class AppOperationContext:
 
     def update_fields(self, **fields: object) -> None:
         self.diagnostics.update_fields(**fields)
-        # A device found at another address (services.locate) is reached there
-        # from now on, and failures report that address.
-        current_host = fields.get("current_host")
-        if isinstance(current_host, str):
-            # In the debug fields too, so every error event carries it.
-            self.diagnostics.add_debug_fields(current_host=current_host)
-            if self.connection is not None:
-                self.connection = replace(self.connection, host=current_host)
 
     def add_debug_fields(self, **fields: object) -> None:
         self.diagnostics.add_debug_fields(**fields)
@@ -175,14 +161,7 @@ class AppOperationContext:
         return sensitive_values
 
     def known_airport_display_name(self) -> str | None:
-        model = self.finish_fields.get("device_model")
-        syap = self.finish_fields.get("device_syap")
-        if not isinstance(model, str) and not isinstance(syap, str):
-            return None
-        return airport_exact_display_name_from_identity(
-            model=model if isinstance(model, str) else None,
-            syap=syap if isinstance(syap, str) else None,
-        )
+        return self.diagnostics.known_airport_display_name()
 
     def set_error(self, message: str) -> None:
         self.error = message
@@ -203,23 +182,12 @@ class AppOperationContext:
             self.set_error(str(message))
         return self.build_error()
 
+    def reading_at(self, connection: SshConnection | None) -> AirportAcpReading | None:
+        """The ACP read load_request_config took at this connection's address."""
+        return self.diagnostics.reading_at(connection)
+
     def apply_managed_target(self, target: ManagedTargetState) -> ManagedTargetState:
-        self.connection = target.connection
-        if target.probe_state is not None:
-            self.apply_probe_state(target.probe_state)
-        return target
+        return self.diagnostics.apply_managed_target(target)
 
     def apply_probe_state(self, probe_state: ProbedDeviceState) -> None:
-        self.probe_state = probe_state
-        probe = probe_state.probe_result
-        self.update_fields(device_model=probe.airport_model, device_syap=probe.airport_syap)
-        compatibility = probe_state.compatibility
-        if compatibility is not None:
-            self.update_fields(
-                device_os_version=build_device_os_version(
-                    compatibility.os_name,
-                    compatibility.os_release,
-                    compatibility.arch,
-                ),
-                device_family=compatibility.payload_family,
-            )
+        self.diagnostics.apply_probe_state(probe_state)

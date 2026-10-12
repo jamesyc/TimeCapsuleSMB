@@ -100,11 +100,11 @@ final class DeviceProfileTests: XCTestCase {
         let weakMetadataOnly = makeProfile(id: "four", host: "10.0.0.12", syap: "119", model: "Time Capsule")
 
         XCTAssertFalse(first.network.matches(sameFullname.network))
-        XCTAssertTrue(first.network.sharesName(with: sameFullname.network))
+        XCTAssertEqual(first.network.nameEvidence(for: sameFullname.network.savedNames, visible: [], saved: []), .same)
         XCTAssertTrue(first.network.matches(sameHost.network))
         XCTAssertTrue(first.network.matches(sameHostWithRootUser.network))
         XCTAssertFalse(first.network.matches(sameHostname.network))
-        XCTAssertTrue(first.network.sharesName(with: sameHostname.network))
+        XCTAssertEqual(first.network.nameEvidence(for: sameHostname.network.savedNames, visible: [], saved: []), .same)
         XCTAssertFalse(first.network.matches(sameAddress.network))
         XCTAssertFalse(first.network.matches(sameLinkLocalAddress.network))
         XCTAssertFalse(first.network.matches(weakMetadataOnly.network))

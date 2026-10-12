@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import doctor_payload
-from timecapsulesmb.app.ops.common import load_request_config, request_device_reading, resolve_request_connection
+from timecapsulesmb.app.ops.common import load_request_config, resolve_request_connection
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.services.app import OperationResult, bool_param, config_path
 from timecapsulesmb.services.doctor import build_doctor_error, doctor_finished_fields, doctor_result_details
+from timecapsulesmb.services.runtime import airport_identity_fields
 
 
 def doctor_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -32,7 +33,7 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         config,
         repo_root=app_paths.distribution_root,
         connection=connection,
-        device_reading=request_device_reading(context, connection) if connection is not None else None,
+        device_reading=context.reading_at(connection),
         skip_ssh=skip_ssh,
         skip_bonjour=skip_bonjour,
         skip_smb=skip_smb,
@@ -42,14 +43,18 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         debug_fields=debug_fields,
     )
     airport_mac = debug_fields.pop("airport_mac", None)
+    naming = debug_fields.get("runtime_naming_identity")
+    naming = naming if isinstance(naming, dict) else {}
     finished = doctor_finished_fields(results, fatal, debug_fields)
     context.add_debug_fields(**debug_fields)
-    context.update_fields(**finished)
+    context.update_fields(**finished, **airport_identity_fields(
+        airport_mac, naming.get("system_name"), naming.get("system_dns_name"),
+    ))
     error = build_doctor_error(results, debug_fields) if fatal else None
     if error:
         context.set_error(error)
     return OperationResult(
         not fatal,
-        doctor_payload(fatal=fatal, results=results, error=error, airport_mac=airport_mac),
+        doctor_payload(fatal=fatal, results=results, error=error),
         diagnostic_error=context.build_error() if fatal else None,
     )

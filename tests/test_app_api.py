@@ -45,6 +45,7 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
+    AirportAcpReading,
     DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
     ProbeResult,
@@ -2538,6 +2539,44 @@ class AppApiTests(unittest.TestCase):
                 else:
                     self.assertEqual(rc, 0)
                     self.assertEqual(self.assert_single_terminal_event(collector, "result")["payload"]["airport_mac"], "02:aa:bb:cc:dd:ee")
+                    # Saved for commands that look for the device after DHCP moves it.
+                    self.assertIn("TC_AIRPORT_MAC=02:aa:bb:cc:dd:ee", path.read_text())
+
+    def run_configure_for_a_saved_device(self, airport_mac: object, reading: AirportAcpReading):
+        """Configure as the profile editor sends it: with the profile's saved MAC."""
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            params = {"config": str(path), "host": "root@10.0.0.2", "password": "pw", "airport_mac": airport_mac}
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=reading) as read, \
+                    mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=LocateResult("not_found")), \
+                    mock.patch("timecapsulesmb.services.configure.enable_ssh_with_port_preflight") as enable, \
+                    mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state",
+                               return_value=probed_state()) as probe:
+                rc = service.run_api_request({"operation": "configure", "params": params}, collector.sink)
+            written = path.exists()
+        return SimpleNamespace(rc=rc, collector=collector, read=read, enable=enable, probe=probe, written=written)
+
+    def test_configure_of_a_saved_device_leaves_another_airport_alone(self) -> None:
+        # The household's other AirPort took the address and shares the password:
+        # ACP must not turn SSH on there and reboot it.
+        other = AirportAcpReading(password_matches=True, airport_mac="02:aa:bb:cc:dd:ff")
+        run = self.run_configure_for_a_saved_device("02:aa:bb:cc:dd:ee", other)
+
+        self.assertEqual(run.rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(run.collector, "error")["code"], "device_identity_mismatch")
+        run.read.assert_called_once_with("root@10.0.0.2", "pw", attempts=1)
+        run.enable.assert_not_called()
+        run.probe.assert_not_called()
+        self.assertFalse(run.written)
+
+    def test_configure_refuses_a_malformed_saved_mac(self) -> None:
+        run = self.run_configure_for_a_saved_device("not-a-mac", AirportAcpReading(password_matches=True))
+
+        self.assertEqual(run.rc, 1)
+        self.assertEqual(self.assert_single_terminal_event(run.collector, "error")["code"], "validation_failed")
+        run.read.assert_not_called()
+        run.probe.assert_not_called()
 
     def test_configure_refuses_a_password_ssh_accepts_but_the_device_rejects(self) -> None:
         # SSH checks only 8 characters; the app reports the device's syPW
@@ -3560,6 +3599,66 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(probed, ["root@10.0.0.2"])
         self.assertNotIn("current_host", self.assert_single_terminal_event(collector, "result")["payload"])
 
+    def run_set_ssh_status_learning(self, params: dict[str, object], *, acp_reachable: bool = True):
+        collector = CollectingSink()
+        named = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Gregory's Capsule")
+        read = mock.Mock(return_value=named)
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", read), \
+                    mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=SetSshStatusResult(
+                        host="10.0.0.2", acp_port_reachable=acp_reachable, ssh_port_reachable=True,
+                    )):
+                rc = service.run_api_request(
+                    {"operation": "set-ssh", "params": {"config": str(config_path), "action": "status", **params}},
+                    collector.sink,
+                )
+        self.assertEqual(rc, 0)
+        return self.assert_single_terminal_event(collector, "result")["payload"], read
+
+    def test_the_ssh_status_check_learns_a_saved_device_without_a_mac(self) -> None:
+        # The app runs it for each saved device it sees at its address, so an
+        # old profile learns its MAC before DHCP moves the device.
+        payload, read = self.run_set_ssh_status_learning({"password": "secret"})
+
+        read.assert_called_once_with("root@10.0.0.2", "secret", attempts=1)
+        self.assertEqual(payload["airport_mac"], DEVICE_AIRPORT_MAC)
+        self.assertEqual(payload["airport_instance_name"], "Gregory's Capsule")
+        self.assertEqual(payload["airport_host_label"], "gregorys-capsule")
+
+    def test_the_ssh_status_check_reads_nothing_more_it_does_not_need(self) -> None:
+        cases = {
+            "no password": ({}, True, []),
+            "acp closed": ({"password": "secret"}, False, []),
+            # A saved MAC: the follow's read already reported the device.
+            "saved mac": ({"password": "secret", "airport_mac": DEVICE_AIRPORT_MAC}, True,
+                          [mock.call("root@10.0.0.2", "secret", attempts=2)]),
+        }
+        for case, (params, acp_reachable, calls) in cases.items():
+            with self.subTest(case=case):
+                _payload, read = self.run_set_ssh_status_learning(params, acp_reachable=acp_reachable)
+                self.assertEqual(read.call_args_list, calls)
+
+    def test_the_device_identity_reaches_the_app_when_the_operation_fails(self) -> None:
+        # A result carries it in its payload (the SSH status check above).
+        collector = CollectingSink()
+        named = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=named), \
+                    mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", side_effect=OSError("connection reset")):
+                rc = service.run_api_request(
+                    {"operation": "set-ssh", "params": {
+                        "config": str(config_path), "action": "enable", "password": "secret", "airport_mac": DEVICE_AIRPORT_MAC,
+                    }},
+                    collector.sink,
+                )
+        self.assertEqual(rc, 1)
+        debug = self.assert_single_terminal_event(collector, "error")["debug"]
+        self.assertEqual((debug["airport_mac"], debug["airport_instance_name"], debug["airport_host_label"]), (DEVICE_AIRPORT_MAC, "Office", "office"))
+
     def test_a_malformed_saved_mac_is_refused(self) -> None:
         rc, collector, probed, locate, _saved = self.run_set_ssh_with_the_saved_mac("80:ea", located=LocateResult("not_found"))
 
@@ -4456,6 +4555,48 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["doctor_sections"]["computer"]["status"], "pass")
         self.assertEqual(payload["status"], "fail")
         self.assertEqual(payload["sections"]["device"]["status"], "fail")
+
+    def test_doctor_reports_the_device_identity_its_ssh_probe_read(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"].update(
+                airport_mac=DEVICE_AIRPORT_MAC,
+                # ACPd builds the host label from syDN before syNm.
+                runtime_naming_identity={"system_name": "Gregory's Capsule", "system_dns_name": "Den Capsule",
+                                         "hostname": "gregorys-capsule"},
+            )
+            return [], False
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+             mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+             mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")), \
+             mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+            service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
+
+        payload = collector.events_of_type("result")[-1]["payload"]
+        self.assertEqual(
+            (payload["airport_mac"], payload["airport_instance_name"], payload["airport_host_label"]),
+            (DEVICE_AIRPORT_MAC, "Gregory's Capsule", "den-capsule"),
+        )
+
+    def test_the_apps_mac_not_the_env_says_which_device_a_profile_is(self) -> None:
+        # Doctor's "(this device)" marker and the follow both read the config's
+        # TC_AIRPORT_MAC: the app's value goes there, and none when it sends none.
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_AIRPORT_MAC": "02:00:00:00:00:0b"})
+        cases = {"app sends a MAC": ({"airport_mac": DEVICE_AIRPORT_MAC}, DEVICE_AIRPORT_MAC), "app sends none": ({}, "")}
+        for case, (params, expected) in cases.items():
+            with self.subTest(case=case):
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config), \
+                     mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)), \
+                     mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "")), \
+                     mock.patch("timecapsulesmb.services.runtime.follow_saved_device",
+                                side_effect=lambda followed, _mac, _callbacks: (followed, None)) as follow, \
+                     mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", return_value=([], False)) as checks:
+                    service.run_api_request({"operation": "doctor", "params": params}, CollectingSink().sink)
+                self.assertEqual(checks.call_args.args[0].get("TC_AIRPORT_MAC"), expected)
+                self.assertEqual(follow.called, bool(expected))
 
     def test_doctor_telemetry_carries_this_macs_nsmb_conf(self) -> None:
         collector = CollectingSink()

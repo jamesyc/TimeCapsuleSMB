@@ -563,6 +563,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ]),
+            // The app's background SSH check of the saved device it now sees.
+            .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))]),
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80", airportMAC: "02:aa:bb:cc:dd:ee"))
             ])
@@ -576,15 +578,16 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         fixture.deviceDiscovery.refresh()
         try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
+        try await waitUntilStoreState { fixture.runner.calls.contains { $0.operation == "set-ssh" } }
         let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
         store.draft.host = "10.0.0.80"
 
         await store.save(profile: profile)
 
         try await waitUntilStoreState { store.state == .saved }
-        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
-        XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
-        XCTAssertNil(fixture.runner.calls[1].params["host"])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "set-ssh", "configure"])
+        XCTAssertEqual(fixture.runner.calls[2].params["selected_record"], currentRecord)
+        XCTAssertNil(fixture.runner.calls[2].params["host"])
     }
 
     func testDashboardUpdateConfiguredAddressRunsConfigureWithCurrentBonjourRecord() async throws {
@@ -604,6 +607,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ]),
+            // The app's background SSH check of the saved device it now sees.
+            .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))]),
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80", airportMAC: "02:aa:bb:cc:dd:ee"))
             ])
@@ -617,6 +622,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         fixture.deviceDiscovery.refresh()
         try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
+        try await waitUntilStoreState { fixture.runner.calls.contains { $0.operation == "set-ssh" } }
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
         for tab in DeviceDashboardTab.allCases {
             session.selectedTab = tab
@@ -629,9 +635,9 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(session.selectedTab, .settings)
         XCTAssertEqual(saved.host, "root@10.0.0.80")
-        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
-        XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
-        XCTAssertNil(fixture.runner.calls[1].params["host"])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "set-ssh", "configure"])
+        XCTAssertEqual(fixture.runner.calls[2].params["selected_record"], currentRecord)
+        XCTAssertNil(fixture.runner.calls[2].params["host"])
         for tab in DeviceDashboardTab.allCases {
             session.selectedTab = tab
             XCTAssertNil(session.staleEndpointNotice(for: profile))
@@ -658,6 +664,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ]),
+            // The app's background SSH check of the saved device it now sees.
+            .init(events: [BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))]),
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@fd00::80", airportMAC: "02:aa:bb:cc:dd:ee"))
             ])
@@ -671,6 +679,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         fixture.deviceDiscovery.refresh()
         try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
+        try await waitUntilStoreState { fixture.runner.calls.contains { $0.operation == "set-ssh" } }
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
 
         session.updateConfiguredAddressFromDiscovery(profile: profile)
@@ -679,9 +688,9 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(session.selectedTab, .settings)
         XCTAssertEqual(saved.host, "root@fd00::80")
-        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
-        XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
-        XCTAssertNil(fixture.runner.calls[1].params["host"])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "set-ssh", "configure"])
+        XCTAssertEqual(fixture.runner.calls[2].params["selected_record"], currentRecord)
+        XCTAssertNil(fixture.runner.calls[2].params["host"])
         XCTAssertNil(fixture.deviceDiscovery.staleEndpointNotice(for: saved))
     }
 

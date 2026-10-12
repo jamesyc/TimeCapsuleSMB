@@ -147,7 +147,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # Disabling SSH ends in an ACP reboot: check ACPd and the password
         # before the prompt and before SSH is turned off in the saved settings.
-        require_acpd_ready(connection, command_context.to_operation_callbacks())
+        require_acpd_ready(connection, command_context.to_operation_callbacks(), reading=command_context.reading_at(connection))
 
         if action is SetSshAction.PROMPT_DISABLE:
             command_context.set_stage("prompt_disable_ssh")

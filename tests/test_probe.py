@@ -899,7 +899,7 @@ class AirportAcpReadingTests(unittest.TestCase):
         reading, get, sleep = self.read({"waMA": bytes.fromhex("02000000000A")})
 
         self.assertEqual(reading, probe.AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:0a"))
-        get.assert_called_once_with("10.0.0.2", "s3cret-pw", ("waMA",), timeout=probe.ACP_IDENTITY_READ_TIMEOUT_SECONDS)
+        get.assert_called_once_with("10.0.0.2", "s3cret-pw", ("waMA", "syNm", "syDN"), timeout=probe.ACP_IDENTITY_READ_TIMEOUT_SECONDS)
         sleep.assert_not_called()
 
     def test_a_rejected_password_is_a_mismatch_without_a_retry(self) -> None:
@@ -961,6 +961,32 @@ class AirportAcpReadingTests(unittest.TestCase):
             answer.assert_not_called()
             self.assertIs(probe.read_admin_password(SshConnection("root@10.0.0.2", "pw", "")).password_matches, False)
         answer.assert_called_once_with("root@10.0.0.2", "pw")
+
+    def test_every_read_gives_the_names_in_the_same_request(self) -> None:
+        get = mock.Mock(return_value={"waMA": bytes.fromhex("02000000000A"), "syNm": b" Office Capsule\x00",
+                                      "syDN": b"Den\x00"})
+        with mock.patch.object(probe.acp, "get_properties", get):
+            reading = REAL_READ_AIRPORT_ACP("root@10.0.0.2", "pw")
+
+        get.assert_called_once_with("10.0.0.2", "pw", ("waMA", "syNm", "syDN"), timeout=probe.ACP_IDENTITY_READ_TIMEOUT_SECONDS)
+        # NUL padding goes; Apple advertises the rest of syNm byte for byte.
+        self.assertEqual(reading, probe.AirportAcpReading(
+            password_matches=True, airport_mac="02:00:00:00:00:0a", airport_name=" Office Capsule", airport_dns_name="Den",
+        ))
+
+    def test_an_unreadable_name_keeps_the_mac(self) -> None:
+        # An unset syDN is an error element; the other names still answer.
+        unset = acp.ACPPropertyError("ACP property syDN failed with error_code -0x1a37")
+        for name in (acp.ACPPropertyError("ACP property syNm failed with error_code -0x1a37"), b"", None):
+            with self.subTest(name=name):
+                answer = {"waMA": bytes.fromhex("02000000000A"), "syDN": unset}
+                if name is not None:
+                    answer["syNm"] = name
+                with mock.patch.object(probe.acp, "get_properties", return_value=answer):
+                    reading = REAL_READ_AIRPORT_ACP("root@10.0.0.2", "pw")
+                self.assertEqual(reading.airport_mac, "02:00:00:00:00:0a")
+                self.assertIsNone(reading.airport_name)
+                self.assertIsNone(reading.airport_dns_name)
 
     def test_an_unknown_password_check_says_why(self) -> None:
         cases = (
