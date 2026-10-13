@@ -79,6 +79,17 @@ class RunScriptAction:
     path: str
 
 
+# boot.sh replaces these hard links to Apple's multi-call /sbin/ACPd with
+# guards that ignore ACPd's starts. /sbin is on the RAM root, so a reboot
+# restores Apple's links; an uninstall without one puts them back itself.
+GUARDED_APPLE_DAEMONS = ("diskd", "wcifsnd")
+
+
+@dataclass(frozen=True)
+class RestoreAppleDaemonsAction:
+    names: tuple[str, ...] = GUARDED_APPLE_DAEMONS
+
+
 RemoteAction = Union[
     EnsureVolumeMountedAction,
     PrepareDirsAction,
@@ -90,6 +101,7 @@ RemoteAction = Union[
     StopTelemetryAction,
     RemovePathsAction,
     RunScriptAction,
+    RestoreAppleDaemonsAction,
 ]
 
 
@@ -158,6 +170,21 @@ def _render_remove_paths_action(action: RemovePathsAction) -> str:
     return "rm -rf " + " ".join(shlex.quote(path) for path in action.paths)
 
 
+def _render_restore_apple_daemons_action(action: RestoreAppleDaemonsAction) -> str:
+    # A name that is already Apple's binary (no guard, or a rerun) is left
+    # alone. Otherwise link beside the guard and rename over it, so the guard
+    # is replaced whole.
+    script = (
+        "for name in " + " ".join(shlex.quote(name) for name in action.names) + "; do "
+        '[ "/sbin/$name" -ef /sbin/ACPd ] && continue; '
+        'ln -f /sbin/ACPd "/sbin/.$name.restore" && mv -f "/sbin/.$name.restore" "/sbin/$name"; '
+        'status=$?; rm -f "/sbin/.$name.restore"; '
+        '[ "$status" -eq 0 ] || { echo "cannot restore Apple /sbin/$name" >&2; exit 1; }; '
+        "done"
+    )
+    return f"/bin/sh -c {shlex.quote(script)}"
+
+
 def render_remote_action(action: RemoteAction) -> str:
     if isinstance(action, StopServiceRuntimeAction):
         return f"/bin/sh -c {shlex.quote(render_stop_service_runtime())}"
@@ -182,6 +209,8 @@ def render_remote_action(action: RemoteAction) -> str:
         return _render_remove_paths_action(action)
     if isinstance(action, RunScriptAction):
         return f"/bin/sh {shlex.quote(action.path)}"
+    if isinstance(action, RestoreAppleDaemonsAction):
+        return _render_restore_apple_daemons_action(action)
     raise TypeError(f"Unsupported remote action: {action!r}")
 
 
@@ -228,6 +257,8 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
         return {"kind": "remove_paths", "args": list(action.paths)}
     if isinstance(action, RunScriptAction):
         return {"kind": "run_script", "args": [action.path]}
+    if isinstance(action, RestoreAppleDaemonsAction):
+        return {"kind": "restore_apple_daemons", "args": list(action.names)}
     raise TypeError(f"Unsupported remote action: {action!r}")
 
 

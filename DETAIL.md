@@ -461,7 +461,14 @@ registrations never leave loopback. ACPd still starts its own diskd at boot and
 whenever it applies a sharing setting; that second diskd would delete our
 diskd's RPC names in ACPd (F16), so `boot.sh` makes `/sbin/diskd` (RAM root) a
 guard that runs the real binary, hard-linked as `/usr/libexec/diskd`, only for
-`-i lo0` and makes every other start exit at once. Our registrations use `name=NULL` and flags
+`-i lo0` and makes every other start exit at once. ACPd likewise starts its own
+`wcifsnd` at boot and on every address change (and once more about 25 s later
+if it exits), which would take the NBNS ports from discovery's child, so
+`/sbin/wcifsnd` is a guard that always exits; discovery runs the real binary
+hard-linked as `/usr/libexec/wcifsnd`, or `/sbin/wcifsnd` when boot.sh could
+not make that link (and so left Apple's binary there). Uninstall puts both
+`/sbin` names back as links to Apple's binary, for an uninstall that does not
+reboot. Our registrations use `name=NULL` and flags
 `0`, so Apple's mDNSResponder owns the shared default service name and resolves
 conflicts. A stock-device test on 2026-09-19 showed `diskd` renaming both SMB and
 ADisk to "Name (2)" after an SMB-only conflict, while `syNm` and the hostname
@@ -479,7 +486,7 @@ accepted, and another device holding the same name is a warning (Bonjour Names).
 | `/usr/libexec/diskd -i lo0 -d local.` | Apple binary, started by the manager through boot.sh's `/sbin/diskd` guard | disk topology (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
 | `printd` | Apple | printer discovery and `_riousbprint`/`_pdl-datastream` registration |
 | `wcifsfs` | Apple | Apple SMB server, always stopped so Samba owns SMB |
-| `/sbin/wcifsnd` | Apple, child owned by `service discovery` | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
+| `/usr/libexec/wcifsnd` | Apple binary, child owned by `service discovery`; boot.sh's `/sbin/wcifsnd` guard ignores ACPd's starts | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
 | `afpserver` | Apple | kept running regardless of the AFP advertising setting; advertising is controlled through diskd's loopback scope and our Bonjour registrations |
 | `service discovery` | ours, `/mnt/Flash/service` | registers Bonjour records through mDNSResponder and owns the foreground `wcifsnd` child used for native NBNS |
 
@@ -655,7 +662,7 @@ with every operation, so the profile's `.env` copy is not trusted.
 ## Registered mDNS Records
 
 Current behavior:
-- `boot.sh` prepares platform directories, installs the diskd guard and the locks filesystem, then executes `service manager`; the manager reconciles Apple's loopback `diskd`
+- `boot.sh` prepares platform directories, installs the diskd and wcifsnd guards and the locks filesystem, then executes `service manager`; the manager reconciles Apple's loopback `diskd`
 - the manager launches `/mnt/Flash/service discovery` with the canonical Samba name (`--netbios-name`), payload state (`--diskless` when applicable), and ADisk rows (`--adisk-share NAME KEY UUID FLAGS`, repeated per share); identity and link facts otherwise come from ACP, the interface table, and flash config
 - the registrant holds one `DNSServiceRef` per (link index, service), re-registers on plan changes (a `PF_ROUTE` socket plus a 30 s ACP poll), and deregisters everything on `SIGTERM` so the daemon sends goodbyes
 - in diskless mode the desired set is empty; `_airport` and `_device-info` are Apple's and stay up regardless
@@ -896,7 +903,7 @@ Important properties:
 - static NetBSD 4 big-endian `armeb` binary for the NetBSD 4 big-endian payload
 - see the artifact section below for current checked-in binary sizes
 - linked into the unified service installed and run from `/mnt/Flash`
-- talks to `/var/run/mDNSResponder` for Bonjour and to the owned `/sbin/wcifsnd` child over Apple's loopback UDP control protocol
+- talks to `/var/run/mDNSResponder` for Bonjour and to the owned `/usr/libexec/wcifsnd` child over Apple's loopback UDP control protocol
 
 CLI: `service discovery [--diskless] [--netbios-name NAME] [--adisk-share NAME KEY UUID FLAGS]... [--debug-logging]`,
 plus `--help`. `service --print-link-plan` and
@@ -911,7 +918,7 @@ At runtime it:
 - registers `_afpovertcp._tcp` (port 548) only when `MDNS_ADVERTISE_AFP=1`
 - uses Apple's shared default instance name with automatic renaming; callback names such as "Name (2)" are accepted without replacing registrations, and ACP name changes do not force a restart
 - treats a daemon that stops answering as degraded, retries on the backoff timer, and never spawns `/sbin/mDNSResponder`
-- starts `/sbin/wcifsnd` only when the payload is ready, the canonical name is available, and the validated plan has an SMB-eligible IPv4 address
+- starts `/usr/libexec/wcifsnd` only when the payload is ready, the canonical name is available, and the validated plan has an SMB-eligible IPv4 address
 - sequentially registers machine `<00>`, `WORKGROUP<00>` and machine `<20>` exactly once for each fresh child generation; Apple's daemon supplies native conflict processing and WINS-configured behavior
 - refreshes the active child with SIGHUP after valid plan refreshes and stops the exact owned child on loss of eligibility or shutdown; the manager removes orphans before replacement
 - publishes `nbns=disabled|waiting|starting|ready`, payload mode, diskless state, and the canonical name in its process title. Doctor requires a single controller and, when eligible, a single child whose parent is that controller and which owns UDP `137` and `138`
@@ -921,7 +928,7 @@ At runtime it:
 
 NBNS is provided automatically by Apple's firmware `wcifsnd`; this project no longer ships a separate NBNS responder or an enable/disable preference. Old `NBNS_ENABLED` flash values and saved app preferences are ignored. The removed `--no-nbns` CLI flag and `nbns_enabled` app API parameter are rejected.
 
-`uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config.
+`uninstall` stops the discovery role and any orphaned `wcifsnd`, puts Apple's `/sbin/wcifsnd` back in place of boot.sh's guard, then removes the flash runtime config.
 
 Discovery starts `wcifsnd` only when an SMB link of a validated plan has an address Apple's daemon would answer on. Its interface scan takes the IPv4 addresses of an interface that is UP and BROADCAST and not LOOPBACK, except `0.0.0.0`, and except a 169.254 address while the interface has any other IPv4 address, `0.0.0.0` included. With no DHCP server, `dhclient-script` leaves `0.0.0.0` on `bridge0` beside `link_local`'s 169.254 address, so such a device answers NBNS nowhere: discovery runs no child and its title says `nbns=none`, and doctor reports native NBNS off and skips its NBNS query. A lease replaces `0.0.0.0` and starts a child. Once running, Apple's daemon enumerates interfaces according to firmware policy, and native NBNS does not promise Bonjour's per-interface `SVC_SMB` filtering. Samba listens on wildcards and Apple's firewall enforces reachability. NBNS provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
 
@@ -995,7 +1002,7 @@ The Advanced panel stores these choices in the local device profile. Run **Insta
 
 ### NBNS (always on, no checkbox)
 
-Always enabled when eligible. When the payload is ready and an SMB link has an IPv4 address Apple's daemon answers on (see [Native NBNS Scope](#native-nbns-scope)), `service discovery` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
+Always enabled when eligible. When the payload is ready and an SMB link has an IPv4 address Apple's daemon answers on (see [Native NBNS Scope](#native-nbns-scope)), `service discovery` owns Apple's `wcifsnd` child (`/usr/libexec/wcifsnd`) and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
 
 ### Enable rsync
 

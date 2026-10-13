@@ -26,8 +26,8 @@ if name=='mount' and os.environ.get('MOUNTED')=='1':print('tmpfs on '+str(root/'
 if name=='uname':print(os.environ.get('KERNEL','6.0'))
 if name=='sysctl' and sys.argv[1]=='-n':print(os.environ.get('BUFCACHE','5'))
 ''')
-    # The RAM root the diskd guard edits: a fake multi-call ACPd records the
-    # name it was started as (argv[0]'s basename) and its arguments.
+    # The RAM root the diskd and wcifsnd guards edit: a fake multi-call ACPd
+    # records the name it was started as (argv[0]'s basename) and its arguments.
     ram = tmp_path / 'ram'
     (ram / 'sbin').mkdir(parents=True)
     (ram / 'usr/libexec').mkdir(parents=True)
@@ -38,8 +38,8 @@ with (Path(os.environ['BOOT_ROOT'])/'calls').open('a') as log:log.write(json.dum
 ''')
     text = load_boot_asset_text('boot.sh')
     replacements = {'/mnt/Memory': str(tmp_path / 'Memory'), '/mnt/Locks': str(tmp_path / 'Locks'),
-                    '/sbin/ACPd': str(ram / 'sbin/ACPd'), '/sbin/diskd': str(ram / 'sbin/diskd'),
-                    '/sbin/.diskd.': str(ram / 'sbin/.diskd.'), '/usr/libexec/diskd': str(ram / 'usr/libexec/diskd'),
+                    '/sbin/ACPd': str(ram / 'sbin/ACPd'), '/sbin/$1': str(ram / 'sbin/$1'),
+                    '/sbin/.$1.': str(ram / 'sbin/.$1.'), '/usr/libexec/': str(ram / 'usr/libexec') + '/',
                     '/root': str(tmp_path / 'root'), '/mnt/Flash/service': shlex.quote(str(tools / 'service')),
                     **{f'/sbin/{name}': shlex.quote(str(tools / name)) for name in ('mount', 'mount_mfs', 'mount_tmpfs', 'sysctl')},
                     '/usr/bin/uname': shlex.quote(str(tools / 'uname'))}
@@ -118,21 +118,32 @@ def test_rc_local_detaches_boot_stdin_and_returns_without_waiting(tmp_path):
     assert ready.exists() and captured.read_text()==''
 
 
-def _wrapper(root):
-    return root/'ram/sbin/diskd'
+def _wrapper(root, name='diskd'):
+    return root/'ram/sbin'/name
 
 
-def test_boot_installs_the_diskd_guard_and_still_prepares_and_starts(boot):
+GUARDS = ['diskd', 'wcifsnd']
+
+
+def _guard_start(root, calls, name, *args):
+    before = len(calls())
+    result = subprocess.run([str(_wrapper(root, name)), *args], capture_output=True, text=True, timeout=10,
+                            env={**os.environ, 'BOOT_ROOT': str(root)})
+    return result.returncode, calls()[before:]
+
+
+def test_boot_installs_both_guards_and_still_prepares_and_starts(boot):
     root, run, calls = boot
     result = run(KERNEL='4.0')
     assert result.returncode == 0, result.stderr
-    # Same inode as ACPd: the multi-call binary, reachable under the name diskd.
-    assert (root/'ram/usr/libexec/diskd').stat().st_ino == (root/'ram/sbin/ACPd').stat().st_ino
-    wrapper = _wrapper(root).read_text()
-    assert wrapper.startswith('#!/bin/sh\n') and wrapper.rstrip().endswith('exit 0')
+    for name in GUARDS:
+        # Same inode as ACPd: the multi-call binary, reachable under the daemon's name.
+        assert (root/'ram/usr/libexec'/name).stat().st_ino == (root/'ram/sbin/ACPd').stat().st_ino
+        wrapper = _wrapper(root, name).read_text()
+        assert wrapper.startswith('#!/bin/sh\n') and wrapper.rstrip().endswith('exit 0')
     assert (root/'ram/sbin/ACPd').read_text().startswith(f'#!{sys.executable}')
-    assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', 'diskd']
-    # The commands after the guard still ran: its heredoc swallowed nothing.
+    assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', *GUARDS]
+    # The commands after the guards still ran: their heredocs swallowed nothing.
     operations = calls()
     assert ['mount_mfs', '-s', '8192', 'swap', str(root/'Locks')] in operations
     assert operations[-1] == ['service', 'manager']
@@ -144,10 +155,7 @@ def test_diskd_guard_starts_only_the_manager_loopback_diskd(boot):
     log = root/'Memory/samba4/var/runtime.log'
 
     def start(*args):
-        before = len(calls())
-        result = subprocess.run([str(_wrapper(root)), *args], capture_output=True, text=True, timeout=10,
-                                env={**os.environ, 'BOOT_ROOT': str(root)})
-        return result.returncode, calls()[before:]
+        return _guard_start(root, calls, 'diskd', *args)
 
     assert start('-i', 'lo0', '-d', 'local.') == (0, [['multicall', 'diskd', '-i', 'lo0', '-d', 'local.']])
     # ACPd's starts: nothing runs, one line each in the runtime log.
@@ -167,26 +175,67 @@ def test_diskd_guard_starts_only_the_manager_loopback_diskd(boot):
     assert not (root/'Memory/samba4/var').exists()
 
 
-def test_rerunning_boot_keeps_one_diskd_link_and_the_same_guard(boot):
+def test_wcifsnd_guard_runs_nothing_and_discovery_reaches_apple_wcifsnd_by_its_link(boot):
+    root, run, calls = boot
+    assert run().returncode == 0
+    log = root/'Memory/samba4/var/runtime.log'
+    # ACPd starts /sbin/wcifsnd without arguments: Apple's daemon never runs,
+    # and each start is one line in the runtime log.
+    assert _guard_start(root, calls, 'wcifsnd') == (0, [])
+    assert _guard_start(root, calls, 'wcifsnd') == (0, [])
+    assert [line.split(' ', 2)[2] for line in log.read_text().splitlines()] == [
+        'wcifsnd guard: ignored ACPd start'] * 2
+    # Discovery's path: the multi-call binary started under the name wcifsnd.
+    before = len(calls())
+    subprocess.run([str(root/'ram/usr/libexec/wcifsnd')], check=True, timeout=10,
+                   env={**os.environ, 'BOOT_ROOT': str(root)})
+    assert calls()[before:] == [['multicall', 'wcifsnd']]
+    log.unlink()
+    (root/'Memory/samba4/var').rename(root/'Memory/samba4/var.away')
+    assert _guard_start(root, calls, 'wcifsnd') == (0, [])
+    assert not (root/'Memory/samba4/var').exists()
+
+
+def test_rerunning_boot_keeps_one_link_and_the_same_guard_for_each_daemon(boot):
     root, run, _ = boot
     assert run(MOUNTED='1').returncode == 0
-    inode, wrapper = (root/'ram/usr/libexec/diskd').stat().st_ino, _wrapper(root).read_text()
+    before = {name: ((root/'ram/usr/libexec'/name).stat().st_ino, _wrapper(root, name).read_text()) for name in GUARDS}
     assert run(MOUNTED='1').returncode == 0
-    assert (root/'ram/usr/libexec/diskd').stat().st_ino == inode
-    assert _wrapper(root).read_text() == wrapper
-    assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', 'diskd']
+    # The second run links from /sbin/ACPd, never from the guard now at /sbin/NAME.
+    for name in GUARDS:
+        assert ((root/'ram/usr/libexec'/name).stat().st_ino, _wrapper(root, name).read_text()) == before[name]
+        assert before[name][0] == (root/'ram/sbin/ACPd').stat().st_ino
+    assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', *GUARDS]
 
 
-def test_diskd_guard_failure_keeps_apple_diskd_and_still_boots(boot):
+def test_guard_failure_keeps_apple_daemons_and_still_boots(boot):
     root, run, calls = boot
-    _wrapper(root).write_text('apple diskd')
+    for name in GUARDS:
+        _wrapper(root, name).write_text(f'apple {name}')
     (root/'ram/usr/libexec').chmod(0o555)  # ln fails
     try:
         result = run()
     finally:
         (root/'ram/usr/libexec').chmod(0o755)
     assert result.returncode == 0, result.stderr
-    assert _wrapper(root).read_text() == 'apple diskd'
-    assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', 'diskd']
-    assert 'diskd guard unavailable' in (root/'Memory/samba4/var/rc.local.log').read_text()
+    for name in GUARDS:
+        assert _wrapper(root, name).read_text() == f'apple {name}'
+    assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', *GUARDS]
+    log = (root/'Memory/samba4/var/rc.local.log').read_text()
+    assert 'diskd guard unavailable' in log and 'wcifsnd guard unavailable' in log
+    assert calls()[-1] == ['service', 'manager']
+
+
+def test_failed_guard_write_leaves_no_temporary_file_and_boot_continues(boot):
+    root, run, calls = boot
+    _wrapper(root, 'wcifsnd').write_text('apple wcifsnd')
+    (root/'ram/sbin').chmod(0o555)  # the guard cannot be written beside it
+    try:
+        result = run()
+    finally:
+        (root/'ram/sbin').chmod(0o755)
+    assert result.returncode == 0, result.stderr
+    assert _wrapper(root, 'wcifsnd').read_text() == 'apple wcifsnd'
+    assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', 'wcifsnd']
+    assert 'wcifsnd guard unavailable' in (root/'Memory/samba4/var/rc.local.log').read_text()
     assert calls()[-1] == ['service', 'manager']

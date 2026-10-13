@@ -65,6 +65,8 @@ verifies that repeated native child deaths preserve discovery, Bonjour, and an
 SMB handle. An ACPd-owned wcifsnd appearing after boot is removed by the manager
 while discovery and Bonjour remain running. A returning wcifsfs is stopped
 without resetting discovery. `test_manager.py` audit tests distinguish those
-foreign processes from the healthy child owned by discovery and still clean an
-orphan after discovery dies
+foreign processes from the healthy child owned by discovery, stop them without
+waiting for the next audit
+(`test_apple_netbios_daemon_is_stopped_without_waiting_for_the_next_audit`),
+and still clean an orphan after discovery dies
 (`test_controller_death_cleans_orphaned_native_nbns_before_replacement`).

@@ -98,8 +98,15 @@ def rig():
     fake_fstat = ROOT / "tests/native/integration/fake_fstat.py"
     fake_fstat.chmod(0o755)
     sock = root / "mDNSResponder"
+    # Discovery runs boot.sh's /usr/libexec link, and /sbin/wcifsnd only when
+    # that link is missing; the stand-in for the second marks its starts.
+    primary, fallback = root / "libexec-wcifsnd", root / "sbin-wcifsnd"
+    primary.symlink_to(fake)
+    fallback.write_text(f'#!/bin/sh\necho FALLBACK >>"$TC_FAKE_WCIFSND_EVENTS"\nexec "{fake}" "$@"\n')
+    fallback.chmod(0o755)
     binary = compile_service(root / "service", flags=[
-        f'-DMDNS_UDS_SERVERPATH="{sock}"', f'-DWCIFSND_PATH="{fake}"',
+        f'-DMDNS_UDS_SERVERPATH="{sock}"', f'-DWCIFSND_PATH="{primary}"',
+        f'-DWCIFSND_FALLBACK_PATH="{fallback}"',
         f'-DTC_FSTAT_PATH="{fake_fstat}"',
         f"-DWCIFSND_PORT={port}", "-DWCIFSND_START_MS=3000", "-DWCIFSND_INSPECT_MS=3000",
         "-DTC_CHILD_GRACE_MS=500", f"-DWCIFSND_FIRST_REPLY_MS={FIRST_REPLY_MS}",
@@ -803,6 +810,24 @@ def test_a_link_local_address_alone_still_registers(rig, dnssd):
             ("MACHINE", 0), ("WORKGROUP", 0), ("MACHINE", 0x20)]
     finally:
         discovery.stop()
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_child_runs_the_boot_link_and_falls_back_to_sbin_without_it(rig, dnssd, linked):
+    primary = rig[0] / "libexec-wcifsnd"
+    aside = rig[0] / "libexec-wcifsnd.aside"
+    if not linked:
+        # boot.sh could not link /usr/libexec/wcifsnd, so it left Apple's
+        # /sbin/wcifsnd unguarded.
+        primary.rename(aside)
+    discovery = Discovery(rig)
+    try:
+        assert wait_for(lambda: len(adds(discovery)) == 3)
+        assert ("FALLBACK" in event_lines(discovery.events)) == (not linked)
+    finally:
+        discovery.stop()
+        if not linked:
+            aside.rename(primary)
 
 
 @pytest.mark.parametrize('afp', [False, True])

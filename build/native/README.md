@@ -123,8 +123,10 @@ Samba workers still keep the manager from exiting.
 
 Apple's mDNSResponder and afpserver remain alive; the AFP preference controls
 advertising only. Loopback diskd retains filesystem ownership. Discovery alone
-owns its wcifsnd child; the manager removes ACPd's competing wcifsnd and
-wcifsfs by PID without replacing a running discovery generation. See
+owns its wcifsnd child, started as `/usr/libexec/wcifsnd` because boot.sh's
+`/sbin/wcifsnd` guard ignores ACPd's starts. The manager removes any other
+wcifsnd, and ACPd's wcifsfs, by PID within about a second of its per-second
+process-table read, without replacing a running discovery generation. See
 [runtime tests](../../tests/native/README.md).
 
 Telemetry creates only `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`. It locks

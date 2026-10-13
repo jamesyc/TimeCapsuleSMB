@@ -9,6 +9,7 @@ from timecapsulesmb.deploy.commands import (
     InstallPermissionsAction,
     PrepareDirsAction,
     RemovePathsAction,
+    RestoreAppleDaemonsAction,
     RemoteAction,
     RemotePermission,
     RemoteSymlink,
@@ -393,6 +394,9 @@ def build_uninstall_plan(
             # metadata inside a payload we are about to remove. Uninstall
             # removes everything, so it stops the migrator instead of waiting.
             StopIdleJobsAction(),
+            # Apple's /sbin/diskd and /sbin/wcifsnd in place of boot.sh's
+            # guards, for an uninstall that does not reboot.
+            RestoreAppleDaemonsAction(),
             RemovePathsAction((
                 *payload_dirs,
                 *flash_targets.values(),

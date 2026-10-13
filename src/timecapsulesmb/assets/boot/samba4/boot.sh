@@ -17,18 +17,28 @@ chmod 755 "$RAM_ROOT" "$RAM_ROOT/sbin" "$RAM_ROOT/etc" "$RAM_ROOT/var" \
 chmod 700 "$RAM_ROOT/private" "$RAM_ROOT/var/cores" || exit 1
 exec >>"$RAM_ROOT/var/rc.local.log" 2>&1
 
-# ACPd starts Apple's diskd at boot and whenever it applies a sharing setting.
-# The manager already runs diskd on loopback. ACPd keeps one table of diskd.*
-# RPC names: the second diskd fails to register, and when it exits ACPd deletes
-# the names it tried, which are the manager diskd's. After a few starts
+# ACPd starts two Apple daemons that would take over from ours, so boot.sh
+# replaces each with a guard that exits at once. /sbin and /usr/libexec are on
+# the RAM root, recreated at every boot. The hard link from /usr/libexec keeps
+# the process named after the daemon (the multi-call binary dispatches on
+# argv[0]'s basename); renaming the guard into place never writes through that
+# shared inode. Without the link, /sbin keeps Apple's binary.
+tc_guard() {
+    ln -f /sbin/ACPd "/usr/libexec/$1" &&
+        cat >"/sbin/.$1.$$" &&
+        chmod 555 "/sbin/.$1.$$" &&
+        mv -f "/sbin/.$1.$$" "/sbin/$1" &&
+        return 0
+    rm -f "/sbin/.$1.$$"
+    echo "boot: $1 guard unavailable; ACPd may start a second $1"
+}
+# ACPd starts diskd at boot and whenever it applies a sharing setting. The
+# manager already runs diskd on loopback. ACPd keeps one table of diskd.* RPC
+# names: the second diskd fails to register, and when it exits ACPd deletes the
+# names it tried, which are the manager diskd's. After a few starts
 # diskd.useVolume is gone until reboot, so deploy and disk activation fail.
-# Only the manager's loopback diskd may start; ACPd's starts exit at once.
-# /sbin and /usr/libexec are on the RAM root, recreated at every boot. The hard
-# link keeps the process named diskd (the multi-call binary dispatches on
-# argv[0]'s basename); renaming the wrapper into place never writes through
-# that shared inode. The heredoc body must follow the line that opens it.
-{ ln -f /sbin/ACPd /usr/libexec/diskd &&
-    cat >/sbin/.diskd.$$ <<'EOF' &&
+# Only the manager's loopback diskd may start.
+tc_guard diskd <<'EOF'
 #!/bin/sh
 # TimeCapsuleSMB diskd guard: see /mnt/Flash/boot.sh.
 if [ "${1:-}" = -i ] && [ "${2:-}" = lo0 ]; then
@@ -38,8 +48,19 @@ fi
     >>/mnt/Memory/samba4/var/runtime.log; } 2>/dev/null
 exit 0
 EOF
-    chmod 555 /sbin/.diskd.$$ && mv -f /sbin/.diskd.$$ /sbin/diskd; } ||
-    { rm -f /sbin/.diskd.$$; echo 'boot: diskd guard unavailable; ACPd may start a second diskd'; }
+# ACPd starts wcifsnd, without arguments, at boot and on every address change,
+# and once more about 25 s later if it exits. A second wcifsnd takes UDP
+# 137/138/922 from the one discovery owns, whose name registrations then fail
+# until the manager stops the other. Discovery starts /usr/libexec/wcifsnd
+# (/sbin/wcifsnd when that link is missing); every start of /sbin/wcifsnd is
+# ACPd's.
+tc_guard wcifsnd <<'EOF'
+#!/bin/sh
+# TimeCapsuleSMB wcifsnd guard: see /mnt/Flash/boot.sh.
+{ echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') wcifsnd guard: ignored ACPd start" \
+    >>/mnt/Memory/samba4/var/runtime.log; } 2>/dev/null
+exit 0
+EOF
 
 tc_prepare_locks() {
     mkdir -p "$LOCKS_ROOT" || return 1

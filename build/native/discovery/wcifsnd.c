@@ -5,6 +5,7 @@
 /* Only test builds may substitute a fake child/port or shorten deadlines. */
 #ifndef TC_NATIVE_TEST
 #undef WCIFSND_PATH
+#undef WCIFSND_FALLBACK_PATH
 #undef WCIFSND_PORT
 #undef WCIFSND_START_MS
 #undef WCIFSND_INSPECT_MS
@@ -13,8 +14,15 @@
 #undef WCIFSND_STOP_MS
 #undef WCIFSND_RETRY_MS
 #endif
+/* boot.sh replaces /sbin/wcifsnd with a guard that exits at once, so ACPd's
+ * own starts never take the NBNS ports from this child; its hard link to
+ * Apple's binary at /usr/libexec/wcifsnd runs the daemon. Where boot.sh could
+ * not make that link it left /sbin/wcifsnd as Apple's binary. */
 #ifndef WCIFSND_PATH
-#define WCIFSND_PATH "/sbin/wcifsnd"
+#define WCIFSND_PATH "/usr/libexec/wcifsnd"
+#endif
+#ifndef WCIFSND_FALLBACK_PATH
+#define WCIFSND_FALLBACK_PATH "/sbin/wcifsnd"
 #endif
 #ifndef WCIFSND_PORT
 #define WCIFSND_PORT 922
@@ -195,6 +203,7 @@ static void spawn_child(struct wcifsnd *w, long long now) {
          * all inherited descriptors prevents a child retaining Bonjour refs. */
         for (fd = 3; fd < limit; fd++) close(fd);
         execl(WCIFSND_PATH, "wcifsnd", (char *)NULL);
+        execl(WCIFSND_FALLBACK_PATH, "wcifsnd", (char *)NULL);
         _exit(127);
     }
     if (child < 0) { fail(w, "fork failed", now); return; }
