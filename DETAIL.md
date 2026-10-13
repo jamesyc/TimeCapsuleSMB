@@ -462,13 +462,16 @@ whenever it applies a sharing setting; that second diskd would delete our
 diskd's RPC names in ACPd (F16), so `boot.sh` makes `/sbin/diskd` (RAM root) a
 guard that runs the real binary, hard-linked as `/usr/libexec/diskd`, only for
 `-i lo0` and makes every other start exit at once. ACPd likewise starts its own
-`wcifsnd` at boot and on every address change (and once more about 25 s later
-if it exits), which would take the NBNS ports from discovery's child, so
-`/sbin/wcifsnd` is a guard that always exits; discovery runs the real binary
-hard-linked as `/usr/libexec/wcifsnd`, or `/sbin/wcifsnd` when boot.sh could
-not make that link (and so left Apple's binary there). Uninstall puts both
-`/sbin` names back as links to Apple's binary, for an uninstall that does not
-reboot. Our registrations use `name=NULL` and flags
+`wcifsnd`, without arguments, at boot (one to three times in the first minute)
+and on address changes, which would take the NBNS ports from discovery's child,
+so `/sbin/wcifsnd` is a guard that always exits; discovery runs the real binary
+hard-linked as `/usr/libexec/wcifsnd`, or `/sbin/wcifsnd` when that link is
+missing (boot.sh could not make it and so left Apple's binary there, or an older
+boot.sh started this runtime). Uninstall leaves both guards in place: the
+manager's loopback diskd outlives it and keeps serving `MaSt` and
+`diskd.useVolume`, and Apple's own diskd beside it would delete those RPC names
+(F16). Uninstall removes boot.sh, so the reboot that follows it, or the user's
+next one after `--no-reboot`, starts the stock daemons. Our registrations use `name=NULL` and flags
 `0`, so Apple's mDNSResponder owns the shared default service name and resolves
 conflicts. A stock-device test on 2026-09-19 showed `diskd` renaming both SMB and
 ADisk to "Name (2)" after an SMB-only conflict, while `syNm` and the hostname
@@ -928,7 +931,7 @@ At runtime it:
 
 NBNS is provided automatically by Apple's firmware `wcifsnd`; this project no longer ships a separate NBNS responder or an enable/disable preference. Old `NBNS_ENABLED` flash values and saved app preferences are ignored. The removed `--no-nbns` CLI flag and `nbns_enabled` app API parameter are rejected.
 
-`uninstall` stops the discovery role and any orphaned `wcifsnd`, puts Apple's `/sbin/wcifsnd` back in place of boot.sh's guard, then removes the flash runtime config.
+`uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config. boot.sh's `/sbin/wcifsnd` guard stays until the next reboot, so Apple's NBNS returns with it.
 
 Discovery starts `wcifsnd` only when an SMB link of a validated plan has an address Apple's daemon would answer on. Its interface scan takes the IPv4 addresses of an interface that is UP and BROADCAST and not LOOPBACK, except `0.0.0.0`, and except a 169.254 address while the interface has any other IPv4 address, `0.0.0.0` included. With no DHCP server, `dhclient-script` leaves `0.0.0.0` on `bridge0` beside `link_local`'s 169.254 address, so such a device answers NBNS nowhere: discovery runs no child and its title says `nbns=none`, and doctor reports native NBNS off and skips its NBNS query. A lease replaces `0.0.0.0` and starts a child. Once running, Apple's daemon enumerates interfaces according to firmware policy, and native NBNS does not promise Bonjour's per-interface `SVC_SMB` filtering. Samba listens on wildcards and Apple's firewall enforces reachability. NBNS provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
 

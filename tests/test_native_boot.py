@@ -196,6 +196,20 @@ def test_wcifsnd_guard_runs_nothing_and_discovery_reaches_apple_wcifsnd_by_its_l
     assert not (root/'Memory/samba4/var').exists()
 
 
+def test_guards_keep_working_after_uninstall_removes_the_runtime(boot):
+    # Uninstall leaves both guards until the reboot: the manager's loopback
+    # diskd outlives it, and Apple's diskd beside it would delete its RPC names.
+    import shutil
+    root, run, calls = boot
+    assert run().returncode == 0
+    shutil.rmtree(root/'Memory/samba4')  # uninstall's RemovePathsAction
+    assert _guard_start(root, calls, 'diskd', '-i', 'lo0', '-d', 'local.') == (
+        0, [['multicall', 'diskd', '-i', 'lo0', '-d', 'local.']])
+    assert _guard_start(root, calls, 'diskd', '-i', 'bridge0', '-d', 'local.') == (0, [])
+    assert _guard_start(root, calls, 'wcifsnd') == (0, [])
+    assert not (root/'Memory/samba4').exists()
+
+
 def test_rerunning_boot_keeps_one_link_and_the_same_guard_for_each_daemon(boot):
     root, run, _ = boot
     assert run(MOUNTED='1').returncode == 0
