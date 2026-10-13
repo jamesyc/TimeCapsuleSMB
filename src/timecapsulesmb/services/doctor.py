@@ -73,6 +73,9 @@ def doctor_finished_fields(
         "nsmb_conf": debug_fields.pop("nsmb_conf", None),
         # How many devices carry a stuck fork of Apple's ACPd before any reboot.
         "acpd_child_count": debug_fields.get("acpd_child_count"),
+        # Whether doctor waited for device services still starting, and how
+        # that ended, on passing runs too.
+        "startup_wait": debug_fields.get("startup_wait"),
         "doctor_status": report["status"],
         "doctor_sections": report["sections"],
     }

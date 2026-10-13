@@ -94,6 +94,8 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("doctor", "load_config"): StagePolicy(LOCAL_READ, True, "Read diagnostic configuration."),
     ("doctor", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
     ("doctor", "run_checks"): StagePolicy(REMOTE_READ, True, "Run local and remote diagnostic checks."),
+    ("doctor", "wait_for_device_startup"): StagePolicy(REMOTE_READ, True, "Wait for device services that are still starting after a boot."),
+    ("doctor", "finish_checks"): StagePolicy(REMOTE_READ, True, "Run the remaining checks after waiting for device startup."),
     ("activate", "load_config"): StagePolicy(LOCAL_READ, True, "Read activation configuration."),
     ("activate", "resolve_managed_target"): StagePolicy(REMOTE_READ, True, "Resolve and probe the NetBSD4 target."),
     ("activate", "build_activation_plan"): StagePolicy(LOCAL_READ, True, "Build the NetBSD4 activation action plan."),

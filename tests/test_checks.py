@@ -5,6 +5,7 @@ import sys
 import socket
 import struct
 import tempfile
+import time
 import unittest
 from contextlib import ExitStack, nullcontext
 from dataclasses import replace
@@ -42,6 +43,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _add_admin_password_result,
     DEVICE_SMB_PASSED,
     DOCTOR_CODE_DEVICE_STARTING_UP,
+    DOCTOR_CODE_HOSTNAME_UNMAPPED,
     DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK,
     DOCTOR_STARTUP_GRACE_SECONDS,
     STARTUP_GRACE_DETAIL_KEY,
@@ -91,6 +93,7 @@ from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
     MDNS_REGISTRATIONS_DEGRADED,
+    MDNS_REGISTRATIONS_STILL_STARTING,
     ManagerStartupAgeProbeResult,
     probe_manager_startup_age_conn,
     ProbedDeviceState,
@@ -154,6 +157,30 @@ def _nbns_owner_name(name: str) -> bytes:
     return b"\x20" + bytes(ord("A") + (c >> 4) if i % 2 == 0 else ord("A") + (c & 15)
                            for c in raw for i in range(2)) + b"\x00"
 
+
+
+class FakeClock:
+    """Doctor's clock (doctor_steps._clock) for tests: only sleeps and
+    simulated work move it. With `delegate_sleep`, sleeps also go through
+    time.sleep, which older tests patch and count."""
+
+    def __init__(self, start: float = 1000.0, *, delegate_sleep: bool = False) -> None:
+        self.start = self.now = start
+        self.delegate_sleep = delegate_sleep
+        self.sleeps: list[float] = []
+        self.mdns_at: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+        if self.delegate_sleep:
+            time.sleep(seconds)
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 class CheckTests(unittest.TestCase):
     def smb_listing_result(self, server: str = "timecapsulesamba4.local", disk_shares: list[str] | None = None) -> CheckResult:
@@ -276,6 +303,8 @@ class CheckTests(unittest.TestCase):
         startup_grace: bool = True,
         debug_fields=None,
         on_result=None,
+        on_stage=None,
+        clock: FakeClock | None = None,
         runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
         deployed_config_present: bool = True,
         migration_activity: MigrationActivity | Exception | None = None,
@@ -291,6 +320,9 @@ class CheckTests(unittest.TestCase):
         resolved_values = values or self.valid_doctor_values()
         mocks = SimpleNamespace()
         with ExitStack() as stack:
+            # A startup window is waited out on this clock, never in real time.
+            mocks.clock = clock or FakeClock(delegate_sleep=True)
+            stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps._clock", mocks.clock))
             mocks.check_nbns_name_resolution = stack.enter_context(mock.patch(
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution",
                 return_value=CheckResult("PASS", "native NBNS resolved"),
@@ -451,6 +483,7 @@ class CheckTests(unittest.TestCase):
                 startup_grace=startup_grace,
                 local_network_permission=local_network_permission,
                 on_result=on_result,
+                on_stage=on_stage,
                 debug_fields=debug_fields,
             )
 
@@ -458,6 +491,11 @@ class CheckTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
+        # Every doctor run here waits on a fake clock, never in real time;
+        # run_doctor_with_mocks swaps in its own per run.
+        self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.checks.doctor_steps._clock", FakeClock(delegate_sleep=True))
+        )
         default_bonjour_instance = BonjourServiceInstance(
             service_type="_smb._tcp.local.",
             name="Time Capsule Samba 4",
@@ -3774,35 +3812,56 @@ class CheckTests(unittest.TestCase):
         socket_debug_mock=None,
         debug_fields: dict[str, object] | None = None,
         startup_age_mock=None,
+        startup_grace: bool = True,
+        on_stage=None,
+        probe_seconds: float = 0.0,
+        smbd_mock=None,
+        extra_patches: dict[str, object] | None = None,
     ):
+        """Run doctor on a fake clock that only sleeps and simulated work move:
+        `probe_seconds` per mDNS probe. `smbd_mock` replaces the ready smbd probe."""
+        clock = FakeClock()
+
+        def timed_mdns(*args, **kwargs):
+            clock.mdns_at.append(clock.now)
+            clock.advance(probe_seconds)
+            return mdns_mock(*args, **kwargs)
+
+        early_checks = dict(extra_patches or {})
+        if smbd_mock is not None:
+            early_checks["timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn"] = smbd_mock
         # This computer defaults to 10.0.0.50, on the harness device's 10.0.0.0/24.
-        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
-            run = self.run_doctor_with_mocks(
-                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-                smb_port=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
-                xattr_result=CheckResult("PASS", "xattr ok"),
-                read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
-                skip_bonjour=True,
-                skip_smb=True,
-                client_source=client_source,
-                debug_fields=debug_fields,
-                extra_patches={
-                    "timecapsulesmb.checks.doctor_steps.probe_device_networks_conn": device_networks_probe(
-                        device_probe_mock or mock.Mock(return_value=SAME_SUBNET_DEVICE_PROBE)
-                    ),
-                    "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock,
-                    "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
-                    "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": startup_age_mock or mock.Mock(
-                        return_value=ManagerStartupAgeProbeResult(startup_age, f"manager started {int(startup_age)}s ago")
-                    ),
-                    "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
-                    "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
-                    "timecapsulesmb.checks.doctor_debug.read_remote_service_socket_diagnostics_conn": (
-                        socket_debug_mock or mock.Mock(return_value="")
-                    ),
-                },
-            )
-        return run, [call.args[0] for call in sleep_mock.call_args_list]
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+            skip_bonjour=True,
+            skip_smb=True,
+            client_source=client_source,
+            debug_fields=debug_fields,
+            startup_grace=startup_grace,
+            on_stage=on_stage,
+            clock=clock,
+            extra_patches={
+                **early_checks,
+                "timecapsulesmb.checks.doctor_steps.probe_device_networks_conn": device_networks_probe(
+                    device_probe_mock or mock.Mock(return_value=SAME_SUBNET_DEVICE_PROBE)
+                ),
+                "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": timed_mdns,
+                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
+                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": startup_age_mock or mock.Mock(
+                    return_value=ManagerStartupAgeProbeResult(startup_age, f"manager started {int(startup_age)}s ago")
+                ),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+                "timecapsulesmb.checks.doctor_debug.read_remote_service_socket_diagnostics_conn": (
+                    socket_debug_mock or mock.Mock(return_value="")
+                ),
+            },
+        )
+        run.clock = clock
+        return run, clock.sleeps
 
     def test_run_doctor_checks_retries_a_bonjour_registration_waiting_for_discoverys_retry(self) -> None:
         degraded = ReadinessProbeResult(
@@ -3835,6 +3894,292 @@ class CheckTests(unittest.TestCase):
         sections = doctor_report(run.results)["sections"]
         self.assertEqual(sections["device"]["status"], "fail")
         self.assertNotIn(NBNS_QUERY_TIMEOUT_CODE, sections["computer"]["fail_codes"])
+
+    def test_run_doctor_checks_polls_native_nbns_through_startup_instead_of_failing(self) -> None:
+        # After a boot Bonjour registers at once, but discovery's first NBNS
+        # add can go unanswered: NBNS is "still starting", then "not ready"
+        # between retries, then ready. A doctor run 42 s in passes once it is.
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        mdns_mock = mock.Mock(side_effect=[starting] * 7 + [not_ready] + [ready])
+        nbns_mock = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
+        stages: list[tuple[str, str | None]] = []
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mdns_mock, nbns_mock, startup_age=42.0, on_stage=lambda *stage: stages.append(stage), debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10] * 8)
+        self.assertEqual(mdns_mock.call_count, 9)
+        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
+        nbns_mock.assert_called_once()
+        # The wait is announced once, with how long it may take, then checks resume.
+        self.assertEqual(stages, [
+            ("wait_for_device_startup",
+             "device services started 42s ago; waiting up to 138s for NetBIOS to finish starting..."),
+            ("finish_checks", None),
+        ])
+        self.assertEqual(debug_fields["startup_wait"], {
+            "manager_age_sec": 42, "window_left_sec": 138.0, "waited_sec": 80.0, "probes": 9, "outcome": "ready",
+        })
+
+    def test_run_doctor_checks_does_not_announce_a_wait_when_mdns_is_ready_at_once(self) -> None:
+        stages: list[tuple[str, str | None]] = []
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=42.0, on_stage=lambda *stage: stages.append(stage), debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual((sleeps, stages), ([], []))
+        self.assertEqual(debug_fields["startup_wait"], {
+            "manager_age_sec": 42, "window_left_sec": 138.0, "waited_sec": 0.0, "probes": 1, "outcome": "ready",
+        })
+
+    def test_run_doctor_checks_startup_window_never_waits_on_a_structural_mdns_failure(self) -> None:
+        # Waiting fixes only the states discovery passes through while starting.
+        broken = ReadinessProbeResult(
+            ready=False,
+            detail="discovery native NBNS state does not match the active plan",
+            steps=(
+                ProbeStepResult("mdns_process", "pass", "discovery process is running"),
+                ProbeStepResult("native_nbns", "fail", "discovery native NBNS state does not match the active plan"),
+            ),
+        )
+        mdns_mock = mock.Mock(return_value=broken)
+        stages: list[tuple[str, str | None]] = []
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mdns_mock, mock.Mock(return_value=self._nbns_query_timeout()), startup_age=42.0,
+            on_stage=lambda *stage: stages.append(stage), debug_fields=debug_fields,
+        )
+
+        mdns_mock.assert_called_once()
+        self.assertEqual(sleeps[:1], [10])  # The query's own retry, not a startup poll.
+        self.assertEqual(stages, [])
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "structural")
+        self.assertTrue(any(result.status == "FAIL"
+                            and result.message == "discovery native NBNS state does not match the active plan"
+                            for result in run.results))
+
+    @staticmethod
+    def _smbd_probe(ready: bool, failure: str = "managed smbd parent process is not running") -> mock.Mock:
+        lines = ("PASS:managed smbd parent process is running",) if ready else (f"FAIL:{failure}",)
+        return mock.Mock(ready=ready, detail="smbd ok" if ready else failure, lines=lines, steps=())
+
+    def test_run_doctor_checks_waits_for_samba_starting_before_the_device_checks(self) -> None:
+        # smbd not yet listening at age 45 is waited for, not collapsed into
+        # "still starting up"; it is reported once, from the wait's probe.
+        smbd_mock = mock.Mock(side_effect=[self._smbd_probe(False)] * 3 + [self._smbd_probe(True)])
+        stages: list[tuple[str, str | None]] = []
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=45.0, smbd_mock=smbd_mock, on_stage=lambda *stage: stages.append(stage),
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10, 10, 10])
+        self.assertEqual(smbd_mock.call_count, 4)
+        self.assertEqual(stages[0], ("wait_for_device_startup",
+                                     "device services started 45s ago; waiting up to 135s for Samba to finish starting..."))
+        self.assertFalse(any(result.status == "FAIL" for result in run.results))
+
+    def test_run_doctor_checks_startup_wait_does_not_probe_a_ready_service_again(self) -> None:
+        # Samba is ready at once; only NBNS is still starting, so only it is
+        # probed each round. Samba's check reports the wait's first probe.
+        smbd_mock = mock.Mock(return_value=self._smbd_probe(True))
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        mdns_mock = mock.Mock(side_effect=[starting] * 4 + [self._nbns_ready_probe()])
+
+        run, sleeps = self._run_doctor_nbns(
+            mdns_mock,
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=42.0, smbd_mock=smbd_mock,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10] * 4)
+        smbd_mock.assert_called_once()
+        self.assertEqual(mdns_mock.call_count, 5)
+
+    def test_run_doctor_checks_reports_samba_that_never_starts_after_the_window(self) -> None:
+        smbd_mock = mock.Mock(return_value=self._smbd_probe(False))
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=100.0, smbd_mock=smbd_mock, debug_fields=debug_fields,
+        )
+
+        self.assertEqual(sleeps[:8], [10] * 8)
+        self.assertEqual(smbd_mock.call_count, 9)  # The wait's rounds; no retries after it.
+        self.assertTrue(run.fatal)
+        self.assertIn("managed smbd parent process is not running",
+                      [result.message for result in run.results if result.status == "FAIL"])
+        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "outlasted")
+
+    def test_run_doctor_checks_names_every_service_it_waits_for(self) -> None:
+        nbns = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        bonjour = ReadinessProbeResult(
+            ready=False, detail=MDNS_REGISTRATIONS_STILL_STARTING,
+            steps=(ProbeStepResult("mdns_registered", "fail", MDNS_REGISTRATIONS_STILL_STARTING),),
+        )
+        cases = (
+            (self._smbd_probe(False), nbns, "Samba and NetBIOS"),
+            (self._smbd_probe(True), bonjour, "Bonjour"),
+        )
+        for smbd, mdns, named in cases:
+            with self.subTest(named):
+                stages: list[tuple[str, str | None]] = []
+                self._run_doctor_nbns(
+                    mock.Mock(side_effect=[mdns, self._nbns_ready_probe()]),
+                    mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+                    startup_age=42.0, smbd_mock=mock.Mock(side_effect=[smbd, self._smbd_probe(True)]),
+                    on_stage=lambda *stage: stages.append(stage),
+                )
+                self.assertEqual(stages[0][1], f"device services started 42s ago; waiting up to 138s for {named} to finish starting...")
+
+    def test_run_doctor_checks_startup_wait_stops_on_a_structural_samba_failure(self) -> None:
+        # NBNS still starting is not worth waiting for when Samba is broken.
+        smbd_mock = mock.Mock(return_value=self._smbd_probe(False, "native service binary missing at /mnt/Flash/service"))
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=starting),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=42.0, smbd_mock=smbd_mock, debug_fields=debug_fields,
+        )
+
+        self.assertEqual(sleeps, [])
+        smbd_mock.assert_called_once()
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "structural")
+        self.assertTrue(run.fatal)
+
+    def test_run_doctor_checks_reports_failures_seen_after_the_window_as_themselves(self) -> None:
+        # After the window, a failure startup grace could otherwise collapse
+        # (here the hostname not mapped yet) is the device's real state.
+        unmapped = mock.Mock(return_value=DeviceHostnameProbeResult("timecapsule", ()))
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=starting),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=100.0,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.probe_device_hostname_conn": unmapped},
+        )
+
+        failures = {result.details.get("code") or result.message for result in run.results if result.status == "FAIL"}
+        self.assertEqual(failures, {DOCTOR_CODE_HOSTNAME_UNMAPPED, "discovery native NBNS is still starting"})
+
+    def test_run_doctor_checks_still_collapses_startup_failures_when_the_wait_ends_early(self) -> None:
+        # Everything the wait polls was ready at once, so the window is still
+        # open: a hostname not mapped yet is the device starting up.
+        unmapped = mock.Mock(return_value=DeviceHostnameProbeResult("timecapsule", ()))
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=42.0,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.probe_device_hostname_conn": unmapped},
+        )
+
+        self.assertEqual(sleeps, [])
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
+
+    def test_run_doctor_checks_startup_window_ends_on_time_with_slow_probes(self) -> None:
+        # Each probe takes 7 s of an 80 s window: the last sleep is cut to the
+        # deadline, one last probe runs there, and nothing waits after it.
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        mdns_mock = mock.Mock(return_value=not_ready)
+
+        run, sleeps = self._run_doctor_nbns(
+            mdns_mock,
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=100.0, probe_seconds=7.0,
+        )
+
+        self.assertEqual(sleeps, [10, 10, 10, 10, 5])
+        self.assertEqual(run.clock.mdns_at[-1], 1080.0)
+        self.assertEqual(mdns_mock.call_count, 6)
+
+    def test_run_doctor_checks_startup_window_replaces_apples_budget_for_still_starting(self) -> None:
+        # The window already outlasts Apple's 100 s registration budget, so no
+        # 20/25/30 s retries follow it; NBNS still starting at the end of it is
+        # a failure of its own.
+        starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=starting),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=41.0, debug_fields=debug_fields,
+        )
+
+        self.assertEqual(sleeps, [10] * 13 + [9])
+        self.assertTrue(run.fatal)
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.message for result in failures], ["discovery native NBNS is still starting"])
+        self.assertEqual(debug_fields["startup_wait"], {
+            "manager_age_sec": 41, "window_left_sec": 139.0, "waited_sec": 139.0, "probes": 15, "outcome": "outlasted",
+        })
+
+    def test_run_doctor_checks_startup_window_shorter_than_a_poll_keeps_the_usual_retries(self) -> None:
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        cases = (
+            # age: (sleeps, probes, startup_wait)
+            (170.0, [10], 2, {"manager_age_sec": 170, "window_left_sec": 10.0, "waited_sec": 10.0, "probes": 2, "outcome": "outlasted"}),
+            (175.0, [10, 15], 3, {"window_left_sec": 5.0, "outcome": "no_window"}),
+            (180.0, [10, 15], 3, {"outcome": "no_window"}),
+            (400.0, [10, 15], 3, {"outcome": "no_window"}),
+        )
+        for startup_age, expected_sleeps, probes, startup_wait in cases:
+            with self.subTest(startup_age=startup_age):
+                mdns_mock = mock.Mock(return_value=not_ready)
+                debug_fields: dict[str, object] = {}
+
+                run, sleeps = self._run_doctor_nbns(
+                    mdns_mock,
+                    mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+                    startup_age=startup_age, debug_fields=debug_fields,
+                )
+
+                self.assertEqual(sleeps, expected_sleeps)
+                self.assertEqual(mdns_mock.call_count, probes)
+                self.assertEqual(debug_fields["startup_wait"], startup_wait)
+                failures = [result for result in run.results if result.status == "FAIL"]
+                self.assertEqual([result.message for result in failures], ["discovery native NBNS is not ready"])
+
+    def test_run_doctor_checks_without_startup_grace_never_waits_for_startup(self) -> None:
+        # --no-startup-grace (the app's startup_grace=false) reports what it
+        # finds: the usual retries, no startup window, no collapse.
+        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
+        stages: list[tuple[str, str | None]] = []
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=not_ready),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=41.0, startup_grace=False, on_stage=lambda *stage: stages.append(stage), debug_fields=debug_fields,
+        )
+
+        self.assertEqual(sleeps, [10, 15])
+        self.assertEqual(stages, [])
+        self.assertEqual(debug_fields["startup_wait"], {"outcome": "disabled"})
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.message for result in failures], ["discovery native NBNS is not ready"])
 
     def test_run_doctor_checks_waits_up_to_apple_budget_while_native_nbns_starts(self) -> None:
         starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
@@ -3904,22 +4249,24 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(nbns_mock.call_count, 2)
         self.assertIn(resolved, run.results)
 
-    def test_run_doctor_checks_startup_grace_collapses_unregistered_nbns_failures(self) -> None:
+    def test_run_doctor_checks_waits_out_startup_then_reports_unregistered_nbns_as_itself(self) -> None:
+        # Doctor polls through the startup window; NBNS still unregistered
+        # after it is a real failure.
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
-        for startup_age, collapsed in ((41.0, True), (3600.0, False)):
+        # 41 s old: polled every 10 s until the window's 139 s are spent. Older:
+        # the usual two retries. The query's own two retries follow either way.
+        for startup_age, mdns_sleeps in ((41.0, [10] * 13 + [9]), (3600.0, [10, 15])):
             with self.subTest(startup_age=startup_age):
                 nbns_mock = mock.Mock(side_effect=[self._nbns_query_timeout()] * 3)
 
-                run, _ = self._run_doctor_nbns(mock.Mock(return_value=not_ready), nbns_mock, startup_age=startup_age)
+                run, sleeps = self._run_doctor_nbns(mock.Mock(return_value=not_ready), nbns_mock, startup_age=startup_age)
 
+                self.assertEqual(sleeps, mdns_sleeps + [10, 15])
                 self.assertTrue(run.fatal)
                 self.assertEqual(nbns_mock.call_count, 3)
                 failures = [result for result in run.results if result.status == "FAIL"]
-                if collapsed:
-                    self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
-                    self.assertEqual(failures[0].details["masked_failures"], ["discovery native NBNS is not ready"])
-                else:
-                    self.assertEqual({result.message for result in failures}, {"discovery native NBNS is not ready"})
+                self.assertEqual({result.message for result in failures}, {"discovery native NBNS is not ready"})
+                self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
                 # The device reported NBNS not ready, so this computer's query
                 # timing out is not counted against it.
                 query = next(result for result in run.results if result.details.get("code") == NBNS_QUERY_TIMEOUT_CODE)
@@ -3934,39 +4281,36 @@ class CheckTests(unittest.TestCase):
                 return probe_manager_startup_age_conn(connection)
         return mock.Mock(side_effect=probe_device)
 
-    def test_run_doctor_checks_startup_grace_survives_a_wall_clock_step_after_boot(self) -> None:
+    def test_run_doctor_checks_startup_window_survives_a_wall_clock_step_after_boot(self) -> None:
         # v3.3.0 field case: 55 s after boot, with the clock stepped a day by
-        # sntpd, ps said the manager was 86577 s old; the grace was skipped
-        # and native NBNS still starting failed doctor. The monotonic start
-        # keeps it a startup failure. A manager that is old on that clock,
-        # or that has no start (an older release), keeps the real failures.
+        # sntpd, ps said the manager was 86577 s old; the startup window was
+        # skipped and native NBNS still starting failed doctor. The monotonic
+        # start keeps doctor waiting through the window. A manager that is old
+        # on that clock, or that has no start (an older release), gets only
+        # the usual retries.
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
         # This computer's query timing out is the device's NBNS, not counted as a failure here.
         nbns_failures = {"discovery native NBNS is not ready"}
         cases = (
-            ("stepped", "role=manager started=5", "60000", True, 55.0),
-            ("old", "role=manager started=5", "4000000", False, 3995.0),
-            ("older release", "role=manager", "60000", False, None),
+            ("stepped", "role=manager started=5", "60000", [10] * 12 + [5], 55.0),
+            ("old", "role=manager started=5", "4000000", [10, 15], 3995.0),
+            ("older release", "role=manager", "60000", [10, 15], None),
         )
-        for name, title, now_ms, collapsed, age in cases:
+        for name, title, now_ms, mdns_sleeps, age in cases:
             with self.subTest(name):
                 debug_fields: dict[str, object] = {}
                 output = f"ps=  142     1 S  1-00:02:57 service service: {title}\nnow_ms={now_ms}\n"
-                run, _ = self._run_doctor_nbns(
+                run, sleeps = self._run_doctor_nbns(
                     mock.Mock(return_value=not_ready),
                     mock.Mock(side_effect=[self._nbns_query_timeout()] * 3),
                     debug_fields=debug_fields,
                     startup_age_mock=self._device_startup_age(output),
                 )
 
+                self.assertEqual(sleeps[:len(mdns_sleeps)], mdns_sleeps)
                 self.assertTrue(run.fatal)
                 failures = [result for result in run.results if result.status == "FAIL"]
-                if collapsed:
-                    self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
-                    self.assertEqual(failures[0].details["manager_started_seconds_ago"], 55)
-                    self.assertTrue(nbns_failures <= set(failures[0].details["masked_failures"]))
-                else:
-                    self.assertEqual({result.message for result in failures}, nbns_failures)
+                self.assertEqual({result.message for result in failures}, nbns_failures)
                 startup = debug_fields["manager_startup_age"]
                 self.assertEqual(startup["seconds_ago"], age)
                 self.assertEqual(startup["now_monotonic_ms"], int(now_ms) if age is not None else None)
@@ -4246,7 +4590,7 @@ class CheckTests(unittest.TestCase):
             ["discovery native NBNS is not ready"],
         )
 
-    def test_run_doctor_checks_keeps_off_subnet_skip_out_of_startup_grace(self) -> None:
+    def test_run_doctor_checks_keeps_off_subnet_skip_out_of_startup_failures(self) -> None:
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
 
         run, _ = self._run_doctor_nbns(
@@ -4257,10 +4601,11 @@ class CheckTests(unittest.TestCase):
             device_probe_mock=mock.Mock(return_value=self.OFF_SUBNET_DEVICE_PROBE),
         )
 
+        # NBNS outlasted the startup window, so it is the only failure; this
+        # computer's off-subnet query is neither a failure nor folded into it.
         failures = [result for result in run.results if result.status == "FAIL"]
-        self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
-        self.assertIn("discovery native NBNS is not ready", failures[0].details["masked_failures"])
-        self.assertFalse(any("NBNS query" in masked for masked in failures[0].details["masked_failures"]))
+        self.assertEqual([result.message for result in failures], ["discovery native NBNS is not ready"])
+        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
         nbns_result = next(result for result in run.results if "NBNS query" in result.message)
         self.assertEqual(nbns_result.status, "SKIP")
 

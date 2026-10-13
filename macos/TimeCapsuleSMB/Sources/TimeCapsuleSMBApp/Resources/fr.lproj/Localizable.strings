@@ -1024,6 +1024,8 @@
 "timeline.stage.removing_managed_files" = "Suppression des fichiers gérés";
 "timeline.stage.repairing_disk" = "Réparation du disque";
 "timeline.stage.running_checkup" = "Exécution de la vérification";
+"timeline.stage.waiting_for_device_startup" = "Attente de la fin du démarrage de l’appareil";
+"timeline.stage.finishing_checkup" = "Fin de la vérification";
 "timeline.stage.saving_device" = "Enregistrement de l’appareil";
 "timeline.stage.starting_smb" = "Démarrage de SMB";
 "timeline.stage.validating_app_bundle" = "Vérification du paquet de l’app";

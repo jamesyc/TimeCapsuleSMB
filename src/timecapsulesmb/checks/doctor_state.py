@@ -57,6 +57,13 @@ class DoctorSink:
     # service the device itself reported down, and that service: such a
     # failure is a SKIP that names the device, not this computer's fault.
     blocked_by_device: dict[str, str] = field(default_factory=dict)
+    # Called with a stage name and, when the stage starts a wait, a line for
+    # people watching (the CLI prints it; the app shows the stage).
+    on_stage: Callable[[str, str | None], None] | None = None
+
+    def stage(self, stage: str, detail: str | None = None) -> None:
+        if self.on_stage is not None:
+            self.on_stage(stage, detail)
 
     @contextmanager
     def in_section(self, section: str) -> Iterator[None]:

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Optional
 
 from timecapsulesmb.checks.doctor import run_doctor_checks
+from timecapsulesmb.checks.doctor_steps import DOCTOR_STAGE_RUN_CHECKS
 from timecapsulesmb.checks.models import DOMAIN_COMPUTER, DOMAIN_DEVICE, CheckResult
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import add_config_argument, print_json
@@ -81,7 +82,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
     parser.add_argument("--skip-bonjour", action="store_true", help="Skip Bonjour browse/resolve checks")
     parser.add_argument("--skip-smb", action="store_true", help="Skip the SMB login and file checks (they write a test folder through SMB)")
-    parser.add_argument("--no-startup-grace", action="store_true", help="Show raw startup-window failures instead of collapsing known transient checks")
+    parser.add_argument("--no-startup-grace", action="store_true", help="Report startup-window failures as they are, instead of waiting for services still starting or collapsing them")
     parser.add_argument("--json", action="store_true", help="Output doctor results as JSON")
     args = parser.parse_args(argv)
 
@@ -102,8 +103,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             connection = command_context.resolve_env_connection(allow_empty_password=True)
             if connection.password:
                 command_context.start_optional_airport_identity_probe(connection)
-        command_context.set_stage("run_checks")
+        command_context.set_stage(DOCTOR_STAGE_RUN_CHECKS)
         doctor_debug: dict[str, object] = {}
+
+        def on_stage(stage: str, detail: str | None) -> None:
+            command_context.set_stage(stage)
+            if detail and not args.json:
+                print(detail, flush=True)
+
         # The followed config: Bonjour and SMB checks look where SSH reaches the device.
         results, fatal = run_doctor_checks(
             command_context.config or config,
@@ -116,6 +123,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             skip_smb=args.skip_smb,
             startup_grace=not args.no_startup_grace,
             on_result=None if args.json else section_printer(),
+            on_stage=on_stage,
             debug_fields=doctor_debug,
         )
         finished = doctor_finished_fields(results, fatal, doctor_debug)

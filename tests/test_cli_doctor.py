@@ -30,6 +30,43 @@ class CliDoctorTests(CliTestCase):
         self.assertIn("doctor found one or more fatal problems", output.getvalue())
         self.assertIn("Doctor failures:", self._telemetry_client.emit.call_args_list[-1].kwargs["error"] if self._telemetry_client.emit.call_args_list else "")
 
+    def _run_with_startup_wait(self, argv: list[str]) -> tuple[str, list[str]]:
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["on_stage"]("wait_for_device_startup", "device services started 42s ago; waiting up to 138s")
+            kwargs["on_stage"]("finish_checks", None)
+            kwargs["debug_fields"]["startup_wait"] = {"outcome": "ready", "probes": 9}
+            return [doctor.CheckResult("PASS", "ok")], False
+
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                with redirect_stdout(output):
+                    self.assertEqual(doctor.main(argv), 0)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["startup_wait"], {"outcome": "ready", "probes": 9})
+        return output.getvalue(), [stage["name"] for stage in finished["execution"]["stages"]]
+
+    def test_doctor_prints_and_records_a_wait_for_device_startup(self) -> None:
+        output, stages = self._run_with_startup_wait([])
+
+        self.assertIn("device services started 42s ago; waiting up to 138s\n", output)
+        # The wait is its own stage in telemetry, with its duration.
+        self.assertEqual(stages[:3], ["run_checks", "wait_for_device_startup", "finish_checks"])
+
+    def test_doctor_json_output_records_the_wait_without_printing_it(self) -> None:
+        output, stages = self._run_with_startup_wait(["--json"])
+
+        self.assertNotIn("waiting up to", output)
+        json.loads(output)
+        self.assertIn("wait_for_device_startup", stages)
+
+    def test_doctor_no_startup_grace_reaches_the_checks(self) -> None:
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([], False)) as checks:
+                with redirect_stdout(io.StringIO()):
+                    doctor.main(["--no-startup-grace"])
+        self.assertIs(checks.call_args.kwargs["startup_grace"], False)
+
     def test_doctor_failure_telemetry_includes_bonjour_candidate_context(self) -> None:
         output = io.StringIO()
         results = [

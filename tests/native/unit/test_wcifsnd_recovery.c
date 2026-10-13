@@ -220,8 +220,43 @@ static void eligibility_and_shutdown(void) {
     assert(!w.child && !w.desired && !w.failed && !forks);
 }
 
+/* An add waits WCIFSND_FIRST_REPLY_MS until a reply wait times out, then
+ * WCIFSND_REPLY_MS until a child has stayed registered for a minute or
+ * native NBNS is no longer wanted. */
+static void reply_wait_lengthens_after_a_timeout(void) {
+    struct wcifsnd w;
+    struct device_plan p = {0};
+    init(&w);
+    assert(!w.patient && reply_ms(&w) == 30000);
+
+    w.phase = WC_REGISTERING; w.child = 42; w.deadline = 30100; w.sent = 1;
+    assert(!wcifsnd_dispatch(&w, NULL, 30099) && !w.failed);
+    assert(!wcifsnd_dispatch(&w, NULL, 30100));
+    assert(w.failed && w.phase == WC_STOPPING && w.patient && reply_ms(&w) == 100000);
+
+    /* Any other failure keeps the long wait. */
+    waited = 42;
+    assert(!wcifsnd_dispatch(&w, NULL, 30200) && !w.child);
+    w.child = 42; w.phase = WC_STARTING; socket_error = EMFILE; waited = 0;
+    assert(!wcifsnd_dispatch(&w, NULL, 40000) && w.failed && w.patient);
+    socket_error = 0;
+
+    /* A child that stays registered for a minute resets it at its next failure. */
+    init(&w); w.patient = 1; w.child = 42; w.phase = WC_ACTIVE; w.active_since = 100;
+    fail(&w, "short-lived success", 60099);
+    assert(w.patient);
+    init(&w); w.patient = 1; w.child = 42; w.phase = WC_ACTIVE; w.active_since = 100;
+    fail(&w, "healthy interval", 60100);
+    assert(!w.patient && reply_ms(&w) == 30000);
+
+    /* So does losing eligibility: a later start is a new boot of native NBNS. */
+    init(&w); w.patient = 1;
+    wcifsnd_apply_plan(&w, &p, 100);
+    assert(!w.desired && !w.patient);
+}
+
 int main(void) {
     retry_deadlines(); cleanup_before_retry(); stopped_inspection_defers_retry();
-    errors_and_stale_replies(); eligibility_and_shutdown();
+    errors_and_stale_replies(); eligibility_and_shutdown(); reply_wait_lengthens_after_a_timeout();
     return 0;
 }

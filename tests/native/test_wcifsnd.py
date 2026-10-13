@@ -68,6 +68,9 @@ WCIFSND_UNIT_MODULES = (
 # proves that none was scheduled.
 WCIFSND_RETRY_MS = 200
 PAST_FIRST_RETRY = 3 * 2 * WCIFSND_RETRY_MS / 1000
+# The reply wait before any timed out, and after one did (device 30 s, 100 s).
+FIRST_REPLY_MS = 1500
+REPLY_MS = 3000
 
 
 @pytest.fixture(scope="module")
@@ -83,7 +86,8 @@ def rig():
         f'-DMDNS_UDS_SERVERPATH="{sock}"', f'-DWCIFSND_PATH="{fake}"',
         f'-DTC_FSTAT_PATH="{fake_fstat}"',
         f"-DWCIFSND_PORT={port}", "-DWCIFSND_START_MS=3000", "-DWCIFSND_INSPECT_MS=3000",
-        "-DTC_CHILD_GRACE_MS=500", "-DWCIFSND_REPLY_MS=1500",
+        "-DTC_CHILD_GRACE_MS=500", f"-DWCIFSND_FIRST_REPLY_MS={FIRST_REPLY_MS}",
+        f"-DWCIFSND_REPLY_MS={REPLY_MS}",
         "-DWCIFSND_STOP_MS=500", "-DTC_PLAN_POLL_MS=200", "-DREG_BACKOFF_MIN_MS=100",
         "-DREG_BACKOFF_MAX_MS=200", "-DREG_IPC_ALARM_SECONDS=1", "-D_DNS_SD_LIBDISPATCH=0",
         f"-DWCIFSND_RETRY_MS={WCIFSND_RETRY_MS}"])
@@ -408,6 +412,64 @@ def test_defended_forever_times_out_then_replaces_child_without_resend(rig, dnss
     assert ("registration of MACHINE<00> timed out after 1500 ms (last reply rcode 3); "
             "replacing native child") in log
     assert "wcifsnd: registered" not in log
+
+
+def test_unanswered_first_add_is_replaced_after_the_short_wait_then_registers(rig, dnssd):
+    # After a reboot the first add can get no reply at all while ACPd starts
+    # its own wcifsnd and wcifsfs; a fresh child then registers in seconds.
+    discovery = Discovery(rig, mode="drop", shares=True)
+    try:
+        connections = bonjour_connections(dnssd)
+        first = wait_for(lambda: first_added_child(discovery), timeout=10)
+        assert first
+        assert wait_for(lambda: "STOP" in generation(discovery, first), timeout=10)
+        discovery.mode.write_text("success")
+        assert wait_for(lambda: "HUP" in event_lines(discovery.events), timeout=15)
+        assert_reaped(first, discovery.proc.pid)
+        assert set(adds_per_child(discovery).values()) <= {1, 3}
+        assert adds_per_child(discovery)[first] == 1
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        log = discovery.stop()[1]
+    assert (f"registration of MACHINE<00> timed out after {FIRST_REPLY_MS} ms (last no reply); "
+            "replacing native child") in log
+    assert "wcifsnd: registered MACHINE with Apple's native NetBIOS daemon" in log
+
+
+def test_reply_wait_lengthens_after_a_timeout_for_slow_name_servers(rig, dnssd):
+    # A WINS server slower than the short wait would otherwise replace every
+    # child forever: after one timeout each add gets the full wait.
+    discovery = Discovery(rig, mode="drop")
+    try:
+        assert wait_for(lambda: len(set(pid for pid, _ in add_events(discovery))) >= 3, timeout=25)
+    finally:
+        log = discovery.stop()[1]
+    timeouts = [line.split("timed out after ")[1].split(" ms")[0]
+                for line in log.splitlines() if "registration of MACHINE<00> timed out after" in line]
+    assert timeouts[:2] == [str(FIRST_REPLY_MS), str(REPLY_MS)]
+    assert set(timeouts[1:]) == {str(REPLY_MS)}
+
+
+def test_unanswered_second_record_uses_the_short_wait_then_the_long_one(rig, dnssd):
+    # The machine name registers, then WORKGROUP<00> gets no reply.
+    discovery = Discovery(rig, mode="drop-after-1")
+    try:
+        first = wait_for(lambda: first_added_child(discovery), timeout=10)
+        assert first
+        assert wait_for(lambda: len(set(pid for pid, _ in add_events(discovery))) >= 2, timeout=15)
+        second = [pid for pid in adds_per_child(discovery) if pid != first][0]
+        assert wait_for(lambda: "STOP" in generation(discovery, second), timeout=15)
+        discovery.mode.write_text("success")
+        assert wait_for(lambda: "HUP" in event_lines(discovery.events), timeout=20)
+    finally:
+        log = discovery.stop()[1]
+    timeouts = [line.split("wcifsnd: ")[1].split(";")[0] for line in log.splitlines()
+                if "timed out after" in line]
+    assert timeouts[:2] == [
+        f"registration of WORKGROUP<00> timed out after {FIRST_REPLY_MS} ms (last no reply)",
+        f"registration of WORKGROUP<00> timed out after {REPLY_MS} ms (last no reply)",
+    ]
+    assert "wcifsnd: registered MACHINE with Apple's native NetBIOS daemon" in log
 
 
 @pytest.mark.parametrize("mode,waiting", [

@@ -83,6 +83,17 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.state), [.succeeded, .running, .running])
     }
 
+    func testDoctorStartupWaitShowsThreeDistinctRows() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "doctor", stage: "run_checks"),
+            BackendEvent(type: "stage", operation: "doctor", stage: "wait_for_device_startup"),
+            BackendEvent(type: "stage", operation: "doctor", stage: "finish_checks")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Running Checkup", "Waiting for Device Startup", "Finishing Checkup"])
+        XCTAssertEqual(timeline.map(\.state), [.succeeded, .succeeded, .running])
+    }
+
     func testSuccessfulResultCompletesLastStage() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "uninstall", stage: "build_uninstall_plan"),
@@ -256,6 +267,16 @@ final class OperationTimelineBuilderTests: XCTestCase {
                 operation
             )
         }
+    }
+
+    func testDoctorWaitingForDeviceStartupHasItsOwnStageTitle() {
+        // Checkup waits for services still starting after a boot instead of
+        // failing; the wait is named, not shown as the raw stage id.
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "doctor", stage: "wait_for_device_startup"), "Waiting for Device Startup")
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "doctor", stage: "run_checks"), "Running Checkup")
+        // After the wait the checks continue as a stage of their own, so the
+        // timeline does not show "Running Checkup" twice.
+        XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "doctor", stage: "finish_checks"), "Finishing Checkup")
     }
 
     func testConfigureTargetSelectionReadsAsAnACPCheck() {

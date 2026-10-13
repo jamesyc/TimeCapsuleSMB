@@ -1024,6 +1024,8 @@
 "timeline.stage.removing_managed_files" = "Removing Managed Files";
 "timeline.stage.repairing_disk" = "Repairing Disk";
 "timeline.stage.running_checkup" = "Running Checkup";
+"timeline.stage.waiting_for_device_startup" = "Waiting for Device Startup";
+"timeline.stage.finishing_checkup" = "Finishing Checkup";
 "timeline.stage.saving_device" = "Saving Device";
 "timeline.stage.starting_smb" = "Starting SMB";
 "timeline.stage.validating_app_bundle" = "Validating App Bundle";

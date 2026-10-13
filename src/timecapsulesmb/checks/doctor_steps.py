@@ -147,10 +147,34 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, ssh_l
 T = TypeVar("T")
 
 
+class _SystemClock:
+    """Doctor's clock. Tests swap `_clock` for a fake one; sleeps still go
+    through time.sleep, which older tests patch."""
+
+    @staticmethod
+    def monotonic() -> float:
+        return time.monotonic()
+
+    @staticmethod
+    def sleep(seconds: float) -> None:
+        time.sleep(seconds)
+
+
+_clock = _SystemClock()
+
+
 DOCTOR_TRANSIENT_RETRY_DELAYS = (10, 15)
 # Apple's client gives each NetBIOS name 20 x 5 s. Registration normally takes
 # ~2 s per name (~24 s through WINS), so only "still starting" waits this long.
 DOCTOR_NBNS_STARTING_RETRY_DELAYS = (20, 25, 30)
+# While the manager is younger than the startup grace, Samba and mDNS still
+# starting are polled this often until the grace ends, instead of being
+# reported as "starting up": after a boot, native NBNS can take ~2 minutes to
+# register. A window shorter than one poll keeps the usual retries.
+DOCTOR_STARTUP_POLL_SECONDS = 10
+DOCTOR_STAGE_RUN_CHECKS = "run_checks"
+DOCTOR_STAGE_WAIT_FOR_STARTUP = "wait_for_device_startup"
+DOCTOR_STAGE_FINISH_CHECKS = "finish_checks"
 NATIVE_NBNS_STILL_STARTING = "discovery native NBNS is still starting"
 TRANSIENT_SMBD_READINESS_FAILURES = {
     "managed smbd parent process is not running",
@@ -269,7 +293,7 @@ def _run_doctor_retryable_check(
             break
         if before_retry is not None:
             before_retry(result, retry_delay)
-        time.sleep(retry_delay)
+        _clock.sleep(retry_delay)
         result = run_attempt()
     return result
 
@@ -2637,13 +2661,16 @@ def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, si
         ))
 
 
-def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> bool | None:
+def _doctor_check_managed_smbd(
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, waited_probe: ReadinessProbeResult | None = None,
+) -> bool | None:
     """Return whether smbd is running and listening on TCP 445 (None when it
-    was not probed or the probe could not tell)."""
+    was not probed or the probe could not tell). `waited_probe` is the startup
+    wait's last one (StartupReadiness); without it, the usual retries."""
     if not remote.remote_checks_enabled:
         return None
 
-    smbd_probe = _run_doctor_retryable_check(
+    smbd_probe = waited_probe if waited_probe is not None else _run_doctor_retryable_check(
         lambda: probe_managed_smbd_conn(target.connection),
         lambda probe: _readiness_probe_retryable(probe, TRANSIENT_SMBD_READINESS_FAILURES),
     )
@@ -2660,11 +2687,139 @@ def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink:
     return not set(_readiness_failure_details(smbd_probe)) & TRANSIENT_SMBD_READINESS_FAILURES
 
 
+def _startup_window_deadline(startup_age: float | None) -> float | None:
+    """When the manager's startup grace ends, on this computer's monotonic
+    clock, or None when it already has. Taken right after the age is read."""
+    if startup_age is None or startup_age >= DOCTOR_STARTUP_GRACE_SECONDS:
+        return None
+    return _clock.monotonic() + DOCTOR_STARTUP_GRACE_SECONDS - startup_age
+
+
+def _startup_window_ended(deadline: float | None) -> bool:
+    """Whether this run's startup window has ended: what fails after it is
+    not the device starting up, however early it was seen to fail."""
+    return deadline is not None and _clock.monotonic() >= deadline
+
+
+def _doctor_startup_deadline(
+    remote: RemoteAccess, sink: DoctorSink, startup_age: float | None, *, enabled: bool,
+) -> float | None:
+    """The startup window's deadline for this run, or None when nothing waits:
+    startup grace is off (--no-startup-grace), or the window already ended."""
+    if not remote.remote_checks_enabled:
+        return None
+    deadline = _startup_window_deadline(startup_age) if enabled else None
+    if deadline is None and sink.debug_fields is not None:
+        sink.debug_fields["startup_wait"] = {"outcome": "no_window" if enabled else "disabled"}
+    return deadline
+
+
+@dataclass(frozen=True)
+class StartupReadiness:
+    """The startup wait's last Samba and mDNS probes, which their checks
+    report; None when nothing waited, so each check probes and retries."""
+    smbd: ReadinessProbeResult | None = None
+    mdns: ReadinessProbeResult | None = None
+
+
+def _readiness_broken(probe: ReadinessProbeResult, transient: set[str]) -> bool:
+    """Not ready, in a state waiting cannot fix."""
+    return not probe.ready and not _readiness_probe_retryable(probe, transient)
+
+
+def _startup_pending_services(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> str:
+    """What the wait is for, named for people: Samba, NetBIOS, Bonjour."""
+    names: list[str] = []
+    if _readiness_probe_retryable(smbd, TRANSIENT_SMBD_READINESS_FAILURES):
+        names.append("Samba")
+    if _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
+        details = _readiness_failure_details(mdns)
+        for name, matches in (
+            ("NetBIOS", lambda detail: "NBNS" in detail),
+            ("Bonjour", lambda detail: "Bonjour" in detail),
+            ("discovery", lambda detail: detail == "discovery process is not running"),
+        ):
+            if any(matches(detail) for detail in details):
+                names.append(name)
+    if not names:
+        return "device services"
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _doctor_wait_for_startup(
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, deadline: float | None,
+) -> StartupReadiness:
+    """Poll Samba and mDNS while either is still starting, until the startup
+    window ends: native NBNS can take minutes after a boot, and Samba starts
+    just before it.
+
+    Stops early once nothing is starting, or when either reports a state
+    waiting cannot fix. Only what is still starting is probed again. Runs
+    before the device checks, so they see the device after the wait. A
+    window shorter than one poll does not wait: each check keeps its usual
+    retries.
+    """
+    if not remote.remote_checks_enabled or deadline is None:
+        return StartupReadiness()
+    started = _clock.monotonic()
+    window_left = deadline - started
+    if window_left < DOCTOR_STARTUP_POLL_SECONDS:
+        if sink.debug_fields is not None:
+            sink.debug_fields["startup_wait"] = {"window_left_sec": round(max(window_left, 0.0), 1), "outcome": "no_window"}
+        return StartupReadiness()
+
+    def settling(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> bool:
+        if _readiness_broken(smbd, TRANSIENT_SMBD_READINESS_FAILURES) or _readiness_broken(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
+            return False
+        return (_readiness_probe_retryable(smbd, TRANSIENT_SMBD_READINESS_FAILURES)
+                or _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES))
+
+    smbd, mdns = probe_managed_smbd_conn(target.connection), probe_managed_mdns_conn(target.connection)
+    rounds = 1
+    waiting = False
+    while settling(smbd, mdns):
+        left = deadline - _clock.monotonic()
+        if left <= 0:
+            break
+        if not waiting:
+            waiting = True
+            sink.stage(
+                DOCTOR_STAGE_WAIT_FOR_STARTUP,
+                f"device services started {int(DOCTOR_STARTUP_GRACE_SECONDS - left)}s ago; waiting up to "
+                f"{int(left + 0.999)}s for {_startup_pending_services(smbd, mdns)} to finish starting...",
+            )
+        _clock.sleep(min(DOCTOR_STARTUP_POLL_SECONDS, left))
+        if _readiness_probe_retryable(smbd, TRANSIENT_SMBD_READINESS_FAILURES):
+            smbd = probe_managed_smbd_conn(target.connection)
+        if _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
+            mdns = probe_managed_mdns_conn(target.connection)
+        rounds += 1
+    if waiting:
+        sink.stage(DOCTOR_STAGE_FINISH_CHECKS)
+    if smbd.ready and mdns.ready:
+        outcome = "ready"
+    elif settling(smbd, mdns):
+        outcome = "outlasted"
+    else:
+        outcome = "structural"
+    if sink.debug_fields is not None:
+        sink.debug_fields["startup_wait"] = {
+            "manager_age_sec": round(DOCTOR_STARTUP_GRACE_SECONDS - window_left),
+            "window_left_sec": round(window_left, 1),
+            "waited_sec": round(_clock.monotonic() - started, 1),
+            "probes": rounds,
+            "outcome": outcome,
+        }
+    return StartupReadiness(smbd=smbd, mdns=mdns)
+
+
 def _doctor_check_managed_mdns(
-    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink,
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, waited_probe: ReadinessProbeResult | None = None,
 ) -> tuple[bool | None, bool | None, dict[str, object] | None]:
     """Return whether native NBNS and Bonjour registration passed (None when
-    not probed), and the device's link plan when the probe read one."""
+    not probed), and the device's link plan when the probe read one.
+    `waited_probe` is the startup wait's last one (StartupReadiness); without
+    it, the usual retries."""
     if not remote.remote_checks_enabled:
         return None, None, None
 
@@ -2677,7 +2832,7 @@ def _doctor_check_managed_mdns(
             return _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES)
         return _readiness_probe_retryable(probe, {NATIVE_NBNS_STILL_STARTING})
 
-    mdns_probe = _run_doctor_retryable_check(
+    mdns_probe = waited_probe if waited_probe is not None else _run_doctor_retryable_check(
         lambda: probe_managed_mdns_conn(target.connection),
         should_retry,
         retry_delays=DOCTOR_TRANSIENT_RETRY_DELAYS + DOCTOR_NBNS_STARTING_RETRY_DELAYS,

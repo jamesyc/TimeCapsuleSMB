@@ -1024,6 +1024,8 @@
 "timeline.stage.removing_managed_files" = "正在移除受管理文件";
 "timeline.stage.repairing_disk" = "正在修复磁盘";
 "timeline.stage.running_checkup" = "正在运行检查";
+"timeline.stage.waiting_for_device_startup" = "正在等待设备完成启动";
+"timeline.stage.finishing_checkup" = "正在完成检查";
 "timeline.stage.saving_device" = "正在保存设备";
 "timeline.stage.starting_smb" = "正在启动 SMB";
 "timeline.stage.validating_app_bundle" = "正在验证应用包";

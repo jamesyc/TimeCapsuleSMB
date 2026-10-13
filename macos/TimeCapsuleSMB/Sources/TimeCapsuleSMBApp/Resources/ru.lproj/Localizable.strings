@@ -1024,6 +1024,8 @@
 "timeline.stage.removing_managed_files" = "Удаление управляемых файлов";
 "timeline.stage.repairing_disk" = "Исправление диска";
 "timeline.stage.running_checkup" = "Выполнение диагностики";
+"timeline.stage.waiting_for_device_startup" = "Ожидание завершения запуска устройства";
+"timeline.stage.finishing_checkup" = "Завершение диагностики";
 "timeline.stage.saving_device" = "Сохранение устройства";
 "timeline.stage.starting_smb" = "Запуск SMB";
 "timeline.stage.validating_app_bundle" = "Проверка пакета приложения";

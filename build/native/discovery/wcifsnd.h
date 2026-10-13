@@ -6,7 +6,9 @@
 /* Names belong to this child generation, not to the UDP client connection.
  * Each add is sent once per child: Apple's registrations are refcounted. A
  * negative reply is provisional (Apple completes the registration anyway);
- * only the reply deadline replaces the child. */
+ * only the reply deadline replaces the child. That deadline is
+ * WCIFSND_FIRST_REPLY_MS until one reply wait times out, then
+ * WCIFSND_REPLY_MS. */
 enum wcifsnd_phase { WC_OFF, WC_STARTING, WC_INSPECTING, WC_REGISTERING, WC_ACTIVE, WC_STOPPING };
 struct wcifsnd {
     enum wcifsnd_phase phase;
@@ -15,6 +17,10 @@ struct wcifsnd {
     int fd, desired, validated, failed, killed, sent, record;
     int last_reply;  /* -1 none, 0..15 rcode, 16 malformed; for the timeout log */
     unsigned failures;
+    /* A reply wait timed out: wait WCIFSND_REPLY_MS from now on. Cleared, like
+     * failures, by a failure after a minute registered, or when native NBNS
+     * is no longer wanted. */
+    int patient;
     uint16_t transaction;
     long long deadline, wake, active_since, inspection_limit;
     char name[16];

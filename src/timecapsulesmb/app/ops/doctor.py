@@ -4,6 +4,7 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import doctor_payload
 from timecapsulesmb.app.ops.common import load_request_config, resolve_request_connection
 from timecapsulesmb.checks.doctor import run_doctor_checks
+from timecapsulesmb.checks.doctor_steps import DOCTOR_STAGE_RUN_CHECKS
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.services.app import OperationResult, bool_param, config_path
@@ -28,7 +29,11 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
     def on_result(result: CheckResult) -> None:
         context.check(status=result.status, message=result.message, details=doctor_result_details(result))
 
-    context.stage("run_checks")
+    def on_stage(stage: str, _detail: str | None) -> None:
+        # The app names the stage itself (OperationTimeline), in its own language.
+        context.stage(stage)
+
+    context.stage(DOCTOR_STAGE_RUN_CHECKS)
     results, fatal = run_doctor_checks(
         config,
         repo_root=app_paths.distribution_root,
@@ -40,6 +45,7 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         startup_grace=startup_grace,
         local_network_permission=local_network_permission if isinstance(local_network_permission, str) else None,
         on_result=on_result,
+        on_stage=on_stage,
         debug_fields=debug_fields,
     )
     airport_mac = debug_fields.pop("airport_mac", None)

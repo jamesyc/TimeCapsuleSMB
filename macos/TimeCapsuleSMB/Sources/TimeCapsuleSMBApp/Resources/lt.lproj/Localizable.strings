@@ -1024,6 +1024,8 @@
 "timeline.stage.removing_managed_files" = "Šalinami valdomi failai";
 "timeline.stage.repairing_disk" = "Taisomas diskas";
 "timeline.stage.running_checkup" = "Vykdomas patikrinimas";
+"timeline.stage.waiting_for_device_startup" = "Laukiama, kol įrenginys baigs pasileisti";
+"timeline.stage.finishing_checkup" = "Baigiamas patikrinimas";
 "timeline.stage.saving_device" = "Išsaugomas įrenginys";
 "timeline.stage.starting_smb" = "Paleidžiamas SMB";
 "timeline.stage.validating_app_bundle" = "Tikrinamas programos paketas";

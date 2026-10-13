@@ -1024,6 +1024,8 @@
 "timeline.stage.removing_managed_files" = "Beheerde bestanden verwijderen";
 "timeline.stage.repairing_disk" = "Schijf repareren";
 "timeline.stage.running_checkup" = "Controle uitvoeren";
+"timeline.stage.waiting_for_device_startup" = "Wachten tot het apparaat klaar is met opstarten";
+"timeline.stage.finishing_checkup" = "Controle afronden";
 "timeline.stage.saving_device" = "Apparaat opslaan";
 "timeline.stage.starting_smb" = "SMB starten";
 "timeline.stage.validating_app_bundle" = "App-pakket controleren";

@@ -9,6 +9,7 @@
 #undef WCIFSND_START_MS
 #undef WCIFSND_INSPECT_MS
 #undef WCIFSND_REPLY_MS
+#undef WCIFSND_FIRST_REPLY_MS
 #undef WCIFSND_STOP_MS
 #undef WCIFSND_RETRY_MS
 #endif
@@ -29,6 +30,15 @@
 #ifndef WCIFSND_REPLY_MS
 #define WCIFSND_REPLY_MS 100000
 #endif
+/* Apple's client resends every 5 s; ours sends each add once, because adds
+ * are reference-counted. After a reboot the first add often gets no reply at
+ * all while ACPd launches its own wcifsnd and wcifsfs, and the replacement
+ * child then registers in seconds. So an add waits this long until one reply
+ * wait has timed out, then WCIFSND_REPLY_MS, which still allows a WINS server
+ * that answers slower than this. */
+#ifndef WCIFSND_FIRST_REPLY_MS
+#define WCIFSND_FIRST_REPLY_MS 30000
+#endif
 #ifndef WCIFSND_STOP_MS
 #define WCIFSND_STOP_MS 2000
 #endif
@@ -39,6 +49,10 @@
 
 static unsigned get16(const unsigned char *p) { return ((unsigned)p[0] << 8) | p[1]; }
 static void put16(unsigned char *p, unsigned n) { p[0] = n >> 8; p[1] = n; }
+
+static long long reply_ms(const struct wcifsnd *w) {
+    return w->patient ? WCIFSND_REPLY_MS : WCIFSND_FIRST_REPLY_MS;
+}
 
 static void request_name(struct wcifsnd *w) {
     unsigned char name[16];
@@ -108,7 +122,7 @@ static void stop_child(struct wcifsnd *w, long long now) {
 static void fail(struct wcifsnd *w, const char *why, long long now) {
     if (w->failed) return;
     timestamped_fprintf(stderr, "wcifsnd: %s; replacing native child\n", why);
-    if (w->active_since >= 0 && now - w->active_since >= 60000) w->failures = 0;
+    if (w->active_since >= 0 && now - w->active_since >= 60000) w->failures = w->patient = 0;
     w->active_since = -1;
     w->failed = 1; stop_child(w, now);
 }
@@ -139,7 +153,7 @@ void wcifsnd_apply_plan(struct wcifsnd *w, const struct device_plan *p, long lon
      * must pass the same validated-plan gate as initial startup. */
     w->validated = p->status.validated;
     if (!w->desired) {
-        w->failed = 0; w->failures = 0; w->active_since = -1;
+        w->failed = 0; w->failures = 0; w->patient = 0; w->active_since = -1;
         stop_child(w, now);
         if (w->phase == WC_OFF) w->wake = 0;
     }
@@ -251,7 +265,7 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
                 } else {
                     if (observe_child(w, now) < 0) return -1;
                     if (w->phase == WC_INSPECTING) {
-                        w->phase = WC_REGISTERING; w->deadline = now + WCIFSND_REPLY_MS;
+                        w->phase = WC_REGISTERING; w->deadline = now + reply_ms(w);
                         w->wake = now; request_name(w);
                     }
                 }
@@ -316,9 +330,13 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
             if (w->last_reply < 0) snprintf(last, sizeof(last), "no reply");
             else if (w->last_reply > 15) snprintf(last, sizeof(last), "unexpected reply");
             else snprintf(last, sizeof(last), "reply rcode %d", w->last_reply);
-            snprintf(why, sizeof(why), "registration of %s timed out after %d ms (last %s)",
-                     record_label(w, label, sizeof(label)), WCIFSND_REPLY_MS, last);
-            fail(w, why, now); return 0;
+            snprintf(why, sizeof(why), "registration of %s timed out after %lld ms (last %s)",
+                     record_label(w, label, sizeof(label)), reply_ms(w), last);
+            fail(w, why, now);
+            /* Set after the log line above, which names the wait that just
+             * expired: every later add waits WCIFSND_REPLY_MS. */
+            w->patient = 1;
+            return 0;
         }
         if (!w->sent && now >= w->wake) {
             ssize_t n = send(w->fd, w->request, sizeof(w->request), 0);
@@ -358,7 +376,7 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
                 if (w->record == 3) {
                     w->phase = WC_ACTIVE; w->active_since = now;
                     timestamped_fprintf(stderr, "wcifsnd: registered %s with Apple's native NetBIOS daemon\n", w->name);
-                } else { request_name(w); w->sent = 0; w->deadline = now + WCIFSND_REPLY_MS; }
+                } else { request_name(w); w->sent = 0; w->deadline = now + reply_ms(w); }
             }
         }
         w->wake = now + (w->sent ? 1000 : 100);

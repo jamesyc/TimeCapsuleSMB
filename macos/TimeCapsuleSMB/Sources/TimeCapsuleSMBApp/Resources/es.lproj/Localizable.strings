@@ -1024,6 +1024,8 @@
 "timeline.stage.removing_managed_files" = "Eliminación de archivos administrados";
 "timeline.stage.repairing_disk" = "Reparando disco";
 "timeline.stage.running_checkup" = "Ejecutando comprobación";
+"timeline.stage.waiting_for_device_startup" = "Esperando a que el dispositivo termine de iniciarse";
+"timeline.stage.finishing_checkup" = "Finalizando comprobación";
 "timeline.stage.saving_device" = "Guardando dispositivo";
 "timeline.stage.starting_smb" = "Iniciando SMB";
 "timeline.stage.validating_app_bundle" = "Verificando el paquete de la app";

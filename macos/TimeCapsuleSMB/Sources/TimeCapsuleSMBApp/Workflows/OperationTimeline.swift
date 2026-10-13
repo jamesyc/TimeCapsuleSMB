@@ -265,6 +265,10 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.saving_device")
         case ("doctor", "run_checks"):
             return L10n.string("timeline.stage.running_checkup")
+        case ("doctor", "wait_for_device_startup"):
+            return L10n.string("timeline.stage.waiting_for_device_startup")
+        case ("doctor", "finish_checks"):
+            return L10n.string("timeline.stage.finishing_checkup")
         case ("activate", "build_activation_plan"):
             return L10n.string("timeline.stage.planning_start_smb")
         case ("activate", "run_activation"):

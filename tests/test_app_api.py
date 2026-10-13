@@ -32,6 +32,7 @@ from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation
+from timecapsulesmb.app.stage_policy import stage_policy
 from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.flash_workflow import SecondaryBankInvalidError, SecondaryBankReadMismatchError
 from tests.flash_fixtures import inspect_full_banks, plan_full_restore
@@ -4538,6 +4539,28 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertEqual(checks[0]["details"], {"port": 445})
 
+    def test_doctor_tells_the_app_when_it_waits_for_device_startup(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["on_stage"]("wait_for_device_startup", "device services started 42s ago; waiting up to 138s")
+            kwargs["on_stage"]("finish_checks", None)
+            return [CheckResult("PASS", "ok")], False
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                    with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                        rc = service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        # The app names the wait itself; the English detail line stays in the helper.
+        stages = [event["stage"] for event in collector.events_of_type("stage")]
+        self.assertEqual(stages[stages.index("run_checks"):], ["run_checks", "wait_for_device_startup", "finish_checks"])
+        for stage in ("wait_for_device_startup", "finish_checks"):
+            self.assertEqual(stage_policy("doctor", stage).cancellable, True)
+
     def test_doctor_tells_the_app_which_section_each_check_ran_in(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
@@ -4774,9 +4797,12 @@ class AppApiTests(unittest.TestCase):
             "skipped": ["bonjour"],
         }
 
+        startup_wait = {"manager_age_sec": 42, "window_left_sec": 138.0, "waited_sec": 80.0, "probes": 9, "outcome": "ready"}
+
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["nbns_subnet"] = nbns_subnet
             kwargs["debug_fields"]["bonjour_link"] = bonjour_link
+            kwargs["debug_fields"]["startup_wait"] = startup_wait
             return [], False
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
@@ -4789,6 +4815,8 @@ class AppApiTests(unittest.TestCase):
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["nbns_subnet"], nbns_subnet)
         self.assertEqual(finished["bonjour_link"], bonjour_link)
+        # Whether a passing run waited for startup, which no error carries.
+        self.assertEqual(finished["startup_wait"], startup_wait)
         self.assertIsNone(finished.get("error"))
 
     def test_doctor_failure_telemetry_includes_shared_debug_context(self) -> None:
