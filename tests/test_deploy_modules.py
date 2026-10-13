@@ -1789,6 +1789,13 @@ describe_managed_smbd_status "" ""
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "rsync daemon is disabled but an rsync process is running")
 
+    # The service binary's path, then `ls -i` of ACPd and boot.sh's guards.
+    BINARY_V31 = (
+        "/mnt/Flash/service\n"
+        "19 /sbin/ACPd\n"
+        "1239 /sbin/diskd\n"
+        "1231 /sbin/wcifsnd\n"
+    )
     PS_V31 = (
         "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n"
         "559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
@@ -1822,14 +1829,78 @@ describe_managed_smbd_status "" ""
         return result, run_ssh_mock
 
     def _mdns_probe_with(self, ps_out: str, fstat_out: str | None = None, plan: str | None = None,
-                         native_nbns: str = "required", bonjour_registrations: str = "required") -> object:
+                         native_nbns: str = "required", bonjour_registrations: str = "required",
+                         binary: str | None = None) -> object:
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31 if binary is None else binary, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31 if fstat_out is None else fstat_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31 if plan is None else plan, stderr=""),
         ], native_nbns=native_nbns, bonjour_registrations=bonjour_registrations)
         return result
+
+    def test_probe_managed_mdns_checks_boot_sh_guards(self) -> None:
+        unguarded_wcifsnd = self.BINARY_V31.replace("1231 /sbin/wcifsnd", "19 /sbin/wcifsnd")
+        unguarded_diskd = self.BINARY_V31.replace("1239 /sbin/diskd", "19 /sbin/diskd")
+        guarded = self._mdns_probe_with(self.PS_V31)
+        self.assertTrue(guarded.ready, guarded.lines)
+        self.assertIn("PASS:boot.sh guards /sbin/diskd against ACPd's starts", guarded.lines)
+        self.assertIn("PASS:boot.sh guards /sbin/wcifsnd against ACPd's starts", guarded.lines)
+        rc_log = "(see /mnt/Memory/samba4/var/rc.local.log)"
+        wcifsnd_missing = ("boot.sh's /sbin/wcifsnd guard is missing: ACPd's wcifsnd starts take the NBNS ports "
+                           f"until the manager stops them {rc_log}")
+        diskd_missing = ("boot.sh's /sbin/diskd guard is missing: an ACPd start of diskd can delete "
+                         f"diskd.useVolume until reboot {rc_log}")
+        # Doctor fails either; deploy, which only reports NetBIOS, still
+        # fails on diskd's, whose loss breaks disk activation.
+        cases = (
+            ("wcifsnd", unguarded_wcifsnd, "required", False, "FAIL:" + wcifsnd_missing),
+            ("wcifsnd advisory", unguarded_wcifsnd, "advisory", True, "INFO:" + wcifsnd_missing),
+            ("diskd", unguarded_diskd, "required", False, "FAIL:" + diskd_missing),
+            ("diskd advisory", unguarded_diskd, "advisory", False, "FAIL:" + diskd_missing),
+            # ls printed nothing for a name: no judgement either way.
+            ("unreadable", "/mnt/Flash/service\n19 /sbin/ACPd\n1239 /sbin/diskd\n", "required", False,
+             "FAIL:could not read /sbin/wcifsnd and /sbin/ACPd to check boot.sh's wcifsnd guard"),
+            ("no listing", "/mnt/Flash/service\n", "advisory", False,
+             "FAIL:could not read /sbin/diskd and /sbin/ACPd to check boot.sh's diskd guard"),
+        )
+        for name, binary, native_nbns, ready, line in cases:
+            with self.subTest(name):
+                result = self._mdns_probe_with(self.PS_V31, binary=binary, native_nbns=native_nbns)
+                self.assertEqual(result.ready, ready, result.lines)
+                self.assertIn(line, result.lines)
+
+    def test_probe_managed_mdns_guard_listing_comes_from_the_real_script(self) -> None:
+        # Run the probe's own script against a /sbin of hard links, as on the
+        # device: ACPd's multi-call binary, a guarded diskd, an unguarded wcifsnd.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sbin = root / "sbin"
+            sbin.mkdir()
+            (sbin / "ACPd").write_bytes(b"apple")
+            (sbin / "diskd").write_text("#!/bin/sh\nexit 0\n")
+            (sbin / "wcifsnd").hardlink_to(sbin / "ACPd")
+            service = root / "service"
+            service.write_text("#!/bin/sh\n")
+            service.chmod(0o755)
+            later = iter([mock.Mock(returncode=0, stdout=out, stderr="")
+                          for out in (self.PS_V31, self.FSTAT_V31, self.PLAN_V31)])
+            binary_runs = []
+
+            def run_ssh(connection, command, **kwargs):
+                if binary_runs:
+                    return next(later)
+                script = shlex.split(command)[2].replace("/sbin/", f"{sbin}/")
+                proc = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                                      env={"RUNTIME_SERVICE_BIN": str(service), "PATH": "/usr/bin:/bin"})
+                binary_runs.append(proc)
+                return proc
+
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=run_ssh):
+                result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"))
+        self.assertIn("PASS:boot.sh guards /sbin/diskd against ACPd's starts", result.lines)
+        self.assertTrue(any(line.startswith("FAIL:boot.sh's /sbin/wcifsnd guard is missing") for line in result.lines),
+                        result.lines)
 
     def test_probe_managed_mdns_reads_bonjour_registration_from_the_discovery_title(self) -> None:
         def title(mdns: str) -> str:
@@ -1886,12 +1957,12 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_has_no_link_plan_when_it_could_not_read_one(self) -> None:
         stopped_early, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
         ])
         self.assertIsNone(stopped_early.link_plan)
         failed, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=1, stdout="", stderr="service: unknown option"),
@@ -1998,7 +2069,7 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_passes_when_apple_daemon_owns_5353_and_plan_grants_smb(self) -> None:
         result, run_ssh_mock = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -2026,7 +2097,7 @@ describe_managed_smbd_status "" ""
             "916 408 S 0:00 service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload\n"
         )
         result, run_ssh_mock = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
         ])
@@ -2041,7 +2112,7 @@ describe_managed_smbd_status "" ""
         fstat_out = self.FSTAT_V31 + "root     avahi-dae 916    4* internet dgram udp *:5353\n"
         plan = self.PLAN_V31.replace("role=lan mask=smb,adisk", "role=isolated mask=none").replace("status=validated", "status=incomplete reason=mode")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
@@ -2057,7 +2128,7 @@ describe_managed_smbd_status "" ""
         )
         plan = self.PLAN_V31.replace("mask=smb,adisk", "mask=none").replace("diskless=0", "diskless=1")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
@@ -2068,7 +2139,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_reports_missing_registrant_and_unparsable_plan(self) -> None:
         ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout="garbage\n", stderr=""),
@@ -2080,7 +2151,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_rejects_controller_without_native_nbns_state(self) -> None:
         ps_out = self.PS_V31.replace("nbns=ready ", "")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -2092,7 +2163,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_rejects_wcifsnd_sockets_owned_by_wrong_pid(self) -> None:
         wrong_pid_fstat = self.FSTAT_V31.replace("wcifsnd  917", "wcifsnd  999")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=wrong_pid_fstat, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -2107,7 +2178,7 @@ describe_managed_smbd_status "" ""
         )
         fstat_out = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -2122,7 +2193,7 @@ describe_managed_smbd_status "" ""
         fstat_out = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
         plan = self.PLAN_V31.replace("addr=192.168.1.10", "addr=239.1.2.3")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
@@ -2131,7 +2202,7 @@ describe_managed_smbd_status "" ""
         self.assertTrue(result.ready, result.lines)
         self.assertIn("PASS:native NBNS is waiting", result.lines)
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=13, stdout="", stderr=""),
@@ -2143,7 +2214,7 @@ describe_managed_smbd_status "" ""
         next to ours still advertises on the LAN (the runtime calls that acpd)."""
         ps_out = self.PS_V31 + "640 1 S 0:00 diskd /sbin/diskd -i  -d local.\n" + "735 1 ZW 0:00 diskd (diskd)\n"
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -2157,7 +2228,7 @@ describe_managed_smbd_status "" ""
         # Token matching: `-i lo0` must be the argv pair, not a substring elsewhere.
         ps_out = self.PS_V31.replace("/sbin/diskd -i lo0 -d local.", "/sbin/diskd -d local.-i lo0")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -2169,7 +2240,7 @@ describe_managed_smbd_status "" ""
         still does not parse becomes a diagnostic, not an exception."""
         plan = self.PLAN_V31.replace('instance="AirPort Time Capsule"', 'instance="Capsule \\"A\\" \\\\ B"')
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
@@ -2177,7 +2248,7 @@ describe_managed_smbd_status "" ""
         self.assertTrue(result.ready, result.lines)
         broken = self.PLAN_V31.replace('instance="AirPort Time Capsule"', 'instance="Capsule "A"')
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=broken, stderr=""),
@@ -2188,7 +2259,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_retries_binary_probe_timeout_and_reports_fstat_timeout(self) -> None:
         result, run_ssh_mock = self._run_mdns_probe([
             SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -2197,7 +2268,7 @@ describe_managed_smbd_status "" ""
         self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]],
                          [MDNS_BINARY_PROBE_TIMEOUT_SECONDS, MDNS_BINARY_PROBE_TIMEOUT_SECONDS])
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             SshCommandTimeout("Timed out waiting for ssh command to finish: fstat"),
         ])
@@ -2232,7 +2303,7 @@ describe_managed_smbd_status "" ""
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
             side_effect=[
-                mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+                mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
                 SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
             ],
         ):

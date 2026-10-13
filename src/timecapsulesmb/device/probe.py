@@ -1429,6 +1429,32 @@ def _bonjour_registration_step(title: str, *, expected: bool) -> tuple[str, str]
     return "fail", MDNS_REGISTRATIONS_STILL_STARTING
 
 
+def _append_guard_steps(steps: list[ProbeStepResult], listing: str, native_nbns: NativeNbnsCheck) -> None:
+    """boot.sh replaces Apple's /sbin/diskd and /sbin/wcifsnd, hard links to
+    the multi-call /sbin/ACPd, with guards that ignore ACPd's starts. A name
+    still on ACPd's inode means boot.sh could not install its guard
+    (rc.local.log says why)."""
+    inodes: dict[str, str] = {}
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].isdigit():
+            inodes[fields[1].rsplit("/", 1)[-1]] = fields[0]
+    apple = inodes.get("ACPd")
+    for name, harm, required in (
+        ("diskd", "an ACPd start of diskd can delete diskd.useVolume until reboot", True),
+        ("wcifsnd", "ACPd's wcifsnd starts take the NBNS ports until the manager stops them", native_nbns == "required"),
+    ):
+        path = f"/sbin/{name}"
+        if apple is None or name not in inodes:
+            status, detail = "fail", f"could not read {path} and /sbin/ACPd to check boot.sh's {name} guard"
+        elif inodes[name] == apple:
+            status = "fail" if required else "info"
+            detail = f"boot.sh's {path} guard is missing: {harm} (see /mnt/Memory/samba4/var/rc.local.log)"
+        else:
+            status, detail = "pass", f"boot.sh guards {path} against ACPd's starts"
+        _append_step(steps, f"{name}_guard", status, detail)
+
+
 def probe_managed_mdns_conn(
     connection: SshConnection,
     *,
@@ -1462,6 +1488,8 @@ if [ ! -x "$RUNTIME_SERVICE_BIN" ]; then
     exit 3
 fi
 echo "$RUNTIME_SERVICE_BIN"
+/bin/ls -i /sbin/ACPd /sbin/diskd /sbin/wcifsnd 2>/dev/null
+exit 0
 '''
     binary_step, binary_proc = _run_timed_probe_step(
         connection,
@@ -1495,6 +1523,7 @@ echo "$RUNTIME_SERVICE_BIN"
         _append_step(steps, "mdns_binary", "fail", detail)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     _append_step(steps, "mdns_binary", "pass", "native service binary is executable")
+    _append_guard_steps(steps, binary_proc.stdout, native_nbns)
 
     ps_step, ps_proc = _run_timed_probe_step(
         connection,

@@ -404,6 +404,14 @@ class InstalledNetbsd4AutostartTests(unittest.TestCase):
                 self.assertEqual(runtime.calls, ["read config", "read version"])
                 self.assertEqual(recorder.fields["runtime_start_after_reboot"], "rc_local")
 
+    def test_netbsd4_install_of_the_oldest_startable_release_is_started(self) -> None:
+        answer, recorder, _runtime = self.plan(runtime=FakeInstalledRuntime(
+            release_tag=OLDEST_ACTIVATABLE_RELEASE_TAG, version_code=OLDEST_ACTIVATABLE_VERSION_CODE))
+
+        self.assertIs(answer, False)
+        self.assertEqual(recorder.fields["runtime_start_after_reboot"], "rc_local")
+        self.assertEqual(recorder.messages, [])
+
     def test_netbsd4_with_the_boot_hook_starts_by_itself(self) -> None:
         answer, recorder, _runtime = self.plan(autostart=True)
 
@@ -423,6 +431,9 @@ class InstalledNetbsd4AutostartTests(unittest.TestCase):
         newer_major = (release_major(CLI_VERSION_CODE) + 1) * 10000
         cases = (
             ("v2.2.9", 20209, "runtime_outdated", "v2.2.9 is older than"),
+            # No /sbin/diskd guard, which the readiness check requires: the
+            # restart would time out, so it is not tried.
+            ("v3.2.0", 30200, "runtime_outdated", f"v3.2.0 is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}"),
             ("v9.0.0", newer_major, "client_outdated", "v9.0.0 is from a newer major version"),
         )
         for tag, code, reason, message in cases:
@@ -615,9 +626,11 @@ class ActivateRuntimeTests(unittest.TestCase):
         self.assertIn(f"older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", str(result))
 
     def test_install_older_than_the_oldest_startable_release_is_refused(self) -> None:
-        # v2.x and v3.0.x lack what this version verifies (v3.0.x stopped
-        # Apple's mDNSResponder), so v3.1.1 waited the full 200 s and failed.
-        for tag, code in (("v2.2.9", 20215), ("v3.0.0", 30000), ("v3.0.9", OLDEST_ACTIVATABLE_VERSION_CODE - 1)):
+        # These lack what this version verifies, so activation would wait the
+        # full timeout and fail: v3.0.x stopped Apple's mDNSResponder, and
+        # v3.1.x and v3.2.x have no boot.sh guard on /sbin/diskd.
+        for tag, code in (("v2.2.9", 20215), ("v3.0.0", 30000), ("v3.1.0", 30100), ("v3.2.0", 30200),
+                          ("v3.2.9", OLDEST_ACTIVATABLE_VERSION_CODE - 1)):
             with self.subTest(tag=tag):
                 result, _recorder, run_actions, settle, verify = self.activate(ready=True, installed=(tag, code))
 
@@ -628,7 +641,7 @@ class ActivateRuntimeTests(unittest.TestCase):
     def test_other_releases_of_this_major_version_are_started_and_verified(self) -> None:
         # Activation needs the same major version, not the same release: an
         # app update without a redeploy still starts the installed runtime.
-        for tag, code in (("v3.1.0", OLDEST_ACTIVATABLE_VERSION_CODE), ("v3.9.0", 30900)):
+        for tag, code in ((OLDEST_ACTIVATABLE_RELEASE_TAG, OLDEST_ACTIVATABLE_VERSION_CODE), ("v3.9.0", 30900)):
             with self.subTest(tag=tag):
                 decision, recorder, run_actions, _settle, verify = self.activate(ready=False, installed=(tag, code))
 
@@ -639,7 +652,7 @@ class ActivateRuntimeTests(unittest.TestCase):
 
     def test_running_install_of_an_older_release_is_left_alone(self) -> None:
         decision, _recorder, run_actions, _settle, verify = self.activate(
-            ready=True, installed=("v3.1.0", OLDEST_ACTIVATABLE_VERSION_CODE),
+            ready=True, installed=(OLDEST_ACTIVATABLE_RELEASE_TAG, OLDEST_ACTIVATABLE_VERSION_CODE),
         )
 
         self.assertEqual(decision.reason, "runtime_already_ready")

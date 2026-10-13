@@ -70,6 +70,7 @@ from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
+from timecapsulesmb.services.activation import OLDEST_ACTIVATABLE_RELEASE_TAG
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import (
     FLASH_UNSUPPORTED_DEVICE_MESSAGE,
@@ -6411,14 +6412,18 @@ MaSt = (
         self.assertFalse(error["recovery"]["retryable"])
 
     def test_activate_against_an_older_install_offers_install(self) -> None:
-        rc, error = self.run_activate_against_install(
-            config_present=True, version=DeployedVersionProbeResult("v2.2.7", 20207, "ok"),
-        )
+        # v3.2.0 keeps Apple's mDNSResponder but has no boot.sh guard on
+        # /sbin/diskd, which this version's readiness check requires.
+        for tag, code in (("v2.2.7", 20207), ("v3.2.0", 30200)):
+            with self.subTest(tag=tag):
+                rc, error = self.run_activate_against_install(
+                    config_present=True, version=DeployedVersionProbeResult(tag, code, "ok"),
+                )
 
-        self.assertEqual(rc, 1)
-        self.assertEqual(error["code"], "runtime_outdated")
-        self.assertIn("v2.2.7 is older than v3.1.0", error["message"])
-        self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+                self.assertEqual(rc, 1)
+                self.assertEqual(error["code"], "runtime_outdated")
+                self.assertIn(f"{tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", error["message"])
+                self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
 
     def test_activate_against_a_newer_install_asks_to_update_the_app(self) -> None:
         rc, error = self.run_activate_against_install(

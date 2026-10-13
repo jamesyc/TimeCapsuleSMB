@@ -1216,6 +1216,8 @@ Useful plan modes:
 
 `tcapsule activate` manually starts an already-deployed NetBSD 4 payload without uploading files again. If the managed runtime is already ready, it skips re-running `/mnt/Flash/rc.local`; otherwise it stops any running launcher and reruns it.
 
+It starts an install of any release of this major version from v3.3.0 on (`OLDEST_ACTIVATABLE_RELEASE_TAG`), and refuses an older one with `runtime_outdated` before touching it, asking for a deploy first: its readiness check needs Apple's `mDNSResponder` left running (v3.1.0 on) and boot.sh's `/sbin/diskd` guard (v3.3.0 on). The restart after an fsck reboot on NetBSD 4 uses the same rule.
+
 Arguments:
 - `--config PATH`: use a non-default config
 - `--yes`: do not prompt before restarting deployed Samba services
@@ -1416,7 +1418,7 @@ It checks:
 - that the managed RAM runtime directory exists
 - SSH reachability
 - detected device compatibility and payload family
-- managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
+- managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, boot.sh's `/sbin/diskd` and `/sbin/wcifsnd` guards (each no longer a hard link to `/sbin/ACPd`; deploy reports a missing `wcifsnd` guard without failing, as it does native NBNS), a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
 - a shared USB printer: when `acp -A prni` lists a plugged-in printer, Apple's `printd` must advertise it (`_pdl-datastream`/`_riousbprint`/`_printer`/`_ipp`) — we never touch printd, so this guards the one thing v3.1.0 changed for printers (v3.0 re-advertised them itself because it killed the responder); skipped when no printer is attached
 - active Samba version, RAM-staged binary/config/auth paths, manager state, mounted share volumes, and required service sockets
 - discovered IPv4/IPv6 SMB endpoints, client-local link-local scopes, route testability, and bounded family-specific TCP 445 reachability

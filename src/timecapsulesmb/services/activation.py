@@ -40,12 +40,13 @@ INSTALL_UPDATE_HINT = (
 )
 # Activation starts the installed runtime and checks it with this version's
 # readiness probes. They hold for every release of this major version from
-# v3.1.0 on, older or newer than this one: v3.1.0 is the first runtime that
-# leaves Apple's mDNSResponder running, which the probes require (v3.0.x
-# stopped it). Keep this in this major version, and raise it when a release
-# changes what the probes check.
-OLDEST_ACTIVATABLE_RELEASE_TAG = "v3.1.0"
-OLDEST_ACTIVATABLE_VERSION_CODE = 30100
+# v3.3.0 on, older or newer than this one: they require Apple's mDNSResponder
+# left running (v3.1.0 on; v3.0.x stopped it) and boot.sh's /sbin/diskd guard
+# (v3.3.0 on). A missing /sbin/wcifsnd guard is only reported there. Keep this
+# in this major version, and raise it when a release changes what the probes
+# check.
+OLDEST_ACTIVATABLE_RELEASE_TAG = "v3.3.0"
+OLDEST_ACTIVATABLE_VERSION_CODE = 30300
 
 
 class ActivationInstallError(DeviceError):
