@@ -4798,11 +4798,16 @@ class AppApiTests(unittest.TestCase):
         }
 
         startup_wait = {"manager_age_sec": 42, "window_left_sec": 138.0, "waited_sec": 80.0, "probes": 9, "outcome": "ready"}
+        device_ipv4 = {
+            "ifconfig": {"bridge0": {"flags": "0xffffe043", "kinds": ["zero", "link_local"]}},
+            "plan": {"bridge0": ["zero", "link_local"]},
+        }
 
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["nbns_subnet"] = nbns_subnet
             kwargs["debug_fields"]["bonjour_link"] = bonjour_link
             kwargs["debug_fields"]["startup_wait"] = startup_wait
+            kwargs["debug_fields"]["device_ipv4"] = device_ipv4
             return [], False
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
@@ -4817,6 +4822,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["bonjour_link"], bonjour_link)
         # Whether a passing run waited for startup, which no error carries.
         self.assertEqual(finished["startup_wait"], startup_wait)
+        # The device's IPv4 address kinds, which a passing run carries too.
+        self.assertEqual(finished["device_ipv4"], device_ipv4)
         self.assertIsNone(finished.get("error"))
 
     def test_doctor_failure_telemetry_includes_shared_debug_context(self) -> None:

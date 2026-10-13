@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import sys
 import socket
 import struct
@@ -82,10 +83,14 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.device.probe import (
+    DeviceInterfaceIpv4,
     DeviceIpv4Entry,
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
     UsbPrinterProbeResult,
+    ipv4_address_kind,
+    link_plan_ipv4_kinds,
+    parse_ifconfig_interface_ipv4,
     parse_ifconfig_ipv4_entries,
     parse_ifconfig_networks,
     probe_device_networks_conn,
@@ -138,6 +143,8 @@ def device_networks_probe(ipv4_probe) -> mock.Mock:
     """A probe_device_networks_conn mock built on an IPv4-subnet probe mock."""
     def probe(connection):
         result = ipv4_probe(connection)
+        if isinstance(result, DeviceNetworksProbeResult):
+            return result
         networks = tuple(dict.fromkeys(entry.network for entry in result.entries))
         return DeviceNetworksProbeResult(result.entries, networks, result.error)
 
@@ -4503,7 +4510,9 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         nbns_result = next(result for result in run.results if "NBNS query" in result.message)
         self.assertEqual(nbns_result.status, "FAIL")
-        device_probe.assert_not_called()
+        # ifconfig ran once, for device_ipv4; without a source address it
+        # still cannot place this computer on or off the device's subnet.
+        device_probe.assert_called_once()
         self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "unknown")
 
     def test_run_doctor_checks_ignores_a_route_without_a_source_address(self) -> None:
@@ -4536,7 +4545,9 @@ class CheckTests(unittest.TestCase):
 
         nbns_result = next(result for result in run.results if "NBNS query" in result.message)
         self.assertEqual(nbns_result.status, "FAIL")
-        device_probe.assert_not_called()
+        # ifconfig ran once, for device_ipv4; without a source address it
+        # still cannot place this computer on or off the device's subnet.
+        device_probe.assert_called_once()
         self.assertEqual(debug_fields["nbns_subnet"]["outcome"], "unknown")
         self.assertEqual(debug_fields["smb_connectivity"]["routes"]["10.0.0.2"]["state"], "available")
 
@@ -4562,9 +4573,56 @@ class CheckTests(unittest.TestCase):
 
                 nbns_result = next(result for result in run.results if "NBNS query" in result.message)
                 self.assertEqual(nbns_result.status, status)
-                device_probe.assert_not_called()
+                # ifconfig runs once for telemetry's device_ipv4; only a
+                # timeout turns it into a subnet verdict.
+                device_probe.assert_called_once()
+                self.assertIn("ifconfig", debug_fields["device_ipv4"])
                 self.assertNotIn("nbns_subnet", debug_fields)
                 self.assertEqual(socket_debug.called, sockets_read)
+
+    def test_run_doctor_checks_records_device_ipv4_kinds_from_ifconfig_and_the_plan(self) -> None:
+        debug_fields: dict[str, object] = {}
+        ifconfig = DeviceNetworksProbeResult(
+            SAME_SUBNET_DEVICE_PROBE.entries,
+            ("10.0.0.0/24",),
+            interfaces=(DeviceInterfaceIpv4("bridge0", "0xffffe043", ("private", "link_local")),
+                        DeviceInterfaceIpv4("mgi1", "0xe843", ("public",))),
+        )
+        ready = self._nbns_ready_probe()
+        mdns = ReadinessProbeResult(ready.ready, ready.detail, ready.steps,
+                                    link_plan=_parse_link_plan(router_plan(wan_ipv4="203.0.113.7")))
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=mdns),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            device_probe_mock=mock.Mock(return_value=ifconfig),
+            debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(debug_fields["device_ipv4"], {
+            "plan": {"bridge0": ["private", "link_local"]},
+            "ifconfig": {
+                "bridge0": {"flags": "0xffffe043", "kinds": ["private", "link_local"]},
+                "mgi1": {"flags": "0xe843", "kinds": ["public"]},
+            },
+        })
+        serialized = json.dumps(debug_fields["device_ipv4"])
+        for address in ("10.0.1.1", "169.254", "203.0.113", "10.0.0.2"):
+            self.assertNotIn(address, serialized)
+
+    def test_run_doctor_checks_records_the_ifconfig_error_in_device_ipv4(self) -> None:
+        debug_fields: dict[str, object] = {}
+
+        self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            device_probe_mock=mock.Mock(return_value=DeviceNetworksProbeResult(error="ifconfig timed out")),
+            debug_fields=debug_fields,
+        )
+
+        # The readiness probe here carries no link plan, so only ifconfig reports.
+        self.assertEqual(debug_fields["device_ipv4"], {"ifconfig": {"error": "ifconfig timed out"}})
 
     def test_run_doctor_checks_skips_off_subnet_timeout_after_native_nbns_retries(self) -> None:
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
@@ -7093,6 +7151,84 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             "\tinet 10.0.0.6 netmask 0xffffff00 broadcast 10.0.0.255\n"
         )
         self.assertEqual(parse_ifconfig_ipv4_entries(text), ())
+
+    def test_ipv4_address_kind_names_each_kind_without_the_address(self) -> None:
+        cases = {
+            "0.0.0.0": "zero",
+            "127.0.0.1": "loopback",
+            "169.254.147.85": "link_local",
+            "10.0.1.1": "private",
+            "172.16.42.1": "private",
+            "192.168.1.10": "private",
+            "203.0.113.7": "public",
+            "8.8.8.8": "public",
+            "999.1.1.1": None,
+            "fe80::1": None,
+            "": None,
+        }
+        for address, kind in cases.items():
+            with self.subTest(address=address):
+                self.assertEqual(ipv4_address_kind(address), kind)
+
+    def test_parse_ifconfig_interface_ipv4_keeps_dhclients_zero_address_beside_link_local(self) -> None:
+        # A device with no DHCP server: dhclient-script's PREINIT leaves
+        # 0.0.0.0 on bridge0, link_local adds its 169.254 alias.
+        text = (
+            "bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet6 fe80::82ea:96ff:fee6:5868%bridge0 prefixlen 64 scopeid 0x9 \n"
+            "\tinet 0.0.0.0 netmask 0x0 broadcast 255.255.255.255\n"
+            "\tinet 169.254.155.207 netmask 0xffff0000 broadcast 169.254.255.255\n"
+        )
+        self.assertEqual(
+            parse_ifconfig_interface_ipv4(text),
+            (DeviceInterfaceIpv4("bridge0", "0xffffe043", ("zero", "link_local")),),
+        )
+
+    def test_parse_ifconfig_interface_ipv4_lists_up_interfaces_and_aliases_in_order(self) -> None:
+        self.assertEqual(
+            parse_ifconfig_interface_ipv4(self.IFCONFIG_NETBSD4),
+            (DeviceInterfaceIpv4("bridge0", "0xe043", ("private", "link_local")),),
+        )
+        text = (
+            "bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 203.0.113.7 netmask 0xffffff00 broadcast 203.0.113.255\n"
+            "bridge0: flags=E043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255\n"
+            "\tinet alias 10.0.5.1 netmask 0xffffff00 broadcast 10.0.5.255\n"
+        )
+        self.assertEqual(parse_ifconfig_interface_ipv4(text), (
+            DeviceInterfaceIpv4("bcmeth1", "0xffffe843", ("public",)),
+            DeviceInterfaceIpv4("bridge0", "0xe043", ("private", "private")),
+        ))
+
+    def test_parse_ifconfig_interface_ipv4_leaves_out_down_loopback_and_addressless_interfaces(self) -> None:
+        text = (
+            "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172\n"
+            "\tinet 127.0.0.1 netmask 0xff000000\n"
+            "bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 10.0.2.1 netmask 0xffffff00 broadcast 10.0.2.255\n"
+            "wlan0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet6 fe80::1%wlan0 prefixlen 64 scopeid 0x3\n"
+            "pass out proto udp from any to any port = domain keep state\n"
+            "\tinet 10.9.9.9 netmask 0xffffff00\n"
+            "ppp0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> metric 0 mtu 1492\n"
+            "\tinet 198.51.100.4 -> 198.51.100.1 netmask 0xffffffff\n"
+            "\tinet 999.1.1.1 netmask 0xffffffff\n"
+        )
+        # ppp0 is UP and not loopback, so it is listed; its unreadable line is not.
+        self.assertEqual(parse_ifconfig_interface_ipv4(text), (DeviceInterfaceIpv4("ppp0", "0x8051", ("public",)),))
+
+    def test_link_plan_ipv4_kinds_reads_only_the_links_sharing_smb(self) -> None:
+        plan = _parse_link_plan(router_plan(wan_ipv4="203.0.113.7"))
+        self.assertEqual(link_plan_ipv4_kinds(plan), {"bridge0": ["private", "link_local"]})
+        shared_wan = _parse_link_plan(router_plan(wan_ipv4="203.0.113.7", wan_mask="smb,adisk"))
+        self.assertEqual(link_plan_ipv4_kinds(shared_wan), {"mgi1": ["public"], "bridge0": ["private", "link_local"]})
+        zero_alias = _parse_link_plan(router_plan().replace(
+            "addr: link=9 family=inet addr=10.0.1.1 prefix=24", "addr: link=9 family=inet addr=0.0.0.0 prefix=0"))
+        self.assertEqual(link_plan_ipv4_kinds(zero_alias), {"bridge0": ["zero", "link_local"]})
+        self.assertEqual(link_plan_ipv4_kinds(_parse_link_plan(router_plan(lan_mask="none"))), {})
+        self.assertEqual(link_plan_ipv4_kinds(None), {})
+        self.assertEqual(link_plan_ipv4_kinds({"links": "bad", "addresses": []}), {})
 
     def test_apple_nbns_client_on_subnet_follows_wcifsnd_broadcast_match(self) -> None:
         device = DeviceIpv4Entry("bridge0", "192.168.28.229", "255.255.255.0", "192.168.28.255")

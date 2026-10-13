@@ -76,6 +76,9 @@ def doctor_finished_fields(
         # Whether doctor waited for device services still starting, and how
         # that ended, on passing runs too.
         "startup_wait": debug_fields.get("startup_wait"),
+        # The kinds of IPv4 address the device has (never the addresses), as
+        # Apple's wcifsnd and discovery each see them, on passing runs too.
+        "device_ipv4": debug_fields.get("device_ipv4"),
         "doctor_status": report["status"],
         "doctor_sections": report["sections"],
     }

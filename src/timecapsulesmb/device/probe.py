@@ -2166,8 +2166,9 @@ def runtime_ram_root_present_conn(connection: SshConnection) -> bool:
 
 
 DEVICE_IFCONFIG_COMMAND = "/sbin/ifconfig -a"
-_IFCONFIG_HEADER_RE = re.compile(r"^(\S+): flags=[0-9a-fA-F]+<([^>]*)>")
+_IFCONFIG_HEADER_RE = re.compile(r"^(\S+): flags=([0-9a-fA-F]+)<([^>]*)>")
 _IFCONFIG_INET_RE = re.compile(r"^\s+inet\s+(?:alias\s+)?(\S+)\s+netmask\s+(\S+)(?:\s+broadcast\s+(\S+))?")
+_IFCONFIG_INET_ADDRESS_RE = re.compile(r"^\s+inet\s+(?:alias\s+)?(\S+)")
 _IFCONFIG_INET6_RE = re.compile(r"^\s+inet6\s+(?:alias\s+)?(\S+)\s+prefixlen\s+(\d+)")
 
 
@@ -2236,7 +2237,7 @@ def parse_ifconfig_ipv4_entries(text: str) -> tuple[DeviceIpv4Entry, ...]:
     for line in text.splitlines():
         header = _IFCONFIG_HEADER_RE.match(line)
         if header is not None:
-            flags = set(header.group(2).split(","))
+            flags = set(header.group(3).split(","))
             interface = None
             if {"UP", "BROADCAST"} <= flags and "LOOPBACK" not in flags:
                 interface = header.group(1)
@@ -2256,6 +2257,100 @@ def parse_ifconfig_ipv4_entries(text: str) -> tuple[DeviceIpv4Entry, ...]:
         routable = [entry for entry in interface_entries if not ipaddress.IPv4Address(entry.address).is_link_local]
         entries.extend(routable or interface_entries)
     return tuple(entries)
+
+
+_RFC1918_NETWORKS = tuple(ipaddress.IPv4Network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+
+
+def ipv4_address_kind(address: str) -> str | None:
+    """What kind of IPv4 address this is, for telemetry that must not carry
+    the address: zero, loopback, link_local, private or public (None when it
+    is not an IPv4 address)."""
+    try:
+        parsed = ipaddress.IPv4Address(address)
+    except ValueError:
+        return None
+    if int(parsed) == 0:
+        return "zero"
+    if parsed.is_loopback:
+        return "loopback"
+    if parsed.is_link_local:
+        return "link_local"
+    # RFC 1918, as native addr4_kind counts it: ipaddress's is_private also
+    # takes documentation and benchmarking ranges.
+    if any(parsed in network for network in _RFC1918_NETWORKS):
+        return "private"
+    return "public"
+
+
+@dataclass(frozen=True)
+class DeviceInterfaceIpv4:
+    """One interface's IPv4 addresses as ifconfig lists them, reduced to the
+    interface flags and each address's kind (ipv4_address_kind)."""
+    interface: str
+    flags: str
+    kinds: tuple[str, ...]
+
+
+def parse_ifconfig_interface_ipv4(text: str) -> tuple[DeviceInterfaceIpv4, ...]:
+    """Every UP, non-loopback interface that has an IPv4 address, with every
+    such address: aliases, 0.0.0.0 (dhclient-script sets it while it looks
+    for a lease) and 169.254 included. Apple's wcifsnd decides which of them
+    it answers NBNS on from exactly this list (parse_ifconfig_ipv4_entries)."""
+    interfaces: list[DeviceInterfaceIpv4] = []
+    current: tuple[str, str] | None = None
+    kinds: list[str] = []
+
+    def flush() -> None:
+        if current is not None and kinds:
+            interfaces.append(DeviceInterfaceIpv4(current[0], current[1], tuple(kinds)))
+
+    for line in text.splitlines():
+        header = _IFCONFIG_HEADER_RE.match(line)
+        if header is not None:
+            flush()
+            names = set(header.group(3).split(","))
+            current = None
+            kinds = []
+            if "UP" in names and "LOOPBACK" not in names:
+                current = (header.group(1), f"0x{header.group(2).lower()}")
+            continue
+        if not line[:1].isspace():
+            flush()
+            current = None
+            kinds = []
+            continue
+        if current is None:
+            continue
+        match = _IFCONFIG_INET_ADDRESS_RE.match(line)
+        kind = ipv4_address_kind(match.group(1)) if match is not None else None
+        if kind is not None:
+            kinds.append(kind)
+    flush()
+    return tuple(interfaces)
+
+
+def link_plan_ipv4_kinds(plan: dict[str, object] | None) -> dict[str, list[str]]:
+    """The kind of each IPv4 address discovery's link plan holds on each link
+    it shares SMB on, by link name: the addresses native NBNS is decided from."""
+    if not isinstance(plan, dict):
+        return {}
+    links = plan.get("links")
+    addresses = plan.get("addresses")
+    if not isinstance(links, list) or not isinstance(addresses, list):
+        return {}
+    kinds: dict[str, list[str]] = {}
+    for link in links:
+        if not isinstance(link, dict) or "smb" not in str(link.get("mask", "")).split(","):
+            continue
+        index = link.get("index")
+        name = str(link.get("name") or f"#{index}")
+        kinds[name] = [
+            kind for address in addresses
+            if isinstance(address, dict) and address.get("family") == "inet" and address.get("link") == index
+            and (kind := ipv4_address_kind(str(address.get("addr", "")))) is not None
+        ]
+    return kinds
 
 
 def _parse_ifconfig_network(line: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
@@ -2283,7 +2378,7 @@ def parse_ifconfig_networks(text: str) -> tuple[str, ...]:
     for line in text.splitlines():
         header = _IFCONFIG_HEADER_RE.match(line)
         if header is not None:
-            flags = set(header.group(2).split(","))
+            flags = set(header.group(3).split(","))
             interface_up = "UP" in flags and "LOOPBACK" not in flags
             continue
         if not line[:1].isspace():
@@ -2304,6 +2399,13 @@ class DeviceNetworksProbeResult:
     ipv4_entries: tuple[DeviceIpv4Entry, ...] = ()
     networks: tuple[str, ...] = ()
     error: str | None = None
+    interfaces: tuple[DeviceInterfaceIpv4, ...] = ()
+
+    def ipv4_kinds_telemetry(self) -> dict[str, object]:
+        """Each interface's flags and address kinds, or the probe error."""
+        if self.error is not None:
+            return {"error": self.error}
+        return {item.interface: {"flags": item.flags, "kinds": list(item.kinds)} for item in self.interfaces}
 
     @property
     def ipv4_subnets(self) -> DeviceIpv4SubnetsProbeResult:
@@ -2322,7 +2424,9 @@ def probe_device_networks_conn(connection: SshConnection) -> DeviceNetworksProbe
     if proc.returncode != 0:
         return DeviceNetworksProbeResult(error=f"ifconfig exited {proc.returncode}")
     text = proc.stdout or ""
-    return DeviceNetworksProbeResult(parse_ifconfig_ipv4_entries(text), parse_ifconfig_networks(text))
+    return DeviceNetworksProbeResult(
+        parse_ifconfig_ipv4_entries(text), parse_ifconfig_networks(text), interfaces=parse_ifconfig_interface_ipv4(text),
+    )
 
 
 # The manager's title (build/native/service/stuck.h tc_manager_title) is read

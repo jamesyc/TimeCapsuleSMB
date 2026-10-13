@@ -112,6 +112,7 @@ from timecapsulesmb.device.probe import (
     apple_name_key,
     flash_runtime_config_present_conn,
     limit_remote_log_tail,
+    link_plan_ipv4_kinds,
     link_plan_networks,
     AirportAcpReading,
     password_check_fields,
@@ -1479,6 +1480,17 @@ def _select_smb_file_ops_share(
 BONJOUR_OFF_LINK_CODE = "bonjour_off_link"
 
 
+def record_device_ipv4(debug_fields: dict[str, object] | None, source: str, value: object) -> None:
+    """The device's IPv4 address kinds as `source` sees them: "ifconfig" is
+    what Apple's wcifsnd enumerates, "plan" what discovery decides native
+    NBNS from. Kinds and flags only, never an address."""
+    if debug_fields is None:
+        return
+    device_ipv4 = debug_fields.setdefault("device_ipv4", {})
+    if isinstance(device_ipv4, dict):
+        device_ipv4[source] = value
+
+
 class DoctorNetworkProbe:
     """The device's networks, and whether this computer is on one, read once per run.
 
@@ -1504,6 +1516,7 @@ class DoctorNetworkProbe:
                     self._device = probe_device_networks_conn(self._target.connection)
                 except Exception as e:
                     self._device = DeviceNetworksProbeResult(error=f"{type(e).__name__}: {e}")
+                record_device_ipv4(self._debug_fields, "ifconfig", self._device.ipv4_kinds_telemetry())
         return self._device
 
     def ipv4_subnets(self) -> DeviceIpv4SubnetsProbeResult:
@@ -2855,7 +2868,10 @@ def _doctor_check_managed_mdns(
         return None if step is None else step.status == "pass"
 
     link_plan = getattr(mdns_probe, "link_plan", None)
-    return passed("native_nbns"), passed("mdns_registered"), (link_plan if isinstance(link_plan, dict) else None)
+    link_plan = link_plan if isinstance(link_plan, dict) else None
+    if link_plan is not None:
+        record_device_ipv4(sink.debug_fields, "plan", link_plan_ipv4_kinds(link_plan))
+    return passed("native_nbns"), passed("mdns_registered"), link_plan
 
 
 def _doctor_device_blocks(
@@ -3201,6 +3217,9 @@ def _doctor_check_nbns(
         return
 
     network = network or DoctorNetworkProbe(target, remote, sink.debug_fields)
+    # Read the device's interfaces even when no result below needs them:
+    # telemetry's device_ipv4 compares them with the plan's on every run.
+    network.device()
     result_start = sink.result_count()
     _add_nbns_results(
         active_smb_conf=smb_config.text,
