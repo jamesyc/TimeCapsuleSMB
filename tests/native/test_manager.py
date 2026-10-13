@@ -820,7 +820,7 @@ def test_missing_diskd_is_started_on_loopback_and_survives_manager_stop(manager)
     os.kill(diskd['pid'],0)
 
 
-def test_failed_diskd_restart_is_backed_off_while_discovery_still_runs(manager):
+def test_failed_diskd_restart_is_backed_off_without_holding_back_discovery(manager):
     root,start,events,wait,_,_=manager
     (root/'diskd-absent').touch();(root/'diskd-fail').touch()
     # Discovery does not wait for diskd.
