@@ -285,7 +285,9 @@ void device_plan_print(FILE *stream, const struct device_plan *plan) {
         if (link->synthetic) {
             fputs(" synthetic=1", stream);
         }
-        fputc('\n', stream);
+        /* The kernel's interface flags, which decide native NBNS
+         * (addr_link_has_nbns_ipv4); doctor reports them. */
+        fprintf(stream, " flags=0x%x\n", link->link.flags);
         for (j = 0; j < link->addr_count; j++) {
             const struct if_addr *addr = &link->addrs[j];
             if (addr->family == AF_INET6) {

@@ -19,6 +19,9 @@ DNS_CLASS_IN = 0x0001
 NBNS_QUERY_TIMEOUT_CODE = "nbns_query_timeout"
 NBNS_OFF_SUBNET_CODE = "nbns_off_subnet"
 NBNS_NEGATIVE_RESPONSE_CODE = "nbns_negative_response"
+# The device registers its name on none of its addresses, as Apple's firmware
+# does without a usable IPv4 address: there is nothing to query.
+NBNS_NOT_SERVED_CODE = "nbns_not_served"
 
 
 def encode_netbios_name(name: str, suffix: int = 0x20) -> bytes:

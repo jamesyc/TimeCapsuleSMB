@@ -15,6 +15,9 @@ struct wcifsnd {
     pid_t child;
     struct tc_child inspection;
     int fd, desired, validated, failed, killed, sent, record;
+    /* An SMB link has an IPv4 address Apple's wcifsnd answers NBNS on
+     * (addr_link_has_nbns_ipv4). Without one no child runs. */
+    int eligible;
     int last_reply;  /* -1 none, 0..15 rcode, 16 malformed; for the timeout log */
     unsigned failures;
     /* A reply wait timed out: wait WCIFSND_REPLY_MS from now on. Cleared, like
@@ -34,4 +37,9 @@ void wcifsnd_prepare(struct wcifsnd *w, fd_set *reads, int *maxfd, long long *de
  * asks the manager to replace the entire discovery generation. */
 int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now);
 void wcifsnd_shutdown(struct wcifsnd *w);
+/* The nbns= state in discovery's process title: ready (names registered),
+ * starting (a child is coming up or registering), disabled (diskless),
+ * none (a validated plan gives Apple's wcifsnd no address to answer on) or
+ * waiting (anything else: no plan yet, or between retries). */
+const char *wcifsnd_readiness(const struct wcifsnd *w, int diskless);
 #endif

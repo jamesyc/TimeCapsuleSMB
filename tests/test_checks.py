@@ -51,6 +51,9 @@ from timecapsulesmb.checks.doctor_steps import (
     STARTUP_GRACE_MASK,
     _apply_startup_grace,
     _doctor_device_blocks,
+    NATIVE_NBNS_NOT_READY,
+    NATIVE_NBNS_OFF,
+    NATIVE_NBNS_READY,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
@@ -63,6 +66,7 @@ from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
     NBNS_OFF_SUBNET_CODE,
+    NBNS_NOT_SERVED_CODE,
     NBNS_QUERY_TIMEOUT_CODE,
     NbnsResponse,
     apple_nbns_client_on_subnet,
@@ -83,6 +87,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.device.probe import (
+    NATIVE_NBNS_OFF_DETAIL,
     DeviceInterfaceIpv4,
     DeviceIpv4Entry,
     DeviceIpv4SubnetsProbeResult,
@@ -4624,6 +4629,67 @@ class CheckTests(unittest.TestCase):
         # The readiness probe here carries no link plan, so only ifconfig reports.
         self.assertEqual(debug_fields["device_ipv4"], {"ifconfig": {"error": "ifconfig timed out"}})
 
+    def test_run_doctor_checks_skips_nbns_on_a_device_whose_wcifsnd_has_no_address(self) -> None:
+        # A Mac cabled to a Time Capsule with no DHCP server:
+        # bridge0 holds 0.0.0.0 beside 169.254, so discovery runs no wcifsnd.
+        debug_fields: dict[str, object] = {}
+        no_lease_plan = router_plan().replace("mode=nat", "mode=bridge").replace(
+            "addr: link=9 family=inet addr=10.0.1.1 prefix=24", "addr: link=9 family=inet addr=0.0.0.0 prefix=0")
+        mdns = ReadinessProbeResult(
+            ready=True,
+            detail="managed mDNS registrant active",
+            steps=(
+                ProbeStepResult("mdns_process", "pass", "discovery process is running"),
+                ProbeStepResult("native_nbns", "pass", NATIVE_NBNS_OFF_DETAIL),
+            ),
+            link_plan=_parse_link_plan(no_lease_plan),
+            nbns_state="none",
+        )
+        ifconfig = DeviceNetworksProbeResult(
+            interfaces=(DeviceInterfaceIpv4("bridge0", "0xffffe043", ("zero", "link_local")),),
+        )
+        nbns = mock.Mock(return_value=self._nbns_query_timeout())
+
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=mdns), nbns, device_probe_mock=mock.Mock(return_value=ifconfig),
+            debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal, [(r.status, r.message) for r in run.results if r.status == "FAIL"])
+        nbns.assert_not_called()
+        native = next(result for result in run.results if result.message == NATIVE_NBNS_OFF_DETAIL)
+        self.assertEqual(native.status, "PASS")
+        skip = next(result for result in run.results if result.message.startswith("NBNS check skipped"))
+        self.assertEqual((skip.status, skip.details.get("code")), ("SKIP", NBNS_NOT_SERVED_CODE))
+        self.assertEqual(debug_fields["device_ipv4"], {
+            "plan": {"bridge0": ["zero", "link_local"]},
+            "native_nbns": "none",
+            "ifconfig": {"bridge0": {"flags": "0xffffe043", "kinds": ["zero", "link_local"]}},
+        })
+
+    def test_run_doctor_checks_queries_nbns_only_when_the_device_registers_a_name(self) -> None:
+        # A passing native check that registers nothing (diskless, or a plan
+        # that gives NBNS no link yet) skips the query; only "ready" asks.
+        cases = (
+            ("disabled", "native NBNS is disabled", False),
+            ("waiting", "native NBNS is waiting", False),
+            ("none", NATIVE_NBNS_OFF_DETAIL, False),
+            ("ready", "Apple wcifsnd is ready on UDP 137 and 138", True),
+        )
+        for state, detail, queried in cases:
+            with self.subTest(state=state):
+                ready = self._native_nbns_probe("pass", detail)
+                mdns = ReadinessProbeResult(ready.ready, ready.detail, ready.steps, nbns_state=state)
+                nbns = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
+
+                run, _ = self._run_doctor_nbns(mock.Mock(return_value=mdns), nbns)
+
+                self.assertFalse(run.fatal)
+                self.assertEqual(nbns.called, queried)
+                if not queried:
+                    skip = next(result for result in run.results if result.message.startswith("NBNS check skipped"))
+                    self.assertEqual((skip.status, skip.details.get("code")), ("SKIP", NBNS_NOT_SERVED_CODE))
+
     def test_run_doctor_checks_skips_off_subnet_timeout_after_native_nbns_retries(self) -> None:
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
         nbns_mock = mock.Mock(side_effect=[self._nbns_query_timeout()] * 3)
@@ -4993,7 +5059,7 @@ class CheckTests(unittest.TestCase):
 
     def test_doctor_sink_counts_a_failure_the_device_explains_against_the_device(self) -> None:
         sink = DoctorSink(on_result=None, debug_fields=None)
-        sink.blocked_by_device = _doctor_device_blocks(False, True, None)
+        sink.blocked_by_device = _doctor_device_blocks(False, NATIVE_NBNS_READY, None)
         with sink.in_section("computer"):
             sink.add(CheckResult("FAIL", "SMB IPv4 is not reachable at 10.0.0.2:445", {"code": "smb_port_unreachable"}))
             sink.add(CheckResult("FAIL", "no discovered _smb._tcp instance", {"code": "bonjour_instance_not_seen"}))
@@ -5038,8 +5104,10 @@ class CheckTests(unittest.TestCase):
 
     def test_doctor_device_blocks_name_only_services_the_device_reported_down(self) -> None:
         self.assertEqual(_doctor_device_blocks(None, None, None), {})
-        self.assertEqual(_doctor_device_blocks(True, True, True), {})
-        self.assertEqual(set(_doctor_device_blocks(False, False, False)), {
+        self.assertEqual(_doctor_device_blocks(True, NATIVE_NBNS_READY, True), {})
+        # Off is not down: there is no NBNS failure for the device to explain.
+        self.assertEqual(_doctor_device_blocks(True, NATIVE_NBNS_OFF, True), {})
+        self.assertEqual(set(_doctor_device_blocks(False, NATIVE_NBNS_NOT_READY, False)), {
             "smb_port_unreachable", "smb_listing_failed", NBNS_QUERY_TIMEOUT_CODE, NBNS_NEGATIVE_RESPONSE_CODE,
             "bonjour_instance_not_seen",
         })
@@ -7151,6 +7219,29 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             "\tinet 10.0.0.6 netmask 0xffffff00 broadcast 10.0.0.255\n"
         )
         self.assertEqual(parse_ifconfig_ipv4_entries(text), ())
+
+    def test_parse_ifconfig_follows_wcifsnd_and_drops_link_local_beside_zero(self) -> None:
+        # No DHCP server: dhclient-script's 0.0.0.0 rules out the 169.254
+        # address, and 0.0.0.0 itself is never answered on.
+        no_lease = (
+            "bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 0.0.0.0 netmask 0x0 broadcast 255.255.255.255\n"
+            "\tinet alias 169.254.155.207 netmask 0xffff0000 broadcast 169.254.255.255\n"
+        )
+        self.assertEqual(parse_ifconfig_ipv4_entries(no_lease), ())
+        self.assertEqual(parse_ifconfig_ipv4_entries(no_lease.replace("\tinet 0.0.0.0 netmask 0x0 broadcast 255.255.255.255\n", "")),
+                         (DeviceIpv4Entry("bridge0", "169.254.155.207", "255.255.0.0", "169.254.255.255"),))
+        # An address this parser cannot read still counts as another address.
+        unreadable = no_lease.replace("inet 0.0.0.0 netmask 0x0 broadcast 255.255.255.255", "inet 10.0.0.3 netmask 0x00000000")
+        self.assertEqual(parse_ifconfig_ipv4_entries(unreadable), ())
+        # The rule is per interface: another interface's zero changes nothing here.
+        two = (
+            "bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 0.0.0.0 netmask 0x0 broadcast 255.255.255.255\n"
+            "bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,MULTICAST> metric 0 mtu 1500\n"
+            "\tinet 169.254.155.207 netmask 0xffff0000 broadcast 169.254.255.255\n"
+        )
+        self.assertEqual([entry.address for entry in parse_ifconfig_ipv4_entries(two)], ["169.254.155.207"])
 
     def test_ipv4_address_kind_names_each_kind_without_the_address(self) -> None:
         cases = {

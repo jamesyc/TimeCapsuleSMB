@@ -97,9 +97,15 @@ struct device_plan {
 
 /* addr.c */
 enum addr_kind { ADDR_UNUSABLE, ADDR_LOOPBACK, ADDR_LINK_LOCAL, ADDR_PRIVATE, ADDR_ULA, ADDR_GLOBAL };
+/* NetBSD's interface flags as the device kernel reports them (if_link.flags);
+ * defined here so host test builds do not take their own <net/if.h>. */
+#define TC_IFF_UP 0x1u
+#define TC_IFF_BROADCAST 0x2u
+#define TC_IFF_LOOPBACK 0x8u
 enum addr_kind addr4_kind(uint32_t network_order);
 enum addr_kind addr6_kind(const struct in6_addr *addr);
 int addr_is_service_address(const struct if_addr *addr);
+int addr_link_has_nbns_ipv4(unsigned flags, const struct if_addr *addrs, size_t count);
 const char *addr_text(const struct if_addr *addr, char *out, size_t out_len);
 
 /* facts.c */

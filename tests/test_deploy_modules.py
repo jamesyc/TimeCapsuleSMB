@@ -74,6 +74,7 @@ from timecapsulesmb.device.processes import (
     render_process_present_by_ucomm,
 )
 from timecapsulesmb.device.probe import (
+    NATIVE_NBNS_OFF_DETAIL,
     MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
     MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
     MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
@@ -1929,6 +1930,33 @@ describe_managed_smbd_status "" ""
                 self.assertIn(line, result.lines)
                 # Advisory findings never become the probe's failure detail.
                 self.assertNotIn("NetBIOS name lookups", result.detail)
+
+    def test_probe_managed_mdns_passes_native_nbns_off_when_wcifsnd_has_no_address(self) -> None:
+        # No DHCP server: bridge0 holds 0.0.0.0 beside its 169.254 address,
+        # discovery runs no wcifsnd and says nbns=none.
+        no_wcifsnd_ps = self.PS_V31.replace("917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", "")
+        no_wcifsnd_fstat = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
+        no_lease_plan = self.PLAN_V31.replace(
+            "addr: link=9 family=inet addr=192.168.1.10 prefix=24\n",
+            "addr: link=9 family=inet addr=0.0.0.0 prefix=0\naddr: link=9 family=inet addr=169.254.147.85 prefix=16\n",
+        ).replace("laIP=192.168.1.10 waIP=192.168.1.10", "laIP=169.254.147.85 waIP=unavailable")
+        none_ps = no_wcifsnd_ps.replace("nbns=ready", "nbns=none")
+        for native_nbns in ("required", "advisory"):
+            with self.subTest(native_nbns=native_nbns):
+                result = self._mdns_probe_with(none_ps, no_wcifsnd_fstat, no_lease_plan, native_nbns=native_nbns)
+                self.assertTrue(result.ready, result.lines)
+                self.assertIn("PASS:" + NATIVE_NBNS_OFF_DETAIL, result.lines)
+                self.assertEqual(result.nbns_state, "none")
+        mismatch = "FAIL:discovery native NBNS state does not match the active plan"
+        # A wcifsnd still running beside "none" is not what discovery reports.
+        running = self._mdns_probe_with(self.PS_V31.replace("nbns=ready", "nbns=none"), None, no_lease_plan)
+        self.assertFalse(running.ready)
+        self.assertIn(mismatch, running.lines)
+        # Nor is "none" without a validated plan to decide it from.
+        incomplete = self._mdns_probe_with(
+            none_ps, no_wcifsnd_fstat, no_lease_plan.replace("status=validated", "status=incomplete reason=iflist"))
+        self.assertIn(mismatch, incomplete.lines)
+        self.assertEqual(self._mdns_probe_with(self.PS_V31).nbns_state, "ready")
 
     def test_probe_managed_mdns_advisory_still_requires_bonjour(self) -> None:
         ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"

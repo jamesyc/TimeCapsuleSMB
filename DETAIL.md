@@ -919,7 +919,7 @@ NBNS is provided automatically by Apple's firmware `wcifsnd`; this project no lo
 
 `uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config.
 
-Once enabled, Apple's daemon enumerates interfaces according to firmware policy. The validated plan provides the coarse cold-start eligibility gate, but native NBNS does not promise Bonjour's per-interface `SVC_SMB` filtering. Samba listens on wildcards and Apple's firewall enforces reachability. NBNS provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
+Discovery starts `wcifsnd` only when an SMB link of a validated plan has an address Apple's daemon would answer on. Its interface scan takes the IPv4 addresses of an interface that is UP and BROADCAST and not LOOPBACK, except `0.0.0.0`, and except a 169.254 address while the interface has any other IPv4 address, `0.0.0.0` included. With no DHCP server, `dhclient-script` leaves `0.0.0.0` on `bridge0` beside `link_local`'s 169.254 address, so such a device answers NBNS nowhere: discovery runs no child and its title says `nbns=none`, and doctor reports native NBNS off and skips its NBNS query. A lease replaces `0.0.0.0` and starts a child. Once running, Apple's daemon enumerates interfaces according to firmware policy, and native NBNS does not promise Bonjour's per-interface `SVC_SMB` filtering. Samba listens on wildcards and Apple's firewall enforces reachability. NBNS provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
 
 ## Service and Telemetry Helpers
 
@@ -991,7 +991,7 @@ The Advanced panel stores these choices in the local device profile. Run **Insta
 
 ### NBNS (always on, no checkbox)
 
-Always enabled when eligible. When the payload and an SMB-eligible IPv4 address are ready, `service discovery` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
+Always enabled when eligible. When the payload is ready and an SMB link has an IPv4 address Apple's daemon answers on (see [Native NBNS Scope](#native-nbns-scope)), `service discovery` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
 
 ### Enable rsync
 

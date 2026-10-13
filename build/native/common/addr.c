@@ -59,6 +59,43 @@ int addr_is_service_address(const struct if_addr *addr) {
     return 0;
 }
 
+static int addr4_is_link_local(const struct if_addr *addr) {
+    return (ntohl(addr->v4.s_addr) >> 16) == 0xa9feU;
+}
+
+/* Whether Apple's wcifsnd answers NBNS on any IPv4 address of this
+ * interface. Its enumeration (getifaddrs; NetBSD 6 0x4a56ac, NetBSD 4
+ * 0x3dffd8) takes the AF_INET addresses of an interface that is UP and
+ * BROADCAST and not LOOPBACK, except 0.0.0.0, and except a 169.254/16
+ * address while the interface has any other address outside 169.254/16,
+ * 0.0.0.0 included. dhclient-script leaves 0.0.0.0 on an interface while it
+ * looks for a lease, so a device with no DHCP server answers on none.
+ * getifaddrs drops addresses whose interface sent no RTM_IFINFO row, which a
+ * synthetic link's zero flags exclude the same way. Flags are tested bit by
+ * bit: the NetBSD 6 kernel reports them sign-extended (0xffffe043). */
+int addr_link_has_nbns_ipv4(unsigned flags, const struct if_addr *addrs, size_t count) {
+    size_t i;
+    int outside_link_local = 0;
+
+    if (!(flags & TC_IFF_UP) || !(flags & TC_IFF_BROADCAST) || (flags & TC_IFF_LOOPBACK)) {
+        return 0;
+    }
+    for (i = 0; i < count; i++) {
+        if (addrs[i].family == AF_INET && !addr4_is_link_local(&addrs[i])) {
+            outside_link_local = 1;
+        }
+    }
+    for (i = 0; i < count; i++) {
+        if (addrs[i].family != AF_INET || addrs[i].v4.s_addr == 0) {
+            continue;
+        }
+        if (!addr4_is_link_local(&addrs[i]) || !outside_link_local) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 const char *addr_text(const struct if_addr *addr, char *out, size_t out_len) {
     const void *src = addr->family == AF_INET ? (const void *)&addr->v4 : (const void *)&addr->v6;
     if (inet_ntop(addr->family, src, out, (socklen_t)out_len) == NULL) {

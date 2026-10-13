@@ -53,6 +53,12 @@ def test_iflist_parses_device_layout_fixture(fixture):
             assert got["link_local"] == ("1" if want["addr"].startswith("fe80:") else "0")
     bridge = next(l for l in links if l["name"] == "bridge0")
     assert int(bridge["index"]) == {"netbsd4le-bridge": 9, "netbsd6-bridge": 13}[fixture]  # == ifconfig scopeid
+    # What native NBNS tests bit by bit, as Apple's wcifsnd does: the LAN
+    # bridge is UP and BROADCAST (NetBSD 6 sign-extends the flags), lo0 is
+    # LOOPBACK.
+    lo0 = next(l for l in links if l["name"] == "lo0")
+    assert int(bridge["flags"], 16) & 0x3 == 0x3 and not int(bridge["flags"], 16) & 0x8
+    assert int(lo0["flags"], 16) & 0x8
     assert manifest["rtm_version"] == {"netbsd4le-bridge": 3, "netbsd6-bridge": 4}[fixture]
 
 
@@ -375,7 +381,9 @@ def test_topology_address_without_ifinfo_record_still_takes_its_role(tmp_path):
                                              links=[("lo0", 5)], addrs=[(9, "192.168.1.10", 24), (5, "127.0.0.1", 8)]))
     assert status(plan)["status"] == "validated"
     link = next(f for kind, f in plan if kind == "link" and f["index"] == "9")
-    assert link == {"name": "", "index": "9", "role": "lan", "mask": "smb,adisk", "synthetic": "1"}
+    # No RTM_IFINFO, so no flags: Apple's getifaddrs drops such an address too,
+    # and native NBNS does not count it (addr_link_has_nbns_ipv4).
+    assert link == {"name": "", "index": "9", "role": "lan", "mask": "smb,adisk", "synthetic": "1", "flags": "0x0"}
     assert any(kind == "addr" and fields["link"] == "9" and fields["addr"] == "192.168.1.10"
                for kind, fields in plan)
     # A named link never carries the flag.

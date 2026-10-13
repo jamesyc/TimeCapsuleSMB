@@ -125,7 +125,7 @@ def run_doctor_checks(
     probed_mac = _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_device_hostname(target, remote, sink)
     smbd_serving = _doctor_check_managed_smbd(target, remote, sink, readiness.smbd)
-    native_nbns_ready, bonjour_registered, link_plan = _doctor_check_managed_mdns(target, remote, sink, readiness.mdns)
+    native_nbns, bonjour_registered, link_plan = _doctor_check_managed_mdns(target, remote, sink, readiness.mdns)
     # Measured once Samba and mDNS have been checked: if the window has ended
     # by then, nothing is collapsed into "starting up". Network checks below
     # that fail after the window ends during them can still be collapsed.
@@ -138,7 +138,7 @@ def run_doctor_checks(
     device_smb = _doctor_check_device_smb(inputs, target, remote, smb_config, processes, password_match, sink)
     # Everything below checks the device from this computer over the network;
     # what the device already reported down is not counted against it.
-    sink.blocked_by_device = _doctor_device_blocks(smbd_serving, native_nbns_ready, bonjour_registered)
+    sink.blocked_by_device = _doctor_device_blocks(smbd_serving, native_nbns, bonjour_registered)
     with sink.in_section(DOMAIN_COMPUTER):
         if remote.device_unreachable:
             _doctor_report_unanswered_device(inputs, target, sink)
@@ -162,7 +162,7 @@ def run_doctor_checks(
             )
             _doctor_add_bonjour_naming_info(bonjour_result, sink)
             _doctor_check_usb_printer(target, remote, bonjour_result, sink, network)
-            _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns_ready, network)
+            _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink, native_nbns, network)
             _doctor_check_authenticated_smb(
                 inputs, target, remote, smb_config, naming, bonjour_result, direct_smb, processes, device_smb, sink,
             )

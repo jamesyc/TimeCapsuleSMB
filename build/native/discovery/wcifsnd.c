@@ -138,17 +138,17 @@ void wcifsnd_init(struct wcifsnd *w, const char *name) {
 }
 
 void wcifsnd_apply_plan(struct wcifsnd *w, const struct device_plan *p, long long now) {
-    size_t i, j;
-    int ipv4 = 0;
+    size_t i;
+    w->eligible = 0;
     for (i = 0; i < p->link_count; i++) {
-        if (!(p->links[i].mask & SVC_SMB)) continue;
-        for (j = 0; j < p->links[i].addr_count; j++) {
-            const struct if_addr *a = &p->links[i].addrs[j];
-            if (a->family == AF_INET && addr_is_service_address(a)) ipv4 = 1;
-        }
+        const struct link_plan *link = &p->links[i];
+        if ((link->mask & SVC_SMB) && addr_link_has_nbns_ipv4(link->link.flags, link->addrs, link->addr_count))
+            w->eligible = 1;
     }
-    /* Apple native NBNS is automatic; only live service eligibility gates it. */
-    w->desired = w->name[0] && !p->options.diskless && ipv4;
+    /* Apple native NBNS is automatic; only live service eligibility gates it.
+     * Apple's wcifsnd answers on no address of a device whose SMB links hold
+     * only 169.254 beside 0.0.0.0 (no DHCP server), so none is started. */
+    w->desired = w->name[0] && !p->options.diskless && w->eligible;
     /* Incomplete facts may retain a live native child, but every replacement
      * must pass the same validated-plan gate as initial startup. */
     w->validated = p->status.validated;
@@ -402,4 +402,12 @@ void wcifsnd_shutdown(struct wcifsnd *w) {
             if (w->inspection.group) select(0, NULL, NULL, NULL, &pause);
         }
     }
+}
+
+const char *wcifsnd_readiness(const struct wcifsnd *w, int diskless) {
+    if (w->phase == WC_ACTIVE) return "ready";
+    if (w->phase != WC_OFF) return "starting";
+    if (diskless) return "disabled";
+    if (w->validated && !w->eligible) return "none";
+    return "waiting";
 }

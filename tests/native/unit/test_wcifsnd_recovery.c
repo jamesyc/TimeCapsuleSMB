@@ -167,6 +167,7 @@ static void eligibility_and_shutdown(void) {
     struct device_plan p = {0};
     p.status.validated = 1; p.link_count = 1;
     p.links[0].mask = SVC_SMB; p.links[0].addr_count = 1;
+    p.links[0].link.flags = TC_IFF_UP | TC_IFF_BROADCAST;
     p.links[0].addrs[0].family = AF_INET;
     assert(inet_pton(AF_INET, "192.0.2.1", &p.links[0].addrs[0].v4) == 1);
     init(&w);
@@ -255,8 +256,80 @@ static void reply_wait_lengthens_after_a_timeout(void) {
     assert(!w.desired && !w.patient);
 }
 
+static void set4(struct if_addr *a, const char *text) {
+    memset(a, 0, sizeof(*a));
+    a->family = AF_INET;
+    assert(inet_pton(AF_INET, text, &a->v4) == 1);
+}
+
+/* Apple's wcifsnd enumeration: which interfaces it answers NBNS on. */
+static void apple_nbns_address_rule(void) {
+    const unsigned lan = TC_IFF_UP | TC_IFF_BROADCAST;
+    struct if_addr a[3];
+    set4(&a[0], "169.254.155.207");
+    assert(addr_link_has_nbns_ipv4(lan, a, 1));                  /* 169.254 alone */
+    set4(&a[1], "0.0.0.0");
+    assert(!addr_link_has_nbns_ipv4(lan, a, 2));                 /* beside dhclient's 0.0.0.0 */
+    assert(!addr_link_has_nbns_ipv4(lan, a + 1, 1));             /* 0.0.0.0 alone */
+    set4(&a[2], "10.0.1.1");
+    assert(addr_link_has_nbns_ipv4(lan, a, 3));                  /* a lease beside them */
+    set4(&a[1], "192.168.1.218");
+    assert(addr_link_has_nbns_ipv4(lan, a, 2));                  /* routable beside 169.254 */
+    set4(&a[1], "169.254.1.2");
+    assert(addr_link_has_nbns_ipv4(lan, a, 2));                  /* two 169.254 aliases */
+    memset(&a[1], 0, sizeof(a[1]));
+    a[1].family = AF_INET6;
+    assert(inet_pton(AF_INET6, "fe80::1", &a[1].v6) == 1);
+    assert(addr_link_has_nbns_ipv4(lan, a, 2));                  /* IPv6 is not another address */
+    set4(&a[1], "192.168.1.218");
+    assert(addr_link_has_nbns_ipv4(0xffffe043u, a, 2));          /* NetBSD 6's sign-extended flags */
+    assert(!addr_link_has_nbns_ipv4(TC_IFF_UP, a, 2));           /* not BROADCAST */
+    assert(!addr_link_has_nbns_ipv4(TC_IFF_BROADCAST, a, 2));    /* down */
+    assert(!addr_link_has_nbns_ipv4(lan | TC_IFF_LOOPBACK, a, 2));
+    assert(!addr_link_has_nbns_ipv4(0, a, 2));                   /* synthetic link: no RTM_IFINFO */
+    assert(!addr_link_has_nbns_ipv4(lan, a, 0));
+}
+
+/* A device with no DHCP server holds only 169.254 beside 0.0.0.0 on its LAN:
+ * no child, no retries, and nbns=none until a lease arrives. */
+static void no_eligible_address_starts_nothing_until_a_lease(void) {
+    struct wcifsnd w;
+    struct device_plan p = {0};
+    init(&w);                                                     /* resets the fakes */
+    wcifsnd_init(&w, "machine");                                  /* and starts with no plan */
+    assert(!strcmp(wcifsnd_readiness(&w, 0), "waiting"));       /* no plan yet */
+    assert(!strcmp(wcifsnd_readiness(&w, 1), "disabled"));
+    p.status.validated = 1; p.link_count = 1;
+    p.links[0].mask = SVC_SMB; p.links[0].link.flags = TC_IFF_UP | TC_IFF_BROADCAST;
+    p.links[0].addr_count = 2;
+    set4(&p.links[0].addrs[0], "0.0.0.0");
+    set4(&p.links[0].addrs[1], "169.254.155.207");
+    wcifsnd_apply_plan(&w, &p, 100);
+    assert(!w.eligible && !w.desired && !strcmp(wcifsnd_readiness(&w, 0), "none"));
+    assert(!wcifsnd_dispatch(&w, NULL, 100000) && !forks);
+    p.status.validated = 0;                                       /* incomplete facts are not "none" */
+    wcifsnd_apply_plan(&w, &p, 100100);
+    assert(!strcmp(wcifsnd_readiness(&w, 0), "waiting"));
+    p.status.validated = 1;
+    set4(&p.links[0].addrs[0], "192.168.1.218");                  /* BOUND replaces 0.0.0.0 */
+    wcifsnd_apply_plan(&w, &p, 100200);
+    assert(w.eligible && w.desired && !strcmp(wcifsnd_readiness(&w, 0), "waiting"));
+    assert(!wcifsnd_dispatch(&w, NULL, 100200) && forks == 1);
+    assert(!strcmp(wcifsnd_readiness(&w, 0), "starting"));
+    w.phase = WC_ACTIVE;
+    assert(!strcmp(wcifsnd_readiness(&w, 0), "ready"));
+    set4(&p.links[0].addrs[0], "0.0.0.0");                        /* the lease is gone again */
+    wcifsnd_apply_plan(&w, &p, 100300);
+    assert(!w.desired && w.phase == WC_STOPPING);
+    waited = 42;
+    assert(!wcifsnd_dispatch(&w, NULL, 100400) && !w.child);
+    assert(!strcmp(wcifsnd_readiness(&w, 0), "none"));
+    assert(!wcifsnd_dispatch(&w, NULL, 200000) && forks == 1);
+}
+
 int main(void) {
     retry_deadlines(); cleanup_before_retry(); stopped_inspection_defers_retry();
     errors_and_stale_replies(); eligibility_and_shutdown(); reply_wait_lengthens_after_a_timeout();
+    apple_nbns_address_rule(); no_eligible_address_starts_nothing_until_a_lease();
     return 0;
 }

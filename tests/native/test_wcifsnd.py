@@ -55,6 +55,22 @@ NAT_OK = facts_text(
          "usbF": "0x458", "syNm": "Capsule", "waMA": "e8:8d:28:58:f1:5c"},
     links=NAT_LINKS, addrs=NAT_ADDRS, config={"nbns_enabled": 1})
 
+# A bridge-mode device with no DHCP server: dhclient-script's PREINIT leaves
+# 0.0.0.0 on bridge0 and link_local adds a 169.254 address, which ACPd
+# reports as laIP. Apple's wcifsnd answers NBNS on neither.
+BRIDGE_NO_LEASE = facts_text(
+    acp={**MODE["bridge"], "laIP": "169.254.147.85", "usbF": "0x458",
+         "syNm": "Capsule", "waMA": "e8:8d:28:58:f1:5c"},
+    links=[("bridge0", 9), ("lo0", 5)],
+    addrs=[(9, "0.0.0.0", 0), (9, "169.254.147.85", 16), (9, "fe80::ff:fe00:1", 64), (5, "127.0.0.1", 8)],
+    config={"nbns_enabled": 1})
+# BOUND replaced 0.0.0.0 with the lease, which ACPd then reports.
+BRIDGE_LEASED = (BRIDGE_NO_LEASE
+                 .replace("addr=0.0.0.0 scope=9 prefix=0", "addr=192.168.1.10 scope=9 prefix=24")
+                 .replace("key=laIP status=ok value=169.254.147.85", "key=laIP status=ok value=192.168.1.10"))
+# 169.254 with no other IPv4 address: Apple's wcifsnd answers on it.
+BRIDGE_LINK_LOCAL_ONLY = BRIDGE_NO_LEASE.replace("addr: link=9 family=inet addr=0.0.0.0 scope=9 prefix=0\n", "")
+
 WCIFSND_UNIT_MODULES = (
     "native/common/acp.c",
     "native/common/addr.c",
@@ -284,6 +300,7 @@ def test_retry_deadlines_cleanup_and_eligibility(tmp_path):
            .replace("family=inet addr=192.168.1.10", "family=inet6 addr=2001:db8::11")
            .replace("family=inet addr=169.254.140.130", "family=inet6 addr=2001:db8::12"), False),
     (NAT_OK, True),
+    (BRIDGE_NO_LEASE, False),
 ])
 def test_ineligible_cold_start_does_not_spawn(rig, dnssd, facts, diskless):
     discovery = Discovery(rig, facts=facts, diskless=diskless)
@@ -755,6 +772,35 @@ def test_loss_of_last_eligible_ipv4_stops_and_reenable_starts_fresh_child(rig, d
         discovery.replace(NAT_OK)
         assert wait_for(lambda: len(adds(discovery)) == 6)
         assert adds_per_child(discovery) == {first: 3, children(discovery)[-1]: 3}
+    finally:
+        discovery.stop()
+
+
+def test_no_lease_starts_no_child_until_dhcp_replaces_the_zero_address(rig, dnssd):
+    discovery = Discovery(rig, facts=BRIDGE_NO_LEASE)
+    try:
+        time.sleep(PAST_FIRST_RETRY)
+        assert not children(discovery) and not adds(discovery)
+        discovery.replace(BRIDGE_LEASED)
+        assert wait_for(lambda: len(adds(discovery)) == 3)
+        first = first_added_child(discovery)
+        discovery.replace(BRIDGE_NO_LEASE)
+        assert wait_for(lambda: "STOP" in generation(discovery, first))
+        started = len(children(discovery))
+        time.sleep(PAST_FIRST_RETRY)
+        # No address left to answer on: nothing is retried.
+        assert len(children(discovery)) == started and len(adds(discovery)) == 3
+        assert discovery.proc.poll() is None
+    finally:
+        discovery.stop()
+
+
+def test_a_link_local_address_alone_still_registers(rig, dnssd):
+    discovery = Discovery(rig, facts=BRIDGE_LINK_LOCAL_ONLY)
+    try:
+        assert wait_for(lambda: len(adds(discovery)) == 3)
+        assert [decode_name(packet) for packet in adds(discovery)] == [
+            ("MACHINE", 0), ("WORKGROUP", 0), ("MACHINE", 0x20)]
     finally:
         discovery.stop()
 

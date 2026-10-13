@@ -404,6 +404,8 @@ class ReadinessProbeResult:
     # The parsed `--print-link-plan` output, from the mDNS probe only. Kept out
     # of equality and hashing: it is a dict.
     link_plan: dict[str, object] | None = field(default=None, compare=False)
+    # The nbns= state in discovery's process title, from the mDNS probe only.
+    nbns_state: str | None = field(default=None, compare=False)
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -1344,6 +1346,11 @@ def _parse_link_plan(text: str) -> dict[str, object]:
 LinkPlanNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
 
+def link_shares_smb(link: object) -> bool:
+    """Whether a parsed `--print-link-plan` link carries SMB in its mask."""
+    return isinstance(link, dict) and "smb" in str(link.get("mask", "")).split(",")
+
+
 def link_plan_networks(
     plan: dict[str, object] | None,
 ) -> tuple[tuple[LinkPlanNetwork, ...], tuple[tuple[str, LinkPlanNetwork], ...]]:
@@ -1377,7 +1384,7 @@ def link_plan_networks(
     for link in plan.get("links") or ():
         networks = by_link.get(str(link.get("index", "")), [])
         role = str(link.get("role", ""))
-        if "smb" in str(link.get("mask", "")).split(","):
+        if link_shares_smb(link):
             served.extend(networks)
         elif role in ("wan", "guest"):
             unserved.extend((role, network) for network in networks)
@@ -1388,6 +1395,7 @@ def link_plan_networks(
 
 
 MDNS_REGISTRATIONS_STILL_STARTING = "discovery Bonjour registrations are still starting"
+NATIVE_NBNS_OFF_DETAIL = "native NBNS is off: the device has no IPv4 address Apple's NetBIOS service answers on"
 MDNS_REGISTRATION_STATE_UNAVAILABLE = "discovery Bonjour registration state is not available yet"
 # A registration that failed or conflicted waits for discovery's retry (1 to
 # 30 s), so doctor retries before reporting it.
@@ -1572,6 +1580,7 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         steps.append(plan_step)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     plan: dict[str, object] | None = None
+    nbns_state: str | None = None
     if plan_proc is None or plan_proc.returncode != 0:
         rc = "unknown" if plan_proc is None else str(plan_proc.returncode)
         _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan probe failed with exit code {rc}")
@@ -1580,7 +1589,7 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         status = str(plan["status"])
         links = plan["links"]
         addresses = plan["addresses"]
-        smb_links = [link for link in links if "smb" in str(link.get("mask", "")).split(",")]
+        smb_links = [link for link in links if link_shares_smb(link)]
         smb_indexes = {str(link.get("index", "")) for link in smb_links}
         def service_ipv4(address: str) -> bool:
             try:
@@ -1609,8 +1618,8 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
             _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan {status} mode={plan['mode']} grants SMB on no link")
 
         title = discovery_lines[0] if len(discovery_lines) == 1 else ""
-        marker = re.search(r"\bnbns=(disabled|waiting|starting|ready)\b", title)
-        nbns_state = marker.group(1) if marker else ""
+        marker = re.search(r"\bnbns=(disabled|waiting|starting|ready|none)\b", title)
+        nbns_state = marker.group(1) if marker else None
         eligible = not diskless and status == "validated" and smb_ipv4
         wcifsnd_lines = [
             line for line in ps_out.splitlines()
@@ -1629,6 +1638,14 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         )
         if not marker:
             nbns_status, nbns_detail = "fail", "discovery NBNS state is not available yet"
+        elif nbns_state == "none":
+            # Discovery found no IPv4 address Apple's wcifsnd answers NBNS on
+            # (169.254 beside the 0.0.0.0 dhclient leaves while it has no
+            # lease), so it runs none; the manager stops any other.
+            if not diskless and status == "validated" and not wcifsnd_lines:
+                nbns_status, nbns_detail = "pass", NATIVE_NBNS_OFF_DETAIL
+            else:
+                nbns_status, nbns_detail = "fail", "discovery native NBNS state does not match the active plan"
         elif eligible and nbns_state == "starting":
             nbns_status, nbns_detail = "fail", "discovery native NBNS is still starting"
         elif eligible and nbns_state == "ready" and len(owned_wcifsnd) == 1 and len(wcifsnd_lines) == 1 and ports_ready:
@@ -1663,7 +1680,7 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         steps=steps,
         default_detail="managed mDNS registrant active" if ready else not_ready,
     )
-    return replace(result, link_plan=plan)
+    return replace(result, link_plan=plan, nbns_state=nbns_state)
 
 
 def probe_managed_rsync_conn(
@@ -2226,13 +2243,15 @@ def _parse_ifconfig_inet(interface: str, line: str) -> DeviceIpv4Entry | None:
 def parse_ifconfig_ipv4_entries(text: str) -> tuple[DeviceIpv4Entry, ...]:
     """Return the IPv4 addresses Apple's wcifsnd answers NBNS queries on.
 
-    Its interface scan (NetBSD 6 `0x4a56ac`) keeps each nonzero AF_INET
-    address on an interface that is UP and BROADCAST and not LOOPBACK, and a
-    169.254/16 address only when that interface has no other IPv4 address.
-    Aliases are separate entries. Apple can also filter by the configured
-    `Interfaces` name; the discovery role runs wcifsnd without that filter.
+    Its interface scan (NetBSD 6 `0x4a56ac`, NetBSD 4 `0x3dffd8`) keeps each
+    nonzero AF_INET address on an interface that is UP and BROADCAST and not
+    LOOPBACK, and a 169.254/16 address only when that interface has no IPv4
+    address outside 169.254/16, 0.0.0.0 included: dhclient-script leaves
+    0.0.0.0 on the interface while it looks for a lease. Aliases are separate
+    entries. Apple can also filter by the configured `Interfaces` name; the
+    discovery role runs wcifsnd without that filter.
     """
-    interfaces: list[list[DeviceIpv4Entry]] = []
+    interfaces: list[tuple[list[DeviceIpv4Entry], list[bool]]] = []
     interface: str | None = None
     for line in text.splitlines():
         header = _IFCONFIG_HEADER_RE.match(line)
@@ -2241,22 +2260,30 @@ def parse_ifconfig_ipv4_entries(text: str) -> tuple[DeviceIpv4Entry, ...]:
             interface = None
             if {"UP", "BROADCAST"} <= flags and "LOOPBACK" not in flags:
                 interface = header.group(1)
-                interfaces.append([])
+                interfaces.append(([], [False]))
             continue
         if not line[:1].isspace():
             interface = None
             continue
         if interface is None:
             continue
+        entries, outside_link_local = interfaces[-1]
+        raw = _IFCONFIG_INET_ADDRESS_RE.match(line)
+        if raw is not None and ipv4_address_kind(raw.group(1)) not in (None, "link_local"):
+            # Any other address counts, 0.0.0.0 and one whose netmask this
+            # parser cannot read included: the kernel lists it to wcifsnd.
+            outside_link_local[0] = True
         entry = _parse_ifconfig_inet(interface, line)
         if entry is not None:
-            interfaces[-1].append(entry)
+            entries.append(entry)
 
-    entries: list[DeviceIpv4Entry] = []
-    for interface_entries in interfaces:
-        routable = [entry for entry in interface_entries if not ipaddress.IPv4Address(entry.address).is_link_local]
-        entries.extend(routable or interface_entries)
-    return tuple(entries)
+    result: list[DeviceIpv4Entry] = []
+    for entries, outside_link_local in interfaces:
+        result.extend(
+            entry for entry in entries
+            if not (outside_link_local[0] and ipaddress.IPv4Address(entry.address).is_link_local)
+        )
+    return tuple(result)
 
 
 _RFC1918_NETWORKS = tuple(ipaddress.IPv4Network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
@@ -2341,7 +2368,7 @@ def link_plan_ipv4_kinds(plan: dict[str, object] | None) -> dict[str, list[str]]
         return {}
     kinds: dict[str, list[str]] = {}
     for link in links:
-        if not isinstance(link, dict) or "smb" not in str(link.get("mask", "")).split(","):
+        if not link_shares_smb(link):
             continue
         index = link.get("index")
         name = str(link.get("name") or f"#{index}")

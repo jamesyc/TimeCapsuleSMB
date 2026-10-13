@@ -58,6 +58,7 @@ from timecapsulesmb.checks.network import (
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
+    NBNS_NOT_SERVED_CODE,
     NBNS_OFF_SUBNET_CODE,
     NBNS_QUERY_TIMEOUT_CODE,
     apple_nbns_client_on_subnet,
@@ -177,6 +178,14 @@ DOCTOR_STAGE_RUN_CHECKS = "run_checks"
 DOCTOR_STAGE_WAIT_FOR_STARTUP = "wait_for_device_startup"
 DOCTOR_STAGE_FINISH_CHECKS = "finish_checks"
 NATIVE_NBNS_STILL_STARTING = "discovery native NBNS is still starting"
+# What the device's own native NBNS check found, for the checks from this
+# computer: registered, not ready yet, or off: the device registers no name
+# (nbns=none: no IPv4 address Apple's wcifsnd answers on; disabled: diskless;
+# waiting while its plan gives NBNS nothing).
+NATIVE_NBNS_READY = "ready"
+NATIVE_NBNS_NOT_READY = "not_ready"
+NATIVE_NBNS_OFF = "off"
+NATIVE_NBNS_OFF_STATES = frozenset({"none", "disabled", "waiting"})
 TRANSIENT_SMBD_READINESS_FAILURES = {
     "managed smbd parent process is not running",
     "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
@@ -1628,7 +1637,7 @@ def _add_nbns_results(
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     reachable_addresses: tuple[str, ...],
     add_result: Callable[[CheckResult], None],
-    native_nbns_ready: bool | None = None,
+    native_nbns: str | None = None,
     route_sources: tuple[tuple[str, str], ...] = (),
     probe_device_subnets: Callable[[], DeviceIpv4SubnetsProbeResult] | None = None,
     debug_fields: dict[str, object] | None = None,
@@ -1639,6 +1648,13 @@ def _add_nbns_results(
             expected_name = runtime_naming_identity.netbios_name
         if expected_name is None:
             add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
+            return
+        if native_nbns == NATIVE_NBNS_OFF:
+            add_result(CheckResult(
+                "SKIP",
+                "NBNS check skipped; the device registers no NetBIOS name (see the native NBNS check)",
+                {"code": NBNS_NOT_SERVED_CODE},
+            ))
             return
         ipv4_addresses = [address for address in reachable_addresses if _smb_target_family(address) == "ipv4"]
         target_ip = next((address for address in ipv4_addresses if not is_link_local_ipv4(address)), None)
@@ -1653,7 +1669,7 @@ def _add_nbns_results(
         def query() -> CheckResult:
             return check_nbns_name_resolution(expected_name, target_ip, expected_ip)
 
-        if native_nbns_ready is False:
+        if native_nbns == NATIVE_NBNS_NOT_READY:
             # The device has not finished registering its name yet: a
             # timeout may clear, and during startup grace it is a startup
             # failure. Once native NBNS is ready a timeout is a network
@@ -2828,9 +2844,10 @@ def _doctor_wait_for_startup(
 
 def _doctor_check_managed_mdns(
     target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, waited_probe: ReadinessProbeResult | None = None,
-) -> tuple[bool | None, bool | None, dict[str, object] | None]:
-    """Return whether native NBNS and Bonjour registration passed (None when
-    not probed), and the device's link plan when the probe read one.
+) -> tuple[str | None, bool | None, dict[str, object] | None]:
+    """Return native NBNS's state (NATIVE_NBNS_*, None when not probed),
+    whether Bonjour registration passed (None when not probed), and the
+    device's link plan when the probe read one.
     `waited_probe` is the startup wait's last one (StartupReadiness); without
     it, the usual retries."""
     if not remote.remote_checks_enabled:
@@ -2871,11 +2888,23 @@ def _doctor_check_managed_mdns(
     link_plan = link_plan if isinstance(link_plan, dict) else None
     if link_plan is not None:
         record_device_ipv4(sink.debug_fields, "plan", link_plan_ipv4_kinds(link_plan))
-    return passed("native_nbns"), passed("mdns_registered"), link_plan
+    nbns_state = getattr(mdns_probe, "nbns_state", None)
+    if isinstance(nbns_state, str):
+        record_device_ipv4(sink.debug_fields, "native_nbns", nbns_state)
+    nbns_passed = passed("native_nbns")
+    if nbns_passed is None:
+        native_nbns = None
+    elif not nbns_passed:
+        native_nbns = NATIVE_NBNS_NOT_READY
+    else:
+        # A passing check in one of these states means no name is registered
+        # by design; "ready" is the only state that registers one.
+        native_nbns = NATIVE_NBNS_OFF if nbns_state in NATIVE_NBNS_OFF_STATES else NATIVE_NBNS_READY
+    return native_nbns, passed("mdns_registered"), link_plan
 
 
 def _doctor_device_blocks(
-    smbd_serving: bool | None, native_nbns_ready: bool | None, bonjour_registered: bool | None,
+    smbd_serving: bool | None, native_nbns: str | None, bonjour_registered: bool | None,
 ) -> dict[str, str]:
     """This computer's failures that would only repeat what the device itself
     reported down: Samba not running, NBNS or Bonjour registration not ready.
@@ -2884,7 +2913,7 @@ def _doctor_device_blocks(
     if smbd_serving is False:
         for code in (DOCTOR_CODE_SMB_PORT_UNREACHABLE, DOCTOR_CODE_SMB_LISTING_FAILED):
             blocks[code] = "Samba is not running on the device"
-    if native_nbns_ready is False:
+    if native_nbns == NATIVE_NBNS_NOT_READY:
         for code in (NBNS_QUERY_TIMEOUT_CODE, NBNS_NEGATIVE_RESPONSE_CODE):
             blocks[code] = "NetBIOS (NBNS) is not ready on the device"
     if bonjour_registered is False:
@@ -3210,7 +3239,7 @@ def _doctor_check_nbns(
     naming: RuntimeNamingState,
     direct_smb: DirectSmbState,
     sink: DoctorSink,
-    native_nbns_ready: bool | None = None,
+    native_nbns: str | None = None,
     network: DoctorNetworkProbe | None = None,
 ) -> None:
     if not remote.remote_checks_enabled:
@@ -3226,7 +3255,7 @@ def _doctor_check_nbns(
         runtime_naming_identity=naming.identity,
         reachable_addresses=direct_smb.reachable_addresses,
         add_result=sink.add,
-        native_nbns_ready=native_nbns_ready,
+        native_nbns=native_nbns,
         route_sources=direct_smb.route_sources,
         probe_device_subnets=network.ipv4_subnets,
         debug_fields=sink.debug_fields,
