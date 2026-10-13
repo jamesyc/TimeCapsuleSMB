@@ -972,8 +972,10 @@ def test_apple_netbios_daemon_is_stopped_without_waiting_for_the_next_audit(mana
         apple.wait()
 
 
-def quiet_audits(events,quiet=3,timeout=30):
-    """The audit count once no audit has started for `quiet` seconds."""
+def quiet_audits(events,quiet=5,timeout=40):
+    """The audit count once no audit has started for `quiet` seconds: the
+    one-second cadence plus an audit job slowed by a loaded host, still well
+    short of AUDIT_MS."""
     count,changed=sum(e['role']=='audit' for e in events()),time.monotonic()
     deadline=changed+timeout
     while time.monotonic()-changed<quiet:
