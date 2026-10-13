@@ -52,12 +52,14 @@ def rig(tmp_path_factory):
             try: self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError): pass
         def do_POST(self):
+            # The mode before the call is visible: a test that changes it once
+            # it sees this call changes only the next one.
+            mode = state['mode']
             state['calls'].append(('POST', self.path))
             raw = self.rfile.read(int(self.headers['Content-Length']))
             payload = json.loads(raw)
             state['payloads'].append(payload)
             state['raw'].append(raw)
-            mode = state['mode']
             if mode == 'http_error': return self.answer(b'{"DEBUG":true}', 500)
             if mode == 'malformed': return self.answer(b'{"DEBUG":true}junk')
             if mode == 'oversized': return self.answer(b' ' * 6000)
