@@ -74,6 +74,7 @@ from timecapsulesmb.device.processes import (
     render_process_present_by_ucomm,
 )
 from timecapsulesmb.device.probe import (
+    FOREIGN_WCIFSND_RUNNING,
     NATIVE_NBNS_OFF_DETAIL,
     MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
     MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
@@ -1957,6 +1958,37 @@ describe_managed_smbd_status "" ""
             none_ps, no_wcifsnd_fstat, no_lease_plan.replace("status=validated", "status=incomplete reason=iflist"))
         self.assertIn(mismatch, incomplete.lines)
         self.assertEqual(self._mdns_probe_with(self.PS_V31).nbns_state, "ready")
+
+    def test_probe_managed_mdns_names_a_wcifsnd_that_discovery_did_not_start(self) -> None:
+        # ACPd starts its own wcifsnd at boot and on address changes; the
+        # manager stops it at its next audit.
+        foreign_line = "4206 190 S 0:00 wcifsnd /sbin/wcifsnd\n"
+        owned_line = "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n"
+        no_owned = self.PS_V31.replace(owned_line, "")
+        no_lease_plan = self.PLAN_V31.replace(
+            "addr: link=9 family=inet addr=192.168.1.10 prefix=24\n",
+            "addr: link=9 family=inet addr=0.0.0.0 prefix=0\naddr: link=9 family=inet addr=169.254.147.85 prefix=16\n",
+        )
+        cases = (
+            ("none", no_owned.replace("nbns=ready", "nbns=none") + foreign_line, no_lease_plan),
+            ("waiting", no_owned.replace("nbns=ready", "nbns=waiting") + foreign_line, no_lease_plan),
+            ("ready beside its own child", self.PS_V31 + foreign_line, None),
+        )
+        for name, ps_out, plan in cases:
+            with self.subTest(name):
+                result = self._mdns_probe_with(ps_out, None, plan)
+                self.assertFalse(result.ready)
+                self.assertIn("FAIL:" + FOREIGN_WCIFSND_RUNNING, result.lines)
+                advisory = self._mdns_probe_with(ps_out, None, plan, native_nbns="advisory")
+                self.assertTrue(advisory.ready, advisory.lines)
+                self.assertIn(f"SKIP:{FOREIGN_WCIFSND_RUNNING}; deploy does not wait for it", advisory.lines)
+        # A zombie ACPd has not reaped is not a running daemon.
+        zombie = self._mdns_probe_with(
+            no_owned.replace("nbns=ready", "nbns=none") + "4206 190 Z 0:00 wcifsnd (wcifsnd)\n", None, no_lease_plan)
+        self.assertIn("PASS:" + NATIVE_NBNS_OFF_DETAIL, zombie.lines)
+        # Discovery's own child beside "none" contradicts it: no retry fixes that.
+        own = self._mdns_probe_with(self.PS_V31.replace("nbns=ready", "nbns=none") + foreign_line, None, no_lease_plan)
+        self.assertIn("FAIL:discovery native NBNS state does not match the active plan", own.lines)
 
     def test_probe_managed_mdns_advisory_still_requires_bonjour(self) -> None:
         ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"

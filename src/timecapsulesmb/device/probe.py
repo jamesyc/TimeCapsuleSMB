@@ -1396,6 +1396,9 @@ def link_plan_networks(
 
 MDNS_REGISTRATIONS_STILL_STARTING = "discovery Bonjour registrations are still starting"
 NATIVE_NBNS_OFF_DETAIL = "native NBNS is off: the device has no IPv4 address Apple's NetBIOS service answers on"
+# A wcifsnd discovery did not start (ACPd's, or an orphan) holds the NBNS
+# ports until the manager's next audit stops it.
+FOREIGN_WCIFSND_RUNNING = "an Apple wcifsnd that discovery did not start is running; the manager stops it"
 MDNS_REGISTRATION_STATE_UNAVAILABLE = "discovery Bonjour registration state is not available yet"
 # A registration that failed or conflicted waits for discovery's retry (1 to
 # 30 s), so doctor retries before reporting it.
@@ -1627,6 +1630,8 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         ]
         controller_pid = mdns_pids[0] if len(mdns_pids) == 1 else ""
         owned_wcifsnd = [line for line in wcifsnd_lines if line.split()[1] == controller_pid]
+        foreign_wcifsnd = [line for line in wcifsnd_lines if line not in owned_wcifsnd]
+        registers_nothing = nbns_state in {"none", "disabled", "waiting"}
         fstat_out = "" if fstat_proc is None else fstat_proc.stdout
         owned_fstat = "\n".join(
             line for line in fstat_out.splitlines()
@@ -1638,6 +1643,10 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         )
         if not marker:
             nbns_status, nbns_detail = "fail", "discovery NBNS state is not available yet"
+        elif foreign_wcifsnd and ((registers_nothing and not owned_wcifsnd)
+                                  or (nbns_state == "ready" and len(owned_wcifsnd) == 1)):
+            # Not discovery's state: the manager clears the other daemon.
+            nbns_status, nbns_detail = "fail", FOREIGN_WCIFSND_RUNNING
         elif nbns_state == "none":
             # Discovery found no IPv4 address Apple's wcifsnd answers NBNS on
             # (169.254 beside the 0.0.0.0 dhclient leaves while it has no
@@ -1660,7 +1669,9 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
             # "waiting" with a validated plan is discovery between retries.
             # After a reboot that is normal: ACPd's own wcifsnd holds UDP 137
             # and 138 until the manager stops it, which took up to 40 s.
-            if eligible and nbns_state in {"starting", "waiting"}:
+            if nbns_detail == FOREIGN_WCIFSND_RUNNING:
+                nbns_status, nbns_detail = "skip", f"{FOREIGN_WCIFSND_RUNNING}; deploy does not wait for it"
+            elif eligible and nbns_state in {"starting", "waiting"}:
                 nbns_status, nbns_detail = "skip", "native NBNS is still starting; deploy does not wait for it"
             else:
                 nbns_status = "info"

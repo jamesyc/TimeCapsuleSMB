@@ -98,6 +98,7 @@ from timecapsulesmb.device.probe import (
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
     FLASH_RUNTIME_CONFIG,
+    FOREIGN_WCIFSND_RUNNING,
     MDNS_REGISTRATION_STATE_UNAVAILABLE,
     MDNS_REGISTRATIONS_DEGRADED,
     MDNS_REGISTRATIONS_STILL_STARTING,
@@ -194,6 +195,7 @@ TRANSIENT_MDNS_READINESS_FAILURES = {
     "discovery process is not running",
     "discovery NBNS state is not available yet",
     NATIVE_NBNS_STILL_STARTING,
+    FOREIGN_WCIFSND_RUNNING,
     "discovery native NBNS is not ready",
     MDNS_REGISTRATIONS_STILL_STARTING,
     MDNS_REGISTRATION_STATE_UNAVAILABLE,
@@ -2860,7 +2862,9 @@ def _doctor_check_managed_mdns(
         retries += 1
         if retries <= len(DOCTOR_TRANSIENT_RETRY_DELAYS):
             return _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES)
-        return _readiness_probe_retryable(probe, {NATIVE_NBNS_STILL_STARTING})
+        # The manager stops a foreign wcifsnd at its next audit, as long as
+        # NBNS registration can take: both get the longer retries.
+        return _readiness_probe_retryable(probe, {NATIVE_NBNS_STILL_STARTING, FOREIGN_WCIFSND_RUNNING})
 
     mdns_probe = waited_probe if waited_probe is not None else _run_doctor_retryable_check(
         lambda: probe_managed_mdns_conn(target.connection),

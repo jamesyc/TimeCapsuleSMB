@@ -87,6 +87,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.device.probe import (
+    FOREIGN_WCIFSND_RUNNING,
     NATIVE_NBNS_OFF_DETAIL,
     DeviceInterfaceIpv4,
     DeviceIpv4Entry,
@@ -4689,6 +4690,46 @@ class CheckTests(unittest.TestCase):
                 if not queried:
                     skip = next(result for result in run.results if result.message.startswith("NBNS check skipped"))
                     self.assertEqual((skip.status, skip.details.get("code")), ("SKIP", NBNS_NOT_SERVED_CODE))
+
+    def test_run_doctor_checks_waits_for_the_manager_to_stop_a_foreign_wcifsnd(self) -> None:
+        foreign = self._native_nbns_probe("fail", FOREIGN_WCIFSND_RUNNING)
+        ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        nbns = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
+
+        # Gone by the third probe: past the first two retries, which cover
+        # most audits; the longer ones cover the rest.
+        run, sleeps = self._run_doctor_nbns(mock.Mock(side_effect=[foreign, foreign, foreign, ready]), nbns)
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10, 15, 20])
+        self.assertFalse(any(result.message == FOREIGN_WCIFSND_RUNNING for result in run.results))
+
+    def test_run_doctor_checks_fails_a_foreign_wcifsnd_the_manager_never_stops(self) -> None:
+        foreign = self._native_nbns_probe("fail", FOREIGN_WCIFSND_RUNNING)
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=foreign),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+        )
+
+        self.assertEqual(sleeps, [10, 15, 20, 25, 30])
+        self.assertTrue(run.fatal)
+        self.assertEqual([result.message for result in run.results if result.status == "FAIL"], [FOREIGN_WCIFSND_RUNNING])
+
+    def test_run_doctor_checks_startup_wait_polls_while_a_foreign_wcifsnd_runs(self) -> None:
+        foreign = self._native_nbns_probe("fail", FOREIGN_WCIFSND_RUNNING)
+        ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(side_effect=[foreign, foreign, ready]),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=30.0, debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10, 10])
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "ready")
 
     def test_run_doctor_checks_skips_off_subnet_timeout_after_native_nbns_retries(self) -> None:
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
