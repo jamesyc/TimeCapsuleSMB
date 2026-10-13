@@ -1030,13 +1030,16 @@ class SharedConnectionTests(unittest.TestCase):
         def path(host: str, password: str, opts: str) -> str:
             return self.option(self.shared_args(ssh_transport.SshConnection(host, password, opts)), "ControlPath")
 
-        base = path("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa")
-        self.assertEqual(base, path("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa"))
+        # mkdtemp names hold only lowercase letters, digits and "_", so the
+        # random control directory can never contain this password by chance.
+        password = "Secret-PW!"
+        base = path("root@10.0.0.2", password, "-o HostKeyAlgorithms=+ssh-rsa")
+        self.assertEqual(base, path("root@10.0.0.2", password, "-o HostKeyAlgorithms=+ssh-rsa"))
         # A different password must log in itself, never ride on this master.
         self.assertNotEqual(base, path("root@10.0.0.2", "other", "-o HostKeyAlgorithms=+ssh-rsa"))
-        self.assertNotEqual(base, path("root@10.0.0.3", "pw", "-o HostKeyAlgorithms=+ssh-rsa"))
-        self.assertNotEqual(base, path("root@10.0.0.2", "pw", "-p 2222"))
-        self.assertNotIn("pw", base)
+        self.assertNotEqual(base, path("root@10.0.0.3", password, "-o HostKeyAlgorithms=+ssh-rsa"))
+        self.assertNotEqual(base, path("root@10.0.0.2", password, "-p 2222"))
+        self.assertNotIn(password, base)
 
     def test_first_shared_command_creates_a_short_private_directory(self) -> None:
         with mock.patch.object(ssh_transport, "_control_dir", None), \
