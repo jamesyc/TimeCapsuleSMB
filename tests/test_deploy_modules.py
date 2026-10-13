@@ -4,6 +4,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import os
 import plistlib
 import unittest
 from dataclasses import replace
@@ -1879,7 +1880,7 @@ describe_managed_smbd_status "" ""
             sbin.mkdir()
             (sbin / "ACPd").write_bytes(b"apple")
             (sbin / "diskd").write_text("#!/bin/sh\nexit 0\n")
-            (sbin / "wcifsnd").hardlink_to(sbin / "ACPd")
+            os.link(sbin / "ACPd", sbin / "wcifsnd")  # Path.hardlink_to needs Python 3.10
             service = root / "service"
             service.write_text("#!/bin/sh\n")
             service.chmod(0o755)
