@@ -1396,8 +1396,9 @@ def link_plan_networks(
 
 MDNS_REGISTRATIONS_STILL_STARTING = "discovery Bonjour registrations are still starting"
 NATIVE_NBNS_OFF_DETAIL = "native NBNS is off: the device has no IPv4 address Apple's NetBIOS service answers on"
-# A wcifsnd discovery did not start (ACPd's, or an orphan) holds the NBNS
-# ports until the manager's next audit stops it.
+# A wcifsnd discovery did not start (an orphan, or ACPd's where boot.sh could
+# not guard /sbin/wcifsnd) holds the NBNS ports until the manager stops it,
+# within about a second (SIGKILL after 10 s).
 FOREIGN_WCIFSND_RUNNING = "an Apple wcifsnd that discovery did not start is running; the manager stops it"
 MDNS_REGISTRATION_STATE_UNAVAILABLE = "discovery Bonjour registration state is not available yet"
 # A registration that failed or conflicted waits for discovery's retry (1 to
@@ -1667,8 +1668,8 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
             nbns_status, nbns_detail = "fail", "discovery native NBNS state does not match the active plan"
         if native_nbns == "advisory" and nbns_status == "fail":
             # "waiting" with a validated plan is discovery between retries.
-            # After a reboot that is normal: ACPd's own wcifsnd holds UDP 137
-            # and 138 until the manager stops it, which took up to 40 s.
+            # After a reboot that is normal: the first registration often gets
+            # no reply, and discovery replaces its child after a 30 s wait.
             if nbns_detail == FOREIGN_WCIFSND_RUNNING:
                 nbns_status, nbns_detail = "skip", f"{FOREIGN_WCIFSND_RUNNING}; deploy does not wait for it"
             elif eligible and nbns_state in {"starting", "waiting"}:

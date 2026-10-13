@@ -54,6 +54,7 @@ from timecapsulesmb.checks.doctor_steps import (
     NATIVE_NBNS_NOT_READY,
     NATIVE_NBNS_OFF,
     NATIVE_NBNS_READY,
+    NATIVE_NBNS_STILL_STARTING,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.doctor_steps import BONJOUR_OFF_LINK_CODE, DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK
@@ -4696,13 +4697,27 @@ class CheckTests(unittest.TestCase):
         ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
         nbns = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
 
-        # Gone by the third probe: past the first two retries, which cover
-        # most audits; the longer ones cover the rest.
-        run, sleeps = self._run_doctor_nbns(mock.Mock(side_effect=[foreign, foreign, foreign, ready]), nbns)
+        # The manager stops it within seconds; one that ignores SIGTERM lasts
+        # until the SIGKILL 10 s later, inside the two short retries.
+        run, sleeps = self._run_doctor_nbns(mock.Mock(side_effect=[foreign, foreign, ready]), nbns)
 
         self.assertFalse(run.fatal)
-        self.assertEqual(sleeps, [10, 15, 20])
+        self.assertEqual(sleeps, [10, 15])
         self.assertFalse(any(result.message == FOREIGN_WCIFSND_RUNNING for result in run.results))
+
+    def test_run_doctor_checks_waits_for_registration_after_a_foreign_wcifsnd_is_stopped(self) -> None:
+        foreign = self._native_nbns_probe("fail", FOREIGN_WCIFSND_RUNNING)
+        starting = self._native_nbns_probe("fail", NATIVE_NBNS_STILL_STARTING)
+        ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        nbns = mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2"))
+
+        # Once the other daemon is gone, discovery registers again; that can
+        # take its 30 s first-reply wait, so the longer retries still apply.
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(side_effect=[foreign, foreign, starting, starting, ready]), nbns)
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10, 15, 20, 25])
 
     def test_run_doctor_checks_fails_a_foreign_wcifsnd_the_manager_never_stops(self) -> None:
         foreign = self._native_nbns_probe("fail", FOREIGN_WCIFSND_RUNNING)
@@ -4712,7 +4727,9 @@ class CheckTests(unittest.TestCase):
             mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
         )
 
-        self.assertEqual(sleeps, [10, 15, 20, 25, 30])
+        # A foreign wcifsnd that outlives the manager's SIGKILL is not going
+        # away: doctor fails after the short retries instead of waiting longer.
+        self.assertEqual(sleeps, [10, 15])
         self.assertTrue(run.fatal)
         self.assertEqual([result.message for result in run.results if result.status == "FAIL"], [FOREIGN_WCIFSND_RUNNING])
 

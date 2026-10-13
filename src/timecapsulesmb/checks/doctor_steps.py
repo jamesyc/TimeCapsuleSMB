@@ -2862,9 +2862,10 @@ def _doctor_check_managed_mdns(
         retries += 1
         if retries <= len(DOCTOR_TRANSIENT_RETRY_DELAYS):
             return _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES)
-        # The manager stops a foreign wcifsnd at its next audit, as long as
-        # NBNS registration can take: both get the longer retries.
-        return _readiness_probe_retryable(probe, {NATIVE_NBNS_STILL_STARTING, FOREIGN_WCIFSND_RUNNING})
+        # Registration can take as long as discovery's first reply wait. A
+        # foreign wcifsnd gets only the short retries: the manager stops it
+        # within seconds, so one still running is one it cannot stop.
+        return _readiness_probe_retryable(probe, {NATIVE_NBNS_STILL_STARTING})
 
     mdns_probe = waited_probe if waited_probe is not None else _run_doctor_retryable_check(
         lambda: probe_managed_mdns_conn(target.connection),
