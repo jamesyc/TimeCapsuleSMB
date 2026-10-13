@@ -1419,7 +1419,7 @@ It checks:
 - that the managed RAM runtime directory exists
 - SSH reachability
 - detected device compatibility and payload family
-- managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, boot.sh's `/sbin/diskd` and `/sbin/wcifsnd` guards (each no longer a hard link to `/sbin/ACPd`; deploy reports a missing `wcifsnd` guard without failing, as it does native NBNS), a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
+- managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, boot.sh's `/sbin/diskd` and `/sbin/wcifsnd` guards (each no longer a hard link to `/sbin/ACPd`; the runtime readiness check that deploy, `activate` and the post-reboot checks share fails on a missing `diskd` guard and only reports a missing `wcifsnd` guard, as it does native NBNS), a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
 - a shared USB printer: when `acp -A prni` lists a plugged-in printer, Apple's `printd` must advertise it (`_pdl-datastream`/`_riousbprint`/`_printer`/`_ipp`) — we never touch printd, so this guards the one thing v3.1.0 changed for printers (v3.0 re-advertised them itself because it killed the responder); skipped when no printer is attached
 - active Samba version, RAM-staged binary/config/auth paths, manager state, mounted share volumes, and required service sockets
 - discovered IPv4/IPv6 SMB endpoints, client-local link-local scopes, route testability, and bounded family-specific TCP 445 reachability
