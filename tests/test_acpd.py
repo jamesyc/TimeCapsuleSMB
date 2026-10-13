@@ -101,14 +101,17 @@ class AcpdAnswersTests(unittest.TestCase):
             self.assertEqual(call, mock.call(CONNECTION, acpd.ACPD_SYUT_COMMAND, check=False, timeout=30))
         return result, run
 
-    def run_on_this_host(self, fake_acp: str) -> tuple[str, float]:
-        """ACPD_SYUT_COMMAND in a local sh, with `fake_acp` as acp and a 1 s deadline."""
+    def run_on_this_host(self, fake_acp: str, deadline: int = acpd.ACPD_READ_DEADLINE_SECONDS) -> tuple[str, float]:
+        """ACPD_SYUT_COMMAND in a local sh, with `fake_acp` as acp. A fake that
+        answers keeps the real deadline: on a loaded Mac, starting a script
+        written a moment ago can take most of a second, and a shorter
+        deadline would kill it before it prints."""
         with tempfile.TemporaryDirectory() as tmp:
             acp_path = Path(tmp) / "acp"
             acp_path.write_text(f"#!/bin/sh\n{fake_acp}\n")
             acp_path.chmod(0o755)
             command = acpd.ACPD_SYUT_COMMAND.replace("/usr/bin/acp", str(acp_path)).replace(
-                f"sleep {acpd.ACPD_READ_DEADLINE_SECONDS};", "sleep 1;",
+                f"sleep {acpd.ACPD_READ_DEADLINE_SECONDS};", f"sleep {deadline};",
             )
             started = time.monotonic()
             proc = subprocess.run(["/bin/sh", "-c", command], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20)
@@ -122,7 +125,7 @@ class AcpdAnswersTests(unittest.TestCase):
         # A read ACPd never answers ends at the deadline with no output: no
         # job notice, and the watchdog does not hold the session open.
         # exec: acp is one process, so the kill closes its output.
-        output, seconds = self.run_on_this_host("exec sleep 15")
+        output, seconds = self.run_on_this_host("exec sleep 15", deadline=1)
         self.assertEqual(output, "")
         self.assertLess(seconds, 5)
         self.assertLess(acpd.ACPD_READ_DEADLINE_SECONDS, acpd.ACPD_SSH_TIMEOUT_SECONDS)
