@@ -823,9 +823,14 @@ def test_missing_diskd_is_started_on_loopback_and_survives_manager_stop(manager)
 def test_failed_diskd_restart_is_backed_off_while_discovery_still_runs(manager):
     root,start,events,wait,_,_=manager
     (root/'diskd-absent').touch();(root/'diskd-fail').touch()
+    # Discovery does not wait for diskd.
     start();wait(started('discovery'))
-    time.sleep(1)
-    assert len([e for e in events() if e['role']=='diskd' and e['kind']=='start']) == 1
+    # Each failure doubles the wait before the next start: 2 s, then 4 s,
+    # counted from the exit, which follows the start. A loaded host only
+    # lengthens the gaps, so they are measured rather than slept through.
+    def diskd_starts(rows):return [e['at'] for e in rows if e['role']=='diskd' and e['kind']=='start']
+    at=diskd_starts(wait(lambda rows:len(diskd_starts(rows))>=3,timeout=30))
+    assert at[1]-at[0]>2 and at[2]-at[1]>4
 
 
 def test_discovery_receives_exact_applied_names_devices_and_uuids_as_argv(manager):
