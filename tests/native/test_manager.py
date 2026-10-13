@@ -943,6 +943,59 @@ def test_term_resistant_foreign_wcifsnd_does_not_reset_discovery(manager):
         native.wait()
 
 
+@pytest.mark.parametrize('role', ['wcifsnd', 'wcifsfs'])
+def test_apple_netbios_daemon_is_stopped_without_waiting_for_the_next_audit(manager, role):
+    root,start,events,wait,_,_=manager
+    start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows)
+                and started('smbd')(rows))
+    discovery=[e for e in values if e['role']=='discovery' and e['kind']=='start']
+    apple=sleeper()
+    try:
+        # ACPd starts these on an address change, between audits (AUDIT_MS,
+        # 30 s here too). The per-second table read starts the audit itself:
+        # no SIGHUP.
+        appeared=time.monotonic()
+        external(root,f'{apple.pid} 1 {apple.pid} S {role} /sbin/{role}\n')
+        apple.wait(timeout=10)
+        assert apple.returncode==-signal.SIGTERM
+        assert time.monotonic()-appeared<10
+        assert [e for e in events() if e['role']=='discovery' and e['kind']=='start']==discovery
+        assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
+    finally:
+        if apple.poll() is None:apple.kill()
+        apple.wait()
+
+
+def test_discoverys_own_and_exited_wcifsnd_start_no_audit(manager):
+    root,start,events,wait,_,_=manager
+    process=start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows)
+                and started('smbd')(rows))
+    controller=[e for e in values if e['role']=='discovery' and e['kind']=='start'][-1]
+    owned,exited=sleeper(),sleeper()
+    try:
+        # Discovery's own child, and an exited one the kernel still lists as
+        # a zombie, are not ACPd's: they leave the audit on its 30 s cadence.
+        external(root,
+            f"{owned.pid} {controller['pid']} {owned.pid} S wcifsnd /sbin/wcifsnd\n"
+            f"{exited.pid} 1 {exited.pid} Z wcifsnd /sbin/wcifsnd\n")
+        (root/'record-audit').touch()
+        # Settle startup's own one-second audits (Samba not yet ready), then
+        # count from one audit that saw both rows.
+        process.send_signal(signal.SIGHUP)
+        wait(lambda rows:sum(e['role']=='audit' for e in rows)>=1)
+        time.sleep(3)
+        audits=sum(e['role']=='audit' for e in events())
+        time.sleep(4)
+        assert sum(e['role']=='audit' for e in events())==audits
+        assert owned.poll() is None and exited.poll() is None
+    finally:
+        for child in (owned,exited):
+            if child.poll() is None:child.kill()
+            child.wait()
+
+
 def test_healthy_rechecks_do_not_restat_or_restage_disk_software(manager):
     root,start,events,wait,_,_=manager
     process=start();wait(started('smbd'))

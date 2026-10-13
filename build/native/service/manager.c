@@ -896,6 +896,23 @@ static void sample_bufstall(struct manager *m, long long now) {
             m->report_longest = m->bufstall.ended_longest;
     }
 }
+/* ACPd starts Apple's wcifsnd and wcifsfs at boot and on address changes;
+ * they take the NBNS ports from discovery's own wcifsnd and TCP 445 from
+ * Samba. Both are named by the process table alone, which the manager reads
+ * every second, so the audit that stops them (apply_audit) starts now rather
+ * than up to AUDIT_MS later. diskd needs its command line, which only the
+ * audit reads, so it waits for the next audit. */
+static int foreign_netbios(const struct manager *m) {
+    size_t i;
+    for (i = 0; i < m->procs.count; i++) {
+        const struct tc_proc *p = &m->procs.procs[i];
+        if (p->pid <= 1 || tc_proc_exited(p))
+            continue;
+        if (!strcmp(p->comm, "wcifsfs") || (!strcmp(p->comm, "wcifsnd") && p->parent != m->discovery.child.pid))
+            return 1;
+    }
+    return 0;
+}
 /* One process-table read per pass (proctable.h), shared by buffer-stall
  * recovery, stuck-process detection and the next audit. Reading is system
  * calls in this process, no fork, so it works with a full process table; it
@@ -919,6 +936,8 @@ static void pump_sample(struct manager *m, long long now) {
     m->procs_valid = 1;
     sample_bufstall(m, now);
     sample_stuck(m, now);
+    if (!m->stopping && foreign_netbios(m))
+        lower(&m->audit_at, now);
 }
 static void pump_stage(struct manager *m, long long now) {
     if (m->stage_job.group && tc_child_poll(&m->stage_job, now)) {

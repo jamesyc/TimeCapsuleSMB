@@ -703,8 +703,12 @@ The [manager](build/native/service/manager.c) owns repeated work:
   processes from the single Flash image. Each collects its own network plan;
   discovery receives only successfully applied share rows in argv.
 - Recover exited children with bounded backoff. Discovery owns its native
-  `wcifsnd`; healthy checks never kill that child independently. If Apple's
-  conflicting `wcifsfs` returns, stop it and replace the discovery generation.
+  `wcifsnd`; healthy checks never kill that child independently. ACPd starts
+  its own `wcifsnd` and `wcifsfs` at boot and on address changes; the manager
+  reads the process table every second, and when either appears (a `wcifsnd`
+  whose parent is not discovery) it starts the audit at once instead of at the
+  next 30-second one. The audit stops them, SIGKILL after 10 s, without
+  replacing discovery or Samba.
 - Stop Samba and rsync if no valid payload remains, even if their old RAM
   executable is present. Discovery can remain diskless without waiting for
   Samba authentication, and telemetry retains its existing signed-job drain.
