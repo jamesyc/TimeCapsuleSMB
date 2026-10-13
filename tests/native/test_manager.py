@@ -967,6 +967,18 @@ def test_apple_netbios_daemon_is_stopped_without_waiting_for_the_next_audit(mana
         apple.wait()
 
 
+def quiet_audits(events,quiet=3,timeout=30):
+    """The audit count once no audit has started for `quiet` seconds."""
+    count,changed=sum(e['role']=='audit' for e in events()),time.monotonic()
+    deadline=changed+timeout
+    while time.monotonic()-changed<quiet:
+        assert time.monotonic()<deadline,f'audits never settled: {count}'
+        time.sleep(.1)
+        now=sum(e['role']=='audit' for e in events())
+        if now!=count:count,changed=now,time.monotonic()
+    return count
+
+
 def test_discoverys_own_and_exited_wcifsnd_start_no_audit(manager):
     root,start,events,wait,_,_=manager
     process=start()
@@ -981,12 +993,11 @@ def test_discoverys_own_and_exited_wcifsnd_start_no_audit(manager):
             f"{owned.pid} {controller['pid']} {owned.pid} S wcifsnd /sbin/wcifsnd\n"
             f"{exited.pid} 1 {exited.pid} Z wcifsnd /sbin/wcifsnd\n")
         (root/'record-audit').touch()
-        # Settle startup's own one-second audits (Samba not yet ready), then
-        # count from one audit that saw both rows.
         process.send_signal(signal.SIGHUP)
         wait(lambda rows:sum(e['role']=='audit' for e in rows)>=1)
-        time.sleep(3)
-        audits=sum(e['role']=='audit' for e in events())
+        # Until an audit sees Samba ready the manager audits every second, for
+        # as long as that takes on a loaded host; then the next is 30 s away.
+        audits=quiet_audits(events)
         time.sleep(4)
         assert sum(e['role']=='audit' for e in events())==audits
         assert owned.poll() is None and exited.poll() is None
