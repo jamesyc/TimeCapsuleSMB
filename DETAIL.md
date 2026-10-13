@@ -714,10 +714,11 @@ The [manager](build/native/service/manager.c) owns repeated work:
   discovery receives only successfully applied share rows in argv.
 - Recover exited children with bounded backoff. Discovery owns its native
   `wcifsnd`; healthy checks never kill that child independently. ACPd starts
-  its own `wcifsnd` and `wcifsfs` at boot and on address changes; the manager
-  reads the process table every second, and when either appears (a `wcifsnd`
-  whose parent is not discovery) it starts the audit at once instead of at the
-  next 30-second one. The audit stops them, SIGKILL after 10 s, without
+  its own `wcifsfs` at boot and on address changes, and a `wcifsnd` that
+  discovery did not start can appear (an orphan, or ACPd's where boot.sh could
+  not guard `/sbin/wcifsnd`). The manager reads the process table every
+  second, and when either appears it starts the audit at once instead of at
+  the next 30-second one. The audit stops them, SIGKILL after 10 s, without
   replacing discovery or Samba.
 - Stop Samba and rsync if no valid payload remains, even if their old RAM
   executable is present. Discovery can remain diskless without waiting for

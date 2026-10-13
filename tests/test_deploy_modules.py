@@ -2031,8 +2031,8 @@ describe_managed_smbd_status "" ""
         self.assertEqual(self._mdns_probe_with(self.PS_V31).nbns_state, "ready")
 
     def test_probe_managed_mdns_names_a_wcifsnd_that_discovery_did_not_start(self) -> None:
-        # ACPd starts its own wcifsnd at boot and on address changes; the
-        # manager stops it at its next audit.
+        # An orphan, or ACPd's where boot.sh could not guard /sbin/wcifsnd;
+        # the manager stops it within about a second.
         foreign_line = "4206 190 S 0:00 wcifsnd /sbin/wcifsnd\n"
         owned_line = "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n"
         no_owned = self.PS_V31.replace(owned_line, "")

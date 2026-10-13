@@ -957,9 +957,9 @@ def test_apple_netbios_daemon_is_stopped_without_waiting_for_the_next_audit(mana
     discovery=[e for e in values if e['role']=='discovery' and e['kind']=='start']
     apple=sleeper()
     try:
-        # ACPd starts these on an address change, between audits (AUDIT_MS,
-        # 30 s here too). The per-second table read starts the audit itself:
-        # no SIGHUP.
+        # ACPd's wcifsfs, or a wcifsnd discovery did not start, appears
+        # between audits (AUDIT_MS, 30 s here too). The per-second table read
+        # starts the audit itself: no SIGHUP.
         appeared=time.monotonic()
         external(root,f'{apple.pid} 1 {apple.pid} S {role} /sbin/{role}\n')
         apple.wait(timeout=10)
@@ -993,7 +993,8 @@ def test_discoverys_own_and_exited_wcifsnd_start_no_audit(manager):
     owned,exited=sleeper(),sleeper()
     try:
         # Discovery's own child, and an exited one the kernel still lists as
-        # a zombie, are not ACPd's: they leave the audit on its 30 s cadence.
+        # a zombie, are not foreign daemons: they leave the audit on its 30 s
+        # cadence.
         external(root,
             f"{owned.pid} {controller['pid']} {owned.pid} S wcifsnd /sbin/wcifsnd\n"
             f"{exited.pid} 1 {exited.pid} Z wcifsnd /sbin/wcifsnd\n")

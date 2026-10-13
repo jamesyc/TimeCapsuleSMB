@@ -896,12 +896,13 @@ static void sample_bufstall(struct manager *m, long long now) {
             m->report_longest = m->bufstall.ended_longest;
     }
 }
-/* ACPd starts Apple's wcifsnd and wcifsfs at boot and on address changes;
- * they take the NBNS ports from discovery's own wcifsnd and TCP 445 from
- * Samba. Both are named by the process table alone, which the manager reads
- * every second, so the audit that stops them (apply_audit) starts now rather
- * than up to AUDIT_MS later. diskd needs its command line, which only the
- * audit reads, so it waits for the next audit. */
+/* ACPd starts Apple's wcifsfs at boot and on address changes, and it can
+ * take TCP 445 from Samba. A wcifsnd discovery did not start (an orphan, or
+ * ACPd's where boot.sh could not guard /sbin/wcifsnd) takes the NBNS ports
+ * from discovery's own. Both are named by the process table alone, which the
+ * manager reads every second, so the audit that stops them (apply_audit)
+ * starts now rather than up to AUDIT_MS later. diskd needs its command line,
+ * which only the audit reads, so it waits for the next audit. */
 static int foreign_netbios(const struct manager *m) {
     size_t i;
     for (i = 0; i < m->procs.count; i++) {

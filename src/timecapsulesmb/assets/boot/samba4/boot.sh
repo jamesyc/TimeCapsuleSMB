@@ -48,8 +48,9 @@ fi
     >>/mnt/Memory/samba4/var/runtime.log; } 2>/dev/null
 exit 0
 EOF
-# ACPd starts wcifsnd, without arguments, at boot and on every address change,
-# and once more about 25 s later if it exits. A second wcifsnd takes UDP
+# ACPd starts wcifsnd, without arguments, at boot (one to three times in the
+# first minute) and on address changes, and carries on when it exits at once.
+# A second wcifsnd takes UDP
 # 137/138/922 from the one discovery owns, whose name registrations then fail
 # until the manager stops the other. Discovery starts /usr/libexec/wcifsnd
 # (/sbin/wcifsnd when that link is missing); every start of /sbin/wcifsnd is

@@ -16,8 +16,10 @@
 #endif
 /* boot.sh replaces /sbin/wcifsnd with a guard that exits at once, so ACPd's
  * own starts never take the NBNS ports from this child; its hard link to
- * Apple's binary at /usr/libexec/wcifsnd runs the daemon. Where boot.sh could
- * not make that link it left /sbin/wcifsnd as Apple's binary. */
+ * Apple's binary at /usr/libexec/wcifsnd runs the daemon. /sbin/wcifsnd is
+ * still Apple's binary where that link is missing: boot.sh could not make it,
+ * or a boot.sh from before the guard started this runtime (an interrupted
+ * deploy). */
 #ifndef WCIFSND_PATH
 #define WCIFSND_PATH "/usr/libexec/wcifsnd"
 #endif
@@ -40,7 +42,7 @@
 #endif
 /* Apple's client resends every 5 s; ours sends each add once, because adds
  * are reference-counted. After a reboot the first add often gets no reply at
- * all while ACPd launches its own wcifsnd and wcifsfs, and the replacement
+ * all, even with ACPd's own wcifsnd starts guarded off, and the replacement
  * child then registers in seconds. So an add waits this long until one reply
  * wait has timed out, then WCIFSND_REPLY_MS, which still allows a WINS server
  * that answers slower than this. */
