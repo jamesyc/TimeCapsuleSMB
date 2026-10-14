@@ -1,6 +1,6 @@
 """Durable-handle, shutdown-close, short-WRITE and handle-time device suite
 (Samba patches 0019, 0024, 0029, 0062, 0072, NetBSD 4's futimens in 0002, and
-the parent scavenger in 0008), run from a Mac against a deployed device.
+the scavenger 0008 still forks), run from a Mac against a deployed device.
 
     .venv/bin/python -m tests.samba.durable_device --env .env [--stall SECONDS]
         [--case NAME ...]
@@ -45,6 +45,14 @@ lands. The smb-in-data case writes data holding SMB2 headers that must not
 match (a far message ID, a wrong structure size, a response) and must be
 written as sent.
 
+The expiry case resets a connection holding a durable open and waits out its
+300 s. The smbd parent forks a scavenger for the expiry (0008 runs notifyd and
+cleanupd in the parent but not the scavenger): with the scavenger stopped, a
+new connection must still be served, since the expiry's lock waits must never
+hold up the parent. Then the scavenger must expire the open: the reconnect is
+refused, and another client's exclusive open gets the file at once, with no
+stale share mode or lease left behind.
+
 The settime cases set a file's last-write time with SET_INFO and read it back
 through a new handle. settime:data sets it on a handle opened for reading and
 writing, as Windows CopyFile does on the file it writes; smbd then calls
@@ -88,7 +96,15 @@ WRITE_MODES = ("short-write", "smb-in-data")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 SETTIME_MODES = ("data", "attributes")
 CASES = (DROP_MODES + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
-         + tuple(f"settime:{mode}" for mode in SETTIME_MODES))
+         + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("expiry",))
+# 0024 grants every durable-v2 open 300 s; the scavenger's timer fires then.
+DURABLE_TIMEOUT_SECONDS = 300
+# The old smbd marks a reset connection's open disconnected within this.
+SCAVENGER_START_SECONDS = 5
+# An exclusive open that has to break a stale lease waits for the break
+# timeout (35 s); one that finds the file free answers well within this, even
+# when the data disk spun down during the wait and has to spin up again.
+FREE_OPEN_SECONDS = 15
 # 2001-02-03 04:05:06 UTC as an SMB FILETIME (100 ns units since 1601).
 SETTIME_FILETIME = (981173106 + 11644473600) * 10_000_000
 
@@ -296,6 +312,80 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
         if mode in ("half-open", "half-open+previous"):
             with contextlib.suppress(Exception):
                 conn1.disconnect()
+
+
+def expiry_case(r: Results, device: Device) -> None:
+    from smbprotocol.exceptions import SMBResponseException
+    from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
+                                  ImpersonationLevel, Open)
+
+    client = DurableClient(device)
+    path = f"{TEST_DIR}\\expiry.bin"
+    payload = b"durable payload expiry\n"
+    conn1, _, tree1 = client.connect()
+    handle, granted = client.open_durable(tree1, path)
+    r.check("expiry: 300 s durable handle granted", lambda: granted)
+    handle.write(payload, 0)
+    _reset(conn1)
+    reset_at = time.monotonic()
+    # The old smbd marks the open disconnected and asks the parent to expire
+    # it; the parent hands that to its scavenger, a child with no client
+    # socket. Stopping the scavenger must not stop new connections.
+    time.sleep(SCAVENGER_START_SECONDS)
+    scavengers = _socketless_smbd_children(device)
+    r.check("expiry: the scavenger runs as its own process", lambda: len(scavengers) == 1)
+    if len(scavengers) == 1:
+        device.sh(f"kill -STOP {scavengers[0]}")
+        try:
+            def served() -> bool:
+                started = time.monotonic()
+                conn, _, tree = DurableClient(device).connect()
+                try:
+                    probe = Open(tree, f"{TEST_DIR}\\expiry-probe.bin")
+                    probe.create(ImpersonationLevel.Impersonation, FilePipePrinterAccessMask.GENERIC_WRITE,
+                                 0x80, 0, CreateDisposition.FILE_OVERWRITE_IF, CreateOptions.FILE_NON_DIRECTORY_FILE)
+                    probe.close()
+                finally:
+                    with contextlib.suppress(Exception):
+                        conn.disconnect()
+                return time.monotonic() - started < FREE_OPEN_SECONDS
+
+            r.check("expiry: a new connection is served while the scavenger is stopped", served)
+        finally:
+            device.sh(f"kill -CONT {scavengers[0]}")
+    wait = DURABLE_TIMEOUT_SECONDS + 20 - (time.monotonic() - reset_at)
+    print(f"expiry: waiting {wait:.0f} s for the handle to expire", flush=True)
+    time.sleep(max(wait, 0))
+    conn2, _, tree2 = client.connect()
+    try:
+        def expired() -> bool:
+            try:
+                client.reconnect(tree2, path, handle.file_id).close()
+            except SMBResponseException as error:
+                return error.status == STATUS_OBJECT_NAME_NOT_FOUND
+            return False
+
+        r.check("expiry: the expired handle no longer reconnects", expired)
+    finally:
+        with contextlib.suppress(Exception):
+            conn2.disconnect()
+    conn3, _, tree3 = DurableClient(device).connect()
+    try:
+        def exclusive() -> bool:
+            started = time.monotonic()
+            other = Open(tree3, path)
+            other.create(ImpersonationLevel.Impersonation,
+                         FilePipePrinterAccessMask.GENERIC_READ | FilePipePrinterAccessMask.GENERIC_WRITE,
+                         0x80, 0, CreateDisposition.FILE_OPEN, CreateOptions.FILE_NON_DIRECTORY_FILE)
+            opened = time.monotonic() - started
+            data = other.read(0, len(payload))
+            other.close()
+            return data == payload and opened < FREE_OPEN_SECONDS
+
+        r.check("expiry: another client opens the file exclusively at once", exclusive)
+    finally:
+        with contextlib.suppress(Exception):
+            conn3.disconnect()
 
 
 def _take_message_ids(conn, count: int) -> int:
@@ -597,6 +687,13 @@ def mac_stall_case(r: Results, device: Device, mount_dir: Path, stall: int) -> N
         unmount(mount_dir)
 
 
+def _socketless_smbd_children(device: Device) -> list[int]:
+    """The smbd parent's children with no TCP socket: forked helpers such as the
+    scavenger, not client connections (fstat, as the manager uses)."""
+    return [pid for pid in _smbd_children(device)
+            if "internet" not in device.sh(f"/usr/bin/fstat -p {pid}", check=False)]
+
+
 def _smbd_children(device: Device) -> list[int]:
     """PIDs of the smbd parent's children, by ps (the devices lack pgrep)."""
     rows = []
@@ -638,6 +735,8 @@ def main() -> int:
         for mode in SETTIME_MODES:
             if f"settime:{mode}" in wanted:
                 settime_case(results, device, mode)
+        if "expiry" in wanted:
+            expiry_case(results, device)
         if args.stall and "mac" in wanted:
             mac_stall_case(results, device, work / "smb", args.stall)
     finally:

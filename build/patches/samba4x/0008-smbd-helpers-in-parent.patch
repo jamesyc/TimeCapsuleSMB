@@ -1,44 +1,17 @@
-diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
---- a/source3/smbd/scavenger.c
-+++ b/source3/smbd/scavenger.c
-@@ -336,6 +336,17 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
- 		   server_id_str_buf(src, &tmp2)));
- 
- 	if (server_id_equal(&state->parent_id, &self)) {
-+#ifdef TC_SAMBA4X_APPLIANCE
-+		/*
-+		 * The appliance smbd forks no resident helper daemons (see
-+		 * smbd_notifyd_init in server.c): run the timers that expire
-+		 * disconnected durable handles on the parent's event loop
-+		 * instead of forwarding them to a forked smbd-scavenger.
-+		 */
-+		msg = (struct scavenger_message *)data->data;
-+		scavenger_add_timer(state, msg);
-+		goto done;
-+#else
- 		NTSTATUS status;
- 
- 		if (!smbd_scavenger_running(state) &&
-@@ -354,6 +365,7 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
- 			goto done;
- 		}
- 		goto done;
-+#endif
- 	}
- 
- 	if (!state->am_scavenger) {
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -480,6 +480,21 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
+@@ -480,6 +480,23 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
  		return (req != NULL);
  	}
  
 +#ifdef TC_SAMBA4X_APPLIANCE
 +	/*
-+	 * The appliance smbd forks no resident helper daemons (notifyd,
-+	 * cleanupd, the scavenger), to save memory: run notifyd in the parent's
-+	 * event loop, as interactive smbd does above.
++	 * The appliance smbd forks no resident notifyd or cleanupd, to save
++	 * memory: run notifyd in the parent's event loop, as interactive smbd
++	 * does above. The scavenger is still forked: its expiry waits for
++	 * share-mode, byte-range and open-record locks that a stuck client smbd
++	 * can hold, and the parent must keep accepting connections meanwhile.
 +	 */
 +	req = notifyd_req(msg, ev);
 +	if (req == NULL) {
@@ -52,7 +25,7 @@ diff --git a/source3/smbd/server.c b/source3/smbd/server.c
  	pid = fork();
  	if (pid == -1) {
  		DEBUG(1, ("%s: fork failed: %s\n", __func__,
-@@ -661,6 +676,22 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+@@ -661,6 +678,22 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
  	char c;
  	int up_pipe[2];
  
@@ -75,7 +48,7 @@ diff --git a/source3/smbd/server.c b/source3/smbd/server.c
  	if (interactive) {
  		req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
  		*ppid = messaging_server_id(msg);
-@@ -2654,9 +2685,18 @@ quic_disabled:
+@@ -2654,9 +2687,18 @@ quic_disabled:
  		exit_daemon("Samba cannot init notification", EACCES);
  	}
  

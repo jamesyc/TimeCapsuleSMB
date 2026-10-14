@@ -225,13 +225,14 @@
 # the absent samba-dcerpcd.
 0005-rpc-embedded-srvsvc.patch|embedded srvsvc named pipe support
 # On appliance builds (TC_SAMBA4X_APPLIANCE), run notifyd and cleanupd in the
-# parent, as interactive smbd does, and the scavenger's durable-handle expiry
-# timers there too (upstream forks it even in interactive mode). Skip the
-# datagram-socket sweep, which forks each time it runs; cleanupd still removes
-# each exited child's socket. Forked helpers work without pthread (tested
-# 2026-09-26); this saves two or three resident
-# smbds (about 2.5 MB RSS each, some of it shared with the parent) and 14 KB
-# of smbd.
+# parent, as interactive smbd does. Skip the datagram-socket sweep, which forks
+# each time it runs; cleanupd still removes each exited child's socket. This
+# saves two resident smbds (about 2.5 MB RSS each, some of it shared with the
+# parent). The scavenger is still forked, on the first disconnected durable
+# handle, as upstream does: expiring a handle waits for that file's share-mode,
+# byte-range and open-record locks, which a client smbd stuck in the kernel
+# can hold indefinitely, and in the parent that wait would stop it accepting
+# connections. Forked helpers work without pthread.
 0008-smbd-helpers-in-parent.patch|host smbd helper services in the parent event loop
 
 # aio_fork.

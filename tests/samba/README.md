@@ -340,8 +340,14 @@ cases set a file's last-write time through a handle opened for data (as
 Windows `CopyFile` does) and through one opened only for attributes (as macOS
 does), then read it back; NetBSD 4's `futimens` replacement (0002) once failed
 the data case with NOT_SUPPORTED. `--case NAME`
-(repeatable) runs only the named cases. The macOS case stops the smbd serving
-a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
+(repeatable) runs only the named cases. `expiry` resets a connection holding
+a durable open and waits out its 300 s (about 5.5 minutes). It first stops the
+scavenger, the smbd parent's only child without a client socket, and requires
+a new connection to be served meanwhile; then the scavenger must expire the
+open, so the reconnect is refused and another client's exclusive open gets the
+file within 15 s (a stale lease's break would take
+35 s; the margin covers a data disk that spun down during the wait). The
+macOS case stops the smbd serving a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
 and checks that the Mac's reconnect keeps the handle and its data. It works in a
 `__tc_durable_test__` folder and removes it at the end.
 
