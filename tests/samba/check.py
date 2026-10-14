@@ -19,7 +19,9 @@ Phases, in order, each step's output in DIR/<device>-<step>.log:
 
 Without --build or --binaries there is nothing new to install or to run the
 drivers from, so those steps are skipped and the devices are tested as they
-are. The lock rows are held for each phase that needs them. The quick tier
+are. On a device that serves several shares, --share6 or --share4le names the
+one its suites test; the drivers and the swapped smbd use the disk the
+runtime runs smbd from either way. The lock rows are held for each phase that needs them. The quick tier
 stops at the first failed phase; the full tier runs everything. A summary
 with each step's time ends the run; the exit status is nonzero if any step
 failed.
@@ -85,27 +87,29 @@ def py(*args: str) -> list[str]:
 
 
 def device_steps(tier: str, lane: str, env: str, out: Path, drivers_from: Path | None,
-                 skip: set[str]) -> list[Step]:
+                 skip: set[str], share: str | None = None) -> list[Step]:
     quick = tier == "quick"
+    # The suites that test a share need one named when the device serves several.
+    on = ["--env", env, *(["--share", share] if share else [])]
     steps: list[Step] = []
     if drivers_from is not None:
         steps.append(Step("drivers", lane, func=functools.partial(run_drivers, tier, env, lane, drivers_from)))
     steps.append(Step("doctor", lane, py("timecapsulesmb.cli.main", "doctor", "--config", env)))
-    steps.append(Step("dir_device", lane, py("tests.samba.dir_device", "--env", env,
+    steps.append(Step("dir_device", lane, py("tests.samba.dir_device", *on,
                                              *(["--quick"] if quick else ["--record", str(out / f"{lane}-dir.json")]))))
-    steps.append(Step("growth_device", lane, py("tests.samba.growth_device", "--env", env, *(["--quick"] if quick else []))))
+    steps.append(Step("growth_device", lane, py("tests.samba.growth_device", *on, *(["--quick"] if quick else []))))
     if not quick:
-        steps.append(Step("growth_device_sync", lane, py("tests.samba.growth_device", "--env", env, "--no-aio",
+        steps.append(Step("growth_device_sync", lane, py("tests.samba.growth_device", *on, "--no-aio",
                                                          *[a for case in GROWTH_SYNC for a in ("--case", case)])))
-        steps.append(Step("durable_device", lane, py("tests.samba.durable_device", "--env", env)))
-        steps.append(Step("links_device", lane, py("tests.samba.links_device", "--env", env)))
-    steps.append(Step("smbtorture", lane, py("tests.samba.torture", "--env", env, "--tier", tier,
+        steps.append(Step("durable_device", lane, py("tests.samba.durable_device", *on)))
+        steps.append(Step("links_device", lane, py("tests.samba.links_device", *on)))
+    steps.append(Step("smbtorture", lane, py("tests.samba.torture", *on, "--tier", tier,
                                              "--device", lane, "--out", str(out / f"{lane}-smbtorture"))))
     return [step for step in steps if step.name not in skip]
 
 
 def plan(tier: str, lanes: list[str], envs: dict[str, str], out: Path, build: bool,
-         binaries: Path | None, skip: set[str]) -> list[Phase]:
+         binaries: Path | None, skip: set[str], shares: dict[str, str | None] | None = None) -> list[Phase]:
     from tests.samba.locks import DEVICE_ROWS
 
     phases = []
@@ -132,7 +136,8 @@ def plan(tier: str, lanes: list[str], envs: dict[str, str], out: Path, build: bo
                 "timecapsulesmb.cli.main", "deploy", "--config", envs[lane], "--debug-logging", "--yes"))
                 for lane in order], parallel=False, locks=device_rows))
     phases.append(Phase("devices", [], locks=device_rows,
-                        per_device={lane: device_steps(tier, lane, envs[lane], out, binaries, skip)
+                        per_device={lane: device_steps(tier, lane, envs[lane], out, binaries, skip,
+                                                                (shares or {}).get(lane))
                                     for lane in lanes}))
     return phases
 
@@ -236,12 +241,11 @@ def unmount_driver_ram(device) -> bool:
 def run_drivers(tier: str, env: str, lane: str, binaries: Path, log: Path) -> bool:
     """Each driver from the drivers' RAM disk, one at a time, its cases one at
     a time with the working directory and TMPDIR on the data disk."""
-    from tests.samba.links_device import Device
-    from tests.samba.swap_smbd import disk_of
+    from tests.samba.links_device import Remote
     from timecapsulesmb.core.config import parse_env_file
 
-    device = Device(parse_env_file(ROOT / env))
-    tmp = f"{disk_of(device.root)}/__tc_drivers__"
+    device = Remote(parse_env_file(ROOT / env))
+    tmp = f"{device.payload_disk()}/__tc_drivers__"
     failed: list[str] = []
     with log.open("w") as out:
         device.sh(f"rm -rf {tmp} && mkdir -p {tmp}")
@@ -376,6 +380,8 @@ def main() -> int:
                         help="a step or phase to leave out (e.g. host_regression, smbtorture, install)")
     parser.add_argument("--env6", default=ENVS["6"])
     parser.add_argument("--env4le", default=ENVS["4le"])
+    parser.add_argument("--share6", help="the share NetBSD 6's suites test (default: its only share)")
+    parser.add_argument("--share4le", help="the share NetBSD 4's suites test (default: its only share)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and stop")
     args = parser.parse_args()
     if args.build and args.binaries:
@@ -385,7 +391,8 @@ def main() -> int:
     lanes = args.device or ["6", "4le"]
     # The env files live in the main checkout; steps run from the repo root.
     envs = {"6": str(Path(args.env6).resolve()), "4le": str(Path(args.env4le).resolve())}
-    phases = plan(args.tier, lanes, envs, args.out, args.build, args.binaries, set(args.skip))
+    phases = plan(args.tier, lanes, envs, args.out, args.build, args.binaries, set(args.skip),
+                  {"6": args.share6, "4le": args.share4le})
     if args.dry_run:
         print(describe(phases))
         return 0

@@ -69,14 +69,14 @@ class Results:
             print(f"FAIL {name}{': ' + detail if detail else ''}", flush=True)
 
 
-class Device:
-    def __init__(self, env: dict[str, str], share: str | None = None) -> None:
+class Remote:
+    """SSH to a device, for tools that need its data disk but no share."""
+
+    def __init__(self, env: dict[str, str]) -> None:
         self.env = env
         self.connection = SshConnection(env["TC_HOST"], env["TC_PASSWORD"],
                                         env.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
         self.host = env["TC_HOST"].split("@", 1)[-1]
-        self.share, self.root = self._share(share or env.get("TC_SHARE_NAME"))
-        self.dir = f"{self.root}/{TEST_DIR}"
 
     def sh(self, command: str, *, check: bool = True) -> str:
         return run_ssh(self.connection, command, check=check, timeout=180).stdout
@@ -88,9 +88,24 @@ class Device:
     def put(self, path: str, data: bytes) -> None:
         run_ssh_input(self.connection, f"cat > {shlex.quote(path)}", input_bytes=data, timeout=180)
 
-    def _share(self, wanted: str | None) -> tuple[str, str]:
+    def smb_conf(self) -> str:
         # The running smb.conf is the source of truth for the shares and their paths.
-        conf = run_ssh(self.connection, "cat /mnt/Memory/samba4/etc/smb.conf", timeout=60).stdout
+        return run_ssh(self.connection, "cat /mnt/Memory/samba4/etc/smb.conf", timeout=60).stdout
+
+    def payload_disk(self) -> str:
+        """/Volumes/dkN, the disk whose .samba4 the runtime runs smbd from
+        (smbd logs to <payload>/logs/log.smbd)."""
+        return payload_disk(self.smb_conf())
+
+
+class Device(Remote):
+    def __init__(self, env: dict[str, str], share: str | None = None) -> None:
+        super().__init__(env)
+        self.share, self.root = self._share(share or env.get("TC_SHARE_NAME"))
+        self.dir = f"{self.root}/{TEST_DIR}"
+
+    def _share(self, wanted: str | None) -> tuple[str, str]:
+        conf = self.smb_conf()
         shares: dict[str, str] = {}
         section = None
         for line in conf.splitlines():
@@ -118,6 +133,14 @@ class Device:
 
     def absent(self, name: str) -> bool:
         return self.ls_l(name) == ""
+
+
+def payload_disk(conf: str) -> str:
+    for line in conf.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "log file" and value.strip().startswith("/Volumes/"):
+            return "/" + "/".join(value.strip().strip("/").split("/")[:2])
+    raise RuntimeError("the running smb.conf has no log file on a /Volumes disk")
 
 
 def mount(url_scheme: str, device: Device, mountpoint: Path) -> None:

@@ -515,5 +515,8 @@ and each device then runs the regression drivers from RAM, doctor,
 `dir_device.py`, `growth_device.py` (both with `--quick` in the quick
 tier), in the full tier also `durable_device.py` and `links_device.py`, and
 `torture.py`, which runs smbtorture in Docker and reports only failures
-missing from `smbtorture/known_failures.txt`. `locks.py` claims and releases
+missing from `smbtorture/known_failures.txt`. On a device that serves several
+shares, `--share6 NAME` or `--share4le NAME` picks the share those suites
+test; the drivers and `swap_smbd.py` need no share and use the disk the
+runtime runs smbd from. `locks.py` claims and releases
 the rows of the shared lock file around each phase.

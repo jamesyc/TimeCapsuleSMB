@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import unittest
+from unittest import mock
 
-from tests.samba.swap_smbd import RAM_SMBD, Swapper, disk_of, restore_commands, smbd_parent, swap_commands
+from tests.samba.links_device import Device, Remote, payload_disk
+from tests.samba.swap_smbd import RAM_SMBD, Swapper, restore_commands, smbd_parent, swap_commands
 
 PS = """  PID  PPID ARGS
   276     1 service: role=manager
@@ -13,12 +16,28 @@ PS = """  PID  PPID ARGS
   400   276 service: role=discovery
 """
 
+# The runtime's smb.conf on a device with an internal disk (dk2, holding the
+# payload) and a USB disk, each shared.
+TWO_SHARES = """[global]
+    log file = /Volumes/dk2/.samba4/logs/log.smbd
+    max log size = 128
+
+[4TB]
+    path = /Volumes/dk3/ShareRoot
+    xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb
+
+[AirPort Disk]
+    path = /Volumes/dk2/ShareRoot
+    xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb
+"""
+ENV = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "x"}
+
 
 class ParseTest(unittest.TestCase):
-    def test_disk_of_a_share_root(self) -> None:
-        self.assertEqual(disk_of("/Volumes/dk2/ShareRoot"), "/Volumes/dk2")
-        with self.assertRaises(ValueError):
-            disk_of("/mnt/Memory/x")
+    def test_the_payload_disk_is_where_smbd_logs(self) -> None:
+        self.assertEqual(payload_disk(TWO_SHARES), "/Volumes/dk2")
+        with self.assertRaises(RuntimeError):
+            payload_disk("[global]\n    log file = /mnt/Memory/log.smbd\n")
 
     def test_the_smbd_the_manager_runs(self) -> None:
         self.assertEqual(smbd_parent(PS), 301)
@@ -42,7 +61,6 @@ class FakeDevice:
     """A device whose manager restarts smbd with a new pid after a kill."""
 
     def __init__(self, running: bytes) -> None:
-        self.root = "/Volumes/dk2/ShareRoot"
         self.running = running
         self.files: dict[str, bytes] = {}
         self.commands: list[str] = []
@@ -68,6 +86,9 @@ class FakeDevice:
             self.running = b"deployed"
         return ""
 
+    def payload_disk(self) -> str:
+        return "/Volumes/dk2"
+
     def sh_bytes(self, command: str) -> bytes:
         assert command == f"cat {RAM_SMBD}"
         return self.running
@@ -92,6 +113,13 @@ class SwapperTest(unittest.TestCase):
         device.sh_bytes = lambda command: b"something else"
         with self.assertRaises(RuntimeError):
             Swapper(device, sleep=lambda _: None).swap(b"new smbd")
+
+    def test_a_device_with_several_shares_swaps_on_its_payload_disk(self) -> None:
+        conf = subprocess.CompletedProcess([], 0, stdout=TWO_SHARES)
+        with mock.patch("tests.samba.links_device.run_ssh", return_value=conf):
+            with self.assertRaisesRegex(RuntimeError, "choose a share"):
+                Device(ENV)
+            self.assertEqual(Swapper(Remote(ENV)).disk, "/Volumes/dk2")
 
     def test_smbd_that_never_comes_back(self) -> None:
         device = FakeDevice(b"deployed")

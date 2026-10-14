@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from tests.samba import check, run
+from tests.samba.links_device import Remote
 from tests.samba.check import (DRIVER_RAM, QUICK_DRIVERS, Outcome, Phase, Step, describe, driver_plan, plan,
                                run_drivers, run_phases, summary)
 
@@ -59,6 +60,16 @@ class PlanTest(unittest.TestCase):
         phases = plan("quick", ["6"], ENVS, OUT, False, None, set())
         self.assertEqual([p.name for p in phases], ["mac", "devices"])
         self.assertNotIn("drivers", names(phases[-1].per_device["6"]))
+
+    def test_a_named_share_reaches_every_suite_that_tests_one(self) -> None:
+        phases = plan("full", ["6", "4le"], ENVS, OUT, False, Path("/bins"), set(), {"6": "AirPort Disk"})
+        for step in phases[-1].per_device["6"]:
+            if step.argv is None or step.name == "doctor":
+                self.assertNotIn("--share", step.argv or [])
+            else:
+                self.assertEqual(step.argv[step.argv.index("--share") + 1], "AirPort Disk", step.name)
+        self.assertFalse(any("--share" in (s.argv or []) for s in phases[-1].per_device["4le"]))
+        self.assertFalse(any("--share" in s.argv for s in phases[1].steps))  # swap_smbd needs none
 
     def test_skip(self) -> None:
         phases = plan("quick", ["6"], ENVS, OUT, True, None, {"host_regression", "smbtorture", "install"})
@@ -172,7 +183,6 @@ class FakeDevice:
     what /sbin/mount lists, df reports free_kib free on it, each driver run's
     reply comes from reply(command), and every command and upload is
     recorded."""
-    root = "/Volumes/dk2/ShareRoot"
 
     def __init__(self, free_kib="12200", reply=None, raise_on=None, mounted=False, umount_fails=False,
                  mount_fails=False) -> None:
@@ -208,6 +218,9 @@ class FakeDevice:
             return self.reply(command)
         return ""
 
+    def payload_disk(self) -> str:
+        return "/Volumes/dk2"
+
     def put(self, path: str, data: bytes) -> None:
         self.uploads.append((path, len(data)))
 
@@ -228,7 +241,7 @@ class RunDriversTest(unittest.TestCase):
         self.log = self.dir / "drivers.log"
 
     def drive(self, device: FakeDevice, tier: str = "quick", lane: str = "6") -> bool:
-        with mock.patch("tests.samba.links_device.Device", return_value=device), \
+        with mock.patch("tests.samba.links_device.Remote", return_value=device), \
              mock.patch("timecapsulesmb.core.config.parse_env_file", return_value={}):
             return run_drivers(tier, ".env.x", lane, self.binaries, self.log)
 
@@ -323,6 +336,18 @@ class RunDriversTest(unittest.TestCase):
         self.assertIn(f"FAILED: {DRIVER_RAM} is still mounted; unmount it by hand", text)
         self.assertNotIn(f"rmdir {DRIVER_RAM}", device.commands)
         self.assertTrue(text.endswith(f"1 failed: ['unmount {DRIVER_RAM}']\n"))
+
+    def test_a_device_with_several_shares_runs_them_on_its_payload_disk(self) -> None:
+        conf = subprocess.CompletedProcess([], 0, stdout=(
+            "[global]\n    log file = /Volumes/dk2/.samba4/logs/log.smbd\n"
+            "[4TB]\n    path = /Volumes/dk3/ShareRoot\n[AirPort Disk]\n    path = /Volumes/dk2/ShareRoot\n"))
+        device = FakeDevice()
+        with mock.patch("tests.samba.links_device.run_ssh", return_value=conf), \
+             mock.patch.object(Remote, "sh", device.sh), mock.patch.object(Remote, "put", device.put), \
+             mock.patch("timecapsulesmb.core.config.parse_env_file",
+                        return_value={"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "x"}):
+            self.assertTrue(run_drivers("quick", ".env.x", "6", self.binaries, self.log))
+        self.assertEqual(device.commands[0], f"rm -rf {TMP} && mkdir -p {TMP}")
 
     def test_a_failed_mount_copies_nothing(self) -> None:
         device = FakeDevice(mount_fails=True)

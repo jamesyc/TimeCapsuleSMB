@@ -5,11 +5,12 @@
     .venv/bin/python -m tests.samba.swap_smbd status --env .env.backup6
 
 The runtime runs smbd from /mnt/Memory/samba4/sbin/smbd, a copy of the
-deployed /Volumes/dkN/.samba4/smbd, and the manager restarts it about two
-seconds after it exits. /mnt/Memory has too little room for a second 10 MB
-copy, so swap copies the binary to the data disk (named smbd: the kernel's
-process name comes from the file name, and doctor looks for "smbd"), points
-the RAM path at it and stops the running smbd. restore copies the deployed
+deployed /Volumes/dkN/.samba4/smbd (dkN from the running smb.conf, whatever
+shares the device serves), and the manager restarts it about two seconds
+after it exits. /mnt/Memory has too little room for a second 10 MB copy, so
+swap copies the binary to that data disk (named smbd: the kernel's process
+name comes from the file name, and doctor looks for "smbd"), points the RAM
+path at it and stops the running smbd. restore copies the deployed
 binary back to RAM and stops smbd again. Nothing is written to /mnt/Flash and
 nothing reboots. The data disk can be unmounted while the swapped smbd runs
 from it; this is for testing only, and a reboot also restores the deployed
@@ -26,14 +27,6 @@ import time
 
 RAM_SMBD = "/mnt/Memory/samba4/sbin/smbd"
 SWAP_DIR = ".tc-swap-smbd"
-
-
-def disk_of(share_root: str) -> str:
-    """/Volumes/dk2 for a share rooted at /Volumes/dk2/ShareRoot."""
-    parts = share_root.strip("/").split("/")
-    if len(parts) < 2 or parts[0] != "Volumes":
-        raise ValueError(f"not a /Volumes path: {share_root}")
-    return "/" + "/".join(parts[:2])
 
 
 def smbd_parent(ps_output: str) -> int:
@@ -67,7 +60,7 @@ def restore_commands(disk: str) -> str:
 class Swapper:
     def __init__(self, device, sleep=time.sleep) -> None:
         self.device = device
-        self.disk = disk_of(device.root)
+        self.disk = device.payload_disk()
         self.sleep = sleep
 
     def running_hash(self) -> str:
@@ -112,10 +105,10 @@ def main() -> int:
     parser.add_argument("binary", nargs="?", type=Path)
     parser.add_argument("--env", required=True)
     args = parser.parse_args()
-    from tests.samba.links_device import Device
+    from tests.samba.links_device import Remote
     from timecapsulesmb.core.config import parse_env_file
 
-    swapper = Swapper(Device(parse_env_file(Path(args.env))))
+    swapper = Swapper(Remote(parse_env_file(Path(args.env))))
     if args.action == "swap":
         if args.binary is None:
             parser.error("swap needs the smbd to run")
