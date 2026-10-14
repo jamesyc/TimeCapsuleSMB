@@ -93,8 +93,15 @@ from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.processes import acpd_stuck_children, manager_unnamed_stuck_count, stuck_processes
+from timecapsulesmb.device.processes import (
+    acpd_stuck_children,
+    manager_unnamed_stuck_count,
+    smbd_waits_for_lock,
+    stuck_processes,
+)
 from timecapsulesmb.device.probe import (
+    FILE_LOCKS_DISK_TDBS,
+    FILE_LOCKS_RAM_TDBS,
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
     FLASH_RUNTIME_CONFIG,
@@ -129,6 +136,7 @@ from timecapsulesmb.device.probe import (
     probe_manager_startup_age_conn,
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
+    read_file_locks_conn,
     read_process_snapshot_conn,
     read_active_smb_conf_conn,
     runtime_ram_root_present_conn,
@@ -2228,6 +2236,8 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
     if sink.debug_fields is not None:
         sink.debug_fields["remote_process_snapshot"] = limit_remote_log_tail(snapshot.rstrip() or "(empty)")
     stuck = tuple(stuck_processes(snapshot))
+    if sink.debug_fields is not None and smbd_waits_for_lock(snapshot):
+        _doctor_list_file_locks(target, sink, disk=not stuck)
     # The manager's title names the four longest and counts the rest.
     unnamed = manager_unnamed_stuck_count(snapshot)
     if stuck:
@@ -2253,6 +2263,25 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
             )
         )
     return ProcessSnapshotState(stuck=stuck, snapshot=snapshot)
+
+
+def _doctor_list_file_locks(target: DoctorTarget, sink: DoctorSink, *, disk: bool) -> None:
+    """An smbd waiting in lockf has stopped serving its client until another
+    process releases a TDB lock; only the holder's PID tells which. The RAM
+    TDBs first, then the data disk's, unless a process is already stuck in the
+    kernel: a disk that stopped answering would leave the listing stuck too."""
+    lists = [("remote_file_locks", FILE_LOCKS_RAM_TDBS)]
+    if disk:
+        lists.append(("remote_file_locks_disk", FILE_LOCKS_DISK_TDBS))
+    else:
+        sink.debug_fields["remote_file_locks_disk_skipped"] = "a process is stuck in the kernel"
+    for field, patterns in lists:
+        try:
+            locks = read_file_locks_conn(target.connection, patterns)
+        except Exception as e:
+            sink.debug_fields[f"{field}_error"] = f"{type(e).__name__}: {e}"
+            return
+        sink.debug_fields[field] = limit_remote_log_tail(locks.rstrip() or "(empty)")
 
 
 APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"

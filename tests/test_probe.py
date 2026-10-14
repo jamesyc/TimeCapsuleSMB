@@ -1001,3 +1001,33 @@ class AirportAcpReadingTests(unittest.TestCase):
         for reading, fields in cases:
             with self.subTest(reading=reading):
                 self.assertEqual(probe.password_check_fields(reading), fields)
+
+
+class FileLocksCommandTests(unittest.TestCase):
+    """file_locks_command runs on the device's sh; here it runs on the host's,
+    with a stand-in for the service that prints the files it was given."""
+
+    def run_command(self, root: Path, patterns: tuple[str, ...]) -> subprocess.CompletedProcess:
+        service = root / "service"
+        service.write_text('#!/bin/sh\nshift\nfor f; do echo "locks $f"; done\n')
+        service.chmod(0o755)
+        return subprocess.run(["/bin/sh", "-c", probe.file_locks_command(patterns, str(service))],
+                              capture_output=True, text=True, timeout=10)
+
+    def test_only_files_the_patterns_match_are_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "locks").mkdir()
+            for name in ("locking.tdb", "brlock.tdb", "msg.lock"):
+                (root / "locks" / name).write_bytes(b"")
+            (root / "locks" / "dir.tdb").mkdir()
+            result = self.run_command(root, (f"{root}/locks/*.tdb", f"{root}/missing/*.tdb"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # No literal unmatched pattern, no directory, nothing that is not a TDB.
+        self.assertEqual(result.stdout.splitlines(),
+                         [f"locks {root}/locks/brlock.tdb", f"locks {root}/locks/locking.tdb"])
+
+    def test_nothing_matched_runs_no_listing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_command(Path(tmp), (f"{tmp}/none/*.tdb",))
+        self.assertEqual((result.returncode, result.stdout), (0, ""))

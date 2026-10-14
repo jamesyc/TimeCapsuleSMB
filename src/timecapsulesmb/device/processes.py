@@ -130,6 +130,20 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
     return list(by_pid.values())
 
 
+# ps's wait channel for a process waiting for another's fcntl() byte-range
+# lock: an smbd waiting for a TDB record lock that another process holds.
+LOCKF_WCHAN = "lockf"
+
+
+def smbd_waits_for_lock(ps_output: str) -> bool:
+    """Whether an smbd waits for an fcntl() lock, in PROCESS_SNAPSHOT_COMMAND output.
+
+    The wait is interruptible (state I), so stuck_processes() never reports it,
+    however long it lasts.
+    """
+    return any(fields[5:7] == [LOCKF_WCHAN, "smbd"] for fields in (line.split(None, 7) for line in ps_output.splitlines()))
+
+
 # ps's wait channel for nanosleep: NetBSD 6 names it nanoslp, and NetBSD 4's
 # ps cuts nanosleep to eight characters.
 NANOSLEEP_WCHANS = frozenset({"nanoslp", "nanoslee"})

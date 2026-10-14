@@ -59,6 +59,11 @@ with a native parser, five-second topology confirmation and ten-second recovery
 poll. Apple EVFILT_DEVICE notifications trigger earlier storage observations
 even if a brief detach/replug leaves inventory unchanged.
 
+`service --print-file-locks FILE...` prints each `fcntl()` byte-range lock
+other processes hold on the files (`F_GETLK` from offset 0, resuming after each
+lock it reports), as `FILE pid PID read|write START+LENGTH`. Doctor runs it on
+Samba's RAM TDBs when an smbd waits in `lockf`, to name the holder.
+
 Cold start grants no sharing services until critical facts validate. Failed
 rereads retain permissions only on unchanged interfaces. Each discovery or
 telemetry process owns its history directly in C; no process serializes or

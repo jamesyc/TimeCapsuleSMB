@@ -104,8 +104,47 @@ static int print_monotonic_ms(void) {
     return printf("%lld\n", now) < 0 || fflush(stdout) != 0;
 }
 
+/* Lists the fcntl() byte-range locks other processes hold on each file: an
+ * smbd asleep in "lockf" waits for one of these on a Samba TDB, and only the
+ * holder's PID says which process to look at. F_GETLK reports one conflicting
+ * lock at a time (one of several readers of a range), so the scan resumes
+ * after each. Opening the file read-only takes no lock, and closing it drops
+ * none, since this process holds none. */
+static int print_file_locks(int argc, char **argv) {
+    int i, rc = 0;
+    for (i = 2; i < argc; i++) {
+        struct flock lock;
+        off_t start = 0;
+        int fd = open(argv[i], O_RDONLY);
+        if (fd < 0) {
+            printf("%s: %s\n", argv[i], strerror(errno));
+            rc = 1;
+            continue;
+        }
+        for (;;) {
+            memset(&lock, 0, sizeof(lock));
+            lock.l_type = F_WRLCK;
+            lock.l_whence = SEEK_SET;
+            lock.l_start = start;
+            if (fcntl(fd, F_GETLK, &lock) < 0) {
+                printf("%s: %s\n", argv[i], strerror(errno));
+                rc = 1;
+                break;
+            }
+            if (lock.l_type == F_UNLCK) break;
+            printf("%s pid %ld %s %lld+%lld\n", argv[i], (long)lock.l_pid,
+                   lock.l_type == F_WRLCK ? "write" : "read", (long long)lock.l_start, (long long)lock.l_len);
+            /* Length 0 runs to the end of the file. */
+            if (lock.l_len <= 0) break;
+            start = lock.l_start + lock.l_len;
+        }
+        close(fd);
+    }
+    return fflush(stdout) != 0 ? 1 : rc;
+}
+
 static void usage(void) {
-    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-monotonic-ms | --print-mast [--timeout-seconds N]\n", stderr);
+    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-monotonic-ms | --print-mast [--timeout-seconds N] | --print-file-locks FILE...\n", stderr);
 }
 int tc_service_helper_main(int argc, char **argv) {
     const char *facts_file = NULL;
@@ -115,6 +154,7 @@ int tc_service_helper_main(int argc, char **argv) {
 
     signal(SIGTERM, stop_acp); signal(SIGINT, stop_acp); signal(SIGPIPE, SIG_IGN);
     if (argc >= 2 && !strcmp(argv[1], "--print-mast")) return print_mast_command(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--print-file-locks")) return print_file_locks(argc, argv);
     for (i = 1; i < argc; i++) {
 #ifdef TC_NATIVE_TEST
         if (!strcmp(argv[i], "--facts-file") && i + 1 < argc) {

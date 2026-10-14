@@ -940,6 +940,8 @@ Discovery starts `wcifsnd` only when an SMB link of a validated plan has an addr
 
 The Flash-resident `service` image provides NT hashing, `--print-link-plan`, and the telemetry role. Telemetry posts a heartbeat at startup and every 12 hours, and downloads and runs a signed debug executable only after verifying signed server authorization. See [build/native/README.md](build/native/README.md) for sources, commands, protocol, and cleanup behavior.
 
+`service --print-file-locks FILE...` lists each `fcntl()` lock another process holds on the files, with its PID (`F_GETLK`, one conflicting lock at a time). An smbd asleep in `lockf` waits for a TDB lock that another process holds, and while it waits its client is not served; such a wait has needed a reboot to clear. When doctor's process list shows an smbd in `lockf`, it lists the locks on the TDBs in `/mnt/Locks`, `/mnt/Memory/samba4/var` and `/mnt/Memory/samba4/private` into the debug field `remote_file_locks`, then, in a separate call, those under each data disk's `.samba4/private` and `.samba4/cache` (`xattr.tdb`; NetBSD 4's cache) into `remote_file_locks_disk`, so the holder can be identified. The RAM listing comes first because a disk that stopped answering blocks the second one; if the first fails, the second is not tried.
+
 Sharing waits at cold start until mode, address ownership, and the relevant
 sharing permissions validate. Bridge names and PF heuristics no longer grant
 access. After validation, failed rereads retain the latest grants and denials

@@ -2788,6 +2788,27 @@ def read_process_snapshot_conn(connection: SshConnection) -> str:
     return proc.stdout or ""
 
 
+# Samba's TDBs in RAM: the lock, state and private directories.
+FILE_LOCKS_RAM_TDBS = ("/mnt/Locks/*.tdb", f"{RUNTIME_RAM_ROOT}/var/*.tdb", f"{RUNTIME_RAM_ROOT}/private/*.tdb")
+# Samba's TDBs on the data disks: xattr_tdb's file and, on NetBSD 4, the cache
+# directory. Listed in a call of their own, after the RAM ones: a disk that
+# stopped answering blocks the listing there.
+FILE_LOCKS_DISK_TDBS = ("/Volumes/dk*/.samba4/private/*.tdb", "/Volumes/dk*/.samba4/cache/*.tdb")
+
+
+def file_locks_command(patterns: tuple[str, ...], service: str = "/mnt/Flash/service") -> str:
+    """List the locks on the files the patterns match. A pattern that matches
+    nothing stays literal in sh, so only existing files are passed on."""
+    return (f"set --; for f in {' '.join(patterns)}; do [ -f \"$f\" ] && set -- \"$@\" \"$f\"; done; "
+            f"[ $# -eq 0 ] || {service} --print-file-locks \"$@\" 2>&1")
+
+
+def read_file_locks_conn(connection: SshConnection, patterns: tuple[str, ...]) -> str:
+    """Each fcntl() lock another process holds on the matching TDBs, with its PID."""
+    proc = run_ssh(connection, file_locks_command(patterns), check=False, timeout=PROCESS_SNAPSHOT_TIMEOUT_SECONDS)
+    return proc.stdout or ""
+
+
 def read_runtime_ram_diagnostics_conn(connection: SshConnection) -> str:
     script = rf'''
 RUNTIME_RAM_ROOT={RUNTIME_RAM_ROOT}

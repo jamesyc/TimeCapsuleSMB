@@ -88,6 +88,8 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.device.probe import (
+    FILE_LOCKS_DISK_TDBS,
+    FILE_LOCKS_RAM_TDBS,
     FOREIGN_WCIFSND_RUNNING,
     NATIVE_NBNS_OFF_DETAIL,
     DeviceInterfaceIpv4,
@@ -2751,9 +2753,18 @@ class CheckTests(unittest.TestCase):
         smb_listing: CheckResult | None = None,
         manager_started_seconds_ago: float = 400.0,
         ssh_login: object | None = None,
+        file_locks: object = "",
+        disk_file_locks: object = "",
     ):
         debug_fields: dict[str, object] = {}
         snapshot_mock = mock.Mock(side_effect=snapshot) if isinstance(snapshot, Exception) else mock.Mock(return_value=snapshot)
+        def read_locks(connection, patterns):
+            answer = disk_file_locks if patterns == FILE_LOCKS_DISK_TDBS else file_locks
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        locks_mock = mock.Mock(side_effect=read_locks)
         log_tail_mock = mock.Mock(return_value={})
         with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
             run = self.run_doctor_with_mocks(
@@ -2770,6 +2781,7 @@ class CheckTests(unittest.TestCase):
                 debug_fields=debug_fields,
                 extra_patches={
                     "timecapsulesmb.checks.doctor_steps.read_process_snapshot_conn": snapshot_mock,
+                    "timecapsulesmb.checks.doctor_steps.read_file_locks_conn": locks_mock,
                     "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
                         return_value=ManagerStartupAgeProbeResult(
                             manager_started_seconds_ago, f"manager started {int(manager_started_seconds_ago)}s ago"
@@ -2781,6 +2793,7 @@ class CheckTests(unittest.TestCase):
             )
         run.debug_fields = debug_fields
         run.snapshot = snapshot_mock
+        run.file_locks = locks_mock
         run.log_tails = log_tail_mock
         run.sleep = sleep_mock
         return run
@@ -2811,6 +2824,68 @@ class CheckTests(unittest.TestCase):
         # The snapshot answered, so the data-disk logs are still worth reading.
         run.log_tails.assert_called_once()
         self.assertIsNone(run.log_tails.call_args.kwargs["skip_data_disk"])
+
+    LOCKF_SMBD_ROW = " 8893   457   457 I      127 lockf    smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+
+    def test_run_doctor_checks_lists_tdb_lock_holders_when_an_smbd_waits_in_lockf(self) -> None:
+        locks = "/mnt/Locks/locking.tdb pid 457 read 4+1\n/mnt/Locks/locking.tdb pid 9001 write 1460+1\n"
+        disk = "/Volumes/dk2/.samba4/private/xattr.tdb pid 9001 write 3100+1\n"
+        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW]),
+                                                    file_locks=locks, disk_file_locks=disk)
+
+        # RAM TDBs first, then the data disk's.
+        self.assertEqual([c.args[1] for c in run.file_locks.call_args_list], [FILE_LOCKS_RAM_TDBS, FILE_LOCKS_DISK_TDBS])
+        self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
+        self.assertEqual(run.debug_fields["remote_file_locks_disk"], disk.rstrip())
+        # An interruptible wait: not reported as blocked in the kernel, and SMB is still checked.
+        self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
+        run.mocks.check_authenticated_smb_listing.assert_called()
+
+    def test_run_doctor_checks_lists_no_locks_without_an_smbd_in_lockf(self) -> None:
+        # Another program waiting for a lock is not Samba's TDB lock.
+        other = "  600     1   600 I      127 lockf    cron     /usr/sbin/cron"
+        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, other]))
+
+        run.file_locks.assert_not_called()
+        self.assertNotIn("remote_file_locks", run.debug_fields)
+        self.assertNotIn("remote_file_locks_error", run.debug_fields)
+
+    def test_run_doctor_checks_records_a_failed_lock_listing_and_carries_on(self) -> None:
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW]),
+            file_locks=SshCommandTimeout("Timed out waiting for ssh command to finish: service"),
+        )
+
+        self.assertIn("SshCommandTimeout", run.debug_fields["remote_file_locks_error"])
+        self.assertNotIn("remote_file_locks", run.debug_fields)
+        # A device that cannot list its RAM TDBs is not asked about the disk's.
+        run.file_locks.assert_called_once()
+        self.assertNotIn("remote_file_locks_disk", run.debug_fields)
+        self.assertIn(self.LOCKF_SMBD_ROW.strip(), run.debug_fields["remote_process_snapshot"])
+        run.mocks.check_authenticated_smb_listing.assert_called()
+
+    def test_run_doctor_checks_lists_no_data_disk_locks_while_a_process_is_stuck_in_the_kernel(self) -> None:
+        # The disk may be what the stuck process waits on; listing its TDBs could hang too.
+        locks = "/mnt/Locks/brlock.tdb pid 457 read 4+1\n"
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW, self.STUCK_SMBD_ROW]), file_locks=locks,
+        )
+
+        self.assertEqual([c.args[1] for c in run.file_locks.call_args_list], [FILE_LOCKS_RAM_TDBS])
+        self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
+        self.assertNotIn("remote_file_locks_disk", run.debug_fields)
+        self.assertEqual(run.debug_fields["remote_file_locks_disk_skipped"], "a process is stuck in the kernel")
+
+    def test_run_doctor_checks_keeps_the_ram_locks_when_the_data_disk_listing_times_out(self) -> None:
+        locks = "/mnt/Locks/brlock.tdb pid 457 read 4+1\n"
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW]), file_locks=locks,
+            disk_file_locks=SshCommandTimeout("Timed out waiting for ssh command to finish: service"),
+        )
+
+        self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
+        self.assertIn("SshCommandTimeout", run.debug_fields["remote_file_locks_disk_error"])
+        self.assertNotIn("remote_file_locks_disk", run.debug_fields)
 
     def test_run_doctor_checks_reads_retrying_waits_from_the_manager_title(self) -> None:
         # ps alone shows needbuf with a sleep time near 0: it wakes to retry.
