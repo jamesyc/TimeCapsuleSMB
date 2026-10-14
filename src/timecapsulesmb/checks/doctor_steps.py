@@ -137,6 +137,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
     read_file_locks_conn,
+    read_kern_limits_conn,
     read_process_snapshot_conn,
     read_active_smb_conf_conn,
     runtime_ram_root_present_conn,
@@ -2238,6 +2239,8 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
     stuck = tuple(stuck_processes(snapshot))
     if sink.debug_fields is not None and smbd_waits_for_lock(snapshot):
         _doctor_list_file_locks(target, sink, disk=not stuck)
+    if sink.debug_fields is not None:
+        _doctor_record_kern_limits(target, sink)
     # The manager's title names the four longest and counts the rest.
     unnamed = manager_unnamed_stuck_count(snapshot)
     if stuck:
@@ -2263,6 +2266,18 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
             )
         )
     return ProcessSnapshotState(stuck=stuck, snapshot=snapshot)
+
+
+def _doctor_record_kern_limits(target: DoctorTarget, sink: DoctorSink) -> None:
+    """The file, process and socket buffer limits the manager raises before
+    smbd starts. A failed raise reaches only runtime.log, and smbd then runs
+    out of files or processes once several Macs connect."""
+    try:
+        limits = read_kern_limits_conn(target.connection)
+    except Exception as e:
+        sink.debug_fields["remote_kern_limits_error"] = f"{type(e).__name__}: {e}"
+        return
+    sink.debug_fields["remote_kern_limits"] = limits.strip() or "(empty)"
 
 
 def _doctor_list_file_locks(target: DoctorTarget, sink: DoctorSink, *, disk: bool) -> None:

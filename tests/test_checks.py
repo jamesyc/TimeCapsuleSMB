@@ -2755,6 +2755,7 @@ class CheckTests(unittest.TestCase):
         ssh_login: object | None = None,
         file_locks: object = "",
         disk_file_locks: object = "",
+        kern_limits: object = "",
     ):
         debug_fields: dict[str, object] = {}
         snapshot_mock = mock.Mock(side_effect=snapshot) if isinstance(snapshot, Exception) else mock.Mock(return_value=snapshot)
@@ -2765,6 +2766,7 @@ class CheckTests(unittest.TestCase):
             return answer
 
         locks_mock = mock.Mock(side_effect=read_locks)
+        kern_mock = mock.Mock(side_effect=kern_limits) if isinstance(kern_limits, Exception) else mock.Mock(return_value=kern_limits)
         log_tail_mock = mock.Mock(return_value={})
         with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
             run = self.run_doctor_with_mocks(
@@ -2782,6 +2784,7 @@ class CheckTests(unittest.TestCase):
                 extra_patches={
                     "timecapsulesmb.checks.doctor_steps.read_process_snapshot_conn": snapshot_mock,
                     "timecapsulesmb.checks.doctor_steps.read_file_locks_conn": locks_mock,
+                    "timecapsulesmb.checks.doctor_steps.read_kern_limits_conn": kern_mock,
                     "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
                         return_value=ManagerStartupAgeProbeResult(
                             manager_started_seconds_ago, f"manager started {int(manager_started_seconds_ago)}s ago"
@@ -2794,6 +2797,7 @@ class CheckTests(unittest.TestCase):
         run.debug_fields = debug_fields
         run.snapshot = snapshot_mock
         run.file_locks = locks_mock
+        run.kern_limits = kern_mock
         run.log_tails = log_tail_mock
         run.sleep = sleep_mock
         return run
@@ -2886,6 +2890,31 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
         self.assertIn("SshCommandTimeout", run.debug_fields["remote_file_locks_disk_error"])
         self.assertNotIn("remote_file_locks_disk", run.debug_fields)
+
+    def test_run_doctor_checks_records_the_kernel_limits_the_manager_raises(self) -> None:
+        limits = "kern.sbmax = 2359296\nkern.maxfiles = 4096\nkern.maxproc = 84\n"
+        run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, kern_limits=limits)
+
+        run.kern_limits.assert_called_once()
+        self.assertEqual(run.debug_fields["remote_kern_limits"], limits.rstrip())
+        # A limit left at Apple's value is diagnostic data, not a failure.
+        self.assertFalse(run.fatal)
+
+    def test_run_doctor_checks_records_a_failed_kernel_limit_read_and_carries_on(self) -> None:
+        run = self.run_doctor_with_process_snapshot(
+            self.HEALTHY_SMBD_ROW, kern_limits=SshCommandTimeout("Timed out waiting for ssh command to finish: sysctl"),
+        )
+
+        self.assertIn("SshCommandTimeout", run.debug_fields["remote_kern_limits_error"])
+        self.assertNotIn("remote_kern_limits", run.debug_fields)
+        run.mocks.check_authenticated_smb_listing.assert_called()
+
+    def test_run_doctor_checks_reads_no_kernel_limits_when_the_process_list_times_out(self) -> None:
+        # A device out of processes has none to spare for sysctl either.
+        run = self.run_doctor_with_process_snapshot(SshCommandTimeout("Timed out waiting for ssh command to finish: ps"))
+
+        run.kern_limits.assert_not_called()
+        self.assertNotIn("remote_kern_limits", run.debug_fields)
 
     def test_run_doctor_checks_reads_retrying_waits_from_the_manager_title(self) -> None:
         # ps alone shows needbuf with a sleep time near 0: it wakes to retry.

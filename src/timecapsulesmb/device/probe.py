@@ -2788,6 +2788,17 @@ def read_process_snapshot_conn(connection: SshConnection) -> str:
     return proc.stdout or ""
 
 
+# The kernel limits the manager raises before every smbd start
+# (build/native/samba/runtime.h).
+KERN_LIMITS_COMMAND = "/sbin/sysctl kern.sbmax kern.maxfiles kern.maxproc"
+
+
+def read_kern_limits_conn(connection: SshConnection) -> str:
+    """KERN_LIMITS_COMMAND's output, errors included."""
+    proc = run_ssh(connection, f"{KERN_LIMITS_COMMAND} 2>&1", check=False, timeout=PROCESS_SNAPSHOT_TIMEOUT_SECONDS)
+    return proc.stdout or ""
+
+
 # Samba's TDBs in RAM: the lock, state and private directories.
 FILE_LOCKS_RAM_TDBS = ("/mnt/Locks/*.tdb", f"{RUNTIME_RAM_ROOT}/var/*.tdb", f"{RUNTIME_RAM_ROOT}/private/*.tdb")
 # Samba's TDBs on the data disks: xattr_tdb's file and, on NetBSD 4, the cache

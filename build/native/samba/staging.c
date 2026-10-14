@@ -53,54 +53,66 @@ int tc_samba_clear_locks(void) {
     return 0;
 }
 
+const char *const tc_kern_limit_names[TC_KERN_LIMITS] = {"sbmax", "maxfiles", "maxproc"};
+
 #if defined(__NetBSD__) && !defined(TC_NATIVE_TEST)
 #include <sys/sysctl.h>
-static int sbmax_get(int *value) {
-    int mib[2] = {CTL_KERN, KERN_SBMAX};
+static const int kern_nodes[TC_KERN_LIMITS] = {KERN_SBMAX, KERN_MAXFILES, KERN_MAXPROC};
+static int kern_get(enum tc_kern_limit limit, int *value) {
+    int mib[2] = {CTL_KERN, kern_nodes[limit]};
     size_t length = sizeof(*value);
     return sysctl(mib, 2, value, &length, NULL, 0);
 }
-static int sbmax_set(int value) {
-    int mib[2] = {CTL_KERN, KERN_SBMAX};
+static int kern_set(enum tc_kern_limit limit, int value) {
+    int mib[2] = {CTL_KERN, kern_nodes[limit]};
     return sysctl(mib, 2, NULL, NULL, &value, sizeof(value));
 }
 #elif defined(TC_NATIVE_TEST)
-/* TC_TEST_SBMAX names a file holding kern.sbmax; a read-only file refuses
- * writes as the kernel would. */
-static int sbmax_get(int *value) {
-    const char *path = getenv("TC_TEST_SBMAX");
-    FILE *stream = path ? fopen(path, "r") : NULL;
+/* TC_TEST_KERN names a directory with one file per limit holding its value;
+ * a read-only file refuses writes as the kernel would. */
+static FILE *kern_open(enum tc_kern_limit limit, const char *mode) {
+    char path[512];
+    const char *dir = getenv("TC_TEST_KERN");
+    if (!dir || snprintf(path, sizeof(path), "%s/%s", dir, tc_kern_limit_names[limit]) >= (int)sizeof(path)) {
+        errno = ENOENT;
+        return NULL;
+    }
+    return fopen(path, mode);
+}
+static int kern_get(enum tc_kern_limit limit, int *value) {
+    FILE *stream = kern_open(limit, "r");
     int n = stream ? fscanf(stream, "%d", value) : 0;
     if (stream)
         fclose(stream);
     return n == 1 ? 0 : -1;
 }
-static int sbmax_set(int value) {
-    const char *path = getenv("TC_TEST_SBMAX");
-    FILE *stream = path ? fopen(path, "w") : NULL;
+static int kern_set(enum tc_kern_limit limit, int value) {
+    FILE *stream = kern_open(limit, "w");
     if (!stream)
         return -1;
     fprintf(stream, "%d\n", value);
     return fclose(stream);
 }
 #else
-static int sbmax_get(int *value) {
+static int kern_get(enum tc_kern_limit limit, int *value) {
+    (void)limit;
     (void)value;
     errno = ENOSYS;
     return -1;
 }
-static int sbmax_set(int value) {
+static int kern_set(enum tc_kern_limit limit, int value) {
+    (void)limit;
     (void)value;
     errno = ENOSYS;
     return -1;
 }
 #endif
 
-int tc_samba_raise_sbmax(int netbsd4) {
-    int current, wanted = (int)TC_SMBD_SBMAX(netbsd4);
-    if (sbmax_get(&current))
+int tc_samba_raise_kern(enum tc_kern_limit limit, unsigned wanted) {
+    int current;
+    if (kern_get(limit, &current))
         return -1;
-    return current >= wanted ? 0 : sbmax_set(wanted);
+    return current >= (int)wanted ? 0 : kern_set(limit, (int)wanted);
 }
 
 static const char *prepared[] = {TC_SMBD_CONF, TC_RAM_ROOT "/private/smbpasswd",

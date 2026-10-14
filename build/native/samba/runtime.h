@@ -30,6 +30,21 @@
  * MCLBYTES): 8/9 of kern.sbmax with ARM's 256-byte mbufs. Apple's kernels
  * start at 256 KiB. */
 #define TC_SMBD_SBMAX(netbsd4) (TC_SMBD_RCVBUF(netbsd4) / 8 * 9)
+/* Open files for the whole system (kern.maxfiles; Apple's kernels allow
+ * 1024). A Time Machine sparse bundle keeps a hundred or more band files open
+ * in its smbd, each taking more than one entry, so several Macs at once fill
+ * Apple's table; every open then fails and the Macs drop their disk images.
+ * The kernel allocates entries as files open, so the limit costs nothing
+ * until it is used. */
+#define TC_MAXFILES 4096u
+/* Processes for the whole system (kern.maxproc). Apple's kernels allow 84
+ * (NetBSD's 20 + 16 * maxusers with maxusers 4), about 50 of them in use at
+ * idle on NetBSD 4. Each client connection adds its smbd and up to two
+ * aio_fork helpers per share it uses, about 40 for eight Macs on both shares;
+ * a full table fails every fork on the device, Apple's daemons' included. 128
+ * covers that with room for logins and jobs, and still stops a runaway well
+ * before this swapless 256 MiB device runs out of memory. */
+#define TC_MAXPROC 128u
 
 struct tc_runtime_config {
     int netbsd4, telemetry, rsync, internal_root, browse_compatibility;

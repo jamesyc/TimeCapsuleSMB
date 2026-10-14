@@ -620,6 +620,29 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
 
+    def test_read_kern_limits_conn_keeps_the_values_and_the_errors(self) -> None:
+        # A kernel that refuses one name still reports the others, and the
+        # refusal is kept: it is what the manager's raise would have hit.
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        with tempfile.TemporaryDirectory() as tmp:
+            sysctl = Path(tmp) / "sysctl"
+            sysctl.write_text('#!/bin/sh\nfor n; do case $n in kern.sbmax) echo "sysctl: $n: no such entry" >&2 ;; '
+                              '*) echo "$n = 4096" ;; esac; done\n')
+            sysctl.chmod(0o755)
+
+            def run_locally(_connection, command, **kwargs):
+                return subprocess.run(command.replace("/sbin/sysctl", str(sysctl)), shell=True,
+                                      executable="/bin/sh", text=True, capture_output=True)
+
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=run_locally) as run_ssh_mock:
+                result = probe.read_kern_limits_conn(connection)
+
+        self.assertEqual(result.splitlines(), ["sysctl: kern.sbmax: no such entry",
+                                               "kern.maxfiles = 4096", "kern.maxproc = 4096"])
+        _args, kwargs = run_ssh_mock.call_args
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.PROCESS_SNAPSHOT_TIMEOUT_SECONDS)
+
     def test_probe_device_conn_uses_connection_wrapper_for_remote_probe_sequence(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
