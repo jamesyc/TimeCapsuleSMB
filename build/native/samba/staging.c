@@ -53,6 +53,56 @@ int tc_samba_clear_locks(void) {
     return 0;
 }
 
+#if defined(__NetBSD__) && !defined(TC_NATIVE_TEST)
+#include <sys/sysctl.h>
+static int sbmax_get(int *value) {
+    int mib[2] = {CTL_KERN, KERN_SBMAX};
+    size_t length = sizeof(*value);
+    return sysctl(mib, 2, value, &length, NULL, 0);
+}
+static int sbmax_set(int value) {
+    int mib[2] = {CTL_KERN, KERN_SBMAX};
+    return sysctl(mib, 2, NULL, NULL, &value, sizeof(value));
+}
+#elif defined(TC_NATIVE_TEST)
+/* TC_TEST_SBMAX names a file holding kern.sbmax; a read-only file refuses
+ * writes as the kernel would. */
+static int sbmax_get(int *value) {
+    const char *path = getenv("TC_TEST_SBMAX");
+    FILE *stream = path ? fopen(path, "r") : NULL;
+    int n = stream ? fscanf(stream, "%d", value) : 0;
+    if (stream)
+        fclose(stream);
+    return n == 1 ? 0 : -1;
+}
+static int sbmax_set(int value) {
+    const char *path = getenv("TC_TEST_SBMAX");
+    FILE *stream = path ? fopen(path, "w") : NULL;
+    if (!stream)
+        return -1;
+    fprintf(stream, "%d\n", value);
+    return fclose(stream);
+}
+#else
+static int sbmax_get(int *value) {
+    (void)value;
+    errno = ENOSYS;
+    return -1;
+}
+static int sbmax_set(int value) {
+    (void)value;
+    errno = ENOSYS;
+    return -1;
+}
+#endif
+
+int tc_samba_raise_sbmax(int netbsd4) {
+    int current, wanted = (int)TC_SMBD_SBMAX(netbsd4);
+    if (sbmax_get(&current))
+        return -1;
+    return current >= wanted ? 0 : sbmax_set(wanted);
+}
+
 static const char *prepared[] = {TC_SMBD_CONF, TC_RAM_ROOT "/private/smbpasswd",
                                  TC_RAM_ROOT "/private/username.map", TC_RSYNC_CONF};
 

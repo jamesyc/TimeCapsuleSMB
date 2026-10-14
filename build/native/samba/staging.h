@@ -16,4 +16,7 @@ int tc_samba_publish(int rsync);
 void tc_samba_discard(void);
 /* Call only after ownership audit and the entire old smbd group has exited. */
 int tc_samba_clear_locks(void);
+/* Raises kern.sbmax to TC_SMBD_SBMAX before smbd starts, so its sockets can
+ * take TC_SMBD_RCVBUF. Never lowers it. */
+int tc_samba_raise_sbmax(int netbsd4);
 #endif

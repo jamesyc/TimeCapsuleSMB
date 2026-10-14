@@ -1057,8 +1057,14 @@ static void reconcile_roles(struct manager *m, long long now) {
         char *argv[] = {TC_SMBD_BIN, "-F", "--no-process-group", "-s", TC_SMBD_CONF, NULL};
         const struct tc_volume *volume = &m->applied_storage.inventory.volumes[m->applied_storage.payload_index];
         int unbounded = m->applied_settings.config.debug || m->applied_settings.config.discovery_debug;
-        if (!(m->blocked & BLOCK_SMB) && !m->smb.child.group && !start_role(&m->smb, argv, log, now, 1, volume, unbounded))
-            m->audit_at = now + 1000;
+        if (!(m->blocked & BLOCK_SMB) && !m->smb.child.group) {
+            /* smbd sizes its listening and accepted sockets at start. */
+            if (tc_samba_raise_sbmax(m->applied_settings.config.netbsd4))
+                timestamped_fprintf(stderr, "manager: could not raise kern.sbmax to %u: %s\n",
+                                    TC_SMBD_SBMAX(m->applied_settings.config.netbsd4), strerror(errno));
+            if (!start_role(&m->smb, argv, log, now, 1, volume, unbounded))
+                m->audit_at = now + 1000;
+        }
         if (m->settings.config.rsync && !(m->blocked & BLOCK_RSYNC)) {
             char *rsync[] = {TC_RSYNC_BIN, "--daemon", "--no-detach", "--config=" TC_RSYNC_CONF, NULL};
             if (!m->rsync.child.group && !start_role(&m->rsync, rsync, TC_RAM_ROOT "/var/rsync.log", now, 1, NULL, 0))

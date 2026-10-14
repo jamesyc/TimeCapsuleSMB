@@ -70,6 +70,15 @@ def test_netbsd4_cache_remains_disk_backed(renderer):
     assert conf["global"]["cache directory"] == "/Volumes/dk2/.samba4/cache"
 
 
+@pytest.mark.parametrize("args,rcvbuf", [((), "2097152"), (("netbsd4",), "524288")])
+def test_receive_buffer_holds_in_flight_writes_within_each_kernels_pool(renderer, args, rcvbuf):
+    # NetBSD 4's Ethernet driver lends its receive buffers to the stack, so its
+    # connections get a quarter of NetBSD 6's.
+    for options in (None, {"VFS_AIO_FORK_ENABLED": 1}):
+        conf = render(renderer, options, args=args)
+        assert conf["global"]["socket options"] == f"TCP_NODELAY SO_RCVBUF={rcvbuf}"
+
+
 def test_tested_aio_and_debug_preferences(renderer):
     conf = render(renderer, {"VFS_AIO_FORK_ENABLED": 1, "SMBD_DEBUG_LOGGING": 1})
     # aio_fork's helper buffers cover Samba's default SMB2 sizes, so none are set.

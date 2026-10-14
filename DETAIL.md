@@ -824,6 +824,7 @@ Current rendered Samba config characteristics:
 - `log file = /Volumes/dkX/.samba4/logs/log.smbd`
 - `max log size = 128` in the normal generated config
 - `deadtime = 720`
+- `socket options = TCP_NODELAY SO_RCVBUF=2097152` on NetBSD 6, `SO_RCVBUF=524288` on NetBSD 4. While smbd waits for the disk it reads nothing, so once the Mac's data in flight fills the receive buffer (stock NetBSD: 32 KiB) the TCP window shuts. macOS gives up on a send after 5 s, then either reconnects or sends a short WRITE (issue 221; patch 0072 catches it and forces a reconnect). NetBSD 6's 2 MiB is about what a Mac's Time Machine writes keep in flight. NetBSD 4's Ethernet driver lends the stack its own 2048 receive buffers of 2 KiB per port and drops packets once all are lent, so NetBSD 4 takes 512 KiB: enough for the Mac's writes to stream, not enough to hold them through a stall, which aio_fork makes rarer there. Before every smbd start the manager raises `kern.sbmax`, and never lowers it, from Apple's 256 KiB to 9/8 of the receive buffer: NetBSD refuses a socket buffer above 8/9 of it.
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 2`, keep Samba's default 8 MiB SMB2 read/write sizes (each helper's buffer covers them, patch 0031), and enable AIO for requests of at least one byte
 - `fruit:resource = file`; this remains the non-HFS and migration-source setting, while HFS shares automatically use the native resource fork

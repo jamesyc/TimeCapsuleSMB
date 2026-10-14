@@ -66,6 +66,10 @@ def event(kind):
         names=[line.split('=',1)[1].strip() for line in (conf.read_text().splitlines() if conf.is_file() else [])
                if line.strip().startswith('netbios name')]
         row['netbios']=names[0] if names else None
+    if role=='smbd' and kind=='start':
+        # kern.sbmax as this smbd sized its sockets.
+        sbmax=Path(os.environ['TC_TEST_ROOT'])/'sbmax'
+        row['sbmax']=sbmax.read_text().split()[0] if sbmax.is_file() else None
     with log.open('a') as f:f.write(json.dumps(row)+'\\n')
 # Like smbd still starting up: no signal handlers yet, so SIGHUP kills it.
 while role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-hold').exists():time.sleep(.05)
@@ -190,7 +194,7 @@ def manager(manager_tools):
     else:hosts.unlink(missing_ok=True)
     for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
-                 'report-hold','report-exit','titles'):
+                 'report-hold','report-exit','titles','sbmax'):
         (root/name).unlink(missing_ok=True)
     (root/'wake').mkdir(exist_ok=True)
     (root/'procs').mkdir()
@@ -220,6 +224,7 @@ def manager(manager_tools):
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
             env={**os.environ,'TC_TEST_ROOT':str(root),'TC_TEST_MOUNTS':str(root/'mounts'),
                  'TC_TEST_HOSTNAME':str(root/'hostname'),'TC_TEST_BUFCACHE':str(root/'bufcache'),
+                 'TC_TEST_SBMAX':str(root/'sbmax'),
                  'TC_TEST_PROCS':str(root/'procs'),
                  'TC_TEST_FORK_FAIL':str(root/'fork-fail')})
         log.close()
@@ -288,6 +293,47 @@ def test_supervision_direct_smb_child_and_applied_discovery(manager):
     for item in events():
         if item['kind']=='start':
             with pytest.raises(ProcessLookupError):os.kill(item['pid'],0)
+
+
+# Apple's kern.sbmax, and what NetBSD 6's 2 MiB smbd receive buffer needs.
+APPLE_SBMAX=262144
+SMBD_SBMAX=2048*1024//8*9
+
+
+def test_kern_sbmax_is_raised_before_every_smbd_start(manager):
+    root,start,events,wait,_,_=manager
+    (root/'sbmax').write_text(f'{APPLE_SBMAX}\n')
+    start()
+    values=wait(started('smbd'))
+    smb=next(e for e in values if e['kind']=='start' and e['role']=='smbd')
+    assert smb['sbmax']==str(SMBD_SBMAX)
+    conf=(root/'ram/etc/smb.conf').read_text()
+    assert 'socket options = TCP_NODELAY SO_RCVBUF=2097152' in conf
+    # Something set it back while smbd ran: the restarted smbd gets it again.
+    (root/'sbmax').write_text(f'{APPLE_SBMAX}\n')
+    os.kill(smb['pid'],signal.SIGKILL)
+    values=wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2)
+    assert [e['sbmax'] for e in values if e['role']=='smbd' and e['kind']=='start']==[str(SMBD_SBMAX)]*2
+
+
+def test_a_larger_kern_sbmax_is_left_alone(manager):
+    root,start,events,wait,_,_=manager
+    (root/'sbmax').write_text('8388608\n')
+    start()
+    values=wait(started('smbd'))
+    assert next(e for e in values if e['kind']=='start' and e['role']=='smbd')['sbmax']=='8388608'
+    assert 'kern.sbmax' not in runtime_log(root)
+
+
+@pytest.mark.parametrize('readonly,error',[(True,'Permission denied'),(False,'No such file or directory')])
+def test_smbd_starts_when_kern_sbmax_cannot_be_raised(manager,readonly,error):
+    root,start,events,wait,_,_=manager
+    if readonly:
+        (root/'sbmax').write_text(f'{APPLE_SBMAX}\n')
+        (root/'sbmax').chmod(0o444)
+    start()
+    wait(started('smbd'))
+    wait_log(root,f'manager: could not raise kern.sbmax to {SMBD_SBMAX}: {error}')
 
 
 def runtime_log(root):
