@@ -47,7 +47,7 @@ def test_default_config_preserves_the_working_shell_settings(renderer):
     assert global_["max log size"] == "128" and "log level" not in global_
     assert global_["min protocol"] == "SMB2" and global_["max protocol"] == "SMB3"
     assert global_["deadtime"] == "720" and global_["smb3 directory leases"] == "no"
-    assert global_["aio read size"] == global_["aio write size"] == "0"
+    assert global_["aio read size"] == global_["aio write size"] == "1"
     assert global_["passdb backend"].endswith("/private/smbpasswd")
     assert global_["username map"].endswith("/private/username.map")
     assert set(conf.sections()) == {"global", "Data", "Data (dk3)"}
@@ -58,7 +58,8 @@ def test_default_config_preserves_the_working_shell_settings(renderer):
         assert share["fruit:metadata"] == "netatalk"
         assert share["fruit:resource"] == "file"
         assert share["xattr_tdb:file"] == "/Volumes/dk2/.samba4/private/xattr.tdb"
-        assert share["vfs objects"] == "catia fruit streams_xattr acl_xattr xattr_tdb"
+        assert share["vfs objects"] == "catia fruit streams_xattr acl_xattr xattr_tdb aio_fork"
+        assert share["aio_fork:max_children"] == "2"
         assert share["tc:native symlinks"] == "yes"
         assert share["veto files"] == "/.samba4/.tc-xsym.*/" and share["delete veto files"] == "yes"
         assert share["smbd max xattr size"] == "3802" and share["streams_xattr:max xattrs per stream"] == "35"
@@ -77,6 +78,19 @@ def test_receive_buffer_holds_in_flight_writes_within_each_kernels_pool(renderer
     for options in (None, {"VFS_AIO_FORK_ENABLED": 1}):
         conf = render(renderer, options, args=args)
         assert conf["global"]["socket options"] == f"TCP_NODELAY SO_RCVBUF={rcvbuf}"
+
+
+@pytest.mark.parametrize("options,aio", [
+    ({}, True),  # deploy always writes the key; aio_fork is on without it too
+    ({"VFS_AIO_FORK_ENABLED": 1}, True),
+    ({"VFS_AIO_FORK_ENABLED": 0}, False),
+])
+def test_aio_fork_is_on_unless_the_config_turns_it_off(renderer, options, aio):
+    conf = render(renderer, options)
+    assert conf["global"]["aio read size"] == conf["global"]["aio write size"] == ("1" if aio else "0")
+    for name in conf.sections()[1:]:
+        assert conf[name]["vfs objects"].endswith(" aio_fork") == aio
+        assert ("aio_fork:max_children" in conf[name]) == aio
 
 
 def test_tested_aio_and_debug_preferences(renderer):

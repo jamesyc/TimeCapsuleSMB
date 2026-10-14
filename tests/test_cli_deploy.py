@@ -391,7 +391,7 @@ class CliDeployTests(CliTestCase):
         self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
         self.assertNotIn("NBNS_ENABLED=", flash_config)
         self.assertIn("ANY_PROTOCOL=0\n", flash_config)
-        self.assertIn("VFS_AIO_FORK_ENABLED=0\n", flash_config)
+        self.assertIn("VFS_AIO_FORK_ENABLED=1\n", flash_config)
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", flash_config)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)
         self.assertIn("MDNS_DEBUG_LOGGING=1\n", flash_config)
@@ -569,14 +569,14 @@ class CliDeployTests(CliTestCase):
 
         enabled = self.run_deploy_cli(
             ["--yes", "--enable-vfs-aio-fork"],
-            values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="false"),
+            values=self.make_valid_env(TC_VFS_AIO_FORK_DISABLED="true"),
             patch_actions=True,
             patch_upload=True,
             upload_side_effect=fake_upload,
         )
         disabled = self.run_deploy_cli(
             ["--yes", "--disable-vfs-aio-fork"],
-            values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="true"),
+            values=self.make_valid_env(TC_VFS_AIO_FORK_DISABLED="false"),
             patch_actions=True,
             patch_upload=True,
             upload_side_effect=fake_upload,

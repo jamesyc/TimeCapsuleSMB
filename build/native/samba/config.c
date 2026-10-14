@@ -49,7 +49,7 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
     config->require_encryption = boolean(&items[5], 0);
     config->disable_security = boolean(&items[6], 0);
     config->netatalk = boolean(&items[7], 1);
-    config->aio_fork = boolean(&items[8], 0);
+    config->aio_fork = boolean(&items[8], 1);
     config->debug = boolean(&items[9], 0);
     config->discovery_debug = boolean(&items[10], 0);
     config->advertise_afp = boolean(&items[11], 0);

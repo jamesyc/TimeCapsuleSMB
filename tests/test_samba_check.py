@@ -45,7 +45,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([s.device for s in install.steps], ["6", "4le"])
         self.assertFalse(install.parallel)
         self.assertEqual(names(phases[3].per_device["6"]),
-                         ["drivers", "doctor", "dir_device", "growth_device", "growth_device_aio",
+                         ["drivers", "doctor", "dir_device", "growth_device", "growth_device_sync",
                           "durable_device", "links_device", "smbtorture"])
         self.assertNotIn("--quick", phases[3].per_device["6"][2].argv)
 

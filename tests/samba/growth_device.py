@@ -1,7 +1,7 @@
 """HFS file-growth device suite (Samba patch 0065), run from a Mac against a
 device whose running smbd carries the patch.
 
-    .venv/bin/python -m tests.samba.growth_device --env .env.backup6 [--share NAME] [--aio]
+    .venv/bin/python -m tests.samba.growth_device --env .env.backup6 [--share NAME] [--no-aio]
 
 HFS has no sparse files: growing a file allocates every block up to its new
 end. Without 0065, smbtorture's smb2.rw.invalid (one byte written at
@@ -25,12 +25,13 @@ seconds without changing the file:
   stream, which patch 0056 serves from the native resource fork; the fork
   keeps its 10 bytes, and can still grow by 100 MiB.
 
---aio runs the suite with the production aio_fork settings (the manager's
-VFS_AIO_FORK_ENABLED: aio_fork in vfs objects, aio sizes 1, two helpers),
-written to the running smb.conf in RAM only and restored at the end. SMB2
-never sends stream writes or zero-length writes asynchronously; the other
-writes then go through aio_fork, and with debug logging the suite checks that
-smbd logged the refused one completing there.
+The suite runs with the device's own settings, where aio_fork is on unless
+TC_VFS_AIO_FORK_DISABLED turned it off. SMB2 never sends stream writes or
+zero-length writes asynchronously; with aio_fork on, the other writes go
+through it, and with debug logging the suite checks that smbd logged the
+refused one completing there. --no-aio runs the suite with the synchronous
+writes of TC_VFS_AIO_FORK_DISABLED=true (no aio_fork in vfs objects, aio sizes
+0), written to the running smb.conf in RAM only and restored at the end.
 
 The allowed requests must keep working: a write 32 MiB past the end (inside
 the growth 0065 never checks), an end of file set to 96 MiB (checked, and
@@ -67,14 +68,11 @@ from tests.samba.links_device import Device, Results, mount, unmount
 TEST_DIR = "__tc_growth_test__"
 RUNNING_SMBD = "/mnt/Memory/samba4/sbin/smbd"
 CONF = "/mnt/Memory/samba4/etc/smb.conf"
-# The manager's aio_fork settings (build/native/samba/config.c) for this run.
-AIO_SED = """s/^    aio read size = 0$/    aio read size = 1/
-s/^    aio write size = 0$/    aio write size = 1/
-/^    vfs objects = .*xattr_tdb$/{
-s/$/ aio_fork/
-a\\
-    aio_fork:max_children = 2
-}
+# The manager's settings without aio_fork (build/native/samba/config.c).
+SYNC_SED = """s/^    aio read size = 1$/    aio read size = 0/
+s/^    aio write size = 1$/    aio write size = 0/
+s/^\\(    vfs objects = .*xattr_tdb\\) aio_fork$/\\1/
+/^    aio_fork:max_children = /d
 """
 # aio_pwrite_smb2_done() at log level 10, for a write refused in pwrite_fsync_send().
 AIO_REFUSAL_LOG = "pwrite_recv returned -1, err = No space left on device"
@@ -292,19 +290,19 @@ def smbd_parent_hup(device: Device) -> None:
 
 
 @contextlib.contextmanager
-def aio_fork_enabled(device: Device):
-    """The production aio_fork settings in the running smb.conf, restored afterwards.
+def aio_fork_disabled(device: Device):
+    """The running smb.conf without aio_fork, restored afterwards.
 
     Edited on the device (the SSH output is not byte-exact); the original is
     kept beside it until the run ends."""
-    backup, script = CONF + ".tc-growth", "/mnt/Memory/tc-growth-aio.sed"
-    device.put(script, AIO_SED.encode())
+    backup, script = CONF + ".tc-growth", "/mnt/Memory/tc-growth-sync.sed"
+    device.put(script, SYNC_SED.encode())
     device.sh(f"cp {CONF} {backup} && sed -f {script} {backup} > {CONF}.new && mv {CONF}.new {CONF} "
               f"&& chmod 600 {CONF}; rm -f {script}")
     try:
         conf = device.sh(f"cat {CONF}")
-        if "aio write size = 1" not in conf or "aio_fork:max_children = 2" not in conf:
-            raise RuntimeError("could not enable aio_fork in the running smb.conf")
+        if "aio write size = 0" not in conf or "aio_fork" in conf:
+            raise RuntimeError("could not disable aio_fork in the running smb.conf")
         smbd_parent_hup(device)
         yield
     finally:
@@ -315,6 +313,9 @@ def aio_fork_enabled(device: Device):
 def aio_refusal_logged(r: Results, device: Device) -> None:
     """The refused write completed through pwrite_fsync_send(), per smbd's log tail."""
     conf = device.sh(f"cat {CONF}")
+    if "aio_fork:max_children" not in conf:
+        print("    aio: aio_fork is off; not checking which path refused", flush=True)
+        return
     if "log level = 10" not in conf:
         print("    aio: smbd is not logging at level 10; not checking which path refused", flush=True)
         return
@@ -442,8 +443,8 @@ def main() -> int:
                         help="run only these cases (repeatable; default: all)")
     parser.add_argument("--quick", action="store_true",
                         help="the quick tier (AGENTS.md): " + ", ".join(QUICK_CASES))
-    parser.add_argument("--aio", action="store_true",
-                        help="run with aio_fork enabled in the running smb.conf (restored afterwards)")
+    parser.add_argument("--no-aio", action="store_true",
+                        help="run with aio_fork removed from the running smb.conf (restored afterwards)")
     args = parser.parse_args()
     wanted = args.case or list(QUICK_CASES if args.quick else CASES)
     device = Device(parse_env_file(Path(args.env)), args.share)
@@ -456,14 +457,14 @@ def main() -> int:
     test_dir = shlex.quote(f"{device.root}/{TEST_DIR}")
     results = Results()
     device.sh(f"rm -rf {test_dir} && mkdir {test_dir} && chmod 777 {test_dir}")
-    with aio_fork_enabled(device) if args.aio else contextlib.nullcontext():
+    with aio_fork_disabled(device) if args.no_aio else contextlib.nullcontext():
         client = Client(device)
         try:
             for case in wanted:
                 start = time.monotonic()
                 RUNNERS[case](results, device, client, total)
                 print(f"== {case} took {time.monotonic() - start:.0f} s", flush=True)
-                if args.aio and case == "write:past-volume":
+                if case == "write:past-volume":
                     aio_refusal_logged(results, device)
         finally:
             client.close()

@@ -61,7 +61,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         requireSMBEncryption: false,
         forceDisableSMBSigningAndEncryption: false,
         fruitMetadataNetatalk: true,
-        vfsAIOForkEnabled: false,
+        vfsAIOForkEnabled: true,
         debugLogging: false,
         mountWaitSeconds: 30,
         ataIdleSeconds: 300,
@@ -77,7 +77,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         requireSMBEncryption: Bool = false,
         forceDisableSMBSigningAndEncryption: Bool = false,
         fruitMetadataNetatalk: Bool = true,
-        vfsAIOForkEnabled: Bool = false,
+        vfsAIOForkEnabled: Bool = true,
         debugLogging: Bool,
         mountWaitSeconds: Int,
         ataIdleSeconds: Int = 300,
@@ -110,7 +110,9 @@ struct DeviceProfileSettings: Codable, Equatable {
         case requireSMBEncryption
         case forceDisableSMBSigningAndEncryption
         case fruitMetadataNetatalk
-        case vfsAIOForkEnabled
+        // A saved vfsAIOForkEnabled is ignored: it was written as false by
+        // default when aio_fork was opt-in.
+        case vfsAIOForkEnabled = "vfsAIOForkOn"
         case debugLogging
         case mountWaitSeconds
         case ataIdleSeconds

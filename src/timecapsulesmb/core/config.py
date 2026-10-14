@@ -60,7 +60,7 @@ DEFAULTS = {
     "TC_REQUIRE_SMB_ENCRYPTION": "false",
     "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "false",
     "TC_FRUIT_METADATA_NETATALK": "true",
-    "TC_VFS_AIO_FORK_ENABLED": "false",
+    "TC_VFS_AIO_FORK_DISABLED": "false",
     "TC_DEBUG_LOGGING": "false",
     "TC_ATA_IDLE_SECONDS": "300",
     "TC_ATA_STANDBY": "",
@@ -77,7 +77,7 @@ ENV_FILE_KEYS = [
     "TC_REQUIRE_SMB_ENCRYPTION",
     "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
-    "TC_VFS_AIO_FORK_ENABLED",
+    "TC_VFS_AIO_FORK_DISABLED",
     "TC_DEBUG_LOGGING",
     "TC_ATA_IDLE_SECONDS",
     "TC_ATA_STANDBY",
@@ -101,6 +101,9 @@ ENV_FILE_OMIT_KEYS = frozenset({
     "TC_MDNS_DEVICE_MODEL",
     "TC_MDNS_HOST_LABEL",
     "TC_SMB_BIND_LAN_ONLY",  # Discard old saved values; sharing follows Apple's settings.
+    # Discard old saved values: vfs_aio_fork is on unless TC_VFS_AIO_FORK_DISABLED
+    # says otherwise, so the old opt-in key's saved "false" must not turn it off.
+    "TC_VFS_AIO_FORK_ENABLED",
     "TC_MDNS_INSTANCE_NAME",
     "TC_NETBIOS_NAME",
     "TC_SHARE_NAME",
@@ -353,6 +356,13 @@ def parse_bool(value: str) -> bool:
     return value.strip().lower() == "true"
 
 
+def vfs_aio_fork_enabled_in(values) -> bool:
+    """aio_fork is on unless TC_VFS_AIO_FORK_DISABLED turns it off. That key
+    replaced the opt-in TC_VFS_AIO_FORK_ENABLED, whose saved values (written
+    as "false" by default) are ignored."""
+    return not parse_bool(values.get("TC_VFS_AIO_FORK_DISABLED", DEFAULTS["TC_VFS_AIO_FORK_DISABLED"]))
+
+
 def validate_bool(value: str, field_name: str) -> Optional[str]:
     if value == "":
         return None
@@ -413,7 +423,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_REQUIRE_SMB_ENCRYPTION": validate_bool,
     "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": validate_bool,
     "TC_FRUIT_METADATA_NETATALK": validate_bool,
-    "TC_VFS_AIO_FORK_ENABLED": validate_bool,
+    "TC_VFS_AIO_FORK_DISABLED": validate_bool,
     "TC_DEBUG_LOGGING": validate_bool,
     "TC_ATA_IDLE_SECONDS": validate_unsigned_integer,
     "TC_ATA_STANDBY": validate_optional_unsigned_integer,
@@ -437,7 +447,7 @@ CONFIGURE_VALIDATED_KEYS = (
     "TC_REQUIRE_SMB_ENCRYPTION",
     "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
-    "TC_VFS_AIO_FORK_ENABLED",
+    "TC_VFS_AIO_FORK_DISABLED",
     "TC_DEBUG_LOGGING",
     "TC_ATA_IDLE_SECONDS",
     "TC_ATA_STANDBY",
@@ -452,7 +462,7 @@ MANAGED_VALIDATED_KEYS = (
     "TC_REQUIRE_SMB_ENCRYPTION",
     "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
-    "TC_VFS_AIO_FORK_ENABLED",
+    "TC_VFS_AIO_FORK_DISABLED",
     "TC_DEBUG_LOGGING",
     "TC_ATA_IDLE_SECONDS",
     "TC_ATA_STANDBY",

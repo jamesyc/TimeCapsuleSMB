@@ -77,7 +77,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 "TC_MDNS_ADVERTISE_AFP": "true",
                 "TC_REQUIRE_SMB_ENCRYPTION": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
-                "TC_VFS_AIO_FORK_ENABLED": "true",
+                "TC_VFS_AIO_FORK_DISABLED": "false",
             },
             host="root@10.0.0.2",
             password="pw",
@@ -101,12 +101,12 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(preserved["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(preserved["TC_REQUIRE_SMB_ENCRYPTION"], "true")
         self.assertEqual(preserved["TC_FRUIT_METADATA_NETATALK"], "true")
-        self.assertEqual(preserved["TC_VFS_AIO_FORK_ENABLED"], "true")
+        self.assertEqual(preserved["TC_VFS_AIO_FORK_DISABLED"], "false")
         self.assertEqual(enabled["TC_SMB_BROWSE_COMPATIBILITY"], "true")
         self.assertEqual(enabled["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(enabled["TC_REQUIRE_SMB_ENCRYPTION"], "true")
         self.assertEqual(enabled["TC_FRUIT_METADATA_NETATALK"], "true")
-        self.assertEqual(enabled["TC_VFS_AIO_FORK_ENABLED"], "true")
+        self.assertEqual(enabled["TC_VFS_AIO_FORK_DISABLED"], "false")
 
     def test_build_configure_env_values_rejects_smb_encryption_with_any_protocol(self) -> None:
         with self.assertRaisesRegex(ValueError, "SMB encryption requires SMB3-only"):
@@ -789,7 +789,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(written["TC_REQUIRE_SMB_ENCRYPTION"], "false")
         self.assertEqual(written["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "false")
         self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "true")
-        self.assertEqual(written["TC_VFS_AIO_FORK_ENABLED"], "false")
+        self.assertEqual(written["TC_VFS_AIO_FORK_DISABLED"], "false")
         self.assertNotIn("TC_PASSWORD", written)
         self.assertEqual(stages, ["ssh_probe", "write_env"])
         self.assertIn({"ssh_final_reachable": True}, debug_fields)

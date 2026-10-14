@@ -3134,7 +3134,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_REQUIRE_SMB_ENCRYPTION"], "false")
         self.assertEqual(values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
         self.assertEqual(values["TC_FRUIT_METADATA_NETATALK"], "false")
-        self.assertEqual(values["TC_VFS_AIO_FORK_ENABLED"], "true")
+        self.assertEqual(values["TC_VFS_AIO_FORK_DISABLED"], "false")
         self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
         self.assertEqual(values["TC_ATA_IDLE_SECONDS"], "0")
         self.assertEqual(values["TC_ATA_STANDBY"], "")
@@ -3188,7 +3188,7 @@ class AppApiTests(unittest.TestCase):
             values = parse_env_file(config_path)
 
         self.assertEqual(rc, 0)
-        self.assertEqual(values["TC_VFS_AIO_FORK_ENABLED"], "true")
+        self.assertEqual(values["TC_VFS_AIO_FORK_DISABLED"], "false")
 
     def test_configure_mdns_advertise_afp_param_writes_true(self) -> None:
         collector = CollectingSink()

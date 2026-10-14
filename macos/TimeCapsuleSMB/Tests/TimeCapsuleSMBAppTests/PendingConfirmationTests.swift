@@ -47,7 +47,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["require_smb_encryption"], .bool(false))
         XCTAssertEqual(params["force_disable_smb_signing_and_encryption"], .bool(false))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
-        XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(false))
+        XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertNil(params["credentials"])
     }
 

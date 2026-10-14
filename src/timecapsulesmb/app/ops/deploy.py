@@ -9,6 +9,7 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     airport_family_display_name_from_identity,
     parse_bool,
+    vfs_aio_fork_enabled_in,
 )
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
@@ -240,7 +241,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     vfs_aio_fork_enabled = bool_param(
         params,
         "vfs_aio_fork_enabled",
-        parse_bool(config.get("TC_VFS_AIO_FORK_ENABLED", DEFAULTS["TC_VFS_AIO_FORK_ENABLED"])),
+        vfs_aio_fork_enabled_in(config),
     )
 
     try:

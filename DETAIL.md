@@ -185,7 +185,7 @@ With the current static-module build, the shipped config supports:
 - `streams_xattr`
 - `acl_xattr`
 - `xattr_tdb`
-- optional `aio_fork`, disabled by default and bounded to eight children per share when enabled
+- `aio_fork`, enabled by default and bounded to two children per client connection and share; `TC_VFS_AIO_FORK_DISABLED=true` leaves it out
 - `fruit:time machine = yes`
 
 ## Native Mac Metadata Architecture
@@ -829,7 +829,7 @@ Current rendered Samba config characteristics:
   - `kern.maxfiles`, the system-wide open-file table, from Apple's 1024 to 4096. A Time Machine sparse bundle keeps a hundred or more band files open in its smbd, so several Macs at once fill Apple's table; every open then fails and the Macs drop their disk images. Entries are allocated as files open, so the limit costs nothing until used.
   - `kern.maxproc`, the system-wide process table, from Apple's 84 (NetBSD's default for `maxusers 4`) to 128. Each client connection adds its smbd and up to two aio_fork helpers per share it uses, about 40 processes for eight Macs on both shares, and a full table fails every fork on the device. 128 covers that with room for logins and jobs, and still stops a runaway well before this swapless device runs out of memory.
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
-- when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 2`, keep Samba's default 8 MiB SMB2 read/write sizes (each helper's buffer covers them, patch 0031), and enable AIO for requests of at least one byte
+- unless `TC_VFS_AIO_FORK_DISABLED=true`, append `aio_fork`, cap each client connection's use of each share at `aio_fork:max_children = 2`, keep Samba's default 8 MiB SMB2 read/write sizes (each helper's buffer covers them, patch 0031), and enable AIO for requests of at least one byte
 - `fruit:resource = file`; this remains the non-HFS and migration-source setting, while HFS shares automatically use the native resource fork
 - `fruit:veto_appledouble = yes`
 - `fruit:metadata = netatalk` by default, or `fruit:metadata = stream` when Netatalk metadata mode is explicitly disabled; on HFS this selects the preferred legacy migration source while runtime FinderInfo is native
@@ -996,7 +996,7 @@ Current important `.env` values include:
 - `TC_REQUIRE_SMB_ENCRYPTION`
 - `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION`
 - `TC_FRUIT_METADATA_NETATALK`
-- `TC_VFS_AIO_FORK_ENABLED`
+- `TC_VFS_AIO_FORK_DISABLED`
 - `TC_DEBUG_LOGGING`
 - `TC_ATA_IDLE_SECONDS`
 - `TC_ATA_STANDBY`
@@ -1053,7 +1053,7 @@ Default: off. Enables `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1`, sets Sa
 
 ### Enable vfs_aio_fork
 
-Default: off. Adds the bounded `aio_fork` VFS module, enables asynchronous I/O for requests of at least one byte, limits SMB2 reads and writes to `128 KiB`, and caps each share at eight forked workers. It is an optional no-pthread I/O profile; leave it off unless testing shows it helps the target workload.
+Default: on. Adds the bounded `aio_fork` VFS module, enables asynchronous I/O for requests of at least one byte, keeps Samba's default 8 MiB SMB2 read/write sizes, and caps each client connection at two forked workers per share. It is the no-pthread asynchronous I/O path; clearing the checkbox saves `TC_VFS_AIO_FORK_DISABLED=true`, which deploys `VFS_AIO_FORK_ENABLED=0`. The old opt-in `TC_VFS_AIO_FORK_ENABLED` key and the app's old saved value are ignored, so neither turns it off.
 
 ### Allow Any SMB Protocol
 
@@ -1163,7 +1163,7 @@ Hidden advanced arguments:
 - `--any-protocol` / `--no-any-protocol`: write `TC_ANY_PROTOCOL=true|false`
 - `--require-smb-encryption` / `--no-require-smb-encryption`: write `TC_REQUIRE_SMB_ENCRYPTION=true|false`
 - `--netatalk` / `--no-netatalk`: write `TC_FRUIT_METADATA_NETATALK=true|false`
-- `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: writes `TC_VFS_AIO_FORK_ENABLED=true|false`; toggles the bounded `vfs_aio_fork` runtime profile
+- `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: writes `TC_VFS_AIO_FORK_DISABLED=false|true`; toggles the bounded `vfs_aio_fork` runtime profile
 - `--debug-logging` / `--no-debug-logging`: explicitly enable or disable managed runtime debug logging
 - `--ata-idle-seconds SECONDS`: writes `TC_ATA_IDLE_SECONDS`; must be a non-negative integer, with `0` disabling the ATA idle timer
 - `--ata-standby SECONDS`: writes `TC_ATA_STANDBY`; must be a non-negative integer, with `0` disabling standby and a blank saved value leaving standby unchanged
@@ -1348,7 +1348,7 @@ Current defaults and fixed values:
 - `TC_REQUIRE_SMB_ENCRYPTION=false`
 - `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=false`
 - `TC_FRUIT_METADATA_NETATALK=true`
-- `TC_VFS_AIO_FORK_ENABLED=false`
+- `TC_VFS_AIO_FORK_DISABLED=false`
 - `TC_DEBUG_LOGGING=false`
 - `TC_ATA_IDLE_SECONDS=300`
 - `TC_ATA_STANDBY=` leaves the standby timer unchanged; set `0` to disable standby

@@ -9,6 +9,7 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     parse_bool,
     parse_env_file,
+    vfs_aio_fork_enabled_in,
 )
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.paths import resolve_app_paths
@@ -278,7 +279,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 vfs_aio_fork_enabled=bool_param(
                     params,
                     "vfs_aio_fork_enabled",
-                    parse_bool(existing.get("TC_VFS_AIO_FORK_ENABLED", DEFAULTS["TC_VFS_AIO_FORK_ENABLED"])),
+                    vfs_aio_fork_enabled_in(existing),
                 ),
                 debug_logging=bool_param(
                     params,

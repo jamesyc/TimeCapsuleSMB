@@ -15,6 +15,7 @@ from timecapsulesmb.core.config import (
     airport_identity_from_model_or_syap,
     parse_bool,
     shell_quote,
+    vfs_aio_fork_enabled_in,
 )
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
@@ -1559,10 +1560,6 @@ def render_flash_runtime_config(
         "TC_FRUIT_METADATA_NETATALK",
         DEFAULTS["TC_FRUIT_METADATA_NETATALK"],
     )
-    vfs_aio_fork_enabled_default = config.get(
-        "TC_VFS_AIO_FORK_ENABLED",
-        DEFAULTS["TC_VFS_AIO_FORK_ENABLED"],
-    )
     configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
     runtime_ata_idle_seconds = (
         _runtime_unsigned_config_value(config, "TC_ATA_IDLE_SECONDS", DEFAULTS["TC_ATA_IDLE_SECONDS"])
@@ -1615,9 +1612,7 @@ def render_flash_runtime_config(
         else fruit_metadata_netatalk
     )
     effective_vfs_aio_fork_enabled = (
-        parse_bool(vfs_aio_fork_enabled_default)
-        if vfs_aio_fork_enabled is None
-        else vfs_aio_fork_enabled
+        vfs_aio_fork_enabled_in(config) if vfs_aio_fork_enabled is None else vfs_aio_fork_enabled
     )
     effective_debug_logging = parse_bool(configured_debug_logging) if debug_logging is None else debug_logging
 

@@ -15,6 +15,7 @@ from timecapsulesmb.core.config import (
     preserved_env_file_values,
     REMOVED_ENV_FILE_KEYS,
     write_env_file,
+    vfs_aio_fork_enabled_in,
 )
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
@@ -553,11 +554,9 @@ def build_managed_config_env_values(
             if fruit_metadata_netatalk is None
             else fruit_metadata_netatalk
         ) else "false",
-        "TC_VFS_AIO_FORK_ENABLED": "true" if (
-            parse_bool(existing.get("TC_VFS_AIO_FORK_ENABLED", DEFAULTS["TC_VFS_AIO_FORK_ENABLED"]))
-            if vfs_aio_fork_enabled is None
-            else vfs_aio_fork_enabled
-        ) else "false",
+        "TC_VFS_AIO_FORK_DISABLED": "false" if (
+            vfs_aio_fork_enabled_in(existing) if vfs_aio_fork_enabled is None else vfs_aio_fork_enabled
+        ) else "true",
         "TC_DEBUG_LOGGING": "true" if (
             parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"]))
             if debug_logging is None

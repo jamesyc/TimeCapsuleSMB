@@ -59,7 +59,7 @@ DRIVER_RAM_MOUNT = {"6": "/sbin/mount_tmpfs -s 12m tmpfs", "4": "/sbin/mount_mfs
 # point it at the drivers' RAM disk there, UFS like /tmp. NetBSD 6's /tmp has
 # room.
 DRIVER_ENV = {"6": "", "4": f"TC_MIGRATE_SCRATCH={DRIVER_RAM} "}
-GROWTH_AIO = ("write:maxfilesize", "write:past-volume", "allowed:hole", "allowed:sequential")
+GROWTH_SYNC = ("write:maxfilesize", "write:past-volume", "allowed:hole", "allowed:sequential")
 
 
 @dataclass
@@ -95,8 +95,8 @@ def device_steps(tier: str, lane: str, env: str, out: Path, drivers_from: Path |
                                              *(["--quick"] if quick else ["--record", str(out / f"{lane}-dir.json")]))))
     steps.append(Step("growth_device", lane, py("tests.samba.growth_device", "--env", env, *(["--quick"] if quick else []))))
     if not quick:
-        steps.append(Step("growth_device_aio", lane, py("tests.samba.growth_device", "--env", env, "--aio",
-                                                        *[a for case in GROWTH_AIO for a in ("--case", case)])))
+        steps.append(Step("growth_device_sync", lane, py("tests.samba.growth_device", "--env", env, "--no-aio",
+                                                         *[a for case in GROWTH_SYNC for a in ("--case", case)])))
         steps.append(Step("durable_device", lane, py("tests.samba.durable_device", "--env", env)))
         steps.append(Step("links_device", lane, py("tests.samba.links_device", "--env", env)))
     steps.append(Step("smbtorture", lane, py("tests.samba.torture", "--env", env, "--tier", tier,

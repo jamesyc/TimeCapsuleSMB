@@ -14,7 +14,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Default SMB Browse Compatibility: false"))
         XCTAssertTrue(text.contains("- Default mDNS Advertise AFP: false"))
         XCTAssertTrue(text.contains("- Default Allow Any SMB Protocol: false"))
-        XCTAssertTrue(text.contains("- Default vfs_aio_fork: false"))
+        XCTAssertTrue(text.contains("- Default vfs_aio_fork: true"))
         XCTAssertTrue(text.contains("- State: Ready"))
         XCTAssertTrue(text.contains("- Helper Version: 2.1.4 (20125)"))
         XCTAssertTrue(text.contains("- Validation Counts: checks=1, fail=0, pass=1"))
@@ -22,7 +22,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Selection: selected device"))
         XCTAssertTrue(text.contains("- Profile Internal Share Uses Disk Root: false"))
         XCTAssertTrue(text.contains("- Profile Allow Any SMB Protocol: false"))
-        XCTAssertTrue(text.contains("- Profile vfs_aio_fork: false"))
+        XCTAssertTrue(text.contains("- Profile vfs_aio_fork: true"))
         XCTAssertTrue(text.contains("- Active device:profile-one: deploy"))
         XCTAssertTrue(text.contains("- Pending Confirmation: none"))
     }

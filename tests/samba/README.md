@@ -473,7 +473,7 @@ request while it is still in progress, which smbd reports as INVALID_PARAMETER.
 (it needs `smbprotocol` on the host):
 
 ```sh
-.venv/bin/python -m tests.samba.growth_device --env .env [--aio]
+.venv/bin/python -m tests.samba.growth_device --env .env [--no-aio]
 ```
 
 It first looks for 0065's refusal message in the smbd the device runs and
@@ -496,12 +496,13 @@ last band hundreds of MiB past the band's beginning, growth beyond the 64 MiB
 size. Files are opened delete-on-close in a `__tc_growth_test__` folder,
 which is removed at the end.
 
-`--aio` runs the suite with the manager's aio_fork settings (as with
-`VFS_AIO_FORK_ENABLED`) written to the running smb.conf in RAM only, and puts
-the original back at the end. The device suite otherwise runs with the default
-synchronous writes. SMB2 sends stream writes and zero-length writes
-synchronously either way; with debug logging, the suite checks that smbd logged
-the refused one-byte write completing through aio_fork.
+The suite runs with the device's own settings, where aio_fork is on unless
+`TC_VFS_AIO_FORK_DISABLED` turned it off. SMB2 sends stream writes and
+zero-length writes synchronously either way; with aio_fork on and debug
+logging, the suite checks that smbd logged the refused one-byte write
+completing through aio_fork. `--no-aio` runs it with the synchronous writes of
+`TC_VFS_AIO_FORK_DISABLED=true` (no aio_fork, aio sizes 0) written to the
+running smb.conf in RAM only, and puts the original back at the end.
 
 ## Test tiers and tooling
 

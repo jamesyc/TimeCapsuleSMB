@@ -129,6 +129,13 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(resolve_distribution_root(nested), root)
             self.assertEqual(resolve_app_paths(nested).config_path, root / ".env")
 
+    def test_render_env_text_drops_the_old_vfs_aio_fork_enabled_key(self) -> None:
+        rendered = render_env_text({"TC_VFS_AIO_FORK_ENABLED": "false", "TC_CUSTOM": "kept"})
+
+        self.assertNotIn("TC_VFS_AIO_FORK_ENABLED", rendered)
+        self.assertIn("TC_VFS_AIO_FORK_DISABLED=false", rendered)
+        self.assertIn("TC_CUSTOM=kept", rendered)
+
     def test_render_env_text_contains_config_keys(self) -> None:
         values = dict(DEFAULTS)
         values["TC_PASSWORD"] = "secret"
@@ -152,7 +159,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_REQUIRE_SMB_ENCRYPTION=false", rendered)
         self.assertIn("TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=false", rendered)
         self.assertIn("TC_FRUIT_METADATA_NETATALK=true", rendered)
-        self.assertIn("TC_VFS_AIO_FORK_ENABLED=false", rendered)
+        self.assertIn("TC_VFS_AIO_FORK_DISABLED=false", rendered)
         self.assertIn("TC_DEBUG_LOGGING=false", rendered)
         self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
         self.assertIn("TC_ATA_STANDBY=''", rendered)
@@ -464,6 +471,10 @@ class ConfigTests(unittest.TestCase):
         values["TC_SMB_BIND_LAN_ONLY"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
         self.assertEqual(validate_app_config(config, profile="deploy"), [])
+        # TC_VFS_AIO_FORK_DISABLED replaced the opt-in key, which is ignored the same way.
+        values["TC_VFS_AIO_FORK_ENABLED"] = "not-bool"
+        config = AppConfig.from_values(values, file_values=values)
+        self.assertEqual(validate_app_config(config, profile="deploy"), [])
         values["TC_SMB_BROWSE_COMPATIBILITY"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
@@ -482,12 +493,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "invalid_value")
         self.assertEqual(errors[0].key, "TC_FRUIT_METADATA_NETATALK")
         values["TC_FRUIT_METADATA_NETATALK"] = "false"
-        values["TC_VFS_AIO_FORK_ENABLED"] = "not-bool"
+        values["TC_VFS_AIO_FORK_DISABLED"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].kind, "invalid_value")
-        self.assertEqual(errors[0].key, "TC_VFS_AIO_FORK_ENABLED")
-        values["TC_VFS_AIO_FORK_ENABLED"] = "false"
+        self.assertEqual(errors[0].key, "TC_VFS_AIO_FORK_DISABLED")
+        values["TC_VFS_AIO_FORK_DISABLED"] = "true"
         values["TC_DEBUG_LOGGING"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
@@ -520,7 +531,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_MDNS_ADVERTISE_AFP"] = "not-bool"
         values["TC_ANY_PROTOCOL"] = "not-bool"
         values["TC_FRUIT_METADATA_NETATALK"] = "not-bool"
-        values["TC_VFS_AIO_FORK_ENABLED"] = "not-bool"
+        values["TC_VFS_AIO_FORK_DISABLED"] = "not-bool"
         values["TC_DEBUG_LOGGING"] = "not-bool"
         values["TC_ATA_IDLE_SECONDS"] = "bad"
         values["TC_ATA_STANDBY"] = "bad"

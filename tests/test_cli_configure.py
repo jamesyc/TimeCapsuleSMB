@@ -513,7 +513,7 @@ class CliConfigureTests(CliTestCase):
         )
         disabled = self.run_configure_cli(
             ["--disable-vfs-aio-fork"],
-            existing_values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="true"),
+            existing_values=self.make_valid_env(TC_VFS_AIO_FORK_DISABLED="false"),
             prompt_side_effect=self.configure_prompt_defaults(),
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
@@ -521,9 +521,9 @@ class CliConfigureTests(CliTestCase):
         )
 
         self.assertEqual(enabled.rc, 0)
-        self.assertEqual(enabled.values["TC_VFS_AIO_FORK_ENABLED"], "true")
+        self.assertEqual(enabled.values["TC_VFS_AIO_FORK_DISABLED"], "false")
         self.assertEqual(disabled.rc, 0)
-        self.assertEqual(disabled.values["TC_VFS_AIO_FORK_ENABLED"], "false")
+        self.assertEqual(disabled.values["TC_VFS_AIO_FORK_DISABLED"], "true")
 
     def test_configure_boolean_override_pairs_can_enable_and_disable_saved_values(self) -> None:
         cases = (

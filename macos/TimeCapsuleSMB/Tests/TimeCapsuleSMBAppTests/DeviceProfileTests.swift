@@ -155,6 +155,20 @@ final class DeviceProfileTests: XCTestCase {
         }
     }
 
+    func testVFSAIOForkIgnoresTheOldOptInValueAndRoundTripsTheNewKey() throws {
+        // Profiles saved while aio_fork was opt-in hold vfsAIOForkEnabled, false by default.
+        let old = Data(#"{"vfsAIOForkEnabled": false, "debugLogging": false, "mountWaitSeconds": 30}"#.utf8)
+        XCTAssertTrue(try JSONDecoder().decode(DeviceProfileSettings.self, from: old).vfsAIOForkEnabled)
+
+        var settings = DeviceProfileSettings.default
+        settings.vfsAIOForkEnabled = false
+        let encoded = try JSONEncoder().encode(settings)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["vfsAIOForkOn"] as? Bool, false)
+        XCTAssertNil(object["vfsAIOForkEnabled"])
+        XCTAssertFalse(try JSONDecoder().decode(DeviceProfileSettings.self, from: encoded).vfsAIOForkEnabled)
+    }
+
     func testProfileSettingsDecodeMissingNewKeysWithDefaults() throws {
         let data = Data("""
         {
@@ -174,7 +188,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.requireSMBEncryption, false)
         XCTAssertEqual(settings.forceDisableSMBSigningAndEncryption, false)
         XCTAssertEqual(settings.fruitMetadataNetatalk, true)
-        XCTAssertEqual(settings.vfsAIOForkEnabled, false)
+        XCTAssertEqual(settings.vfsAIOForkEnabled, true)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
         XCTAssertEqual(settings.ataIdleSeconds, 300)

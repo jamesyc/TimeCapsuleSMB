@@ -852,7 +852,7 @@ if sys.argv[1] == "df":
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
-                "TC_VFS_AIO_FORK_ENABLED": "true",
+                "TC_VFS_AIO_FORK_DISABLED": "false",
             }
         )
 
@@ -988,7 +988,7 @@ if sys.argv[1] == "df":
                 "TC_SMB_BROWSE_COMPATIBILITY": "false",
                 "TC_ANY_PROTOCOL": "false",
                 "TC_FRUIT_METADATA_NETATALK": "false",
-                "TC_VFS_AIO_FORK_ENABLED": "false",
+                "TC_VFS_AIO_FORK_DISABLED": "true",
             }
         )
 
@@ -1078,7 +1078,7 @@ if sys.argv[1] == "df":
                 "TC_MDNS_ADVERTISE_AFP": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
-                "TC_VFS_AIO_FORK_ENABLED": "true",
+                "TC_VFS_AIO_FORK_DISABLED": "false",
             }
         )
 
@@ -1102,6 +1102,23 @@ if sys.argv[1] == "df":
         self.assertIn("FRUIT_METADATA_NETATALK=0\n", rendered)
         self.assertIn("VFS_AIO_FORK_ENABLED=0\n", rendered)
 
+
+    def test_flash_runtime_config_turns_vfs_aio_fork_on_unless_disabled(self) -> None:
+        home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
+        cases = (
+            ("no key", {}, None, "1"),
+            # The old opt-in key, saved as "false" by default, decides nothing.
+            ("old key false", {"TC_VFS_AIO_FORK_ENABLED": "false"}, None, "1"),
+            ("disabled", {"TC_VFS_AIO_FORK_DISABLED": "true"}, None, "0"),
+            ("not disabled", {"TC_VFS_AIO_FORK_DISABLED": "false"}, None, "1"),
+            ("override off", {"TC_VFS_AIO_FORK_DISABLED": "false"}, False, "0"),
+            ("override on", {"TC_VFS_AIO_FORK_DISABLED": "true"}, True, "1"),
+        )
+        for name, values, override, expected in cases:
+            with self.subTest(name):
+                rendered = render_flash_runtime_config(AppConfig.from_values(values), home,
+                                                       vfs_aio_fork_enabled=override)
+                self.assertIn(f"\nVFS_AIO_FORK_ENABLED={expected}\n", rendered)
 
     def test_flash_runtime_config_uses_drive_settings_from_config(self) -> None:
         config = AppConfig.from_values(
