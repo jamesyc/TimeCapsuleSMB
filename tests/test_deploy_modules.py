@@ -45,6 +45,7 @@ from timecapsulesmb.deploy.executor import (
     upload_deployment_payload,
 )
 from timecapsulesmb.deploy.migration import (
+    MigrationExitError,
     MigrationStalledError,
     OversizedSummary,
     OversizedValue,
@@ -1076,6 +1077,45 @@ class DeployModuleTests(unittest.TestCase):
                     # Telemetry still counts them.
                     self.assertEqual(migrations[1]["skipped_not_found"], skipped["copy"].counts["not_found"])
 
+    def test_skips_of_volumes_finished_before_a_cleanup_failure_are_still_shown(self) -> None:
+        """A volume whose cleanup finished is saved as complete and never
+        walked again, so a failure on a later volume must not swallow its
+        skipped entries."""
+        finished = SkippedSummary({**dict.fromkeys(SKIP_REASONS, 0), "malformed": 1},
+                                  [SkippedEntry("malformed", "/Volumes/dk2/Photos/._x.jpg")])
+        for phase in ("copy", "cleanup"):
+            with self.subTest(phase=phase):
+                messages, measurements = [], []
+
+                def migrate(_connection, _plan, *, phase: str, inventory, failing=phase):
+                    inventory.skipped[phase] = finished
+                    if phase == failing:
+                        raise RuntimeError("opendir failed path=/Volumes/dk3/x")
+                    return XattrMigrationResult(f"phase={phase}", (self._mast_volume(),), (), None, 0, False,
+                                                finished)
+
+                with self.assertRaises(DeployDeviceError):
+                    upload_and_verify_deployment_payload(
+                        AppConfig.from_values({}), SshConnection("host", "pw", ""),
+                        self._prepared_deploy_plan(), DeployRuntimeConfig(),
+                        callbacks=OperationCallbacks(
+                            log=messages.append,
+                            record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
+                        run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
+                        migrate_xattrs_func=migrate,
+                        probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                        flush_remote_writes=mock.Mock(),
+                        verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+                    )
+                failure = [fields for kind, fields in measurements
+                           if kind == "xattr_migration" and fields["result"] == "failure"][0]
+                self.assertEqual(failure["skipped_malformed"], 1)
+                # A failed copy leaves every volume to be walked again: nothing
+                # is final yet, so nothing is shown.
+                shown = "1 ._ file is damaged and was kept unchanged." in messages
+                self.assertEqual(shown, phase == "cleanup")
+                self.assertEqual("  /Volumes/dk2/Photos/._x.jpg" in messages, phase == "cleanup")
+
     def test_dropped_verified_rows_are_recorded_for_cleanup_without_the_copy_path(self) -> None:
         for dropped in (0, 3):
             with self.subTest(dropped=dropped):
@@ -1136,6 +1176,59 @@ class DeployModuleTests(unittest.TestCase):
                     RemovePathsAction((RAM_HELPER,)) in call.args[1]
                     for call in remote_actions.call_args_list
                 ))
+
+    def test_migrator_ended_by_a_signal_is_reported_as_stopped_or_crashed(self) -> None:
+        cases = (
+            (137, 9, "xattr_migration_stopped", "The device stopped the Samba metadata migration (signal 9)."),
+            (143, 15, "xattr_migration_stopped", "The device stopped the Samba metadata migration (signal 15)."),
+            (139, 11, "xattr_migration_crashed", "The Samba metadata migration crashed on the device (signal 11)."),
+            (138, 10, "xattr_migration_crashed", "The Samba metadata migration crashed on the device (signal 10)."),
+            (134, 6, "xattr_migration_crashed", "The Samba metadata migration crashed on the device (signal 6)."),
+            (4, None, "xattr_migration_failed", "Native HFS metadata migration (copy) failed."),
+            # Only ssh reports 255, after its login: the connection dropped.
+            (255, None, "xattr_migration_connection_lost",
+             "The connection to the device was lost during the Samba metadata migration. The migration may still "
+             "be running on the device. Rerun deploy: it waits for a running migration to finish first."),
+        )
+        for status, signal_number, code, first_line in cases:
+            with self.subTest(status=status):
+                measurements = []
+                error = MigrationExitError(f"Native metadata migration failed with exit status {status}.", status)
+                with self.assertRaises(DeployDeviceError) as caught:
+                    upload_and_verify_deployment_payload(
+                        AppConfig.from_values({}), SshConnection("host", "pw", ""),
+                        self._prepared_deploy_plan(), DeployRuntimeConfig(),
+                        callbacks=OperationCallbacks(
+                            record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
+                        run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
+                        migrate_xattrs_func=mock.Mock(side_effect=error),
+                        probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    )
+                self.assertEqual(caught.exception.code, code)
+                message = str(caught.exception)
+                self.assertEqual(message.splitlines()[0].split(" Verified")[0], first_line)
+                # Only a dropped connection leaves a migration that may still run.
+                self.assertEqual("may still be running" in message, status == 255)
+                # The cause of a stop is unknown; the message must not guess one.
+                self.assertNotIn("memory", message)
+                self.assertIn(f"exit status {status}", message)
+                migration = next(fields for kind, fields in measurements if kind == "xattr_migration")
+                self.assertEqual((migration["exit_status"], migration["exit_signal"]), (status, signal_number))
+
+        # Failures that are not an exit status record none.
+        measurements = []
+        with self.assertRaises(DeployDeviceError):
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}), SshConnection("host", "pw", ""),
+                self._prepared_deploy_plan(), DeployRuntimeConfig(),
+                callbacks=OperationCallbacks(
+                    record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
+                run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
+                migrate_xattrs_func=mock.Mock(side_effect=MigrationStalledError("no progress")),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            )
+        migration = next(fields for kind, fields in measurements if kind == "xattr_migration")
+        self.assertEqual((migration["exit_status"], migration["exit_signal"]), (None, None))
 
     def test_source_inspection_stall_uses_migration_classification(self) -> None:
         remote_actions = mock.Mock()

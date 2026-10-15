@@ -22,6 +22,8 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import (
+    CRASH_SIGNALS,
+    MigrationExitError,
     MigrationStalledError,
     NATIVE_TIMEOUT_SECONDS,
     NATIVE_XATTR_LIMIT,
@@ -162,6 +164,22 @@ XATTR_MIGRATION_TIMEOUT_MESSAGE = (
 XATTR_MIGRATION_STALLED_MESSAGE = (
     "Samba metadata migration stopped after making no progress. "
     "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
+)
+# No cause is offered for a stopped migrator: a signal 9 can be the kernel out
+# of memory, uninstall stopping it, or someone killing it by hand.
+XATTR_MIGRATION_STOPPED_MESSAGE = (
+    "The device stopped the Samba metadata migration (signal {signal}). "
+    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy."
+)
+XATTR_MIGRATION_CRASHED_MESSAGE = (
+    "The Samba metadata migration crashed on the device (signal {signal}). "
+    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy."
+)
+# The migrator outlives a dropped ssh session, but the drop may also be the
+# device restarting, so it may or may not still be running.
+XATTR_MIGRATION_CONNECTION_LOST_MESSAGE = (
+    "The connection to the device was lost during the Samba metadata migration. The migration may still be "
+    "running on the device. Rerun deploy: it waits for a running migration to finish first."
 )
 PREVIOUS_MIGRATION_STALLED_MESSAGE = (
     "A metadata migration left on the device by an earlier installation stopped making progress, "
@@ -1110,6 +1128,10 @@ def upload_and_verify_deployment_payload(
         elapsed = round(time.monotonic() - started, 3)
         stalled = isinstance(exc, MigrationStalledError)
         timed_out = is_ssh_timeout_error(exc)
+        exit_status = exc.status if isinstance(exc, MigrationExitError) else None
+        exit_signal = exc.signal if isinstance(exc, MigrationExitError) else None
+        # The volumes this phase finished before failing.
+        skipped = inventory.skipped.get(phase)
         diagnostic = (
             f"phase={phase} elapsed_seconds={elapsed} "
             f"stall_seconds={STALL_SECONDS} "
@@ -1128,7 +1150,16 @@ def upload_and_verify_deployment_payload(
             log_path=log,
             result="failure",
             error_type=type(exc).__name__,
+            exit_status=exit_status,
+            exit_signal=exit_signal,
+            **_skipped_measurement(skipped),
         )
+        # A volume whose cleanup finished before the failure is saved as
+        # complete and never walked again: this is the only time its skipped
+        # entries can be shown.
+        if phase == "cleanup" and skipped is not None:
+            for line in _skipped_summaries(skipped, share_path):
+                callbacks.message(line)
         callbacks.debug(**{f"xattr_migration_{phase}_failure": diagnostic,
                            f"xattr_migration_{phase}_error": str(exc)})
         if stalled:
@@ -1140,6 +1171,18 @@ def upload_and_verify_deployment_payload(
             raise DeployDeviceError(
                 f"{XATTR_MIGRATION_TIMEOUT_MESSAGE}\n{diagnostic}\n{exc}",
                 code="xattr_migration_timeout",
+            ) from exc
+        if isinstance(exc, MigrationExitError) and exc.connection_lost:
+            raise DeployDeviceError(
+                f"{XATTR_MIGRATION_CONNECTION_LOST_MESSAGE}\n{diagnostic}\n{exc}",
+                code="xattr_migration_connection_lost",
+            ) from exc
+        if exit_signal is not None:
+            crashed = exit_signal in CRASH_SIGNALS
+            message = XATTR_MIGRATION_CRASHED_MESSAGE if crashed else XATTR_MIGRATION_STOPPED_MESSAGE
+            raise DeployDeviceError(
+                f"{message.format(signal=exit_signal)}\n{diagnostic}\n{exc}",
+                code="xattr_migration_crashed" if crashed else "xattr_migration_stopped",
             ) from exc
         raise DeployDeviceError(
             f"Native HFS metadata migration ({phase}) failed.\n{diagnostic}\n{exc}",

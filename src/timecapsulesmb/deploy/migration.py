@@ -70,6 +70,32 @@ class MigrationStalledError(RuntimeError):
     """The native migrator made no progress before its inactivity guard fired."""
 
 
+# NetBSD's numbers for the signals that mean the migrator itself faulted
+# (SIGILL, SIGABRT, SIGFPE, SIGBUS, SIGSEGV) rather than something ending it.
+CRASH_SIGNALS = frozenset({4, 6, 8, 10, 11})
+
+
+class MigrationExitError(RuntimeError):
+    """The native migrator exited with a failure status."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def signal(self) -> int | None:
+        """The signal that ended it: the remote shell reports one as 128 + N.
+        255 is ssh's own failure, never the shell's."""
+        return self.status - 128 if 128 < self.status < 255 else None
+
+    @property
+    def connection_lost(self) -> bool:
+        """ssh lost its connection after the migrator started. ssh raises
+        every failure before its login (run_ssh_input), and neither the
+        migrator nor the shell around it exits 255, so 255 can only be that."""
+        return self.status == 255
+
+
 def normalized_uuid(value: str) -> str:
     try:
         return str(uuid.UUID(value))
@@ -382,10 +408,15 @@ def _native(connection: SshConnection, arguments: list[str], *, request: bytes =
     if log is not None:
         command.extend(["--log", log])
     command.extend(arguments)
+    # Not exec: when a signal ends the migrator, ssh alone reports only 255.
+    # The shell outlives it and passes on its status, 128 + the signal, and
+    # names the signal on stderr. Any other status passes through unchanged.
+    remote = (shlex.join(command) + '; s=$?; if [ "$s" -gt 128 ]; then '
+              'echo "migrator stopped by signal $((s - 128))" >&2; fi; exit "$s"')
     try:
         result = run_ssh_input(
             connection,
-            "exec " + shlex.join(command),
+            remote,
             input_bytes=request,
             timeout=NATIVE_TIMEOUT_SECONDS,
             raw_remote_status=True,
@@ -405,10 +436,11 @@ def _native(connection: SshConnection, arguments: list[str], *, request: bytes =
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", "replace").strip()
         tail = _saved_log_snapshot(connection, log)
-        raise RuntimeError(
+        raise MigrationExitError(
             f"Native metadata migration failed with exit status {result.returncode}"
             f"{f': {detail}' if detail else ''}.\n"
-            f"Saved migration log snapshot ({log}; may be incomplete):\n{tail}"
+            f"Saved migration log snapshot ({log}; may be incomplete):\n{tail}",
+            result.returncode,
         )
     if len(result.stdout) > MAX_RECEIPT_BYTES:
         raise RuntimeError("Migration coverage exceeds the supported size")

@@ -9,6 +9,7 @@ import json
 import os
 import shlex
 from pathlib import Path
+import signal
 import subprocess
 from types import SimpleNamespace
 
@@ -370,7 +371,10 @@ def test_legacy_config_is_only_parsed_as_data(text, expected):
     assert m.legacy_mode(text) == expected
 
 
-def test_native_command_uses_direct_guarded_single_attempt(monkeypatch):
+def test_native_command_is_one_guarded_attempt_carrying_the_request(monkeypatch):
+    """One ssh attempt with no timeout, the request on stdin and the raw
+    status; test_native_command_reports_the_signal_that_ended_the_migrator
+    runs the command itself."""
     captured = []
     def run(_conn, command, **kwargs):
         captured.append((command, kwargs))
@@ -382,15 +386,16 @@ def test_native_command_uses_direct_guarded_single_attempt(monkeypatch):
         request=b"request",
         log="/disk/log",
     ) == {"version": 1}
-    assert captured == [(
-        "exec /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log /disk/log multi copy",
-        {
-            "input_bytes": b"request",
-            "timeout": None,
-            "raw_remote_status": True,
-            "extra_ssh_args": m.NATIVE_SSH_ARGS,
-        },
-    )]
+    command, kwargs = captured[0]
+    assert len(captured) == 1
+    assert shlex.split(command.split(";")[0]) == [
+        "/mnt/Memory/tc-xattr-hfs-migrate", "--stall-seconds", "300", "--log", "/disk/log", "multi", "copy"]
+    assert kwargs == {
+        "input_bytes": b"request",
+        "timeout": None,
+        "raw_remote_status": True,
+        "extra_ssh_args": m.NATIVE_SSH_ARGS,
+    }
 
 
 def test_native_stall_reports_saved_log_with_bounded_diagnostic_read(monkeypatch):
@@ -450,6 +455,66 @@ def test_native_requires_zero_status_and_valid_json(monkeypatch, status, stdout,
     )
     with pytest.raises(RuntimeError, match=message):
         m._native(SshConnection("test", "", ""), ["inspect", "/disk/tdb"])
+
+
+@pytest.mark.parametrize("helper, status, stderr", [
+    ("kill -9 $$", 137, "migrator stopped by signal 9\n"),
+    ("kill -SEGV $$", 128 + signal.SIGSEGV, f"migrator stopped by signal {signal.SIGSEGV}\n"),
+    ("exit 75", 75, ""),
+    ("exit 4", 4, ""),
+    ('printf \'{"version":1}\'', 0, ""),
+])
+def test_native_command_reports_the_signal_that_ended_the_migrator(monkeypatch, tmp_path, helper, status, stderr):
+    """The remote command, run by a real shell around a helper that ends as
+    the migrator might: a signal becomes 128 + N and a named stderr line
+    instead of ssh's bare 255; any other status passes through."""
+    fake = tmp_path / "helper"
+    fake.write_text(f"#!/bin/sh\n{helper}\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(m, "RAM_HELPER", str(fake))
+    ran = []
+
+    def run(_conn, command, **_kwargs):
+        ran.append(subprocess.run(["/bin/sh", "-c", command], capture_output=True))
+        return ran[-1]
+    monkeypatch.setattr(m, "run_ssh_input", run)
+    monkeypatch.setattr(m, "run_ssh", lambda *_a, **_k: SimpleNamespace(stdout=""))
+    try:
+        m._native(SshConnection("test", "", ""), ["inspect", "/disk/tdb"])
+    except (m.MigrationExitError, m.MigrationStalledError):
+        pass
+    # A shell may report the kill itself first (macOS sh prints "Killed: 9").
+    assert ran[0].returncode == status
+    assert ran[0].stderr.decode().endswith(stderr) if stderr else ran[0].stderr == b""
+
+
+@pytest.mark.parametrize("status, signal_number", [(137, 9), (139, 11), (134, 6), (4, None), (128, None), (255, None)])
+def test_native_failure_carries_its_exit_status_and_signal(monkeypatch, status, signal_number):
+    """255 is ssh's own: it raises every failure before its login, so a 255
+    it returns means the connection dropped after the migrator started."""
+    monkeypatch.setattr(m, "run_ssh_input",
+                        lambda *_a, **_k: subprocess.CompletedProcess([], status, b"", b"migrator stopped"))
+    monkeypatch.setattr(m, "run_ssh", lambda *_a, **_k: SimpleNamespace(stdout=""))
+    with pytest.raises(m.MigrationExitError, match=f"exit status {status}: migrator stopped") as caught:
+        m._native(SshConnection("test", "", ""), ["multi", "copy"], log="/disk/log")
+    # 255 is ssh's own failure: the shell around the migrator never reports it.
+    assert (caught.value.status, caught.value.signal) == (status, signal_number)
+    assert caught.value.connection_lost is (status == 255)
+
+
+def test_native_command_still_passes_the_request_to_the_migrator(monkeypatch, tmp_path):
+    """The shell around the migrator must hand it ssh's stdin untouched: the
+    request goes in there and the report comes back on stdout."""
+    fake = tmp_path / "helper"
+    fake.write_text("#!/bin/sh\ncat\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(m, "RAM_HELPER", str(fake))
+    request = json.dumps({"version": 1, "request": "TCMIGRATE1\n" + "R x\n" * 2000}).encode()
+
+    def run(_conn, command, *, input_bytes=b"", **_kwargs):
+        return subprocess.run(["/bin/sh", "-c", command], input=input_bytes, capture_output=True)
+    monkeypatch.setattr(m, "run_ssh_input", run)
+    assert m._native(SshConnection("test", "", ""), ["multi", "copy"], request=request) == json.loads(request)
 
 
 KEY_X = "04000000000000000100000000000000"
