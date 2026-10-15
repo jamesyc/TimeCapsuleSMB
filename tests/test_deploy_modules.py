@@ -88,6 +88,7 @@ from timecapsulesmb.device.probe import (
     ProbeStepResult,
     ReadinessProbeResult,
     SMBD_STATUS_HELPERS,
+    _parse_link_plan,
     apple_bonjour_host_label,
     derive_runtime_naming_identity,
     extract_airport_identity_from_acp_output,
@@ -2094,6 +2095,48 @@ describe_managed_smbd_status "" ""
         self.assertIn("PASS:Apple mDNSResponder listens on UDP 5353 for IPv4 and IPv6", result.lines)
         self.assertIn("PASS:no other process holds UDP 5353", result.lines)
         self.assertIn("PASS:mdns link plan validated mode=bridge; SMB on bridge0(lan)", result.lines)
+
+    def test_probe_managed_mdns_link_plan_reports_the_address_the_session_reached(self) -> None:
+        """The plan step runs as written under a real shell: sshd's
+        SSH_CONNECTION gives the session line, and the plan's own status
+        still decides the step."""
+        _, run_ssh_mock = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+        command = run_ssh_mock.call_args_list[3].args[1]
+
+        def run_plan_step(ssh_connection: str | None, status: int) -> subprocess.CompletedProcess[str]:
+            with tempfile.TemporaryDirectory() as directory:
+                service = Path(directory) / "service"
+                service.write_text(f"#!/bin/sh\nprintf '%s' {shlex.quote(self.PLAN_V31)}\nexit {status}\n")
+                service.chmod(0o755)
+                env = {"PATH": "/bin:/usr/bin", "RUNTIME_SERVICE_BIN": str(service)}
+                if ssh_connection is not None:
+                    env["SSH_CONNECTION"] = ssh_connection
+                return subprocess.run(command, shell=True, env=env, capture_output=True, text=True, check=False)
+
+        reached = run_plan_step("169.254.24.209 50000 169.254.247.225 22", 0)
+        self.assertEqual(reached.returncode, 0)
+        self.assertEqual(reached.stdout.splitlines()[0], "session: server=169.254.247.225")
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=reached.stdout, stderr=""),
+        ])
+        self.assertTrue(result.ready, result.lines)
+        self.assertEqual(result.link_plan["session_server"], "169.254.247.225")
+        self.assertIn("PASS:mdns link plan validated mode=bridge; SMB on bridge0(lan)", result.lines)
+
+        # Without SSH_CONNECTION the session field is empty, never an error.
+        unset = run_plan_step(None, 0)
+        self.assertEqual(unset.returncode, 0)
+        self.assertEqual(_parse_link_plan(unset.stdout)["session_server"], "")
+        # The plan's own failure stays the step's status.
+        self.assertEqual(run_plan_step("169.254.24.209 50000 169.254.247.225 22", 13).returncode, 13)
 
     def test_probe_managed_mdns_fails_when_apple_daemon_is_dead_or_diskd_is_on_the_lan(self) -> None:
         ps_out = (

@@ -1313,10 +1313,13 @@ def _argv_has_pair(argv: list[str], flag: str, value: str) -> bool:
 
 
 def _parse_link_plan(text: str) -> dict[str, object]:
-    """Parses `--print-link-plan` output (guide C.2): status, mode, links with masks."""
+    """Parses `--print-link-plan` output (guide C.2): status, mode, links with
+    masks, their addresses, and the probe script's `session:` line (the
+    device address the SSH session reached)."""
     status = ""
     mode = ""
     reason = ""
+    session_server = ""
     links: list[dict[str, str]] = []
     addresses: list[dict[str, str]] = []
     for raw_line in text.splitlines():
@@ -1340,7 +1343,16 @@ def _parse_link_plan(text: str) -> dict[str, object]:
             links.append(fields)
         elif kind == "addr":
             addresses.append(fields)
-    return {"status": status, "mode": mode, "reason": reason, "links": links, "addresses": addresses}
+        elif kind == "session":
+            session_server = fields.get("server", "")
+    return {
+        "status": status,
+        "mode": mode,
+        "reason": reason,
+        "links": links,
+        "addresses": addresses,
+        "session_server": session_server,
+    }
 
 
 LinkPlanNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
@@ -1392,6 +1404,61 @@ def link_plan_networks(
         return (), ()
     unserved = [(role, network) for role, network in unserved if not any(network.overlaps(item) for item in served)]
     return tuple(dict.fromkeys(served)), tuple(dict.fromkeys(unserved))
+
+
+def _scoped_address(text: str) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address | None, str]:
+    """An address and its %scope ("" without one), an IPv4-mapped one as
+    IPv4; (None, "") for text that is not an address."""
+    address_text, _, scope = text.partition("%")
+    try:
+        address = ipaddress.ip_address(address_text)
+    except ValueError:
+        return None, ""
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped, ""
+    return address, scope
+
+
+def link_plan_session_link(plan: dict[str, object] | None) -> tuple[str, LinkPlanNetwork] | None:
+    """(role, network) of the WAN or guest link this SSH session reached the
+    device on, when that link does not share disks and the address reached is
+    link-local.
+
+    fe80::/64 is on every link, and 169.254.0.0/16 can be on the WAN port or
+    the LAN bridge, so link_plan_networks leaves link-local networks out; the
+    exact address reached names one link. A link-local address is
+    never routed, so reaching one puts this computer on that link. A routed
+    WAN address says nothing about where this computer is.
+
+    The same link-local address can sit on more than one link. A %scope then
+    names the link (by name or index); without one, an address on several
+    links names none.
+    """
+    if plan is None:
+        return None
+    reached, scope = _scoped_address(str(plan.get("session_server") or ""))
+    if reached is None or not reached.is_link_local:
+        return None
+    links = {str(link.get("index", "")): link for link in plan.get("links") or ()}
+    holders: list[tuple[dict[str, str] | None, str]] = []
+    for addr in plan.get("addresses") or ():
+        if _scoped_address(str(addr.get("addr", "")))[0] != reached:
+            continue
+        index = str(addr.get("link", ""))
+        link = links.get(index)
+        if scope and scope not in (index, str(addr.get("scope", "")), str((link or {}).get("name", ""))):
+            continue
+        holders.append((link, str(addr.get("prefix", ""))))
+    if len(holders) != 1:
+        return None
+    link, prefix = holders[0]
+    role = str(link.get("role", "")) if link is not None else ""
+    if role not in ("wan", "guest") or link_shares_smb(link):
+        return None
+    try:
+        return role, ipaddress.ip_interface(f"{reached}/{prefix}").network
+    except ValueError:
+        return None
 
 
 MDNS_REGISTRATIONS_STILL_STARTING = "discovery Bonjour registrations are still starting"
@@ -1598,9 +1665,15 @@ exit 0
         else:
             _append_step(steps, "mdns_5353_exclusive", "pass", "no other process holds UDP 5353")
 
+    # sshd sets SSH_CONNECTION to "client_ip client_port server_ip
+    # server_port"; server_ip is the device address this session reached,
+    # which says which link this computer is on (link_plan_session_link).
+    # exec keeps the plan's own exit status.
     plan_script = r'''
 RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
-"$RUNTIME_SERVICE_BIN" --print-link-plan
+set -- $SSH_CONNECTION
+echo "session: server=$3"
+exec "$RUNTIME_SERVICE_BIN" --print-link-plan
 '''
     plan_step, plan_proc = _run_timed_probe_step(
         connection,

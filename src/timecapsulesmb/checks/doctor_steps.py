@@ -124,6 +124,7 @@ from timecapsulesmb.device.probe import (
     limit_remote_log_tail,
     link_plan_ipv4_kinds,
     link_plan_networks,
+    link_plan_session_link,
     AirportAcpReading,
     password_check_fields,
     read_admin_password,
@@ -1592,16 +1593,26 @@ def client_on_unshared_network_message(
     shared_networks: Iterable[IpNetwork],
     *,
     platform: str | None = None,
+    cabled: bool = False,
 ) -> str:
+    """`cabled`: this computer reached the device at a link-local address,
+    so it is on that link's own cable rather than on a network of its own."""
     computer = "this Mac" if (platform or sys.platform) == "darwin" else "this computer"
     distinct_roles = set(roles)
-    place = _UNSHARED_NETWORK_PLACES.get(next(iter(distinct_roles))) if len(distinct_roles) == 1 else None
+    role = next(iter(distinct_roles)) if len(distinct_roles) == 1 else None
+    place = _UNSHARED_NETWORK_PLACES.get(role) if role is not None else None
     # The message reaches telemetry in doctor's error, so public networks are
     # shown only by family and prefix length.
     client = ", ".join(reportable_network(network, hide_hosts=True) for network in client_networks)
     shared = ", ".join(reportable_network(network) for network in shared_networks)
+    # A self-assigned 169.254 or fe80 range says nothing to a reader.
+    where = (
+        "plugged straight into the device's internet (WAN) port"
+        if cabled and role == "wan"
+        else f"on {place or 'a device network'} ({client})"
+    )
     return (
-        f"{computer} is on {place or 'a device network'} ({client}), "
+        f"{computer} is {where}, "
         f"where the device does not share its disks; join the device's main network ({shared}) "
         f"by Wi-Fi or one of its LAN ports, then run doctor again. Bonjour and SMB were not checked from {computer}"
     )
@@ -1619,28 +1630,44 @@ def _doctor_check_unshared_network(
     (the runtime applies Apple's rules: in router mode the WAN side and the
     guest network only with "Share disks over WAN"). Bonjour, SMB and NBNS
     from such a network fail without saying why, so the caller skips them.
+
+    Networks decide first. A link with only a link-local address (a WAN port
+    with no DHCP server, cabled straight to this computer) has no network
+    that tells links apart, so the link-local address this SSH session
+    reached decides then.
     """
     if not remote.remote_checks_enabled:
         return False
     shared, unshared = link_plan_networks(link_plan)
-    if not unshared:
+    if not shared:
         return False
     local = [item.network for item in local_lan_networks()]
     if any(network.overlaps(item) for network in shared for item in local):
         return False
     matched = [(role, network) for role, network in unshared if any(network.overlaps(item) for item in local)]
-    if not matched:
-        return False
-    client = [item for item in local if any(item.overlaps(network) for _, network in matched)]
+    details: dict[str, object] = {"code": DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK}
+    if matched:
+        client = [item for item in local if any(item.overlaps(network) for _, network in matched)]
+        details["matched_by"] = "network"
+        details["client_networks"] = [reportable_network(network, hide_hosts=True) for network in client]
+    else:
+        session_link = link_plan_session_link(link_plan)
+        if session_link is None:
+            return False
+        matched = [session_link]
+        # The device link's link-local network, which this computer's end of
+        # the cable shares; not one of this computer's own networks.
+        client = [session_link[1]]
+        details["matched_by"] = "session_address"
+        details["session_link_network"] = reportable_network(session_link[1])
+    details["unshared_networks"] = [{"role": role, "network": reportable_network(network)} for role, network in matched]
+    details["shared_networks"] = [reportable_network(network) for network in shared]
     sink.add(CheckResult(
         "FAIL",
-        client_on_unshared_network_message(client, (role for role, _ in matched), shared),
-        {
-            "code": DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK,
-            "client_networks": [reportable_network(network, hide_hosts=True) for network in client],
-            "unshared_networks": [{"role": role, "network": reportable_network(network)} for role, network in matched],
-            "shared_networks": [reportable_network(network) for network in shared],
-        },
+        client_on_unshared_network_message(
+            client, (role for role, _ in matched), shared, cabled=details["matched_by"] == "session_address",
+        ),
+        details,
     ))
     return True
 

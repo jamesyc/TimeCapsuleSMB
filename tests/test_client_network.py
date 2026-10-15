@@ -24,7 +24,12 @@ from timecapsulesmb.checks.doctor_steps import (
 )
 from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, host_networks, interface_kind, local_lan_networks
-from timecapsulesmb.device.probe import ReadinessProbeResult, _parse_link_plan, link_plan_networks
+from timecapsulesmb.device.probe import (
+    ReadinessProbeResult,
+    _parse_link_plan,
+    link_plan_networks,
+    link_plan_session_link,
+)
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.acp_ssh import (
     ACPDeviceOffNetworkError,
@@ -88,22 +93,36 @@ def router_plan(
     *,
     wan_mask: str = "none",
     guest_mask: str = "none",
-    wan_ipv4: str = "192.168.1.57",
+    wan_ipv4: str | None = "192.168.1.57",
     status: str = "validated",
     lan_mask: str = "smb,adisk",
+    wan_link_local: str | None = None,
+    lan_link_local: str | None = "169.254.147.85",
+    guest_link_local: str | None = None,
+    session_server: str | None = None,
 ) -> str:
     """The NetBSD 4 plan above with the device in router mode, as two v3.3.0
     field devices reported: WAN on mgi1 (upstream 192.168.1.0/24 and its ULA
-    prefix), the LAN bridge on Apple's 10.0.1.1, the guest network on bridge1."""
+    prefix), the LAN bridge on Apple's 10.0.1.1, the guest network on bridge1.
+
+    The LAN bridge's 169.254 alias comes from the bridge-mode capture above.
+    In router mode Apple runs `link_local` on the WAN port only, so
+    lan_link_local=None is that shape.
+    wan_ipv4=None with wan_link_local is a WAN port without a DHCP lease;
+    session_server is the device address the doctor's SSH session reached."""
+    lan_ll = "" if lan_link_local is None else f"addr: link=9 family=inet addr={lan_link_local} prefix=16\n"
+    session = "" if session_server is None else f"session: server={session_server}\n"
+    wan_addr = "" if wan_ipv4 is None else f"addr: link=2 family=inet addr={wan_ipv4} prefix=24\n"
+    wan_ll = "" if wan_link_local is None else f"addr: link=2 family=inet addr={wan_link_local} prefix=16\n"
+    guest_ll = "" if guest_link_local is None else f"addr: link=10 family=inet addr={guest_link_local} prefix=16\n"
     return f"""\
-plan: status={status} mode=nat stale_seconds=0 diskless=0
+{session}plan: status={status} mode=nat stale_seconds=0 diskless=0
 config: advertise_afp=0
-acp: raNA=1 raDS=1 waNM=1 usbF=0x450 laIP=10.0.1.1 waIP={wan_ipv4} waLL=unavailable gnRo=172.16.42.1
+acp: raNA=1 raDS=1 waNM=1 usbF=0x450 laIP=10.0.1.1 waIP={wan_ipv4 or "unavailable"} waLL=unavailable gnRo=172.16.42.1
 identity: instance="Time Capsule bcca1b" netbios=time-capsule-bc wama=E8:8D:28:58:F1:5C
 link: name=mgi0 index=1 role=isolated mask=none
 link: name=mgi1 index=2 role=wan mask={wan_mask}
-addr: link=2 family=inet addr={wan_ipv4} prefix=24
-addr: link=2 family=inet6 addr=fe80::ea8d:28ff:fe58:f15d scope=2 prefix=64
+{wan_addr}{wan_ll}addr: link=2 family=inet6 addr=fe80::ea8d:28ff:fe58:f15d scope=2 prefix=64
 addr: link=2 family=inet6 addr=fdca:7da7:ed32:428b:ea8d:28ff:fe58:f15d scope=2 prefix=64
 link: name=lo0 index=5 role=isolated mask=none
 addr: link=5 family=inet addr=127.0.0.1 prefix=8
@@ -111,10 +130,9 @@ addr: link=5 family=inet6 addr=::1 scope=5 prefix=128
 link: name=bridge0 index=9 role=lan mask={lan_mask}
 addr: link=9 family=inet6 addr=fe80::ea8d:28ff:fe58:f15c scope=9 prefix=64
 addr: link=9 family=inet addr=10.0.1.1 prefix=24
-addr: link=9 family=inet addr=169.254.147.85 prefix=16
-link: name=bridge1 index=10 role=guest mask={guest_mask}
+{lan_ll}link: name=bridge1 index=10 role=guest mask={guest_mask}
 addr: link=10 family=inet addr=172.16.42.1 prefix=24
-"""
+{guest_ll}"""
 
 
 def net(text: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
@@ -185,6 +203,88 @@ class LinkPlanNetworksTests(unittest.TestCase):
         text = router_plan() + "addr: link=10 family=inet addr=172.16.43.1\naddr: link=10 family=inet addr=bogus prefix=24\n"
         _shared, unshared = link_plan_networks(_parse_link_plan(text))
         self.assertEqual([network for role, network in unshared if role == "guest"], [net("172.16.42.0/24")])
+
+
+class LinkPlanSessionLinkTests(unittest.TestCase):
+    """The link a doctor SSH session reached, from the plan's session line."""
+
+    # A WAN port with no DHCP server: only Apple's self-assigned address, which
+    # in router mode only the WAN port has.
+    NO_LEASE = dict(wan_ipv4=None, wan_link_local="169.254.247.225", lan_link_local=None)
+
+    def session_link(self, **kwargs: object):
+        return link_plan_session_link(_parse_link_plan(router_plan(**kwargs)))
+
+    def test_the_parser_reads_the_session_address(self) -> None:
+        self.assertEqual(_parse_link_plan(router_plan(session_server="169.254.247.225"))["session_server"], "169.254.247.225")
+        self.assertEqual(_parse_link_plan(router_plan())["session_server"], "")
+        # An sshd that sets no SSH_CONNECTION prints an empty field.
+        self.assertEqual(_parse_link_plan("session: server=\n" + router_plan())["session_server"], "")
+
+    def test_a_link_local_wan_address_names_the_wan_link(self) -> None:
+        self.assertEqual(self.session_link(session_server="169.254.247.225", **self.NO_LEASE), ("wan", net("169.254.0.0/16")))
+
+    def test_ipv6_link_local_and_ipv4_mapped_forms_match(self) -> None:
+        cases = {
+            "IPv6 with scope": ("fe80::ea8d:28ff:fe58:f15d%mgi1", ("wan", net("fe80::/64"))),
+            "IPv6 without scope": ("fe80::ea8d:28ff:fe58:f15d", ("wan", net("fe80::/64"))),
+            "IPv4-mapped": ("::ffff:169.254.247.225", ("wan", net("169.254.0.0/16"))),
+        }
+        for name, (server, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self.session_link(session_server=server, **self.NO_LEASE), expected)
+
+    def test_a_link_local_guest_address_names_the_guest_link(self) -> None:
+        # The device runs the guest network's DHCP, so this is the guest
+        # role's code path, handled as the WAN role's is.
+        self.assertEqual(
+            self.session_link(session_server="169.254.9.9", guest_link_local="169.254.9.9", lan_link_local=None),
+            ("guest", net("169.254.0.0/16")),
+        )
+
+    def test_a_scope_names_the_link_when_two_links_share_an_address(self) -> None:
+        # Both links carry fe80::aa; the WAN is listed first.
+        text = router_plan(**self.NO_LEASE).replace(
+            "addr=fe80::ea8d:28ff:fe58:f15c scope=9", "addr=fe80::aa scope=9").replace(
+            "addr=fe80::ea8d:28ff:fe58:f15d scope=2", "addr=fe80::aa scope=2")
+        cases = {
+            "LAN by name": ("fe80::aa%bridge0", None),
+            "LAN by index": ("fe80::aa%9", None),
+            "WAN by name": ("fe80::aa%mgi1", ("wan", net("fe80::/64"))),
+            "WAN by index": ("fe80::aa%2", ("wan", net("fe80::/64"))),
+            # Without a scope the address names neither link.
+            "no scope": ("fe80::aa", None),
+            # A scope naming neither link names nothing.
+            "other link": ("fe80::aa%wlan0", None),
+        }
+        for name, (server, expected) in cases.items():
+            with self.subTest(case=name):
+                plan = _parse_link_plan(f"session: server={server}\n" + text)
+                self.assertEqual(link_plan_session_link(plan), expected)
+
+    def test_a_scope_must_match_the_link_holding_the_address(self) -> None:
+        self.assertIsNone(self.session_link(session_server="fe80::ea8d:28ff:fe58:f15d%bridge0", **self.NO_LEASE))
+
+    def test_nothing_when_the_session_says_nothing_about_an_unshared_link(self) -> None:
+        cases = {
+            # Bridge mode's LAN alias, reached by a Mac cabled to a LAN port
+            # with no DHCP server: the device shares disks there.
+            "LAN bridge alias": dict(session_server="169.254.147.85", wan_ipv4=None,
+                                     wan_link_local="169.254.247.225", lan_link_local="169.254.147.85"),
+            "WAN shares disks": dict(session_server="169.254.247.225", wan_mask="smb,adisk", **self.NO_LEASE),
+            # A routed WAN address says nothing about where this computer is.
+            "routed WAN address": dict(session_server="192.168.1.57"),
+            "address on no link": dict(session_server="169.254.1.1", **self.NO_LEASE),
+            "no session line": dict(**self.NO_LEASE),
+            "malformed address": dict(session_server="not-an-address", **self.NO_LEASE),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                self.assertIsNone(self.session_link(**kwargs))
+        # Only the WAN side and the guest network are unshared networks.
+        isolated = router_plan(session_server="169.254.5.5") + "addr: link=1 family=inet addr=169.254.5.5 prefix=16\n"
+        self.assertIsNone(link_plan_session_link(_parse_link_plan(isolated)))
+        self.assertIsNone(link_plan_session_link(None))
 
 
 class LocalNetworkTests(unittest.TestCase):
@@ -277,6 +377,61 @@ class UnsharedNetworkCheckTests(unittest.TestCase):
         self.assertTrue(failed)
         self.assertIn("internet (WAN) side (fdca:7da7:ed32:428b::/64)", results[0].message)
 
+    def test_a_mac_cabled_to_a_wan_port_without_dhcp_fails_by_the_address_it_reached(self) -> None:
+        # The Mac's own network is elsewhere; its cable to the WAN port only
+        # has self-assigned addresses on both ends.
+        plan = router_plan(
+            wan_ipv4=None, wan_link_local="169.254.247.225", lan_link_local=None, session_server="169.254.247.225")
+        failed, results = self.run_check(plan, (lan("en0", "192.168.50.10", "192.168.50.0/24"),))
+        self.assertTrue(failed)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(
+            results[0].message,
+            "this Mac is plugged straight into the device's internet (WAN) port, where the device does not share "
+            "its disks; join the device's main network (10.0.1.0/24) by Wi-Fi or one of its LAN ports, then run "
+            "doctor again. Bonjour and SMB were not checked from this Mac",
+        )
+        self.assertEqual(results[0].details["code"], DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK)
+        self.assertEqual(results[0].details["matched_by"], "session_address")
+        self.assertEqual(results[0].details["unshared_networks"], [{"role": "wan", "network": "169.254.0.0/16"}])
+        # The device link's network is not one of this computer's networks.
+        self.assertEqual(results[0].details["session_link_network"], "169.254.0.0/16")
+        self.assertNotIn("client_networks", results[0].details)
+        # A computer with no other network at all is told the same.
+        failed, _results = self.run_check(plan, ())
+        self.assertTrue(failed)
+
+    def test_a_shared_network_still_wins_over_the_address_reached(self) -> None:
+        # Also on the main network: Bonjour and SMB can work over the LAN.
+        plan = router_plan(
+            wan_ipv4=None, wan_link_local="169.254.247.225", lan_link_local=None, session_server="169.254.247.225")
+        self.assertEqual(self.run_check(plan, (lan("en1", "10.0.1.20", "10.0.1.0/24"),)), (False, []))
+
+    def test_a_network_match_is_reported_as_one(self) -> None:
+        plan = router_plan(session_server="169.254.147.85")
+        failed, results = self.run_check(plan, (lan("en0", "192.168.1.170", "192.168.1.0/24"),))
+        self.assertTrue(failed)
+        self.assertEqual(results[0].details["matched_by"], "network")
+        self.assertEqual(results[0].details["client_networks"], ["192.168.1.0/24"])
+        self.assertNotIn("session_link_network", results[0].details)
+
+    def test_no_failure_when_the_address_reached_is_not_on_an_unshared_link(self) -> None:
+        elsewhere = (lan("en0", "192.168.50.10", "192.168.50.0/24"),)
+        cases = {
+            # Bridge mode's LAN alias; the device shares disks there.
+            "LAN bridge alias": router_plan(wan_ipv4=None, wan_link_local="169.254.247.225", session_server="169.254.147.85"),
+            "share disks over WAN": router_plan(
+                wan_ipv4=None, wan_link_local="169.254.247.225", session_server="169.254.247.225", wan_mask="smb,adisk"),
+            "routed WAN address": router_plan(session_server="192.168.1.57"),
+            "plan not validated": router_plan(
+                wan_ipv4=None, wan_link_local="169.254.247.225", session_server="169.254.247.225", status="incomplete"),
+            "diskless": router_plan(
+                wan_ipv4=None, wan_link_local="169.254.247.225", session_server="169.254.247.225", lan_mask="none"),
+        }
+        for name, plan in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self.run_check(plan, elsewhere), (False, []))
+
     def test_no_failure_when_this_computer_shares_a_disk_network(self) -> None:
         cases = {
             "on the LAN": (lan("en0", "10.0.1.20", "10.0.1.0/24"),),
@@ -336,6 +491,18 @@ class UnsharedNetworkCheckTests(unittest.TestCase):
         # Networks of more than one kind get the general wording.
         mixed = client_on_unshared_network_message([net("192.168.1.0/24")], ["wan", "guest"], [net("10.0.1.0/24")], platform="linux")
         self.assertTrue(mixed.startswith("this computer is on a device network (192.168.1.0/24)"))
+
+    def test_a_cable_to_the_wan_port_is_named_instead_of_its_self_assigned_range(self) -> None:
+        cabled = client_on_unshared_network_message(
+            [net("169.254.0.0/16")], ["wan"], [net("10.0.1.0/24")], platform="linux", cabled=True)
+        self.assertTrue(cabled.startswith(
+            "this computer is plugged straight into the device's internet (WAN) port, where the device does not share"))
+        self.assertNotIn("169.254", cabled)
+        self.assertIn("main network (10.0.1.0/24)", cabled)
+        # The guest network has no port of its own: its network is shown.
+        guest = client_on_unshared_network_message(
+            [net("169.254.0.0/16")], ["guest"], [net("10.0.1.0/24")], platform="linux", cabled=True)
+        self.assertTrue(guest.startswith("this computer is on the device's guest network (169.254.0.0/16)"))
 
 
 class StartupGraceTests(unittest.TestCase):

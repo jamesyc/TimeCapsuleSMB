@@ -1678,7 +1678,7 @@ class CheckTests(unittest.TestCase):
     WAN_SIDE = (LocalInterfaceNetwork("en0", "192.168.1.170", ipaddress.ip_network("192.168.1.0/24")),)
     ROUTER_LAN = (LocalInterfaceNetwork("en0", "10.0.1.20", ipaddress.ip_network("10.0.1.0/24")),)
 
-    def _run_doctor_against_router(self, *, local_networks, **kwargs):
+    def _run_doctor_against_router(self, *, local_networks, plan_text=None, **kwargs):
         """Doctor against a router-mode device whose link plan shares disks on
         10.0.1.0/24 only. Records what ran from this computer."""
         mdns = ReadinessProbeResult(
@@ -1688,7 +1688,7 @@ class CheckTests(unittest.TestCase):
                 ProbeStepResult("mdns_process", "pass", "discovery process is running"),
                 ProbeStepResult("native_nbns", "pass", "Apple wcifsnd is ready on UDP 137 and 138"),
             ),
-            link_plan=_parse_link_plan(router_plan()),
+            link_plan=_parse_link_plan(router_plan() if plan_text is None else plan_text),
         )
         calls = SimpleNamespace(
             discover=mock.Mock(return_value=(BonjourDiscoverySnapshot([], []), None, None)),
@@ -1733,6 +1733,28 @@ class CheckTests(unittest.TestCase):
         messages = [result.message for result in run.results]
         self.assertTrue(any(message.startswith("active Samba share names:") for message in messages), messages)
         self.assertTrue(any(message == "discovery process is running" for message in messages), messages)
+
+    def test_doctor_over_a_cable_to_the_wan_port_fails_first_by_the_address_it_reached(self) -> None:
+        # The Mac's own network is elsewhere; its cable to the WAN port has
+        # only self-assigned addresses, so no network tells the links apart.
+        plan = router_plan(
+            wan_ipv4=None, wan_link_local="169.254.247.225", lan_link_local=None, session_server="169.254.247.225")
+        elsewhere = (LocalInterfaceNetwork("en0", "192.168.50.10", ipaddress.ip_network("192.168.50.0/24")),)
+        with mock.patch("timecapsulesmb.checks.doctor_steps.sys.platform", "darwin"):
+            run, calls = self._run_doctor_against_router(local_networks=elsewhere, plan_text=plan)
+
+        self.assertTrue(run.fatal)
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK])
+        self.assertEqual(failures[0].details["matched_by"], "session_address")
+        self.assertTrue(failures[0].message.startswith(
+            "this Mac is plugged straight into the device's internet (WAN) port, where the device does not share its disks"
+        ))
+        calls.discover.assert_not_called()
+        calls.nbns.assert_not_called()
+        calls.listing.assert_not_called()
+        run.mocks.check_smb_port.assert_not_called()
+        self.assertFalse(any(result.message.startswith(("Bonjour", "SMB", "NBNS")) for result in run.results))
 
     UNREACHABLE = CheckResult(
         "FAIL",
