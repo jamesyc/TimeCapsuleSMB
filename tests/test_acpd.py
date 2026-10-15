@@ -1,7 +1,7 @@
 """Apple ACPd health read over SSH (timecapsulesmb.device.acpd and
 device.processes.acpd_stuck_children). The process listings are rows from
-real devices in telemetry (PROCESS_SNAPSHOT_COMMAND columns: pid ppid pgid
-stat sl wchan ucomm command)."""
+real devices in telemetry, in PROCESS_SNAPSHOT_COMMAND's layout (pid ppid
+pgid stat sl wchan time ucomm, then the command line)."""
 from __future__ import annotations
 
 import subprocess
@@ -26,33 +26,33 @@ CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
 # A v3.4.0 TimeCapsule8,119 the morning its deploy reboot left ACPd torn down:
 # ACPd's fork 352 had slept since boot.
 STUCK_BEFORE_REBOOT = "\n".join((
-    "    1     0     1 Ss    10 wait    init            init ",
-    "  352   119     2 S      1 nanoslp ACPd            /sbin/ACPd ",
-    "  467   119     2 S      0 select  sshd            /usr/sbin/sshd -D -e ",
-    "  943   119     2 Z      0 -       mDNSResponder   (mDNSResponder)",
-    "  976   119     2 S     10 kqueue  diskd           /sbin/diskd -i  -d local. ",
-    "19793   467 19793 Ss     0 select  sshd            sshd: root@notty ",
-    "  119     1     2 Sl     0 kqueue  ACPd            /sbin/ACPd ",
+    "    1 0 1 Ss 10 wait 0:00.00 init",
+    "  352 119 2 S 1 nanoslp 0:00.00 ACPd",
+    "  467 119 2 S 0 select 0:00.00 sshd",
+    "  943 119 2 Z 0 - 0:00.00 mDNSResponder",
+    "  976 119 2 S 10 kqueue 0:00.00 diskd           /sbin/diskd -i  -d local. ",
+    "19793 467 19793 Ss 0 select 0:00.00 sshd",
+    "  119 1 2 Sl 0 kqueue 0:00.00 ACPd",
 ))
 # The same device after the request: ACPd itself sleeps too, as ppid 1.
 STUCK_AFTER_REQUEST = "\n".join((
-    "    1     0     1 Is   127 wait    init      init ",
-    "  352   119     2 S      1 nanoslp ACPd      /sbin/ACPd ",
-    "  467   119     2 S      0 select  sshd      /usr/sbin/sshd -D -e ",
-    "  119     1     2 Il     0 nanoslp ACPd      /sbin/ACPd ",
+    "    1 0 1 Is 127 wait 0:00.00 init",
+    "  352 119 2 S 1 nanoslp 0:00.00 ACPd",
+    "  467 119 2 S 0 select 0:00.00 sshd",
+    "  119 1 2 Il 0 nanoslp 0:00.00 ACPd",
 ))
 HEALTHY_NETBSD6 = "\n".join((
-    "    1     0     1 Ss     7 wait    init          init ",
-    "  119     1     2 Sl     1 kqueue  ACPd          /sbin/ACPd ",
-    "  146     1     2 S      1 select  service       service: role=manager started=6 ",
-    "  299   119     2 S      1 select  sshd          /usr/sbin/sshd -D -e ",
-    "  707   119     2 Sl     1 kqueue  mDNSResponder /sbin/mDNSResponder -d ",
+    "    1 0 1 Ss 7 wait 0:00.00 init",
+    "  119 1 2 Sl 1 kqueue 0:00.00 ACPd",
+    "  146 1 2 S 1 select 0:00.00 service       service: role=manager started=6 ",
+    "  299 119 2 S 1 select 0:00.00 sshd",
+    "  707 119 2 Sl 1 kqueue 0:00.00 mDNSResponder",
 ))
 # NetBSD 4 runs ACPd -nofork; the ps | sed pipeline can list itself.
 HEALTHY_NETBSD4 = "\n".join((
-    "  190     1    15 Sa     8 kqread   ACPd            /sbin/ACPd -nofork ",
-    "  289   190    15 S      0 select   sshd            /usr/sbin/sshd -D -e ",
-    "28338 28660 28660 R      0 piperd   sh              sed -n /ACPd/p (sh)",
+    "  190 1 15 Sa 8 kqread 0:00.00 ACPd",
+    "  289 190 15 S 0 select 0:00.00 sshd",
+    "28338 28660 28660 R 0 piperd 0:00.00 sh",
 ))
 
 
@@ -68,8 +68,8 @@ class AcpdStuckChildrenTests(unittest.TestCase):
 
     def test_netbsd4_names_the_same_sleep_nanoslee(self) -> None:
         listing = "\n".join((
-            "  190     1    15 Sa     8 kqread   ACPd            /sbin/ACPd -nofork ",
-            "  412   190    15 S      1 nanoslee ACPd            /sbin/ACPd -nofork ",
+            "  190 1 15 Sa 8 kqread 0:00.00 ACPd",
+            "  412 190 15 S 1 nanoslee 0:00.00 ACPd",
         ))
         self.assertEqual(acpd_stuck_children(listing), [412])
 
@@ -85,9 +85,9 @@ class AcpdStuckChildrenTests(unittest.TestCase):
     def test_only_acpd_s_own_forks_count(self) -> None:
         # sshd sleeps under ACPd, and another program may be named ACPd.
         listing = "\n".join((
-            "  119     1     2 Sl     1 kqueue  ACPd          /sbin/ACPd ",
-            "  300   119     2 S      1 nanoslp sshd          /usr/sbin/sshd -D -e ",
-            "  400   300     2 S      1 nanoslp ACPd          /sbin/ACPd ",
+            "  119 1 2 Sl 1 kqueue 0:00.00 ACPd",
+            "  300 119 2 S 1 nanoslp 0:00.00 sshd",
+            "  400 300 2 S 1 nanoslp 0:00.00 ACPd",
         ))
         self.assertEqual(acpd_stuck_children(listing), [])
 

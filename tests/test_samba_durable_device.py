@@ -6,6 +6,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
+from tests.device_ps import ps_row
 from tests.samba import device_processes, durable_device
 from tests.samba.durable_device import OLD_SMBD_EXIT_SECONDS, _scavengers, serves_client
 from tests.samba.links_device import Results
@@ -57,10 +58,9 @@ class FakeDevice:
     def sh(self, command: str, *, check: bool = True) -> str:
         if command == device_processes.COMMAND:
             self.now = self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
-            # Children asleep on the disk keep their command line unread.
-            rows = ["  146     1     2 S    service service: role=manager",
-                    "  457   146   457 S    smbd    /mnt/Memory/samba4/sbin/smbd -F --no-process-group"]
-            return "\n".join(rows + [f"{pid:5}   457   457 D    smbd    (unreadable)" for pid in self.now]) + "\n"
+            # Children asleep on the disk among them.
+            rows = [ps_row(146, "service", "service: role=manager", pgid=2), ps_row(457, "smbd", ppid=146)]
+            return "\n".join(rows + [ps_row(pid, "smbd", ppid=457, pgid=457, stat="D") for pid in self.now]) + "\n"
         pid = int(command.rsplit(None, 1)[1])
         return self.now.get(pid, "")
 
@@ -119,10 +119,9 @@ class StoppedDevice:
             self.signals.append(command)
             return ""
         assert command == device_processes.COMMAND
-        rows = ["  146     1     2 S    service service: role=manager",
-                "  457   146   457 S    smbd    /mnt/Memory/samba4/sbin/smbd -F --no-process-group"]
+        rows = [ps_row(146, "service", "service: role=manager", pgid=2), ps_row(457, "smbd", ppid=146)]
         if self.connected:
-            rows.append(" 3994   457   457 S    smbd    /mnt/Memory/samba4/sbin/smbd -F --no-process-group")
+            rows.append(ps_row(3994, "smbd", ppid=457, pgid=457))
         return "\n".join(rows) + "\n"
 
 

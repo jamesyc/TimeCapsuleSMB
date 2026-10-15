@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.device_ps import FakePs, process
+from tests.device_ps import FakePs, process, ps_row
 from timecapsulesmb.device.migration_jobs import running_migrations
 from timecapsulesmb.device.processes import render_stop_service_runtime, render_wait_for_idle_jobs
 
@@ -105,13 +105,18 @@ def test_active_metadata_and_diagnostic_jobs_block_cleanup(tmp_path, comm, state
 
 
 @pytest.mark.parametrize('comm,state,expected', IDLE_JOB_ROWS)
-def test_python_and_shell_agree_on_which_rows_are_migrations(comm, state, expected):
+def test_python_and_shell_agree_on_which_rows_are_migrations(tmp_path, comm, state, expected):
     # device.migration_jobs finds the migrations the shell guard waits for or
-    # stops; the telemetry and debug jobs are the shell's alone.
+    # stops; the telemetry and debug jobs are the shell's alone. Both read
+    # the same device listing.
+    from timecapsulesmb.device.migration_jobs import JOBS_PS_COMMAND
+
     migrations = {'tc-xattr-hfs-mi', 'xattr-hfs-migrate', 'sh /bin/sh /mnt/Flash/migrate.sh',
                   'sh /mnt/Flash/xattr-migrate-wrapper.sh'}
-    found = running_migrations(f'17 {state} 0:01.00 {comm}')
-    assert bool(found) == (expected == 1 and comm in migrations)
+    fake = FakePs(tmp_path, [process(f'17 {state} {comm}')])
+    listing = subprocess.run(fake.install(JOBS_PS_COMMAND), shell=True, capture_output=True, text=True)
+    assert listing.returncode == 0, listing.stderr
+    assert bool(running_migrations(listing.stdout)) == (expected == 1 and comm in migrations)
 
 
 @pytest.mark.parametrize('failed_sync', [0, 1, 2])
@@ -219,22 +224,22 @@ state.write_text(json.dumps(d))
 
 
 def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
-    from timecapsulesmb.device.processes import service_role_lines
+    from timecapsulesmb.device.processes import service_role_processes
     rows = '\n'.join([
-        '10 1 S 0:00 service service: role=manager',
-        '17 1 S 0:00 service service: role=manager waiting=hostname',
+        ps_row(10, 'service', 'service: role=manager', ppid=1, stat='S'),
+        ps_row(17, 'service', 'service: role=manager waiting=hostname', ppid=1, stat='S'),
         # The title a device shows now: its start, then any wait and stuck list.
-        '18 1 S 0:00 service service: role=manager started=12 waiting=hostname stuck=3166:smbd:biowait:600',
-        '11 10 S 0:00 service service: role=discovery nbns=ready',
-        '12 10 S 0:00 service /mnt/Flash/service discovery --netbios-name NAS',
-        '13 10 S 0:00 service /mnt/Flash/service --print-link-plan',
-        '14 10 Z 0:00 service service: role=discovery nbns=ready',
-        '15 10 S 0:00 service /mnt/Flash/service telemetry --once role=discovery',
-        '16 10 S 0:00 service service: role=telemetry --daemon',
+        ps_row(18, 'service', 'service: role=manager started=12 waiting=hostname stuck=3166:smbd:biowait:600', ppid=1, stat='S'),
+        ps_row(11, 'service', 'service: role=discovery nbns=ready', ppid=10, stat='S'),
+        ps_row(12, 'service', '/mnt/Flash/service discovery --netbios-name NAS', ppid=10, stat='S'),
+        ps_row(13, 'service', '/mnt/Flash/service --print-link-plan', ppid=10, stat='S'),
+        ps_row(14, 'service', 'service: role=discovery nbns=ready', ppid=10, stat='Z'),
+        ps_row(15, 'service', '/mnt/Flash/service telemetry --once role=discovery', ppid=10, stat='S'),
+        ps_row(16, 'service', 'service: role=telemetry --daemon', ppid=10, stat='S'),
     ])
-    assert [line.split()[0] for line in service_role_lines(rows,'manager')]==['10','17','18']
-    assert [line.split()[0] for line in service_role_lines(rows,'discovery')]==['11','12']
-    assert [line.split()[0] for line in service_role_lines(rows,'telemetry')]==['16']
+    assert [process.pid for process in service_role_processes(rows, 'manager')] == [10, 17, 18]
+    assert [process.pid for process in service_role_processes(rows, 'discovery')] == [11, 12]
+    assert [process.pid for process in service_role_processes(rows, 'telemetry')] == [16]
 
 
 @pytest.mark.parametrize('stuck_row,expected_label,manager_timeout', [
@@ -292,7 +297,7 @@ if sys.argv[1] == 'ps':
         d['scans'] += 1
     ps(['30 S service service: role=manager'] if limit is None or d['scans'] <= limit else [])
 elif sys.argv[1] == 'stuck-ps':
-    rows = ['30 1 S select service']
+    rows = ['30 1 30 S 0 select 0:00.00 service']
     rows += {list(extra_rows)!r}
     print('\\n'.join(rows))
 elif sys.argv[1] == 'sleep':
@@ -302,7 +307,10 @@ state.write_text(json.dumps(d))
     kwargs = {} if supervisor_seconds is None else {'supervisor_seconds': supervisor_seconds}
     script = render_stop_service_runtime(attempts=0, **kwargs)
     fake = lambda name: shlex.join([sys.executable, str(tool), name])
-    script = script.replace(STUCK_PROCESS_PS_COMMAND, fake('stuck-ps'))
+    # Only report_stuck's listing: ps_rows lists the same columns.
+    stuck_listing = STUCK_PROCESS_PS_COMMAND + ' 2>/dev/null | while'
+    assert stuck_listing in script
+    script = script.replace(stuck_listing, fake('stuck-ps') + ' 2>/dev/null | while')
     script = script.replace('/bin/ps', fake('ps'))
     script = script.replace('/bin/kill', fake('kill'))
     script = script.replace('sleep 1', fake('sleep'))
@@ -350,7 +358,8 @@ def test_supervisor_stop_gives_up_after_its_budget_and_reports_what_is_stuck(tmp
         tmp_path,
         manager_scans=None,
         supervisor_seconds=3,
-        extra_rows=['41 30 D biowai smbd', '42 41 S select smbd', '50 1 D biowai other'],
+        extra_rows=['41 30 41 D 127 biowai 0:00.00 smbd', '42 41 41 S 0 select 0:00.00 smbd',
+                    '50 1 50 D 127 biowai 0:00.00 other'],
     )
 
     assert result.returncode == 1

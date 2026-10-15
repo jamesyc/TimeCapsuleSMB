@@ -13,17 +13,14 @@ import re
 import shlex
 import threading
 
-from timecapsulesmb.device.processes import command_unreadable, ps_rows_command
+from timecapsulesmb.device.processes import parse_ps_rows, ps_rows_command
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 # The kernel truncates ucomm: tc-xattr-hfs-migrate shows as tc-xattr-hfs-mi.
 MIGRATOR_UCOMMS = ("tc-xattr-hfs-mi", "xattr-hfs-migra")
-# One row per process: pid, state, CPU time, kernel ucomm, then argv for the
-# migrators and shells.
-JOBS_PS_COMMAND = ps_rows_command(
-    "jobs_ps", ("pid", "stat", "time"), tuple(f"{ucomm}*" for ucomm in MIGRATOR_UCOMMS) + ("sh",)
-)
+# ps_rows with argv for the migrators and shells.
+JOBS_PS_COMMAND = ps_rows_command(*(f"{ucomm}*" for ucomm in MIGRATOR_UCOMMS), "sh")
 # Shell migrations of releases before the native migrator.
 LEGACY_MIGRATION_SCRIPTS = ("/mnt/Flash/migrate.sh", "/mnt/Flash/xattr-migrate-wrapper.sh")
 # Options of the native migrator that take a value.
@@ -78,16 +75,14 @@ class MigrationActivity:
 
 def running_migrations(ps_output: str) -> tuple[RunningMigration, ...]:
     found = []
-    for line in ps_output.splitlines():
-        fields = line.split()
-        if len(fields) < 4 or not fields[0].isdigit() or fields[1].startswith("Z"):
+    for process in parse_ps_rows(ps_output):
+        if process.zombie:
             continue
-        pid, _state, cpu_time, ucomm, argv = int(fields[0]), fields[1], fields[2], fields[3], fields[4:]
+        pid, cpu_time, ucomm = process.pid, process.time, process.ucomm
+        # Without its command line (NetBSD 4's ps, or a migrator waiting on
+        # the disk) a migrator's phase is unknown and its log not found.
+        argv = [] if process.unreadable else list(process.argv)
         if ucomm.startswith(MIGRATOR_UCOMMS):
-            # Without its command line (NetBSD 4's ps, or a migrator waiting
-            # on the disk) the phase is unknown and the log not found.
-            if command_unreadable(argv):
-                argv = []
             found.append(RunningMigration(pid, _native_phase(argv), _option(argv, "--log"), cpu_time))
         elif ucomm == "sh":
             # A shell whose command line was not read is not counted: a

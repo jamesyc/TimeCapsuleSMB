@@ -19,27 +19,39 @@ from dataclasses import dataclass
 # possibly theirs and never as absent. The second look and the read are
 # separate commands, so this narrows the stall rather than closing it.
 UNREADABLE_COMMAND = "(unreadable)"
-_PS_ROWS_FUNCTION = r'''
-__NAME__() (
-    # One row per process: __COLUMNS__ ucomm, then the command line for the
-    # ucomms __SELECT__. Split at blanks whatever the caller's IFS, and
-    # never expand a command line's glob characters.
+# Every listing's columns, in this order; ps_rows adds the command line after
+# them. ps prints "-" for a process with no wait channel, so every row has all
+# eight. A ucomm with a space would spill into the command line, but every
+# name a caller selects has none.
+PS_COLUMNS = "-o pid= -o ppid= -o pgid= -o stat= -o sl= -o wchan= -o time= -o ucomm="
+PS_ROWS_FUNCTION = r'''
+ps_rows() (
+    # One row per process: pid ppid pgid stat sl wchan time ucomm, then the
+    # command line for the processes whose ucomm matches one of the case
+    # patterns given as arguments. Split at blanks whatever the caller's IFS,
+    # and never expand a command line's glob characters.
     unset IFS
     set -f
-    ps_list=$(/bin/ps ax __LISTING__ -o ucomm= 2>/dev/null) || exit 1
+    ps_select=$*
+    ps_list=$(/bin/ps ax __PS_COLUMNS__ 2>/dev/null) || exit 1
     ps_waited=
     while IFS= read -r ps_line; do
         set -- $ps_line
-        if [ "$#" -le __STATE__ ]; then
+        if [ "$#" -lt 8 ]; then
             [ -z "$ps_line" ] || printf '%s\n' "$ps_line"
             continue
         fi
         ps_pid=$1
-        eval "ps_state=\${__STATE__} ps_comm=\${$#}"
-        case "$ps_comm" in
-            __SELECT__) ;;
-            *) printf '%s\n' "$ps_line"; continue ;;
-        esac
+        ps_state=$4
+        ps_comm=$8
+        ps_selected=
+        for ps_pattern in $ps_select; do
+            case "$ps_comm" in $ps_pattern) ps_selected=1 ;; esac
+        done
+        if [ -z "$ps_selected" ]; then
+            printf '%s\n' "$ps_line"
+            continue
+        fi
         case "$ps_state" in
             Z*) printf '%s\n' "$ps_line"; continue ;;
             D*)
@@ -84,73 +96,83 @@ __NAME__() (
 $ps_list
 EOF_PS_ROWS
 )
-'''
+'''.replace("__PS_COLUMNS__", PS_COLUMNS).replace("__UNREADABLE__", UNREADABLE_COMMAND).strip() + "\n"
 
 
-def render_ps_rows(name: str, columns: tuple[str, ...], select: tuple[str, ...]) -> str:
-    """A shell function NAME that prints the process table, one row per
-    process: COLUMNS (pid first, stat among them), ucomm, then the command
-    line for the processes whose ucomm matches a SELECT case pattern.
-
-    It runs in a subshell, so its set -f and variables stay its own, and fails
-    only when the listing itself fails.
-    """
-    return (
-        _PS_ROWS_FUNCTION.replace("__NAME__", name)
-        .replace("__COLUMNS__", " ".join(columns))
-        .replace("__LISTING__", " ".join(f"-o {column}=" for column in columns))
-        .replace("__STATE__", str(columns.index("stat") + 1))
-        .replace("__SELECT__", "|".join(select))
-        .replace("__UNREADABLE__", UNREADABLE_COMMAND)
-        .strip()
-    )
+def ps_rows_command(*select: str) -> str:
+    """An SSH command printing ps_rows' rows, reading the command lines of the
+    processes whose ucomm matches a pattern in select; it fails when ps does."""
+    call = " ".join(["ps_rows", *(shlex.quote(pattern) for pattern in select)])
+    return f"/bin/sh -c {shlex.quote(PS_ROWS_FUNCTION + call)}"
 
 
-def ps_rows_command(name: str, columns: tuple[str, ...], select: tuple[str, ...]) -> str:
-    """An SSH command printing render_ps_rows' rows; it fails when ps does."""
-    return f"/bin/sh -c {shlex.quote(render_ps_rows(name, columns, select) + chr(10) + name)}"
+@dataclass(frozen=True)
+class Process:
+    """One ps_rows row."""
+
+    pid: int
+    ppid: int
+    pgid: int
+    stat: str
+    # Seconds in the current sleep, capped at PS_SLEEP_SECONDS_CAP.
+    sl: int
+    wchan: str
+    time: str
+    ucomm: str
+    # The command line's words; empty when it was not asked for.
+    argv: tuple[str, ...] = ()
+
+    @property
+    def zombie(self) -> bool:
+        return self.stat.startswith("Z")
+
+    @property
+    def unreadable(self) -> bool:
+        return self.argv == (UNREADABLE_COMMAND,)
 
 
-def command_unreadable(argv: list[str]) -> bool:
-    """A ps_rows command line it did not read."""
-    return argv == [UNREADABLE_COMMAND]
+def parse_ps_rows(output: str) -> list[Process]:
+    """ps_rows' rows (or a listing of PS_COLUMNS alone). A line that is not
+    one, such as an error message, is left out."""
+    rows = []
+    for fields in (line.split() for line in output.splitlines()):
+        if len(fields) < 8 or not all(field.isdigit() for field in (*fields[:3], fields[4])):
+            continue
+        rows.append(Process(int(fields[0]), int(fields[1]), int(fields[2]), fields[3], int(fields[4]),
+                            fields[5], fields[6], fields[7], tuple(fields[8:])))
+    return rows
 
 
-PS_CAPTURE_FUNCTION = render_ps_rows("capture_ps_out", ("pid", "ppid", "stat", "time"), ("service", "diskd"))
-PS_CAPTURE_COMMAND = PS_CAPTURE_FUNCTION + "\ncapture_ps_out || true"
+# The listing doctor's Samba, mDNS, startup and hostname checks read: the
+# manager's and discovery's titles, and diskd's interface.
+PS_CAPTURE_FUNCTION = PS_ROWS_FUNCTION + "capture_ps_out() { ps_rows service diskd; }\n"
+PS_CAPTURE_COMMAND = PS_CAPTURE_FUNCTION + "capture_ps_out || true"
 # The same listing as one SSH command. A listing that fails prints nothing.
 PS_CAPTURE_SSH_COMMAND = f"/bin/sh -c {shlex.quote(PS_CAPTURE_COMMAND)}"
-# The launchers and service processes the stop script and idle_jobs tell
-# apart by their command lines.
-MANAGED_PS_ROWS_FUNCTION = render_ps_rows("managed_ps_rows", ("pid", "stat"), ("sh", "service")) + "\n"
 
 
-def service_role_lines(ps_output: str, role: str) -> list[str]:
-    """Match the live role title, or argv before the native title is installed."""
+def service_role_processes(ps_output: str, role: str) -> list[Process]:
+    """The live processes holding role: by the role title, or by argv before
+    the native title is installed."""
     rows = []
-    for line in ps_output.splitlines():
-        fields = line.split()
-        if len(fields) < 6 or fields[2].startswith("Z"):
+    for process in parse_ps_rows(ps_output):
+        argv = process.argv
+        if process.zombie or process.ucomm != "service":
             continue
-        if fields[4] == "service" and fields[5] == "service:" and fields[6:7] == [f"role={role}"]:
-            rows.append(line)
-        elif fields[4] == "service" and fields[5] == "/mnt/Flash/service" and fields[6:7] == [role]:
-            role_arguments = fields[7:]
-            if role == "discovery" and any(word in role_arguments for word in ("--diskless", "--netbios-name")):
-                rows.append(line)
-            elif role == "telemetry" and "--daemon" in role_arguments:
-                rows.append(line)
+        if argv[:2] == ("service:", f"role={role}"):
+            rows.append(process)
+        elif argv[:2] == ("/mnt/Flash/service", role):
+            if role == "discovery" and any(word in argv[2:] for word in ("--diskless", "--netbios-name")):
+                rows.append(process)
+            elif role == "telemetry" and "--daemon" in argv[2:]:
+                rows.append(process)
     return rows
 
 
 def service_unreadable(ps_output: str) -> bool:
-    """A live service process whose command line ps_rows did not read, in the
-    layout service_role_lines reads: it may hold any role."""
-    for fields in (line.split() for line in ps_output.splitlines()):
-        if len(fields) == 6 and not fields[2].startswith("Z") and fields[4] == "service" \
-                and command_unreadable(fields[5:]):
-            return True
-    return False
+    """A live service process whose command line ps_rows did not read: it may
+    hold any role."""
+    return any(p.ucomm == "service" and p.unreadable and not p.zombie for p in parse_ps_rows(ps_output))
 
 
 # The manager gives each child TC_CHILD_GRACE_MS (build/native/common/process.h)
@@ -164,9 +186,13 @@ def service_unreadable(ps_output: str) -> bool:
 # 120 s SSH timeout (REMOTE_ACTION_TIMEOUT_SECONDS).
 MANAGER_CHILD_GRACE_SECONDS = 10
 SUPERVISOR_STOP_SECONDS = 2 * MANAGER_CHILD_GRACE_SECONDS
-# NetBSD ps reports the kernel wait channel: a Samba child blocked on disk I/O
-# is the usual reason a manager cannot finish stopping.
-STUCK_PROCESS_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o wchan= -o ucomm="
+# The table alone, which never waits, in ps_rows' layout without command
+# lines: what a failed stop and a timed-out listing report. ps_rows' own
+# listing is this same command, so a test that fakes one by replacing this
+# text replaces both. NetBSD ps reports
+# the kernel wait channel: a Samba child blocked on disk I/O is the usual
+# reason a manager cannot finish stopping.
+STUCK_PROCESS_PS_COMMAND = f"/bin/ps ax {PS_COLUMNS}"
 # How the stop script names a service process it waited for in vain without
 # reading its command line: asleep in the kernel throughout, like a manager
 # that does not stop, and nearly always on a failing disk.
@@ -177,19 +203,16 @@ def describe_uninterruptible(stuck_listing: str) -> str:
     """The processes in an uninterruptible sleep (state D, kernel threads
     aside) in STUCK_PROCESS_PS_COMMAND output, for a listing that timed out:
     a ps among them waits for a map lock (see UNREADABLE_COMMAND)."""
-    found = []
-    for fields in (line.split(None, 4) for line in stuck_listing.splitlines()):
-        if len(fields) == 5 and fields[2].startswith("D") and "K" not in fields[2]:
-            found.append(f"{fields[4]} (pid {fields[0]}) on {fields[3]}")
-    return ", ".join(found)
+    return ", ".join(
+        f"{p.ucomm} (pid {p.pid}) on {p.wchan}"
+        for p in parse_ps_rows(stuck_listing) if p.stat.startswith("D") and "K" not in p.stat
+    )
 
 
 # Read before any check touches the data disk. Only the manager's title and
 # diskd's interface come from command lines, so a process held on the disk
 # cannot hold up the listing (see UNREADABLE_COMMAND).
-PROCESS_SNAPSHOT_COMMAND = ps_rows_command(
-    "process_snapshot", ("pid", "ppid", "pgid", "stat", "sl", "wchan"), ("service", "diskd")
-)
+PROCESS_SNAPSHOT_COMMAND = ps_rows_command("service", "diskd")
 # ps shows D for an uninterruptible sleep. The kernel counts a sleeping
 # thread's seconds asleep (l_slptime) and resets the count at every wake-up,
 # so a process doing slow disk I/O never reaches this; one that does has
@@ -215,12 +238,12 @@ class StuckProcess:
         return f"{self.name} (pid {self.pid}) waiting on {self.wchan} for {seconds} s"
 
 
-def _manager_title_stuck(command: str) -> tuple[list[StuckProcess], int]:
+def _manager_title_stuck(title: tuple[str, ...]) -> tuple[list[StuckProcess], int]:
     """Entries of the manager's "stuck=PID:COMM:WAIT:SECONDS,...[,+N]" title
     word, and N, how many more it counts than it names."""
     stuck = []
     unnamed = 0
-    for word in command.split():
+    for word in title:
         if not word.startswith("stuck="):
             continue
         for item in word.removeprefix("stuck=").split(","):
@@ -235,18 +258,14 @@ def _manager_title_stuck(command: str) -> tuple[list[StuckProcess], int]:
     return stuck, unnamed
 
 
-def _manager_title_command(ps_output: str) -> str | None:
-    for line in ps_output.splitlines():
-        fields = line.split(None, 7)
-        if len(fields) == 8 and fields[6] == "service" and "role=manager" in fields[7].split():
-            return fields[7]
-    return None
+def _is_manager_title(process: Process) -> bool:
+    return process.ucomm == "service" and "role=manager" in process.argv
 
 
 def manager_unnamed_stuck_count(ps_output: str) -> int:
     """How many stuck processes the manager's title counts beyond the ones it names."""
-    command = _manager_title_command(ps_output)
-    return _manager_title_stuck(command)[1] if command is not None else 0
+    manager = next((p for p in parse_ps_rows(ps_output) if _is_manager_title(p)), None)
+    return _manager_title_stuck(manager.argv)[1] if manager is not None else 0
 
 
 def stuck_processes(ps_output: str) -> list[StuckProcess]:
@@ -257,25 +276,16 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
     title names, which takes precedence for the same PID.
     """
     by_pid: dict[int, StuckProcess] = {}
-    for line in ps_output.splitlines():
-        fields = line.split(None, 7)
-        if len(fields) < 7:
+    for process in parse_ps_rows(ps_output):
+        if _is_manager_title(process):
+            for stuck in _manager_title_stuck(process.argv)[0]:
+                by_pid[stuck.pid] = stuck
             continue
-        pid, _ppid, _pgid, state, sleep, wchan, name = fields[:7]
-        if name == "service" and len(fields) == 8 and "role=manager" in fields[7].split():
-            for process in _manager_title_stuck(fields[7])[0]:
-                by_pid[process.pid] = process
+        if not process.stat.startswith("D") or "K" in process.stat:
             continue
-        if not state.startswith("D") or "K" in state:
-            continue
-        try:
-            sleep_seconds = int(sleep)
-            stuck_pid = int(pid)
-        except ValueError:
-            continue
-        if sleep_seconds >= STUCK_SLEEP_SECONDS and stuck_pid not in by_pid:
-            by_pid[stuck_pid] = StuckProcess(
-                stuck_pid, name, wchan, sleep_seconds, capped=sleep_seconds >= PS_SLEEP_SECONDS_CAP
+        if process.sl >= STUCK_SLEEP_SECONDS and process.pid not in by_pid:
+            by_pid[process.pid] = StuckProcess(
+                process.pid, process.ucomm, process.wchan, process.sl, capped=process.sl >= PS_SLEEP_SECONDS_CAP
             )
     return list(by_pid.values())
 
@@ -292,16 +302,8 @@ def smbd_lock_waits(ps_output: str, min_seconds: int = 0) -> list[int]:
     The wait is interruptible (state I), so stuck_processes() never reports it,
     however long it lasts.
     """
-    pids = []
-    for fields in (line.split(None, 7) for line in ps_output.splitlines()):
-        if fields[5:7] != [LOCKF_WCHAN, "smbd"]:
-            continue
-        try:
-            if int(fields[4]) >= min_seconds:
-                pids.append(int(fields[0]))
-        except ValueError:
-            continue
-    return pids
+    return [p.pid for p in parse_ps_rows(ps_output)
+            if p.ucomm == "smbd" and p.wchan == LOCKF_WCHAN and p.sl >= min_seconds]
 
 
 # ps's wait channel for nanosleep: NetBSD 6 names it nanoslp, and NetBSD 4's
@@ -317,10 +319,9 @@ def acpd_stuck_children(ps_output: str) -> list[int]:
     restarting the kernel. A fork on its way to exec is never in nanosleep.
     Matched on ucomm: sshd and the other daemons are ACPd's children too.
     """
-    rows = [line.split(None, 7) for line in ps_output.splitlines()]
-    rows = [fields for fields in rows if len(fields) >= 7 and fields[6] == "ACPd"]
-    acpd = {fields[0] for fields in rows}
-    return [int(fields[0]) for fields in rows if fields[1] in acpd and fields[5] in NANOSLEEP_WCHANS]
+    rows = [p for p in parse_ps_rows(ps_output) if p.ucomm == "ACPd"]
+    acpd = {p.pid for p in rows}
+    return [p.pid for p in rows if p.ppid in acpd and p.wchan in NANOSLEEP_WCHANS]
 
 
 def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = SUPERVISOR_STOP_SECONDS) -> str:
@@ -328,11 +329,11 @@ def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = 
     # shutdown. Apple's daemons and unrelated `service` processes are not ours.
     # Supervisors get supervisor_seconds of one-second passes; workers and the
     # SIGKILL escalation of launcher shells keep the shorter attempts budget.
-    return (MANAGED_PS_ROWS_FUNCTION + r'''
+    return (PS_ROWS_FUNCTION + r'''
 set -f
 managed_processes() {
-    managed_ps=$(managed_ps_rows) || return 1
-    while read -r pid state comm command; do
+    managed_ps=$(ps_rows sh service) || return 1
+    while read -r pid _ppid _pgid state _sl _wchan _time comm command; do
         case "$state" in Z*|"") continue ;; esac
         if [ "$command" = '__UNREADABLE__' ]; then
             # It may be one of ours: wait for it in both scopes, but never
@@ -386,7 +387,7 @@ report_stuck() {
     # Show what each process that did not stop, and each of its children, is
     # waiting on, so a failed stop says whether the disk was the cause.
     stuck=" $1 "
-    __STUCK_PS__ 2>/dev/null | while read -r pid ppid state wchan comm; do
+    __STUCK_PS__ 2>/dev/null | while read -r pid ppid _pgid state _sl wchan _time comm _rest; do
         case "$stuck" in
             *" $pid "*|*" $ppid "*)
                 echo "still running: pid=$pid ppid=$ppid stat=$state wchan=$wchan comm=$comm" >&2 ;;
@@ -445,12 +446,12 @@ done
 # "pid ucomm unreadable" for a shell or service process whose command line was
 # not read: it may be one, so it is waited for but never signalled.
 # device.migration_jobs matches the same migrators in Python; keep them in step.
-IDLE_JOBS_FUNCTION = MANAGED_PS_ROWS_FUNCTION + r'''
+IDLE_JOBS_FUNCTION = PS_ROWS_FUNCTION + r'''
 idle_jobs() (
     # A shell's arguments may hold glob patterns; never expand them.
     set -f
-    jobs_ps=$(managed_ps_rows) || exit 1
-    while read -r pid state comm rest; do
+    jobs_ps=$(ps_rows sh service) || exit 1
+    while read -r pid _ppid _pgid state _sl _wchan _time comm rest; do
         case "$state" in Z*|"") continue ;; esac
         case "$comm:$rest" in
             'sh:__UNREADABLE__'|'service:__UNREADABLE__')
@@ -583,21 +584,22 @@ def render_pkill_wait_pkill9_by_ucomm(name: str, *, attempts: int = 5) -> str:
     )
 
 
+# Shell readers of capture_ps_out's rows (ps_rows' layout: pid ppid pgid stat
+# sl wchan time ucomm, then the command line).
 PROBE_PROCESS_HELPERS = (
-    r'''
-__PS_CAPTURE_FUNCTION__
-
+    PS_CAPTURE_FUNCTION
+    + r'''
 smbd_parent_process_present() {
     ps_out=$1
     smbd_pids=""
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         set -- $line
-        [ "$#" -ge 5 ] || continue
-        case "$3" in
+        [ "$#" -ge 8 ] || continue
+        case "$4" in
             Z*) continue ;;
         esac
-        if [ "$5" = "smbd" ]; then
+        if [ "$8" = "smbd" ]; then
             smbd_pids="$smbd_pids $1"
         fi
     done <<EOF
@@ -607,11 +609,11 @@ EOF
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         set -- $line
-        [ "$#" -ge 5 ] || continue
-        case "$3" in
+        [ "$#" -ge 8 ] || continue
+        case "$4" in
             Z*) continue ;;
         esac
-        if [ "$5" = "smbd" ]; then
+        if [ "$8" = "smbd" ]; then
             case " $smbd_pids " in
                 *" $2 "*) ;;
                 *) return 0 ;;
@@ -631,16 +633,18 @@ native_service_role_present() {
     role_unreadable=
     while IFS= read -r role_line; do
         set -- $role_line
-        [ "$#" -ge 6 ] || continue
-        case "$3" in Z*) continue ;; esac
-        [ "$5" = service ] || continue
-        if [ "$#" -eq 6 ] && [ "$6" = '__UNREADABLE__' ]; then
-            role_unreadable="$role_unreadable $1"
+        [ "$#" -ge 9 ] || continue
+        case "$4" in Z*) continue ;; esac
+        [ "$8" = service ] || continue
+        role_pid=$1
+        shift 8
+        if [ "$#" -eq 1 ] && [ "$1" = '__UNREADABLE__' ]; then
+            role_unreadable="$role_unreadable $role_pid"
             continue
         fi
-        [ "$#" -ge 7 ] || continue
-        if [ "$6" = 'service:' ] && [ "$7" = "role=$wanted_role" ]; then return 0; fi
-        if [ "$6" = /mnt/Flash/service ] && [ "$7" = "$wanted_role" ]; then return 0; fi
+        [ "$#" -ge 2 ] || continue
+        if [ "$1" = 'service:' ] && [ "$2" = "role=$wanted_role" ]; then return 0; fi
+        if [ "$1" = /mnt/Flash/service ] && [ "$2" = "$wanted_role" ]; then return 0; fi
     done <<EOF_ROLE
 $role_ps
 EOF_ROLE
@@ -657,9 +661,9 @@ capture_fstat_for_ucomm() {
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         set -- $line
-        [ "$#" -ge 5 ] || continue
-        [ "$5" = "$ucomm" ] || continue
-        case "$3" in
+        [ "$#" -ge 8 ] || continue
+        [ "$8" = "$ucomm" ] || continue
+        case "$4" in
             Z*) continue ;;
         esac
         # NetBSD4 has fstat but not netstat/sockstat/lsof. Scope fstat to
@@ -670,7 +674,5 @@ capture_fstat_for_ucomm() {
 $ps_out
 EOF
 }
-'''
-    .replace("__PS_CAPTURE_FUNCTION__", PS_CAPTURE_FUNCTION)
-    .replace("__UNREADABLE__", UNREADABLE_COMMAND)
+'''.replace("__UNREADABLE__", UNREADABLE_COMMAND)
 )

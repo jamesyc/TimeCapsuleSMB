@@ -19,25 +19,23 @@ def listing(tmp_path, processes):
     return result.stdout, fake
 
 
-def test_finds_the_manager_and_its_smbd_reading_only_their_command_lines(tmp_path):
+def test_finds_the_manager_and_its_smbd_reading_only_service_command_lines(tmp_path):
     output, fake = listing(tmp_path, [
         process("132 S service service: role=manager started=4", pgid="2"),
         process("140 S service service: role=discovery nbns=ready", ppid="132", pgid="140"),
         process(f"21323 S smbd {SMBD}", ppid="132", pgid="21323"),
-        # A connection child asleep on the disk: never read, still listed.
-        process(f"22862 D smbd {SMBD}", ppid="21323", pgid="21323", stat_later="D"),
+        process(f"22862 D smbd {SMBD}", ppid="21323", pgid="21323"),
         process("371 S mDNSResponder /sbin/mDNSResponder -d"),
         process("90 Z sh (sh)"),
     ])
     rows = device_processes.parse(output)
 
-    assert fake.command_reads() == ["132", "140", "21323"]
+    # smbd forks per connection: its command line is never read.
+    assert fake.command_reads() == ["132", "140"]
     assert [row.pid for row in rows] == [132, 140, 21323, 22862, 371]
-    assert device_processes.manager(rows).group == 2
+    assert device_processes.manager(rows).pgid == 2
     samba = device_processes.samba_parent(rows)
-    assert (samba.pid, samba.group, samba.args) == (21323, 21323, SMBD)
-    assert next(row for row in rows if row.pid == 22862).args == "(unreadable)"
-    assert next(row for row in rows if row.pid == 371) == device_processes.Process(371, 1, 371, "S", "mDNSResponder", "")
+    assert (samba.pid, samba.pgid, samba.argv) == (21323, 21323, ())
     assert smbd_parent(output) == 21323
 
 

@@ -779,9 +779,9 @@ def _scavengers(device: Device, old: list[int], clock=time.monotonic, sleep=time
 def _smbd_children(device: Device) -> list[int]:
     """PIDs of the smbd parent's children, by ps (the devices lack pgrep)."""
     rows = device_processes.parse(device.sh(device_processes.COMMAND))
-    managers = {row.pid for row in rows if row.name == "service" and row.args.startswith("service: role=manager")}
-    parents = {row.pid for row in rows if row.parent in managers and row.name == "smbd"}
-    return [row.pid for row in rows if row.parent in parents]
+    managers = {row.pid for row in rows if row.ucomm == "service" and row.argv[:2] == ("service:", "role=manager")}
+    parents = {row.pid for row in rows if row.ppid in managers and row.ucomm == "smbd"}
+    return [row.pid for row in rows if row.ppid in parents]
 
 
 def main() -> int:

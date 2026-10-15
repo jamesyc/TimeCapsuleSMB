@@ -2,7 +2,7 @@
 
 Scripts list the process table with `ps ax -o COLUMN= ...` and read one
 process's command line with `ps -ww -o ucomm= -o command= -p PID` (see
-timecapsulesmb.device.processes.render_ps_rows). This fake answers both from a
+timecapsulesmb.device.processes.ps_rows). This fake answers both from a
 JSON state file and records every call, so a test can check which command
 lines a script read. A listing that asks for command lines fails: reading
 every process's command line is what can hang a device.
@@ -24,6 +24,14 @@ from pathlib import Path
 
 LIST_REJECTED = 64
 DEFAULTS = {"ppid": "1", "sl": "0", "wchan": "-", "time": "0:00.00", "etime": "00:01"}
+
+
+def ps_row(pid: int, ucomm: str, command: str = "", *, ppid: int = 1, pgid: int | None = None, stat: str = "S",
+           sl: int = 0, wchan: str = "-", time: str = "0:00.00") -> str:
+    """One ps_rows output row (timecapsulesmb.device.processes.PS_COLUMNS,
+    then the command line), for parser fixtures."""
+    fields = [pid, ppid, pid if pgid is None else pgid, stat, sl, wchan, time, ucomm]
+    return " ".join(str(field) for field in fields) + (f" {command}" if command else "")
 
 
 def process(row: str, **extra: object) -> dict[str, object]:

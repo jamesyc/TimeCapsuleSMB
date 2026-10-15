@@ -19,10 +19,10 @@ from timecapsulesmb.device.processes import (
     PS_CAPTURE_COMMAND,
     PS_CAPTURE_SSH_COMMAND,
     STUCK_PROCESS_PS_COMMAND,
-    command_unreadable,
+    PS_ROWS_FUNCTION,
     describe_uninterruptible,
-    render_ps_rows,
-    service_role_lines,
+    parse_ps_rows,
+    service_role_processes,
     service_unreadable,
 )
 from timecapsulesmb.core.net import endpoint_host
@@ -1279,20 +1279,6 @@ def _with_uninterruptible_processes(connection: SshConnection, step: ProbeStepRe
     return replace(step, stdout=listing, asleep_in_kernel=asleep)
 
 
-def _parse_live_pids_for_ucomm(ps_out: str, ucomm: str) -> tuple[str, ...]:
-    pids: list[str] = []
-    for raw_line in ps_out.splitlines():
-        fields = raw_line.split()
-        if len(fields) < 5:
-            continue
-        pid, _ppid, stat, _time_field, proc_ucomm = fields[:5]
-        if stat.startswith("Z") or proc_ucomm != ucomm:
-            continue
-        if pid.isdigit():
-            pids.append(pid)
-    return tuple(pids)
-
-
 def _fstat_has_udp_port(fstat_out: str, proc_name: str, family: str, port: int) -> bool:
     socket_family = "internet6" if family == "ipv6" else "internet"
     needle = f" {socket_family} dgram udp "
@@ -1352,7 +1338,7 @@ def _fstat_5353_listeners(fstat_out: str) -> dict[str, set[str]]:
     return listeners
 
 
-def _argv_has_pair(argv: list[str], flag: str, value: str) -> bool:
+def _argv_has_pair(argv: tuple[str, ...], flag: str, value: str) -> bool:
     return any(argv[i] == flag and argv[i + 1] == value for i in range(len(argv) - 1))
 
 
@@ -1647,17 +1633,17 @@ exit 0
         steps.append(_with_uninterruptible_processes(connection, ps_step))
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     ps_out = "" if ps_proc is None else ps_proc.stdout
-    discovery_lines = service_role_lines(ps_out, "discovery")
-    mdns_pids = [line.split()[0] for line in discovery_lines]
-    apple_pids = _parse_live_pids_for_ucomm(ps_out, "mDNSResponder")
-    diskd_lines = [line for line in ps_out.splitlines() if len(line.split()) >= 5 and line.split()[4] == "diskd" and not line.split()[2].startswith("Z")]
-    unreadable_diskd = [line for line in diskd_lines if command_unreadable(line.split()[5:])]
+    processes = [process for process in parse_ps_rows(ps_out) if not process.zombie]
+    discovery = service_role_processes(ps_out, "discovery")
+    apple_pids = [process.pid for process in processes if process.ucomm == "mDNSResponder"]
+    diskd = [process for process in processes if process.ucomm == "diskd"]
+    unreadable_diskd = [process for process in diskd if process.unreadable]
     # Same classification as the runtime's tc_apple_diskd_probe: a diskd is
     # ours only if its argv carries the `-i lo0` pair; every other live diskd
     # is ACPd's and advertises on the LAN regardless of ours (review 2, R8).
-    loopback_diskd = [line for line in diskd_lines if _argv_has_pair(line.split()[5:], "-i", "lo0")]
-    stray_diskd = [line for line in diskd_lines if line not in loopback_diskd and line not in unreadable_diskd]
-    diskless = any("--diskless" in line.split() for line in discovery_lines)
+    loopback_diskd = [process for process in diskd if _argv_has_pair(process.argv, "-i", "lo0")]
+    stray_diskd = [process for process in diskd if process not in loopback_diskd and process not in unreadable_diskd]
+    diskless = any("--diskless" in process.argv for process in discovery)
 
     fstat_proc: subprocess.CompletedProcess[str] | None = None
     if apple_pids:
@@ -1672,7 +1658,7 @@ exit 0
     elif loopback_diskd and not stray_diskd:
         _append_step(steps, "diskd_loopback", "pass", "Apple diskd runs on loopback (-i lo0)")
     elif stray_diskd:
-        stray_pids = ", ".join(line.split()[0] for line in stray_diskd)
+        stray_pids = ", ".join(str(process.pid) for process in stray_diskd)
         _append_step(
             steps, "diskd_loopback", "fail",
             f"Apple diskd pid(s) {stray_pids} are not on loopback; their _smb/_adisk/_afpovertcp names may be visible"
@@ -1680,9 +1666,9 @@ exit 0
         )
     else:
         _append_step(steps, "diskd_loopback", "fail", "Apple diskd is not running")
-    if len(mdns_pids) == 1:
+    if len(discovery) == 1:
         _append_step(steps, "mdns_process", "pass", "discovery process is running")
-    elif len(mdns_pids) > 1:
+    elif len(discovery) > 1:
         _append_step(steps, "mdns_process", "fail", "multiple discovery processes are running")
     elif service_unreadable(ps_out):
         _append_step(steps, "mdns_process", "fail", DISCOVERY_UNREADABLE)
@@ -1774,22 +1760,19 @@ exec "$RUNTIME_SERVICE_BIN" --print-link-plan
         else:
             _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan {status} mode={plan['mode']} grants SMB on no link")
 
-        title = discovery_lines[0] if len(discovery_lines) == 1 else ""
+        title = " ".join(discovery[0].argv) if len(discovery) == 1 else ""
         marker = re.search(r"\bnbns=(disabled|waiting|starting|ready|none)\b", title)
         nbns_state = marker.group(1) if marker else None
         eligible = not diskless and status == "validated" and smb_ipv4
-        wcifsnd_lines = [
-            line for line in ps_out.splitlines()
-            if len(line.split()) >= 5 and line.split()[4] == "wcifsnd" and not line.split()[2].startswith("Z")
-        ]
-        controller_pid = mdns_pids[0] if len(mdns_pids) == 1 else ""
-        owned_wcifsnd = [line for line in wcifsnd_lines if line.split()[1] == controller_pid]
-        foreign_wcifsnd = [line for line in wcifsnd_lines if line not in owned_wcifsnd]
+        wcifsnd = [process for process in processes if process.ucomm == "wcifsnd"]
+        controller_pid = discovery[0].pid if len(discovery) == 1 else None
+        owned_wcifsnd = [process for process in wcifsnd if process.ppid == controller_pid]
+        foreign_wcifsnd = [process for process in wcifsnd if process not in owned_wcifsnd]
         registers_nothing = nbns_state in {"none", "disabled", "waiting"}
         fstat_out = "" if fstat_proc is None else fstat_proc.stdout
         owned_fstat = "\n".join(
             line for line in fstat_out.splitlines()
-            if len(line.split()) >= 3 and line.split()[1] == "wcifsnd" and line.split()[2] == (owned_wcifsnd[0].split()[0] if len(owned_wcifsnd) == 1 else "")
+            if len(line.split()) >= 3 and line.split()[1] == "wcifsnd" and line.split()[2] == (str(owned_wcifsnd[0].pid) if len(owned_wcifsnd) == 1 else "")
         )
         ports_ready = (
             _fstat_has_udp_port(owned_fstat, "wcifsnd", "ipv4", 137)
@@ -1805,17 +1788,17 @@ exec "$RUNTIME_SERVICE_BIN" --print-link-plan
             # Discovery found no IPv4 address Apple's wcifsnd answers NBNS on
             # (169.254 beside the 0.0.0.0 dhclient leaves while it has no
             # lease), so it runs none; the manager stops any other.
-            if not diskless and status == "validated" and not wcifsnd_lines:
+            if not diskless and status == "validated" and not wcifsnd:
                 nbns_status, nbns_detail = "pass", NATIVE_NBNS_OFF_DETAIL
             else:
                 nbns_status, nbns_detail = "fail", "discovery native NBNS state does not match the active plan"
         elif eligible and nbns_state == "starting":
             nbns_status, nbns_detail = "fail", "discovery native NBNS is still starting"
-        elif eligible and nbns_state == "ready" and len(owned_wcifsnd) == 1 and len(wcifsnd_lines) == 1 and ports_ready:
+        elif eligible and nbns_state == "ready" and len(owned_wcifsnd) == 1 and len(wcifsnd) == 1 and ports_ready:
             nbns_status, nbns_detail = "pass", "Apple wcifsnd is ready on UDP 137 and 138"
         elif eligible:
             nbns_status, nbns_detail = "fail", "discovery native NBNS is not ready"
-        elif nbns_state in {"disabled", "waiting"} and not wcifsnd_lines:
+        elif nbns_state in {"disabled", "waiting"} and not wcifsnd:
             nbns_status, nbns_detail = "pass", f"native NBNS is {nbns_state}"
         else:
             nbns_status, nbns_detail = "fail", "discovery native NBNS state does not match the active plan"
@@ -1846,9 +1829,6 @@ exec "$RUNTIME_SERVICE_BIN" --print-link-plan
         default_detail="managed mDNS registrant active" if ready else not_ready,
     )
     return replace(result, link_plan=plan, nbns_state=nbns_state)
-
-
-RSYNC_PS_ROWS_FUNCTION = render_ps_rows("rsync_ps_rows", ("pid", "stat"), ("rsync",))
 
 
 def probe_managed_rsync_conn(
@@ -1889,8 +1869,8 @@ fi
 # processes sshd starts for a remote client are the user's transfers
 # (issue #346), so they neither satisfy nor fail these checks.
 rsync_pids=
-{RSYNC_PS_ROWS_FUNCTION}
-if ps_out=$(rsync_ps_rows); then
+{PS_ROWS_FUNCTION}
+if ps_out=$(ps_rows rsync); then
     old_ifs=$IFS
     IFS='
 '
@@ -1902,13 +1882,13 @@ if ps_out=$(rsync_ps_rows); then
         IFS=' 	'
         set -- $line
         IFS=$line_ifs
-        [ "$#" -ge 3 ] || continue
-        case "$2" in Z*) continue ;; esac
-        [ "$3" = rsync ] || continue
+        [ "$#" -ge 8 ] || continue
+        case "$4" in Z*) continue ;; esac
+        [ "$8" = rsync ] || continue
         rsync_pid=$1
         rsync_daemon=0
         rsync_server=0
-        shift 3
+        shift 8
         for rsync_arg in "$@"; do
             case "$rsync_arg" in
                 --daemon) rsync_daemon=1 ;;
@@ -2231,8 +2211,8 @@ def manager_reports_payload_missing(connection: SshConnection) -> bool:
         proc = run_ssh(connection, PS_CAPTURE_SSH_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
     except SshCommandTimeout:
         return False
-    rows = service_role_lines(proc.stdout or "", "manager") if proc.returncode == 0 else []
-    return len(rows) == 1 and _title_payload_missing(rows[0].split()[6:])
+    rows = service_role_processes(proc.stdout or "", "manager") if proc.returncode == 0 else []
+    return len(rows) == 1 and _title_payload_missing(list(rows[0].argv[1:]))
 
 
 def _title_payload_missing(title: list[str]) -> bool:
@@ -2716,14 +2696,14 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
     # listing that always includes this shell's own processes came back empty.
     if not ps_rows:
         return ManagerStartupAgeProbeResult(None, "process listing failed")
-    rows = service_role_lines("\n".join(ps_rows), "manager")
+    rows = service_role_processes("\n".join(ps_rows), "manager")
     if not rows and service_unreadable("\n".join(ps_rows)):
         return ManagerStartupAgeProbeResult(None, MANAGER_UNREADABLE)
     if not rows:
         return ManagerStartupAgeProbeResult(None, "manager is not running")
     if len(rows) > 1:
         return ManagerStartupAgeProbeResult(None, f"{len(rows)} manager processes are running")
-    title = rows[0].split()[6:]
+    title = list(rows[0].argv[1:])
     return replace(_manager_startup_age(title, now_text), payload_missing=_title_payload_missing(title))
 
 
@@ -2836,7 +2816,7 @@ def parse_device_hostname_probe(stdout: str) -> DeviceHostnameProbeResult:
             hosts_lines.append(value)
         elif key == "found" and value.isdigit():
             boot_wait_ms = int(value)  # the latest manager's line is the last one
-    waiting = any("waiting=hostname" in row.split()[6:] for row in service_role_lines("\n".join(ps_rows), "manager"))
+    waiting = any("waiting=hostname" in row.argv[1:] for row in service_role_processes("\n".join(ps_rows), "manager"))
     return DeviceHostnameProbeResult(hostname, tuple(hosts_lines), waiting, boot_wait_ms)
 
 

@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 import timecapsulesmb.device.probe as probe
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.processes import UNREADABLE_COMMAND
+from timecapsulesmb.device.processes import UNREADABLE_COMMAND, parse_ps_rows
 from timecapsulesmb.device.probe import (
     SshAccessStatus,
     flash_runtime_config_present_conn,
@@ -148,19 +148,22 @@ class ProbeTests(unittest.TestCase):
 
     @staticmethod
     def _manager_age_output(*rows: str, now_ms: str = "60000") -> str:
-        # The probe's output: each ps row (pid ppid stat time ucomm command,
-        # as NetBSD 4 and 6 print them) behind ps=, then the clock reading.
+        # The probe's output: each ps_rows row (pid ppid pgid stat sl wchan
+        # time ucomm command) behind ps=, then the clock reading. Every
+        # fixture row is a row, so a check that ignores one ignores it for
+        # what it is.
+        assert len(parse_ps_rows("\n".join(rows))) == len(rows), rows
         return "".join(f"ps={row}\n" for row in rows) + f"now_ms={now_ms}\n"
 
     _MANAGER_PEERS = (
-        " 4390  9751 S       2:47:30 service       service: role=telemetry --daemon",
-        " 9070  9751 Ss      2:47:29 smbd          /mnt/Memory/samba4/sbin/smbd -F --no-process-group",
-        " 9807  9751 S       2:47:27 service       service: role=discovery nbns=ready mode=payload",
+        " 4390 9751 4390 S 0 - 2:47:30 service       service: role=telemetry --daemon",
+        " 9070 9751 9070 Ss 0 - 2:47:29 smbd",
+        " 9807 9751 9807 S 0 - 2:47:27 service       service: role=discovery nbns=ready mode=payload",
     )
 
     def test_probe_manager_startup_age_conn_subtracts_the_title_start_from_the_monotonic_clock(self) -> None:
         result, run_ssh_mock = self._probe_manager_age(self._manager_age_output(
-            *self._MANAGER_PEERS, "  250     1 Ss         0:41 service       service: role=manager started=19", now_ms="60999"
+            *self._MANAGER_PEERS, "  250 1 250 Ss 0 - 0:41 service       service: role=manager started=19", now_ms="60999"
         ))
 
         self.assertEqual(result.manager_started_seconds_ago, 41.0)
@@ -178,7 +181,7 @@ class ProbeTests(unittest.TestCase):
         # behind and sntpd stepped it, so ps said 1-00:02:57 (86577 s) for a
         # manager that started 55 s earlier.
         result, _ = self._probe_manager_age(self._manager_age_output(
-            " 142 1 S 1-00:02:57 service service: role=manager started=5", now_ms="60000"
+            " 142 1 142 S 0 - 1-00:02:57 service service: role=manager started=5", now_ms="60000"
         ))
 
         self.assertEqual(result.manager_started_seconds_ago, 55.0)
@@ -187,7 +190,7 @@ class ProbeTests(unittest.TestCase):
         # NetBSD 4 deploys reboot first and activate starts the manager later:
         # its age is not the device's uptime.
         result, _ = self._probe_manager_age(self._manager_age_output(
-            " 758 1 S 0:20 service service: role=manager started=600", now_ms="620400"
+            " 758 1 758 S 0 - 0:20 service service: role=manager started=600", now_ms="620400"
         ))
 
         self.assertEqual(result.manager_started_seconds_ago, 20.0)
@@ -195,8 +198,8 @@ class ProbeTests(unittest.TestCase):
     def test_device_hostname_probe_parses_name_hosts_title_and_boot_wait(self) -> None:
         result = probe.parse_device_hostname_probe(
             "hostname=capsule\n"
-            "ps=  250     1 Ss 0:41 service       service: role=manager waiting=hostname\n"
-            "ps=  251     1 S  0:41 service       service: role=discovery nbns=ready\n"
+            "ps=  250 1 250 Ss 0 - 0:41 service       service: role=manager waiting=hostname\n"
+            "ps=  251 1 251 S 0 - 0:41 service       service: role=discovery nbns=ready\n"
             "hosts=127.0.0.1\tlocalhost localhost.\n"
             "hosts=127.0.0.1\tcapsule capsule.local\n"
             "found=4330\n"
@@ -214,10 +217,10 @@ class ProbeTests(unittest.TestCase):
     def test_device_hostname_probe_ignores_lookalike_and_dead_managers(self) -> None:
         result = probe.parse_device_hostname_probe(
             "hostname=capsule\n"
-            "ps=  250 1 Z 0:05 service service: role=manager waiting=hostname\n"
-            "ps=  251 1 S 0:05 service service: role=manager-helper waiting=hostname\n"
-            "ps=  252 1 S 0:05 sh sh -c echo service: role=manager waiting=hostname\n"
-            "ps=  253 1 S 0:05 service service: role=manager\n"
+            "ps=  250 1 250 Z 0 - 0:05 service service: role=manager waiting=hostname\n"
+            "ps=  251 1 251 S 0 - 0:05 service service: role=manager-helper waiting=hostname\n"
+            "ps=  252 1 252 S 0 - 0:05 sh sh -c echo service: role=manager waiting=hostname\n"
+            "ps=  253 1 253 S 0 - 0:05 service service: role=manager\n"
         )
 
         self.assertFalse(result.manager_waiting)
@@ -287,7 +290,7 @@ class ProbeTests(unittest.TestCase):
         ):
             with self.subTest(title=title):
                 result, _ = self._probe_manager_age(self._manager_age_output(
-                    *self._MANAGER_PEERS, f"  250     1 Ss 0:41 service       {title}", now_ms="60000"
+                    *self._MANAGER_PEERS, f"  250 1 250 Ss 0 - 0:41 service       {title}", now_ms="60000"
                 ))
                 self.assertEqual(result.manager_started_seconds_ago, 41.0)
 
@@ -301,7 +304,7 @@ class ProbeTests(unittest.TestCase):
         ):
             with self.subTest(title=title):
                 result, _ = self._probe_manager_age(self._manager_age_output(
-                    *self._MANAGER_PEERS, f"  250     1 Ss 0:41 service       {title}", now_ms="60000"
+                    *self._MANAGER_PEERS, f"  250 1 250 Ss 0 - 0:41 service       {title}", now_ms="60000"
                 ))
                 self.assertEqual(result.payload_missing, missing)
                 self.assertEqual(result.manager_started_seconds_ago, 41.0)
@@ -309,7 +312,7 @@ class ProbeTests(unittest.TestCase):
     def test_probe_manager_startup_age_conn_reports_a_missing_payload_without_an_age(self) -> None:
         # A failed clock read loses the age, never the payload state.
         result, _ = self._probe_manager_age(self._manager_age_output(
-            " 250 1 Ss 0:41 service service: role=manager started=19 payload=missing", now_ms=""
+            " 250 1 250 Ss 0 - 0:41 service service: role=manager started=19 payload=missing", now_ms=""
         ))
         self.assertIsNone(result.manager_started_seconds_ago)
         self.assertTrue(result.payload_missing)
@@ -323,7 +326,7 @@ class ProbeTests(unittest.TestCase):
         # Polled while a deploy or activation waits: ps alone, no exec of the
         # service for a clock reading.
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        manager = "  250     1 Ss 0:41 service       service: role=manager started=19{}"
+        manager = "  250 1 250 Ss 0 - 0:41 service       service: role=manager started=19{}"
         cases = (
             ("ok", [*self._MANAGER_PEERS, manager.format(" payload=missing")], 0, True),
             ("present", [*self._MANAGER_PEERS, manager.format("")], 0, False),
@@ -350,7 +353,7 @@ class ProbeTests(unittest.TestCase):
         for now_ms, age in (("19000", 0.0), ("19999", 0.0), ("20000", 1.0)):
             with self.subTest(now_ms=now_ms):
                 result, _ = self._probe_manager_age(self._manager_age_output(
-                    " 250 1 Ss 0:00 service service: role=manager started=19", now_ms=now_ms
+                    " 250 1 250 Ss 0 - 0:00 service service: role=manager started=19", now_ms=now_ms
                 ))
                 self.assertEqual(result.manager_started_seconds_ago, age)
 
@@ -366,14 +369,14 @@ class ProbeTests(unittest.TestCase):
             "service: role=manager started=\u00b2",
         ):
             with self.subTest(title=title):
-                result, _ = self._probe_manager_age(self._manager_age_output(f" 250 1 Ss 0:41 service {title}"))
+                result, _ = self._probe_manager_age(self._manager_age_output(f" 250 1 250 Ss 0 - 0:41 service {title}"))
                 self.assertIsNone(result.manager_started_seconds_ago)
                 self.assertEqual(result.detail, "manager title has no start time (an older release, or its clock read failed)")
 
     def test_probe_manager_startup_age_conn_returns_none_without_a_monotonic_reading(self) -> None:
         # An older service binary rejects --print-monotonic-ms and prints
         # nothing; a missing line is the same.
-        row = " 250 1 Ss 0:41 service service: role=manager started=19"
+        row = " 250 1 250 Ss 0 - 0:41 service service: role=manager started=19"
         for output in (
             self._manager_age_output(row, now_ms=""),
             self._manager_age_output(row, now_ms="soon"),
@@ -389,7 +392,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_probe_manager_startup_age_conn_returns_none_for_a_start_after_the_clock_reading(self) -> None:
         result, _ = self._probe_manager_age(self._manager_age_output(
-            " 250 1 Ss 0:41 service service: role=manager started=61", now_ms="60000"
+            " 250 1 250 Ss 0 - 0:41 service service: role=manager started=61", now_ms="60000"
         ))
 
         self.assertIsNone(result.manager_started_seconds_ago)
@@ -400,7 +403,7 @@ class ProbeTests(unittest.TestCase):
         # ps's status is lost in the pipe, and a listing always has the probe's
         # own shell: no ps= line means ps failed, not that no manager runs. A
         # row without the ps= prefix is not a process.
-        for output in ("now_ms=60000\n", " 250 1 Ss 0:41 service service: role=manager started=19\nnow_ms=60000\n"):
+        for output in ("now_ms=60000\n", " 250 1 250 Ss 0 - 0:41 service service: role=manager started=19\nnow_ms=60000\n"):
             with self.subTest(output=output):
                 result, _ = self._probe_manager_age(output)
                 self.assertIsNone(result.manager_started_seconds_ago)
@@ -410,7 +413,7 @@ class ProbeTests(unittest.TestCase):
         # Between exec and its first setproctitle, ps shows the manager's argv,
         # which has no start yet: like no manager, it gets no startup grace.
         result, _ = self._probe_manager_age(self._manager_age_output(
-            " 250 1 Ss 0:00 service /mnt/Flash/service manager"
+            " 250 1 250 Ss 0 - 0:00 service /mnt/Flash/service manager"
         ))
 
         self.assertIsNone(result.manager_started_seconds_ago)
@@ -442,23 +445,23 @@ class ProbeTests(unittest.TestCase):
     def test_probe_manager_startup_age_conn_reports_a_manager_it_could_not_identify(self) -> None:
         # A service process whose command line was not read may be the
         # manager: no age, and not "not running" either.
-        unreadable = f"  250     1 D          0:41 service       {UNREADABLE_COMMAND}"
+        unreadable = f"  250 1 250 D 0 - 0:41 service       {UNREADABLE_COMMAND}"
         result, _ = self._probe_manager_age(self._manager_age_output(*self._MANAGER_PEERS, unreadable))
         self.assertIsNone(result.manager_started_seconds_ago)
         self.assertEqual(result.detail, probe.MANAGER_UNREADABLE)
 
         # Beside a manager that was read, it is some other service process.
         result, _ = self._probe_manager_age(self._manager_age_output(
-            unreadable, "  251     1 Ss         0:41 service       service: role=manager started=19",
+            unreadable, "  251 1 251 Ss 0 - 0:41 service       service: role=manager started=19",
         ))
         self.assertEqual(result.manager_started_seconds_ago, 41.0)
 
     def test_probe_manager_startup_age_conn_ignores_zombie_and_lookalike_managers(self) -> None:
         result, _ = self._probe_manager_age(self._manager_age_output(
-            " 250 1 Z 0:05 service service: role=manager started=1",
-            " 251 1 S 0:05 service service: role=manager-helper started=1",
-            " 252 1 S 0:05 sh sh -c echo service: role=manager started=1",
-            " 253 1 S 0:05 service service: role=job manager started=1",
+            " 250 1 250 Z 0 - 0:05 service service: role=manager started=1",
+            " 251 1 251 S 0 - 0:05 service service: role=manager-helper started=1",
+            " 252 1 252 S 0 - 0:05 sh sh -c echo service: role=manager started=1",
+            " 253 1 253 S 0 - 0:05 service service: role=job manager started=1",
         ))
 
         self.assertIsNone(result.manager_started_seconds_ago)
@@ -466,8 +469,8 @@ class ProbeTests(unittest.TestCase):
 
     def test_probe_manager_startup_age_conn_returns_none_when_several_managers_run(self) -> None:
         result, _ = self._probe_manager_age(self._manager_age_output(
-            " 250 1 Ss 5:00 service service: role=manager started=1",
-            " 900 1 Ss 0:03 service service: role=manager started=50",
+            " 250 1 250 Ss 0 - 5:00 service service: role=manager started=1",
+            " 900 1 900 Ss 0 - 0:03 service service: role=manager started=50",
         ))
 
         self.assertIsNone(result.manager_started_seconds_ago)

@@ -21,6 +21,7 @@ from timecapsulesmb.device.migration_jobs import (
     probe_migration_activity,
     running_migrations,
 )
+from timecapsulesmb.device.processes import parse_ps_rows
 from timecapsulesmb.services import deploy
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
@@ -32,7 +33,7 @@ from timecapsulesmb.transport.errors import SshError
 from timecapsulesmb.transport.ssh import SshConnection
 
 LOG = "/Volumes/dk2/.samba4/logs/xattr-migration-copy.log"
-COPY_ROW = f"  412 S     1:02.50 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log {LOG} multi copy"
+COPY_ROW = f"  412 1 412 S 0 - 1:02.50 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log {LOG} multi copy"
 
 
 def migration(pid: int = 412, phase: str = "copy", cpu_time: str = "1:02.50", log: str | None = LOG) -> RunningMigration:
@@ -43,11 +44,11 @@ class RunningMigrationsTests(unittest.TestCase):
     def test_reads_phase_and_log_of_each_native_migrator(self) -> None:
         rows = "\n".join((
             COPY_ROW,
-            "  413 R  0:00.10 xattr-hfs-migra /mnt/Memory/tc-xattr-hfs-migrate --log /x/cleanup.log multi cleanup",
-            "  414 S  0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log /x/r.log multi retire",
-            "  415 S  0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log /x/c.log inspect-root /Volumes/dk2",
-            "  416 S  0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 inspect",
-            "  417 S  0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate multi",
+            "  413 1 413 R 0 - 0:00.10 xattr-hfs-migra /mnt/Memory/tc-xattr-hfs-migrate --log /x/cleanup.log multi cleanup",
+            "  414 1 414 S 0 - 0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log /x/r.log multi retire",
+            "  415 1 415 S 0 - 0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log /x/c.log inspect-root /Volumes/dk2",
+            "  416 1 416 S 0 - 0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 inspect",
+            "  417 1 417 S 0 - 0:00.01 tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate multi",
         ))
         self.assertEqual(running_migrations(rows), (
             RunningMigration(412, "copy", LOG, "1:02.50"),
@@ -60,10 +61,10 @@ class RunningMigrationsTests(unittest.TestCase):
 
     def test_finds_shell_migrations_of_older_releases_by_argv_only(self) -> None:
         rows = "\n".join((
-            "  20 S 0:00.02 sh /bin/sh /mnt/Flash/migrate.sh",
-            "  21 S 0:00.02 sh /mnt/Flash/xattr-migrate-wrapper.sh",
+            "  20 1 20 S 0 - 0:00.02 sh /bin/sh /mnt/Flash/migrate.sh",
+            "  21 1 21 S 0 - 0:00.02 sh /mnt/Flash/xattr-migrate-wrapper.sh",
             # The SSH wrapper that started it mentions the script but is not it.
-            "  22 S 0:00.00 sh sh -c /mnt/Flash/migrate.sh",
+            "  22 1 22 S 0 - 0:00.00 sh sh -c /mnt/Flash/migrate.sh",
         ))
         self.assertEqual(running_migrations(rows), (
             RunningMigration(20, "legacy", None, "0:00.02"),
@@ -71,20 +72,22 @@ class RunningMigrationsTests(unittest.TestCase):
         ))
 
     def test_netbsd4_rows_without_readable_arguments_still_count(self) -> None:
-        # NetBSD 4's ps puts the command name in parentheses when it cannot
-        # read argv, and the kernel's ucomm keeps 16 characters.
-        self.assertEqual(running_migrations(" 1504 S    0:00.01 tc-xattr-hfs-mig (tc-xattr-hfs-mig)\n"),
+        # NetBSD 4's ps cannot read the migrator's argv (ps_rows then prints
+        # its marker), and the kernel's ucomm keeps 16 characters.
+        self.assertEqual(running_migrations(" 1504 1 1504 S 0 - 0:00.01 tc-xattr-hfs-mig (unreadable)\n"),
                          (RunningMigration(1504, "unknown", None, "0:00.01"),))
 
     def test_skips_zombies_other_processes_and_malformed_rows(self) -> None:
         rows = "\n".join((
-            "  30 Z 0:00.00 tc-xattr-hfs-mi",
-            "  31 S 0:00.00 afpserver /sbin/afpserver",
-            "  32 S 0:00.00 service service: role=job storage",
+            "  30 1 30 Z 0 - 0:00.00 tc-xattr-hfs-mi",
+            "  31 1 31 S 0 - 0:00.00 afpserver",
+            "  32 1 32 S 0 - 0:00.00 service",
             "PID STAT TIME COMMAND",
             "",
             "  33 S",
         ))
+        # Ignored for what they are, not for failing to parse.
+        self.assertEqual([process.pid for process in parse_ps_rows(rows)], [30, 31, 32])
         self.assertEqual(running_migrations(rows), ())
 
 
@@ -131,13 +134,15 @@ class UnreadableCommandLineTests(unittest.TestCase):
         # Its name alone says what it is; NetBSD 4's ps, or a migrator waiting
         # on the disk, leaves the phase and log unknown.
         self.assertEqual(
-            running_migrations("  412 D 1:02.50 tc-xattr-hfs-mi (unreadable)"),
+            running_migrations("  412 1 412 D 0 - 1:02.50 tc-xattr-hfs-mi (unreadable)"),
             (RunningMigration(412, "unknown", None, "1:02.50"),),
         )
 
     def test_a_shell_without_its_command_line_is_not_counted(self) -> None:
         # Deploy's idle-job guard waits for such a shell instead.
-        self.assertEqual(running_migrations("  20 D 0:00.02 sh (unreadable)"), ())
+        row = "  20 1 20 D 0 - 0:00.02 sh (unreadable)"
+        self.assertTrue(parse_ps_rows(row)[0].unreadable)
+        self.assertEqual(running_migrations(row), ())
 
     def test_jobs_listing_reads_command_lines_of_migrators_and_shells_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,7 +167,7 @@ class ProbeTests(unittest.TestCase):
     connection = SshConnection("root@10.0.0.2", "pw", "")
 
     def test_no_migration_costs_one_ps_call(self) -> None:
-        with mock.patch("timecapsulesmb.device.migration_jobs.run_ssh", return_value=completed("  1 S 0:00.00 init /sbin/init\n")) as ssh:
+        with mock.patch("timecapsulesmb.device.migration_jobs.run_ssh", return_value=completed("  1 1 1 S 0 - 0:00.00 init\n")) as ssh:
             activity = probe_migration_activity(self.connection)
         self.assertEqual(activity, MigrationActivity(()))
         self.assertEqual(ssh.call_args.args[1], JOBS_PS_COMMAND)

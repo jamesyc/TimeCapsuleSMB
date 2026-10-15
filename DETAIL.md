@@ -757,18 +757,29 @@ stalls behind one such process however many others it lists. The table itself
 (`KERN_PROC2`, `ps ax` without a command column) never waits.
 
 The manager reads the table alone ([proctable.h](build/native/service/proctable.h))
-and reads argv only in jobs. The host's device scripts do the same through
-`render_ps_rows` (`device/processes.py`): one `ps ax` listing without command
-lines, then `ps -ww -o ucomm= -o command= -p PID` (NetBSD 4's `ps -p` takes one
-PID) for each process whose role depends on its argv: `service` titles, `sh`
-launchers, `diskd`'s `-i lo0`, rsync's `--daemon`, the migrator's phase. A row
-in state `D` is looked at once more a second later; if it is still `D`, or ps
-cannot read it, the row ends in `(unreadable)`. A process gone since the listing
-is left out. Callers treat an unreadable process as possibly theirs, never as
-absent: the stop scripts wait for it but never signal it, the idle-job guard
-waits for it, doctor's manager, discovery and rsync checks say it could not be
-identified (and retry it), and a migrator is still a migration. When a listing
-times out anyway, doctor and deploy telemetry read the table alone and name the
+and reads argv only in jobs. The host's device scripts do the same through one
+shell function, `ps_rows` (`device/processes.py`). Every listing has one layout,
+`pid ppid pgid stat sl wchan time ucomm`, then the command line, and one parser
+(`parse_ps_rows`). Each caller names the processes whose role depends on their
+argv, and only those command lines are read, one `ps -ww -o ucomm= -o command=
+-p PID` each (NetBSD 4's `ps -p` takes one PID):
+
+- doctor's listings and the probes: `service` titles and `diskd`'s `-i lo0`;
+- the stop script and the idle-job guard: `service` and `sh` launchers;
+- the migration probe: the migrator's phase and `sh`;
+- the rsync check: rsync's `--daemon`.
+
+Doctor never reads `sh` or `smbd` command lines: they fork the most, so they are
+the likeliest to hold their map lock. A row in state `D` is looked at once more
+a second later; if it is still `D`, or ps cannot read it, the row ends in
+`(unreadable)`. A process gone since the listing is left out. Callers treat an
+unreadable process as possibly theirs, never as absent: the stop scripts wait
+for it but never signal it, the idle-job guard waits for it, doctor's manager
+and discovery checks say it could not be identified (and retry it), and a
+migrator is still a migration. An rsync daemon is not: it waits for
+connections, so one asleep in the kernel is brief, and doctor retries "not
+running". When a listing times out anyway, doctor and deploy telemetry read the
+table alone (`STUCK_PROCESS_PS_COMMAND`, the same columns) and name the
 processes asleep in the kernel.
 
 This narrows the stall but does not close it: the second look and the read are

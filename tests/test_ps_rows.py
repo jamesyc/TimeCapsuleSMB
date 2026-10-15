@@ -10,31 +10,37 @@ import subprocess
 
 import pytest
 
-from tests.device_ps import FakePs, process
+from tests.device_ps import FakePs, process, ps_row
 from timecapsulesmb.device.processes import (
+    PS_ROWS_FUNCTION,
     UNREADABLE_COMMAND,
+    Process,
     describe_uninterruptible,
+    parse_ps_rows,
     ps_rows_command,
-    render_ps_rows,
     render_process_present_by_ucomm,
 )
 
 # Ubuntu CI runs these scripts with dash; macOS has both.
 SHELLS = [shell for shell in ("/bin/sh", "/bin/dash") if os.path.exists(shell)]
-FUNCTION = render_ps_rows("rows", ("pid", "ppid", "stat"), ("service", "tc-xattr-hfs-mi*"))
+# A name, and a prefix pattern as the migrators' truncated names need.
+CALL = "ps_rows service 'tc-xattr-hfs-mi*'"
 
 
 def run_rows(tmp_path, shell, processes, *, prefix="", suffix="", **fake_options):
     fake = FakePs(tmp_path, processes, **fake_options)
     sleeps = tmp_path / "sleeps"
-    script = fake.install(FUNCTION).replace("sleep 1", f"echo slept >> {sleeps}")
-    result = subprocess.run([shell, "-c", f"{script}\n{prefix}rows{suffix}"], capture_output=True, text=True)
+    script = fake.install(PS_ROWS_FUNCTION).replace("sleep 1", f"echo slept >> {sleeps}")
+    result = subprocess.run([shell, "-c", f"{script}{prefix}{CALL}{suffix}"], capture_output=True, text=True)
     slept = len(sleeps.read_text().splitlines()) if sleeps.exists() else 0
     return result, fake, slept
 
 
 def rows_by_pid(output):
-    return {line.split()[0]: line.split() for line in output.splitlines()}
+    rows = {process.pid: process for process in parse_ps_rows(output)}
+    # Every line is a row.
+    assert len(rows) == len(output.splitlines()), output
+    return rows
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -48,10 +54,10 @@ def test_reads_command_lines_only_for_selected_processes(tmp_path, shell):
 
     assert result.returncode == 0, result.stderr
     rows = rows_by_pid(result.stdout)
-    assert rows["10"] == ["10", "1", "S", "service", "service:", "role=manager", "started=12"]
-    assert rows["11"] == ["11", "1", "S", "smbd"]
-    assert rows["12"][4:] == ["/mnt/Memory/tc-xattr-hfs-migrate", "multi", "copy", "--log", "/x"]
-    assert rows["13"] == ["13", "1", "S", "sh"]
+    assert rows[10] == Process(10, 1, 10, "S", 0, "-", "0:00.00", "service", ("service:", "role=manager", "started=12"))
+    assert rows[11] == Process(11, 1, 11, "S", 0, "-", "0:00.00", "smbd")
+    assert rows[12].argv == ("/mnt/Memory/tc-xattr-hfs-migrate", "multi", "copy", "--log", "/x")
+    assert rows[13].argv == ()
     assert fake.command_reads() == ["10", "12"]
     assert slept == 0
 
@@ -69,10 +75,10 @@ def test_a_process_asleep_in_the_kernel_is_looked_at_again_but_never_read(tmp_pa
 
     assert result.returncode == 0, result.stderr
     rows = rows_by_pid(result.stdout)
-    assert rows["10"][4:] == [UNREADABLE_COMMAND]
-    assert rows["11"][4:] == ["service:", "role=discovery"]
-    assert rows["12"] == ["12", "1", "D", "smbd"]
-    assert rows["13"][4:] == [UNREADABLE_COMMAND]
+    assert rows[10].unreadable
+    assert rows[11].argv == ("service:", "role=discovery")
+    assert (rows[12].stat, rows[12].argv) == ("D", ())
+    assert rows[13].unreadable
     assert fake.command_reads() == ["11"]
     assert slept == 1
 
@@ -85,17 +91,17 @@ def test_a_process_gone_since_the_listing_is_left_out(tmp_path, shell):
     ])
 
     assert result.returncode == 0, result.stderr
-    assert list(rows_by_pid(result.stdout)) == ["11"]
+    assert list(rows_by_pid(result.stdout)) == [11]
 
 
 @pytest.mark.parametrize("shell", SHELLS)
 def test_a_sleeping_process_gone_before_its_second_look_is_left_out(tmp_path, shell):
     fake = FakePs(tmp_path, [process("10 D service service: role=manager")])
     # The process exits during the one-second wait.
-    script = fake.install(FUNCTION).replace(
+    script = fake.install(PS_ROWS_FUNCTION).replace(
         "sleep 1", f"{fake.command('kill')} -KILL 10"
     )
-    result = subprocess.run([shell, "-c", f"{script}\nrows"], capture_output=True, text=True)
+    result = subprocess.run([shell, "-c", f"{script}{CALL}"], capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
@@ -110,7 +116,7 @@ def test_a_live_process_without_a_readable_command_line_is_kept_as_unreadable(tm
     result, _, _ = run_rows(tmp_path, shell, [process("10 S service service: role=manager", **extra)])
 
     assert result.returncode == 0, result.stderr
-    assert rows_by_pid(result.stdout)["10"] == ["10", "1", "S", "service", UNREADABLE_COMMAND]
+    assert rows_by_pid(result.stdout)[10].argv == (UNREADABLE_COMMAND,)
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -121,7 +127,7 @@ def test_zombies_and_short_rows_pass_through_unread(tmp_path, shell):
     ])
 
     assert result.returncode == 0, result.stderr
-    assert rows_by_pid(result.stdout)["10"] == ["10", "1", "Z", "service"]
+    assert (rows_by_pid(result.stdout)[10].stat, rows_by_pid(result.stdout)[10].argv) == ("Z", ())
     assert fake.command_reads() == ["11"]
 
 
@@ -147,24 +153,47 @@ def test_command_lines_are_printed_verbatim_whatever_the_callers_ifs_and_globbin
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == [f"   10     1 S service {command}"]
+    assert result.stdout.splitlines() == [f"   10     1    10 S 0 - 0:00.00 service {command}"]
 
 
-def test_ps_rows_command_runs_the_function_over_ssh(tmp_path):
-    fake = FakePs(tmp_path, [process("10 S service service: role=manager")])
-    command = ps_rows_command("rows", ("pid", "stat"), ("service",))
-    result = subprocess.run(fake.install(command), shell=True, capture_output=True, text=True)
+def test_ps_rows_command_passes_its_patterns_unexpanded(tmp_path):
+    # The login shell must not expand a pattern against its directory first.
+    work = tmp_path / "cwd"
+    work.mkdir()
+    (work / "tc-xattr-hfs-migrate.log").write_text("")
+    fake = FakePs(tmp_path, [process("10 S tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate multi copy"),
+                             process("11 S sh /bin/sh /x")])
+    command = ps_rows_command("tc-xattr-hfs-mi*")
+    result = subprocess.run(fake.install(command), shell=True, capture_output=True, text=True, cwd=work)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["10", "S", "service", "service:", "role=manager"]
+    assert [(p.pid, p.argv) for p in parse_ps_rows(result.stdout)] == [
+        (10, ("/mnt/Memory/tc-xattr-hfs-migrate", "multi", "copy")), (11, ())]
+
+
+def test_parse_ps_rows_reads_the_layout_and_leaves_out_what_is_not_a_row():
+    output = "\n".join([
+        ps_row(10, "service", "service: role=manager", ppid=1, pgid=2, stat="Ss", sl=3, wchan="select", time="0:01.50"),
+        ps_row(11, "smbd", stat="Z"),
+        "ps: kvm_getprocs: Cannot allocate memory",
+        "  12 1 12 S 0 select 0:00.00",       # no ucomm
+        "  x 1 1 S 0 select 0:00.00 sh",       # no pid
+        "  13 1 13 S soon select 0:00.00 sh",  # no sleep time
+    ])
+
+    assert parse_ps_rows(output) == [
+        Process(10, 1, 2, "Ss", 3, "select", "0:01.50", "service", ("service:", "role=manager")),
+        Process(11, 1, 11, "Z", 0, "-", "0:00.00", "smbd"),
+    ]
+    assert parse_ps_rows(output)[1].zombie and not parse_ps_rows(output)[0].zombie
 
 
 def test_describe_uninterruptible_names_the_sleepers_but_not_kernel_threads():
     listing = "\n".join([
-        "  812   700 D    vmmapbsy ps",
-        "  700     1 D    biowait  service",
-        "    3     0 DK   pgdaemon pgdaemon",
-        "  701     1 S    select   smbd",
+        "  812 700 812 D 127 vmmapbsy 0:00.00 ps",
+        "  700 1 700 D 127 biowait 0:00.00 service",
+        "  3 0 3 DK 127 pgdaemon 0:00.00 pgdaemon",
+        "  701 1 701 S 127 select 0:00.00 smbd",
         "garbage",
     ])
     assert describe_uninterruptible(listing) == "ps (pid 812) on vmmapbsy, service (pid 700) on biowait"

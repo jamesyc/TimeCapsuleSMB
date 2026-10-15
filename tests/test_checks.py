@@ -2757,8 +2757,8 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertFalse(any("data disk appears unresponsive" in result.message for result in run.results))
 
-    STUCK_SMBD_ROW = " 3166   457   457 D      127 biowait  smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
-    HEALTHY_SMBD_ROW = "  457   146   457 I       20 select   smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+    STUCK_SMBD_ROW = " 3166 457 457 D 127 biowait 0:00.00 smbd"
+    HEALTHY_SMBD_ROW = "  457 146 457 I 20 select 0:00.00 smbd"
 
     def run_doctor_with_process_snapshot(
         self,
@@ -2847,7 +2847,7 @@ class CheckTests(unittest.TestCase):
         run.log_tails.assert_called_once()
         self.assertIsNone(run.log_tails.call_args.kwargs["skip_data_disk"])
 
-    LOCKF_SMBD_ROW = " 8893   457   457 I      127 lockf    smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+    LOCKF_SMBD_ROW = " 8893 457 457 I 127 lockf 0:00.00 smbd"
 
     def test_run_doctor_checks_lists_tdb_lock_holders_when_an_smbd_waits_in_lockf(self) -> None:
         locks = "/mnt/Locks/locking.tdb pid 457 read 4+1\n/mnt/Locks/locking.tdb pid 9001 write 1460+1\n"
@@ -2867,7 +2867,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_lists_no_locks_without_an_smbd_in_lockf(self) -> None:
         # Another program waiting for a lock is not Samba's TDB lock.
-        other = "  600     1   600 I      127 lockf    cron     /usr/sbin/cron"
+        other = "  600 1 600 I 127 lockf 0:00.00 cron"
         run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, other]))
 
         run.file_locks.assert_not_called()
@@ -2877,7 +2877,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_fails_smbds_that_waited_two_minutes_for_a_lock(self) -> None:
         # ps counts the seconds asleep up to 127; 120 is two minutes.
-        second = " 8894   457   457 I      120 lockf    smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+        second = " 8894 457 457 I 120 lockf 0:00.00 smbd"
         locks = "/mnt/Locks/locking.tdb pid 9001 write 1460+1\n"
         run = self.run_doctor_with_process_snapshot(
             "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW, second]), file_locks=locks,
@@ -2897,7 +2897,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_lists_the_locks_of_a_shorter_lock_wait_without_failing(self) -> None:
         # A wait that ends within two minutes is a busy lock, not a stuck one.
-        short = " 8893   457   457 I      119 lockf    smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+        short = " 8893 457 457 I 119 lockf 0:00.00 smbd"
         locks = "/mnt/Locks/locking.tdb pid 9001 write 1460+1\n"
         run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, short]), file_locks=locks)
 
@@ -2971,8 +2971,8 @@ class CheckTests(unittest.TestCase):
         # ps alone shows needbuf with a sleep time near 0: it wakes to retry.
         snapshot = "\n".join(
             [
-                "  146     1     2 S        1 select   service  service: role=manager stuck=3166:smbd:needbuf:600",
-                " 3166   457   457 D        0 needbuf  smbd     /mnt/Memory/samba4/sbin/smbd -F",
+                "  146 1 2 S 1 select 0:00.00 service  service: role=manager stuck=3166:smbd:needbuf:600",
+                " 3166 457 457 D 0 needbuf 0:00.00 smbd",
             ]
         )
         run = self.run_doctor_with_process_snapshot(snapshot)
@@ -2983,7 +2983,7 @@ class CheckTests(unittest.TestCase):
         run.mocks.check_authenticated_smb_listing.assert_not_called()
 
     def test_run_doctor_checks_counts_stuck_processes_the_manager_title_does_not_name(self) -> None:
-        snapshot = "  146     1     2 S        1 select   service  service: role=manager stuck=3166:smbd:needbuf:600,+5"
+        snapshot = "  146 1 2 S 1 select 0:00.00 service  service: role=manager stuck=3166:smbd:needbuf:600,+5"
         run = self.run_doctor_with_process_snapshot(snapshot)
 
         stuck = [result for result in run.results if "blocked in the kernel" in result.message]
@@ -2992,7 +2992,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(stuck[0].details["stuck_processes_unnamed"], 5)
 
     def test_run_doctor_checks_reports_stuck_non_smbd_process_but_still_checks_smb(self) -> None:
-        stuck_mdns = "  359   119     2 D      125 tstile   mDNSResponder /sbin/mDNSResponder -d"
+        stuck_mdns = "  359 119 2 D 125 tstile 0:00.00 mDNSResponder"
         run = self.run_doctor_with_process_snapshot(
             "\n".join([self.HEALTHY_SMBD_ROW, stuck_mdns]),
             smb_listing=self.connection_shaped_smb_failure(),
@@ -3009,8 +3009,8 @@ class CheckTests(unittest.TestCase):
         snapshot = "\n".join(
             [
                 self.HEALTHY_SMBD_ROW,
-                " 3166   457   457 D      119 biowait  smbd     /mnt/Memory/samba4/sbin/smbd -F",
-                "    0     0     0 DKl    127 uvm      system   [system]",
+                " 3166 457 457 D 119 biowait 0:00.00 smbd",
+                "    0 0 0 DKl 127 uvm 0:00.00 system",
             ]
         )
         run = self.run_doctor_with_process_snapshot(snapshot)
@@ -3048,7 +3048,7 @@ class CheckTests(unittest.TestCase):
     def test_run_doctor_checks_names_what_a_timed_out_snapshot_waited_for(self) -> None:
         # The table without command lines never waits, and shows the
         # processes asleep in the kernel that the listing may have waited for.
-        table = "  812   700 D    vmmapbsy ps\n  700     1 D    biowait  service\n"
+        table = "  812 700 812 D 127 vmmapbsy 0:00.00 ps\n"
         asleep = "ps (pid 812) on vmmapbsy, service (pid 700) on biowait"
         run = self.run_doctor_with_process_snapshot(
             SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
@@ -3064,7 +3064,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(run.debug_fields["remote_process_table"], table.rstrip())
 
     def test_doctor_names_what_a_timed_out_mdns_process_listing_waited_for(self) -> None:
-        table = "  812   700 D    vmmapbsy ps\n"
+        table = "  812 700 812 D 127 vmmapbsy 0:00.00 ps\n"
         asleep = "ps (pid 812) on vmmapbsy"
         detail = "mDNS process table probe timed out after 30s"
         for step, expected_info, expected_table in (
@@ -3120,8 +3120,8 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in failures))
 
     STUCK_ACPD_ROWS = "\n".join((
-        "  119     1     2 Sl       0 kqueue   ACPd     /sbin/ACPd",
-        "  352   119     2 S        1 nanoslp  ACPd     /sbin/ACPd",
+        "  119 1 2 Sl 0 kqueue 0:00.00 ACPd",
+        "  352 119 2 S 1 nanoslp 0:00.00 ACPd",
     ))
 
     def apple_acpd_failures(self, run) -> list[CheckResult]:
@@ -4561,7 +4561,7 @@ class CheckTests(unittest.TestCase):
         for name, title, now_ms, mdns_sleeps, age in cases:
             with self.subTest(name):
                 debug_fields: dict[str, object] = {}
-                output = f"ps=  142     1 S  1-00:02:57 service service: {title}\nnow_ms={now_ms}\n"
+                output = f"ps=  142 1 142 S 0 - 1-00:02:57 service service: {title}\nnow_ms={now_ms}\n"
                 run, sleeps = self._run_doctor_nbns(
                     mock.Mock(return_value=not_ready),
                     mock.Mock(side_effect=[self._nbns_query_timeout()] * 3),

@@ -1583,7 +1583,7 @@ class DeployModuleTests(unittest.TestCase):
     def test_runtime_verification_measurement_reports_what_a_timed_out_listing_waited_for(self) -> None:
         # A timed-out process listing carries the table read just after it and
         # the processes asleep in the kernel; other failures carry neither.
-        table = "  812   700 D    vmmapbsy ps\n"
+        table = "  812 700 812 D 127 vmmapbsy 0:00.00 ps\n"
         timed_out = ProbeStepResult(
             "mdns_process_table_probe", "timeout", "mDNS process table probe timed out after 30s",
             stdout=table, asleep_in_kernel="ps (pid 812) on vmmapbsy",
@@ -1686,13 +1686,13 @@ class DeployModuleTests(unittest.TestCase):
         script = (
             helpers
             + r'''
-zombie_smbd="100 1 Z 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
-live_smbd="101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
-zombie_discovery="200 1 Z 0:00.00 service service: role=discovery nbns=ready"
-live_discovery="201 1 S 0:00.00 service service: role=discovery nbns=ready"
+zombie_smbd="100 1 100 Z 0 - 0:00.00 smbd"
+live_smbd="101 1 101 S 0 - 0:00.00 smbd"
+zombie_discovery="200 1 200 Z 0 - 0:00.00 service service: role=discovery nbns=ready"
+live_discovery="201 1 201 S 0 - 0:00.00 service service: role=discovery nbns=ready"
 mixed_smbd=$(cat <<'EOF'
-100 1 Z 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd
-101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd
+100 1 100 Z 0 - 0:00.00 smbd
+101 1 101 S 0 - 0:00.00 smbd
 EOF
 )
 
@@ -1715,16 +1715,19 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         self.assertIn("fstat:101", result.stdout)
 
     def test_probe_status_helpers_do_not_count_probe_shell_body_as_manager(self) -> None:
+        # capture_ps_out never reads a shell's command line; these rows give
+        # them one anyway, holding the manager's title, to show that only a
+        # service process's title counts.
         script = (
             SMBD_STATUS_HELPERS
             + r'''
-real_manager="203 1 S 0:00.00 service service: role=manager"
-waiting_manager="205 1 S 0:00.00 service service: role=manager waiting=hostname"
-started_manager="206 1 S 0:00.00 service service: role=manager started=12 waiting=hostname"
-retired_shell_manager="204 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
+real_manager="203 1 203 S 0 - 0:00.00 service service: role=manager"
+waiting_manager="205 1 205 S 0 - 0:00.00 service service: role=manager waiting=hostname"
+started_manager="206 1 206 S 0 - 0:00.00 service service: role=manager started=12 waiting=hostname"
+retired_shell_manager="204 1 204 S 0 - 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
 self_match_manager=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe='service: role=manager'
-11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=service: role=manager'
+3308 11745 3308 S 0 - 0:00.01 sh /bin/sh -c probe='service: role=manager'
+11745 11677 11745 Ss 0 - 0:00.01 sh sh -c /bin/sh -c 'probe=service: role=manager'
 EOF
 )
 manager_process_present_for_volume "$real_manager"; echo "manager=$?"
@@ -1774,8 +1777,8 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
                 encoding="utf-8",
             )
             ps_out = (
-                "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf\n"
-                "202 1 S 0:00.00 service service: role=manager\n"
+                "101 1 101 S 0 - 0:00.00 smbd\n"
+                "202 1 202 S 0 - 0:00.00 service service: role=manager\n"
             )
             script = f"""
 RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
@@ -1832,7 +1835,7 @@ root smbd 101 11 internet6 stream tcp 0x0 [fd00::40]:445'; echo "specific_only=$
 
     def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_manager(self) -> None:
         result = self._run_smbd_status_helpers(
-            "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf"
+            "101 1 101 S 0 - 0:00.00 smbd"
         )
         self.assertIn("FAIL:active smb.conf passdb backend is not staged in RAM", result.stdout)
         self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
@@ -1844,15 +1847,15 @@ root smbd 101 11 internet6 stream tcp 0x0 [fd00::40]:445'; echo "specific_only=$
     def test_smbd_status_helpers_report_a_manager_they_could_not_identify(self) -> None:
         # A service process whose command line was not read may be the manager.
         rows = [
-            "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf",
-            f"102 1 D 0:00.00 service {UNREADABLE_COMMAND}",
-            "103 1 S 0:00.00 service service: role=discovery nbns=ready",
+            "101 1 101 S 0 - 0:00.00 smbd",
+            f"102 1 102 D 0 - 0:00.00 service {UNREADABLE_COMMAND}",
+            "103 1 103 S 0 - 0:00.00 service service: role=discovery nbns=ready",
         ]
         result = self._run_smbd_status_helpers("\n".join(rows))
         self.assertIn(f"FAIL:{MANAGER_UNREADABLE}", result.stdout)
         self.assertNotIn("FAIL:manager is not running for managed runtime", result.stdout)
 
-        rows.append("104 1 S 0:00.00 service service: role=manager started=12")
+        rows.append("104 1 104 S 0 - 0:00.00 service service: role=manager started=12")
         result = self._run_smbd_status_helpers("\n".join(rows))
         self.assertIn("PASS:manager is running for managed runtime", result.stdout)
 
@@ -2052,7 +2055,6 @@ describe_managed_smbd_status "" ""
         self.assertIn("SKIP:rsync daemon is disabled and not running", result.lines)
         remote_cmd = run_ssh_mock.call_args.args[1]
         self.assertIn('RUNTIME_PAYLOAD_DIR=/Volumes/dk2/.samba4', remote_cmd)
-        self.assertIn('[ "$3" = rsync ]', remote_cmd)
         self.assertNotIn("pid file", remote_cmd.lower())
 
     def test_probe_managed_rsync_requires_ram_process_and_tcp_873_when_enabled(self) -> None:
@@ -2096,10 +2098,10 @@ describe_managed_smbd_status "" ""
         "1231 /sbin/wcifsnd\n"
     )
     PS_V31 = (
-        "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n"
-        "559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
-        "916 408 S 0:00 service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n"
-        "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n"
+        "371 1 371 Sa 0 - 0:00 mDNSResponder\n"
+        "559 1 559 S 0 - 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
+        "916 408 916 S 0 - 0:00 service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n"
+        "917 916 917 S 0 - 0:00 wcifsnd\n"
     )
     FSTAT_V31 = (
         "root     mDNSResponder  371    5* internet dgram udp *:5353\n"
@@ -2275,7 +2277,7 @@ describe_managed_smbd_status "" ""
         self.assertIn("FAIL:discovery native NBNS is still starting", result.lines)
 
     def test_probe_managed_mdns_advisory_reports_native_nbns_without_blocking_deploy(self) -> None:
-        no_wcifsnd_ps = self.PS_V31.replace("917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", "")
+        no_wcifsnd_ps = self.PS_V31.replace("917 916 917 S 0 - 0:00 wcifsnd\n", "")
         no_wcifsnd_fstat = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
         unlisted = "; NetBIOS name lookups may fail, SMB and Bonjour are unaffected"
         cases = [
@@ -2306,7 +2308,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_passes_native_nbns_off_when_wcifsnd_has_no_address(self) -> None:
         # No DHCP server: bridge0 holds 0.0.0.0 beside its 169.254 address,
         # discovery runs no wcifsnd and says nbns=none.
-        no_wcifsnd_ps = self.PS_V31.replace("917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", "")
+        no_wcifsnd_ps = self.PS_V31.replace("917 916 917 S 0 - 0:00 wcifsnd\n", "")
         no_wcifsnd_fstat = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
         no_lease_plan = self.PLAN_V31.replace(
             "addr: link=9 family=inet addr=192.168.1.10 prefix=24\n",
@@ -2333,8 +2335,8 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_names_a_wcifsnd_that_discovery_did_not_start(self) -> None:
         # An orphan, or ACPd's where boot.sh could not guard /sbin/wcifsnd;
         # the manager stops it within about a second.
-        foreign_line = "4206 190 S 0:00 wcifsnd /sbin/wcifsnd\n"
-        owned_line = "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n"
+        foreign_line = "4206 190 4206 S 0 - 0:00 wcifsnd\n"
+        owned_line = "917 916 917 S 0 - 0:00 wcifsnd\n"
         no_owned = self.PS_V31.replace(owned_line, "")
         no_lease_plan = self.PLAN_V31.replace(
             "addr: link=9 family=inet addr=192.168.1.10 prefix=24\n",
@@ -2355,14 +2357,14 @@ describe_managed_smbd_status "" ""
                 self.assertIn(f"SKIP:{FOREIGN_WCIFSND_RUNNING}; deploy does not wait for it", advisory.lines)
         # A zombie ACPd has not reaped is not a running daemon.
         zombie = self._mdns_probe_with(
-            no_owned.replace("nbns=ready", "nbns=none") + "4206 190 Z 0:00 wcifsnd (wcifsnd)\n", None, no_lease_plan)
+            no_owned.replace("nbns=ready", "nbns=none") + "4206 190 4206 Z 0 - 0:00 wcifsnd\n", None, no_lease_plan)
         self.assertIn("PASS:" + NATIVE_NBNS_OFF_DETAIL, zombie.lines)
         # Discovery's own child beside "none" contradicts it: no retry fixes that.
         own = self._mdns_probe_with(self.PS_V31.replace("nbns=ready", "nbns=none") + foreign_line, None, no_lease_plan)
         self.assertIn("FAIL:discovery native NBNS state does not match the active plan", own.lines)
 
     def test_probe_managed_mdns_advisory_still_requires_bonjour(self) -> None:
-        ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
+        ps_out = "371 1 371 Sa 0 - 0:00 mDNSResponder\n559 1 559 S 0 - 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
         result = self._mdns_probe_with(ps_out, native_nbns="advisory")
         self.assertFalse(result.ready)
         self.assertIn("FAIL:discovery process is not running", result.lines)
@@ -2434,9 +2436,9 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_fails_when_apple_daemon_is_dead_or_diskd_is_on_the_lan(self) -> None:
         ps_out = (
-            "878 1 ZWa 0:00 (mDNSResponder) (mDNSResponder)\n"
-            "232 1 S 0:00 diskd /sbin/diskd -i  -d local.\n"
-            "916 408 S 0:00 service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload\n"
+            "878 1 878 ZWa 0 - 0:00 (mDNSResponder)\n"
+            "232 1 232 S 0 - 0:00 diskd /sbin/diskd -i  -d local.\n"
+            "916 408 916 S 0 - 0:00 service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload\n"
         )
         result, run_ssh_mock = self._run_mdns_probe([
             mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
@@ -2465,7 +2467,7 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_accepts_diskless_registrant_without_smb_links(self) -> None:
         ps_out = self.PS_V31.replace(
-            "nbns=ready mdns=ready:2/2 mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n917 916 S 0:00 wcifsnd /sbin/wcifsnd",
+            "nbns=ready mdns=ready:2/2 mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n917 916 917 S 0 - 0:00 wcifsnd",
             "nbns=waiting mdns=waiting:0/0 mode=diskless --diskless",
         )
         plan = self.PLAN_V31.replace("mask=smb,adisk", "mask=none").replace("diskless=0", "diskless=1")
@@ -2479,7 +2481,7 @@ describe_managed_smbd_status "" ""
         self.assertIn("PASS:mdns link plan validated (diskless; nothing advertised)", result.lines)
 
     def test_probe_managed_mdns_reports_missing_registrant_and_unparsable_plan(self) -> None:
-        ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
+        ps_out = "371 1 371 Sa 0 - 0:00 mDNSResponder\n559 1 559 S 0 - 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
         result, _ = self._run_mdns_probe([
             mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
@@ -2516,7 +2518,7 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_reports_nbns_retry_as_not_ready(self) -> None:
         ps_out = self.PS_V31.replace("nbns=ready", "nbns=waiting").replace(
-            "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", ""
+            "917 916 917 S 0 - 0:00 wcifsnd\n", ""
         )
         fstat_out = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
         result, _ = self._run_mdns_probe([
@@ -2530,7 +2532,7 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_accepts_waiting_without_service_eligible_ipv4(self) -> None:
         ps_out = self.PS_V31.replace("nbns=ready", "nbns=waiting").replace(
-            "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", ""
+            "917 916 917 S 0 - 0:00 wcifsnd\n", ""
         )
         fstat_out = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
         plan = self.PLAN_V31.replace("addr=192.168.1.10", "addr=239.1.2.3")
@@ -2554,7 +2556,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_fails_the_diskd_gate_when_a_stray_diskd_runs_beside_ours(self) -> None:
         """Review 2 R8: `-i lo0` present somewhere is not enough; ACPd's diskd
         next to ours still advertises on the LAN (the runtime calls that acpd)."""
-        ps_out = self.PS_V31 + "640 1 S 0:00 diskd /sbin/diskd -i  -d local.\n" + "735 1 ZW 0:00 diskd (diskd)\n"
+        ps_out = self.PS_V31 + "640 1 640 S 0 - 0:00 diskd /sbin/diskd -i  -d local.\n" + "735 1 735 ZW 0 - 0:00 diskd (diskd)\n"
         result, _ = self._run_mdns_probe([
             mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
@@ -2644,7 +2646,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_takeover_reports_process_table_timeout(self) -> None:
         # The table alone never waits; it names what the listing waited for.
         # The detail stays one text for every such timeout.
-        listing = "  812   700 D    vmmapbsy ps\n  700     1 D    biowait  service\n  371     1 S    select   mDNSResponder\n"
+        listing = "  812 700 812 D 127 vmmapbsy 0:00.00 ps\n  700 1 700 D 127 biowait 0:00.00 service\n  371 1 371 S 127 select 0:00.00 mDNSResponder\n"
         detail = f"mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s"
         for stuck, table, asleep in (
             (mock.Mock(returncode=0, stdout=listing, stderr=""), listing,
@@ -2682,7 +2684,7 @@ describe_managed_smbd_status "" ""
         self.assertNotIn("FAIL:discovery process is not running", result.lines)
 
         # Beside a discovery process that was read, it changes nothing.
-        result = self._mdns_probe_with(self.PS_V31 + f"920 408 D 0:00 service {UNREADABLE_COMMAND}\n")
+        result = self._mdns_probe_with(self.PS_V31 + f"920 408 920 D 0 - 0:00 service {UNREADABLE_COMMAND}\n")
         self.assertIn("PASS:discovery process is running", result.lines)
 
     def test_probe_managed_mdns_skips_the_loopback_check_for_an_unreadable_diskd(self) -> None:
@@ -2692,7 +2694,7 @@ describe_managed_smbd_status "" ""
         self.assertIn(f"SKIP:{DISKD_UNREADABLE}", result.lines)
 
         # A diskd known to be on the LAN still fails.
-        stray = unreadable + "560 1 S 0:00 diskd /sbin/diskd\n"
+        stray = unreadable + "560 1 560 S 0 - 0:00 diskd /sbin/diskd\n"
         result = self._mdns_probe_with(stray)
         self.assertFalse(result.ready)
         self.assertTrue(any(line.startswith("FAIL:Apple diskd pid(s) 560 are not on loopback") for line in result.lines))

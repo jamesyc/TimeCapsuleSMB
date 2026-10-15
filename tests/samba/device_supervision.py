@@ -39,12 +39,12 @@ class Device:
         return run_ssh(self.ssh, text, timeout=30).stdout.replace("\r\n", "\n")
 
     def processes(self):
-        return [dict(pid=row.pid, parent=row.parent, group=row.group, name=row.name, args=row.args)
+        return [dict(pid=row.pid, parent=row.ppid, group=row.pgid, name=row.ucomm, argv=row.argv)
                 for row in device_processes.parse(self.command(device_processes.COMMAND))]
 
     def role(self, name, rows=None):
         rows = self.processes() if rows is None else rows
-        selected = [p for p in rows if (p["name"] == "service" and p["args"].startswith("service: role=" + name + " "))]
+        selected = [p for p in rows if p["name"] == "service" and p["argv"][:2] == ("service:", "role=" + name)]
         assert len(selected) == 1, (name, selected)
         return selected[0]
 
@@ -54,7 +54,8 @@ class Device:
         matches = [p for p in rows if p["name"] == "smbd" and p["parent"] == manager["pid"]]
         assert len(matches) == 1, matches
         samba = matches[0]
-        assert "-F --no-process-group" in samba["args"], samba
+        # -F keeps it the manager's direct child; with --no-process-group it
+        # stays in the group the manager gave it, its own.
         assert samba["group"] == samba["pid"] and samba["group"] != manager["group"], (samba, manager)
         return samba
 
@@ -277,7 +278,7 @@ def native_nbns_failure(device, share, filename):
     def initial_child(rows):
         controller = device.role("discovery", rows)
         children = [p for p in rows if p["name"] == "wcifsnd" and p["parent"] == controller["pid"]]
-        return children[0] if "nbns=ready" in controller["args"] and len(children) == 1 else None
+        return children[0] if "nbns=ready" in controller["argv"] and len(children) == 1 else None
 
     # A listening Samba parent can precede discovery's native registrations.
     # Wait for the fault's precondition after the preceding manager restart.

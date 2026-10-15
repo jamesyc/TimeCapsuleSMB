@@ -2,23 +2,24 @@ from __future__ import annotations
 
 import unittest
 
+from tests.device_ps import ps_row
 from timecapsulesmb.device.processes import StuckProcess, manager_unnamed_stuck_count, stuck_processes
 
-# PROCESS_SNAPSHOT_COMMAND rows (pid ppid pgid stat sl wchan ucomm command),
-# shaped like the NetBSD 6 and NetBSD 4 devices print them.
-SMBD_PARENT = "  457   146   457 I       20 select   smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group -s /mnt/Memory/samba4/etc/smb.conf"
-NETBSD6_KERNEL = "    0     0     0 DKl      0 uvm      system   [system]"
-NETBSD4_KERNEL_THREAD = "    5     0     0 DK     127 amc6821c amc6821c_thread [amc6821c_thread]"
-ZOMBIE = "   97   119     2 Z        0 -        wcifsnd  (wcifsnd)"
-RUNNING = " 3166   457   457 R        0 -        smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group -s /mnt/Memory/samba4/etc/smb.conf"
+# PROCESS_SNAPSHOT_COMMAND rows: only service and diskd rows carry a command
+# line.
+SMBD_PARENT = ps_row(457, "smbd", ppid=146, stat="I", sl=20, wchan="select")
+NETBSD6_KERNEL = ps_row(0, "system", ppid=0, stat="DKl", wchan="uvm")
+NETBSD4_KERNEL_THREAD = ps_row(5, "amc6821c_thread", ppid=0, pgid=0, stat="DK", sl=127, wchan="amc6821c")
+ZOMBIE = ps_row(97, "wcifsnd", ppid=119, pgid=2, stat="Z")
+RUNNING = ps_row(3166, "smbd", ppid=457, pgid=457, stat="R")
 
 
 def manager_row(words: str) -> str:
-    return f"  146     1     2 S        1 select   service  service: role=manager {words}".rstrip()
+    return ps_row(146, "service", f"service: role=manager {words}".rstrip(), pgid=2, sl=1, wchan="select")
 
 
 def row(pid: int, state: str, sleep: str, wchan: str, name: str) -> str:
-    return f"{pid:5d}   457   457 {state:<6} {sleep:>4} {wchan:<8} {name:<8} /mnt/Memory/samba4/sbin/{name} -F"
+    return ps_row(pid, name, ppid=457, pgid=457, stat=state, sl=int(sleep), wchan=wchan)
 
 
 class StuckProcessesTests(unittest.TestCase):
@@ -67,7 +68,8 @@ class StuckProcessesTests(unittest.TestCase):
         )
 
     def test_skips_short_and_malformed_rows(self) -> None:
-        output = "\n".join(["", "garbage", "  x   1   1 D 127 biowait smbd smbd", "  40 1 1 D many biowait smbd smbd"])
+        output = "\n".join(["", "garbage", "  x 1 1 D 127 biowait 0:00.00 smbd", "  40 1 1 D many biowait 0:00.00 smbd",
+                            "  41 1 1 D 127 biowait 0:00.00"])
 
         self.assertEqual(stuck_processes(output), [])
 
@@ -126,7 +128,7 @@ class StuckProcessesTests(unittest.TestCase):
         self.assertEqual(stuck_processes(output), [])
 
     def test_only_the_manager_title_is_read(self) -> None:
-        discovery = "  911   146   911 S        1 select   service  service: role=discovery stuck=1:x:y:99"
+        discovery = ps_row(911, "service", "service: role=discovery stuck=1:x:y:99", ppid=146, sl=1, wchan="select")
 
         self.assertEqual(stuck_processes(discovery), [])
 
@@ -190,19 +192,20 @@ class ListedWithoutCommandLinesTests(unittest.TestCase):
 
 class UnreadableServiceTests(unittest.TestCase):
     def test_lists_live_service_processes_whose_command_lines_were_not_read(self) -> None:
-        from timecapsulesmb.device.processes import UNREADABLE_COMMAND, service_role_lines, service_unreadable
+        from timecapsulesmb.device.processes import UNREADABLE_COMMAND, service_role_processes, service_unreadable
 
         rows = "\n".join([
-            f"  10 1 D 0:00 service {UNREADABLE_COMMAND}",
-            f"  11 1 Z 0:00 service {UNREADABLE_COMMAND}",
-            f"  12 1 D 0:00 smbd {UNREADABLE_COMMAND}",
-            "  13 1 S 0:00 service service: role=manager",
-            "  14 1 S 0:00 service (service)",
-            "  15 1 S 0:00 service",
+            ps_row(10, "service", UNREADABLE_COMMAND, stat="D"),
+            ps_row(11, "service", UNREADABLE_COMMAND, stat="Z"),
+            # diskd's command line is read too, and can be unreadable.
+            ps_row(12, "diskd", UNREADABLE_COMMAND, stat="D"),
+            ps_row(13, "service", "service: role=manager"),
+            ps_row(14, "service", "(service)"),
+            ps_row(15, "service"),
         ])
 
         self.assertTrue(service_unreadable(rows))
         # A zombie, another program, or a command line that was read: none.
         self.assertFalse(service_unreadable("\n".join(rows.splitlines()[1:])))
         # An unread row holds no role.
-        self.assertEqual([line.split()[0] for line in service_role_lines(rows, "manager")], ["13"])
+        self.assertEqual([process.pid for process in service_role_processes(rows, "manager")], [13])
