@@ -13,7 +13,8 @@ CASES = (
     "map_records_private_only", "map_fixed_replaces", "unmap_splits_and_trims", "merge_adjacent",
     "remap_moves", "remap_drops_replaced", "protect_updates", "overflow_falls_back", "fallback_lock_failure",
     "repair_keeps_contents", "fork_mask_and_errno", "advice_restored", "advice_partial_repair",
-    "read_only_ranges_skipped", "updates_keep_mask_and_errno",
+    "read_only_ranges_skipped", "updates_keep_mask_and_errno", "stack_cycled", "stack_cycle_fails",
+    "stack_bottom_unknown",
 )
 
 

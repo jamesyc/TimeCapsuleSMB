@@ -18,17 +18,24 @@
  *
  * Right before each fork() this file removes the parent's mappings of its own
  * private memory, so the kernel's stale page state goes with them: every
- * private writable mapping is protected PROT_NONE and straight back (the
- * pmap_remove() that mprotect(PROT_NONE) does drops the pv entries), then one
- * word per page of the stack in use is written back unchanged. fork() then
- * write-protects every page the parent still maps, and copy-on-write works. The
+ * private writable mapping, the stack too, is protected PROT_NONE and straight
+ * back (the pmap_remove() that mprotect(PROT_NONE) does drops the pv entries).
+ * fork() then write-protects every page the parent still maps, and
+ * copy-on-write works. Touching a page instead is not enough: a page this
+ * kernel skipped at an earlier fork() and the parent wrote since was made
+ * writable by the pmap's modified emulation, without the fault that would
+ * clear its map entry's needs-copy mark, and uvmspace_fork() write-protects
+ * an entry only when it first marks it, so every later fork() would share the
+ * page writable. Only removing the mapping makes the next write a real
+ * copy-on-write fault (seen on the device in the smbd parent's stack). The
  * process cannot list its own mappings (this kernel has no vm.proc.map sysctl),
  * so linker wrappers (--wrap=mmap,_mmap,munmap,mremap,mprotect) keep a registry
  * of the private ones, read-only ones too: the parent cannot write to those
  * after fork(), so the repair skips them, but mprotect() can make one writable
  * and only a recorded range follows that. The data segment runs from
- * __preinit_array_start to sbrk(0), and the stack from the current frame to
- * __ps_strings. The repaired ranges also get MADV_RANDOM: libc's fork() runs
+ * __preinit_array_start to sbrk(0), and the stack's writable part is the
+ * RLIMIT_STACK below __ps_strings (the kernel keeps the rest of the stack's
+ * reserve PROT_NONE). The repaired ranges also get MADV_RANDOM: libc's fork() runs
  * its atfork handlers (jemalloc writes its locks) between the repair and the
  * system call, and UVM fault-ahead would enter the faulting page's neighbours
  * unreferenced, which is the leaking state again (seen on the device in .bss).
@@ -61,6 +68,7 @@
 
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
@@ -84,26 +92,6 @@ extern char tc_fork_repair_static_end[] __asm__("end") __attribute__((weak));
 
 #ifndef TC_FORK_REPAIR_SLOTS
 #define TC_FORK_REPAIR_SLOTS 512
-#endif
-
-/*
- * Only the host tests build with AddressSanitizer (TC_NATIVE_SANITIZERS).
- * The repair reads and rewrites whole stack pages from its own frame up,
- * which ASan reports, and ASan can move the local it starts from onto a
- * separate "fake stack", so the pages it walked were not the stack at all.
- * An uninstrumented function keeps its locals on the real stack. Empty in
- * every build for the devices, so their code is unchanged.
- */
-#if defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#define TC_FORK_REPAIR_NO_ASAN __attribute__((no_sanitize_address))
-#endif
-#endif
-#if !defined(TC_FORK_REPAIR_NO_ASAN) && defined(__SANITIZE_ADDRESS__)
-#define TC_FORK_REPAIR_NO_ASAN __attribute__((no_sanitize_address))
-#endif
-#ifndef TC_FORK_REPAIR_NO_ASAN
-#define TC_FORK_REPAIR_NO_ASAN
 #endif
 
 struct tc_fork_repair_range {
@@ -135,7 +123,8 @@ void tc_fork_repair_note_unmap(void *address, size_t length);
 void tc_fork_repair_note_remap(void *old_address, size_t old_length, void *new_address, size_t new_length);
 void tc_fork_repair_note_protect(void *address, size_t length, int prot);
 int tc_fork_repair_prepare(void);
-int tc_fork_repair_bounds(uintptr_t *data_start, uintptr_t *data_end, uintptr_t *stack_top);
+int tc_fork_repair_bounds(uintptr_t *data_start, uintptr_t *data_end, uintptr_t *stack_bottom,
+			  uintptr_t *stack_top);
 
 static uintptr_t tc_fork_repair_page(void)
 {
@@ -345,11 +334,12 @@ int tc_fork_repair_lookup(const void *address, int *prot)
 /*
  * Protect [start, start + length) PROT_NONE and back to prot. Returns 0, or the
  * errno of a PROT_NONE step that failed (the range is then unchanged). While
- * the range is PROT_NONE nothing may touch it; on the appliance it can hold
- * errno and __stack_chk_guard, and a fault with signals blocked spins in the
- * kernel forever. So the device version is two raw system calls that use only
- * registers and the stack (which is never protected here), and it exits if it
- * cannot restore the range: nothing could run safely afterwards.
+ * the range is PROT_NONE nothing may touch it; on the appliance it can be the
+ * stack this runs on, or hold errno and __stack_chk_guard, and a fault with
+ * signals blocked spins in the kernel forever. So the device version saves its
+ * registers on the stack before the first of its two raw system calls and
+ * restores them after the second, uses only registers in between, and exits if
+ * it cannot restore the range: nothing could run safely afterwards.
  */
 #if defined(__arm__) && defined(__NetBSD__) && !defined(TC_FORK_REPAIR_TEST)
 int tc_fork_repair_cycle(uintptr_t start, size_t length, int prot);
@@ -396,11 +386,13 @@ static int tc_fork_repair_cycle(uintptr_t start, size_t length, int prot)
 #endif
 
 #ifdef TC_FORK_REPAIR_TEST
-/* Host tests supply the data segment and stack ranges (or none) and may
- * shrink the registry; they never repair the test process's own memory. They
- * also read back every madvise() call and can make mlockall() fail. */
-static uintptr_t tc_fork_repair_test_data[3], tc_fork_repair_test_stack_top;
-static int tc_fork_repair_test_touch_stack, tc_fork_repair_test_lock_errno;
+/* Host tests supply the data segment and a stand-in stack they map
+ * themselves (or none) and may shrink the registry; they never repair the
+ * test process's own memory. They also read back every madvise() call and
+ * can make mlockall() fail. */
+static uintptr_t tc_fork_repair_test_data[3], tc_fork_repair_test_stack[2];
+static int tc_fork_repair_test_lock_errno;
+unsigned long tc_fork_repair_test_stack_cycles;
 static uintptr_t tc_fork_repair_test_advice_log[64][3];
 static unsigned tc_fork_repair_test_advice_count;
 unsigned long tc_fork_repair_cycles, tc_fork_repair_test_unlocks;
@@ -416,21 +408,24 @@ void tc_fork_repair_test_reset(unsigned capacity)
 	tc_fork_repair_test_unlocks = 0;
 	tc_fork_repair_capacity = capacity ? capacity : TC_FORK_REPAIR_SLOTS;
 	tc_fork_repair_test_data[0] = tc_fork_repair_test_data[1] = tc_fork_repair_test_data[2] = 0;
-	tc_fork_repair_test_stack_top = 0;
-	tc_fork_repair_test_touch_stack = 0;
+	tc_fork_repair_test_stack[0] = tc_fork_repair_test_stack[1] = 0;
+	tc_fork_repair_test_stack_cycles = 0;
 	tc_fork_repair_test_lock_errno = 0;
 	tc_fork_repair_test_advice_count = 0;
 }
 
 /* The data segment runs from data_start to data_end; its static part (.data
- * and .bss) ends at static_end, and the sbrk() heap follows. */
-void tc_fork_repair_test_segments(void *data_start, void *static_end, void *data_end, void *stack_top)
+ * and .bss) ends at static_end, and the sbrk() heap follows. The stack's
+ * writable part runs from stack_bottom to stack_top (a mapping of the test's
+ * own; none when stack_top is NULL). */
+void tc_fork_repair_test_segments(void *data_start, void *static_end, void *data_end, void *stack_bottom,
+				  void *stack_top)
 {
 	tc_fork_repair_test_data[0] = (uintptr_t)data_start;
 	tc_fork_repair_test_data[1] = (uintptr_t)static_end;
 	tc_fork_repair_test_data[2] = (uintptr_t)data_end;
-	tc_fork_repair_test_stack_top = (uintptr_t)stack_top;
-	tc_fork_repair_test_touch_stack = stack_top != NULL;
+	tc_fork_repair_test_stack[0] = (uintptr_t)stack_bottom;
+	tc_fork_repair_test_stack[1] = (uintptr_t)stack_top;
 }
 
 void tc_fork_repair_test_lock_fails(int error)
@@ -528,7 +523,7 @@ static int tc_fork_repair_data(uintptr_t *start, uintptr_t *end)
 static uintptr_t tc_fork_repair_stack_top(void)
 {
 #ifdef TC_FORK_REPAIR_TEST
-	return tc_fork_repair_test_stack_top;
+	return tc_fork_repair_test_stack[1];
 #elif defined(__NetBSD__)
 	if (&__ps_strings == NULL || __ps_strings == NULL) {
 		return 0;
@@ -539,14 +534,38 @@ static uintptr_t tc_fork_repair_stack_top(void)
 #endif
 }
 
-/* The data segment and stack top the repair uses (for the regression driver). */
-int tc_fork_repair_bounds(uintptr_t *data_start, uintptr_t *data_end, uintptr_t *stack_top)
+/*
+ * The bottom of the stack's writable part: RLIMIT_STACK below the top. The
+ * kernel maps the whole reserve at exec, keeps what lies beyond the limit
+ * PROT_NONE and moves that boundary when the limit changes, so cycling below
+ * it would make the reserve writable. 0 when unknown.
+ */
+static uintptr_t tc_fork_repair_stack_bottom(uintptr_t top)
+{
+#ifdef TC_FORK_REPAIR_TEST
+	(void)top;
+	return tc_fork_repair_test_stack[0];
+#else
+	struct rlimit limit;
+
+	if (top == 0 || getrlimit(RLIMIT_STACK, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY ||
+	    limit.rlim_cur == 0 || limit.rlim_cur >= top) {
+		return 0;
+	}
+	return tc_fork_repair_up(top - (uintptr_t)limit.rlim_cur);
+#endif
+}
+
+/* The data segment and the stack the repair uses (for the regression driver). */
+int tc_fork_repair_bounds(uintptr_t *data_start, uintptr_t *data_end, uintptr_t *stack_bottom,
+			  uintptr_t *stack_top)
 {
 	*stack_top = tc_fork_repair_stack_top();
+	*stack_bottom = tc_fork_repair_stack_bottom(*stack_top);
 	if (!tc_fork_repair_data(data_start, data_end)) {
 		*data_start = *data_end = 0;
 	}
-	return *stack_top != 0 && *data_start != 0;
+	return *stack_bottom != 0 && *data_start != 0;
 }
 
 /*
@@ -577,10 +596,9 @@ static uintptr_t tc_fork_repair_heap_start(uintptr_t data_start, uintptr_t data_
  * file. 0, or -1 when fork() must use the fallback instead. Signals are
  * blocked by the caller.
  */
-TC_FORK_REPAIR_NO_ASAN int tc_fork_repair_prepare(void)
+int tc_fork_repair_prepare(void)
 {
-	uintptr_t data_start, data_end, top, page, low;
-	volatile char here;
+	uintptr_t data_start, data_end, top, low;
 	int have_data;
 	unsigned i;
 
@@ -589,13 +607,14 @@ TC_FORK_REPAIR_NO_ASAN int tc_fork_repair_prepare(void)
 		return -1;
 	}
 	top = tc_fork_repair_stack_top();
+	low = tc_fork_repair_stack_bottom(top);
 	have_data = tc_fork_repair_data(&data_start, &data_end);
 #ifdef TC_FORK_REPAIR_TEST
-	if (tc_fork_repair_test_touch_stack && top == 0) {
+	if (top != 0 && low == 0) {
 		return -1;
 	}
 #else
-	if (top == 0 || !have_data) {
+	if (low == 0 || !have_data) {
 		return -1;
 	}
 #endif
@@ -605,7 +624,7 @@ TC_FORK_REPAIR_NO_ASAN int tc_fork_repair_prepare(void)
 	tc_fork_repair_stack[0] = tc_fork_repair_stack[1] = 0;
 	/* Each call restores its range before returning, so this loop may keep
 	 * reading the registry, which lives in the data segment. That segment
-	 * goes last. */
+	 * goes last but for the stack. */
 	for (i = 0; i < tc_fork_repair_count; i++) {
 		struct tc_fork_repair_range *r = &tc_fork_repair_map[i];
 		if ((r->prot & PROT_WRITE) == 0) {
@@ -627,32 +646,24 @@ TC_FORK_REPAIR_NO_ASAN int tc_fork_repair_prepare(void)
 		tc_fork_repair_heap[0] = tc_fork_repair_heap_start(data_start, data_end);
 		tc_fork_repair_heap[1] = data_end;
 	}
-	/*
-	 * The stack cannot be protected while in use: write one word of each
-	 * page from this frame up back unchanged, so each page is mapped
-	 * writable and fork() write-protects it. Pages below this frame hold no
-	 * live data; the child writes them before reading them.
-	 */
-#ifdef TC_FORK_REPAIR_TEST
-	if (!tc_fork_repair_test_touch_stack) {
-		return 0;
+	if (top == 0) {
+		return 0;	/* host tests without a stack */
 	}
-#endif
-	page = tc_fork_repair_page();
-	low = tc_fork_repair_down((uintptr_t)&here);
+	/*
+	 * The stack, although this code runs on it: tc_fork_repair_cycle()
+	 * touches no memory between its two system calls, and the faults that
+	 * follow are ordinary ones. MADV_RANDOM goes on first, so that those
+	 * faults do not map neighbouring pages unreferenced.
+	 */
 	tc_fork_repair_advise(low, top, MADV_RANDOM);
 	tc_fork_repair_stack[0] = low;
 	tc_fork_repair_stack[1] = top;
-	for (i = 0; ; i++) {
-		volatile char *p = (volatile char *)(low + i * page);
-		char c;
-
-		if ((uintptr_t)p >= top) {
-			break;
-		}
-		c = *p;
-		*p = c;
+	if (tc_fork_repair_cycle(low, top - low, PROT_READ | PROT_WRITE) != 0) {
+		return -1;
 	}
+#ifdef TC_FORK_REPAIR_TEST
+	tc_fork_repair_test_stack_cycles++;
+#endif
 	return 0;
 }
 

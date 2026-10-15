@@ -2,7 +2,7 @@
   "artifacts": {
     "rsync": {
       "path": "bin/rsync/rsync",
-      "sha256": "17b5b495f5835d452e70d77d79a8d658c0f381061cf7b086f51aacbc69c2da3a"
+      "sha256": "649f04087c9b34e8ce67c364ab34464c542ab2137ef2c2b848a7b0f1913e9c3b"
     },
     "rsync-netbsd4le": {
       "path": "bin/rsync-netbsd4le/rsync",
@@ -14,15 +14,15 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "dfdb964ac5f4b83c96fd769c3c049721c2df6493b96334f1040d4dc87fbb214c"
+      "sha256": "4e8d47b47de80241d73a431a955707915ee27cce1da66549e8a3ca5f0bb92097"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "4df44d33defe035a561ef0b72feda29ee22823a2e9cff29b4ae8e22b655a5f14"
+      "sha256": "d39b085d77081bee3543d57d8888cca0e9a2829f9a34c6935224f6bde2457e3e"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "4ab63c9ed680502356c5b2534f9d6d3b625a7c1ecb11e6f6f5cb0d8c5f9f378f"
+      "sha256": "6a6a6b4e1dcb1681ab6540396c01fc2c6ba81d498d7024b4ae06d46535a2333a"
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
@@ -38,7 +38,7 @@
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "5cc39f47a9477b2b7e026e962431d7eee1d2407d013c4e07d1918d0dfd6c8106"
+      "sha256": "1375af333eb9d260eeae4fd4ceef416eb6d4ca02423779869e4e9ee820013db5"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",

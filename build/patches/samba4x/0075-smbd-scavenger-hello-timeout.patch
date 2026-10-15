@@ -1,0 +1,56 @@
+diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
+--- a/source3/smbd/scavenger.c
++++ b/source3/smbd/scavenger.c
+@@ -21,6 +21,7 @@
+ #include "includes.h"
+ #include "messages.h"
+ #include "serverid.h"
++#include "../lib/util/select.h"
+ #include "smbd/globals.h"
+ #include "smbd/smbXsrv_open.h"
+ #include "smbd/scavenger.h"
+@@ -166,10 +167,34 @@ static bool scavenger_say_hello(int fd, struct server_id self)
+ 	return true;
+ }
+ 
+-static bool scavenger_wait_hello(int fd, struct server_id *child)
++#ifndef TC_SCAVENGER_HELLO_SECONDS
++/*
++ * How long the parent waits for a new scavenger's hello. The parent serves
++ * nothing while it waits: no new connections, no reaping. A child that never
++ * says hello (Apple's NetBSD 6 fork bug can leave one spinning) would stop it
++ * for good, so give up and kill the child. The expiry that started it is lost:
++ * that handle stays disconnected until another open of its file finds it
++ * stale. Later expiries start another scavenger. The child opens its logs on
++ * the data disk before its hello, so this allows for a disk spinning up.
++ */
++#define TC_SCAVENGER_HELLO_SECONDS 30
++#endif
++
++static bool scavenger_wait_hello(int fd, pid_t pid, struct server_id *child)
+ {
+ 	struct server_id_buf tmp;
++	struct pollfd pfd = { .fd = fd, .events = POLLIN };
+ 	ssize_t ret;
++	int ready;
++
++	ready = sys_poll_intr(&pfd, 1, TC_SCAVENGER_HELLO_SECONDS * 1000);
++	if (ready != 1) {
++		DBG_ERR("scavenger %d sent no hello within %d seconds (%s); "
++			"killing it\n", (int)pid, TC_SCAVENGER_HELLO_SECONDS,
++			ready == 0 ? "timeout" : strerror(errno));
++		kill(pid, SIGKILL);
++		return false;
++	}
+ 
+ 	ret = read_data(fd, child, sizeof(struct server_id));
+ 	if (ret == -1) {
+@@ -293,7 +318,7 @@ static bool smbd_scavenger_start(struct smbd_scavenger_state *state)
+ 	/* parent */
+ 	close(fds[1]);
+ 
+-	ok = scavenger_wait_hello(fds[0], state->scavenger_id);
++	ok = scavenger_wait_hello(fds[0], ret, state->scavenger_id);
+ 	if (!ok) {
+ 		close(fds[0]);
+ 		goto fail;

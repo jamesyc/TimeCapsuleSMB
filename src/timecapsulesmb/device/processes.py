@@ -135,13 +135,23 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
 LOCKF_WCHAN = "lockf"
 
 
-def smbd_waits_for_lock(ps_output: str) -> bool:
-    """Whether an smbd waits for an fcntl() lock, in PROCESS_SNAPSHOT_COMMAND output.
+def smbd_lock_waits(ps_output: str, min_seconds: int = 0) -> list[int]:
+    """PIDs of the smbds asleep waiting for an fcntl() lock for at least
+    min_seconds, in PROCESS_SNAPSHOT_COMMAND output.
 
     The wait is interruptible (state I), so stuck_processes() never reports it,
     however long it lasts.
     """
-    return any(fields[5:7] == [LOCKF_WCHAN, "smbd"] for fields in (line.split(None, 7) for line in ps_output.splitlines()))
+    pids = []
+    for fields in (line.split(None, 7) for line in ps_output.splitlines()):
+        if fields[5:7] != [LOCKF_WCHAN, "smbd"]:
+            continue
+        try:
+            if int(fields[4]) >= min_seconds:
+                pids.append(int(fields[0]))
+        except ValueError:
+            continue
+    return pids
 
 
 # ps's wait channel for nanosleep: NetBSD 6 names it nanoslp, and NetBSD 4's

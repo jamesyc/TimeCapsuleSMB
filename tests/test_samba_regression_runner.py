@@ -157,9 +157,16 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
             "off_t n)\n{\n\tif (n) {\n\t\treturn tc_file_growth_check(0, n);\n\t}\n\treturn 0;\n}")
         regions.append(region)
         (tmp_path / filename).write_text("static int before;\n\n" + region + "\n\nstatic void after(void)\n{\n}\n")
+    # The scavenger hello wait comes with the timeout block above it, and only
+    # its own column-0 closing brace ends the cut.
+    hello = ("#ifndef TC_SCAVENGER_HELLO_SECONDS\n#define TC_SCAVENGER_HELLO_SECONDS 30\n#endif\n\n"
+             "static bool scavenger_wait_hello(int fd, pid_t pid, struct server_id *child)\n{\n"
+             "\tif (fd) {\n\t\treturn false;\n\t}\n\treturn true;\n}")
+    (smbd / "scavenger.c").write_text("static int before;\n\n" + hello + "\n\nstatic void after(void)\n{\n}\n")
     run.stage(tmp_path)
     run.stage(tmp_path)
     assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"
+    assert (modules / "tc_scavenger_hello.inc").read_text() == hello + "\n"
     calls = []
 
     class Builder:

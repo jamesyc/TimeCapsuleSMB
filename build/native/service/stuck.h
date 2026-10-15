@@ -39,7 +39,7 @@
 #define TC_STUCK_REPORT_MS 300000
 #endif
 /* Uninterruptible sleepers tracked at once: processes plus the threads of
- * multi-threaded ones. kern.maxproc is 84 on both kernels. */
+ * multi-threaded ones. The manager raises kern.maxproc to 128. */
 #define TC_STUCK_MAX 128
 #define TC_STUCK_WMESG TC_PROC_WMESG
 #define TC_STUCK_COMM TC_PROC_COMM

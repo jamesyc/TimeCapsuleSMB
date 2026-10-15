@@ -22,34 +22,16 @@ void tc_fork_repair_note_remap(void *old_address, size_t old_length, void *new_a
 void tc_fork_repair_note_protect(void *address, size_t length, int prot);
 int tc_fork_repair_prepare(void);
 void tc_fork_repair_test_reset(unsigned capacity);
-void tc_fork_repair_test_segments(void *data_start, void *static_end, void *data_end, void *stack_top);
+void tc_fork_repair_test_segments(void *data_start, void *static_end, void *data_end, void *stack_bottom,
+				  void *stack_top);
 void tc_fork_repair_test_lock_fails(int error);
 unsigned tc_fork_repair_test_advice(uintptr_t (*out)[3], unsigned max);
 unsigned tc_fork_repair_test_ranges(uintptr_t (*out)[3], unsigned max);
 int tc_fork_repair_test_overflowed(void);
 extern unsigned long tc_fork_repair_fallbacks, tc_fork_repair_lock_failures, tc_fork_repair_cycles;
-extern unsigned long tc_fork_repair_test_unlocks;
+extern unsigned long tc_fork_repair_test_unlocks, tc_fork_repair_test_stack_cycles;
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: CHECK(%s) failed\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
-
-/*
- * The repair walks the real stack from its own frame up to the top these
- * tests give it, taken from a local. ASan can move an instrumented function's
- * locals to a separate "fake stack" (Linux CI does), which would put that top
- * outside the stack the repair walks. Like tc_fork_repair_prepare(), the
- * tests that pass a stack top are left uninstrumented.
- */
-#if defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#define REAL_STACK_LOCALS __attribute__((no_sanitize_address))
-#endif
-#endif
-#if !defined(REAL_STACK_LOCALS) && defined(__SANITIZE_ADDRESS__)
-#define REAL_STACK_LOCALS __attribute__((no_sanitize_address))
-#endif
-#ifndef REAL_STACK_LOCALS
-#define REAL_STACK_LOCALS
-#endif
 
 static uintptr_t pg;
 static uintptr_t got[16][3];
@@ -265,34 +247,36 @@ static void fallback_lock_failure(uintptr_t b)
 }
 
 /* Repair leaves every byte and every protection as it was. */
-REAL_STACK_LOCALS static void repair_keeps_contents(uintptr_t b)
+static void repair_keeps_contents(uintptr_t b)
 {
 	char *rw = mmap(NULL, 3 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	char *ro = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	char *data = mmap(NULL, 2 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-	volatile char canary[64];
+	char *stack = mmap(NULL, 3 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	int status, i;
 	pid_t pid;
 
 	(void)b;
-	CHECK(rw != MAP_FAILED && ro != MAP_FAILED && data != MAP_FAILED);
+	CHECK(rw != MAP_FAILED && ro != MAP_FAILED && data != MAP_FAILED && stack != MAP_FAILED);
 	for (i = 0; i < 3 * (int)pg; i++) rw[i] = (char)(i * 7);
 	memset(ro, 'r', pg);
 	memset(data, 'd', 2 * pg);
-	memset((char *)canary, 'c', sizeof(canary));
+	memset(stack, 's', 3 * pg);
 	CHECK(mprotect(ro, pg, PROT_READ) == 0);
 	tc_fork_repair_note_map(rw, 3 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON);
 	tc_fork_repair_note_map(ro, pg, PROT_READ, MAP_PRIVATE | MAP_ANON);
-	/* The "data segment" and a stack top above this frame, inside the live stack. */
-	tc_fork_repair_test_segments(data, data + pg, data + 2 * pg, (void *)(((uintptr_t)&canary[63] + pg) & ~(pg - 1)));
+	/* The "data segment" and a stand-in stack the repair cycles. */
+	tc_fork_repair_test_segments(data, data + pg, data + 2 * pg, stack, stack + 3 * pg);
 	CHECK(tc_fork_repair_prepare() == 0);
 	CHECK(tc_fork_repair_cycles == 1);	/* rw only: ro cannot be written */
+	CHECK(tc_fork_repair_test_stack_cycles == 1);
 	for (i = 0; i < 3 * (int)pg; i++) CHECK(rw[i] == (char)(i * 7));
 	for (i = 0; i < (int)pg; i++) CHECK(ro[i] == 'r');
 	for (i = 0; i < 2 * (int)pg; i++) CHECK(data[i] == 'd');
-	for (i = 0; i < 64; i++) CHECK(canary[i] == 'c');
+	for (i = 0; i < 3 * (int)pg; i++) CHECK(stack[i] == 's');
 	rw[0] = 1;
 	data[0] = 1;
+	stack[0] = 1;	/* writable again after its cycle */
 	/* Still read-only: a write kills the writer. */
 	pid = fork();
 	if (pid == 0) {
@@ -307,6 +291,7 @@ REAL_STACK_LOCALS static void repair_keeps_contents(uintptr_t b)
 	munmap(rw, 3 * pg);
 	munmap(ro, pg);
 	munmap(data, 2 * pg);
+	munmap(stack, 3 * pg);
 }
 
 /* The wrapper restores the caller's signal mask and keeps fork()'s errno. */
@@ -369,30 +354,29 @@ static void check_advice(const uintptr_t *entry, const void *start, const void *
 /* MADV_RANDOM covers what the repair touched until the fork system call; right
  * after fork() the parent and the child put normal advice back on all of it
  * but the static data and .bss, where patch 0046 keeps MADV_RANDOM. */
-REAL_STACK_LOCALS static void advice_restored(uintptr_t b)
+static void advice_restored(uintptr_t b)
 {
 	char *rw = mmap(NULL, 2 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	char *data = mmap(NULL, 4 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-	volatile char frame[64];
-	uintptr_t log[64][3], top = ((uintptr_t)&frame[63] + pg) & ~(pg - 1);
+	char *stack = mmap(NULL, 2 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	uintptr_t log[64][3];
 	int status;
 	pid_t pid;
 
-	CHECK(rw != MAP_FAILED && data != MAP_FAILED);
-	frame[0] = 1;
+	CHECK(rw != MAP_FAILED && data != MAP_FAILED && stack != MAP_FAILED);
 	tc_fork_repair_note_map(rw, 2 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON);
 	/* .bss ends 100 bytes into the second page: the heap starts on the third. */
-	tc_fork_repair_test_segments(data, data + pg + 100, data + 4 * pg, (void *)top);
+	tc_fork_repair_test_segments(data, data + pg + 100, data + 4 * pg, stack, stack + 2 * pg);
 	fake_pid = 4242;
 	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
 	CHECK(tc_fork_repair_test_advice(log, 64) == 6);
 	check_advice(log[0], rw, rw + 2 * pg, MADV_RANDOM);
 	check_advice(log[1], data, data + 4 * pg, MADV_RANDOM);
-	/* The stack from the repair's own frame, below this one, to the top. */
-	CHECK(log[2][0] < (uintptr_t)&frame[0] && log[2][1] == top && log[2][2] == MADV_RANDOM);
+	/* The stack's whole writable part. */
+	check_advice(log[2], stack, stack + 2 * pg, MADV_RANDOM);
 	check_advice(log[3], rw, rw + 2 * pg, MADV_NORMAL);
 	check_advice(log[4], data + 2 * pg, data + 4 * pg, MADV_NORMAL);
-	check_advice(log[5], (void *)log[2][0], (void *)top, MADV_NORMAL);
+	check_advice(log[5], stack, stack + 2 * pg, MADV_NORMAL);
 	/* Undone once: another fork() repairs and undoes again. */
 	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
 	CHECK(tc_fork_repair_test_advice(log, 64) == 12);
@@ -400,7 +384,7 @@ REAL_STACK_LOCALS static void advice_restored(uintptr_t b)
 	/* A real fork(): the child undoes the advice in its own address space. */
 	tc_fork_repair_test_reset(0);
 	tc_fork_repair_note_map(rw, 2 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON);
-	tc_fork_repair_test_segments(data, data + pg + 100, data + 4 * pg, (void *)top);
+	tc_fork_repair_test_segments(data, data + pg + 100, data + 4 * pg, stack, stack + 2 * pg);
 	pid = tc_fork_repair_fork(fork);
 	CHECK(pid >= 0);
 	if (pid == 0) {
@@ -414,7 +398,7 @@ REAL_STACK_LOCALS static void advice_restored(uintptr_t b)
 	/* Without data bounds for the heap (.bss end unknown), none of the data
 	 * segment gets normal advice back. */
 	tc_fork_repair_test_reset(0);
-	tc_fork_repair_test_segments(data, NULL, data + 4 * pg, NULL);
+	tc_fork_repair_test_segments(data, NULL, data + 4 * pg, NULL, NULL);
 	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
 	CHECK(tc_fork_repair_test_advice(log, 64) == 1);
 	check_advice(log[0], data, data + 4 * pg, MADV_RANDOM);
@@ -427,6 +411,7 @@ REAL_STACK_LOCALS static void advice_restored(uintptr_t b)
 	CHECK(tc_fork_repair_test_advice(log, 64) == 0);
 	munmap(rw, 2 * pg);
 	munmap(data, 4 * pg);
+	munmap(stack, 2 * pg);
 }
 
 /* A repair that fails part way falls back, and still undoes the advice it
@@ -450,6 +435,93 @@ static void advice_partial_repair(uintptr_t b)
 	check_advice(log[1], pages, pages + pg, MADV_NORMAL);
 	check_advice(log[2], pages + 2 * pg, pages + 3 * pg, MADV_NORMAL);
 	munmap(pages, pg);
+}
+
+/*
+ * The stack is cycled, PROT_NONE and back, like the other private mappings:
+ * a page this kernel skipped at an earlier fork() and the parent wrote since
+ * is writable without having faulted, and only removing its mapping makes the
+ * next write a copy-on-write fault. Last of all, after the data segment, and
+ * once per fork(); the child keeps the fork-time contents.
+ */
+static void stack_cycled(uintptr_t b)
+{
+	char *data = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	char *stack = mmap(NULL, 4 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	int go[2], status;
+	char c;
+	pid_t pid;
+
+	(void)b;
+	CHECK(data != MAP_FAILED && stack != MAP_FAILED);
+	memset(stack, 'a', 4 * pg);
+	tc_fork_repair_test_segments(data, data + pg, data + pg, stack, stack + 4 * pg);
+	fake_pid = 4242;
+	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
+	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
+	CHECK(tc_fork_repair_test_stack_cycles == 2 && tc_fork_repair_fallbacks == 0);
+	CHECK(pipe(go) == 0);
+	pid = tc_fork_repair_fork(fork);
+	CHECK(pid >= 0);
+	if (pid == 0) {
+		close(go[1]);
+		if (read(go[0], &c, 1) != 1) _exit(2);
+		_exit(stack[0] == 'a' && stack[4 * pg - 1] == 'a' ? 0 : 1);
+	}
+	close(go[0]);
+	CHECK(tc_fork_repair_test_stack_cycles == 3);
+	memset(stack, 'b', 4 * pg);
+	CHECK(write(go[1], "x", 1) == 1);
+	CHECK(waitpid(pid, &status, 0) == pid);
+	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	munmap(data, pg);
+	munmap(stack, 4 * pg);
+}
+
+/* A stack whose PROT_NONE step fails (here: not mapped) makes fork() lock
+ * memory instead, after undoing the advice it gave. */
+static void stack_cycle_fails(uintptr_t b)
+{
+	char *data = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	char *stack = mmap(NULL, 2 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	uintptr_t log[64][3];
+
+	(void)b;
+	CHECK(data != MAP_FAILED && stack != MAP_FAILED);
+	CHECK(munmap(stack, 2 * pg) == 0);
+	tc_fork_repair_test_segments(data, data + pg, data + pg, stack, stack + 2 * pg);
+	fake_pid = 4242;
+	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
+	CHECK(tc_fork_repair_test_stack_cycles == 0);
+	CHECK(tc_fork_repair_fallbacks == 1 && tc_fork_repair_test_unlocks == 1);
+	/* The data segment (all static data here, so it keeps MADV_RANDOM), then
+	 * the stack, which gets normal advice back. */
+	CHECK(tc_fork_repair_test_advice(log, 64) == 3);
+	check_advice(log[0], data, data + pg, MADV_RANDOM);
+	check_advice(log[1], stack, stack + 2 * pg, MADV_RANDOM);
+	check_advice(log[2], stack, stack + 2 * pg, MADV_NORMAL);
+	munmap(data, pg);
+}
+
+/* A stack top without a known bottom (on the device: RLIMIT_STACK unreadable
+ * or unlimited) falls back before repairing anything. */
+static void stack_bottom_unknown(uintptr_t b)
+{
+	char *rw = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	char *stack = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	uintptr_t log[64][3];
+
+	(void)b;
+	CHECK(rw != MAP_FAILED && stack != MAP_FAILED);
+	tc_fork_repair_note_map(rw, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON);
+	tc_fork_repair_test_segments(NULL, NULL, NULL, NULL, stack + pg);
+	fake_pid = 4242;
+	CHECK(tc_fork_repair_fork(fake_fork) == 4242);
+	CHECK(tc_fork_repair_cycles == 0 && tc_fork_repair_test_stack_cycles == 0);
+	CHECK(tc_fork_repair_fallbacks == 1);
+	CHECK(tc_fork_repair_test_advice(log, 64) == 0);
+	munmap(rw, pg);
+	munmap(stack, pg);
 }
 
 /* Registry updates leave the signal mask and errno as they were. */
@@ -523,6 +595,9 @@ int main(int argc, char **argv)
 		{"advice_partial_repair", advice_partial_repair},
 		{"read_only_ranges_skipped", read_only_ranges_skipped},
 		{"updates_keep_mask_and_errno", updates_keep_mask_and_errno},
+		{"stack_cycled", stack_cycled},
+		{"stack_cycle_fails", stack_cycle_fails},
+		{"stack_bottom_unknown", stack_bottom_unknown},
 	};
 	unsigned i;
 

@@ -39,7 +39,7 @@ AIO_CASES = (
 DURABLE_CASES = (
     "transition", "live", "already_disconnected", "client_mismatch",
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
-    "v1_transition",
+    "v1_transition", "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_silent",
 )
 
 STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
@@ -65,8 +65,11 @@ FILE_GROWTH_CASES = ("unchecked", "stale_size", "fits", "exceeds", "boundary", "
                      "fstat_error", "real_volume", "real_resource_fork", "call_write", "call_pwrite_send",
                      "call_set_filelen", "call_offload")
 # The NetBSD 6 fork() repair (patch 0070); "kernel" also checks that the
-# NetBSD 4 kernel needs none. Skipped where the build does not link it.
-FORK_REPAIR_CASES = ("kernel", "bounds", "registry", "regions", "read_after_repair", "nested", "fallback")
+# NetBSD 4 kernel needs none, and on NetBSD 6 "kernel" and "needscopy" fail
+# unless a plain fork() still leaks there, so the other cases test something.
+# Skipped where the build does not link it.
+FORK_REPAIR_CASES = ("kernel", "bounds", "registry", "regions", "read_after_repair", "nested", "fallback",
+                     "stack_below", "stack_deep", "needscopy")
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
 
@@ -114,6 +117,11 @@ def stage(source: Path) -> None:
     # from them, or moved after their I/O, fails on the host.
     callers = [cut((source / filename).read_text(), first, last) for filename, first, last in GROWTH_CALLERS]
     (modules / "tc_file_growth_callers.inc").write_text("\n\n".join(callers) + "\n")
+    # The smbd parent's wait for a scavenger's hello, with its timeout, for
+    # tc_durable_reconnect_test (patch 0075).
+    scavenger = (source / "source3/smbd/scavenger.c").read_text()
+    (modules / "tc_scavenger_hello.inc").write_text(
+        cut(scavenger, "#ifndef TC_SCAVENGER_HELLO_SECONDS", "static bool scavenger_wait_hello(") + "\n")
     script.write_text(original + marker + (HERE / "targets.py").read_text())
 
 

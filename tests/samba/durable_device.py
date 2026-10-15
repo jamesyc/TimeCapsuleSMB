@@ -1,5 +1,5 @@
 """Durable-handle, shutdown-close, short-WRITE and handle-time device suite
-(Samba patches 0019, 0024, 0029, 0062, 0072, NetBSD 4's futimens in 0002, and
+(Samba patches 0019, 0024, 0029, 0062, 0072, 0074, NetBSD 4's futimens in 0002, and
 the scavenger 0008 still forks), run from a Mac against a deployed device.
 
     .venv/bin/python -m tests.samba.durable_device --env .env [--stall SECONDS]
@@ -21,6 +21,11 @@ it from a new connection with the same client GUID:
   wait; the deferred reconnect must then take the open over.
 - half-open+previous: naming the old session in the new session setup makes
   the old smbd close it.
+- stopped+previous: as half-open+previous, with the old smbd stopped for
+  70 s. The session setup must be answered within macOS's 60 s (0074 waits
+  50 s; upstream waited for the old smbd with no limit); the reconnect is
+  deferred until the old smbd is resumed and closes the session, then takes
+  the open over.
 - rst+ipc-tdis: before the reset, IPC$ is connected and disconnected, as a Mac
   listing shares does. That tree disconnect leaves smbd's working directory at
   "/", and the logoff that follows the reset closes the durable open from
@@ -90,17 +95,28 @@ LIVE_WAIT_SECONDS = 90.0
 # Slack for the device's reply after the deferral: an answer much later than
 # the window is not 0024's deferral running out.
 LIVE_WAIT_SLACK_SECONDS = 3
+# The deferral runs on the device's clock, which adjtime() slews by up to
+# 0.5 % (5000 us a second while more than a second remains). sntpd does that
+# for a while after every boot, so a 90 s deferral can end 0.45 s early.
+DEVICE_CLOCK_SLEW = 0.005
 DROP_MODES = ("fin", "rst", "half-open", "half-open+reset", "half-open+previous", "rst+ipc-tdis",
               "rst+second-session")
 WRITE_MODES = ("short-write", "smb-in-data")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 SETTIME_MODES = ("data", "attributes")
-CASES = (DROP_MODES + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
+CASES = (DROP_MODES + ("stopped+previous",) + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
          + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("expiry",))
 # 0024 grants every durable-v2 open 300 s; the scavenger's timer fires then.
 DURABLE_TIMEOUT_SECONDS = 300
-# The old smbd marks a reset connection's open disconnected within this.
-SCAVENGER_START_SECONDS = 5
+# A reset connection's smbd exits within this, even when closing its files
+# waits a minute for a slow disk.
+OLD_SMBD_EXIT_SECONDS = 120
+# macOS gives a session setup this long; 0074 answers one that names a
+# session its smbd has not closed after 50 s.
+SESSION_SETUP_SECONDS = 60
+# stopped+previous resumes the old smbd after this: past 0074's wait, and
+# late enough that a server waiting for the old session misses macOS's limit.
+OLD_SMBD_STOP_SECONDS = 70
 # An exclusive open that has to break a stale lease waits for the break
 # timeout (35 s); one that finds the file free answers well within this, even
 # when the data disk spun down during the wait and has to spin up again.
@@ -278,7 +294,8 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
                     # The status alone cannot tell a deferred refusal from an
                     # immediate one, so the wait must cover 0024's full window.
                     return (error.status == STATUS_OBJECT_NAME_NOT_FOUND and
-                            LIVE_WAIT_SECONDS - 0.2 <= waited <= LIVE_WAIT_SECONDS + LIVE_WAIT_SLACK_SECONDS)
+                            LIVE_WAIT_SECONDS * (1 - DEVICE_CLOCK_SLEW) - 0.2 <= waited
+                            <= LIVE_WAIT_SECONDS + LIVE_WAIT_SLACK_SECONDS)
                 return False
 
             r.check(f"{mode}: a live open is refused after the full deferral", refused)
@@ -314,6 +331,54 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
                 conn1.disconnect()
 
 
+def stopped_previous_case(r: Results, device: Device) -> None:
+    mode = "stopped+previous"
+    client = DurableClient(device)
+    path = f"{TEST_DIR}\\stopped-previous.bin"
+    payload = b"durable payload stopped+previous\n"
+    before = set(_smbd_children(device))
+    conn1, sess1, tree1 = client.connect()
+    old = sorted(set(_smbd_children(device)) - before)
+    second: dict[str, object] = {}
+    try:
+        handle, granted = client.open_durable(tree1, path)
+        r.check(f"{mode}: 300 s durable handle granted", lambda: granted)
+        handle.write(payload, 0)
+        r.check(f"{mode}: the connection has its own smbd", lambda: len(old) == 1)
+        if len(old) != 1 or not granted:
+            return
+        device.sh(f"kill -STOP {old[0]}")
+        stopped = time.monotonic()
+        resume = threading.Timer(OLD_SMBD_STOP_SECONDS, device.sh, (f"kill -CONT {old[0]}",))
+        resume.start()
+        try:
+            # A server that waits for the old smbd times the connect out; that
+            # fails this check and skips the next, not the cases after it.
+            def answered() -> bool:
+                second["conn"], _, second["tree"] = client.connect(sess1.session_id)
+                return time.monotonic() - stopped < SESSION_SETUP_SECONDS
+
+            r.check(f"{mode}: the session setup is answered while the old smbd is stopped", answered)
+            if "tree" not in second:
+                return
+
+            def taken_over() -> bool:
+                again = client.reconnect(second["tree"], path, handle.file_id)
+                waited = time.monotonic() - stopped
+                data = again.read(0, len(payload))
+                again.close()
+                return data == payload and OLD_SMBD_STOP_SECONDS <= waited < LIVE_WAIT_SECONDS
+
+            r.check(f"{mode}: the reconnect waits for the old smbd, then takes the open over", taken_over)
+        finally:
+            resume.join()
+            device.sh(f"kill -CONT {old[0]}", check=False)
+    finally:
+        for conn in (second.get("conn"), conn1):
+            with contextlib.suppress(Exception):
+                conn.disconnect()
+
+
 def expiry_case(r: Results, device: Device) -> None:
     from smbprotocol.exceptions import SMBResponseException
     from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
@@ -322,17 +387,18 @@ def expiry_case(r: Results, device: Device) -> None:
     client = DurableClient(device)
     path = f"{TEST_DIR}\\expiry.bin"
     payload = b"durable payload expiry\n"
+    before = set(_smbd_children(device))
     conn1, _, tree1 = client.connect()
+    old = sorted(set(_smbd_children(device)) - before)
     handle, granted = client.open_durable(tree1, path)
     r.check("expiry: 300 s durable handle granted", lambda: granted)
     handle.write(payload, 0)
     _reset(conn1)
     reset_at = time.monotonic()
-    # The old smbd marks the open disconnected and asks the parent to expire
-    # it; the parent hands that to its scavenger, a child with no client
-    # socket. Stopping the scavenger must not stop new connections.
-    time.sleep(SCAVENGER_START_SECONDS)
-    scavengers = _socketless_smbd_children(device)
+    # The old smbd marks the open disconnected, asks the parent to expire it
+    # and exits; the parent hands the expiry to its scavenger, a child with no
+    # client connection. Stopping the scavenger must not stop new connections.
+    scavengers = _scavengers(device, old)
     r.check("expiry: the scavenger runs as its own process", lambda: len(scavengers) == 1)
     if len(scavengers) == 1:
         device.sh(f"kill -STOP {scavengers[0]}")
@@ -687,11 +753,26 @@ def mac_stall_case(r: Results, device: Device, mount_dir: Path, stall: int) -> N
         unmount(mount_dir)
 
 
-def _socketless_smbd_children(device: Device) -> list[int]:
-    """The smbd parent's children with no TCP socket: forked helpers such as the
-    scavenger, not client connections (fstat, as the manager uses)."""
-    return [pid for pid in _smbd_children(device)
-            if "internet" not in device.sh(f"/usr/bin/fstat -p {pid}", check=False)]
+def serves_client(fstat: str) -> bool:
+    """Whether fstat output lists a connected TCP socket. A connection prints
+    both ends joined by "<->" (or "-->"), the device's first on NetBSD 4 and
+    the client's first on NetBSD 6; a listener prints only its own address,
+    and every forked child holds the parent's. Unix sockets print "<->" too."""
+    return any(" stream tcp " in line and ("<->" in line or "-->" in line) for line in fstat.splitlines())
+
+
+def _scavengers(device: Device, old: list[int], clock=time.monotonic, sleep=time.sleep) -> list[int]:
+    """The smbd parent's children that serve no client, once the old smbds
+    have exited (a reset connection's smbd serves none while it closes its
+    files) and the parent has forked its scavenger: one, polled for briefly."""
+    deadline = clock() + OLD_SMBD_EXIT_SECONDS
+    while True:
+        children = _smbd_children(device)
+        helpers = [] if set(old) & set(children) else [
+            pid for pid in children if not serves_client(device.sh(f"/usr/bin/fstat -p {pid}", check=False))]
+        if len(helpers) == 1 or clock() >= deadline:
+            return helpers
+        sleep(1)
 
 
 def _smbd_children(device: Device) -> list[int]:
@@ -726,6 +807,8 @@ def main() -> int:
         for mode in DROP_MODES:
             if mode in wanted:
                 drop_case(results, device, mode)
+        if "stopped+previous" in wanted:
+            stopped_previous_case(results, device)
         for mode in WRITE_MODES:
             if mode in wanted:
                 write_case(results, device, mode)

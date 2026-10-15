@@ -130,6 +130,9 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         }.items():
             self.make_file(src_dir / "source3/smbd" / filename,
                            "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names))
+        # The scavenger hello wait tc_durable_reconnect_test compiles.
+        self.make_file(src_dir / "source3/smbd/scavenger.c",
+                       "#ifndef TC_SCAVENGER_HELLO_SECONDS\n#endif\n\nstatic bool scavenger_wait_hello(void)\n{\n}\n")
         # And the growth-check callers tc_file_growth_test compiles.
         for filename, first, last in GROWTH_CALLERS:
             head = first + "\n};\n" if first != last else ""

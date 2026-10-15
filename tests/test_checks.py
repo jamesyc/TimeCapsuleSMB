@@ -2844,6 +2844,8 @@ class CheckTests(unittest.TestCase):
         # An interruptible wait: not reported as blocked in the kernel, and SMB is still checked.
         self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
         run.mocks.check_authenticated_smb_listing.assert_called()
+        # Asleep 127 s, past the two minutes: one waiter, named as one.
+        self.assertIn("for a database lock (PID 8893); ", "\n".join(result.message for result in run.results))
 
     def test_run_doctor_checks_lists_no_locks_without_an_smbd_in_lockf(self) -> None:
         # Another program waiting for a lock is not Samba's TDB lock.
@@ -2853,6 +2855,37 @@ class CheckTests(unittest.TestCase):
         run.file_locks.assert_not_called()
         self.assertNotIn("remote_file_locks", run.debug_fields)
         self.assertNotIn("remote_file_locks_error", run.debug_fields)
+        self.assertFalse(run.fatal)
+
+    def test_run_doctor_checks_fails_smbds_that_waited_two_minutes_for_a_lock(self) -> None:
+        # ps counts the seconds asleep up to 127; 120 is two minutes.
+        second = " 8894   457   457 I      120 lockf    smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+        locks = "/mnt/Locks/locking.tdb pid 9001 write 1460+1\n"
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW, second]), file_locks=locks,
+        )
+
+        waits = [result for result in run.results if "database lock" in result.message]
+        self.assertEqual([result.status for result in waits], ["FAIL"])
+        self.assertTrue(waits[0].message.startswith(
+            "Samba has waited at least 2 minutes for a database lock (PIDs 8893, 8894); "))
+        self.assertTrue(waits[0].message.endswith("Restart the device to clear it"))
+        self.assertEqual(waits[0].details, {"smbd_lock_waits": [8893, 8894]})
+        self.assertTrue(run.fatal)
+        # The holder's PID travels with the failure; new connections still work.
+        self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
+        self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
+        run.mocks.check_authenticated_smb_listing.assert_called()
+
+    def test_run_doctor_checks_lists_the_locks_of_a_shorter_lock_wait_without_failing(self) -> None:
+        # A wait that ends within two minutes is a busy lock, not a stuck one.
+        short = " 8893   457   457 I      119 lockf    smbd     /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
+        locks = "/mnt/Locks/locking.tdb pid 9001 write 1460+1\n"
+        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, short]), file_locks=locks)
+
+        self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
+        self.assertFalse(any("database lock" in result.message for result in run.results))
+        self.assertFalse(run.fatal)
 
     def test_run_doctor_checks_records_a_failed_lock_listing_and_carries_on(self) -> None:
         run = self.run_doctor_with_process_snapshot(

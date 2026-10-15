@@ -184,8 +184,9 @@
 # context). NetBSD 4's pmap is not affected. On the NetBSD 6 lanes
 # (TC_FORK_REPAIR), libreplace includes overlay lib/replace/tc_fork_repair.c:
 # linker wrappers keep a registry of private mappings, and right before each
-# fork() every private mapping is protected PROT_NONE and back (dropping the
-# stale page state) and the stack in use is written back. The native service
+# fork() every private mapping, the stack too, is protected PROT_NONE and back
+# (dropping the stale page state). Touching a page is not enough: one left
+# writable that way stays shared at every later fork(). The native service
 # and rsync link the same file. Appliance only; nothing here is for upstream.
 0070-replace-fork-repair.patch|fork() repair for Apple's NetBSD 6 kernel
 # Time Capsule HFS can report file and directory owner/group as 4294967295.
@@ -234,6 +235,12 @@
 # can hold indefinitely, and in the parent that wait would stop it accepting
 # connections. Forked helpers work without pthread.
 0008-smbd-helpers-in-parent.patch|host smbd helper services in the parent event loop
+# The parent waits for a new scavenger's hello with no time limit, and serves
+# nothing meanwhile (no new connections, no reaping): a child that never says
+# hello stopped the parent for good. Wait at most 30 seconds, then kill the
+# child; only the expiry that started it is lost, and later ones start another
+# scavenger.
+0075-smbd-scavenger-hello-timeout.patch|bound the parent's wait for a new scavenger's hello
 
 # aio_fork.
 # Normal helper retirement sends a short message without SCM_RIGHTS data.
@@ -297,6 +304,13 @@
 # Machine treats that as fatal. Also fixes a Samba bug: the path that ignores
 # frames kept each frame's buffer until the connection ended.
 0072-smbd-short-write-desync.patch|refuse a WRITE that holds the next request, then answer nothing
+# A Mac reconnecting names its lost session in the new session setup and
+# gives that request 60 seconds. Upstream answers only once the old session's
+# smbd has closed it, with no time limit, so an smbd that cannot run (a long
+# HFS close, a wait for a lock) kept the Mac from connecting at all. Wait at
+# most 50 seconds, then answer; 0024 then defers the durable reconnects that
+# follow until the old smbd releases the opens.
+0074-smbd-session-close-previous-timeout.patch|answer session setup after 50 seconds while the previous session still closes
 # Not specific to Time Machine; an upstream bug that 0029 relies on. A shutdown
 # close (a dropped connection, a bare SMB2 LOGOFF, a tree disconnect) runs from
 # whatever working directory the last request left, which is "/" after any tree

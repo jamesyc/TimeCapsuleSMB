@@ -9,8 +9,8 @@
  * is busy, the caller sleeps with no timeout, and the thread that would free
  * a buffer may itself be waiting for one. The sleeper cannot be killed. Each
  * new connection or job then adds another stuck process until fork() hits
- * kern.maxproc (84 on both kernels), and the device stops answering SSH and
- * SMB until it is power-cycled.
+ * kern.maxproc (128 once the manager raises it), and the device stops
+ * answering SSH and SMB until it is power-cycled.
  *
  * buf_lotsfree() always allocates while vm.bufmem is below
  * vm.bufmem_lowater. The manager raises the low-water mark to the highest

@@ -94,9 +94,10 @@ from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.processes import (
+    STUCK_SLEEP_SECONDS,
     acpd_stuck_children,
     manager_unnamed_stuck_count,
-    smbd_waits_for_lock,
+    smbd_lock_waits,
     stuck_processes,
 )
 from timecapsulesmb.device.probe import (
@@ -2237,7 +2238,7 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
     if sink.debug_fields is not None:
         sink.debug_fields["remote_process_snapshot"] = limit_remote_log_tail(snapshot.rstrip() or "(empty)")
     stuck = tuple(stuck_processes(snapshot))
-    if sink.debug_fields is not None and smbd_waits_for_lock(snapshot):
+    if sink.debug_fields is not None and smbd_lock_waits(snapshot):
         _doctor_list_file_locks(target, sink, disk=not stuck)
     if sink.debug_fields is not None:
         _doctor_record_kern_limits(target, sink)
@@ -2263,6 +2264,20 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
                 + ". A disk operation is not completing (a failing disk or a kernel I/O stall); "
                 "if this does not clear, power-cycle the device",
                 details,
+            )
+        )
+    # A TDB lock wait lasts as long as another process holds the lock, and
+    # nothing on the device ends it; the lock listing above names the holder.
+    waiting = smbd_lock_waits(snapshot, STUCK_SLEEP_SECONDS)
+    if waiting:
+        sink.add(
+            CheckResult(
+                "FAIL",
+                f"Samba has waited at least {STUCK_SLEEP_SECONDS // 60} minutes for a database lock "
+                f"(PID{'s' if len(waiting) > 1 else ''} {', '.join(map(str, waiting))}); "
+                "backups from the Mac it serves fail until another process releases the lock. "
+                "Restart the device to clear it",
+                {"smbd_lock_waits": waiting},
             )
         )
     return ProcessSnapshotState(stuck=stuck, snapshot=snapshot)

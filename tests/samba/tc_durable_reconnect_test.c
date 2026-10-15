@@ -89,6 +89,66 @@ static struct server_id current_process(const struct messaging_context *ctx)
 #define smbXsrv_version_global_current() SMBXSRV_VERSION_1
 #include "../smbd/smbXsrv_open.c"
 #undef dbwrap_do_locked
+#undef messaging_server_id
+
+/*
+ * The smbd parent's wait for a new scavenger's hello (patch 0075), cut from
+ * the patched scavenger.c (tests/samba/run.py stage): it must not block the
+ * parent for good, so a child that never says hello is killed after the
+ * timeout. Each case sets the limit: a slow host or device only makes the
+ * silent case longer, and the others get a limit they never come near, so
+ * no case depends on how fast the child is scheduled.
+ */
+static int tc_hello_seconds;
+#define TC_SCAVENGER_HELLO_SECONDS tc_hello_seconds
+#include "../../lib/util/select.h"
+#include "tc_scavenger_hello.inc"
+
+static int scavenger_hello(const char *name)
+{
+	struct server_id sent = {.pid = 4321, .task_id = 7}, got = {0};
+	struct timeval start;
+	int fds[2], status;
+	double took;
+	bool ok;
+	pid_t pid;
+
+	tc_hello_seconds = strcmp(name, "scavenger_hello_silent") ? 120 : 3;
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0) {
+		close(fds[0]);
+		if (!strcmp(name, "scavenger_hello_sent")) {
+			_exit(write(fds[1], &sent, sizeof(sent)) == sizeof(sent) ? 0 : 1);
+		}
+		if (!strcmp(name, "scavenger_hello_silent")) {
+			for (;;) pause();	/* holds its end open and says nothing */
+		}
+		_exit(0);			/* scavenger_hello_exited: no hello */
+	}
+	close(fds[1]);
+	GetTimeOfDay(&start);
+	ok = scavenger_wait_hello(fds[0], pid, &got);
+	took = timeval_elapsed(&start);
+	CHECK(waitpid(pid, &status, 0) == pid);
+	close(fds[0]);
+	if (!strcmp(name, "scavenger_hello_sent")) {
+		CHECK(ok && server_id_equal(&got, &sent));
+		CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	} else if (!strcmp(name, "scavenger_hello_silent")) {
+		/* Given up after the timeout, and the child killed. */
+		CHECK(!ok && took >= tc_hello_seconds - 0.1);
+		CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+	} else {
+		/* The child's end closed: no wait for the timeout. */
+		CHECK(!strcmp(name, "scavenger_hello_exited"));
+		CHECK(!ok && took < tc_hello_seconds / 2);
+		CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	}
+	printf("PASS %s\n", name);
+	return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -112,6 +172,9 @@ int main(int argc, char **argv)
 	unsigned id, expected_attempts = 1;
 	const struct GUID *guid = NULL;
 	CHECK(argc == 2 && frame && table);
+	if (!strncmp(argv[1], "scavenger_hello_", 16)) {
+		return scavenger_hello(argv[1]);
+	}
 	/* A v1 reconnect names no create GUID. */
 	if (strncmp(argv[1], "v1_", 3)) guid = &create_guid;
 	setup_logging(argv[0], DEBUG_STDERR);

@@ -66,7 +66,10 @@ worker errors, successful and failed synchronous fallback, worker limits and
 share isolation, FIFO saturation, cancellation, worker failure recovery and idle
 cleanup. Durable tests cover live-to-disconnected transition, bounded retry
 exhaustion, unlocked waiting and identity/ownership rejection. They do not assert
-the literal retry limit of 34.
+the literal retry limit of 34. The `scavenger_hello_*` cases run the smbd
+parent's wait for a new scavenger's hello (patch 0075) against a forked child
+that says hello, exits without one, or stays silent: only the silent child is
+waited out and killed, with the limit set to 3 s for that case alone.
 
 Storage reload cases compile the production connection code and the unchanged
 parent/worker callback bodies from the source being built. They check revoked
@@ -326,8 +329,12 @@ connection's open is refused with OBJECT_NAME_NOT_FOUND once 0024's 90 s
 deferral runs out (the case checks the full wait too, as an immediate refusal
 has the same status) unless the new session names the old one;
 `half-open+reset` resets the old connection after 15 s (past the old 10 s
-limit), which must then take the open over. Durable-v2 grants must be 300 s
-for zero, short and over-limit client timeout requests. `short-write` sends a WRITE 4 KiB short with the next
+limit), which must then take the open over. `stopped+previous` names the old
+session from a new one while the old smbd is stopped for 70 s: 0074 must answer
+the session setup within macOS's 60 s (it waits 50 s for the old session), and
+the reconnect must wait until the old smbd is resumed, then take the open over.
+Durable-v2 grants must be 300 s for zero, short and over-limit client timeout
+requests. `short-write` sends a WRITE 4 KiB short with the next
 request inside it, as macOS did in issue 221: 0072 must write nothing, log
 `tc_desync:` and keep the connection open answering nothing, and the handle
 must reconnect after a reset. `smb-in-data` writes data holding SMB2 headers
@@ -342,9 +349,11 @@ does), then read it back; NetBSD 4's `futimens` replacement (0002) once failed
 the data case with NOT_SUPPORTED. `--case NAME`
 (repeatable) runs only the named cases. `expiry` resets a connection holding
 a durable open and waits out its 300 s (about 5.5 minutes). It first stops the
-scavenger, the smbd parent's only child without a client socket, and requires
-a new connection to be served meanwhile; then the scavenger must expire the
-open, so the reconnect is refused and another client's exclusive open gets the
+scavenger and requires a new connection to be served meanwhile. The scavenger
+is the smbd parent's only child serving no client (no TCP socket with both
+ends in `fstat`; every child holds the parent's listeners), counted once the
+reset connection's smbd has exited (up to 120 s). Then the scavenger must
+expire the open, so the reconnect is refused and another client's exclusive open gets the
 file within 15 s (a stale lease's break would take
 35 s; the margin covers a data disk that spun down during the wait). The
 macOS case stops the smbd serving a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending

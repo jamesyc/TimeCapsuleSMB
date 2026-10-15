@@ -1,0 +1,50 @@
+diff --git a/source3/smbd/smb2_sesssetup.c b/source3/smbd/smb2_sesssetup.c
+--- a/source3/smbd/smb2_sesssetup.c
++++ b/source3/smbd/smb2_sesssetup.c
+@@ -908,6 +908,16 @@ auth:
+ 	return req;
+ }
+ 
++/*
++ * How long a session setup that names a previous session waits for the old
++ * smbd to close it before answering anyway: macOS gives a session setup 60
++ * seconds, and an smbd that cannot run its event loop (a long HFS close, a
++ * wait for a lock) would otherwise keep the client from connecting at all.
++ * The old smbd closes the session when it runs again, and a durable reconnect
++ * that arrives meanwhile is deferred until the open is released (patch 0024).
++ */
++#define TC_CLOSE_PREVIOUS_SECONDS 50
++
+ static void smbd_smb2_session_setup_gensec_done(struct tevent_req *subreq)
+ {
+ 	struct tevent_req *req =
+@@ -955,6 +965,11 @@ static void smbd_smb2_session_setup_gensec_done(struct tevent_req *subreq)
+ 		if (tevent_req_nomem(subreq, req)) {
+ 			return;
+ 		}
++		if (!tevent_req_set_endtime(subreq, state->ev,
++				timeval_current_ofs(TC_CLOSE_PREVIOUS_SECONDS, 0))) {
++			tevent_req_oom(req);
++			return;
++		}
+ 		tevent_req_set_callback(subreq,
+ 					smbd_smb2_session_setup_previous_done,
+ 					req);
+@@ -973,6 +988,17 @@ static void smbd_smb2_session_setup_previous_done(struct tevent_req *subreq)
+ 
+ 	status = smb2srv_session_close_previous_recv(subreq);
+ 	TALLOC_FREE(subreq);
++	if (NT_STATUS_EQUAL(status, NT_STATUS_IO_TIMEOUT)) {
++		struct smbd_smb2_session_setup_state *state =
++			tevent_req_data(req,
++			struct smbd_smb2_session_setup_state);
++
++		DBG_ERR("previous session %#" PRIx64 " not closed "
++			"after %d seconds; answering\n",
++			state->in_previous_session_id,
++			TC_CLOSE_PREVIOUS_SECONDS);
++		status = NT_STATUS_OK;
++	}
+ 	if (tevent_req_nterror(req, status)) {
+ 		return;
+ 	}

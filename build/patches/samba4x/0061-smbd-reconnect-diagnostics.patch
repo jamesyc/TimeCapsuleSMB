@@ -79,7 +79,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 diff --git a/source3/smbd/smb2_sesssetup.c b/source3/smbd/smb2_sesssetup.c
 --- a/source3/smbd/smb2_sesssetup.c
 +++ b/source3/smbd/smb2_sesssetup.c
-@@ -943,6 +943,13 @@ static void smbd_smb2_session_setup_gensec_done(struct tevent_req *subreq)
+@@ -953,6 +953,13 @@ static void smbd_smb2_session_setup_gensec_done(struct tevent_req *subreq)
  		return;
  	}
  
