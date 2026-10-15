@@ -6,7 +6,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from tests.samba import durable_device
+from tests.samba import device_processes, durable_device
 from tests.samba.durable_device import OLD_SMBD_EXIT_SECONDS, _scavengers, serves_client
 from tests.samba.links_device import Results
 
@@ -55,12 +55,12 @@ class FakeDevice:
         self.now: dict[int, str] = {}
 
     def sh(self, command: str, *, check: bool = True) -> str:
-        if command.startswith("ps "):
+        if command == device_processes.COMMAND:
             self.now = self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
-            rows = ["  PID  PPID COMMAND", "  146     1 service: role=manager",
-                    "  457   146 /mnt/Memory/samba4/sbin/smbd -F --no-process-group"]
-            return "\n".join(rows + [f"{pid:5} 457 /mnt/Memory/samba4/sbin/smbd -F --no-process-group"
-                                     for pid in self.now]) + "\n"
+            # Children asleep on the disk keep their command line unread.
+            rows = ["  146     1     2 S    service service: role=manager",
+                    "  457   146   457 S    smbd    /mnt/Memory/samba4/sbin/smbd -F --no-process-group"]
+            return "\n".join(rows + [f"{pid:5}   457   457 D    smbd    (unreadable)" for pid in self.now]) + "\n"
         pid = int(command.rsplit(None, 1)[1])
         return self.now.get(pid, "")
 
@@ -118,10 +118,11 @@ class StoppedDevice:
         if command.startswith("kill "):
             self.signals.append(command)
             return ""
-        rows = ["  PID  PPID COMMAND", "  146     1 service: role=manager",
-                "  457   146 /mnt/Memory/samba4/sbin/smbd -F --no-process-group"]
+        assert command == device_processes.COMMAND
+        rows = ["  146     1     2 S    service service: role=manager",
+                "  457   146   457 S    smbd    /mnt/Memory/samba4/sbin/smbd -F --no-process-group"]
         if self.connected:
-            rows.append(" 3994   457 /mnt/Memory/samba4/sbin/smbd -F --no-process-group")
+            rows.append(" 3994   457   457 S    smbd    /mnt/Memory/samba4/sbin/smbd -F --no-process-group")
         return "\n".join(rows) + "\n"
 
 

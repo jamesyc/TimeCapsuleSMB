@@ -9,6 +9,7 @@ from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_MISSING_ERROR,
     ManagedRuntimeProbeResult,
+    limit_remote_log_tail,
     probe_managed_runtime_conn,
     read_runtime_log_tails_conn,
     runtime_payload_missing,
@@ -148,4 +149,10 @@ def _runtime_verification_measurement(
             final_blocker_status=final_blocker.status,
             final_blocker_detail=final_blocker.detail,
         )
+        if final_blocker.status == "timeout" and final_blocker.stdout:
+            # A process listing that timed out: the table without command
+            # lines, read just after it.
+            measurement["final_blocker_process_table"] = limit_remote_log_tail(final_blocker.stdout.rstrip())
+        if final_blocker.asleep_in_kernel:
+            measurement["final_blocker_asleep_in_kernel"] = final_blocker.asleep_in_kernel
     return measurement

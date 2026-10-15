@@ -1,11 +1,28 @@
 """Host-packaged shutdown must work even when every old script is missing."""
 import json
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
+from tests.device_ps import FakePs, process
 from timecapsulesmb.device.migration_jobs import running_migrations
 from timecapsulesmb.device.processes import render_stop_service_runtime, render_wait_for_idle_jobs
+
+# The fake tools below answer ps as the device does (tests/device_ps.py) from
+# rows of "pid stat ucomm command".
+FAKE_PS = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+from tests.device_ps import answer, process
+def ps(rows):
+    out, status, _vanished = answer([process(row) for row in rows], sys.argv[2:])
+    sys.stdout.write(out)
+    return status
+def listing():
+    return 'ax' in sys.argv[2:]
+'''
 
 
 @pytest.mark.parametrize('stubborn', [False, True])
@@ -39,13 +56,13 @@ def test_service_supervisor_stops_before_workers_and_leaves_apple_alone(tmp_path
     state.write_text(json.dumps(rows))
     log = tmp_path / 'signals'
     helper = tmp_path / 'helper.py'
-    helper.write_text(f'''
+    helper.write_text(FAKE_PS + f'''
 import json, sys
 from pathlib import Path
 state = Path({str(state)!r})
 rows = json.loads(state.read_text())
 if sys.argv[1] == 'ps':
-    print('\\n'.join(rows))
+    sys.exit(ps(rows))
 else:
     pid = sys.argv[-1]
     with open({str(log)!r}, 'a') as out: out.write(pid + '\\n')
@@ -54,7 +71,7 @@ else:
 ''')
     import sys
     script = render_stop_service_runtime(attempts=0, supervisor_seconds=0)
-    script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', f'{sys.executable} {helper} ps')
+    script = script.replace('/bin/ps', f'{sys.executable} {helper} ps')
     script = script.replace('/bin/kill', f'{sys.executable} {helper} kill')
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
     if stubborn:
@@ -81,11 +98,9 @@ IDLE_JOB_ROWS = [
 
 
 @pytest.mark.parametrize('comm,state,expected', IDLE_JOB_ROWS)
-def test_active_metadata_and_diagnostic_jobs_block_cleanup(comm, state, expected):
-    script = render_wait_for_idle_jobs(attempts=0).replace(
-        '/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', f"printf '%s\\n' '17 {state} {comm}'"
-    )
-    result = subprocess.run(['/bin/sh', '-c', script], capture_output=True)
+def test_active_metadata_and_diagnostic_jobs_block_cleanup(tmp_path, comm, state, expected):
+    fake = FakePs(tmp_path, [process(f'17 {state} {comm}')])
+    result = subprocess.run(['/bin/sh', '-c', fake.install(render_wait_for_idle_jobs(attempts=0))], capture_output=True)
     assert result.returncode == expected
 
 
@@ -145,7 +160,7 @@ def test_shutdown_rescans_all_supervisors_before_service_workers(tmp_path, scena
     }
     state.write_text(json.dumps({'rows': rows, 'signals': [], 'scans': 0}))
     tool = tmp_path / 'process-tool.py'
-    tool.write_text(f'''
+    tool.write_text(FAKE_PS + f'''
 import json, sys
 from pathlib import Path
 state = Path({str(state)!r})
@@ -153,12 +168,15 @@ scenario = {scenario!r}
 d = json.loads(state.read_text())
 if sys.argv[1] == 'ps':
     if scenario == 'ps_failure': sys.exit(1)
-    d['scans'] += 1
+    if listing():
+        d['scans'] += 1
     # Without stopping manager first, it can start a normal slow ACP query
     # between the worker snapshot and its absence check (the review repro).
     if scenario == 'manager_starts_helper' and d['scans'] >= 4 and '30' in d['rows']:
         d['rows']['33'] = '33 S service /mnt/Flash/service --print-samba-identity'
-    print('\\n'.join(d['rows'].values()))
+    status = ps(d['rows'].values())
+    state.write_text(json.dumps(d))
+    sys.exit(status)
 else:
     sig, pid = sys.argv[-2:]
     d['signals'].append([sig, pid])
@@ -173,7 +191,7 @@ else:
 state.write_text(json.dumps(d))
 ''')
     script = render_stop_service_runtime(attempts=1, supervisor_seconds=2)
-    script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', shlex.join([sys.executable, str(tool), 'ps']))
+    script = script.replace('/bin/ps', shlex.join([sys.executable, str(tool), 'ps']))
     script = script.replace('/bin/kill', shlex.join([sys.executable, str(tool), 'kill']))
     script = script.replace('sleep 1', ':')
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
@@ -239,13 +257,12 @@ def test_stuck_process_is_named_so_deploy_can_classify_a_stuck_manager(tmp_path,
     from timecapsulesmb.services.deploy import _manager_stop_timed_out
 
     tool = tmp_path / 'tool.py'
-    tool.write_text(f'''
-import sys
+    tool.write_text(FAKE_PS + f'''
 if sys.argv[1] == 'ps':
-    print({stuck_row!r})
+    sys.exit(ps([{stuck_row!r}]))
 ''')
     script = render_stop_service_runtime(attempts=0, supervisor_seconds=0)
-    script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', shlex.join([sys.executable, str(tool), 'ps']))
+    script = script.replace('/bin/ps', shlex.join([sys.executable, str(tool), 'ps']))
     script = script.replace('/bin/kill', shlex.join([sys.executable, str(tool), 'kill']))
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
 
@@ -264,16 +281,16 @@ def _run_manager_stop(tmp_path, *, manager_scans, supervisor_seconds=None, extra
     state = tmp_path / 'manager.json'
     state.write_text(json.dumps({'scans': 0, 'sleeps': 0}))
     tool = tmp_path / 'manager-tool.py'
-    tool.write_text(f'''
+    tool.write_text(FAKE_PS + f'''
 import json, sys
 from pathlib import Path
 state = Path({str(state)!r})
 d = json.loads(state.read_text())
 limit = {manager_scans!r}
 if sys.argv[1] == 'ps':
-    d['scans'] += 1
-    if limit is None or d['scans'] <= limit:
-        print('30 S service service: role=manager')
+    if listing():
+        d['scans'] += 1
+    ps(['30 S service service: role=manager'] if limit is None or d['scans'] <= limit else [])
 elif sys.argv[1] == 'stuck-ps':
     rows = ['30 1 S select service']
     rows += {list(extra_rows)!r}
@@ -285,8 +302,8 @@ state.write_text(json.dumps(d))
     kwargs = {} if supervisor_seconds is None else {'supervisor_seconds': supervisor_seconds}
     script = render_stop_service_runtime(attempts=0, **kwargs)
     fake = lambda name: shlex.join([sys.executable, str(tool), name])
-    script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', fake('ps'))
     script = script.replace(STUCK_PROCESS_PS_COMMAND, fake('stuck-ps'))
+    script = script.replace('/bin/ps', fake('ps'))
     script = script.replace('/bin/kill', fake('kill'))
     script = script.replace('sleep 1', fake('sleep'))
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
@@ -375,20 +392,19 @@ def _run_fsck_script(tmp_path, *, stubborn=None, fsck_rc=0,
     state.write_text(json.dumps({'rows': rows, 'mounts': mounts}))
     log = tmp_path / 'log'
     tool = tmp_path / 'tool.py'
-    tool.write_text(f"""
+    tool.write_text(FAKE_PS + f"""
 import json, sys
 from pathlib import Path
 state = Path({str(state)!r})
 data = json.loads(state.read_text())
 rows = data['rows']
 cmd = sys.argv[1]
+status = 0
 def drop(pid):
     if pid != {stubborn!r}:
         rows.pop(pid, None)
-if cmd == 'ps-full':
-    print('\\n'.join(rows.values()))
-elif cmd == 'ps-short':
-    print('\\n'.join(' '.join(r.split()[1:]) for r in rows.values()))
+if cmd == 'ps':
+    status = ps(rows.values())
 elif cmd == 'kill':
     drop(sys.argv[-1])
 elif cmd == 'pkill':
@@ -417,6 +433,7 @@ if cmd == 'umount':
     state.write_text(json.dumps(data))
 if cmd == 'fsck_hfs':
     sys.exit({fsck_rc})
+sys.exit(status)
 """)
     fake = lambda name: shlex.join([sys.executable, str(tool), name])
     script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2')
@@ -426,8 +443,7 @@ if cmd == 'fsck_hfs':
         ('/usr/bin/acp', 'acp'),
         ('/sbin/shutdown', 'shutdown'),
         ('/sbin/reboot', 'reboot'),
-        ('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', 'ps-full'),
-        ('ps axww -o stat= -o ucomm= -o command=', 'ps-short'),
+        ('/bin/ps', 'ps'),
         ('/usr/bin/pkill', 'pkill'),
         ('/bin/kill', 'kill'),
         ('/sbin/umount', 'umount'),
@@ -435,7 +451,7 @@ if cmd == 'fsck_hfs':
         ('/sbin/fsck_hfs', 'fsck_hfs'),
     ):
         script = script.replace(real, fake(name))
-    script = script.replace('sleep 1', ':').replace('/tmp/tcapsule-ps.', f'{tmp_path}/ps.')
+    script = script.replace('sleep 1', ':')
     result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
     calls = log.read_text().splitlines() if log.exists() else []
     data = json.loads(state.read_text())
@@ -515,3 +531,128 @@ def test_fsck_repairs_a_volume_apple_already_unmounted(tmp_path):
     assert fsck_exit_status(result.stdout) == 0
     assert 'not currently mounted' in result.stdout
     assert calls == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2']
+
+
+# Ubuntu CI's /bin/sh is dash; macOS has both.
+SHELLS = [shell for shell in ('/bin/sh', '/bin/dash') if os.path.exists(shell)]
+STOP_LOOP_SLEEP = '[ "$attempt" -ge "$limit" ] || sleep 1'
+
+
+def _stop_with_fake_ps(tmp_path, processes, *, shell='/bin/sh', on_loop_sleep=lambda fake: ':'):
+    """Run the stop script against tests/device_ps. on_loop_sleep(fake) is
+    the command run in place of the wait between passes; ps_rows' own second
+    look waits for nothing."""
+    fake = FakePs(tmp_path, processes)
+    script = fake.install(render_stop_service_runtime(attempts=1, supervisor_seconds=1))
+    assert STOP_LOOP_SLEEP in script
+    script = script.replace(STOP_LOOP_SLEEP, STOP_LOOP_SLEEP.replace('sleep 1', on_loop_sleep(fake)))
+    script = script.replace('sleep 1', ':')
+    return subprocess.run([shell, '-c', script], capture_output=True, text=True), fake
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_stop_waits_for_an_unreadable_shell_or_service_but_never_signals_it(tmp_path, shell):
+    # A process whose command line could not be read may be ours or someone
+    # else's: the stop waits for it, then fails naming it, and leaves it alone.
+    from timecapsulesmb.services.deploy import _manager_stop_timed_out
+
+    result, fake = _stop_with_fake_ps(tmp_path, [
+        process('20 S service /mnt/Flash/service run'),
+        process('40 D sh /bin/sh /mnt/Flash/boot.sh', stat_later='D'),
+        process('41 S service service: role=discovery', argv='unreadable'),
+        process('42 D smbd /mnt/Memory/samba4/sbin/smbd -F'),
+    ], shell=shell)
+
+    assert result.returncode == 1
+    lines = result.stderr.splitlines()
+    assert 'process sh did not show its command line (pid 40); retry after its active work finishes' in lines
+    assert 'process service did not show its command line (pid 41); retry after its active work finishes' in lines
+    assert [pid for _signal, pid in fake.signals] == ['20']
+    assert '40' not in fake.command_reads()
+    # A service asleep in the kernel throughout may be the manager: deploy
+    # gives the stuck-service advice.
+    assert _manager_stop_timed_out(RuntimeError(result.stderr))
+
+
+def test_an_unreadable_shell_alone_is_not_a_stuck_manager(tmp_path):
+    from timecapsulesmb.services.deploy import _manager_stop_timed_out
+
+    result, _ = _stop_with_fake_ps(tmp_path, [process('40 D sh /bin/sh /mnt/Flash/boot.sh', stat_later='D')])
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines()[0] == (
+        'process sh did not show its command line (pid 40); retry after its active work finishes'
+    )
+    assert not _manager_stop_timed_out(RuntimeError(result.stderr))
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_stop_finishes_once_an_unreadable_process_exits(tmp_path, shell):
+    # Seen unreadable on the first pass and waited for; it exits during the
+    # wait between passes, and the next pass finds nothing left.
+    result, fake = _stop_with_fake_ps(tmp_path, [
+        process('20 S service /mnt/Flash/service run'),
+        process('40 D sh /bin/sh /mnt/Flash/boot.sh', stat_later='D'),
+    ], shell=shell, on_loop_sleep=lambda fake: f"{fake.command('exit')} 40")
+
+    assert result.returncode == 0, result.stderr
+    assert fake.pids == set()
+    assert [pid for _signal, pid in fake.signals] == ['20']
+    assert ['-o', 'stat=', '-p', '40'] in fake.calls
+    assert '40' not in fake.command_reads()
+
+
+def test_stop_signals_a_process_whose_disk_wait_ended_by_the_second_look(tmp_path):
+    result, fake = _stop_with_fake_ps(tmp_path, [process('20 D service service: role=manager', stat_later='S')])
+
+    assert result.returncode == 0, result.stderr
+    assert fake.signals == [['-TERM', '20']]
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('row', [
+    '17 S sh /bin/sh /mnt/Flash/migrate.sh',
+    '17 S service service: role=job storage',
+    '17 S sh sh -c true',
+])
+def test_idle_jobs_wait_for_an_unreadable_shell_or_service(tmp_path, row, shell):
+    # It may be a migration or a job: cleanup waits for it, whatever it is.
+    fake = FakePs(tmp_path, [process(row, argv='unreadable')])
+    result = subprocess.run(
+        [shell, '-c', fake.install(render_wait_for_idle_jobs(attempts=0))], capture_output=True, text=True
+    )
+
+    assert result.returncode == 1
+    assert 'still active' in result.stderr
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_idle_jobs_never_expand_a_shells_arguments(tmp_path, shell):
+    # Expanded in a directory holding a file named sh, "*" would become "sh"
+    # and the next word would pass for the script that shell runs.
+    work = tmp_path / 'cwd'
+    work.mkdir()
+    (work / 'sh').write_text('')
+    fake = FakePs(tmp_path, [process('17 S sh * /mnt/Flash/migrate.sh')])
+    result = subprocess.run(
+        [shell, '-c', fake.install(render_wait_for_idle_jobs(attempts=0))], capture_output=True, text=True, cwd=work,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_stop_idle_jobs_never_signals_an_unreadable_process(tmp_path, shell):
+    from timecapsulesmb.device.processes import render_stop_idle_jobs
+
+    fake = FakePs(tmp_path, [
+        process('17 S sh /bin/sh /mnt/Flash/migrate.sh', argv='unreadable'),
+        process('18 S tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate multi copy'),
+    ])
+    script = fake.install(render_stop_idle_jobs(attempts=1)).replace('sleep 1', ':')
+    result = subprocess.run([shell, '-c', script], capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == ['process sh did not show its command line (pid 17)']
+    assert fake.signals == [['-TERM', '18']]
+    assert fake.pids == {'17'}

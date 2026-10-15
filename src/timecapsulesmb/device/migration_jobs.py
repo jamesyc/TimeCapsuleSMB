@@ -13,13 +13,17 @@ import re
 import shlex
 import threading
 
+from timecapsulesmb.device.processes import command_unreadable, ps_rows_command
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
-# One row per process: pid, state, CPU time, kernel ucomm, then argv.
-JOBS_PS_COMMAND = "/bin/ps axww -o pid= -o stat= -o time= -o ucomm= -o command="
 # The kernel truncates ucomm: tc-xattr-hfs-migrate shows as tc-xattr-hfs-mi.
 MIGRATOR_UCOMMS = ("tc-xattr-hfs-mi", "xattr-hfs-migra")
+# One row per process: pid, state, CPU time, kernel ucomm, then argv for the
+# migrators and shells.
+JOBS_PS_COMMAND = ps_rows_command(
+    "jobs_ps", ("pid", "stat", "time"), tuple(f"{ucomm}*" for ucomm in MIGRATOR_UCOMMS) + ("sh",)
+)
 # Shell migrations of releases before the native migrator.
 LEGACY_MIGRATION_SCRIPTS = ("/mnt/Flash/migrate.sh", "/mnt/Flash/xattr-migrate-wrapper.sh")
 # Options of the native migrator that take a value.
@@ -80,8 +84,15 @@ def running_migrations(ps_output: str) -> tuple[RunningMigration, ...]:
             continue
         pid, _state, cpu_time, ucomm, argv = int(fields[0]), fields[1], fields[2], fields[3], fields[4:]
         if ucomm.startswith(MIGRATOR_UCOMMS):
+            # Without its command line (NetBSD 4's ps, or a migrator waiting
+            # on the disk) the phase is unknown and the log not found.
+            if command_unreadable(argv):
+                argv = []
             found.append(RunningMigration(pid, _native_phase(argv), _option(argv, "--log"), cpu_time))
         elif ucomm == "sh":
+            # A shell whose command line was not read is not counted: a
+            # legacy migration's shell waits on its children, not on the disk,
+            # and deploy's idle-job guard still waits for any such shell.
             # Match argv, not text inside an SSH `sh -c` wrapper.
             if argv[:1] in (["/bin/sh"], ["sh"]):
                 argv = argv[1:]

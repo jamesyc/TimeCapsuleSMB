@@ -225,7 +225,9 @@ def run_all(tag: str, env: dict[str, str], host: str, share: str, names: list[st
 # spinning: with every test connection closed, no smbd child should compute.
 SPIN_INTERVAL = 5.0
 SPIN_SHARE = 0.8
-PS_COMMAND = "ps -ax -o pid,ppid,utime,command"
+# ucomm, not the command line: reading every command line can hang behind a
+# process stuck on the disk (timecapsulesmb.device.processes).
+PS_COMMAND = "/bin/ps ax -o pid= -o ppid= -o utime= -o ucomm="
 
 
 def cpu_seconds(text: str) -> float:
@@ -240,9 +242,10 @@ def smbd_children(ps: str) -> dict[int, float]:
     """smbd processes forked by another smbd (the parent's is the manager),
     with their user CPU seconds."""
     rows = []
-    for line in ps.splitlines()[1:]:
-        fields = line.split(None, 3)
-        if len(fields) == 4 and "/smbd" in fields[3].split()[0]:
+    for line in ps.splitlines():
+        fields = line.split()
+        # ps prints "-" for a zombie's CPU time: it has exited.
+        if len(fields) == 4 and fields[0].isdigit() and fields[3] == "smbd" and fields[2][:1].isdigit():
             rows.append((int(fields[0]), int(fields[1]), cpu_seconds(fields[2])))
     pids = {pid for pid, _, _ in rows}
     return {pid: utime for pid, ppid, utime in rows if ppid in pids}

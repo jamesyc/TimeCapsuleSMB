@@ -104,6 +104,7 @@ from timecapsulesmb.services.activation import Netbsd4StartMessages, start_netbs
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import ACPD_STOPPED_MESSAGE, followed, reboot_device
 from timecapsulesmb.device.probe import AirportAcpReading
+from timecapsulesmb.device.processes import UNREADABLE_SERVICE_STOP_MESSAGE
 from timecapsulesmb.services.runtime import ManagedTargetState, probe_failure_error, require_acpd_ready
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
@@ -186,6 +187,9 @@ PREVIOUS_MIGRATION_STALLED_MESSAGE = (
     "often due to a failing disk. Unplug the device, plug it back in, and try again."
 )
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
+# A service process the stop script waited for without reading its command
+# line (it stayed asleep in the kernel) may be the manager: the same advice.
+MANAGER_STOP_TIMEOUT_SENTINELS = (MANAGER_STOP_TIMEOUT_SENTINEL, UNREADABLE_SERVICE_STOP_MESSAGE)
 # A migrator left by an interrupted deploy is polled this often. It kills
 # itself after STALL_SECONDS without progress, so one that still runs a
 # minute past that is stuck in the kernel (a failing disk).
@@ -661,7 +665,7 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
 
 
 def _manager_stop_timed_out(exc: BaseException) -> bool:
-    return MANAGER_STOP_TIMEOUT_SENTINEL in str(exc)
+    return any(sentinel in str(exc) for sentinel in MANAGER_STOP_TIMEOUT_SENTINELS)
 
 
 def _upload_timeout_sec(transfer: FileTransfer, sources: Mapping[str, Path]) -> int | None:

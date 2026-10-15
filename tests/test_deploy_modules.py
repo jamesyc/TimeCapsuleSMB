@@ -80,11 +80,18 @@ from timecapsulesmb.deploy.verify import (
     verify_post_uninstall,
 )
 from timecapsulesmb.core.config import AppConfig
+from tests.device_ps import FakePs, process
 from timecapsulesmb.device.processes import (
+    PS_CAPTURE_COMMAND,
+    STUCK_PROCESS_PS_COMMAND,
+    UNREADABLE_COMMAND,
     render_process_present_by_ucomm,
 )
 from timecapsulesmb.device.probe import (
+    DISCOVERY_UNREADABLE,
+    DISKD_UNREADABLE,
     DISK_PAYLOAD_MISSING_ERROR,
+    MANAGER_UNREADABLE,
     DISK_PAYLOAD_MISSING_MESSAGE,
     runtime_payload_missing,
     FOREIGN_WCIFSND_RUNNING,
@@ -1573,6 +1580,46 @@ class DeployModuleTests(unittest.TestCase):
                 if not nbns_steps:
                     self.assertNotIn("native_nbns_detail", fields)
 
+    def test_runtime_verification_measurement_reports_what_a_timed_out_listing_waited_for(self) -> None:
+        # A timed-out process listing carries the table read just after it and
+        # the processes asleep in the kernel; other failures carry neither.
+        table = "  812   700 D    vmmapbsy ps\n"
+        timed_out = ProbeStepResult(
+            "mdns_process_table_probe", "timeout", "mDNS process table probe timed out after 30s",
+            stdout=table, asleep_in_kernel="ps (pid 812) on vmmapbsy",
+        )
+        failed = ProbeStepResult("mdns_link_plan_probe", "fail", "mdns link plan probe failed with exit code 1",
+                                 stdout="plan: garbage\n")
+        for step, expected in (
+            (timed_out, {"final_blocker_process_table": table.rstrip(),
+                         "final_blocker_asleep_in_kernel": "ps (pid 812) on vmmapbsy"}),
+            (failed, {"final_blocker_process_table": None, "final_blocker_asleep_in_kernel": None}),
+        ):
+            with self.subTest(step=step.id):
+                verification = ManagedRuntimeProbeResult(
+                    ready=False,
+                    detail=step.detail,
+                    smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+                    mdns=ReadinessProbeResult(ready=False, detail=step.detail, steps=(step,)),
+                )
+                measurements: list[tuple[str, dict[str, object]]] = []
+                with self.assertRaises(DeviceError):
+                    verify_managed_runtime_ready(
+                        SshConnection("host", "pw", ""),
+                        callbacks=OperationCallbacks(
+                            record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))
+                        ),
+                        stage="verify_runtime_activation",
+                        timeout_seconds=200,
+                        heading="Runtime verification:",
+                        failure_message="not ready",
+                        probe_runtime=mock.Mock(return_value=verification),
+                    )
+                fields = next(fields for kind, fields in measurements if kind == "runtime_verification")
+                self.assertEqual(fields["final_blocker_step"], step.id)
+                self.assertEqual(fields["final_blocker_detail"], step.detail)
+                self.assertEqual({key: fields.get(key) for key in expected}, expected)
+
     def test_render_managed_runtime_verification_fails_when_runtime_probe_fails(self) -> None:
         verification = ManagedRuntimeProbeResult(
             ready=False,
@@ -1784,6 +1831,32 @@ root smbd 101 11 internet6 stream tcp 0x0 [fd00::40]:445'; echo "specific_only=$
         self.assertIn("specific_only=1", result.stdout)
 
     def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_manager(self) -> None:
+        result = self._run_smbd_status_helpers(
+            "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf"
+        )
+        self.assertIn("FAIL:active smb.conf passdb backend is not staged in RAM", result.stdout)
+        self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
+        self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
+        self.assertIn("FAIL:one or more managed share volumes are not mounted", result.stdout)
+        self.assertIn("FAIL:manager is not running for managed runtime", result.stdout)
+        self.assertIn("status=1", result.stdout)
+
+    def test_smbd_status_helpers_report_a_manager_they_could_not_identify(self) -> None:
+        # A service process whose command line was not read may be the manager.
+        rows = [
+            "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf",
+            f"102 1 D 0:00.00 service {UNREADABLE_COMMAND}",
+            "103 1 S 0:00.00 service service: role=discovery nbns=ready",
+        ]
+        result = self._run_smbd_status_helpers("\n".join(rows))
+        self.assertIn(f"FAIL:{MANAGER_UNREADABLE}", result.stdout)
+        self.assertNotIn("FAIL:manager is not running for managed runtime", result.stdout)
+
+        rows.append("104 1 S 0:00.00 service service: role=manager started=12")
+        result = self._run_smbd_status_helpers("\n".join(rows))
+        self.assertIn("PASS:manager is running for managed runtime", result.stdout)
+
+    def _run_smbd_status_helpers(self, ps_out: str) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
@@ -1812,7 +1885,7 @@ RUNTIME_SMB_CONF_PATH={shlex.quote(str(smb_conf))}
 RUNTIME_PERSISTENT_ROOT_PREFIX={shlex.quote(str(persistent_prefix) + "/")}
 {SMBD_STATUS_HELPERS}
 capture_df_for_volume_root() {{ echo "/dev/md0a 100 10 90 10% /"; }}
-ps_out='101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf'
+ps_out={shlex.quote(ps_out)}
 fstat_out='root smbd 101 10 internet stream tcp 0x0 *:445'
 if describe_managed_smbd_status "$ps_out" "$fstat_out"; then
     echo status=0
@@ -1824,12 +1897,7 @@ fi
             result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("FAIL:active smb.conf passdb backend is not staged in RAM", result.stdout)
-        self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
-        self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
-        self.assertIn("FAIL:one or more managed share volumes are not mounted", result.stdout)
-        self.assertIn("FAIL:manager is not running for managed runtime", result.stdout)
-        self.assertIn("status=1", result.stdout)
+        return result
 
     def test_smbd_status_helper_reports_device_samba_version_from_runtime_binary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2190,6 +2258,7 @@ describe_managed_smbd_status "" ""
         stopped_early, _ = self._run_mdns_probe([
             mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
             SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+            mock.Mock(returncode=0, stdout="", stderr=""),
         ])
         self.assertIsNone(stopped_early.link_plan)
         failed, _ = self._run_mdns_probe([
@@ -2311,7 +2380,7 @@ describe_managed_smbd_status "" ""
             [MDNS_BINARY_PROBE_TIMEOUT_SECONDS, MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS, MDNS_FSTAT_PROBE_TIMEOUT_SECONDS, MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS],
         )
         remote_commands = [call.args[1] for call in run_ssh_mock.call_args_list]
-        self.assertIn("ps axww", remote_commands[1])
+        self.assertEqual(remote_commands[1], f"/bin/sh -c {shlex.quote(PS_CAPTURE_COMMAND)}")
         self.assertIn("/internet/p", remote_commands[2])
         self.assertIn('"$RUNTIME_SERVICE_BIN" --print-link-plan', remote_commands[3])
         self.assertNotIn("discovery --print-link-plan", remote_commands[3])
@@ -2573,17 +2642,60 @@ describe_managed_smbd_status "" ""
         )
 
     def test_probe_managed_mdns_takeover_reports_process_table_timeout(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            side_effect=[
-                mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
-                SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
-            ],
+        # The table alone never waits; it names what the listing waited for.
+        # The detail stays one text for every such timeout.
+        listing = "  812   700 D    vmmapbsy ps\n  700     1 D    biowait  service\n  371     1 S    select   mDNSResponder\n"
+        detail = f"mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s"
+        for stuck, table, asleep in (
+            (mock.Mock(returncode=0, stdout=listing, stderr=""), listing,
+             "ps (pid 812) on vmmapbsy, service (pid 700) on biowait"),
+            (mock.Mock(returncode=1, stdout=listing, stderr=""), "", ""),
+            (SshCommandTimeout("Timed out waiting for ssh command to finish: ps"), "", ""),
         ):
-            result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"))
+            with self.subTest(stuck=stuck), mock.patch(
+                "timecapsulesmb.device.probe.run_ssh",
+                side_effect=[
+                    mock.Mock(returncode=0, stdout=self.BINARY_V31, stderr=""),
+                    SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+                    stuck,
+                ],
+            ) as run_ssh_mock:
+                result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"))
+            self.assertFalse(result.ready)
+            self.assertEqual(result.detail, detail)
+            self.assertIn(f"FAIL:{detail}", result.lines)
+            step = next(step for step in result.steps if step.id == "mdns_process_table_probe")
+            self.assertEqual((step.status, step.stdout, step.asleep_in_kernel), ("timeout", table, asleep))
+            self.assertEqual(run_ssh_mock.call_args_list[2].args[1], STUCK_PROCESS_PS_COMMAND)
+
+    def test_probe_managed_mdns_reports_a_discovery_process_it_could_not_identify(self) -> None:
+        # A service process whose command line was not read may be discovery:
+        # it is neither found nor missing, and doctor waits for it.
+        ps_out = self.PS_V31.replace(
+            "service service: role=discovery nbns=ready mdns=ready:2/2 mode=payload --netbios-name TimeCapsule "
+            "--adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82",
+            f"service {UNREADABLE_COMMAND}",
+        )
+        result = self._mdns_probe_with(ps_out)
         self.assertFalse(result.ready)
-        self.assertEqual(result.detail, f"mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s")
-        self.assertIn(f"FAIL:mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s", result.lines)
+        self.assertIn(f"FAIL:{DISCOVERY_UNREADABLE}", result.lines)
+        self.assertNotIn("FAIL:discovery process is not running", result.lines)
+
+        # Beside a discovery process that was read, it changes nothing.
+        result = self._mdns_probe_with(self.PS_V31 + f"920 408 D 0:00 service {UNREADABLE_COMMAND}\n")
+        self.assertIn("PASS:discovery process is running", result.lines)
+
+    def test_probe_managed_mdns_skips_the_loopback_check_for_an_unreadable_diskd(self) -> None:
+        unreadable = self.PS_V31.replace("diskd /sbin/diskd -i lo0 -d local.", f"diskd {UNREADABLE_COMMAND}")
+        result = self._mdns_probe_with(unreadable)
+        self.assertTrue(result.ready, result.lines)
+        self.assertIn(f"SKIP:{DISKD_UNREADABLE}", result.lines)
+
+        # A diskd known to be on the LAN still fails.
+        stray = unreadable + "560 1 S 0:00 diskd /sbin/diskd\n"
+        result = self._mdns_probe_with(stray)
+        self.assertFalse(result.ready)
+        self.assertTrue(any(line.startswith("FAIL:Apple diskd pid(s) 560 are not on loopback") for line in result.lines))
 
     def test_decide_manual_activation_skips_ready_runtime(self) -> None:
         runtime_ready = ManagedRuntimeProbeResult(
@@ -3237,33 +3349,41 @@ describe_managed_smbd_status "" ""
         self.assertEqual([call.args[1] for call in run_ssh_mock.call_args_list], expected)
 
     def test_render_process_present_ignores_zombies_for_name_and_full_matches(self) -> None:
-        def process_present(command: str, *, ps_lines: list[str]) -> bool:
+        def process_present(command: str, *, rows: list[str]) -> bool:
             with tempfile.TemporaryDirectory() as tmp:
-                fixture = Path(tmp) / "ps.txt"
-                fixture.write_text("\n".join(ps_lines) + "\n")
-                command = command.replace(
-                    "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null",
-                    f"cat {shlex.quote(str(fixture))} >/tmp/tcapsule-ps.$$",
-                )
-                result = subprocess.run(["/bin/sh", "-c", command], check=False, text=True, capture_output=True)
+                fake = FakePs(Path(tmp), [process(row) for row in rows])
+                result = subprocess.run(["/bin/sh", "-c", fake.install(command)], check=False, text=True, capture_output=True)
             self.assertEqual(result.stderr, "")
             return result.returncode == 0
 
-        self.assertFalse(process_present(render_process_present_by_ucomm("wcifsnd"), ps_lines=["Z    wcifsnd         (wcifsnd)"]))
-        self.assertTrue(process_present(render_process_present_by_ucomm("wcifsnd"), ps_lines=["S    wcifsnd         wcifsnd"]))
+        self.assertFalse(process_present(render_process_present_by_ucomm("wcifsnd"), rows=["9 Z wcifsnd (wcifsnd)"]))
+        self.assertTrue(process_present(render_process_present_by_ucomm("wcifsnd"), rows=["9 S wcifsnd wcifsnd"]))
 
     def test_render_process_present_rejects_generic_full_substring_matches(self) -> None:
         with self.assertRaises(ValueError):
             render_remote_action(StopProcessAction("smbd;rm"))
 
     def test_render_stop_process_action_waits_for_exit(self) -> None:
-        command = render_remote_action(StopProcessAction("mdns"))
-        self.assertIn("/usr/bin/pkill '^mdns$' >/dev/null 2>&1 || true;", command)
-        self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
-        self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
-        self.assertIn('if [ \"$2\" = mdns ]; then found=1; break; fi;', command)
-        self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
-        self.assertIn("/usr/bin/pkill -9 '^mdns$' >/dev/null 2>&1 || true;", command)
+        # TERM first, KILL only for a process that outlives it, and a failure
+        # only for one that outlives both. Zombies and other names are gone.
+        for survives, signals, stopped in (
+            ((), [["-TERM", "9"]], True),
+            (("TERM",), [["-TERM", "9"], ["-KILL", "9"]], True),
+            (("TERM", "KILL"), [["-TERM", "9"], ["-KILL", "9"]], False),
+        ):
+            with self.subTest(survives=survives), tempfile.TemporaryDirectory() as tmp:
+                fake = FakePs(Path(tmp), [
+                    process("9 S mdns /mnt/Flash/mdns", survives=survives),
+                    process("10 Z mdns (mdns)", survives=("TERM", "KILL")),
+                    process("11 S mdnsx /x", survives=("TERM", "KILL")),
+                ])
+                command = fake.install(render_remote_action(StopProcessAction("mdns"))).replace("sleep 1", ":")
+                result = subprocess.run(["/bin/sh", "-c", command], check=False, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, stopped, result.stderr)
+                self.assertEqual([signal for signal in fake.signals if signal[1] == "9"], signals)
+                self.assertEqual(fake.command_reads(), [])
+                if not stopped:
+                    self.assertEqual(result.stderr, "process mdns did not stop\n")
 
     def test_render_stop_process_action_kills_and_fails_if_still_running(self) -> None:
         command = render_remote_action(StopProcessAction("smbd"))

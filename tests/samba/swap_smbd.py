@@ -25,24 +25,16 @@ import shlex
 import sys
 import time
 
+from tests.samba import device_processes
+
 RAM_SMBD = "/mnt/Memory/samba4/sbin/smbd"
 SWAP_DIR = ".tc-swap-smbd"
 
 
 def smbd_parent(ps_output: str) -> int:
-    """The pid of the smbd the manager runs (its direct child)."""
-    rows = []
-    for line in ps_output.splitlines():
-        fields = line.split(None, 2)
-        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
-            rows.append((int(fields[0]), int(fields[1]), fields[2]))
-    managers = [pid for pid, _, args in rows if args.startswith("service: role=manager")]
-    if len(managers) != 1:
-        raise RuntimeError(f"expected one manager, found {len(managers)}")
-    parents = [pid for pid, ppid, args in rows if ppid == managers[0] and "smbd" in args.split()[0]]
-    if len(parents) != 1:
-        raise RuntimeError(f"expected one smbd under the manager, found {len(parents)}")
-    return parents[0]
+    """The pid of the smbd the manager runs (its direct child), from
+    device_processes.COMMAND output."""
+    return device_processes.samba_parent(device_processes.parse(ps_output)).pid
 
 
 def swap_commands(disk: str) -> str:
@@ -68,12 +60,12 @@ class Swapper:
         return hashlib.sha256(self.device.sh_bytes(f"cat {RAM_SMBD}")).hexdigest()
 
     def restart(self) -> None:
-        old = smbd_parent(self.device.sh("ps -axo pid,ppid,args"))
+        old = smbd_parent(self.device.sh(device_processes.COMMAND))
         self.device.sh(f"kill {old}")
         for _ in range(60):
             self.sleep(1)
             try:
-                if smbd_parent(self.device.sh("ps -axo pid,ppid,args")) != old:
+                if smbd_parent(self.device.sh(device_processes.COMMAND)) != old:
                     return
             except RuntimeError:
                 continue

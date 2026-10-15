@@ -8,6 +8,7 @@ import json
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -39,8 +40,12 @@ def fake_tools(tmp_path, scenario):
     alive.write_text(json.dumps(rows or []))
     ps = tmp_path / 'ps.py'
     ps.write_text(f'''import json, sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+from tests.device_ps import answer, process
 if {rows is None!r}: sys.exit(1)
-print('\\n'.join(json.load(open({str(alive)!r}))))
+out, status, _vanished = answer([process(row) for row in json.load(open({str(alive)!r}))], sys.argv[1:])
+sys.stdout.write(out)
+sys.exit(status)
 ''')
     kill = tmp_path / 'kill.py'
     kill.write_text(f'''import json, sys
@@ -51,7 +56,7 @@ if signal in {dies_on!r}.get(pid, []):
     json.dump(rows, open({str(alive)!r}, 'w'))
 ''')
     script = render_stop_idle_jobs(attempts=2).replace(
-        '/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', shlex.join([sys.executable, str(ps)]),
+        '/bin/ps', shlex.join([sys.executable, str(ps)]),
     ).replace('/bin/kill', shlex.join([sys.executable, str(kill)])).replace('sleep 1', ':')
     return script, signals
 

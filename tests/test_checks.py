@@ -2770,6 +2770,7 @@ class CheckTests(unittest.TestCase):
         file_locks: object = "",
         disk_file_locks: object = "",
         kern_limits: object = "",
+        process_table: tuple[str, str] = ("", ""),
     ):
         debug_fields: dict[str, object] = {}
         snapshot_mock = mock.Mock(side_effect=snapshot) if isinstance(snapshot, Exception) else mock.Mock(return_value=snapshot)
@@ -2797,6 +2798,9 @@ class CheckTests(unittest.TestCase):
                 debug_fields=debug_fields,
                 extra_patches={
                     "timecapsulesmb.checks.doctor_steps.read_process_snapshot_conn": snapshot_mock,
+                    "timecapsulesmb.checks.doctor_steps.read_uninterruptible_processes_conn": mock.Mock(
+                        return_value=process_table
+                    ),
                     "timecapsulesmb.checks.doctor_steps.read_file_locks_conn": locks_mock,
                     "timecapsulesmb.checks.doctor_steps.read_kern_limits_conn": kern_mock,
                     "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
@@ -3038,6 +3042,54 @@ class CheckTests(unittest.TestCase):
         )
         self.assertIn("SshCommandTimeout", run.debug_fields["remote_process_snapshot_error"])
         self.assertNotIn("remote_process_snapshot", run.debug_fields)
+        self.assertEqual(run.debug_fields["remote_process_table"], "(unavailable)")
+        self.assertEqual(warnings[0].details, {})
+
+    def test_run_doctor_checks_names_what_a_timed_out_snapshot_waited_for(self) -> None:
+        # The table without command lines never waits, and shows the
+        # processes asleep in the kernel that the listing may have waited for.
+        table = "  812   700 D    vmmapbsy ps\n  700     1 D    biowait  service\n"
+        asleep = "ps (pid 812) on vmmapbsy, service (pid 700) on biowait"
+        run = self.run_doctor_with_process_snapshot(
+            SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+            smb_listing=self.connection_shaped_smb_failure(),
+            process_table=(table, asleep),
+        )
+
+        warnings = [result for result in run.results if "listing the device's processes timed out" in result.message]
+        self.assertEqual(len(warnings), 1)
+        # The warning keeps one text; the sleepers ride in its details.
+        self.assertNotIn("asleep", warnings[0].message)
+        self.assertEqual(warnings[0].details, {"asleep_in_kernel": asleep})
+        self.assertEqual(run.debug_fields["remote_process_table"], table.rstrip())
+
+    def test_doctor_names_what_a_timed_out_mdns_process_listing_waited_for(self) -> None:
+        table = "  812   700 D    vmmapbsy ps\n"
+        asleep = "ps (pid 812) on vmmapbsy"
+        detail = "mDNS process table probe timed out after 30s"
+        for step, expected_info, expected_table in (
+            (ProbeStepResult("mdns_process_table_probe", "timeout", detail, stdout=table, asleep_in_kernel=asleep),
+             [("INFO", f"processes asleep in the kernel: {asleep}")], table.rstrip()),
+            # The follow-up read failed too: nothing to name.
+            (ProbeStepResult("mdns_process_table_probe", "timeout", detail), [], None),
+        ):
+            with self.subTest(asleep=step.asleep_in_kernel):
+                debug_fields: dict[str, object] = {}
+                probe = ReadinessProbeResult(ready=False, detail=detail, steps=(step,))
+                with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep"):
+                    run = self.run_doctor_with_mocks(
+                        ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                        skip_smb=True,
+                        debug_fields=debug_fields,
+                        extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mock.Mock(return_value=probe)},
+                    )
+                self.assertTrue(any(result.status == "FAIL" and result.message == detail for result in run.results))
+                self.assertEqual(
+                    [(result.status, result.message) for result in run.results
+                     if str(result.message).startswith("processes asleep in the kernel")],
+                    expected_info,
+                )
+                self.assertEqual(debug_fields.get("mdns_process_table"), expected_table)
 
     def test_run_doctor_checks_keeps_normal_flow_when_snapshot_fails_without_timeout(self) -> None:
         run = self.run_doctor_with_process_snapshot(

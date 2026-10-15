@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 import timecapsulesmb.device.probe as probe
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.processes import UNREADABLE_COMMAND
 from timecapsulesmb.device.probe import (
     SshAccessStatus,
     flash_runtime_config_present_conn,
@@ -147,7 +148,7 @@ class ProbeTests(unittest.TestCase):
 
     @staticmethod
     def _manager_age_output(*rows: str, now_ms: str = "60000") -> str:
-        # The probe's output: each ps row (pid ppid stat etime ucomm command,
+        # The probe's output: each ps row (pid ppid stat time ucomm command,
         # as NetBSD 4 and 6 print them) behind ps=, then the clock reading.
         return "".join(f"ps={row}\n" for row in rows) + f"now_ms={now_ms}\n"
 
@@ -167,7 +168,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual((result.started_monotonic_s, result.now_monotonic_ms), (19, 60999))
         args, kwargs = run_ssh_mock.call_args
         self.assertEqual(args[1], probe.MANAGER_STARTUP_AGE_COMMAND)
-        self.assertTrue(args[1].startswith(probe.MANAGER_PS_COMMAND))
+        self.assertTrue(args[1].startswith(probe.PS_CAPTURE_SSH_COMMAND))
         self.assertIn('"${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}" --print-monotonic-ms', args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
@@ -335,7 +336,7 @@ class ProbeTests(unittest.TestCase):
                 proc = subprocess.CompletedProcess(args=["ssh"], returncode=returncode, stdout="".join(f"{row}\n" for row in rows))
                 with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
                     self.assertEqual(probe.manager_reports_payload_missing(connection), expected)
-                self.assertEqual(run_ssh_mock.call_args.args[1], probe.MANAGER_PS_COMMAND)
+                self.assertEqual(run_ssh_mock.call_args.args[1], probe.PS_CAPTURE_SSH_COMMAND)
                 self.assertFalse(run_ssh_mock.call_args.kwargs["check"])
 
     def test_manager_reports_payload_missing_is_false_when_ps_times_out(self) -> None:
@@ -437,6 +438,20 @@ class ProbeTests(unittest.TestCase):
 
         self.assertIsNone(result.manager_started_seconds_ago)
         self.assertEqual(result.detail, "manager is not running")
+
+    def test_probe_manager_startup_age_conn_reports_a_manager_it_could_not_identify(self) -> None:
+        # A service process whose command line was not read may be the
+        # manager: no age, and not "not running" either.
+        unreadable = f"  250     1 D          0:41 service       {UNREADABLE_COMMAND}"
+        result, _ = self._probe_manager_age(self._manager_age_output(*self._MANAGER_PEERS, unreadable))
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertEqual(result.detail, probe.MANAGER_UNREADABLE)
+
+        # Beside a manager that was read, it is some other service process.
+        result, _ = self._probe_manager_age(self._manager_age_output(
+            unreadable, "  251     1 Ss         0:41 service       service: role=manager started=19",
+        ))
+        self.assertEqual(result.manager_started_seconds_ago, 41.0)
 
     def test_probe_manager_startup_age_conn_ignores_zombie_and_lookalike_managers(self) -> None:
         result, _ = self._probe_manager_age(self._manager_age_output(

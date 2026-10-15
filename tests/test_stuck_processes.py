@@ -133,3 +133,76 @@ class StuckProcessesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListedWithoutCommandLinesTests(unittest.TestCase):
+    """The snapshot reads command lines only for service and diskd processes."""
+
+    def snapshot(self, processes: list[dict[str, object]]) -> tuple[str, list[str]]:
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        from tests.device_ps import FakePs
+        from timecapsulesmb.device.processes import PROCESS_SNAPSHOT_COMMAND
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakePs(Path(tmp), processes)
+            result = subprocess.run(
+                fake.install(PROCESS_SNAPSHOT_COMMAND).replace("sleep 1", ":"), shell=True, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout, fake.command_reads()
+
+    def test_finds_stuck_processes_and_the_manager_title_without_reading_other_command_lines(self) -> None:
+        from tests.device_ps import process
+        from timecapsulesmb.device.processes import acpd_stuck_children, smbd_lock_waits
+
+        output, reads = self.snapshot([
+            process("146 S service service: role=manager started=3 stuck=900:smbd:needbuf:300,+2", ppid="1", pgid="2"),
+            process("3166 D smbd /mnt/Memory/samba4/sbin/smbd -F", ppid="457", sl="127", wchan="biowait"),
+            process("3167 I smbd /mnt/Memory/samba4/sbin/smbd -F", ppid="457", sl="40", wchan="lockf"),
+            process("200 S ACPd /usr/sbin/ACPd", ppid="1"),
+            process("201 S ACPd /usr/sbin/ACPd", ppid="200", wchan="nanoslp"),
+            process("559 S diskd /sbin/diskd -i lo0 -d local.", ppid="1"),
+        ])
+
+        self.assertEqual(reads, ["146", "559"])
+        self.assertEqual(stuck_processes(output), [
+            StuckProcess(900, "smbd", "needbuf", 300),
+            StuckProcess(3166, "smbd", "biowait", 127, capped=True),
+        ])
+        self.assertEqual(manager_unnamed_stuck_count(output), 2)
+        self.assertEqual(smbd_lock_waits(output, 30), [3167])
+        self.assertEqual(acpd_stuck_children(output), [201])
+
+    def test_a_manager_asleep_in_the_kernel_is_kept_unread_and_reported_when_stuck(self) -> None:
+        from tests.device_ps import process
+
+        output, reads = self.snapshot([
+            process("146 D service service: role=manager", ppid="1", sl="127", wchan="vmmapbsy", stat_later="D"),
+        ])
+
+        self.assertEqual(reads, [])
+        self.assertEqual(stuck_processes(output), [StuckProcess(146, "service", "vmmapbsy", 127, capped=True)])
+        self.assertEqual(manager_unnamed_stuck_count(output), 0)
+
+
+class UnreadableServiceTests(unittest.TestCase):
+    def test_lists_live_service_processes_whose_command_lines_were_not_read(self) -> None:
+        from timecapsulesmb.device.processes import UNREADABLE_COMMAND, service_role_lines, service_unreadable
+
+        rows = "\n".join([
+            f"  10 1 D 0:00 service {UNREADABLE_COMMAND}",
+            f"  11 1 Z 0:00 service {UNREADABLE_COMMAND}",
+            f"  12 1 D 0:00 smbd {UNREADABLE_COMMAND}",
+            "  13 1 S 0:00 service service: role=manager",
+            "  14 1 S 0:00 service (service)",
+            "  15 1 S 0:00 service",
+        ])
+
+        self.assertTrue(service_unreadable(rows))
+        # A zombie, another program, or a command line that was read: none.
+        self.assertFalse(service_unreadable("\n".join(rows.splitlines()[1:])))
+        # An unread row holds no role.
+        self.assertEqual([line.split()[0] for line in service_role_lines(rows, "manager")], ["13"])

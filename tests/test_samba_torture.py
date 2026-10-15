@@ -133,11 +133,10 @@ class RunTest(unittest.TestCase):
 
 
 
-PS_HEAD = "  PID  PPID      UTIME COMMAND\n"
-
-
 def ps(*rows: tuple[int, int, str, str]) -> str:
-    return PS_HEAD + "".join(f"{pid:5d} {ppid:5d} {utime:>10} {command}\n" for pid, ppid, utime, command in rows)
+    """PS_COMMAND output: pid, ppid, user CPU and ucomm, the program's name."""
+    return "".join(f"{pid:5d} {ppid:5d} {utime:>10} {command.split()[0].rsplit('/', 1)[-1]}\n"
+                   for pid, ppid, utime, command in rows)
 
 
 class StuckChildTest(unittest.TestCase):
@@ -151,7 +150,9 @@ class StuckChildTest(unittest.TestCase):
     def test_children_are_smbd_processes_of_an_smbd_parent(self) -> None:
         text = ps((132, 1, "0.5", "service: role=manager"), (21323, 132, "1.3", self.SMBD),
                   (22862, 21323, "0:44:17.45", self.SMBD), (25000, 21323, "0.1", self.SMBD),
-                  (26000, 132, "0.2", "/sbin/diskd -i lo0"), (27000, 25000, "0.0", "sh -c ps"))
+                  (26000, 132, "0.2", "/sbin/diskd -i lo0"), (27000, 25000, "0.0", "sh -c ps"),
+                  # An exited child: ps prints "-" for a zombie's CPU time.
+                  (28000, 21323, "-", self.SMBD))
         self.assertEqual(smbd_children(text), {22862: 2657.45, 25000: 0.1})
 
     def test_a_child_that_keeps_computing_is_stuck(self) -> None:

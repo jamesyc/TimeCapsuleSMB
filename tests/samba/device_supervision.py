@@ -20,12 +20,12 @@ from smbprotocol.open import Open, ImpersonationLevel, FilePipePrinterAccessMask
 from smbprotocol.session import Session
 from smbprotocol.tree import TreeConnect
 
+from tests.samba import device_processes
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
 
 CONF = "/mnt/Memory/samba4/etc/smb.conf"
-PS = "/bin/ps axww -o pid= -o ppid= -o pgid= -o stat= -o ucomm= -o command="
 
 
 class Device:
@@ -39,12 +39,8 @@ class Device:
         return run_ssh(self.ssh, text, timeout=30).stdout.replace("\r\n", "\n")
 
     def processes(self):
-        rows = []
-        for line in self.command(PS).splitlines():
-            fields = line.split(None, 5)
-            if len(fields) == 6 and fields[0].isdigit() and not fields[3].startswith("Z"):
-                rows.append(dict(pid=int(fields[0]), parent=int(fields[1]), group=int(fields[2]), name=fields[4], args=fields[5]))
-        return rows
+        return [dict(pid=row.pid, parent=row.parent, group=row.group, name=row.name, args=row.args)
+                for row in device_processes.parse(self.command(device_processes.COMMAND))]
 
     def role(self, name, rows=None):
         rows = self.processes() if rows is None else rows

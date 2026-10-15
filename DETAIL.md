@@ -746,6 +746,37 @@ shell cadence and function-stubbing tests. Patched Samba tests separately cover
 reload delivery, volume replacement, descriptor revocation and asynchronous
 teardown with another tree still active.
 
+### Reading the process table
+
+On both kernels, reading another process's command line (`ps`'s `command`
+column, `KERN_PROC_ARGS`) goes through `uvm_io()` and `uvm_map_extract()`,
+which take the target process's map lock exclusively. A process asleep in
+`fork()` (`uvmspace_fork()` allocates with the map locked) or `msync()` holds
+that lock for as long as the disk keeps it waiting, so `ps axww -o command=`
+stalls behind one such process however many others it lists. The table itself
+(`KERN_PROC2`, `ps ax` without a command column) never waits.
+
+The manager reads the table alone ([proctable.h](build/native/service/proctable.h))
+and reads argv only in jobs. The host's device scripts do the same through
+`render_ps_rows` (`device/processes.py`): one `ps ax` listing without command
+lines, then `ps -ww -o ucomm= -o command= -p PID` (NetBSD 4's `ps -p` takes one
+PID) for each process whose role depends on its argv: `service` titles, `sh`
+launchers, `diskd`'s `-i lo0`, rsync's `--daemon`, the migrator's phase. A row
+in state `D` is looked at once more a second later; if it is still `D`, or ps
+cannot read it, the row ends in `(unreadable)`. A process gone since the listing
+is left out. Callers treat an unreadable process as possibly theirs, never as
+absent: the stop scripts wait for it but never signal it, the idle-job guard
+waits for it, doctor's manager, discovery and rsync checks say it could not be
+identified (and retry it), and a migrator is still a migration. When a listing
+times out anyway, doctor and deploy telemetry read the table alone and name the
+processes asleep in the kernel.
+
+This narrows the stall but does not close it: the second look and the read are
+separate commands, so a process can go to sleep holding its map lock between
+them, and the read then waits for it. `sh` is among the selected names and
+forks often, so a deploy's stop script can still meet one. The SSH timeout of
+each caller bounds that wait.
+
 ## Optional rsync Daemon
 
 Deploy always installs the device-family rsync binary and its generated daemon configuration in the selected HDD payload:

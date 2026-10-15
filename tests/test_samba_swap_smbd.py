@@ -6,14 +6,17 @@ import subprocess
 import unittest
 from unittest import mock
 
+from tests.samba import device_processes
 from tests.samba.links_device import Device, Remote, payload_disk
 from tests.samba.swap_smbd import RAM_SMBD, Swapper, restore_commands, smbd_parent, swap_commands
 
-PS = """  PID  PPID ARGS
-  276     1 service: role=manager
-  301   276 /mnt/Memory/samba4/sbin/smbd -F --no-process-group -s /mnt/Memory/samba4/etc/smb.conf
-  305   301 /mnt/Memory/samba4/sbin/smbd -F --no-process-group -s /mnt/Memory/samba4/etc/smb.conf
-  400   276 service: role=discovery
+# device_processes.COMMAND output: pid ppid pgid stat ucomm, then the command
+# line of service and smbd processes.
+PS = """  276     1     2 S    service service: role=manager
+  301   276   301 S    smbd    /mnt/Memory/samba4/sbin/smbd -F --no-process-group -s /mnt/Memory/samba4/etc/smb.conf
+  305   301   301 D    smbd    (unreadable)
+  400   276   400 S    service service: role=discovery
+  371     1   371 S    mDNSResponder
 """
 
 # The runtime's smb.conf on a device with an internal disk (dk2, holding the
@@ -44,9 +47,9 @@ class ParseTest(unittest.TestCase):
 
     def test_no_manager_or_no_smbd(self) -> None:
         with self.assertRaises(RuntimeError):
-            smbd_parent("  1 0 init\n")
+            smbd_parent("  1 0 1 Is init\n")
         with self.assertRaises(RuntimeError):
-            smbd_parent("  276 1 service: role=manager\n")
+            smbd_parent("  276 1 2 S service service: role=manager\n")
 
     def test_commands(self) -> None:
         self.assertIn(f"ln -s /Volumes/dk2/.tc-swap-smbd/smbd {RAM_SMBD}", swap_commands("/Volumes/dk2"))
@@ -69,8 +72,8 @@ class FakeDevice:
 
     def sh(self, command: str) -> str:
         self.commands.append(command)
-        if command.startswith("ps "):
-            return f"276 1 service: role=manager\n{self.pid} 276 {RAM_SMBD} -F\n"
+        if command == device_processes.COMMAND:
+            return f"276 1 2 S service service: role=manager\n{self.pid} 276 {self.pid} S smbd {RAM_SMBD} -F\n"
         if command.startswith("kill "):
             assert command == f"kill {self.pid}"
             self.pid += 10

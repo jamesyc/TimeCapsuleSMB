@@ -4,8 +4,125 @@ import shlex
 from dataclasses import dataclass
 
 
-PS_TEMP_COMMAND = "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null"
-PS_CAPTURE_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= -o command= 2>/dev/null || true"
+# Reading another process's command line (ps's command column, the kernel's
+# KERN_PROC_ARGS) copies it out of that process's memory under its map lock.
+# A process asleep in fork() or msync() holds that lock while the disk keeps it
+# waiting, and a `ps ax -o command=` listing then waits for it too, however
+# many other processes it lists. The process table itself comes from kernel
+# structures (KERN_PROC2) and never waits. So, like the manager
+# (build/native/service/proctable.h), every listing here reads the table alone
+# and reads a command line only for the processes whose role depends on it.
+#
+# ps_rows prints this in place of a command line it did not read: the process
+# was in an uninterruptible sleep (state D) on two looks a second apart, or ps
+# could not read it. Callers that would act on the role treat the process as
+# possibly theirs and never as absent. The second look and the read are
+# separate commands, so this narrows the stall rather than closing it.
+UNREADABLE_COMMAND = "(unreadable)"
+_PS_ROWS_FUNCTION = r'''
+__NAME__() (
+    # One row per process: __COLUMNS__ ucomm, then the command line for the
+    # ucomms __SELECT__. Split at blanks whatever the caller's IFS, and
+    # never expand a command line's glob characters.
+    unset IFS
+    set -f
+    ps_list=$(/bin/ps ax __LISTING__ -o ucomm= 2>/dev/null) || exit 1
+    ps_waited=
+    while IFS= read -r ps_line; do
+        set -- $ps_line
+        if [ "$#" -le __STATE__ ]; then
+            [ -z "$ps_line" ] || printf '%s\n' "$ps_line"
+            continue
+        fi
+        ps_pid=$1
+        eval "ps_state=\${__STATE__} ps_comm=\${$#}"
+        case "$ps_comm" in
+            __SELECT__) ;;
+            *) printf '%s\n' "$ps_line"; continue ;;
+        esac
+        case "$ps_state" in
+            Z*) printf '%s\n' "$ps_line"; continue ;;
+            D*)
+                # Most uninterruptible sleeps end within milliseconds; one
+                # that lasts may hold the map lock, so look once more later.
+                if [ -z "$ps_waited" ]; then
+                    sleep 1
+                    ps_waited=1
+                fi
+                ps_state=$(/bin/ps -o stat= -p "$ps_pid" 2>/dev/null)
+                case "$ps_state" in
+                    "")
+                        /bin/kill -0 "$ps_pid" 2>/dev/null || continue
+                        printf '%s %s\n' "$ps_line" '__UNREADABLE__'
+                        continue ;;
+                    *D*)
+                        printf '%s %s\n' "$ps_line" '__UNREADABLE__'
+                        continue ;;
+                esac ;;
+        esac
+        # NetBSD 4's ps -p takes one PID. A process gone since the listing
+        # is left out; one that ran another program since is not this row's.
+        ps_read=$(/bin/ps -ww -o ucomm= -o command= -p "$ps_pid" 2>/dev/null)
+        ps_read=${ps_read#"${ps_read%%[! ]*}"}
+        ps_command='__UNREADABLE__'
+        if [ -z "$ps_read" ]; then
+            /bin/kill -0 "$ps_pid" 2>/dev/null || continue
+        else
+            case "$ps_read" in
+                "$ps_comm "*)
+                    ps_read=${ps_read#"$ps_comm"}
+                    ps_read=${ps_read#"${ps_read%%[! ]*}"}
+                    # ps shows "(ucomm)" when it cannot read the command line.
+                    case "$ps_read" in
+                        ""|"($ps_comm)") ;;
+                        *) ps_command=$ps_read ;;
+                    esac ;;
+            esac
+        fi
+        printf '%s %s\n' "$ps_line" "$ps_command"
+    done <<EOF_PS_ROWS
+$ps_list
+EOF_PS_ROWS
+)
+'''
+
+
+def render_ps_rows(name: str, columns: tuple[str, ...], select: tuple[str, ...]) -> str:
+    """A shell function NAME that prints the process table, one row per
+    process: COLUMNS (pid first, stat among them), ucomm, then the command
+    line for the processes whose ucomm matches a SELECT case pattern.
+
+    It runs in a subshell, so its set -f and variables stay its own, and fails
+    only when the listing itself fails.
+    """
+    return (
+        _PS_ROWS_FUNCTION.replace("__NAME__", name)
+        .replace("__COLUMNS__", " ".join(columns))
+        .replace("__LISTING__", " ".join(f"-o {column}=" for column in columns))
+        .replace("__STATE__", str(columns.index("stat") + 1))
+        .replace("__SELECT__", "|".join(select))
+        .replace("__UNREADABLE__", UNREADABLE_COMMAND)
+        .strip()
+    )
+
+
+def ps_rows_command(name: str, columns: tuple[str, ...], select: tuple[str, ...]) -> str:
+    """An SSH command printing render_ps_rows' rows; it fails when ps does."""
+    return f"/bin/sh -c {shlex.quote(render_ps_rows(name, columns, select) + chr(10) + name)}"
+
+
+def command_unreadable(argv: list[str]) -> bool:
+    """A ps_rows command line it did not read."""
+    return argv == [UNREADABLE_COMMAND]
+
+
+PS_CAPTURE_FUNCTION = render_ps_rows("capture_ps_out", ("pid", "ppid", "stat", "time"), ("service", "diskd"))
+PS_CAPTURE_COMMAND = PS_CAPTURE_FUNCTION + "\ncapture_ps_out || true"
+# The same listing as one SSH command. A listing that fails prints nothing.
+PS_CAPTURE_SSH_COMMAND = f"/bin/sh -c {shlex.quote(PS_CAPTURE_COMMAND)}"
+# The launchers and service processes the stop script and idle_jobs tell
+# apart by their command lines.
+MANAGED_PS_ROWS_FUNCTION = render_ps_rows("managed_ps_rows", ("pid", "stat"), ("sh", "service")) + "\n"
 
 
 def service_role_lines(ps_output: str, role: str) -> list[str]:
@@ -26,20 +143,53 @@ def service_role_lines(ps_output: str, role: str) -> list[str]:
     return rows
 
 
+def service_unreadable(ps_output: str) -> bool:
+    """A live service process whose command line ps_rows did not read, in the
+    layout service_role_lines reads: it may hold any role."""
+    for fields in (line.split() for line in ps_output.splitlines()):
+        if len(fields) == 6 and not fields[2].startswith("Z") and fields[4] == "service" \
+                and command_unreadable(fields[5:]):
+            return True
+    return False
+
+
 # The manager gives each child TC_CHILD_GRACE_MS (build/native/common/process.h)
 # to exit after SIGTERM, then sends SIGKILL, reaps it and only then exits itself.
 # Stopping it takes up to that grace plus the kill and reap. v3.1.1 waited about
 # 10 s and reported healthy managers as stuck; a rerun minutes later worked.
-# Twice the grace also covers a slow NetBSD 4 process scan on each pass.
+# Twice the grace also covers a slow NetBSD 4 process scan on each pass. The
+# budget counts passes, not seconds: a pass also waits a second whenever a
+# shell or service process is asleep in the kernel (ps_rows' second look),
+# so a stop can take twice as long, still well inside the deploy action's
+# 120 s SSH timeout (REMOTE_ACTION_TIMEOUT_SECONDS).
 MANAGER_CHILD_GRACE_SECONDS = 10
 SUPERVISOR_STOP_SECONDS = 2 * MANAGER_CHILD_GRACE_SECONDS
 # NetBSD ps reports the kernel wait channel: a Samba child blocked on disk I/O
 # is the usual reason a manager cannot finish stopping.
 STUCK_PROCESS_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o wchan= -o ucomm="
+# How the stop script names a service process it waited for in vain without
+# reading its command line: asleep in the kernel throughout, like a manager
+# that does not stop, and nearly always on a failing disk.
+UNREADABLE_SERVICE_STOP_MESSAGE = "process service did not show its command line"
 
-# ps reads the process table through sysctl, not from the disk, so this still
-# answers while processes are blocked on the data disk.
-PROCESS_SNAPSHOT_COMMAND = "/bin/ps axww -o pid= -o ppid= -o pgid= -o stat= -o sl= -o wchan= -o ucomm= -o command="
+
+def describe_uninterruptible(stuck_listing: str) -> str:
+    """The processes in an uninterruptible sleep (state D, kernel threads
+    aside) in STUCK_PROCESS_PS_COMMAND output, for a listing that timed out:
+    a ps among them waits for a map lock (see UNREADABLE_COMMAND)."""
+    found = []
+    for fields in (line.split(None, 4) for line in stuck_listing.splitlines()):
+        if len(fields) == 5 and fields[2].startswith("D") and "K" not in fields[2]:
+            found.append(f"{fields[4]} (pid {fields[0]}) on {fields[3]}")
+    return ", ".join(found)
+
+
+# Read before any check touches the data disk. Only the manager's title and
+# diskd's interface come from command lines, so a process held on the disk
+# cannot hold up the listing (see UNREADABLE_COMMAND).
+PROCESS_SNAPSHOT_COMMAND = ps_rows_command(
+    "process_snapshot", ("pid", "ppid", "pgid", "stat", "sl", "wchan"), ("service", "diskd")
+)
 # ps shows D for an uninterruptible sleep. The kernel counts a sleeping
 # thread's seconds asleep (l_slptime) and resets the count at every wake-up,
 # so a process doing slow disk I/O never reaches this; one that does has
@@ -178,12 +328,18 @@ def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = 
     # shutdown. Apple's daemons and unrelated `service` processes are not ours.
     # Supervisors get supervisor_seconds of one-second passes; workers and the
     # SIGKILL escalation of launcher shells keep the shorter attempts budget.
-    return r'''
+    return (MANAGED_PS_ROWS_FUNCTION + r'''
 set -f
 managed_processes() {
-    managed_ps=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command=) || return 1
+    managed_ps=$(managed_ps_rows) || return 1
     while read -r pid state comm command; do
         case "$state" in Z*|"") continue ;; esac
+        if [ "$command" = '__UNREADABLE__' ]; then
+            # It may be one of ours: wait for it in both scopes, but never
+            # signal a process that may be someone else's.
+            printf '%s unknown %s\n' "$pid" "$comm"
+            continue
+        fi
         if [ "$comm" = sh ]; then
             # Match argv, not text embedded in the SSH `sh -c` wrapper.
             set -- $command
@@ -247,7 +403,11 @@ for scope in supervisor worker; do
         if [ "$attempt" -gt "$limit" ]; then
             pids=
             while read -r pid kind label; do
-                echo "process $label did not stop; retry after its active work finishes" >&2
+                if [ "$kind" = unknown ]; then
+                    echo "process $label did not show its command line (pid $pid); retry after its active work finishes" >&2
+                else
+                    echo "process $label did not stop; retry after its active work finishes" >&2
+                fi
                 pids="$pids $pid"
             done <<EOF_BUSY
 $processes
@@ -258,7 +418,9 @@ EOF_BUSY
         # Signal the whole snapshot before waiting. Rescan each pass: a boot
         # script may have forked a manager after the preceding snapshot.
         while read -r pid kind label; do
-            if [ "$kind" = shell ] && [ "$attempt" -gt 0 ] && [ "$attempt" -ge __ATTEMPTS__ ]; then
+            if [ "$kind" = unknown ]; then
+                :
+            elif [ "$kind" = shell ] && [ "$attempt" -gt 0 ] && [ "$attempt" -ge __ATTEMPTS__ ]; then
                 /bin/kill -9 "$pid" 2>/dev/null || true
             else
                 # Native service/telemetry owners may be draining a debug
@@ -272,20 +434,29 @@ EOF_STOP
         attempt=$((attempt + 1))
     done
 done
-'''.replace("__ATTEMPTS__", str(attempts)).replace(
+''').replace("__ATTEMPTS__", str(attempts)).replace(
         "__SUPERVISOR_SECONDS__", str(supervisor_seconds)
-    ).replace("__STUCK_PS__", STUCK_PROCESS_PS_COMMAND).strip()
+    ).replace("__STUCK_PS__", STUCK_PROCESS_PS_COMMAND).replace("__UNREADABLE__", UNREADABLE_COMMAND).strip()
 
 
 # Metadata and diagnostic jobs that outlive the SSH session that started them:
 # the native migrator (ucomm truncated to 15 characters), shell migrations of
-# older releases, and telemetry/debug jobs. Prints "pid ucomm" for each.
+# older releases, and telemetry/debug jobs. Prints "pid ucomm" for each, and
+# "pid ucomm unreadable" for a shell or service process whose command line was
+# not read: it may be one, so it is waited for but never signalled.
 # device.migration_jobs matches the same migrators in Python; keep them in step.
-IDLE_JOBS_FUNCTION = r'''
-idle_jobs() {
-    jobs_ps=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command=) || return 1
+IDLE_JOBS_FUNCTION = MANAGED_PS_ROWS_FUNCTION + r'''
+idle_jobs() (
+    # A shell's arguments may hold glob patterns; never expand them.
+    set -f
+    jobs_ps=$(managed_ps_rows) || exit 1
     while read -r pid state comm rest; do
         case "$state" in Z*|"") continue ;; esac
+        case "$comm:$rest" in
+            'sh:__UNREADABLE__'|'service:__UNREADABLE__')
+                echo "$pid $comm unreadable"
+                continue ;;
+        esac
         busy=
         case "$comm" in
             telemetry|debug|heartbeat|tc-xattr-hfs-mi*|xattr-hfs-migra*) busy=1 ;;
@@ -307,8 +478,8 @@ idle_jobs() {
     done <<EOF
 $jobs_ps
 EOF
-}
-'''
+)
+'''.replace("__UNREADABLE__", UNREADABLE_COMMAND)
 
 
 def render_wait_for_idle_jobs(*, attempts: int = 5) -> str:
@@ -340,8 +511,12 @@ while :; do
     busy=$(idle_jobs) || exit 1
     [ -n "$busy" ] || exit 0
     if [ "$attempt" -gt __ATTEMPTS__ ]; then
-        while read -r pid comm; do
-            echo "job $comm (pid $pid) did not stop" >&2
+        while read -r pid comm unreadable; do
+            if [ -n "$unreadable" ]; then
+                echo "process $comm did not show its command line (pid $pid)" >&2
+            else
+                echo "job $comm (pid $pid) did not stop" >&2
+            fi
         done <<EOF_BUSY
 $busy
 EOF_BUSY
@@ -349,8 +524,8 @@ EOF_BUSY
     fi
     signal=TERM
     [ "$attempt" -lt __ATTEMPTS__ ] || signal=KILL
-    while read -r pid comm; do
-        /bin/kill -$signal "$pid" 2>/dev/null || true
+    while read -r pid comm unreadable; do
+        [ -n "$unreadable" ] || /bin/kill -$signal "$pid" 2>/dev/null || true
     done <<EOF_STOP
 $busy
 EOF_STOP
@@ -368,20 +543,14 @@ def _ucomm_pkill_pattern(name: str) -> str:
 
 
 def render_process_present_by_ucomm(name: str) -> str:
+    """Exits 0 while a live process has ucomm NAME, and when ps fails."""
     return (
-        "found=1; "
-        f"if {PS_TEMP_COMMAND}; then "
-        "found=0; "
-        "while IFS= read line; do "
-        '[ -n "$line" ] || continue; '
-        "set -- $line; "
-        '[ "$#" -ge 2 ] || continue; '
-        'case "$1" in Z*) continue ;; esac; '
-        f'if [ "$2" = {shlex.quote(name)} ]; then found=1; break; fi; '
-        "done </tmp/tcapsule-ps.$$; "
-        "rm -f /tmp/tcapsule-ps.$$; "
-        "fi; "
-        '[ \"$found\" -eq 1 ]'
+        "ps_out=$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null) || exit 0; "
+        "printf '%s\\n' \"$ps_out\" | { "
+        "while read -r state comm; do "
+        'case "$state" in Z*) continue ;; esac; '
+        f'[ "$comm" != {shlex.quote(name)} ] || exit 0; '
+        "done; exit 1; }"
     )
 
 
@@ -396,49 +565,27 @@ def render_wait_for_process_absent(present_command: str, *, attempts: int) -> st
     )
 
 
-def _render_pkill_wait_pkill9(
-    *,
-    term_pattern: str,
-    kill_pattern: str,
-    full: bool,
-    present_command: str,
-    failure_label: str,
-    attempts: int,
-) -> str:
-    term_flags = "-f " if full else ""
-    kill_flags = "-9 -f " if full else "-9 "
-    term_command = f"/usr/bin/pkill {term_flags}{shlex.quote(term_pattern)} >/dev/null 2>&1 || true"
-    kill_command = f"/usr/bin/pkill {kill_flags}{shlex.quote(kill_pattern)} >/dev/null 2>&1 || true"
+def render_pkill_wait_pkill9_by_ucomm(name: str, *, attempts: int = 5) -> str:
+    # pkill matches ucomm only: with -f it would read every process's
+    # command line (see UNREADABLE_COMMAND).
+    pattern = shlex.quote(_ucomm_pkill_pattern(name))
+    present_command = render_process_present_by_ucomm(name)
     wait_command = render_wait_for_process_absent(present_command, attempts=attempts)
     process_present = f"/bin/sh -c {shlex.quote(present_command)} >/dev/null 2>&1"
-    failure_message = shlex.quote(f"process {failure_label} did not stop")
+    failure_message = shlex.quote(f"process {name} did not stop")
     return (
-        f"{term_command}; "
+        f"/usr/bin/pkill {pattern} >/dev/null 2>&1 || true; "
         f"{wait_command}; "
         f"if {process_present}; then "
-        f"{kill_command}; {wait_command}; "
+        f"/usr/bin/pkill -9 {pattern} >/dev/null 2>&1 || true; {wait_command}; "
         "fi; "
         f"if {process_present}; then echo {failure_message} >&2; exit 1; fi"
     )
 
 
-def render_pkill_wait_pkill9_by_ucomm(name: str, *, attempts: int = 5) -> str:
-    pattern = _ucomm_pkill_pattern(name)
-    return _render_pkill_wait_pkill9(
-        term_pattern=pattern,
-        kill_pattern=pattern,
-        full=False,
-        present_command=render_process_present_by_ucomm(name),
-        failure_label=name,
-        attempts=attempts,
-    )
-
-
 PROBE_PROCESS_HELPERS = (
     r'''
-capture_ps_out() {
-    __PS_CAPTURE_COMMAND__
-}
+__PS_CAPTURE_FUNCTION__
 
 smbd_parent_process_present() {
     ps_out=$1
@@ -476,14 +623,22 @@ EOF
     return 1
 }
 
+# Sets role_unreadable to the PIDs of the service processes whose command
+# lines capture_ps_out did not read: any of them may hold the role.
 native_service_role_present() {
     role_ps=$1
     wanted_role=$2
+    role_unreadable=
     while IFS= read -r role_line; do
         set -- $role_line
-        [ "$#" -ge 7 ] || continue
+        [ "$#" -ge 6 ] || continue
         case "$3" in Z*) continue ;; esac
         [ "$5" = service ] || continue
+        if [ "$#" -eq 6 ] && [ "$6" = '__UNREADABLE__' ]; then
+            role_unreadable="$role_unreadable $1"
+            continue
+        fi
+        [ "$#" -ge 7 ] || continue
         if [ "$6" = 'service:' ] && [ "$7" = "role=$wanted_role" ]; then return 0; fi
         if [ "$6" = /mnt/Flash/service ] && [ "$7" = "$wanted_role" ]; then return 0; fi
     done <<EOF_ROLE
@@ -516,5 +671,6 @@ $ps_out
 EOF
 }
 '''
-    .replace("__PS_CAPTURE_COMMAND__", PS_CAPTURE_COMMAND)
+    .replace("__PS_CAPTURE_FUNCTION__", PS_CAPTURE_FUNCTION)
+    .replace("__UNREADABLE__", UNREADABLE_COMMAND)
 )

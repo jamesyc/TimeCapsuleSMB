@@ -63,6 +63,7 @@ import uuid
 from pathlib import Path
 
 from timecapsulesmb.core.config import parse_env_file
+from tests.samba import device_processes
 from tests.samba.links_device import Device, Results, mount, unmount
 
 TEST_DIR = "__tc_growth_test__"
@@ -283,9 +284,8 @@ def stream_resource(r: Results, device: Device, client: Client, total: int) -> N
 
 def smbd_parent_hup(device: Device) -> None:
     """Make the running smbd reread smb.conf."""
-    device.sh('M=$(ps axo pid,command | sed -n "s/^ *\\([0-9]*\\) service: role=manager.*/\\1/p"); '
-              'P=$(ps axo pid,ppid,command | sed -n "s/^ *\\([0-9]*\\) *$M \\/mnt\\/Memory\\/samba4\\/sbin\\/smbd -F.*/\\1/p"); '
-              'kill -HUP $P')
+    parent = device_processes.samba_parent(device_processes.parse(device.sh(device_processes.COMMAND)))
+    device.sh(f"kill -HUP {parent.pid}")
     time.sleep(3)
 
 

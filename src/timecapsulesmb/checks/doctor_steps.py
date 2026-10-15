@@ -105,8 +105,10 @@ from timecapsulesmb.device.probe import (
     FILE_LOCKS_RAM_TDBS,
     DeviceIpv4SubnetsProbeResult,
     DeviceNetworksProbeResult,
+    DISCOVERY_UNREADABLE,
     FLASH_RUNTIME_CONFIG,
     FOREIGN_WCIFSND_RUNNING,
+    MANAGER_UNREADABLE,
     MDNS_REGISTRATION_STATE_UNAVAILABLE,
     MDNS_REGISTRATIONS_DEGRADED,
     MDNS_REGISTRATIONS_STILL_STARTING,
@@ -143,6 +145,7 @@ from timecapsulesmb.device.probe import (
     read_file_locks_conn,
     read_kern_limits_conn,
     read_process_snapshot_conn,
+    read_uninterruptible_processes_conn,
     read_active_smb_conf_conn,
     runtime_ram_root_present_conn,
 )
@@ -202,10 +205,12 @@ NATIVE_NBNS_OFF = "off"
 NATIVE_NBNS_OFF_STATES = frozenset({"none", "disabled", "waiting"})
 TRANSIENT_SMBD_READINESS_FAILURES = {
     "managed smbd parent process is not running",
+    MANAGER_UNREADABLE,
     "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
 }
 TRANSIENT_MDNS_READINESS_FAILURES = {
     "discovery process is not running",
+    DISCOVERY_UNREADABLE,
     "discovery NBNS state is not available yet",
     NATIVE_NBNS_STILL_STARTING,
     FOREIGN_WCIFSND_RUNNING,
@@ -2249,14 +2254,19 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
     try:
         snapshot = read_process_snapshot_conn(target.connection)
     except SshCommandTimeout as e:
+        # The table alone never waits: it names a process the listing may
+        # have waited for, asleep in the kernel holding its memory map.
+        listing, asleep = read_uninterruptible_processes_conn(target.connection)
         if sink.debug_fields is not None:
             sink.debug_fields["remote_process_snapshot_error"] = f"{type(e).__name__}: {e}"
+            sink.debug_fields["remote_process_table"] = limit_remote_log_tail(listing.rstrip() or "(unavailable)")
         sink.add(
             CheckResult(
                 "WARN",
                 f"listing the device's processes timed out after {PROCESS_SNAPSHOT_TIMEOUT_SECONDS}s although "
                 "SSH login worked; the device may be running out of processes, so doctor does not retry SMB "
                 "and does not read logs from the data disk",
+                details={"asleep_in_kernel": asleep} if asleep else {},
             )
         )
         return ProcessSnapshotState(timed_out=True)
@@ -2868,7 +2878,7 @@ def _startup_pending_services(smbd: ReadinessProbeResult, mdns: ReadinessProbeRe
         for name, matches in (
             ("NetBIOS", lambda detail: "NBNS" in detail),
             ("Bonjour", lambda detail: "Bonjour" in detail),
-            ("discovery", lambda detail: detail == "discovery process is not running"),
+            ("discovery", lambda detail: detail in {"discovery process is not running", DISCOVERY_UNREADABLE}),
         ):
             if any(matches(detail) for detail in details):
                 names.append(name)
@@ -2984,6 +2994,16 @@ def _doctor_check_managed_mdns(
     )
     steps = getattr(mdns_probe, "steps", ())
     steps = steps if isinstance(steps, (list, tuple)) else ()
+    listing = next((step for step in steps if getattr(step, "id", None) == "mdns_process_table_probe"
+                    and getattr(step, "status", None) == "timeout"), None)
+    if listing is not None:
+        if sink.debug_fields is not None and listing.stdout:
+            sink.debug_fields["mdns_process_table"] = limit_remote_log_tail(listing.stdout.rstrip())
+        if listing.asleep_in_kernel:
+            # That FAIL comes from the probe's line text, which carries no
+            # details: the processes asleep in the kernel get a line of their own.
+            sink.add(CheckResult("INFO", f"processes asleep in the kernel: {listing.asleep_in_kernel}",
+                                 {"asleep_in_kernel": listing.asleep_in_kernel}))
 
     def passed(step_id: str) -> bool | None:
         step = next((step for step in steps if getattr(step, "id", None) == step_id), None)

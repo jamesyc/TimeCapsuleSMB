@@ -86,6 +86,7 @@ import uuid
 from pathlib import Path
 
 from timecapsulesmb.core.config import parse_env_file
+from tests.samba import device_processes
 from tests.samba.links_device import Device, Results, mount, unmount
 
 TEST_DIR = "__tc_durable_test__"
@@ -777,14 +778,10 @@ def _scavengers(device: Device, old: list[int], clock=time.monotonic, sleep=time
 
 def _smbd_children(device: Device) -> list[int]:
     """PIDs of the smbd parent's children, by ps (the devices lack pgrep)."""
-    rows = []
-    for line in device.sh("ps axww -o pid,ppid,command").splitlines()[1:]:
-        parts = line.split(None, 2)
-        if len(parts) == 3 and parts[0].isdigit():
-            rows.append((int(parts[0]), int(parts[1]), parts[2]))
-    managers = {pid for pid, _, cmd in rows if cmd.startswith("service: role=manager")}
-    parents = {pid for pid, ppid, cmd in rows if ppid in managers and "/sbin/smbd" in cmd}
-    return [pid for pid, ppid, _ in rows if ppid in parents]
+    rows = device_processes.parse(device.sh(device_processes.COMMAND))
+    managers = {row.pid for row in rows if row.name == "service" and row.args.startswith("service: role=manager")}
+    parents = {row.pid for row in rows if row.parent in managers and row.name == "smbd"}
+    return [row.pid for row in rows if row.parent in parents]
 
 
 def main() -> int:

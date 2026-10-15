@@ -11,6 +11,7 @@ from unittest import mock
 
 import pytest
 
+from tests.device_ps import FakePs, process
 from timecapsulesmb.device.probe import (
     ReadinessProbeResult,
     probe_managed_rsync_conn,
@@ -39,7 +40,6 @@ def device(tmp_path):
     (ram / 'rsync').write_text('#!/bin/sh\n')
     (ram / 'rsync').chmod(0o755)
     (ram / 'rsyncd.conf').write_text('[shareroot]\n')
-    ps = tmp_path / 'ps.txt'
     bound = tmp_path / 'bound.txt'
     fstat_log = tmp_path / 'fstat.log'
     fstat = tmp_path / 'fstat.py'
@@ -56,7 +56,8 @@ def device(tmp_path):
     (cwd / '--daemon').write_text('')
 
     def run(rows, *, enabled, bound_pids=(), probe=probe_managed_rsync_conn):
-        ps.write_text(''.join(row + '\n' for row in rows))
+        """rows: "pid stat ucomm command" strings, or tests.device_ps processes."""
+        fake = FakePs(tmp_path, [process(row) if isinstance(row, str) else row for row in rows])
         bound.write_text(' '.join(bound_pids))
         fstat_log.write_text('')
         config = tmp_path / 'tcapsulesmb.conf'
@@ -65,7 +66,7 @@ def device(tmp_path):
         def run_ssh(connection, command, **kwargs):
             argv = shlex.split(command)
             assert argv[:2] == ['/bin/sh', '-c']
-            script = argv[2].replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', f'cat {ps}')
+            script = fake.install(argv[2])
             script = script.replace('/usr/bin/fstat', f'{sys.executable} {fstat}')
             env = {'PATH': '/usr/bin:/bin', 'RUNTIME_CONFIG_FILE': str(config),
                    'RUNTIME_RSYNC_BIN': str(ram / 'rsync'), 'RUNTIME_RSYNC_CONF': str(ram / 'rsyncd.conf')}
@@ -141,3 +142,27 @@ def test_runtime_readiness_is_not_held_back_by_a_client_while_rsync_is_disabled(
                             connection, smbd_mdns_stagger_seconds=0, mdns_settle_seconds=0))
     assert result.ready, result.detail
     assert 'SKIP:rsync daemon is disabled and not running' in [step.line for step in result.steps]
+
+
+def test_enabled_rsync_counts_a_daemon_it_could_not_read_as_not_running(device):
+    # The daemon waits for connections, not on the disk, so one asleep in the
+    # kernel is brief: doctor retries "not running" until it shows.
+    run = device
+    result, fstat = run([process(DAEMON, stat='D', stat_later='D'), CLIENT], enabled=True, bound_pids=('40',))
+    assert not result.ready
+    assert 'FAIL:managed rsync process is not running' in result.lines
+    assert fstat == []
+
+
+def test_an_unreadable_transfer_does_not_hide_the_daemon(device):
+    run = device
+    result, fstat = run([DAEMON, process(CHILD, argv='unreadable')], enabled=True, bound_pids=('40',))
+    assert result.ready, result.lines
+    assert fstat == ['40']
+
+
+def test_disabled_rsync_ignores_an_unreadable_rsync(device):
+    # It may be a user's transfer; only a daemon known to be one fails.
+    run = device
+    result, _ = run([process(CLIENT, argv='unreadable')], enabled=False)
+    assert result.ready, result.lines

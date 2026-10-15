@@ -3,10 +3,13 @@ the device, reading how far it got, and deploy waiting for it."""
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
+from tests.device_ps import FakePs, process
 from timecapsulesmb.app.events import AppClient, ClientDisconnected
 from timecapsulesmb.device.migration_jobs import (
     JOBS_PS_COMMAND,
@@ -121,6 +124,38 @@ class MigrationLogTests(unittest.TestCase):
 
 def completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], returncode, stdout=stdout)
+
+
+class UnreadableCommandLineTests(unittest.TestCase):
+    def test_a_migrator_without_its_command_line_is_still_a_migration(self) -> None:
+        # Its name alone says what it is; NetBSD 4's ps, or a migrator waiting
+        # on the disk, leaves the phase and log unknown.
+        self.assertEqual(
+            running_migrations("  412 D 1:02.50 tc-xattr-hfs-mi (unreadable)"),
+            (RunningMigration(412, "unknown", None, "1:02.50"),),
+        )
+
+    def test_a_shell_without_its_command_line_is_not_counted(self) -> None:
+        # Deploy's idle-job guard waits for such a shell instead.
+        self.assertEqual(running_migrations("  20 D 0:00.02 sh (unreadable)"), ())
+
+    def test_jobs_listing_reads_command_lines_of_migrators_and_shells_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakePs(Path(tmp), [
+                process(f"412 S tc-xattr-hfs-mi /mnt/Memory/tc-xattr-hfs-migrate --log {LOG} multi copy", time="1:02.50"),
+                process("20 S sh /bin/sh /mnt/Flash/migrate.sh"),
+                process("30 S smbd /mnt/Memory/samba4/sbin/smbd -F"),
+                process("31 D sh /bin/sh /mnt/Flash/xattr-migrate-wrapper.sh", stat_later="D"),
+            ])
+            output = subprocess.run(
+                fake.install(JOBS_PS_COMMAND).replace("sleep 1", ":"), shell=True, capture_output=True, text=True,
+            ).stdout
+            reads = fake.command_reads()
+        self.assertEqual(running_migrations(output), (
+            RunningMigration(412, "copy", LOG, "1:02.50"),
+            RunningMigration(20, "legacy", None, "0:00.00"),
+        ))
+        self.assertEqual(reads, ["412", "20"])
 
 
 class ProbeTests(unittest.TestCase):

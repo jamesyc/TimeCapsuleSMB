@@ -17,7 +17,13 @@ from timecapsulesmb.device.processes import (
     PROBE_PROCESS_HELPERS,
     PROCESS_SNAPSHOT_COMMAND,
     PS_CAPTURE_COMMAND,
+    PS_CAPTURE_SSH_COMMAND,
+    STUCK_PROCESS_PS_COMMAND,
+    command_unreadable,
+    describe_uninterruptible,
+    render_ps_rows,
     service_role_lines,
+    service_unreadable,
 )
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations import acp
@@ -53,9 +59,20 @@ REMOTE_LOG_TAIL_LINES = 80
 
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 30
-# ps answers in under a second on both kernels, even with processes stuck on
-# the disk; taking much longer means the device is short of processes.
+# The listing answers in a second or two on both kernels, even with processes
+# stuck on the disk (a second more when a service or diskd is asleep in the
+# kernel); taking much longer means the device is short of processes, or one
+# of those went to sleep holding its map lock between two reads.
 PROCESS_SNAPSHOT_TIMEOUT_SECONDS = 15
+# A listing without command lines, read after one that timed out.
+UNINTERRUPTIBLE_LISTING_TIMEOUT_SECONDS = 15
+# A process whose command line a listing did not read (UNREADABLE_COMMAND)
+# may hold the role a check looks for: the check says so, never that the role
+# is missing. Such a process is nearly always waiting on the disk briefly.
+_UNREADABLE_NOTE = "did not show its command line (it may be waiting on the disk)"
+MANAGER_UNREADABLE = f"manager could not be identified: a service process {_UNREADABLE_NOTE}"
+DISCOVERY_UNREADABLE = f"discovery process could not be identified: a service process {_UNREADABLE_NOTE}"
+DISKD_UNREADABLE = f"Apple diskd {_UNREADABLE_NOTE}; its interface was not checked"
 SMBD_READINESS_PROBE_TIMEOUT_SECONDS = 30
 MDNS_BINARY_PROBE_TIMEOUT_SECONDS = 30
 MDNS_BINARY_PROBE_ATTEMPTS = 2
@@ -276,6 +293,9 @@ describe_managed_smbd_status() {{
     fi
     if manager_process_present_for_volume "$ps_out"; then
         echo "PASS:manager is running for managed runtime"
+    elif [ -n "$role_unreadable" ]; then
+        echo "FAIL:{MANAGER_UNREADABLE}"
+        status=1
     else
         echo "FAIL:manager is not running for managed runtime"
         status=1
@@ -384,6 +404,11 @@ class ProbeStepResult:
     stdout: str = ""
     stderr: str = ""
     returncode: int | None = None
+    # A process listing that timed out: the processes asleep in the kernel
+    # (describe_uninterruptible), from a listing without command lines, which
+    # is then this step's stdout. Kept out of detail, so the detail stays one
+    # text for every such timeout.
+    asleep_in_kernel: str = ""
 
     @property
     def line(self) -> str:
@@ -1235,6 +1260,25 @@ def _append_step(steps: list[ProbeStepResult], step_id: str, status: ProbeStepSt
     steps.append(ProbeStepResult(id=step_id, status=status, detail=detail))
 
 
+def read_uninterruptible_processes_conn(connection: SshConnection) -> tuple[str, str]:
+    """After a process listing timed out: the table without command lines,
+    which never waits, and describe_uninterruptible of it. Empty when that
+    read fails too."""
+    try:
+        proc = run_ssh(
+            connection, STUCK_PROCESS_PS_COMMAND, check=False, timeout=UNINTERRUPTIBLE_LISTING_TIMEOUT_SECONDS
+        )
+    except TransportError:
+        return "", ""
+    listing = (proc.stdout or "") if proc.returncode == 0 else ""
+    return listing, describe_uninterruptible(listing)
+
+
+def _with_uninterruptible_processes(connection: SshConnection, step: ProbeStepResult) -> ProbeStepResult:
+    listing, asleep = read_uninterruptible_processes_conn(connection)
+    return replace(step, stdout=listing, asleep_in_kernel=asleep)
+
+
 def _parse_live_pids_for_ucomm(ps_out: str, ucomm: str) -> tuple[str, ...]:
     pids: list[str] = []
     for raw_line in ps_out.splitlines():
@@ -1600,18 +1644,19 @@ exit 0
         timeout_seconds=process_timeout_seconds,
     )
     if ps_step.status == "timeout":
-        steps.append(ps_step)
+        steps.append(_with_uninterruptible_processes(connection, ps_step))
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     ps_out = "" if ps_proc is None else ps_proc.stdout
     discovery_lines = service_role_lines(ps_out, "discovery")
     mdns_pids = [line.split()[0] for line in discovery_lines]
     apple_pids = _parse_live_pids_for_ucomm(ps_out, "mDNSResponder")
     diskd_lines = [line for line in ps_out.splitlines() if len(line.split()) >= 5 and line.split()[4] == "diskd" and not line.split()[2].startswith("Z")]
+    unreadable_diskd = [line for line in diskd_lines if command_unreadable(line.split()[5:])]
     # Same classification as the runtime's tc_apple_diskd_probe: a diskd is
     # ours only if its argv carries the `-i lo0` pair; every other live diskd
     # is ACPd's and advertises on the LAN regardless of ours (review 2, R8).
     loopback_diskd = [line for line in diskd_lines if _argv_has_pair(line.split()[5:], "-i", "lo0")]
-    stray_diskd = [line for line in diskd_lines if line not in loopback_diskd]
+    stray_diskd = [line for line in diskd_lines if line not in loopback_diskd and line not in unreadable_diskd]
     diskless = any("--diskless" in line.split() for line in discovery_lines)
 
     fstat_proc: subprocess.CompletedProcess[str] | None = None
@@ -1620,7 +1665,11 @@ exit 0
     else:
         # F11: nothing respawns it and a hand-started one lacks _airport.
         _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is not running (reboot the device; it cannot be restarted by hand)")
-    if loopback_diskd and not stray_diskd:
+    if unreadable_diskd and not stray_diskd:
+        # Apple's diskd waits on the disks it serves; a stray one shows on
+        # the next check, as the manager's own probe retries every disk pass.
+        _append_step(steps, "diskd_loopback", "skip", DISKD_UNREADABLE)
+    elif loopback_diskd and not stray_diskd:
         _append_step(steps, "diskd_loopback", "pass", "Apple diskd runs on loopback (-i lo0)")
     elif stray_diskd:
         stray_pids = ", ".join(line.split()[0] for line in stray_diskd)
@@ -1635,6 +1684,8 @@ exit 0
         _append_step(steps, "mdns_process", "pass", "discovery process is running")
     elif len(mdns_pids) > 1:
         _append_step(steps, "mdns_process", "fail", "multiple discovery processes are running")
+    elif service_unreadable(ps_out):
+        _append_step(steps, "mdns_process", "fail", DISCOVERY_UNREADABLE)
     else:
         _append_step(steps, "mdns_process", "fail", "discovery process is not running")
 
@@ -1797,6 +1848,9 @@ exec "$RUNTIME_SERVICE_BIN" --print-link-plan
     return replace(result, link_plan=plan, nbns_state=nbns_state)
 
 
+RSYNC_PS_ROWS_FUNCTION = render_ps_rows("rsync_ps_rows", ("pid", "stat"), ("rsync",))
+
+
 def probe_managed_rsync_conn(
     connection: SshConnection,
     *,
@@ -1835,7 +1889,8 @@ fi
 # processes sshd starts for a remote client are the user's transfers
 # (issue #346), so they neither satisfy nor fail these checks.
 rsync_pids=
-if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
+{RSYNC_PS_ROWS_FUNCTION}
+if ps_out=$(rsync_ps_rows); then
     old_ifs=$IFS
     IFS='
 '
@@ -2173,7 +2228,7 @@ def manager_reports_payload_missing(connection: SshConnection) -> bool:
     """The manager's title says payload=missing. ps only: the startup-age
     probe also execs the service for a clock reading this does not need."""
     try:
-        proc = run_ssh(connection, MANAGER_PS_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+        proc = run_ssh(connection, PS_CAPTURE_SSH_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
     except SshCommandTimeout:
         return False
     rows = service_role_lines(proc.stdout or "", "manager") if proc.returncode == 0 else []
@@ -2610,14 +2665,11 @@ def probe_device_networks_conn(connection: SshConnection) -> DeviceNetworksProbe
 
 
 # The manager's title (build/native/service/stuck.h tc_manager_title) is read
-# from this listing. Its etime column is never read: ps computes it from the
-# wall clock, which sntpd steps after boot. It stays for the column layout
-# service_role_lines expects (pid ppid stat <one field> ucomm command).
-MANAGER_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o etime= -o ucomm= -o command="
-# The title's started= and this reading are the same clock, the kernel's
-# monotonic one, read in that order so the age cannot come out negative.
+# from PS_CAPTURE_SSH_COMMAND. The title's started= and this reading are the
+# same clock, the kernel's monotonic one, read in that order so the age cannot
+# come out negative.
 MANAGER_STARTUP_AGE_COMMAND = (
-    MANAGER_PS_COMMAND
+    PS_CAPTURE_SSH_COMMAND
     + ' 2>/dev/null | sed "s/^/ps=/"; '
     'echo "now_ms=$("${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}" --print-monotonic-ms 2>/dev/null)"'
 )
@@ -2665,6 +2717,8 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
     if not ps_rows:
         return ManagerStartupAgeProbeResult(None, "process listing failed")
     rows = service_role_lines("\n".join(ps_rows), "manager")
+    if not rows and service_unreadable("\n".join(ps_rows)):
+        return ManagerStartupAgeProbeResult(None, MANAGER_UNREADABLE)
     if not rows:
         return ManagerStartupAgeProbeResult(None, "manager is not running")
     if len(rows) > 1:
@@ -2697,7 +2751,7 @@ def _manager_startup_age(title: list[str], now_text: str) -> ManagerStartupAgePr
 # manager logged at boot (best effort: the manager trims runtime.log).
 DEVICE_HOSTNAME_PROBE_COMMAND = (
     'echo "hostname=$(/bin/hostname 2>/dev/null)"; '
-    + MANAGER_PS_COMMAND
+    + PS_CAPTURE_SSH_COMMAND
     + ' 2>/dev/null | sed "s/^/ps=/"; '
     'sed "s/^/hosts=/" /etc/hosts 2>/dev/null; '
     "sed -n 's/.*manager: hostname found: [^ ]* after \\([0-9]*\\) ms.*/found=\\1/p' "
