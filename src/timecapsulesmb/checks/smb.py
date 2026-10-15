@@ -32,23 +32,25 @@ class SmbClientTarget:
 SmbClientTargetInput = Union[str, SmbClientTarget]
 
 
-def parse_smbclient_disk_shares(stdout: str) -> list[str]:
-    shares: list[str] = []
-    for raw_line in stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if "|" in line:
-            parts = line.split("|", 2)
-            if len(parts) >= 2 and parts[0] == "Disk":
-                share_name = parts[1].strip()
-            else:
-                continue
-        else:
-            share_name = line
-        if share_name and share_name != "IPC$" and share_name not in shares:
-            shares.append(share_name)
-    return shares
+# Share types `smbclient -g` prints in its share table; the workgroup listing
+# that can follow adds Server and Workgroup rows.
+SMBCLIENT_SHARE_TYPES = frozenset({"Disk", "IPC", "Printer", "Device"})
+
+
+def parse_smbclient_disk_shares(stdout: str) -> list[str] | None:
+    """The disk shares in `smbclient -g -L` output, or None when no share
+    table came back.
+
+    The table is the only proof the listing worked. `-L`'s exit status comes
+    from the workgroup step after it (1 when the server name has no IPv4
+    address), whether or not the table came back. Samba always lists IPC$, so
+    a listed server has at least one row.
+    """
+    rows = [line.strip().split("|", 2) for line in stdout.splitlines()]
+    rows = [row for row in rows if len(row) == 3 and row[0] in SMBCLIENT_SHARE_TYPES]
+    if not rows:
+        return None
+    return list(dict.fromkeys(name.strip() for kind, name, _ in rows if kind == "Disk" and name.strip()))
 
 
 def _normalize_smb_client_target(target: SmbClientTargetInput) -> SmbClientTarget:
@@ -91,12 +93,6 @@ def _smbclient_text_tail(value: object) -> str | None:
     return text[-SMBCLIENT_DEBUG_TEXT_LIMIT:]
 
 
-def _smbclient_failure_line(proc: subprocess.CompletedProcess[str]) -> str:
-    text = _smbclient_text_tail(proc.stderr) or _smbclient_text_tail(proc.stdout) or ""
-    detail = text.splitlines()
-    return detail[-1] if detail else f"failed with rc={proc.returncode}"
-
-
 def _smbclient_proc_failure_detail(proc: subprocess.CompletedProcess[str]) -> tuple[str, dict[str, object]]:
     # smbclient prints NT_STATUS failures on stdout while libsmb noise lands on
     # stderr (e.g. the misleading SMB1-fallback "smb1cli_req_writev_submit" line
@@ -124,12 +120,6 @@ def _smbclient_proc_failure_detail(proc: subprocess.CompletedProcess[str]) -> tu
     return message, details
 
 
-def _smbclient_failure_target_display(target: SmbClientTarget) -> str:
-    if target.ip_address:
-        return f"{target.server} via {target.ip_address}"
-    return target.server
-
-
 def _smbclient_attempt_display(attempt: dict[str, object]) -> str:
     server = str(attempt.get("server") or "unknown")
     ip_address = attempt.get("ip_address")
@@ -143,8 +133,6 @@ def _smbclient_attempt_failure_summary(index: int, attempt: dict[str, object]) -
     outcome = attempt.get("outcome")
     if outcome == "timeout":
         failure = "timed out"
-    elif outcome == "missing_expected_share":
-        failure = f"expected share {attempt.get('expected_share')!r} not found"
     else:
         failure = str(attempt.get("failure") or f"failed with outcome={outcome or 'unknown'}")
     command = attempt.get("command")
@@ -270,65 +258,35 @@ def check_authenticated_smb_listing(
     password: str,
     server: SmbClientTargetInput | list[SmbClientTargetInput],
     *,
-    expected_share_name: Optional[str] = None,
     port: Optional[int] = None,
     timeout: int = 20,
 ) -> CheckResult:
+    """List the shares of the first server that answers, trying each in turn."""
     if not command_exists("smbclient"):
         return CheckResult("FAIL", "missing local tool smbclient")
-    if isinstance(server, list):
-        servers = server if isinstance(server, list) else [server]
-        return try_authenticated_smb_listing(
-            username,
-            password,
-            servers,
-            expected_share_name=expected_share_name,
-            port=port,
-            timeout=timeout,
-        )
-
-    target = _normalize_smb_client_target(server)
-    command = _redacted_smbclient_command(_smbclient_listing_args(target, username, password, port=port))
-    try:
+    attempts: list[dict[str, object]] = []
+    for target in map(_normalize_smb_client_target, server if isinstance(server, list) else [server]):
+        command = _redacted_smbclient_command(_smbclient_listing_args(target, username, password, port=port))
         start = time.monotonic()
-        proc = _run_smbclient_listing(target, username, password, port=port, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
+        try:
+            proc = _run_smbclient_listing(target, username, password, port=port, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            attempt = _new_listing_attempt(target, timeout, start, command)
+            attempt["outcome"] = "timeout"
+            _record_listing_output(attempt, exc.stdout, exc.stderr)
+            attempts.append(attempt)
+            continue
         attempt = _new_listing_attempt(target, timeout, start, command)
-        attempt["outcome"] = "timeout"
-        stdout_tail = _smbclient_text_tail(exc.stdout)
-        stderr_tail = _smbclient_text_tail(exc.stderr)
-        if stdout_tail is not None:
-            attempt["stdout_tail"] = stdout_tail
-        if stderr_tail is not None:
-            attempt["stderr_tail"] = stderr_tail
-        return CheckResult(
-            "FAIL",
-            f"authenticated SMB listing failed: timed out via {_smbclient_failure_target_display(target)}",
-            {"attempts": [attempt]},
-        )
-    attempt = _new_listing_attempt(target, timeout, start, command)
-    attempt["returncode"] = proc.returncode
-    stdout_tail = _smbclient_text_tail(proc.stdout)
-    stderr_tail = _smbclient_text_tail(proc.stderr)
-    if stdout_tail is not None:
-        attempt["stdout_tail"] = stdout_tail
-    if stderr_tail is not None:
-        attempt["stderr_tail"] = stderr_tail
-    if proc.returncode == 0:
+        attempt["returncode"] = proc.returncode
+        _record_listing_output(attempt, proc.stdout, proc.stderr)
+        attempts.append(attempt)
         disk_shares = parse_smbclient_disk_shares(proc.stdout)
-        attempt["disk_shares"] = disk_shares
-        if expected_share_name is not None and expected_share_name not in proc.stdout:
-            attempt["outcome"] = "missing_expected_share"
-            attempt["expected_share"] = expected_share_name
-            return CheckResult(
-                "FAIL",
-                f"authenticated SMB listing did not include expected share {expected_share_name!r} on {target.display}",
-                {"attempts": [attempt], "disk_shares": disk_shares},
-            )
+        if disk_shares is None:
+            attempt["outcome"] = "error"
+            attempt["failure"] = _smbclient_proc_failure_detail(proc)[0]
+            continue
         attempt["outcome"] = "pass"
-        if expected_share_name is not None:
-            attempt["expected_share"] = expected_share_name
-            attempt["expected_share_found"] = True
+        attempt["disk_shares"] = disk_shares
         return CheckResult(
             "PASS",
             f"authenticated SMB listing works for {username}@{target.display}",
@@ -336,87 +294,18 @@ def check_authenticated_smb_listing(
                 "server": target.server,
                 "ip_address": target.ip_address,
                 "disk_shares": disk_shares,
-                "attempts": [attempt],
+                "attempts": attempts,
             },
         )
-    attempt["outcome"] = "error"
-    msg = _smbclient_failure_line(proc)
-    attempt["failure"] = msg
-    return CheckResult(
-        "FAIL",
-        f"authenticated SMB listing failed via {_smbclient_failure_target_display(target)} using {command}: {msg}",
-        {"attempts": [attempt]},
-    )
-
-
-def try_authenticated_smb_listing(
-    username: str,
-    password: str,
-    servers: list[SmbClientTargetInput],
-    *,
-    expected_share_name: Optional[str] = None,
-    port: Optional[int] = None,
-    timeout: int = 30,
-) -> CheckResult:
-    if not command_exists("smbclient"):
-        return CheckResult("WARN", "SMB listing verification skipped: smbclient not found")
-
-    attempts: list[dict[str, object]] = []
-    targets = [_normalize_smb_client_target(server_input) for server_input in servers]
-    for target in targets:
-        command = _redacted_smbclient_command(_smbclient_listing_args(target, username, password, port=port))
-        try:
-            start = time.monotonic()
-            proc = _run_smbclient_listing(target, username, password, port=port, timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            attempt = _new_listing_attempt(target, timeout, start, command)
-            attempt["outcome"] = "timeout"
-            stdout_tail = _smbclient_text_tail(exc.stdout)
-            stderr_tail = _smbclient_text_tail(exc.stderr)
-            if stdout_tail is not None:
-                attempt["stdout_tail"] = stdout_tail
-            if stderr_tail is not None:
-                attempt["stderr_tail"] = stderr_tail
-            attempts.append(attempt)
-            continue
-        attempt = _new_listing_attempt(target, timeout, start, command)
-        attempt["returncode"] = proc.returncode
-        stdout_tail = _smbclient_text_tail(proc.stdout)
-        stderr_tail = _smbclient_text_tail(proc.stderr)
-        if stdout_tail is not None:
-            attempt["stdout_tail"] = stdout_tail
-        if stderr_tail is not None:
-            attempt["stderr_tail"] = stderr_tail
-        if proc.returncode == 0:
-            disk_shares = parse_smbclient_disk_shares(proc.stdout)
-            attempt["disk_shares"] = disk_shares
-            if expected_share_name is not None and expected_share_name not in proc.stdout:
-                attempt["outcome"] = "missing_expected_share"
-                attempt["expected_share"] = expected_share_name
-                attempts.append(attempt)
-                continue
-            attempt["outcome"] = "pass"
-            if expected_share_name is not None:
-                attempt["expected_share"] = expected_share_name
-                attempt["expected_share_found"] = True
-            attempts.append(attempt)
-            return CheckResult(
-                "PASS",
-                f"authenticated SMB listing works for {username}@{target.display}",
-                {
-                    "server": target.server,
-                    "ip_address": target.ip_address,
-                    "disk_shares": disk_shares,
-                    "attempts": attempts,
-                },
-            )
-        attempt["outcome"] = "error"
-        raw_failure = _smbclient_failure_line(proc)
-        attempt["failure"] = raw_failure
-        attempts.append(attempt)
-
     failure_msg = _smbclient_attempts_failure_summary(attempts)
     return CheckResult("FAIL", f"authenticated SMB listing failed after {len(attempts)} attempt(s): {failure_msg}", {"attempts": attempts})
+
+
+def _record_listing_output(attempt: dict[str, object], stdout: object, stderr: object) -> None:
+    for key, value in (("stdout_tail", stdout), ("stderr_tail", stderr)):
+        tail = _smbclient_text_tail(value)
+        if tail is not None:
+            attempt[key] = tail
 
 
 def check_authenticated_smb_file_ops_detailed(

@@ -158,10 +158,7 @@ def build_discovery_context(results: list[CheckResult], debug_fields: Mapping[st
 
 def _authenticated_smb_listing_passed(debug_fields: Mapping[str, object]) -> bool:
     for attempt in _as_sequence(_mapping_value(debug_fields, "authenticated_smb_listing_attempts")):
-        outcome = _mapping_value(attempt, "outcome")
-        expected_share_found = _mapping_value(attempt, "expected_share_found")
-        disk_shares = _as_sequence(_mapping_value(attempt, "disk_shares"))
-        if outcome == "pass" and (expected_share_found is True or disk_shares):
+        if _mapping_value(attempt, "outcome") == "pass" and _as_sequence(_mapping_value(attempt, "disk_shares")):
             return True
     return False
 

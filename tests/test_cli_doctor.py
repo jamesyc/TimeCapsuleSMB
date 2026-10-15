@@ -387,12 +387,11 @@ class CliDoctorTests(CliTestCase):
                     {
                         "server": "home.local",
                         "outcome": "error",
-                        "expected_share_found": False,
                     },
                     {
                         "server": "Home.IoT",
                         "outcome": "pass",
-                        "expected_share_found": True,
+                        "disk_shares": ["Data"],
                     },
                 ],
             },
@@ -401,6 +400,26 @@ class CliDoctorTests(CliTestCase):
         assert error is not None
         self.assertIn("Discovery context:", error)
         self.assertIn("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records", error)
+
+    def test_doctor_error_does_not_report_unicast_smb_without_disk_shares(self) -> None:
+        # A listing whose table held only IPC$ logged on but shares nothing.
+        results = [
+            doctor.CheckResult(
+                "FAIL",
+                "no discovered _smb._tcp instance matched expected device instance 'Home'",
+            )
+        ]
+        error = doctor.build_doctor_error(
+            results,
+            {
+                "bonjour_discovery": {"instance_count": 0},
+                "authenticated_smb_listing_attempts": [
+                    {"server": "home.local", "outcome": "pass", "disk_shares": []},
+                ],
+            },
+        )
+        assert error is not None
+        self.assertNotIn("SMB works over unicast", error)
 
     def test_doctor_error_ignores_legacy_mdns_transport_logs(self) -> None:
         results = [
@@ -414,7 +433,7 @@ class CliDoctorTests(CliTestCase):
             {
                 "bonjour_discovery": {"instance_count": 0},
                 "authenticated_smb_listing_attempts": [
-                    {"outcome": "pass", "expected_share_found": True},
+                    {"outcome": "pass", "disk_shares": ["Data"]},
                 ],
                 "remote_discovery_log_tail": (
                     "mdns auto-ip active: link[0] iface=bridge0 mdns_ipv4=1 mdns_ipv6=1\n"

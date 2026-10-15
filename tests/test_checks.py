@@ -80,7 +80,6 @@ from timecapsulesmb.checks.smb import (
     check_authenticated_smb_file_ops_detailed,
     check_authenticated_smb_listing,
     parse_smbclient_disk_shares,
-    try_authenticated_smb_listing,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
@@ -2307,25 +2306,17 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertIn("expected 10.0.1.1", result.message)
 
-    def test_try_authenticated_smb_listing_handles_timeout(self) -> None:
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
-            with mock.patch(
-                "timecapsulesmb.checks.smb.run_local_capture",
-                side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=30),
-            ):
-                result = try_authenticated_smb_listing("admin", "pw", ["server.local"])
-        self.assertEqual(result.status, "FAIL")
-        self.assertIn("timed out", result.message)
-
     def test_check_authenticated_smb_listing_handles_timeout(self) -> None:
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=20),
             ):
-                result = check_authenticated_smb_listing("admin", "pw", "home.local", expected_share_name="Data")
+                result = check_authenticated_smb_listing("admin", "pw", "home.local")
         self.assertEqual(result.status, "FAIL")
-        self.assertIn("timed out via home.local", result.message)
+        self.assertIn("attempt 1 home.local", result.message)
+        self.assertIn("timed out", result.message)
+        self.assertEqual(result.details["attempts"][0]["outcome"], "timeout")
 
     def test_run_doctor_checks_respects_skip_flags(self) -> None:
         run = self.run_doctor_with_mocks(
@@ -6401,33 +6392,58 @@ class CheckTests(unittest.TestCase):
         self.assertIn(SmbClientTarget("time-capsule.local", "10.0.0.2"), called_servers)
         self.assertNotIn("10.0.1.99.local", called_servers)
 
-    def test_check_authenticated_smb_listing_requires_expected_share(self) -> None:
-        proc = subprocess.CompletedProcess(["smbclient"], 0, "Public\n", "")
+    def test_check_authenticated_smb_listing_passes_on_share_table_when_ipv6_name_exits_1(self) -> None:
+        # smbclient -L exits 1 after listing the shares when the server name
+        # has no IPv4 address; the listing itself worked.
+        proc = subprocess.CompletedProcess(
+            ["smbclient"],
+            1,
+            "Disk|Data|\nIPC|IPC$|IPC Service (Samba)\ntc.local is an IPv6 address -- no workgroup available\n",
+            "",
+        )
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
-                result = check_authenticated_smb_listing(
-                    "admin",
-                    "pw",
-                    "server.local",
-                    expected_share_name="Data",
-                )
-        self.assertEqual(result.status, "FAIL")
-        self.assertIn("did not include expected share", result.message)
-
-    def test_check_authenticated_smb_listing_passes_when_expected_share_present(self) -> None:
-        proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
-            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
-                result = check_authenticated_smb_listing(
-                    "admin",
-                    "pw",
-                    "server.local",
-                    expected_share_name="Data",
-                )
+                result = check_authenticated_smb_listing("admin", "pw", SmbClientTarget("tc.local", "fe80::1%en0"))
         self.assertEqual(result.status, "PASS")
         self.assertIn("listing works", result.message)
-        self.assertEqual(result.details["server"], "server.local")
-        self.assertEqual(result.details["disk_shares"], ["Data", "Public"])
+        self.assertEqual(result.details["server"], "tc.local")
+        self.assertEqual(result.details["disk_shares"], ["Data"])
+        self.assertEqual(result.details["attempts"][0]["returncode"], 1)
+
+    def test_check_authenticated_smb_listing_fails_without_share_table_despite_exit_0(self) -> None:
+        # -L exits 0 once IPC$ accepts the login, even when the share
+        # enumeration that follows fails.
+        # The reason is on stdout; stderr noise must not replace it.
+        proc = subprocess.CompletedProcess(
+            ["smbclient"],
+            0,
+            "Error returning browse list: NT_STATUS_ACCESS_DENIED\n",
+            "lpcfg_do_global_parameter: WARNING: The \"client lanman auth\" option is deprecated\n",
+        )
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
+                result = check_authenticated_smb_listing("admin", "pw", "server.local")
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("Error returning browse list: NT_STATUS_ACCESS_DENIED", result.message)
+        self.assertEqual(result.details["attempts"][0]["failure"], "Error returning browse list: NT_STATUS_ACCESS_DENIED")
+        self.assertEqual(result.details["attempts"][0]["outcome"], "error")
+        self.assertNotIn("disk_shares", result.details)
+
+    def test_check_authenticated_smb_listing_fails_on_logon_failure(self) -> None:
+        proc = subprocess.CompletedProcess(["smbclient"], 1, "session setup failed: NT_STATUS_LOGON_FAILURE\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
+                result = check_authenticated_smb_listing("admin", "pw", "server.local")
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("NT_STATUS_LOGON_FAILURE", result.message)
+
+    def test_check_authenticated_smb_listing_fails_without_smbclient(self) -> None:
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=False):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture") as run_mock:
+                result = check_authenticated_smb_listing("admin", "pw", ["server.local"])
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.message, "missing local tool smbclient")
+        run_mock.assert_not_called()
 
     def test_parse_smbclient_disk_shares_uses_machine_listing_types(self) -> None:
         output = "\n".join([
@@ -6436,12 +6452,20 @@ class CheckTests(unittest.TestCase):
             "Printer|lp|Printer",
             "Disk|Archive Data|",
             "Disk|Data|Duplicate",
+            "SMB1 disabled -- no workgroup available",
+            "Server|TC|Time Capsule",
+            "Workgroup|WORKGROUP|TC",
         ])
 
         self.assertEqual(parse_smbclient_disk_shares(output), ["Data", "Archive Data"])
 
-    def test_try_authenticated_smb_listing_falls_back_to_second_server_when_first_times_out(self) -> None:
-        proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
+    def test_parse_smbclient_disk_shares_tells_no_table_from_no_disk_shares(self) -> None:
+        self.assertIsNone(parse_smbclient_disk_shares(""))
+        self.assertIsNone(parse_smbclient_disk_shares("session setup failed: NT_STATUS_LOGON_FAILURE\nData\n"))
+        self.assertEqual(parse_smbclient_disk_shares("IPC|IPC$|IPC Service (Samba)\n"), [])
+
+    def test_check_authenticated_smb_listing_falls_back_to_second_server_when_first_times_out(self) -> None:
+        proc = subprocess.CompletedProcess(["smbclient"], 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
@@ -6450,35 +6474,34 @@ class CheckTests(unittest.TestCase):
                     proc,
                 ],
             ):
-                result = try_authenticated_smb_listing(
+                result = check_authenticated_smb_listing(
                     "admin",
                     "pw",
                     ["home.local", "10.0.1.1"],
-                    expected_share_name="Data",
                 )
         self.assertEqual(result.status, "PASS")
         self.assertIn("admin@10.0.1.1", result.message)
         self.assertEqual(result.details["server"], "10.0.1.1")
 
-    def test_try_authenticated_smb_listing_continues_when_share_missing_on_first_server(self) -> None:
-        missing_proc = subprocess.CompletedProcess(["smbclient"], 0, "Public\n", "")
-        good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
+    def test_check_authenticated_smb_listing_continues_when_first_server_returns_no_share_table(self) -> None:
+        missing_proc = subprocess.CompletedProcess(["smbclient"], 0, "Error returning browse list: NT_STATUS_ACCESS_DENIED\n", "")
+        good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=[missing_proc, good_proc],
             ):
-                result = try_authenticated_smb_listing(
+                result = check_authenticated_smb_listing(
                     "admin",
                     "pw",
                     ["home.local", "10.0.1.1"],
-                    expected_share_name="Data",
                 )
         self.assertEqual(result.status, "PASS")
         self.assertIn("admin@10.0.1.1", result.message)
         self.assertEqual(result.details["server"], "10.0.1.1")
+        self.assertEqual([attempt["outcome"] for attempt in result.details["attempts"]], ["error", "pass"])
 
-    def test_try_authenticated_smb_listing_records_attempt_debug_details(self) -> None:
+    def test_check_authenticated_smb_listing_records_attempt_debug_details(self) -> None:
         failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_IO_TIMEOUT\n")
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch(
@@ -6488,11 +6511,10 @@ class CheckTests(unittest.TestCase):
                     failed_proc,
                 ],
             ):
-                result = try_authenticated_smb_listing(
+                result = check_authenticated_smb_listing(
                     "admin",
                     "secret-password",
                     ["home.local", "10.0.1.1"],
-                    expected_share_name="Data",
                 )
 
         self.assertEqual(result.status, "FAIL")
@@ -6500,7 +6522,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(attempts[0]["server"], "home.local")
         self.assertEqual(attempts[0]["outcome"], "timeout")
-        self.assertEqual(attempts[0]["timeout_sec"], 30)
+        self.assertEqual(attempts[0]["timeout_sec"], 20)
         self.assertEqual(attempts[1]["server"], "10.0.1.1")
         self.assertEqual(attempts[1]["outcome"], "error")
         self.assertEqual(attempts[1]["returncode"], 1)
@@ -6595,26 +6617,6 @@ class CheckTests(unittest.TestCase):
             "FAIL",
             "listing failed",
             {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_LOGON_FAILURE"}]},
-        )
-        listing_mock = mock.Mock(return_value=failure)
-
-        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
-            run = self.run_doctor_with_mocks(
-                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-                smb_port=mock.Mock(status="PASS", message="445 ok"),
-                skip_bonjour=True,
-                extra_patches={"timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock},
-            )
-
-        self.assertTrue(run.fatal)
-        listing_mock.assert_called_once()
-        sleep_mock.assert_not_called()
-
-    def test_run_doctor_checks_does_not_retry_smb_listing_missing_expected_share(self) -> None:
-        failure = CheckResult(
-            "FAIL",
-            "listing failed",
-            {"attempts": [{"server": "home.local", "outcome": "missing_expected_share", "expected_share": "Data"}]},
         )
         listing_mock = mock.Mock(return_value=failure)
 
@@ -7057,11 +7059,11 @@ class CheckTests(unittest.TestCase):
             nonlocal captured_env
             captured_args = args
             captured_env = kwargs.get("env")
-            return subprocess.CompletedProcess(args, 0, "Data\n", "")
+            return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
-                result = check_authenticated_smb_listing("admin", "pw", "server.local", expected_share_name="Data")
+                result = check_authenticated_smb_listing("admin", "pw", "server.local")
         self.assertEqual(result.status, "PASS")
         self.assertIsNotNone(captured_args)
         self.assertEqual(captured_args[:3], ["smbclient", "-s", "/dev/null"])
@@ -7075,7 +7077,7 @@ class CheckTests(unittest.TestCase):
         def fake_run_local_capture(args, timeout=20, **kwargs):
             nonlocal captured_args
             captured_args = args
-            return subprocess.CompletedProcess(args, 0, "Data\n", "")
+            return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
@@ -7083,7 +7085,6 @@ class CheckTests(unittest.TestCase):
                     "admin",
                     "pw",
                     "127.0.0.1",
-                    expected_share_name="Data",
                     port=1445,
                 )
         self.assertEqual(result.status, "PASS")
@@ -7098,7 +7099,7 @@ class CheckTests(unittest.TestCase):
         def fake_run_local_capture(args, timeout=20, **kwargs):
             nonlocal captured_args
             captured_args = args
-            return subprocess.CompletedProcess(args, 0, "Data\n", "")
+            return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
@@ -7106,7 +7107,6 @@ class CheckTests(unittest.TestCase):
                     "admin",
                     "pw",
                     SmbClientTarget("server.local", "192.168.1.217"),
-                    expected_share_name="Data",
                 )
         self.assertEqual(result.status, "PASS")
         self.assertEqual(result.details["server"], "server.local")
@@ -7123,7 +7123,7 @@ class CheckTests(unittest.TestCase):
         def fake_run_local_capture(args, timeout=30, **kwargs):
             nonlocal captured_args
             captured_args = args
-            return subprocess.CompletedProcess(args, 0, "Data\n", "")
+            return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
@@ -7131,7 +7131,6 @@ class CheckTests(unittest.TestCase):
                     "admin",
                     "pw",
                     SmbClientTarget("fe80::1%en0", "fe80::1%en0"),
-                    expected_share_name="Data",
                 )
         self.assertEqual(result.status, "PASS")
         self.assertEqual(
@@ -7139,17 +7138,17 @@ class CheckTests(unittest.TestCase):
             ["smbclient", "-s", "/dev/null", "-g", "-I", "fe80::1%en0", "-L", "//fe80::1%en0", "-U", "admin%pw"],
         )
 
-    def test_try_authenticated_smb_listing_forwards_custom_port(self) -> None:
+    def test_check_authenticated_smb_listing_forwards_custom_port_for_server_lists(self) -> None:
         captured_args = None
 
         def fake_run_local_capture(args, timeout=30, **kwargs):
             nonlocal captured_args
             captured_args = args
-            return subprocess.CompletedProcess(args, 0, "Data\n", "")
+            return subprocess.CompletedProcess(args, 0, "Disk|Data|\nDisk|Public|\nIPC|IPC$|IPC Service (Samba)\nSMB1 disabled -- no workgroup available\n", "")
 
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
-                result = try_authenticated_smb_listing("admin", "pw", ["127.0.0.1"], port=2445)
+                result = check_authenticated_smb_listing("admin", "pw", ["127.0.0.1"], port=2445)
         self.assertEqual(result.status, "PASS")
         self.assertEqual(captured_args[3:6], ["-g", "-p", "2445"])
 
@@ -7992,6 +7991,54 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
         )
         # SSH works, so the device changes files itself; the LAN only lists.
         file_ops_mock.assert_not_called()
+
+    def test_run_doctor_checks_passes_ipv6_only_listing_when_smbclient_exits_1_after_the_table(self) -> None:
+        # The only address this computer reaches is IPv6, and the device's name
+        # has no IPv4 address here: smbclient -L lists the shares, then exits
+        # 1 for the workgroup step. The listing worked.
+        routes = {
+            "10.0.0.2": RouteSelection("unavailable", error="no route", error_number=51),
+            "fd00::2": RouteSelection("available", source="fd00::9"),
+        }
+        smbclient_calls: list[list[str]] = []
+
+        def fake_smbclient(args, timeout=20, **kwargs):
+            smbclient_calls.append(args)
+            return subprocess.CompletedProcess(
+                args,
+                1,
+                "Disk|Data|\nIPC|IPC$|IPC Service (Samba)\n"
+                "timecapsulesamba4.local is an IPv6 address -- no workgroup available\n",
+                "",
+            )
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=CheckResult("PASS", "ssh ok"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+            smb_port=REAL_SMB_PORT_CHECK,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
+                "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
+                "timecapsulesmb.checks.doctor_steps.check_smb_port": mock.Mock(
+                    return_value=CheckResult("PASS", "SMB reachable at fd00::2:445"),
+                ),
+                "timecapsulesmb.checks.smb.command_exists": mock.Mock(return_value=True),
+                "timecapsulesmb.checks.smb.run_local_capture": mock.Mock(side_effect=fake_smbclient),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(len(smbclient_calls), 1)
+        self.assertEqual(smbclient_calls[0][-4:-2], ["-L", "//timecapsulesamba4.local"])
+        self.assertIn("fd00::2", smbclient_calls[0])
+        listing = next(result for result in run.results if result.message.startswith("authenticated SMB listing"))
+        self.assertEqual(
+            (listing.status, listing.message),
+            ("PASS", "authenticated SMB listing works for admin@timecapsulesamba4.local via fd00::2"),
+        )
+        self.assertEqual(listing.details["disk_shares"], ["Data"])
+        self.assertFalse([result for result in run.results if result.status != "PASS" and "SMB listing" in result.message])
 
 
     def test_run_doctor_checks_changes_files_over_the_lan_pinned_to_the_listed_address_without_ssh(self) -> None:
