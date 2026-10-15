@@ -446,21 +446,29 @@ def test_public_discovery_preserves_answer_before_inconclusive_final_retries(mon
     cap_browse_window(monkeypatch, "dns-sd")
     command = native_dns_sd._run_dns_sd_command
     address_calls = 0
+    answered_on_call = 0
 
     def answer_once(args, **kwargs):
-        nonlocal address_calls
+        nonlocal address_calls, answered_on_call
         if "-G" in args:
             address_calls += 1
-            if address_calls > 1:
+            # The delayed browse start consumes the capped window, and each
+            # resolve attempt has only .5 s for both -L and -G. Under load the
+            # first -G can expire without a callback: exercise that explicitly,
+            # then allow real queries until an answer actually arrives.
+            if address_calls == 1 or answered_on_call:
                 # An unfinished retry has no callbacks, including no withdrawal.
                 return "", "", -15, True, ""
-        return command(args, **kwargs)
+        response = command(args, **kwargs)
+        if "-G" in args and address in native_dns_sd._parse_dns_sd_address_output(response[0]):
+            answered_on_call = address_calls
+        return response
 
     monkeypatch.setattr(native_dns_sd, "_run_dns_sd_command", answer_once)
     result = discover_operation({"timeout": 5, "service": "_airport"},
                                AppOperationContext("discover", EventSink(lambda _event: None)))
     device = result.payload["devices"][0]
-    assert address_calls > 1
+    assert 1 < answered_on_call < address_calls
     assert device["host"] == address
     assert device["addresses"] == [address]
     assert device["selected_record"][family] == [address]
