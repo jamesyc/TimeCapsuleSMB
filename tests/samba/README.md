@@ -107,7 +107,12 @@ ordinary, corrupt, duplicate, and unsupported AppleDouble records; embedded
 FinderInfo and xattrs; oversized and missing native attributes; 1 MiB streamed
 resource forks; copy/cleanup separation; resource-copy restart markers;
 byte-for-byte verification; sidecar retention/deletion; and the intentionally
-blank resource-fork payload. A real temporary `xattr.tdb` case migrates
+blank resource-fork payload. The `skips` case covers entries the walk leaves
+alone instead of failing the volume: names lstat cannot find (vanished files,
+Apple's shortened listing of a name past NetBSD's 511-byte limit, a whole folder), paths past
+the limit, and damaged, unsupported or non-regular `._` files. It checks what
+each reports, that their rows quarantine the database, and that read errors,
+other lstat errors and a volume unmounted mid-walk still fail. A real temporary `xattr.tdb` case migrates
 FinderInfo under both public metadata settings, canonical Apple xattrs,
 ordinary ACL data, and a fragmented Windows stream, then verifies TDB deletion
 and detached-volume orphan retention through the program entry point. Additional

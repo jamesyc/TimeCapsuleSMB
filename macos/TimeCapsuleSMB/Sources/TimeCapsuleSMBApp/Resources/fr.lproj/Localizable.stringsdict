@@ -254,6 +254,96 @@
 			<string>%lld octets</string>
 		</dict>
 	</dict>
+	<key>backend.summary.migration.skipped_malformed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld de fichiers ._ sont endommagés et ont été conservés tels quels.</string>
+			<key>one</key>
+			<string>%lld fichier ._ est endommagé et a été conservé tel quel.</string>
+			<key>other</key>
+			<string>%lld fichiers ._ sont endommagés et ont été conservés tels quels.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@more@</string>
+		<key>more</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>  ...et %lld d’autres</string>
+			<key>one</key>
+			<string>  ...et %lld autre</string>
+			<key>other</key>
+			<string>  ...et %lld autres</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_name_too_long</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld de fichiers ont des noms trop longs pour que Samba puisse les ouvrir sur cet appareil, ils ne sont donc pas visibles via SMB. Pour y accéder, connectez le disque à un Mac.</string>
+			<key>one</key>
+			<string>%lld fichier a un nom trop long pour que Samba puisse l’ouvrir sur cet appareil, il n’est donc pas visible via SMB. Pour y accéder, connectez le disque à un Mac.</string>
+			<key>other</key>
+			<string>%lld fichiers ont des noms trop longs pour que Samba puisse les ouvrir sur cet appareil, ils ne sont donc pas visibles via SMB. Pour y accéder, connectez le disque à un Mac.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_not_a_file</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@entries@</string>
+		<key>entries</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld d’entrées ._ ne sont pas des fichiers ordinaires et ont été conservées.</string>
+			<key>one</key>
+			<string>%lld entrée ._ n’est pas un fichier ordinaire et a été conservée.</string>
+			<key>other</key>
+			<string>%lld entrées ._ ne sont pas des fichiers ordinaires et ont été conservées.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_unsupported</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>%lld de fichiers ._ contiennent des entrées que TimeCapsuleSMB ne convertit pas. Leurs métadonnées prises en charge ont été migrées et les fichiers ont été conservés.</string>
+			<key>one</key>
+			<string>%lld fichier ._ contient des entrées que TimeCapsuleSMB ne convertit pas. Ses métadonnées prises en charge ont été migrées et le fichier a été conservé.</string>
+			<key>other</key>
+			<string>%lld fichiers ._ contiennent des entrées que TimeCapsuleSMB ne convertit pas. Leurs métadonnées prises en charge ont été migrées et les fichiers ont été conservés.</string>
+		</dict>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

@@ -54,6 +54,16 @@ OVERSIZED_KINDS = frozenset({"tdb", "appledouble"})
 # Why a value stayed in legacy storage: too large for a native attribute, or a
 # resource fork on a folder, which HFS cannot hold at any size.
 KEPT_REASONS = frozenset({"size", "folder_fork"})
+# Why the walk left an entry alone (tc_skip_reason in the migrator): a name
+# the device cannot open (Apple's HFS lists a name past NetBSD's 511-byte limit
+# in a form lstat does not find), a file that vanished mid-walk, or a ._ file kept as it
+# is because it is damaged, holds entries the migrator does not convert, or is
+# not a regular file. Deploy tells the user about all but vanished files
+# (SKIPPED_SENTENCES), in this order.
+SKIP_REASONS = ("name_too_long", "not_found", "malformed", "unsupported", "not_a_file")
+# The native report lists at most this many entries per reason
+# (TC_SKIP_EXAMPLES); its counts cover all.
+SKIPPED_EXAMPLES = 10
 
 
 class MigrationStalledError(RuntimeError):
@@ -232,6 +242,51 @@ def decode_oversized(report: dict) -> OversizedSummary:
     return OversizedSummary(tdb, appledouble, values, folder_forks=folder_forks)
 
 
+@dataclass(frozen=True)
+class SkippedEntry:
+    reason: str  # see SKIP_REASONS
+    path: str
+
+
+@dataclass
+class SkippedSummary:
+    counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(SKIP_REASONS, 0))
+    # At most SKIPPED_EXAMPLES per reason, across volumes.
+    entries: list[SkippedEntry] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return sum(self.counts.values())
+
+    def add(self, other: "SkippedSummary") -> None:
+        for reason in SKIP_REASONS:
+            self.counts[reason] += other.counts[reason]
+            listed = sum(entry.reason == reason for entry in self.entries)
+            self.entries.extend([entry for entry in other.entries if entry.reason == reason]
+                                [:SKIPPED_EXAMPLES - listed])
+
+
+def decode_skipped(report: dict) -> SkippedSummary:
+    block = report.get("skipped")
+    if not isinstance(block, dict):
+        raise ValueError("missing skipped entries")
+    counts = {reason: block.get(reason) for reason in SKIP_REASONS}
+    items = block.get("items")
+    if any(type(count) is not int or count < 0 for count in counts.values()) or not isinstance(items, list):
+        raise ValueError("invalid skipped entries")
+    entries = []
+    for item in items:
+        if (not isinstance(item, dict) or item.get("reason") not in counts
+                or not _HEX.fullmatch(str(item.get("path_hex", "")))):
+            raise ValueError("invalid skipped entry")
+        # Display only, like the oversized paths.
+        entries.append(SkippedEntry(item["reason"], bytes.fromhex(item["path_hex"]).decode("utf-8", "replace")))
+    for reason, count in counts.items():
+        if sum(entry.reason == reason for entry in entries) > min(SKIPPED_EXAMPLES, count):
+            raise ValueError("invalid skipped entries")
+    return SkippedSummary(counts, entries)
+
+
 @dataclass
 class MigrationInventory:
     volumes: tuple[MaStVolume, ...]
@@ -246,6 +301,7 @@ class MigrationInventory:
     output: list[str] = field(default_factory=list)
     # Per phase, for deploy to show the user and record in telemetry.
     oversized: dict[str, OversizedSummary] = field(default_factory=dict)
+    skipped: dict[str, SkippedSummary] = field(default_factory=dict)
     # Verified rows a lone retained source dropped, and the copy made first.
     dropped_rows: int = 0
     backup: str | None = None
@@ -525,6 +581,7 @@ def validate_native_report(report: object, inventory: MigrationInventory,
         coverage.update(active_coverage)
         validate_coverage(coverage, {source_id(source) for source in inventory.cohort})
         decode_oversized(report)
+        decode_skipped(report)
     except ValueError as exc:
         raise RuntimeError("Invalid migration source response") from exc
     return coverage
@@ -566,6 +623,7 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
         return f"migration_phase={phase} skipped reason=no_legacy_tdb"
     log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
     oversized = inventory.oversized.setdefault(phase, OversizedSummary())
+    skipped = inventory.skipped.setdefault(phase, SkippedSummary())
     run_ssh(connection, f"mkdir -p {shlex.quote(str(PurePosixPath(log).parent))} && printf '%s\\n' {shlex.quote(f'phase={phase} sources={len(inventory.sources)} stall_seconds={STALL_SECONDS}')} > {shlex.quote(log)} && /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ' >> {shlex.quote(log)}")
     current = read_mast_volumes_conn(connection)
     available = {normalized_uuid(v.adisk_uuid): v for v in current}
@@ -593,9 +651,14 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
         oversized.appledouble += kept.appledouble
         oversized.folder_forks += kept.folder_forks
         oversized.values.extend(kept.values[:MAX_OVERSIZED_ITEMS - len(oversized.values)])
+        left = decode_skipped(report)
+        skipped.add(left)
         inventory.output.append(f"phase={phase} uuid={key} entries={report['entries']} "
                                 f"oversized_tdb={kept.tdb} oversized_appledouble={kept.appledouble} "
-                                f"folder_forks={kept.folder_forks} complete")
+                                f"folder_forks={kept.folder_forks} "
+                                + "".join(f"skipped_{reason}={left.counts[reason]} "
+                                          for reason in SKIP_REASONS if left.counts[reason])
+                                + "complete")
         if phase == "copy":
             inventory.copied.add(key)
         elif {source_id(s) for s in inventory.sources} == {source_id(s) for s in inventory.cohort}:

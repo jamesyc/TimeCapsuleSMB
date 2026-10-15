@@ -273,6 +273,47 @@ static struct dirent *migration_test_readdir(DIR *dir)
 	if (directory_read_error) { errno = EIO; return NULL; }
 	return readdir(dir);
 }
+/* Names whose lstat fails, the way Apple's HFS fails a shortened long name
+ * (ENOENT) or a too-long path (ENAMETOOLONG). Matched on the last component. */
+static struct { const char *name; int error; } failed_lstats[6];
+/* The walk's first lstat below this directory replaces it with an empty
+ * one, as if Apple unmounted the volume mid-walk. */
+static const char *vanishing_root;
+static char vanished_to[PATH_MAX];
+static int migration_test_lstat(const char *path, struct stat *st)
+{
+	const char *slash = strrchr(path, '/');
+	size_t i;
+
+	if (vanishing_root != NULL && vanished_to[0] == '\0' &&
+	    strcmp(path, vanishing_root) != 0)
+	{
+		CHECK((size_t)snprintf(vanished_to, sizeof(vanished_to), "%s.gone", vanishing_root) <
+		      sizeof(vanished_to));
+		CHECK(rename(vanishing_root, vanished_to) == 0 && mkdir(vanishing_root, 0700) == 0);
+	}
+	for (i = 0; slash != NULL && i < ARRAY_SIZE(failed_lstats); i++) {
+		if (failed_lstats[i].name != NULL && strcmp(slash + 1, failed_lstats[i].name) == 0) {
+			errno = failed_lstats[i].error;
+			return -1;
+		}
+	}
+	return lstat(path, st);
+}
+/* A name whose open fails after its lstat succeeded, as when it is renamed
+ * between the two. Matched on the last component. */
+static const char *failed_open;
+static int failed_open_error;
+static int migration_test_open(const char *path, int flags)
+{
+	const char *slash = strrchr(path, '/');
+
+	if (failed_open != NULL && slash != NULL && strcmp(slash + 1, failed_open) == 0) {
+		errno = failed_open_error;
+		return -1;
+	}
+	return open(path, flags);
+}
 static int migration_test_commit(struct db_context *db)
 {
 	if (commit_error && commits_before_error > 0) {
@@ -296,6 +337,8 @@ static void *migration_test_talloc_realloc_array(
 }
 #define pread migration_test_pread
 #define readdir migration_test_readdir
+#define TC_MIGRATE_LSTAT(path, st) migration_test_lstat((path), (st))
+#define TC_MIGRATE_OPEN(path, flags) migration_test_open((path), (flags))
 #define fsync migration_test_fsync
 #define sync migration_test_sync
 #define dbwrap_transaction_commit migration_test_commit
@@ -319,6 +362,8 @@ static ino_t test_folder_inode;
 #undef talloc_realloc
 #undef pread
 #undef readdir
+#undef TC_MIGRATE_LSTAT
+#undef TC_MIGRATE_OPEN
 #undef fsync
 #undef sync
 #undef dbwrap_transaction_commit
@@ -869,6 +914,7 @@ static void test_errors(void)
 	char root[PATH_MAX], base[PATH_MAX], sidecar[PATH_MAX], native[PATH_MAX];
 	uint8_t unsupported[82];
 	struct tc_migration migration = {.phase = TC_PHASE_COPY};
+	struct tc_skip_report skips = {0};
 	int base_fd;
 	int sidecar_fd;
 
@@ -908,10 +954,14 @@ static void test_errors(void)
 	base_fd = open(base, O_RDONLY);
 	CHECK(base_fd != -1);
 	reset_xattrs();
-	errno = 0;
-	CHECK(tc_migrate_appledouble(&migration, base_fd, base) == -1);
-	CHECK(errno == ENOTSUP);
+	/* Entries this tool does not convert keep the ._ file, which no longer
+	 * fails the walk; test_skips covers what is still migrated from it. */
+	migration.skipped = &skips;
+	CHECK(tc_migrate_appledouble(&migration, base_fd, base) == 0);
+	CHECK(skips.by_reason[TC_SKIP_UNSUPPORTED] == 1 && skips.count == 1);
 	CHECK(access(sidecar, F_OK) == 0);
+	migration.skipped = NULL;
+	TALLOC_FREE(skips.items[0].path);
 	close(base_fd);
 	/* A volume root must not consume a sibling /Volumes/._dkN file. */
 	CHECK(tc_scan_root(&migration, base) == 0);
@@ -1177,7 +1227,7 @@ static void test_boundary(void)
 	/* An entry on a different device is a nested mount: skipped, not walked
 	 * and not an error. The same walk on the right device visits both. */
 	m.root_dev = (uint64_t)st.st_dev + 1;
-	CHECK(tc_scan_path(&m, root, false) == 0);
+	CHECK(tc_scan_path(&m, root, false, false) == 0);
 	CHECK(m.counts.boundary_skipped == 1 && m.counts.entries == 0);
 	CHECK(tc_scan_root(&m, root) == 0);
 	CHECK(m.counts.boundary_skipped == 1 && m.counts.entries == 2);
@@ -2869,6 +2919,277 @@ static void test_hfs(void)
 #endif
 }
 
+/* Apple's shortened listing of a long name fills 255 bytes. */
+static char shortened_name[256];
+
+/* "/Volumes/dk2/" and a name of length bytes ending in tail. */
+static const char *named_path(char *out, size_t size, size_t length, const char *tail)
+{
+	size_t prefix = strlen("/Volumes/dk2/"), pad = length - strlen(tail);
+
+	CHECK(prefix + length < size && strlen(tail) <= length);
+	memcpy(out, "/Volumes/dk2/", prefix);
+	memset(out + prefix, 'S', pad);
+	memcpy(out + prefix + pad, tail, strlen(tail) + 1);
+	return out;
+}
+
+/* Files the walk cannot use are left alone instead of failing the volume. */
+static void skips_tree(const char *root, char paths[][512], size_t count)
+{
+	const char *const names[] = {
+		"object", "lost", "long", shortened_name, "hidden", "hidden/inner",
+		"bad", "._bad", "odd", "._odd", "link", "._link", "eio", "._eio", "._gone",
+	};
+	size_t i;
+
+	CHECK(count == ARRAY_SIZE(names));
+	for (i = 0; i < count; i++) {
+		CHECK((size_t)snprintf(paths[i], 512, "%s/%s", root, names[i]) < 512);
+	}
+}
+
+/* Each reason keeps its own examples, so one that floods the walk cannot
+ * crowd out another; unreachable ._ names are only logged. */
+static void test_skip_examples(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct tc_skip_report report = {.ctx = frame};
+	struct tc_migration migration = {.mem_ctx = frame, .skipped = &report};
+	char path[64];
+	size_t i, vanished = 0;
+
+	for (i = 0; i < TC_SKIP_EXAMPLES + 2; i++) {
+		snprintf(path, sizeof(path), "/Volumes/dk2/gone%zu", i);
+		tc_skip_entry(&migration, TC_SKIP_NOT_FOUND, path);
+	}
+	tc_skip_entry(&migration, TC_SKIP_NAME_TOO_LONG, "/Volumes/dk2/Song#7A45B.tmp");
+	tc_skip_entry(&migration, TC_SKIP_NAME_TOO_LONG, "/Volumes/dk2/._Song#7A45C.tmp");
+	tc_skip_entry(&migration, TC_SKIP_NOT_FOUND, "/Volumes/dk2/._gone");
+	tc_skip_entry(&migration, TC_SKIP_MALFORMED, "/Volumes/dk2/._bad");
+	CHECK(report.by_reason[TC_SKIP_NOT_FOUND] == TC_SKIP_EXAMPLES + 2);
+	CHECK(report.by_reason[TC_SKIP_NAME_TOO_LONG] == 1 && report.by_reason[TC_SKIP_MALFORMED] == 1);
+	CHECK(tc_skipped(&report, true) == TC_SKIP_EXAMPLES + 3 && tc_skipped(&report, false) == 1);
+	CHECK(report.sidecars_unreachable == 2);
+	CHECK(report.count == TC_SKIP_EXAMPLES + 2);
+	for (i = 0; i < report.count; i++) {
+		vanished += report.items[i].reason == TC_SKIP_NOT_FOUND;
+		CHECK(strstr(report.items[i].path, "/._") == NULL || report.items[i].reason == TC_SKIP_MALFORMED);
+	}
+	CHECK(vanished == TC_SKIP_EXAMPLES);
+	CHECK(!strcmp(report.items[TC_SKIP_EXAMPLES].path, "/Volumes/dk2/Song#7A45B.tmp"));
+	TALLOC_FREE(frame);
+}
+
+/* A name lstat found but open cannot (renamed in between) is skipped too, and
+ * a folder skipped that way is not walked; any other open error still fails. */
+static void test_skip_on_open(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct tc_skip_report report = {.ctx = frame};
+	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY, .skipped = &report};
+	char root[PATH_MAX] = "/tmp/tc-skip-open.XXXXXX", moved[PATH_MAX], inner[PATH_MAX], kept[PATH_MAX];
+	struct stat st;
+
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
+	CHECK((size_t)snprintf(moved, sizeof(moved), "%s/moved", root) < sizeof(moved));
+	CHECK((size_t)snprintf(inner, sizeof(inner), "%s/inner", moved) < sizeof(inner));
+	CHECK((size_t)snprintf(kept, sizeof(kept), "%s/kept", root) < sizeof(kept));
+	CHECK(mkdir(moved, 0700) == 0);
+	write_file(inner, "x", 1);
+	write_file(kept, "x", 1);
+	CHECK(stat(root, &st) == 0);
+	m.root_dev = st.st_dev;
+	failed_open = "moved";
+	failed_open_error = ENOENT;
+	CHECK(tc_scan_path(&m, root, false, false) == 0);
+	/* The root, moved and kept were counted; inner was never reached. */
+	CHECK(m.counts.entries == 3);
+	CHECK(report.by_reason[TC_SKIP_NOT_FOUND] == 1 && report.count == 1);
+	CHECK(strcmp(report.items[0].path, moved) == 0);
+
+	failed_open_error = EACCES;
+	ZERO_STRUCT(m.counts);
+	CHECK(tc_scan_path(&m, root, false, false) == -1);
+	CHECK(m.first_error == EACCES && strcmp(m.first_error_path, moved) == 0);
+	CHECK(report.by_reason[TC_SKIP_NOT_FOUND] == 1);
+	failed_open = NULL;
+	CHECK(unlink(inner) == 0 && rmdir(moved) == 0 && unlink(kept) == 0 && rmdir(root) == 0);
+	TALLOC_FREE(frame);
+}
+
+static void test_skips(void)
+{
+	enum { OBJECT, LOST, LONG, SHORTENED, HIDDEN, INNER, BAD, BAD_AD, ODD, ODD_AD, LINK, LINK_AD, EIO_FILE, EIO_AD,
+	       GONE_AD, COUNT };
+	TALLOC_CTX *frame = talloc_stackframe();
+	char root[PATH_MAX] = "/tmp/tc-skips.XXXXXX", private_dir[128], old[160], newer[160];
+	char paths[COUNT][512], expected[2 * 512 + 64], path_hex[2 * 512], quarantine[192], named[512];
+	struct timeval dates[2] = {{.tv_sec = 1234567890}, {.tv_sec = 1234567890}};
+	struct tc_multi multi;
+	struct tc_counts counts;
+	struct file_id object_id, lost_id, inner_id;
+	struct stat st;
+	uint8_t malformed[82], unsupported[82], plain[82];
+	size_t i;
+
+	/* Only Apple's shortened form counts as a long name: a name that fills
+	 * the 255 bytes, short of one multibyte character, and ends in its
+	 * catalog id. Any other name lstat cannot find vanished. */
+	CHECK(tc_shortened_hfs_name(named_path(named, sizeof(named), 255, "#7A45B.tmp")));
+	CHECK(tc_shortened_hfs_name(named_path(named, sizeof(named), 255, "#7A45B")));
+	CHECK(tc_shortened_hfs_name(named_path(named, sizeof(named), 250, "#7A45B.tmp")));
+	CHECK(!tc_shortened_hfs_name(named_path(named, sizeof(named), 249, "#7A45B.tmp")));
+	CHECK(!tc_shortened_hfs_name(named_path(named, sizeof(named), 255, "#7a45b.tmp")));
+	CHECK(!tc_shortened_hfs_name(named_path(named, sizeof(named), 255, "#.tmp")));
+	CHECK(!tc_shortened_hfs_name(named_path(named, sizeof(named), 255, "#123456789.tmp")));
+	CHECK(!tc_shortened_hfs_name(named_path(named, sizeof(named), 255, "#7A45B-2.tmp")));
+	CHECK(!tc_shortened_hfs_name("/Volumes/dk2/Invoice #2024.pdf"));
+	snprintf(named, sizeof(named), "/Volumes/dk2/A#1/%0255d", 0);
+	CHECK(!tc_shortened_hfs_name(named));
+	memset(shortened_name, 'S', 255 - strlen("#7A45B.tmp"));
+	memcpy(shortened_name + 255 - strlen("#7A45B.tmp"), "#7A45B.tmp", sizeof("#7A45B.tmp"));
+
+	CHECK(mkdtemp(scratch_path(root, sizeof(root))) != NULL);
+	snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root);
+	CHECK(mkdir(private_dir, 0700) == 0);
+	snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
+	snprintf(newer, sizeof(newer), "%s/new.tdb", private_dir);
+	skips_tree(root, paths, COUNT);
+	CHECK(mkdir(paths[HIDDEN], 0700) == 0);
+	for (i = 0; i < COUNT; i++) {
+		if (i != HIDDEN && i != LINK_AD && (strstr(paths[i], "/._") == NULL || i == GONE_AD)) {
+			write_file(paths[i], "x", 1);
+		}
+	}
+	CHECK(stat(paths[OBJECT], &st) == 0); object_id = tc_file_id(&st);
+	CHECK(stat(paths[LOST], &st) == 0); lost_id = tc_file_id(&st);
+	CHECK(stat(paths[INNER], &st) == 0); inner_id = tc_file_id(&st);
+	multi_value(old, &object_id, "com.apple.test", "v", 1);
+	multi_value(newer, &object_id, "com.apple.test", "v", 1);
+	multi_value(old, &lost_id, "com.apple.lost", "l", 1);
+	multi_value(old, &inner_id, "com.apple.inner", "i", 1);
+	/* No entries at all: a container nothing in can be trusted. */
+	make_appledouble(malformed, sizeof(malformed), AFP_FinderSize, NULL, 0);
+	PUSH_BE_U16(malformed, 24, 0);
+	write_file(paths[BAD_AD], malformed, sizeof(malformed));
+	/* A FinderInfo worth migrating beside an entry this tool does not convert. */
+	make_appledouble(unsupported, sizeof(unsupported), AFP_FinderSize, NULL, 0);
+	unsupported[50] = 0x41;
+	PUSH_BE_U32(unsupported, 38, 3);
+	write_file(paths[ODD_AD], unsupported, sizeof(unsupported));
+	CHECK(symlink("object", paths[LINK_AD]) == 0);
+	make_appledouble(plain, sizeof(plain), AFP_FinderSize, NULL, 0);
+	write_file(paths[EIO_AD], plain, sizeof(plain));
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	failed_lstats[0].name = "lost"; failed_lstats[0].error = ENOENT;
+	failed_lstats[1].name = "long"; failed_lstats[1].error = ENAMETOOLONG;
+	failed_lstats[2].name = "hidden"; failed_lstats[2].error = ENOENT;
+	failed_lstats[3].name = "eio"; failed_lstats[3].error = ENOENT;
+	/* Apple's listing of a name over 255 bytes: lstat cannot find it. */
+	failed_lstats[4].name = shortened_name; failed_lstats[4].error = ENOENT;
+	/* A sidecar that vanished is logged, never reported. */
+	failed_lstats[5].name = "._gone"; failed_lstats[5].error = ENOENT;
+
+	multi_prepare(&multi, frame, root, old, newer);
+	reset_xattrs();
+	CHECK(tc_multi_scan(&multi, &counts) == 0);
+	CHECK(tc_skipped(&multi.skipped, true) == 5 && tc_skipped(&multi.skipped, false) == 3);
+	CHECK(multi.skipped.count == 8);
+	/* The vanished ._gone is counted apart, for the log only. */
+	CHECK(multi.skipped.sidecars_unreachable == 1);
+	CHECK(find_xattr("com.apple.test") != NULL);
+	CHECK(find_xattr(TC_FINDERINFO_XATTR) != NULL && find_xattr(TC_FINDERINFO_XATTR)->value[0] == 0x41);
+	CHECK(find_xattr("com.apple.lost") == NULL && find_xattr("com.apple.inner") == NULL);
+
+	/* Cleanup keeps every ._ file it could not use, and the rows of files it
+	 * never reached are orphans: retirement quarantines their database. */
+	multi.phase = TC_PHASE_CLEANUP;
+	CHECK(tc_multi_scan(&multi, &counts) == 0);
+	CHECK(access(paths[BAD_AD], F_OK) == 0 && access(paths[ODD_AD], F_OK) == 0);
+	CHECK(lstat(paths[LINK_AD], &st) == 0 && S_ISLNK(st.st_mode));
+	CHECK(counts.sidecars_kept == 2);
+	CHECK(coverage_of(&multi.sources[0], &object_id) == 1);
+	CHECK(coverage_of(&multi.sources[0], &lost_id) == 2);
+	CHECK(coverage_of(&multi.sources[0], &inner_id) == 2);
+
+	report_multi = &multi; report_counts = &counts;
+	CHECK(read_stdout_capture(print_multi_report, "", report_output, sizeof(report_output)) == 0);
+	CHECK(strstr(report_output, "\"skipped\":{\"not_found\":3,\"name_too_long\":2,\"malformed\":1,"
+			  "\"unsupported\":1,\"not_a_file\":1,\"items\":[") != NULL);
+	hex_string(path_hex, paths[LONG], strlen(paths[LONG]));
+	snprintf(expected, sizeof(expected),
+		 "{\"reason\":\"name_too_long\",\"path_hex\":\"%s\"}", path_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+	hex_string(path_hex, paths[SHORTENED], strlen(paths[SHORTENED]));
+	snprintf(expected, sizeof(expected),
+		 "{\"reason\":\"name_too_long\",\"path_hex\":\"%s\"}", path_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+	hex_string(path_hex, paths[ODD_AD], strlen(paths[ODD_AD]));
+	snprintf(expected, sizeof(expected),
+		 "{\"reason\":\"unsupported\",\"path_hex\":\"%s\"}", path_hex);
+	CHECK(strstr(report_output, expected) != NULL);
+	CHECK(strstr(report_output, "\"reason\":\"malformed\"") != NULL);
+	CHECK(strstr(report_output, "\"reason\":\"not_a_file\"") != NULL);
+	CHECK(strstr(report_output, "\"reason\":\"not_found\"") != NULL);
+	hex_string(path_hex, paths[GONE_AD], strlen(paths[GONE_AD]));
+	CHECK(strstr(report_output, path_hex) == NULL);
+
+	CHECK(tc_multi_retire(&multi) == 0);
+	CHECK(multi.sources[0].retired == 2 && multi.sources[1].retired == 1);
+	snprintf(quarantine, sizeof(quarantine), "%s.orphaned.1", old);
+	CHECK(access(old, F_OK) != 0 && access(newer, F_OK) != 0 && access(quarantine, F_OK) == 0);
+	CHECK(unlink(quarantine) == 0);
+
+	/* A read that fails on a ._ file is still an error, and the failure names
+	 * the first error and where it happened. */
+	failed_lstats[3].name = NULL;
+	CHECK(stat(paths[EIO_AD], &st) == 0);
+	injected_read_inode = st.st_ino;
+	injected_read_offset = 0;
+	multi_value(old, &object_id, "com.apple.test", "v", 1);
+	multi_value(newer, &object_id, "com.apple.test", "v", 1);
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	TALLOC_FREE(frame);
+	frame = talloc_stackframe();
+	multi_prepare(&multi, frame, root, old, newer);
+	reset_xattrs();
+	CHECK(tc_multi_scan(&multi, &counts) == -1);
+	CHECK(errno == EIO && multi.error_path != NULL && strcmp(multi.error_path, paths[EIO_FILE]) == 0);
+	injected_read_inode = 0;
+
+	/* Any other lstat error on a listed name still fails the walk. */
+	failed_lstats[3].name = "eio"; failed_lstats[3].error = EACCES;
+	reset_xattrs();
+	CHECK(tc_multi_scan(&multi, &counts) == -1);
+	CHECK(errno == EACCES && strcmp(multi.error_path, paths[EIO_FILE]) == 0);
+	failed_lstats[3].name = "eio"; failed_lstats[3].error = ENOENT;
+
+	/* A volume unmounted mid-walk fails the walk instead of passing as a
+	 * flood of skipped names, and cleanup removes nothing from it. */
+	multi.phase = TC_PHASE_CLEANUP;
+	reset_xattrs();
+	vanishing_root = root;
+	vanished_to[0] = '\0';
+	CHECK(tc_multi_scan(&multi, &counts) == -1);
+	CHECK(errno == ESTALE);
+	CHECK(coverage_of(&multi.sources[0], &object_id) == 0);
+	vanishing_root = NULL;
+	CHECK(rmdir(root) == 0 && rename(vanished_to, root) == 0);
+	CHECK(access(paths[BAD_AD], F_OK) == 0 && access(paths[OBJECT], F_OK) == 0);
+
+	ZERO_ARRAY(failed_lstats);
+	for (i = COUNT; i > 0; i--) {
+		if (i - 1 == HIDDEN) {
+			CHECK(rmdir(paths[HIDDEN]) == 0);
+		} else {
+			CHECK(unlink(paths[i - 1]) == 0);
+		}
+	}
+	unlink(old); unlink(newer); rmdir(private_dir); CHECK(rmdir(root) == 0);
+	TALLOC_FREE(frame);
+}
+
 static void test_oversized(void)
 {
 	test_oversized_record();
@@ -2926,6 +3247,11 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "drop_verified") == 0 || strcmp(argv[1], "all") == 0) {
 		test_drop_verified();
 	}
+	if (strcmp(argv[1], "skips") == 0 || strcmp(argv[1], "all") == 0) {
+		test_skip_examples();
+		test_skip_on_open();
+		test_skips();
+	}
 	if (strcmp(argv[1], "hfs") == 0 || strcmp(argv[1], "all") == 0) {
 		test_hfs();
 	}
@@ -2942,6 +3268,7 @@ int main(int argc, char **argv)
 	    strcmp(argv[1], "long_names") != 0 &&
 	    strcmp(argv[1], "folder_forks") != 0 &&
 	    strcmp(argv[1], "drop_verified") != 0 &&
+	    strcmp(argv[1], "skips") != 0 &&
 	    strcmp(argv[1], "hfs") != 0 &&
 	    strcmp(argv[1], "resume") != 0 &&
 	    strcmp(argv[1], "orphans") != 0 &&

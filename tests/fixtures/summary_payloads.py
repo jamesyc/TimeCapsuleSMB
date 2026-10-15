@@ -24,10 +24,10 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.core.summaries import Summary
-from timecapsulesmb.deploy.migration import OversizedSummary, OversizedValue
+from timecapsulesmb.deploy.migration import OversizedSummary, OversizedValue, SkippedEntry, SkippedSummary
 from timecapsulesmb.services.maintenance import fsck_failure_message, fsck_plan_to_jsonable, FsckTarget
 from timecapsulesmb.services.reachability import ReachabilityCheck, ReachabilityResult, result_from_checks, run_reachability
-from timecapsulesmb.services.deploy import WAITING_FOR_PREVIOUS_MIGRATION, _oversized_summaries
+from timecapsulesmb.services.deploy import WAITING_FOR_PREVIOUS_MIGRATION, _oversized_summaries, _skipped_summaries
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult, disable_set_ssh, enable_set_ssh
 from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.transport.ssh import SshConnection
@@ -119,6 +119,27 @@ def _kept_values_logs() -> list[tuple[str, str, str, bool, object]]:
         (f"log_kept_{name}_{index}", "log", "deploy", True, line)
         for name, summary in mixes.items()
         for index, line in enumerate(_oversized_summaries(summary))
+    ]
+
+
+def _skipped_logs() -> list[tuple[str, str, str, bool, object]]:
+    """The metadata migration's skipped-entries report: every reason with a
+    count of 1 and a larger count, and a list cut short by its examples."""
+    long_name = SkippedEntry("name_too_long", "/Volumes/dk2/Music/Song#7A45B.tmp")
+    mixes = {
+        "one_each": SkippedSummary(dict.fromkeys(("name_too_long", "not_found", "malformed", "unsupported",
+                                                  "not_a_file"), 1), [
+            long_name, SkippedEntry("not_found", "/Volumes/dk2/Downloads/part.tmp"),
+            SkippedEntry("malformed", "/Volumes/dk2/Photos/._x.jpg"),
+            SkippedEntry("unsupported", "/Volumes/dk2/Docs/._report.pdf"),
+            SkippedEntry("not_a_file", "/Volumes/dk2/._link")]),
+        "many": SkippedSummary({"name_too_long": 12, "not_found": 2, "malformed": 3, "unsupported": 2,
+                                "not_a_file": 2}, [long_name]),
+    }
+    return [
+        (f"log_skipped_{name}_{index}", "log", "deploy", True, line)
+        for name, summary in mixes.items()
+        for index, line in enumerate(_skipped_summaries(summary))
     ]
 
 
@@ -228,6 +249,7 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
     for name, ssh_result in _set_ssh_results():
         rows.append((name, result, "set-ssh", True, contracts.set_ssh_payload(ssh_result)))
     rows.extend(_kept_values_logs())
+    rows.extend(_skipped_logs())
     rows.append(("log_waiting_for_previous_migration", "log", "deploy", True, WAITING_FOR_PREVIOUS_MIGRATION))
     return rows
 

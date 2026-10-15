@@ -52,7 +52,7 @@ NATIVE_METADATA_CASES = (
 )
 XATTR_MIGRATE_CASES = (
     "guard", "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
-    "orphans", "multi", "oversized", "long_names", "folder_forks", "drop_verified", "hfs",
+    "orphans", "multi", "oversized", "long_names", "folder_forks", "drop_verified", "skips", "hfs",
 )
 NATIVE_LINKS_CASES = ("apple_format", "format_limits", "parse_rejects", "convert_created", "convert_write_only",
                       "convert_refused", "sole_open", "commit_races", "commit_failures", "rollback_races",

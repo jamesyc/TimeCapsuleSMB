@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Écriture de restauration en mémoire flash vérifiée ; redémarrage demandé.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Écriture de restauration en mémoire flash vérifiée ; appareil redémarré.";
 "backend.summary.flash_write_completed" = "Écriture en mémoire flash terminée.";
+"backend.summary.migration.skipped_path" = "  %@";
 "backend.summary.migration.waiting_for_previous" = "Attente de la fin de la migration des métadonnées d’une installation précédente...";
 "backend.summary.flash_write_not_needed" = "L’écriture en mémoire flash n’était pas nécessaire.";
 "backend.summary.fsck_completed" = "Réparation du disque terminée avec fsck.";

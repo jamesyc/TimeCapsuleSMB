@@ -44,7 +44,15 @@ from timecapsulesmb.deploy.executor import (
     remote_uninstall_payload,
     upload_deployment_payload,
 )
-from timecapsulesmb.deploy.migration import MigrationStalledError, OversizedSummary, OversizedValue, RAM_HELPER
+from timecapsulesmb.deploy.migration import (
+    MigrationStalledError,
+    OversizedSummary,
+    OversizedValue,
+    RAM_HELPER,
+    SKIP_REASONS,
+    SkippedEntry,
+    SkippedSummary,
+)
 from timecapsulesmb.deploy.planner import (
     BINARY_SERVICE_SOURCE,
     BINARY_RSYNC_SOURCE,
@@ -121,6 +129,8 @@ from timecapsulesmb.services.deploy import (
     DeployRuntimeConfig,
     PreparedDeployPlan,
     _oversized_summaries,
+    _share_path,
+    _skipped_summaries,
     complete_deployment_after_upload,
     device_has_no_internal_disk,
     mast_no_volume_error,
@@ -759,7 +769,8 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertIs(migrate.call_args_list[0].kwargs["inventory"], migrate.call_args_list[1].kwargs["inventory"])
                 self.assertNotIn("legacy_metadata", migrate.call_args_list[0].kwargs)
 
-    def _run_migration_reporting(self, summaries: dict[str, OversizedSummary | None], dropped: int = 0):
+    def _run_migration_reporting(self, summaries: dict[str, OversizedSummary | None], dropped: int = 0,
+                                 skipped: dict[str, SkippedSummary | None] | None = None):
         messages: list[str] = []
         measurements: list[tuple[str, dict[str, object]]] = []
         root = self._mast_volume()
@@ -767,7 +778,8 @@ class DeployModuleTests(unittest.TestCase):
         def migrate(_connection, _plan, *, phase, inventory):
             # Only cleanup's retirement can drop verified rows.
             rows = dropped if phase == "cleanup" else 0
-            return XattrMigrationResult(f"phase={phase}", (root,), (), summaries[phase], rows, bool(rows))
+            return XattrMigrationResult(f"phase={phase}", (root,), (), summaries[phase], rows, bool(rows),
+                                        (skipped or {}).get(phase))
 
         upload_and_verify_deployment_payload(
             AppConfig.from_values({}),
@@ -943,6 +955,126 @@ class DeployModuleTests(unittest.TestCase):
                 messages, migrations = self._run_migration_reporting({"copy": summary, "cleanup": summary})
                 self.assertEqual(self._kept_lines(messages), expected)
                 self.assertEqual([fields["oversized_folder_forks"] for fields in migrations], [summary.folder_forks] * 2)
+
+    def test_skipped_entries_are_shown_once_after_cleanup_and_recorded_without_paths(self) -> None:
+        # The native report lists 10 paths per reason.
+        long_names = [SkippedEntry("name_too_long", f"/Volumes/dk2/Music/Song {i}#7A45{i:X}.tmp") for i in range(10)]
+        damaged = SkippedEntry("malformed", "/Volumes/dk2/Photos/._private.jpg")
+        summary = SkippedSummary({"name_too_long": 12, "not_found": 0, "malformed": 1, "unsupported": 0,
+                                  "not_a_file": 0}, [*long_names, damaged])
+        messages, migrations = self._run_migration_reporting({"copy": None, "cleanup": None},
+                                                             skipped={"copy": summary, "cleanup": summary})
+
+        # Copy and cleanup walk the same tree: the user hears it once, after cleanup.
+        reported = [index for index, message in enumerate(messages) if "names too long for Samba" in message]
+        self.assertEqual(len(reported), 1)
+        cleanup_start = next(index for index, message in enumerate(messages)
+                             if message.startswith("Verifying native HFS metadata"))
+        self.assertGreater(reported[0], cleanup_start)
+        lines = messages[reported[0]:reported[0] + 14]
+        self.assertEqual(lines[0], "12 files have names too long for Samba on this device to open, so they are not "
+                                   "visible over SMB. To reach them, connect the disk to a Mac.")
+        self.assertEqual(lines[1:11], [f"  {entry.path}" for entry in long_names])
+        self.assertEqual(lines[11], "  ...and 2 more")
+        self.assertEqual(lines[12:], ["1 ._ file is damaged and was kept unchanged.", f"  {damaged.path}"])
+
+        # Telemetry gets each reason's count in both phases, never a path.
+        self.assertEqual([fields["phase"] for fields in migrations], ["copy", "cleanup"])
+        for fields in migrations:
+            self.assertEqual({key: value for key, value in fields.items() if key.startswith("skipped_")}, {
+                "skipped_name_too_long": 12, "skipped_not_found": 0, "skipped_malformed": 1,
+                "skipped_unsupported": 0, "skipped_not_a_file": 0})
+            self.assertFalse(any(entry.path in repr(fields) for entry in summary.entries))
+
+    def test_paths_are_shown_inside_their_shares(self) -> None:
+        internal = self._mast_volume("dk2", name="AirPort Disk")
+        external = self._mast_volume("dk4", disk_device="sd0", name="4TB", builtin=False)
+        volumes = (internal, external)
+        cases = (
+            # The internal disk's share is its ShareRoot folder by default.
+            ("/Volumes/dk2/ShareRoot/Photos/._x.jpg", False, "AirPort Disk/Photos/._x.jpg"),
+            ("/Volumes/dk2/ShareRoot/Photos/._x.jpg", True, "AirPort Disk/ShareRoot/Photos/._x.jpg"),
+            ("/Volumes/dk4/Music/song", False, "4TB/Music/song"),
+            ("/Volumes/dk4/Music/song", True, "4TB/Music/song"),
+            # Outside every share, or on a disk that only shares a prefix: as is.
+            ("/Volumes/dk2/Backups.backupdb/x", False, "/Volumes/dk2/Backups.backupdb/x"),
+            ("/Volumes/dk2/Backups.backupdb/x", True, "AirPort Disk/Backups.backupdb/x"),
+            ("/Volumes/dk40/x", False, "/Volumes/dk40/x"),
+            ("/Volumes/dk2/ShareRoot", False, "/Volumes/dk2/ShareRoot"),
+        )
+        for path, internal_root, expected in cases:
+            with self.subTest(path=path, internal_root=internal_root):
+                self.assertEqual(_share_path(path, volumes, internal_root), expected)
+
+        # Deploy shows the kept values and skipped entries that way, and
+        # sends the same paths as the message arguments the app translates.
+        inventory = fake_inventory()
+        inventory.volumes = volumes
+        skipped = SkippedSummary({**dict.fromkeys(SKIP_REASONS, 0), "malformed": 1},
+                                 [SkippedEntry("malformed", "/Volumes/dk2/ShareRoot/Photos/._x.jpg")])
+        kept = OversizedSummary(appledouble=1, values=[
+            OversizedValue("appledouble", "/Volumes/dk4/Music/song", "com.apple.big", 5000)])
+        with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: inventory):
+            messages, _ = self._run_migration_reporting({"copy": kept, "cleanup": kept},
+                                                        skipped={"copy": skipped, "cleanup": skipped})
+        self.assertIn("  AirPort Disk/Photos/._x.jpg", messages)
+        self.assertIn("  4TB/Music/song (com.apple.big, 5000 bytes)", messages)
+        self.assertFalse(any("/Volumes/" in message for message in messages if message.startswith("  ")))
+
+    def test_skipped_report_says_one_sentence_per_reason_in_order(self) -> None:
+        entry = {reason: SkippedEntry(reason, f"/Volumes/dk2/{reason}")
+                 for reason in ("name_too_long", "not_found", "malformed", "unsupported", "not_a_file")}
+        one = SkippedSummary({reason: 1 for reason in entry}, list(entry.values())[::-1])
+        lines = _skipped_summaries(one)
+        # A file that vanished mid-walk is routine while afpserver and Time
+        # Machine keep working, and leaves nothing to do: it is never shown.
+        self.assertEqual([line.key for line in lines], [
+            "migration.skipped_name_too_long", "migration.skipped_path",
+            "migration.skipped_malformed", "migration.skipped_path",
+            "migration.skipped_unsupported", "migration.skipped_path",
+            "migration.skipped_not_a_file", "migration.skipped_path"])
+        self.assertEqual([line.text for line in lines], [
+            "1 file has a name too long for Samba on this device to open, so it is not visible over SMB. To reach "
+            "it, connect the disk to a Mac.",
+            "  /Volumes/dk2/name_too_long",
+            "1 ._ file is damaged and was kept unchanged.",
+            "  /Volumes/dk2/malformed",
+            "1 ._ file holds entries TimeCapsuleSMB does not convert. Its supported metadata was migrated, and the "
+            "file was kept.",
+            "  /Volumes/dk2/unsupported",
+            "1 ._ entry is not a regular file and was kept.",
+            "  /Volumes/dk2/not_a_file"])
+        self.assertEqual(lines[1].args, ("/Volumes/dk2/name_too_long",))
+
+        # A reason whose entries the capped list left out still gets its
+        # sentence, and the paths it lacks are counted, not invented.
+        two = SkippedSummary({"name_too_long": 0, "not_found": 2, "malformed": 0, "unsupported": 2,
+                              "not_a_file": 2}, [entry["unsupported"]])
+        lines = _skipped_summaries(two)
+        self.assertEqual([line.key for line in lines][-1], "migration.skipped_more")
+        self.assertEqual([line.text for line in lines], [
+            "2 ._ files hold entries TimeCapsuleSMB does not convert. Their supported metadata was migrated, and "
+            "the files were kept.",
+            "  /Volumes/dk2/unsupported",
+            "  ...and 1 more",
+            "2 ._ entries are not regular files and were kept.",
+            "  ...and 2 more"])
+
+    def test_no_skipped_message_when_nothing_was_skipped_or_files_only_vanished(self) -> None:
+        vanished = SkippedSummary({**dict.fromkeys(SKIP_REASONS, 0), "not_found": 3},
+                                  [SkippedEntry("not_found", "/Volumes/dk2/Backups.backupdb/band.tmp")])
+        for skipped in ({"copy": SkippedSummary(), "cleanup": SkippedSummary()}, {"copy": None, "cleanup": None},
+                        {"copy": vanished, "cleanup": vanished}):
+            with self.subTest(skipped=skipped):
+                messages, migrations = self._run_migration_reporting({"copy": None, "cleanup": None},
+                                                                     skipped=skipped)
+                self.assertFalse(any("skipped" in message or "._ " in message for message in messages))
+                self.assertFalse(any("band.tmp" in message or "disappeared" in message for message in messages))
+                if skipped["copy"] is None:
+                    self.assertNotIn("skipped_not_found", migrations[0])
+                else:
+                    # Telemetry still counts them.
+                    self.assertEqual(migrations[1]["skipped_not_found"], skipped["copy"].counts["not_found"])
 
     def test_dropped_verified_rows_are_recorded_for_cleanup_without_the_copy_path(self) -> None:
         for dropped in (0, 3):

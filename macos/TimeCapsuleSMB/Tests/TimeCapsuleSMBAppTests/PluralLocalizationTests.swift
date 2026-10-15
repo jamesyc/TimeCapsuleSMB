@@ -148,7 +148,7 @@ final class PluralLocalizationTests: XCTestCase {
     func testEveryPluralKeyRendersTheExpectedFormAtEveryBoundaryCount() throws {
         let cldr = try loadCLDR()
         let english = try pluralEntries(.english)
-        XCTAssertEqual(english.count, 15)
+        XCTAssertEqual(english.count, 20)
         XCTAssertEqual(Set(cldr.categories.keys), Set(Self.languages.map(\.rawValue)))
         for language in Self.languages {
             let entries = try pluralEntries(language)

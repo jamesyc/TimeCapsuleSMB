@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -27,7 +27,9 @@ from timecapsulesmb.deploy.migration import (
     NATIVE_XATTR_LIMIT,
     OversizedSummary,
     RAM_HELPER,
+    SKIP_REASONS,
     STALL_SECONDS,
+    SkippedSummary,
     inspect_sources,
     inventory_metadata,
 )
@@ -85,6 +87,7 @@ from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_DELAY_SECONDS,
     MaStDiskSnapshot,
     MaStDiscoveryResult,
+    MaStVolume,
     PayloadHome,
     PayloadHomeSelection,
     PayloadVerificationResult,
@@ -183,7 +186,29 @@ def _counted(count: int, one: str, other: str) -> str:
     return (one if count == 1 else other).replace("%lld", str(count))
 
 
-def _oversized_summaries(oversized: OversizedSummary) -> list[Summary]:
+def _effective_internal_root(config: AppConfig, override: bool | None) -> bool:
+    """Whether the internal disk's share is the whole disk, not ShareRoot."""
+    if override is not None:
+        return override
+    return parse_bool(config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"]))
+
+
+def _share_path(path: str, volumes: Sequence[MaStVolume], internal_root: bool) -> str:
+    """A device path as a Mac sees it over SMB: the share's name, then the
+    path inside the share. A share is named after its volume; the device adds
+    a suffix only when two volumes have the same name and shortens only a
+    name too long for its Bonjour record, which this does not repeat. A path
+    in no share stays as it is."""
+    for volume in volumes:
+        root = volume.volume_root.rstrip("/")
+        share = f"{root}/ShareRoot" if volume.builtin and not internal_root else root
+        if path.startswith(share + "/"):
+            return f"{volume.name}/{path[len(share) + 1:]}"
+    return path
+
+
+def _oversized_summaries(oversized: OversizedSummary,
+                         display: Callable[[str], str] = lambda path: path) -> list[Summary]:
     """Shown after cleanup, when the kept values and their database's fate are
     final. Each line is one whole sentence the app translates by its key; the
     sentences that do not apply are left out, not rephrased."""
@@ -230,15 +255,71 @@ def _oversized_summaries(oversized: OversizedSummary) -> list[Summary]:
     for value in shown:
         size = _counted(value.size, "%lld byte", "%lld bytes")
         if value.reason == "folder_fork":
-            lines.append(Summary("migration.kept_folder_fork", f"  {value.path} (folder resource fork, {size})",
-                                 (value.path, value.size)))
+            path = display(value.path)
+            lines.append(Summary("migration.kept_folder_fork", f"  {path} (folder resource fork, {size})",
+                                 (path, value.size)))
         else:
-            lines.append(Summary("migration.kept_value", f"  {value.path} ({value.name}, {size})",
-                                 (value.path, value.name, value.size)))
+            path = display(value.path)
+            lines.append(Summary("migration.kept_value", f"  {path} ({value.name}, {size})",
+                                 (path, value.name, value.size)))
     if total > len(shown):
         more = total - len(shown)
         lines.append(Summary("migration.kept_more", f"  ...and {more} more", (more,)))
     return lines
+
+
+# One sentence per reason the user is told about, singular and plural, in
+# SKIP_REASONS order. Files that vanished mid-walk are left out: afpserver and
+# Time Machine keep working during deploy, so it is routine and leaves nothing
+# to do. Their counts still go to the log and telemetry.
+SKIPPED_SENTENCES = {
+    "name_too_long": (
+        "%lld file has a name too long for Samba on this device to open, so it is not visible over SMB. "
+        "To reach it, connect the disk to a Mac.",
+        "%lld files have names too long for Samba on this device to open, so they are not visible over SMB. "
+        "To reach them, connect the disk to a Mac.",
+    ),
+    "malformed": (
+        "%lld ._ file is damaged and was kept unchanged.",
+        "%lld ._ files are damaged and were kept unchanged.",
+    ),
+    "unsupported": (
+        "%lld ._ file holds entries TimeCapsuleSMB does not convert. Its supported metadata was migrated, "
+        "and the file was kept.",
+        "%lld ._ files hold entries TimeCapsuleSMB does not convert. Their supported metadata was migrated, "
+        "and the files were kept.",
+    ),
+    "not_a_file": (
+        "%lld ._ entry is not a regular file and was kept.",
+        "%lld ._ entries are not regular files and were kept.",
+    ),
+}
+
+
+def _skipped_summaries(skipped: SkippedSummary,
+                       display: Callable[[str], str] = lambda path: path) -> list[Summary]:
+    """Shown after cleanup, like the kept values: each reason that occurred,
+    then the paths the native report listed for it (SKIPPED_EXAMPLES)."""
+    lines: list[Summary] = []
+    for reason, sentences in SKIPPED_SENTENCES.items():
+        count = skipped.counts[reason]
+        if not count:
+            continue
+        lines.append(Summary(f"migration.skipped_{reason}", _counted(count, *sentences), (count,)))
+        listed = [entry for entry in skipped.entries if entry.reason == reason]
+        lines.extend(Summary("migration.skipped_path", f"  {path}", (path,))
+                     for path in (display(entry.path) for entry in listed))
+        if count > len(listed):
+            more = count - len(listed)
+            lines.append(Summary("migration.skipped_more", f"  ...and {more} more", (more,)))
+    return lines
+
+
+def _skipped_measurement(skipped: SkippedSummary | None) -> dict[str, object]:
+    """Counts only: paths name the user's files."""
+    if skipped is None:
+        return {}
+    return {f"skipped_{reason}": skipped.counts[reason] for reason in SKIP_REASONS}
 
 
 def _oversized_measurement(oversized: OversizedSummary | None) -> dict[str, object]:
@@ -1019,6 +1100,11 @@ def upload_and_verify_deployment_payload(
     inventory = inventory_metadata(connection, plan)
     callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
                     legacy_unavailable_roots=inventory.unavailable)
+    # Kept and skipped paths are shown inside their shares, as a Mac sees them.
+    internal_root = _effective_internal_root(config, runtime_config.internal_share_use_disk_root)
+
+    def share_path(path: str) -> str:
+        return _share_path(path, inventory.volumes, internal_root)
 
     def raise_migration_failure(phase: str, started: float, log: str | None, exc: Exception) -> None:
         elapsed = round(time.monotonic() - started, 3)
@@ -1097,12 +1183,17 @@ def upload_and_verify_deployment_payload(
             log_path=migration_log,
             result="success",
             **_oversized_measurement(oversized),
+            **_skipped_measurement(migration_result.skipped),
             **dropped,
         )
         # Copy and cleanup find the same values; tell the user once, after
         # cleanup has verified the rest and retired (or kept) the database.
         if phase == "cleanup" and oversized is not None and oversized.total:
-            for line in _oversized_summaries(oversized):
+            for line in _oversized_summaries(oversized, share_path):
+                callbacks.message(line)
+        # Copy and cleanup walk the same tree, so cleanup's list is complete.
+        if phase == "cleanup" and migration_result.skipped is not None:
+            for line in _skipped_summaries(migration_result.skipped, share_path):
                 callbacks.message(line)
         callbacks.debug(
             **{
@@ -1538,7 +1629,6 @@ def render_flash_runtime_config(
     ata_standby: str | int | None = None,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
-    internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
     smb_browse_compatibility_default = config.get(
         "TC_SMB_BROWSE_COMPATIBILITY",
         DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"],
@@ -1571,11 +1661,7 @@ def render_flash_runtime_config(
         if ata_standby is None
         else _runtime_unsigned_override_value(ata_standby)
     )
-    effective_internal_root = (
-        parse_bool(internal_root_default)
-        if internal_share_use_disk_root is None
-        else internal_share_use_disk_root
-    )
+    effective_internal_root = _effective_internal_root(config, internal_share_use_disk_root)
     effective_any_protocol = (
         parse_bool(any_protocol_default)
         if any_protocol is None

@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Herstel naar flash geverifieerd; herstart aangevraagd.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Herstel naar flash geverifieerd; apparaat herstart.";
 "backend.summary.flash_write_completed" = "Schrijven naar flash voltooid.";
+"backend.summary.migration.skipped_path" = "  %@";
 "backend.summary.migration.waiting_for_previous" = "Wachten tot de metadatamigratie van een eerdere installatie klaar is...";
 "backend.summary.flash_write_not_needed" = "Schrijven naar flash was niet nodig.";
 "backend.summary.fsck_completed" = "Schijfreparatie voltooid met fsck.";

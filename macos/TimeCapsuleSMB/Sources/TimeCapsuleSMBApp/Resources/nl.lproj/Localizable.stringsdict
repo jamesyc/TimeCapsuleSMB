@@ -226,6 +226,86 @@
 			<string>%lld bytes</string>
 		</dict>
 	</dict>
+	<key>backend.summary.migration.skipped_malformed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld ._-bestand is beschadigd en is ongewijzigd bewaard.</string>
+			<key>other</key>
+			<string>%lld ._-bestanden zijn beschadigd en zijn ongewijzigd bewaard.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@more@</string>
+		<key>more</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>  ...en nog %lld</string>
+			<key>other</key>
+			<string>  ...en nog %lld</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_name_too_long</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld bestand heeft een naam die te lang is om door Samba op dit apparaat te worden geopend, dus het is niet zichtbaar via SMB. Sluit de schijf aan op een Mac om het te bereiken.</string>
+			<key>other</key>
+			<string>%lld bestanden hebben namen die te lang zijn om door Samba op dit apparaat te worden geopend, dus ze zijn niet zichtbaar via SMB. Sluit de schijf aan op een Mac om ze te bereiken.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_not_a_file</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@entries@</string>
+		<key>entries</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld ._-item is geen gewoon bestand en is bewaard.</string>
+			<key>other</key>
+			<string>%lld ._-items zijn geen gewone bestanden en zijn bewaard.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_unsupported</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld ._-bestand bevat items die TimeCapsuleSMB niet omzet. De ondersteunde metadata ervan zijn gemigreerd en het bestand is bewaard.</string>
+			<key>other</key>
+			<string>%lld ._-bestanden bevatten items die TimeCapsuleSMB niet omzet. De ondersteunde metadata ervan zijn gemigreerd en de bestanden zijn bewaard.</string>
+		</dict>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

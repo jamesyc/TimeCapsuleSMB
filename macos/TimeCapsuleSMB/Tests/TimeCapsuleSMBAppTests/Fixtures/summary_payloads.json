@@ -2628,6 +2628,261 @@
   {
     "event": {
       "level": "info",
+      "message": "1 file has a name too long for Samba on this device to open, so it is not visible over SMB. To reach it, connect the disk to a Mac.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.skipped_name_too_long",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_0"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Music/Song#7A45B.tmp",
+      "message_args": [
+        "/Volumes/dk2/Music/Song#7A45B.tmp"
+      ],
+      "message_key": "migration.skipped_path",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_1"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 ._ file is damaged and was kept unchanged.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.skipped_malformed",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_2"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Photos/._x.jpg",
+      "message_args": [
+        "/Volumes/dk2/Photos/._x.jpg"
+      ],
+      "message_key": "migration.skipped_path",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_3"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 ._ file holds entries TimeCapsuleSMB does not convert. Its supported metadata was migrated, and the file was kept.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.skipped_unsupported",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_4"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Docs/._report.pdf",
+      "message_args": [
+        "/Volumes/dk2/Docs/._report.pdf"
+      ],
+      "message_key": "migration.skipped_path",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_5"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "1 ._ entry is not a regular file and was kept.",
+      "message_args": [
+        1
+      ],
+      "message_key": "migration.skipped_not_a_file",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_6"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/._link",
+      "message_args": [
+        "/Volumes/dk2/._link"
+      ],
+      "message_key": "migration.skipped_path",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_one_each_7"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "12 files have names too long for Samba on this device to open, so they are not visible over SMB. To reach them, connect the disk to a Mac.",
+      "message_args": [
+        12
+      ],
+      "message_key": "migration.skipped_name_too_long",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_0"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  /Volumes/dk2/Music/Song#7A45B.tmp",
+      "message_args": [
+        "/Volumes/dk2/Music/Song#7A45B.tmp"
+      ],
+      "message_key": "migration.skipped_path",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_1"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  ...and 11 more",
+      "message_args": [
+        11
+      ],
+      "message_key": "migration.skipped_more",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_2"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "3 ._ files are damaged and were kept unchanged.",
+      "message_args": [
+        3
+      ],
+      "message_key": "migration.skipped_malformed",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_3"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  ...and 3 more",
+      "message_args": [
+        3
+      ],
+      "message_key": "migration.skipped_more",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_4"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "2 ._ files hold entries TimeCapsuleSMB does not convert. Their supported metadata was migrated, and the files were kept.",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.skipped_unsupported",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_5"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  ...and 2 more",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.skipped_more",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_6"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "2 ._ entries are not regular files and were kept.",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.skipped_not_a_file",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_7"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "  ...and 2 more",
+      "message_args": [
+        2
+      ],
+      "message_key": "migration.skipped_more",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_skipped_many_8"
+  },
+  {
+    "event": {
+      "level": "info",
       "message": "Waiting for the metadata migration from an earlier installation to finish...",
       "message_args": [],
       "message_key": "migration.waiting_for_previous",

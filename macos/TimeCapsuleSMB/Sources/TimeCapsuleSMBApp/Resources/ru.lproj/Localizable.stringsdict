@@ -312,6 +312,106 @@
 			<string>%lld байта</string>
 		</dict>
 	</dict>
+	<key>backend.summary.migration.skipped_malformed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld файла ._ повреждены и сохранены без изменений.</string>
+			<key>many</key>
+			<string>%lld файлов ._ повреждены и сохранены без изменений.</string>
+			<key>one</key>
+			<string>%lld файл ._ поврежден и сохранен без изменений.</string>
+			<key>other</key>
+			<string>%lld файла ._ повреждены и сохранены без изменений.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@more@</string>
+		<key>more</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>  ...и еще %lld</string>
+			<key>many</key>
+			<string>  ...и еще %lld</string>
+			<key>one</key>
+			<string>  ...и еще %lld</string>
+			<key>other</key>
+			<string>  ...и еще %lld</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_name_too_long</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld файла имеют слишком длинные имена, чтобы Samba на этом устройстве могла их открыть, поэтому они не видны по SMB. Чтобы получить к ним доступ, подключите диск к Mac.</string>
+			<key>many</key>
+			<string>%lld файлов имеют слишком длинные имена, чтобы Samba на этом устройстве могла их открыть, поэтому они не видны по SMB. Чтобы получить к ним доступ, подключите диск к Mac.</string>
+			<key>one</key>
+			<string>%lld файл имеет слишком длинное имя, чтобы Samba на этом устройстве могла его открыть, поэтому он не виден по SMB. Чтобы получить к нему доступ, подключите диск к Mac.</string>
+			<key>other</key>
+			<string>%lld файла имеют слишком длинные имена, чтобы Samba на этом устройстве могла их открыть, поэтому они не видны по SMB. Чтобы получить к ним доступ, подключите диск к Mac.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_not_a_file</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@entries@</string>
+		<key>entries</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld элемента ._ не являются обычными файлами и сохранены.</string>
+			<key>many</key>
+			<string>%lld элементов ._ не являются обычными файлами и сохранены.</string>
+			<key>one</key>
+			<string>%lld элемент ._ не является обычным файлом и сохранен.</string>
+			<key>other</key>
+			<string>%lld элемента ._ не являются обычными файлами и сохранены.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_unsupported</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>few</key>
+			<string>%lld файла ._ содержат записи, которые TimeCapsuleSMB не преобразует. Поддерживаемые метаданные из них перенесены, а сами файлы сохранены.</string>
+			<key>many</key>
+			<string>%lld файлов ._ содержат записи, которые TimeCapsuleSMB не преобразует. Поддерживаемые метаданные из них перенесены, а сами файлы сохранены.</string>
+			<key>one</key>
+			<string>%lld файл ._ содержит записи, которые TimeCapsuleSMB не преобразует. Поддерживаемые метаданные из него перенесены, а сам файл сохранен.</string>
+			<key>other</key>
+			<string>%lld файла ._ содержат записи, которые TimeCapsuleSMB не преобразует. Поддерживаемые метаданные из них перенесены, а сами файлы сохранены.</string>
+		</dict>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

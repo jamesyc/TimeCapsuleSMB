@@ -26,6 +26,7 @@ KEY_B = "02000000000000000100000000000000"
 UUID_C = "33333333-3333-3333-3333-333333333333"
 KEY_C = "03000000000000000100000000000000"
 NO_OVERSIZED = {"tdb": 0, "appledouble": 0, "folder_forks": 0, "items": []}
+NO_SKIPPED = {"name_too_long": 0, "not_found": 0, "malformed": 0, "unsupported": 0, "not_a_file": 0, "items": []}
 CONTAINER = "/Volumes/dk2/Users/me/Library/Containers/com.example.app"
 PERSONALITY = "com.apple.data-container-personality"
 
@@ -33,6 +34,14 @@ PERSONALITY = "com.apple.data-container-personality"
 def oversized_item(path=CONTAINER, name=PERSONALITY, size=12979, kind="tdb", reason="size"):
     return {"kind": kind, "reason": reason, "path_hex": os.fsencode(path).hex(),
             "name_hex": os.fsencode(name).hex(), "size": size}
+
+
+def skipped_item(path="/Volumes/dk2/Music/Song#7A45B.tmp", reason="name_too_long"):
+    return {"reason": reason, "path_hex": os.fsencode(path).hex()}
+
+
+def skipped_block(items=(), **counts):
+    return {**NO_SKIPPED, **counts, "items": list(items)}
 
 
 def fake_inventory():
@@ -62,7 +71,7 @@ def device(tmp_path, monkeypatch):
     # as Apple's dkN renumbering changes it.
     state = SimpleNamespace(volumes=volumes, source=source, calls=[], mounted={UUID_A, UUID_B}, fail=None,
                             reads=[], native={UUID_A: "old", UUID_B: "old"},
-                            kind={UUID_A: "M", UUID_B: "M"}, oversized={}, rows={}, absent=True,
+                            kind={UUID_A: "M", UUID_B: "M"}, oversized={}, skipped={}, rows={}, absent=True,
                             dropped=False, fail_save_after_drop=set(), moved=False, dev={})
     keys = {UUID_A: KEY_A, UUID_B: KEY_B, UUID_C: KEY_C}
     monkeypatch.setattr(m, "read_mast_volumes_conn", lambda _conn: state.volumes)
@@ -108,7 +117,7 @@ def device(tmp_path, monkeypatch):
             # The helper's whole-cohort preflight: any unnamed row anywhere defers.
             deferred = state.absent or any(
                 held - {uuid for _kind, uuid in named} for held, named in zip(rows, covered))
-            report = {"version": 1, "entries": 0, "oversized": NO_OVERSIZED, "sources": [
+            report = {"version": 1, "entries": 0, "oversized": NO_OVERSIZED, "skipped": NO_SKIPPED, "sources": [
                 {"index": i, "total": 2, "coverage": [], "retired": 0, "deleted": 0} for i in range(len(sources))]}
             if not deferred:
                 # Aliases first, then the file: quarantined whole when an orphaned
@@ -141,7 +150,8 @@ def device(tmp_path, monkeypatch):
         key = roots[0][1]
         if phase == "copy" and any(key in held for held in rows):
             state.native[key] = "migrated"
-        return {"version": 1, "entries": 3, "oversized": state.oversized.get(key, NO_OVERSIZED), "sources": [
+        return {"version": 1, "entries": 3, "oversized": state.oversized.get(key, NO_OVERSIZED),
+                "skipped": state.skipped.get(key, NO_SKIPPED), "sources": [
             {"index": i, "total": 2, "retired": 0, "deleted": 0,
              "coverage": [[state.kind[key], keys[key]]] if phase == "cleanup" and key in rows[i] else []}
             for i in range(len(sources))]}
@@ -478,6 +488,9 @@ def test_rejects_unknown_duplicate_and_excess_key_coverage(device, change):
                                     "oversized_name_hex", "oversized_kind", "oversized_fits_natively",
                                     "oversized_reason", "oversized_folder_forks_missing",
                                     "oversized_folder_forks_over_count", "oversized_empty_folder_fork",
+                                    "skipped_missing", "skipped_reason_missing", "skipped_negative", "skipped_type",
+                                    "skipped_more_items_than_counted", "skipped_more_items_than_their_reason",
+                                    "skipped_over_limit", "skipped_over_reason_limit", "skipped_item_reason", "skipped_path_hex", "skipped_item_type",
                                     "deleted_missing", "deleted_type", "deleted_negative", "deleted_without_d",
                                     "backup_without_deleted"])
 def test_native_report_validation_rejects_status_and_schema_mismatches(device, change):
@@ -486,10 +499,13 @@ def test_native_report_validation_rejects_status_and_schema_mismatches(device, c
         "version": 1,
         "entries": 1,
         "oversized": {"tdb": 1, "appledouble": 0, "folder_forks": 0, "items": [oversized_item()]},
+        "skipped": skipped_block([skipped_item(), skipped_item("/Volumes/dk2/._x", "malformed")],
+                                 name_too_long=1, malformed=1),
         "sources": [{"index": 0, "total": 1, "retired": 0, "deleted": 0, "coverage": [["M", KEY_A]]}],
     }
     m.validate_native_report(copy.deepcopy(report), inv)
     item = report["oversized"]["items"][0]
+    skipped = report["skipped"]
     if change == "version": report["version"] = True
     elif change == "entries": report["entries"] = True
     elif change == "count": report["sources"] = []
@@ -512,6 +528,22 @@ def test_native_report_validation_rejects_status_and_schema_mismatches(device, c
     elif change == "oversized_folder_forks_over_count": report["oversized"]["folder_forks"] = 2
     elif change == "oversized_empty_folder_fork": item.update(reason="folder_fork", size=0)
     elif change == "oversized_fits_natively": item["size"] = m.NATIVE_XATTR_LIMIT
+    elif change == "skipped_missing": del report["skipped"]
+    elif change == "skipped_reason_missing": del skipped["not_a_file"]
+    elif change == "skipped_negative": skipped["not_found"] = -1
+    elif change == "skipped_type": skipped["unsupported"] = True
+    elif change == "skipped_more_items_than_counted": skipped.update(name_too_long=0, malformed=0)
+    # The total covers both items, but no malformed entry was counted.
+    elif change == "skipped_more_items_than_their_reason": skipped.update(name_too_long=2, malformed=0)
+    elif change == "skipped_over_limit":
+        skipped.update(**dict.fromkeys(m.SKIP_REASONS, 11),
+                       items=[skipped_item(reason=reason) for reason in m.SKIP_REASONS for _ in range(10)] * 2)
+    # The native report lists at most SKIPPED_EXAMPLES paths per reason.
+    elif change == "skipped_over_reason_limit":
+        skipped.update(not_found=11, items=[skipped_item(reason="not_found")] * 11)
+    elif change == "skipped_item_reason": skipped["items"][0]["reason"] = "vanished"
+    elif change == "skipped_path_hex": skipped["items"][0]["path_hex"] = "not hex"
+    elif change == "skipped_item_type": skipped["items"][0] = "/Volumes/dk2/a"
     elif change == "deleted_missing": del report["sources"][0]["deleted"]
     elif change == "deleted_type": report["sources"][0]["deleted"] = True
     elif change == "deleted_negative": report["sources"][0]["deleted"] = -1
@@ -523,7 +555,7 @@ def test_native_report_validation_rejects_status_and_schema_mismatches(device, c
 
 
 def drop_report(deleted=1, retired=0, backup="/x.orphaned.1"):
-    report = {"version": 1, "entries": 0, "oversized": NO_OVERSIZED,
+    report = {"version": 1, "entries": 0, "oversized": NO_OVERSIZED, "skipped": NO_SKIPPED,
               "sources": [{"index": 0, "total": 3, "retired": retired, "deleted": deleted, "coverage": [["O", KEY_B]]}]}
     if backup is not None:
         report["backup_hex"] = os.fsencode(backup).hex()
@@ -563,6 +595,7 @@ def test_native_report_accepts_kept_values_and_decodes_them(device):
         "entries": 1,
         "oversized": {"tdb": 60, "appledouble": 1, "folder_forks": 0, "items": [oversized_item(size=3803)] * 49 + [
             oversized_item("/Volumes/dk2/Photos/._x", "com.apple.big", 5000, "appledouble")]},
+        "skipped": NO_SKIPPED,
         "sources": [{"index": 0, "total": 2, "retired": 0, "deleted": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
     }
     coverage = m.validate_native_report(report, inv)
@@ -583,6 +616,7 @@ def test_native_report_accepts_folder_forks_of_any_size(device):
             oversized_item("/Volumes/dk2/pass.txt.rtfd", "com.apple.ResourceFork", 64, "appledouble", "folder_fork"),
             oversized_item("/Volumes/dk2/Old.rtfd", "com.apple.ResourceFork", 10, "tdb", "folder_fork"),
             oversized_item("/Volumes/dk2/Photos/._x", "com.apple.big", 5000, "appledouble")]},
+        "skipped": NO_SKIPPED,
         "sources": [{"index": 0, "total": 2, "retired": 0, "deleted": 0, "coverage": [["X", KEY_A], ["M", KEY_B]]}],
     }
     m.validate_native_report(report, inv)
@@ -664,6 +698,57 @@ def test_reported_names_are_decoded_for_display_only():
     value = m.decode_oversized(report).values[0]
     assert value.path == "/Volumes/dk2/caf\ufffd" and value.name == "com.apple.\ufffd"
     (value.path + value.name).encode("utf-8", "strict")
+
+
+def test_skipped_entries_complete_the_volume_and_their_rows_quarantine_the_database(device):
+    """A name the device cannot open no longer fails the volume. Its row stays
+    unmatched, so cleanup marks it orphaned and retirement keeps the database
+    as xattr.tdb.orphaned.N instead of deleting it."""
+    device.skipped[UUID_A] = skipped_block([skipped_item(), skipped_item("/Volumes/dk2/Photos/._x", "malformed")],
+                                           name_too_long=1, malformed=1)
+    device.kind[UUID_A] = "O"
+    device.absent = False
+    inv = device.inventory(); device.inspect(inv)
+    copy_output = device.phase(inv, "copy")
+    output = device.phase(inv, "cleanup")
+    for phase, text in (("copy", copy_output), ("cleanup", output)):
+        assert (f"phase={phase} uuid={UUID_A} entries=3 oversized_tdb=0 oversized_appledouble=0 folder_forks=0 "
+                "skipped_name_too_long=1 skipped_malformed=1 complete") in text
+        assert inv.skipped[phase].counts == {"name_too_long": 1, "not_found": 0, "malformed": 1,
+                                             "unsupported": 0, "not_a_file": 0}
+        assert inv.skipped[phase].entries == [
+            m.SkippedEntry("name_too_long", "/Volumes/dk2/Music/Song#7A45B.tmp"),
+            m.SkippedEntry("malformed", "/Volumes/dk2/Photos/._x")]
+    # The volume without skips says nothing about them.
+    assert f"phase=copy uuid={UUID_B} entries=3 oversized_tdb=0 oversized_appledouble=0 folder_forks=0 complete" \
+        in copy_output
+    assert (f"retired source=.samba4/private/xattr.tdb uuid={UUID_A} outcome=quarantined "
+            "orphaned=1 oversized=0") in output
+    assert not device.source.exists() and Path(f"{device.source}.orphaned.1").exists()
+
+
+def test_skipped_examples_of_every_reason_survive_a_volume_that_filled_the_list():
+    full = m.SkippedSummary({**dict.fromkeys(m.SKIP_REASONS, 0), "not_found": 80},
+                            [m.SkippedEntry("not_found", f"/Volumes/dk2/{i}") for i in range(m.SKIPPED_EXAMPLES)])
+    later = m.SkippedSummary({**dict.fromkeys(m.SKIP_REASONS, 0), "not_found": 3, "name_too_long": 1},
+                             [m.SkippedEntry("not_found", "/Volumes/dk3/a"),
+                              m.SkippedEntry("name_too_long", "/Volumes/dk3/Song#1F.tmp")])
+    total = m.SkippedSummary()
+    total.add(full)
+    total.add(later)
+    assert total.counts["not_found"] == 83 and total.counts["name_too_long"] == 1 and total.total == 84
+    # Each reason keeps up to SKIPPED_EXAMPLES examples of its own.
+    assert sum(entry.reason == "not_found" for entry in total.entries) == m.SKIPPED_EXAMPLES
+    assert m.SkippedEntry("not_found", "/Volumes/dk3/a") not in total.entries
+    assert m.SkippedEntry("name_too_long", "/Volumes/dk3/Song#1F.tmp") in total.entries
+
+
+def test_skipped_paths_are_decoded_for_display_only():
+    report = {"skipped": skipped_block([{"reason": "not_found", "path_hex": b"/Volumes/dk2/caf\xe9".hex()}],
+                                       not_found=1)}
+    entry = m.decode_skipped(report).entries[0]
+    assert entry.path == "/Volumes/dk2/caf\ufffd"
+    entry.path.encode("utf-8", "strict")
 
 
 def test_receipt_accepts_known_coverage_kinds_and_rescans_on_unknown_ones(device):

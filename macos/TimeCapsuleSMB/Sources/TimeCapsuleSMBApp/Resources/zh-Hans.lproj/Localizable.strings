@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "闪存恢复写入已验证；已请求重启。";
 "backend.summary.flash_restore_write_validated_rebooted" = "闪存恢复写入已验证；设备已重启。";
 "backend.summary.flash_write_completed" = "闪存写入已完成。";
+"backend.summary.migration.skipped_path" = "  %@";
 "backend.summary.migration.waiting_for_previous" = "正在等待之前一次安装的元数据迁移完成...";
 "backend.summary.flash_write_not_needed" = "无需闪存写入。";
 "backend.summary.fsck_completed" = "已使用 fsck 完成磁盘修复。";

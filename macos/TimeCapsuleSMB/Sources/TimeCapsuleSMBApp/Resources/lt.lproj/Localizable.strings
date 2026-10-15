@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Flash atminties atkūrimo įrašymas patvirtintas; paprašyta paleisti iš naujo.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash atminties atkūrimo įrašymas patvirtintas; įrenginys paleistas iš naujo.";
 "backend.summary.flash_write_completed" = "Įrašymas į flash atmintį baigtas.";
+"backend.summary.migration.skipped_path" = "  %@";
 "backend.summary.migration.waiting_for_previous" = "Laukiama, kol baigsis ankstesnio diegimo metaduomenų perkėlimas...";
 "backend.summary.flash_write_not_needed" = "Įrašyti į flash atmintį nereikėjo.";
 "backend.summary.fsck_completed" = "Disko taisymas su fsck baigtas.";

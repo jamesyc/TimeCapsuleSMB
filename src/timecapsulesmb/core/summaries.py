@@ -100,6 +100,14 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "migration.kept_value": ("str", "str", "int"),
     "migration.kept_folder_fork": ("str", "int"),
     "migration.kept_more": ("int",),
+    # Entries the migration left alone, one sentence per reason, each followed
+    # by example paths and migration.skipped_more.
+    "migration.skipped_name_too_long": ("int",),
+    "migration.skipped_malformed": ("int",),
+    "migration.skipped_unsupported": ("int",),
+    "migration.skipped_not_a_file": ("int",),
+    "migration.skipped_path": ("str",),
+    "migration.skipped_more": ("int",),
 }
 
 

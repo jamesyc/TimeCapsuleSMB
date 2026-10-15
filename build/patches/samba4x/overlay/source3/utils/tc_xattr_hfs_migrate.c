@@ -263,7 +263,17 @@ struct tc_appledouble {
 	struct tc_ad_entry finderinfo;
 	struct tc_ad_entry resource;
 	bool unsupported_entries;
+	/* The container itself is inconsistent (tc_ad_malformed), as opposed
+	 * to a read or write failing while it was used. */
+	bool malformed;
 };
+
+static int tc_ad_malformed(struct tc_appledouble *ad)
+{
+	ad->malformed = true;
+	errno = EINVAL;
+	return -1;
+}
 
 struct tc_counts {
 	uint64_t entries;
@@ -310,6 +320,47 @@ struct tc_oversized_report {
 	size_t count;
 };
 
+/* Why an entry was left alone. A name the device cannot look up is not
+ * visible over SMB either: Apple's HFS returns a name past NetBSD's 511-byte
+ * limit from readdir in a shortened "name#<catalog id>" form lstat cannot find;
+ * a path past PATH_MAX cannot be opened at all. A file can also vanish during
+ * the walk, since afpserver keeps running through deploy. A ._ file that is
+ * damaged, holds entries this tool does not convert, or is not a regular file
+ * stays where it is. Any TDB row such an entry owned stays unmatched; cleanup
+ * marks it orphaned, so retirement quarantines its database instead of
+ * deleting it. */
+enum tc_skip_reason {
+	TC_SKIP_NOT_FOUND,
+	TC_SKIP_NAME_TOO_LONG,
+	TC_SKIP_MALFORMED,
+	TC_SKIP_UNSUPPORTED,
+	TC_SKIP_NOT_A_FILE,
+	TC_SKIP_REASON_COUNT
+};
+static const char *const tc_skip_reason_names[] = {
+	[TC_SKIP_NOT_FOUND] = "not_found",
+	[TC_SKIP_NAME_TOO_LONG] = "name_too_long",
+	[TC_SKIP_MALFORMED] = "malformed",
+	[TC_SKIP_UNSUPPORTED] = "unsupported",
+	[TC_SKIP_NOT_A_FILE] = "not_a_file",
+};
+/* Deploy shows each reason with up to this many of its paths, so each reason
+ * keeps its own examples; the per-reason counts cover every entry. */
+#define TC_SKIP_EXAMPLES 10
+struct tc_skip_item {
+	enum tc_skip_reason reason;
+	char *path;
+};
+/* The walk's skipped entries (tc_skip_entry), one report per walk. */
+struct tc_skip_report {
+	TALLOC_CTX *ctx;
+	struct tc_skip_item items[TC_SKIP_REASON_COUNT * TC_SKIP_EXAMPLES];
+	size_t count;
+	uint64_t by_reason[TC_SKIP_REASON_COUNT];
+	/* Unreachable ._ names: logged, but not in by_reason (tc_skip_entry). */
+	uint64_t sidecars_unreachable;
+};
+
 struct tc_multi;
 struct tc_migration {
 	struct tc_multi *multi;
@@ -332,6 +383,13 @@ struct tc_migration {
 	/* Shared with the per-file copies tc_multi_file makes; NULL outside
 	 * deploy's multi mode, where the log line is the only report. */
 	struct tc_oversized_report *oversized;
+	/* Same sharing as oversized. */
+	struct tc_skip_report *skipped;
+	/* The walk's first error and where it happened. A failed walk carries on
+	 * through the rest of the tree, so errno at the end belongs to whatever
+	 * ran last, often a missing ._ file that is not an error at all. */
+	int first_error;
+	char *first_error_path;
 	struct tc_counts counts;
 };
 
@@ -340,6 +398,80 @@ static int tc_multi_file(struct tc_migration *, int, const char *, const struct 
 static bool tc_missing_error(int error)
 {
 	return error == ENOATTR || error == ENODATA || error == ENOENT;
+}
+
+static bool tc_skip_unreachable_reason(enum tc_skip_reason reason)
+{
+	return reason == TC_SKIP_NOT_FOUND || reason == TC_SKIP_NAME_TOO_LONG;
+}
+
+/* The report's names the walk could not reach (true) or ._ files it left
+ * alone (false). */
+static uint64_t tc_skipped(const struct tc_skip_report *report, bool unreachable)
+{
+	uint64_t total = 0;
+	int reason;
+
+	for (reason = 0; reason < TC_SKIP_REASON_COUNT; reason++) {
+		if (tc_skip_unreachable_reason(reason) == unreachable) {
+			total += report->by_reason[reason];
+		}
+	}
+	return total;
+}
+
+static void tc_skip_entry(struct tc_migration *migration,
+			  enum tc_skip_reason reason,
+			  const char *path)
+{
+	struct tc_skip_report *report = migration->skipped;
+	const char *slash = strrchr(path, '/');
+	const char *name = slash != NULL ? slash + 1 : path;
+
+	fprintf(stderr, "skipped path=%s reason=%s\n", path, tc_skip_reason_names[reason]);
+	/* An unreachable ._ name is only logged. Its base file is reported in
+	 * its place: a long name's sidecar is shortened like the name itself,
+	 * and a vanished sidecar has nothing to show. */
+	if (report == NULL) {
+		return;
+	}
+	if (tc_skip_unreachable_reason(reason) && strncmp(name, "._", 2) == 0) {
+		report->sidecars_unreachable++;
+		return;
+	}
+	/* At most TC_SKIP_EXAMPLES per reason, so items never overflows. */
+	if (report->by_reason[reason]++ < TC_SKIP_EXAMPLES) {
+		struct tc_skip_item *item = &report->items[report->count];
+
+		item->path = talloc_strdup(report->ctx, path);
+		if (item->path != NULL) {
+			item->reason = reason;
+			report->count++;
+		}
+	}
+}
+
+/* Keep the walk's first error for the final report. */
+static void tc_note_error(struct tc_migration *migration, const char *path)
+{
+	int error = errno;
+
+	if (migration->first_error == 0) {
+		migration->first_error = error != 0 ? error : EIO;
+		migration->first_error_path = talloc_strdup(migration->mem_ctx, path);
+	}
+	errno = error;
+}
+
+static void tc_walk_error(struct tc_migration *migration,
+			  const char *what,
+			  const char *path)
+{
+	int error = errno;
+
+	fprintf(stderr, "%s path=%s error=%s\n", what, path, strerror(error));
+	errno = error;
+	tc_note_error(migration, path);
 }
 
 static struct file_id tc_file_id(const struct stat *st)
@@ -599,6 +731,13 @@ static int tc_keep_oversized(struct tc_migration *migration,
  * ..namedfork/rsrc is ENOENT and its com.apple.ResourceFork attribute EPERM.
  * The test driver fakes file forks with directories, so it overrides the hook. */
 #define TC_HFS_HOLDS_RESOURCE_FORK(st) (!S_ISDIR((st)->st_mode))
+/* Tests replace the walk's lstat and open to fail chosen names. */
+#ifndef TC_MIGRATE_LSTAT
+#define TC_MIGRATE_LSTAT(path, st) lstat(path, st)
+#endif
+#ifndef TC_MIGRATE_OPEN
+#define TC_MIGRATE_OPEN(path, flags) open(path, flags)
+#endif
 #ifndef TC_MIGRATE_HOLDS_RESOURCE_FORK
 #define TC_MIGRATE_HOLDS_RESOURCE_FORK(st) TC_HFS_HOLDS_RESOURCE_FORK(st)
 #endif
@@ -1175,13 +1314,11 @@ static int tc_parse_appledouble(int fd,
 	}
 	count = PULL_BE_U16(ad->header, 24);
 	if (count == 0 || count > TC_AD_MAX_ENTRIES) {
-		errno = EINVAL;
-		return -1;
+		return tc_ad_malformed(ad);
 	}
 	descriptors_size = (size_t)count * TC_AD_ENTRY_SIZE;
 	if (TC_AD_HEADER_SIZE + descriptors_size > ad->header_size) {
-		errno = EINVAL;
-		return -1;
+		return tc_ad_malformed(ad);
 	}
 	for (i = 0; i < count; i++) {
 		const uint8_t *descriptor = ad->header + TC_AD_HEADER_SIZE +
@@ -1192,8 +1329,7 @@ static int tc_parse_appledouble(int fd,
 		uint32_t length = PULL_BE_U32(descriptor, 8);
 
 		if ((uint64_t)offset + length > (uint64_t)st->st_size) {
-			errno = EINVAL;
-			return -1;
+			return tc_ad_malformed(ad);
 		}
 		if (id == TC_AD_FINDERI) {
 			entry = &ad->finderinfo;
@@ -1204,8 +1340,7 @@ static int tc_parse_appledouble(int fd,
 			continue;
 		}
 		if (entry->present) {
-			errno = EINVAL;
-			return -1;
+			return tc_ad_malformed(ad);
 		}
 		entry->present = true;
 		entry->offset = offset;
@@ -1216,8 +1351,7 @@ static int tc_parse_appledouble(int fd,
 	     (uint64_t)ad->finderinfo.offset + ad->finderinfo.length >
 		ad->header_size))
 	{
-		errno = EINVAL;
-		return -1;
+		return tc_ad_malformed(ad);
 	}
 	return 0;
 }
@@ -1251,7 +1385,7 @@ static int tc_migrate_appledouble_xattrs(
 	struct tc_migration *migration,
 	int base_fd,
 	const char *path,
-	const struct tc_appledouble *ad)
+	struct tc_appledouble *ad)
 {
 	const struct tc_ad_entry *finder = &ad->finderinfo;
 	const uint8_t *header;
@@ -1267,20 +1401,17 @@ static int tc_migrate_appledouble_xattrs(
 		return 0;
 	}
 	if (finder->length < AFP_FinderSize + 2 + TC_AD_XATTR_HEADER_SIZE) {
-		errno = EINVAL;
-		return -1;
+		return tc_ad_malformed(ad);
 	}
 	if (memcmp(ad->header + TC_AD_FILLER_OFFSET,
 		   TC_AD_OSX_FILLER, TC_AD_FILLER_SIZE) != 0)
 	{
-		errno = EINVAL;
-		return -1;
+		return tc_ad_malformed(ad);
 	}
 	header_offset = finder->offset + AFP_FinderSize + 2;
 	header = ad->header + header_offset;
 	if (PULL_BE_U32(header, 0) != TC_AD_XATTR_MAGIC) {
-		errno = EINVAL;
-		return -1;
+		return tc_ad_malformed(ad);
 	}
 	total_size = PULL_BE_U32(header, 8);
 	data_start = PULL_BE_U32(header, 12);
@@ -1292,8 +1423,7 @@ static int tc_migrate_appledouble_xattrs(
 	    data_start < header_offset + TC_AD_XATTR_HEADER_SIZE ||
 	    (uint64_t)data_start + data_length > total_size)
 	{
-		errno = EINVAL;
-		return -1;
+		return tc_ad_malformed(ad);
 	}
 	entry_offset = header_offset + TC_AD_XATTR_HEADER_SIZE;
 	for (i = 0; i < count; i++) {
@@ -1304,8 +1434,7 @@ static int tc_migrate_appledouble_xattrs(
 
 		entry_offset = (entry_offset + 3) & ~(size_t)3;
 		if (entry_offset + TC_AD_XATTR_ENTRY_SIZE > data_start) {
-			errno = EINVAL;
-			return -1;
+			return tc_ad_malformed(ad);
 		}
 		value_offset = PULL_BE_U32(ad->header, entry_offset);
 		value_length = PULL_BE_U32(ad->header, entry_offset + 4);
@@ -1316,8 +1445,7 @@ static int tc_migrate_appledouble_xattrs(
 			name_length - 1] != '\0' ||
 		    (uint64_t)value_offset + value_length > total_size)
 		{
-			errno = EINVAL;
-			return -1;
+			return tc_ad_malformed(ad);
 		}
 		name = (const char *)ad->header + entry_offset +
 			TC_AD_XATTR_ENTRY_SIZE;
@@ -1672,6 +1800,17 @@ out:
 	return result;
 }
 
+static bool tc_refused_symlink(int error)
+{
+#ifdef EFTYPE
+	/* NetBSD's answer to O_NOFOLLOW on a symlink. */
+	if (error == EFTYPE) {
+		return true;
+	}
+#endif
+	return error == ELOOP;
+}
+
 static int tc_migrate_appledouble(struct tc_migration *migration,
 				  int base_fd,
 				  const char *path)
@@ -1698,12 +1837,19 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 		if (errno == ENOENT ||
 		    (errno == ENAMETOOLONG && strlen(appledouble) < PATH_MAX)) {
 			result = 0;
+		} else if (tc_refused_symlink(errno)) {
+			/* O_NOFOLLOW refuses a symlink named like a sidecar. */
+			tc_skip_entry(migration, TC_SKIP_NOT_A_FILE, appledouble);
+			result = 0;
 		}
 		goto out;
 	}
-	if (fstat(source_fd, &source_st) != 0 ||
-	    !S_ISREG(source_st.st_mode))
-	{
+	if (fstat(source_fd, &source_st) != 0) {
+		goto out;
+	}
+	if (!S_ISREG(source_st.st_mode)) {
+		tc_skip_entry(migration, TC_SKIP_NOT_A_FILE, appledouble);
+		result = 0;
 		goto out;
 	}
 	parse_state = tc_parse_appledouble(source_fd, &source_st, &ad);
@@ -1712,14 +1858,9 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 		goto out;
 	}
 	if (parse_state != 0) {
-		goto out;
+		goto damaged;
 	}
 	migration->counts.sidecars_seen++;
-	if (ad.unsupported_entries) {
-		fprintf(stderr, "unsupported AppleDouble entries path=%s\n", path);
-		errno = ENOTSUP;
-		goto out;
-	}
 	if (tc_migrate_appledouble_finderinfo(
 			migration, base_fd, path, &ad) != 0 ||
 	    tc_migrate_appledouble_xattrs(
@@ -1727,6 +1868,17 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 	    tc_migrate_resource(
 			migration, base_fd, source_fd, path, &ad.resource) != 0)
 	{
+		goto damaged;
+	}
+	if (ad.unsupported_entries) {
+		/* FinderInfo, the resource fork and the attributes are native now;
+		 * the entries this tool does not convert exist only here, so the
+		 * file stays. */
+		tc_skip_entry(migration, TC_SKIP_UNSUPPORTED, appledouble);
+		if (migration->phase == TC_PHASE_CLEANUP) {
+			migration->counts.sidecars_kept++;
+		}
+		result = 0;
 		goto out;
 	}
 	if (migration->phase == TC_PHASE_CLEANUP &&
@@ -1745,6 +1897,18 @@ static int tc_migrate_appledouble(struct tc_migration *migration,
 		migration->counts.sidecars_deleted++;
 	}
 	result = 0;
+	goto out;
+damaged:
+	/* An inconsistent container is trusted no further: it stays as it is,
+	 * and anything written from it before the fault matches the copy it
+	 * keeps. A read or write that failed is still an error. */
+	if (ad.malformed) {
+		tc_skip_entry(migration, TC_SKIP_MALFORMED, appledouble);
+		if (migration->phase == TC_PHASE_CLEANUP) {
+			migration->counts.sidecars_kept++;
+		}
+		result = 0;
+	}
 out:
 	if (result != 0 && errno != ENOENT) {
 		fprintf(stderr, "AppleDouble migration failed path=%s error=%s\n",
@@ -1817,9 +1981,50 @@ static struct tc_tdb_key *tc_tdb_key_of(struct tc_migration *migration,
 
 static void tc_multi_progress(const struct tc_migration *migration, bool force);
 
+/* Apple's HFS lists a name past NetBSD's 511-byte limit in a shortened form,
+ * "<prefix>#<catalog id in hex>[.<extension>]", which lstat does not find.
+ * The prefix is cut so the form fills 255 bytes, short of at most one multibyte
+ * character, so a short name with a "#1A" in it is an ordinary name that
+ * vanished. */
+#define TC_SHORTENED_NAME_MIN 250
+static bool tc_shortened_hfs_name(const char *path)
+{
+	const char *slash = strrchr(path, '/');
+	const char *name = slash != NULL ? slash + 1 : path;
+	const char *mark = strrchr(name, '#');
+	size_t digits;
+
+	if (mark == NULL || strlen(name) < TC_SHORTENED_NAME_MIN) {
+		return false;
+	}
+	digits = strspn(mark + 1, "0123456789ABCDEF");
+	return digits > 0 && digits <= 8 &&
+		(mark[1 + digits] == '\0' || mark[1 + digits] == '.');
+}
+
+/* A readdir entry that lstat or open cannot find by its name is left alone
+ * (see enum tc_skip_reason); true when this error means that. The volume root
+ * is never skipped: an unreadable root fails the walk. */
+static bool tc_skip_unreachable(struct tc_migration *migration,
+				const char *path)
+{
+	if (errno == ENOENT) {
+		tc_skip_entry(migration, tc_shortened_hfs_name(path) ?
+			      TC_SKIP_NAME_TOO_LONG : TC_SKIP_NOT_FOUND, path);
+		return true;
+	}
+	if (errno == ENAMETOOLONG) {
+		tc_skip_entry(migration, TC_SKIP_NAME_TOO_LONG, path);
+		return true;
+	}
+	return false;
+}
+
+/* listed is true for a name read from a directory, false for a walk's root. */
 static int tc_scan_path(struct tc_migration *migration,
 			const char *path,
-			bool scan_sidecar)
+			bool scan_sidecar,
+			bool listed)
 {
 	struct stat st;
 	struct stat opened_st;
@@ -1831,8 +2036,11 @@ static int tc_scan_path(struct tc_migration *migration,
 	int fd = -1;
 	int result = 0;
 
-	if (lstat(path, &st) != 0) {
-		fprintf(stderr, "lstat failed path=%s error=%s\n", path, strerror(errno));
+	if (TC_MIGRATE_LSTAT(path, &st) != 0) {
+		if (listed && tc_skip_unreachable(migration, path)) {
+			return 0;
+		}
+		tc_walk_error(migration, "lstat failed", path);
 		return -1;
 	}
 	if ((uint64_t)st.st_dev != migration->root_dev) {
@@ -1852,19 +2060,23 @@ static int tc_scan_path(struct tc_migration *migration,
 		/* A hard link to a record that already kept a value. */
 		bool kept_revisit = key != NULL && key->kept;
 
-		fd = open(path, O_RDONLY | O_NOFOLLOW);
+		fd = TC_MIGRATE_OPEN(path, O_RDONLY | O_NOFOLLOW);
+		if (fd == -1 && listed && tc_skip_unreachable(migration, path)) {
+			/* A directory skipped here is not walked either. */
+			return 0;
+		}
 		if (fd == -1 || fstat(fd, &opened_st) != 0 ||
 		    st.st_dev != opened_st.st_dev || st.st_ino != opened_st.st_ino ||
 		    (migration->multi ? tc_multi_file(migration, fd, path, &st, scan_sidecar) :
 		     tc_migrate_tdb_record(migration, fd, path, &st)) != 0)
 		{
-			fprintf(stderr, "metadata migration failed path=%s error=%s\n",
-				path, strerror(errno));
+			tc_walk_error(migration, "metadata migration failed", path);
 			result = -1;
 		}
 		if (!migration->multi && result == 0 && scan_sidecar &&
 		    tc_migrate_appledouble(migration, fd, path) != 0)
 		{
+			tc_note_error(migration, path);
 			result = -1;
 		}
 		if (!migration->multi && result == 0 &&
@@ -1882,8 +2094,7 @@ static int tc_scan_path(struct tc_migration *migration,
 		} else if (!migration->multi && result == 0 &&
 			   tc_retire_tdb_record(migration, fd, &st) != 0)
 		{
-			fprintf(stderr, "metadata retirement failed path=%s error=%s\n",
-				path, strerror(errno));
+			tc_walk_error(migration, "metadata retirement failed", path);
 			result = -1;
 		}
 		if (fd != -1) {
@@ -1895,7 +2106,7 @@ static int tc_scan_path(struct tc_migration *migration,
 	}
 	dir = opendir(path);
 	if (dir == NULL) {
-		fprintf(stderr, "opendir failed path=%s error=%s\n", path, strerror(errno));
+		tc_walk_error(migration, "opendir failed", path);
 		return -1;
 	}
 	/* Snapshot one directory before cleanup removes sidecars from it. A
@@ -1907,7 +2118,7 @@ static int tc_scan_path(struct tc_migration *migration,
 		entry = readdir(dir);
 		if (entry == NULL) {
 			if (errno != 0) {
-				fprintf(stderr, "readdir failed path=%s error=%s\n", path, strerror(errno));
+				tc_walk_error(migration, "readdir failed", path);
 				result = -1;
 			}
 			break;
@@ -1924,11 +2135,14 @@ static int tc_scan_path(struct tc_migration *migration,
 			size_t capacity = child_capacity == 0 ? 64 : child_capacity * 2;
 			if (capacity < child_capacity || capacity > SIZE_MAX / sizeof(char *)) {
 				errno = ENOMEM;
+				tc_note_error(migration, path);
 				result = -1;
 				break;
 			}
 			grown = talloc_realloc(migration->mem_ctx, children, char *, capacity);
 			if (grown == NULL) {
+				errno = ENOMEM;
+				tc_note_error(migration, path);
 				result = -1;
 				break;
 			}
@@ -1937,12 +2151,15 @@ static int tc_scan_path(struct tc_migration *migration,
 		}
 		children[child_count] = talloc_strdup(children, entry->d_name);
 		if (children[child_count] == NULL) {
+			errno = ENOMEM;
+			tc_note_error(migration, path);
 			result = -1;
 			break;
 		}
 		child_count++;
 	}
 	if (closedir(dir) != 0) {
+		tc_walk_error(migration, "closedir failed", path);
 		result = -1;
 	}
 	for (pass = 0; pass < 2; pass++) {
@@ -1955,7 +2172,11 @@ static int tc_scan_path(struct tc_migration *migration,
 				continue;
 			}
 			child = talloc_asprintf(frame, "%s/%s", path, children[i]);
-			if (child == NULL || tc_scan_path(migration, child, !sidecar_name) != 0) {
+			if (child == NULL) {
+				errno = ENOMEM;
+				tc_note_error(migration, path);
+				result = -1;
+			} else if (tc_scan_path(migration, child, !sidecar_name, true) != 0) {
 				result = -1;
 			}
 			tc_progress();
@@ -1977,11 +2198,11 @@ static int tc_scan_root(struct tc_migration *migration, const char *path)
 		return -1;
 	}
 	if (lstat(path, &st) != 0) {
-		fprintf(stderr, "lstat failed path=%s error=%s\n", path, strerror(errno));
+		tc_walk_error(migration, "lstat failed", path);
 		return -1;
 	}
 	migration->root_dev = st.st_dev;
-	if (tc_scan_path(migration, path, false) != 0) {
+	if (tc_scan_path(migration, path, false, false) != 0) {
 		return -1;
 	}
 	devs = talloc_realloc(migration->mem_ctx, migration->complete_devs,
@@ -2345,6 +2566,9 @@ struct tc_multi {
 	/* The copy made before dropping any row. */
 	char *backup;
 	struct tc_oversized_report oversized;
+	struct tc_skip_report skipped;
+	/* Where the failed walk's first error happened (tc_note_error). */
+	char *error_path;
 };
 
 static int tc_source_stat_read(const char *path, struct tc_source_stat *out)
@@ -2611,6 +2835,9 @@ static int tc_multi_open(struct tc_multi *multi, struct tc_multi_source *source)
 		TDB_DEFAULT, multi->drop_verified ? O_RDWR : O_RDONLY, 0,
 		DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
 	if (source->scan.db == NULL || tc_collect_tdb_keys(&source->scan)) return -1;
+	/* A run that dies without a word (a signal) then shows how far it got. */
+	fprintf(stderr, "source db=%u keys=%zu bytes=%"PRIu64" collected\n",
+		source->index + 1, source->scan.num_tdb_keys, source->stat.size);
 	multi->total_keys += source->scan.num_tdb_keys;
 	if (multi->total_keys > TC_MULTI_MAX_KEYS) { errno = E2BIG; return -1; }
 	qsort(source->scan.tdb_keys, source->scan.num_tdb_keys,
@@ -2760,31 +2987,55 @@ static int tc_multi_root_valid(struct tc_multi *multi, struct stat *out)
 static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
 {
 	struct tc_migration scan = {.mem_ctx = multi->ctx, .multi = multi, .phase = multi->phase,
-		.oversized = &multi->oversized};
+		.oversized = &multi->oversized, .skipped = &multi->skipped};
 	struct stat st;
 	size_t i, k;
 	int fd, result;
+	bool volume_changed;
 	if (tc_multi_root_valid(multi, &st)) return -1;
 	/* One report per walk. */
 	multi->oversized.ctx = multi->ctx;
 	multi->oversized.count = 0;
+	multi->skipped.ctx = multi->ctx;
+	multi->skipped.count = 0;
+	ZERO_ARRAY(multi->skipped.by_reason);
+	multi->skipped.sidecars_unreachable = 0;
 	for (i = 0; i < multi->count; i++)
 		for (k = 0; k < multi->sources[i].scan.num_tdb_keys; k++)
 			multi->sources[i].scan.tdb_keys[k].reported = false;
 	fd = open(multi->root, O_RDONLY | O_NOFOLLOW);
 	if (fd < 0) return -1;
-	fprintf(stderr, "volume phase=%s uuid=%s root=%s sources=%zu start\n",
-		multi->phase == TC_PHASE_COPY ? "copy" : "cleanup", multi->root_uuid, multi->root, multi->count);
+	fprintf(stderr, "volume phase=%s uuid=%s root=%s sources=%zu keys=%zu start\n",
+		multi->phase == TC_PHASE_COPY ? "copy" : "cleanup", multi->root_uuid, multi->root, multi->count,
+		multi->total_keys);
 	tc_multi_progress(&scan, true);
 	result = tc_scan_root(&scan, multi->root);
 	tc_multi_progress(&scan, true);
 	/* Apple's HFS may disappear while a walk is in flight. Both the original
-	 * root descriptor and its current pathname must still identify this mount. */
-	if (fstat(fd, &st) || (uint64_t)st.st_dev != multi->root_dev ||
+	 * root descriptor and its current pathname must still identify this mount.
+	 * This also turns the flood of not-found skips an unmounted volume would
+	 * produce into the failure it is. */
+	volume_changed = fstat(fd, &st) || (uint64_t)st.st_dev != multi->root_dev ||
 		(uint64_t)st.st_ino != multi->root_inode || tc_multi_root_valid(multi, &st) ||
-		tc_fsync_directory_or_sync(fd) || tc_multi_validate_sources(multi)) result = -1;
+		tc_fsync_directory_or_sync(fd) || tc_multi_validate_sources(multi);
 	close(fd);
-	if (result) return -1;
+	if (volume_changed) {
+		int error = errno;
+		uint64_t skipped = tc_skipped(&multi->skipped, true) + tc_skipped(&multi->skipped, false);
+		if (skipped > 0) {
+			fprintf(stderr, "volume uuid=%s changed during the walk; %"PRIu64" skipped entries are not reported\n",
+				multi->root_uuid, skipped);
+		}
+		errno = error;
+		return -1;
+	}
+	if (result) {
+		if (scan.first_error != 0) {
+			errno = scan.first_error;
+			multi->error_path = scan.first_error_path;
+		}
+		return -1;
+	}
 	if (multi->phase == TC_PHASE_CLEANUP) {
 		for (i = 0; i < multi->count; i++) {
 			struct tc_multi_source *s = &multi->sources[i];
@@ -2799,10 +3050,13 @@ static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
 	*counts = scan.counts;
 	fprintf(stderr, "volume uuid=%s complete entries=%"PRIu64" sidecars_deleted=%"PRIu64
 			" oversized_tdb=%"PRIu64" oversized_appledouble=%"PRIu64" folder_forks=%"PRIu64
-			" sidecars_kept=%"PRIu64"\n",
+			" sidecars_kept=%"PRIu64" skipped_unreachable=%"PRIu64" skipped_appledouble=%"PRIu64
+			" sidecars_unreachable=%"PRIu64"\n",
 			multi->root_uuid, counts->entries, counts->sidecars_deleted,
 			counts->oversized_tdb, counts->oversized_appledouble,
-			counts->folder_forks_tdb + counts->folder_forks_appledouble, counts->sidecars_kept);
+			counts->folder_forks_tdb + counts->folder_forks_appledouble, counts->sidecars_kept,
+			tc_skipped(&multi->skipped, true), tc_skipped(&multi->skipped, false),
+			multi->skipped.sidecars_unreachable);
 	return 0;
 }
 static int tc_multi_retire_path(struct tc_multi_source *source, const char *path, bool quarantine)
@@ -2939,6 +3193,21 @@ static void tc_multi_report(struct tc_multi *multi, const struct tc_counts *coun
 		printf("\",\"size\":%zu}", item->size);
 	}
 	printf("]},");
+	/* Entries left alone (tc_skip_entry), counted by reason; paths are hex
+	 * like the rest. */
+	printf("\"skipped\":{");
+	for (i = 0; i < TC_SKIP_REASON_COUNT; i++) {
+		printf("\"%s\":%"PRIu64",", tc_skip_reason_names[i], multi->skipped.by_reason[i]);
+	}
+	printf("\"items\":[");
+	for (i = 0; i < multi->skipped.count; i++) {
+		const struct tc_skip_item *item = &multi->skipped.items[i];
+		printf("%s{\"reason\":\"%s\",\"path_hex\":\"", i ? "," : "",
+		       tc_skip_reason_names[item->reason]);
+		tc_hex_print(stdout, (const uint8_t *)item->path, strlen(item->path));
+		printf("\"}");
+	}
+	printf("]},");
 	if (multi->backup != NULL) {
 		printf("\"backup_hex\":\"");
 		tc_hex_print(stdout, (const uint8_t *)multi->backup, strlen(multi->backup));
@@ -2975,6 +3244,8 @@ static int tc_multi_main(const char *phase)
 	result = tc_multi_read(&multi, stdin);
 	if (!result) result = multi.retire ? tc_multi_retire(&multi) : tc_multi_scan(&multi, &counts);
 	if (!result) tc_multi_report(&multi, &counts);
+	else if (multi.error_path != NULL)
+		fprintf(stderr, "multi migration failed phase=%s error=%s path=%s\n", phase, strerror(errno), multi.error_path);
 	else fprintf(stderr, "multi migration failed phase=%s error=%s\n", phase, strerror(errno));
 	TALLOC_FREE(frame);
 	return result ? 4 : 0;
@@ -3040,6 +3311,7 @@ int main(int argc, char **argv)
 {
 	TALLOC_CTX *frame = NULL;
 	struct tc_migration migration = {0};
+	struct tc_skip_report skipped = {0};
 	unsigned stall_seconds;
 	const char *log_path;
 	bool guarded;
@@ -3074,6 +3346,8 @@ int main(int argc, char **argv)
 		goto done;
 	}
 	migration.mem_ctx = frame;
+	skipped.ctx = frame;
+	migration.skipped = &skipped;
 	if (argc == 3 && !strcmp(argv[1], "multi")) {
 		result = tc_multi_main(argv[2]);
 		goto done;
@@ -3173,6 +3447,7 @@ int main(int argc, char **argv)
 	       " tdb_kept=%"PRIu64" oversized_tdb=%"PRIu64
 	       " oversized_appledouble=%"PRIu64" folder_forks=%"PRIu64
 	       " sidecars_kept=%"PRIu64
+	       " skipped_unreachable=%"PRIu64" skipped_appledouble=%"PRIu64
 	       " errors=%"PRIu64"\n",
 	       migration.phase == TC_PHASE_COPY ? "copy" : "cleanup",
 	       migration.counts.entries,
@@ -3199,7 +3474,14 @@ int main(int argc, char **argv)
 	       migration.counts.folder_forks_tdb +
 		       migration.counts.folder_forks_appledouble,
 	       migration.counts.sidecars_kept,
+	       tc_skipped(&skipped, true),
+	       tc_skipped(&skipped, false),
 	       migration.counts.errors);
+	if (migration.first_error != 0) {
+		fprintf(stderr, "first error path=%s error=%s\n",
+			migration.first_error_path != NULL ? migration.first_error_path : "unknown",
+			strerror(migration.first_error));
+	}
 	result = result == 0 ? 0 : 4;
 done:
 	TALLOC_FREE(frame);

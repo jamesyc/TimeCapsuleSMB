@@ -81,6 +81,31 @@
 		<key>NSStringLocalizedFormatKey</key>
 		<string>  %1$@（%2$@，%3$lld 字节）</string>
 	</dict>
+	<key>backend.summary.migration.skipped_malformed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%lld 个 ._ 文件已损坏，已原样保留。</string>
+	</dict>
+	<key>backend.summary.migration.skipped_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>  ...另有 %lld 个</string>
+	</dict>
+	<key>backend.summary.migration.skipped_name_too_long</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%lld 个文件的名称过长，此设备上的 Samba 无法打开，因此无法通过 SMB 看到。要访问这些文件，请将磁盘连接到 Mac。</string>
+	</dict>
+	<key>backend.summary.migration.skipped_not_a_file</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%lld 个 ._ 项目不是普通文件，已保留。</string>
+	</dict>
+	<key>backend.summary.migration.skipped_unsupported</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%lld 个 ._ 文件包含 TimeCapsuleSMB 不转换的条目。其中受支持的元数据已迁移，文件已保留。</string>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

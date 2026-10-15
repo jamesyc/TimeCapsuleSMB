@@ -11,7 +11,7 @@ from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
 
 if TYPE_CHECKING:
-    from timecapsulesmb.deploy.migration import OversizedSummary
+    from timecapsulesmb.deploy.migration import OversizedSummary, SkippedSummary
 
 
 PAYLOAD_FLUSH_SETTLE_SECONDS = 10
@@ -36,13 +36,15 @@ class XattrMigrationResult:
     # copied first (the path names the user's disk, so telemetry gets a flag).
     dropped_rows: int = 0
     backup: bool = False
+    # Entries the walk left alone: names it could not open, unusable ._ files.
+    skipped: SkippedSummary | None = None
 
 
 def migrate_xattr_tdb_to_hfs(connection: SshConnection, plan: DeploymentPlan, *, phase: str, inventory) -> XattrMigrationResult:
     from timecapsulesmb.deploy.migration import migrate_phase
     output = migrate_phase(connection, plan, inventory, phase)
     return XattrMigrationResult(output, inventory.volumes, tuple(inventory.unavailable), inventory.oversized.get(phase),
-                                inventory.dropped_rows, inventory.backup is not None)
+                                inventory.dropped_rows, inventory.backup is not None, inventory.skipped.get(phase))
 
 
 def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:

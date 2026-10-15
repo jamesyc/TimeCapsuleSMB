@@ -226,6 +226,86 @@
 			<string>%lld bytes</string>
 		</dict>
 	</dict>
+	<key>backend.summary.migration.skipped_malformed</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld ._ file is damaged and was kept unchanged.</string>
+			<key>other</key>
+			<string>%lld ._ files are damaged and were kept unchanged.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_more</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@more@</string>
+		<key>more</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>  ...and %lld more</string>
+			<key>other</key>
+			<string>  ...and %lld more</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_name_too_long</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld file has a name too long for Samba on this device to open, so it is not visible over SMB. To reach it, connect the disk to a Mac.</string>
+			<key>other</key>
+			<string>%lld files have names too long for Samba on this device to open, so they are not visible over SMB. To reach them, connect the disk to a Mac.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_not_a_file</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@entries@</string>
+		<key>entries</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld ._ entry is not a regular file and was kept.</string>
+			<key>other</key>
+			<string>%lld ._ entries are not regular files and were kept.</string>
+		</dict>
+	</dict>
+	<key>backend.summary.migration.skipped_unsupported</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@files@</string>
+		<key>files</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld ._ file holds entries TimeCapsuleSMB does not convert. Its supported metadata was migrated, and the file was kept.</string>
+			<key>other</key>
+			<string>%lld ._ files hold entries TimeCapsuleSMB does not convert. Their supported metadata was migrated, and the files were kept.</string>
+		</dict>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

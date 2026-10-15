@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Восстановление флеш-памяти проверено; перезагрузка запрошена.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Восстановление флеш-памяти проверено; устройство перезагружено.";
 "backend.summary.flash_write_completed" = "Запись во флеш-память завершена.";
+"backend.summary.migration.skipped_path" = "  %@";
 "backend.summary.migration.waiting_for_previous" = "Ожидание завершения переноса метаданных от предыдущей установки...";
 "backend.summary.flash_write_not_needed" = "Запись во флеш-память не требовалась.";
 "backend.summary.fsck_completed" = "Исправление диска с помощью fsck завершено.";

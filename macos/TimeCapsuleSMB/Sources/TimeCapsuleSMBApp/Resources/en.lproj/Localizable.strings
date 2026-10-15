@@ -313,6 +313,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Flash restore write validated; reboot requested.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash restore write validated; device rebooted.";
 "backend.summary.flash_write_completed" = "Flash write completed.";
+"backend.summary.migration.skipped_path" = "  %@";
 "backend.summary.migration.waiting_for_previous" = "Waiting for the metadata migration from an earlier installation to finish...";
 "backend.summary.flash_write_not_needed" = "Flash write was not needed.";
 "backend.summary.fsck_completed" = "Disk repair completed with fsck.";

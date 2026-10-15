@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_reboot_requested" = "Wiederherstellung im Flash-Speicher geprüft; Neustart angefordert.";
 "backend.summary.flash_restore_write_validated_rebooted" = "Wiederherstellung im Flash-Speicher geprüft; Gerät neu gestartet.";
 "backend.summary.flash_write_completed" = "Schreiben in den Flash-Speicher abgeschlossen.";
+"backend.summary.migration.skipped_path" = "  %@";
 "backend.summary.migration.waiting_for_previous" = "Warten, bis die Metadaten-Migration einer früheren Installation abgeschlossen ist...";
 "backend.summary.flash_write_not_needed" = "Schreiben in den Flash-Speicher war nicht erforderlich.";
 "backend.summary.fsck_completed" = "Festplattenreparatur mit fsck abgeschlossen.";
