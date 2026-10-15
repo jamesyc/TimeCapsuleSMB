@@ -95,7 +95,6 @@ from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.processes import (
     STUCK_SLEEP_SECONDS,
-    acpd_stuck_children,
     manager_unnamed_stuck_count,
     smbd_lock_waits,
     stuck_processes,
@@ -2359,40 +2358,25 @@ APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
 def _doctor_check_apple_acpd(
     target: DoctorTarget, remote: RemoteAccess, processes: ProcessSnapshotState, sink: DoctorSink,
 ) -> None:
-    """Apple's ACPd: a stuck fork of it hangs the next reboot, and one that does
-    not answer syUT serves no ACP at all (DETAIL.md, "Apple ACPd can hang
-    during its own restart"). Neither clears by waiting, so startup grace
-    leaves both alone. Read from the stuck-process step's listing; a device
-    whose ps did not answer is asked nothing more."""
+    """Apple's ACPd: a restart it took but never ran, a stuck fork of it that
+    hangs the next restart, and a syUT read it does not answer
+    (DETAIL.md, "Apple ACPd can hang during its own restart"). None clears by
+    waiting, so startup grace leaves them alone. Read from the stuck-process
+    step's listing; a device whose ps did not answer is asked nothing more."""
     if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
         return
-    children = acpd_stuck_children(processes.snapshot)
-    if sink.debug_fields is not None:
-        sink.debug_fields["acpd_child_count"] = len(children)
-    if children:
-        sink.add(
-            CheckResult(
-                "FAIL",
-                acpd.acpd_broken_message(
-                    f"its helper process (pid {', '.join(map(str, children))}) is stuck",
-                    note="Sharing may work now, but the next restart will leave the device offline until it is unplugged. ",
-                    then=", then check again",
-                ).removesuffix("."),
-                {"code": APPLE_ACPD_BROKEN_CODE, "acpd_stuck_children": children},
-            )
-        )
     try:
-        answers = acpd.acpd_answers(target.connection)
+        problems = acpd.acpd_problems(target.connection, processes.snapshot)
     except TransportError:
         return
-    if not answers:
+    if sink.debug_fields is not None:
+        sink.debug_fields["acpd_problems"] = [problem.code for problem in problems]
+    for problem in problems:
         sink.add(
             CheckResult(
                 "FAIL",
-                acpd.acpd_broken_message(
-                    "the device's own acp cannot read its uptime (syUT)", then=", then check again",
-                ).removesuffix("."),
-                {"code": APPLE_ACPD_BROKEN_CODE},
+                acpd.acpd_broken_message(problem.what, note=problem.note, then=", then check again").removesuffix("."),
+                {"code": APPLE_ACPD_BROKEN_CODE, "acpd_problem": problem.code, **problem.details},
             )
         )
 

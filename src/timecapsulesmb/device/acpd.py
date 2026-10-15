@@ -1,4 +1,5 @@
-"""Apple ACPd health, read over SSH.
+"""Apple ACPd health, read over SSH, and the marker that shows a restart
+ACPd took but never ran (RESTART_MARKER).
 
 ACPd serves both network ACP (port 5009) and the device's own /usr/bin/acp.
 It can hang (DETAIL.md, "Apple ACPd can hang during its own restart"), and
@@ -10,9 +11,9 @@ does not answer is what blames ACPd.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from timecapsulesmb.device.processes import PROCESS_SNAPSHOT_COMMAND, acpd_stuck_children
+from timecapsulesmb.device.processes import PROCESS_SNAPSHOT_COMMAND, STUCK_PROCESS_PS_COMMAND, parse_ps_rows
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
@@ -35,26 +36,31 @@ ACPD_SYUT_COMMAND = (
     "wait $p; kill $w) 2>/dev/null"
 )
 ACPD_SSH_TIMEOUT_SECONDS = ACPD_READ_DEADLINE_SECONDS + 15
-# The kernel's statistics clock ticks since boot: it only grows while the
-# kernel runs and starts again from zero at every boot, and it never reads
-# the wall clock, which NTP steps by weeks just after boot (measured
-# 2026-10-11: 100 ticks a second on both families, a constant offset from
-# syUT). The process names show a shutdown under way.
-RESTART_EVIDENCE_COMMAND = "/sbin/sysctl -n kern.cp_time && /bin/ps axww -o ucomm="
-RESTART_EVIDENCE_TIMEOUT_SECONDS = 15
 _HEX_LINE = re.compile(r"0x[0-9A-Fa-f]+")
-_CP_TIME_FIELD = re.compile(r"\w+ = (\d+)")
-_CP_TIME_FIELDS = 5
+# Written over SSH just before every ACP restart request that SSH can see. A
+# real restart empties Apple's RAM disk, so a marker that is still there proves
+# the kernel never restarted: ACPd took the request and stopped without
+# running shutdown. Nothing on the device reads it.
+RESTART_MARKER = "/mnt/Memory/acp-reboot"
+RESTART_MARKER_TIMEOUT_SECONDS = 15
+# A real restart runs /sbin/shutdown, whose last step stops sshd, so SSH can
+# still see the marker while a slow shutdown runs. The process table is read
+# without any command line, so it never waits (see UNREADABLE_COMMAND).
+_RESTART_MARKER_READ = f"[ -e {RESTART_MARKER} ] && {STUCK_PROCESS_PS_COMMAND}"
+# ps's wait channel for nanosleep: NetBSD 6 names it nanoslp, and NetBSD 4's
+# ps cuts nanosleep to eight characters.
+NANOSLEEP_WCHANS = frozenset({"nanoslp", "nanoslee"})
 
 
 @dataclass(frozen=True)
-class RestartEvidence:
-    """What the running kernel shows about a restart, from one SSH read."""
+class AcpdProblem:
+    """One reason ACPd cannot take a restart or serve ACP."""
 
-    # kern.cp_time summed: statistics clock ticks since this kernel booted.
-    cpu_ticks: int
-    # A shutdown or reboot process is running: a restart is under way.
-    shutting_down: bool
+    code: str
+    # Words for acpd_broken_message.
+    what: str
+    note: str = ""
+    details: dict[str, object] = field(default_factory=dict)
 
 
 def acpd_broken_message(what: str, *, note: str = "", then: str = ", then try again") -> str:
@@ -80,31 +86,75 @@ def acpd_answers(connection: SshConnection) -> bool:
     return False
 
 
-def parse_restart_evidence(output: str) -> RestartEvidence | None:
-    """RESTART_EVIDENCE_COMMAND output; None unless cp_time has its five counters."""
-    lines = output.splitlines()
-    if not lines:
-        return None
-    counters = _CP_TIME_FIELD.findall(lines[0])
-    if len(counters) != _CP_TIME_FIELDS:
-        return None
-    names = {line.strip() for line in lines[1:]}
-    return RestartEvidence(sum(int(value) for value in counters), bool(names & {"shutdown", "reboot"}))
-
-
-def read_restart_evidence(connection: SshConnection) -> RestartEvidence | None:
-    """parse_restart_evidence of one read; None when SSH or the read fails."""
+def mark_restart(connection: SshConnection) -> bool:
+    """Write RESTART_MARKER; False when it could not be written."""
     try:
-        proc = run_ssh(connection, RESTART_EVIDENCE_COMMAND, check=False, timeout=RESTART_EVIDENCE_TIMEOUT_SECONDS)
+        proc = run_ssh(connection, f": > {RESTART_MARKER}", check=False, timeout=RESTART_MARKER_TIMEOUT_SECONDS)
     except TransportError:
-        return None
-    return parse_restart_evidence(proc.stdout or "") if proc.returncode == 0 else None
+        return False
+    return proc.returncode == 0
 
 
-def read_acpd_stuck_children(connection: SshConnection) -> list[int]:
-    """acpd_stuck_children of one process listing; empty when ps does not answer."""
+def restart_never_happened(connection: SshConnection) -> bool:
+    """True when RESTART_MARKER outlived its restart request and no shutdown runs.
+
+    False also when the marker is there but ps fails: that can only delay a
+    hang being reported, never report one that did not happen. Raises
+    TransportError.
+    """
+    proc = run_ssh(connection, _RESTART_MARKER_READ, check=False, timeout=RESTART_MARKER_TIMEOUT_SECONDS)
+    if proc.returncode != 0:
+        return False
+    return not {p.ucomm for p in parse_ps_rows(proc.stdout or "")} & {"shutdown", "reboot"}
+
+
+def read_processes(connection: SshConnection) -> str:
+    """PROCESS_SNAPSHOT_COMMAND output; empty when ps does not answer."""
     try:
-        proc = run_ssh(connection, PROCESS_SNAPSHOT_COMMAND, check=False, timeout=ACPD_SSH_TIMEOUT_SECONDS)
+        return run_ssh(connection, PROCESS_SNAPSHOT_COMMAND, check=False, timeout=ACPD_SSH_TIMEOUT_SECONDS).stdout or ""
     except TransportError:
-        return []
-    return acpd_stuck_children(proc.stdout or "")
+        return ""
+
+
+def acpd_stuck_children(ps_output: str) -> list[int]:
+    """PIDs of ACPd's own forks asleep in nanosleep, in PROCESS_SNAPSHOT_COMMAND output.
+
+    A healthy device runs one ACPd. A second one, ACPd's child that never went
+    on to exec, predicted every v3.4.0 reboot that tore ACPd down without
+    restarting the kernel. A fork on its way to exec is never in nanosleep.
+    Matched on ucomm: sshd and the other daemons are ACPd's children too.
+    """
+    rows = [p for p in parse_ps_rows(ps_output) if p.ucomm == "ACPd"]
+    acpd = {p.pid for p in rows}
+    return [p.pid for p in rows if p.ppid in acpd and p.wchan in NANOSLEEP_WCHANS]
+
+
+def acpd_problems(connection: SshConnection, ps_output: str | None = None) -> list[AcpdProblem]:
+    """Every reason ACPd cannot take a restart now.
+
+    A restart that never happened is the whole story: ACPd tore itself down,
+    so it is reported alone, with one fix, and nothing more is read.
+
+    `ps_output` is a PROCESS_SNAPSHOT_COMMAND listing already read; it is read
+    here when None. The marker and syUT reads raise TransportError: an SSH
+    failure is the device's or the network's, not ACPd's.
+    """
+    if restart_never_happened(connection):
+        return [AcpdProblem(
+            "restart_never_happened",
+            "the device did not restart when TimeCapsuleSMB last asked it to",
+            note="Restarting it again would fail the same way. ",
+        )]
+    problems = []
+    if not acpd_answers(connection):
+        # The device's own acp gets no uptime (syUT) from ACPd.
+        problems.append(AcpdProblem("syut_silent", "the AirPort service on this device is stuck"))
+    stuck = acpd_stuck_children(read_processes(connection) if ps_output is None else ps_output)
+    if stuck:
+        problems.append(AcpdProblem(
+            "stuck_child",
+            f"its helper process (pid {', '.join(map(str, stuck))}) is stuck",
+            note="Sharing may work now, but the next restart will leave the device offline until it is unplugged. ",
+            details={"acpd_stuck_children": stuck},
+        ))
+    return problems

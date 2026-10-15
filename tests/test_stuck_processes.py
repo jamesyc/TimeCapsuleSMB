@@ -158,7 +158,8 @@ class ListedWithoutCommandLinesTests(unittest.TestCase):
 
     def test_finds_stuck_processes_and_the_manager_title_without_reading_other_command_lines(self) -> None:
         from tests.device_ps import process
-        from timecapsulesmb.device.processes import acpd_stuck_children, smbd_lock_waits
+        from timecapsulesmb.device.acpd import acpd_stuck_children
+        from timecapsulesmb.device.processes import smbd_lock_waits
 
         output, reads = self.snapshot([
             process("146 S service service: role=manager started=3 stuck=900:smbd:needbuf:300,+2", ppid="1", pgid="2"),

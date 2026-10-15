@@ -64,12 +64,6 @@ AIRPORT_PASSWORD_MISMATCH_MESSAGE = (
 )
 
 
-# Apple's firmware, not ours: ACPd serves every ACP request, and a stuck ACPd
-# tears itself down at a reboot request without restarting the device
-# (DETAIL.md, "Apple ACPd can hang during its own restart").
-ACPD_BROKEN_MESSAGE = acpd.acpd_broken_message(
-    "the AirPort service on this device is stuck", note="Nothing was changed. ",
-)
 ACP_UNREACHABLE_MESSAGE = (
     "This computer cannot reach AirPort ACP (port 5009) on {host}, although the device's own ACP works. "
     "This command needs ACP from this computer, so nothing was changed. Connect this computer to the "
@@ -122,10 +116,11 @@ def require_acpd_ready(
 
     Every reboot and every flash command goes through Apple's ACPd: the
     password must be the one ACP takes, ACPd must answer this computer and the
-    device's own acp, and no stuck fork of ACPd may be waiting to hang the
-    next reboot. `reading` is this command's earlier network read of the
-    device at this address (confirm_device_address); an unanswered one is not
-    read again, as the second read would only repeat the same retry.
+    device's own acp, the last restart requested must have happened, and no
+    stuck fork of ACPd may be waiting to hang the next reboot. `reading` is
+    this command's earlier network read of the device at this address
+    (confirm_device_address); an unanswered one is not read again, as the
+    second read would only repeat the same retry.
     """
     if reading is None:
         reading = read_admin_password(connection)
@@ -133,11 +128,15 @@ def require_acpd_ready(
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
     report_airport_identity(callbacks, reading)
-    answers = acpd.acpd_answers(connection)
-    stuck = acpd.read_acpd_stuck_children(connection) if answers else []
-    if not answers or stuck:
-        callbacks.debug(acpd_answers=answers, acpd_stuck_children=stuck)
-        raise DeviceAccessError(ACPD_BROKEN_MESSAGE, code="acpd_broken")
+    problems = acpd.acpd_problems(connection)
+    if problems:
+        details = {key: value for problem in problems for key, value in problem.details.items()}
+        callbacks.debug(acpd_problems=[problem.code for problem in problems], **details)
+        # Apple's firmware, not ours (DETAIL.md, "Apple ACPd can hang during its own restart").
+        raise DeviceAccessError(
+            acpd.acpd_broken_message(problems[0].what, note=f"{problems[0].note}Nothing was changed. "),
+            code="acpd_broken",
+        )
     if reading.password_matches is None and reading.error:
         # The device's own ACP works, so the path from here is what is blocked.
         host = endpoint_host(connection.host)

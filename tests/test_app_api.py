@@ -6735,7 +6735,8 @@ MaSt = (
     def test_fsck_refuses_a_broken_apple_acpd_before_asking(self) -> None:
         # The reboot would leave ACPd torn down and the device running.
         for patch, value in (
-            ("timecapsulesmb.device.acpd.read_acpd_stuck_children", [352]),
+            ("timecapsulesmb.device.acpd.restart_never_happened", True),
+            ("timecapsulesmb.device.acpd.read_processes", "  119 1 2 Sl 0 kqueue 0:00.00 ACPd\n  352 119 2 S 1 nanoslp 0:00.00 ACPd\n"),
             ("timecapsulesmb.device.acpd.acpd_answers", False),
         ):
             with self.subTest(patch=patch):
@@ -6788,7 +6789,7 @@ MaSt = (
                     "timecapsulesmb.app.ops.flash.require_connection_compatibility",
                     return_value=supported_compatibility("netbsd4be_samba4"),
                 ), \
-                mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=[352]), \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True), \
                 mock.patch("timecapsulesmb.app.ops.flash.backup_flash") as backup:
             rc = service.run_api_request({"operation": "flash", "params": {"action": "backup"}}, collector.sink)
 

@@ -53,16 +53,14 @@ FOLLOW_AFTER_DOWN_SECONDS = 60
 FOLLOW_INTERVAL_SECONDS = 30
 # Apple's ACPd can take a reboot request, tear itself down and never run
 # shutdown (DETAIL.md, "Apple ACPd can hang during its own restart"): ACP goes
-# quiet as in a reboot, but the old kernel and its sshd keep running. No clock
-# can tell: the Mac may sleep through the wait, and NTP steps the device's
-# clock by weeks just after a boot. The kernel's tick counter can: it starts
-# from zero at every boot, so a count no smaller than the one read before the
-# request is the same kernel. A new boot older than the old one was could pass
-# that, and its ACPd answers syUT; a restart under way lists shutdown. So the
-# hang is: ACP quiet, the count not reset, no shutdown, and syUT silent, twice.
+# quiet as in a reboot, but the old kernel and its sshd keep running. The
+# restart marker written before the request tells: a real restart clears it.
+# The hang tells the user to unplug the device, which during a real restart
+# could cut ACPd's own flash writes, so the marker must be seen on two checks
+# in a row before anything is reported.
 HANG_CHECK_AFTER_DOWN_SECONDS = 90
 HANG_CHECK_INTERVAL_SECONDS = 30
-HANG_CHECK_SILENT_CHECKS = 2
+HANG_CHECK_MARKED_CHECKS = 2
 
 REBOOT_NO_DOWN_MESSAGE = "Reboot was requested but the device did not restart."
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
@@ -99,23 +97,26 @@ def reboot_device(
     The new boot must answer ACP within `up_timeout_seconds` of the first
     unanswered read. Then SSH must open within REBOOT_SSH_TIMEOUT_SECONDS of
     the new boot being seen (`expect_ssh`), or must stay closed.
-    `ssh`, when SSH works before the request, also watches for a reboot
-    that never happens: ACPd quiet while the same kernel still answers SSH.
+    `ssh`, when SSH works before the request, marks the restart on the
+    device (device.acpd.RESTART_MARKER), and the wait watches for a reboot
+    that never happens: ACPd quiet while the marker is still there.
     Returns the device's SSH target when the new boot came up at another
     address (see services.locate), else None. Raises RebootFlowError.
     """
     callbacks = callbacks or OperationCallbacks()
     host = endpoint_host(host)
     if not wait:
+        restart_marker = _mark(ssh)
+        if restart_marker is not None:
+            callbacks.debug(restart_marker=restart_marker)
         _request(host, password, callbacks, raise_errors=True)
         return None
-    # The running kernel's tick count, before it is asked to restart.
-    before = acpd.read_restart_evidence(ssh) if ssh is not None else None
     u0, airport_mac, error = _read_uptime(host, password)
     if u0 is None:
         code = "auth_failed" if isinstance(error, acp.ACPAuthError) else "device_unreachable"
         raise RebootFlowError(f"Could not read the device's uptime through AirPort ACP before rebooting: {error}", code)
     started = time.monotonic()
+    restart_marker = _mark(ssh)
     time.sleep(1)
     _request(host, password, callbacks, raise_errors=False)
     return _wait(
@@ -132,8 +133,16 @@ def reboot_device(
         up_timeout_message=up_timeout_message,
         stopped_message=stopped_message,
         ssh=ssh,
-        ticks_before=None if before is None else before.cpu_ticks,
+        restart_marker=restart_marker,
     )
+
+
+def _mark(ssh: SshConnection | None) -> str | None:
+    """Mark the restart about to be requested: "written", or "unwritten",
+    which only loses the hang check; None without SSH."""
+    if ssh is None:
+        return None
+    return "written" if acpd.mark_restart(ssh) else "unwritten"
 
 
 def followed(connection: SshConnection, moved: str | None) -> SshConnection:
@@ -237,7 +246,7 @@ def _wait(
     up_timeout_message: str,
     stopped_message: str,
     ssh: SshConnection | None,
-    ticks_before: int | None,
+    restart_marker: str | None,
 ) -> str | None:
     fields: dict[str, object] = {
         "start_timeout_sec": start_timeout_seconds,
@@ -245,8 +254,8 @@ def _wait(
         "expect_ssh": expect_ssh,
         "u0_sec": u0,
     }
-    if ssh is not None:
-        fields["cpu_ticks_before"] = ticks_before
+    if restart_marker is not None:
+        fields["restart_marker"] = restart_marker
     moved: str | None = None
     rejected: LocateResult | None = None
     # Each kind of failed read, and when it was first and last seen: refused
@@ -269,29 +278,13 @@ def _wait(
     def is_new_boot(uptime: int | None, read_started: float) -> bool:
         return uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started)
 
-    def hang_check(connection: SshConnection, baseline: int) -> str:
-        """Why this look is, or is not, the hang: "acpd_silent" is the hang."""
-        if not tcp_open(host, SSH_PORT):
-            return "ssh_closed"
-        evidence = acpd.read_restart_evidence(connection)
-        if evidence is None:
-            return "no_evidence"
-        fields["cpu_ticks_at_check"] = evidence.cpu_ticks
-        if evidence.cpu_ticks < baseline:
-            return "new_kernel"
-        if evidence.shutting_down:
-            return "shutting_down"
-        try:
-            return "acpd_answers" if acpd.acpd_answers(connection) else "acpd_silent"
-        except TransportError:
-            return "ssh_failed"
-
     callbacks.message("Waiting for the device to restart...")
     callbacks.stage("wait_for_reboot_down")
     down_since: float | None = None
     next_follow = 0.0
     next_hang_check = 0.0
-    silent_checks = 0
+    marked_checks = 0
+    asked_ssh = False
     up_stage = False
     while True:
         time.sleep(REBOOT_POLL_SECONDS)
@@ -322,16 +315,28 @@ def _wait(
             callbacks.message("Device went down; waiting for it to come back up...")
             callbacks.stage("wait_for_reboot_up")
         if (
-            ssh is not None and ticks_before is not None
+            ssh is not None and restart_marker == "written"
             and now - down_since >= HANG_CHECK_AFTER_DOWN_SECONDS and now >= next_hang_check
         ):
-            # Start to start: a hung syUT read alone takes ACPD_READ_DEADLINE_SECONDS twice.
             next_hang_check = now + HANG_CHECK_INTERVAL_SECONDS
-            reason = hang_check(ssh, ticks_before)
-            silent_checks = silent_checks + 1 if reason == "acpd_silent" else 0
             fields["acpd_hang_checks"] = int(fields.get("acpd_hang_checks", 0)) + 1
-            fields["hang_check_last"] = reason
-            if silent_checks >= HANG_CHECK_SILENT_CHECKS:
+            # SSH closed, as in a real restart, ends a run of marked checks. The
+            # port check ends at once where SSH to a device that is off would
+            # wait out the marker read's timeout. A read that fails with the
+            # port open shows nothing either way and leaves the run alone.
+            if not tcp_open(host, SSH_PORT):
+                check = "ssh_closed"
+            else:
+                asked_ssh = True
+                try:
+                    check = "marked" if acpd.restart_never_happened(ssh) else "restarting"
+                except TransportError:
+                    check = "ssh_failed"
+            if check != "ssh_failed":
+                marked_checks = marked_checks + 1 if check == "marked" else 0
+            fields["hang_check_last"] = check
+            fields["acpd_marked_checks_max"] = max(int(fields.get("acpd_marked_checks_max", 0)), marked_checks)
+            if marked_checks >= HANG_CHECK_MARKED_CHECKS:
                 finish("acpd_stopped_without_reboot", "acpd_broken", stopped_message)
         if airport_mac and now - down_since >= FOLLOW_AFTER_DOWN_SECONDS and now >= next_follow:
             next_follow = now + FOLLOW_INTERVAL_SECONDS
@@ -359,6 +364,10 @@ def _wait(
             finish("did_not_come_back_up", "reboot_not_finished", message)
 
     fields["reset_seen_after_sec"] = round(now - started, 3)
+    if asked_ssh:
+        # A look may have opened a shared SSH connection to the old kernel,
+        # which the restart left dead: the next command logs in afresh.
+        close_ssh_masters(endpoint_host(ssh.host))
     fields["uptime_at_return_sec"] = uptime
     if not up_stage:
         callbacks.stage("wait_for_reboot_up")

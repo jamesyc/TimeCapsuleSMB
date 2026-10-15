@@ -3137,8 +3137,32 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: its helper process (pid 352) is stuck"))
         self.assertIn("bug in Apple's firmware", failures[0].message)
         self.assertEqual(failures[0].domain, "device")
-        self.assertEqual(run.debug_fields["acpd_child_count"], 1)
+        self.assertEqual(failures[0].details["acpd_stuck_children"], [352])
+        self.assertEqual(run.debug_fields["acpd_problems"], ["stuck_child"])
         self.assertTrue(run.fatal)
+
+    def test_run_doctor_checks_fails_a_restart_that_never_happened_even_in_startup_grace(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True) as marker:
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, manager_started_seconds_ago=41.0)
+
+        marker.assert_called_once()
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual([result.details["acpd_problem"] for result in failures], ["restart_never_happened"])
+        self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: the device did not restart"))
+        self.assertIn("then check again", failures[0].message)
+        self.assertEqual(run.debug_fields["acpd_problems"], ["restart_never_happened"])
+        self.assertTrue(run.fatal)
+
+    def test_run_doctor_checks_gives_a_hung_restart_one_failure(self) -> None:
+        # The torn-down ACPd also fails syUT and may leave its fork: one cause,
+        # one fix, so one FAIL.
+        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False):
+            run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_ACPD_ROWS]))
+
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual([result.details["acpd_problem"] for result in failures], ["restart_never_happened"])
+        self.assertEqual(run.debug_fields["acpd_problems"], ["restart_never_happened"])
 
     def test_run_doctor_checks_fails_an_apple_acpd_that_does_not_answer_syut(self) -> None:
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False):
@@ -3146,30 +3170,39 @@ class CheckTests(unittest.TestCase):
 
         failures = self.apple_acpd_failures(run)
         self.assertEqual(len(failures), 1)
-        self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: the device's own acp cannot read its uptime"))
-        self.assertEqual(run.debug_fields["acpd_child_count"], 0)
+        self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: the AirPort service on this device is stuck"))
+        self.assertEqual(failures[0].details["acpd_problem"], "syut_silent")
+        self.assertEqual(run.debug_fields["acpd_problems"], ["syut_silent"])
 
     def test_run_doctor_checks_passes_a_healthy_apple_acpd(self) -> None:
-        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_ACPD_ROWS.splitlines()[0]]))
+        with mock.patch("timecapsulesmb.device.acpd.read_processes") as processes:
+            run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_ACPD_ROWS.splitlines()[0]]))
 
+        # The stuck-process step's listing is used, not read again.
+        processes.assert_not_called()
         self.assertEqual(self.apple_acpd_failures(run), [])
-        self.assertEqual(run.debug_fields["acpd_child_count"], 0)
+        self.assertEqual(run.debug_fields["acpd_problems"], [])
 
     def test_run_doctor_checks_asks_apple_acpd_nothing_when_ps_did_not_answer(self) -> None:
-        with mock.patch("timecapsulesmb.device.acpd.acpd_answers") as answer:
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers") as answer, \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened") as marker:
             run = self.run_doctor_with_process_snapshot(SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/ps"))
 
         answer.assert_not_called()
+        marker.assert_not_called()
         self.assertEqual(self.apple_acpd_failures(run), [])
-        self.assertNotIn("acpd_child_count", run.debug_fields)
+        self.assertNotIn("acpd_problems", run.debug_fields)
 
     def test_run_doctor_checks_skips_apple_acpd_when_ssh_cannot_ask(self) -> None:
         from timecapsulesmb.transport.errors import SshError
 
-        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", side_effect=SshError("Connection reset")):
-            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+        for read in ("acpd_answers", "restart_never_happened"):
+            with self.subTest(read=read):
+                with mock.patch(f"timecapsulesmb.device.acpd.{read}", side_effect=SshError("Connection reset")):
+                    run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
 
-        self.assertEqual(self.apple_acpd_failures(run), [])
+                self.assertEqual(self.apple_acpd_failures(run), [])
+                self.assertNotIn("acpd_problems", run.debug_fields)
 
     def test_apply_startup_grace_masks_failures_within_grace_window(self) -> None:
         results = [

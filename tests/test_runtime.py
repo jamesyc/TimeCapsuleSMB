@@ -647,59 +647,91 @@ class RequireAcpdReadyReadingTests(unittest.TestCase):
 
 
 class RequireAcpdReadyAcpdTests(unittest.TestCase):
-    """Apple's ACPd must answer the device's own acp, and this computer, and
-    carry no stuck fork, before a reboot or flash changes anything."""
+    """Apple's ACPd must answer the device's own acp, and this computer, have
+    run the last restart requested, and carry no stuck fork, before a reboot
+    or flash changes anything."""
 
     CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+    STUCK_LISTING = "\n".join((
+        "  119 1 2 Sl 0 kqueue 0:00.00 ACPd",
+        "  352 119 2 S 1 nanoslp 0:00.00 ACPd",
+    ))
 
-    def gate(self, *, answers: bool = True, stuck: list[int] | None = None, reading=None, off_network=None):
+    def gate(self, *, answers: bool = True, listing: str = "", never_happened: bool = False, reading=None, off_network=None):
         debug: dict[str, object] = {}
         callbacks = OperationCallbacks(add_debug_fields=debug.update)
         with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as answer, \
-                mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=stuck or []) as children, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as processes, \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened), \
                 mock.patch("timecapsulesmb.services.runtime.client_networks_if_off_network", return_value=off_network):
             try:
                 service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=reading or acp_reading(True))
                 error = None
             except service_runtime.DeviceAccessError as exc:
                 error = exc
-        return error, debug, answer, children
+        return error, debug, answer, processes
 
     def test_a_healthy_acpd_lets_the_command_go_on(self) -> None:
-        error, debug, answer, children = self.gate()
+        error, debug, answer, processes = self.gate()
         self.assertIsNone(error)
         answer.assert_called_once_with(self.CONNECTION)
-        children.assert_called_once_with(self.CONNECTION)
-        self.assertNotIn("acpd_answers", debug)
+        processes.assert_called_once_with(self.CONNECTION)
+        self.assertNotIn("acpd_problems", debug)
 
     def test_an_acpd_that_does_not_answer_syut_is_broken(self) -> None:
-        error, debug, _answer, children = self.gate(answers=False)
-        self.assertEqual((error.code, str(error)), ("acpd_broken", service_runtime.ACPD_BROKEN_MESSAGE))
+        error, debug, _answer, _processes = self.gate(answers=False)
+        self.assertEqual(error.code, "acpd_broken")
+        # Plain words for the user; the debug field names the problem.
+        self.assertTrue(str(error).startswith("Apple ACPd is broken: the AirPort service on this device is stuck"))
+        self.assertNotIn("syUT", str(error))
         self.assertIn("Nothing was changed", str(error))
-        # Nothing more to learn from a process listing.
-        children.assert_not_called()
-        self.assertEqual(debug["acpd_answers"], False)
+        self.assertEqual(debug["acpd_problems"], ["syut_silent"])
 
     def test_a_stuck_fork_of_acpd_is_broken(self) -> None:
-        error, debug, _answer, _children = self.gate(stuck=[352])
+        error, debug, _answer, _processes = self.gate(listing=self.STUCK_LISTING)
         self.assertEqual(error.code, "acpd_broken")
+        self.assertIn("pid 352", str(error))
+        self.assertEqual(debug["acpd_problems"], ["stuck_child"])
         self.assertEqual(debug["acpd_stuck_children"], [352])
 
+    def test_a_restart_that_never_happened_is_refused_until_the_device_is_unplugged(self) -> None:
+        # Another restart request would fail the same way.
+        error, debug, _answer, _processes = self.gate(never_happened=True)
+        self.assertEqual(error.code, "acpd_broken")
+        self.assertIn("did not restart", str(error))
+        self.assertIn("Nothing was changed", str(error))
+        self.assertIn("Unplug the device", str(error))
+        self.assertEqual(debug["acpd_problems"], ["restart_never_happened"])
+
+    def test_the_first_problem_is_named_and_every_one_is_reported(self) -> None:
+        error, debug, _answer, _processes = self.gate(answers=False, listing=self.STUCK_LISTING)
+        self.assertIn("the AirPort service on this device is stuck", str(error))
+        self.assertEqual(debug["acpd_problems"], ["syut_silent", "stuck_child"])
+        self.assertEqual(debug["acpd_stuck_children"], [352])
+
+    def test_a_restart_that_never_happened_is_the_only_problem_named(self) -> None:
+        error, debug, answer, processes = self.gate(never_happened=True, answers=False, listing=self.STUCK_LISTING)
+        self.assertIn("did not restart", str(error))
+        self.assertEqual(debug["acpd_problems"], ["restart_never_happened"])
+        answer.assert_not_called()
+        processes.assert_not_called()
+
     def test_a_rejected_password_is_refused_before_ssh_is_asked(self) -> None:
-        error, _debug, answer, _children = self.gate(reading=acp_reading(False))
+        error, _debug, answer, processes = self.gate(reading=acp_reading(False))
         self.assertEqual(error.code, "auth_failed")
         answer.assert_not_called()
+        processes.assert_not_called()
 
     def test_an_unanswered_network_read_blames_acpd_only_when_its_own_acp_fails(self) -> None:
         unanswered = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
-        error, debug, _answer, _children = self.gate(reading=unanswered, answers=False)
+        error, debug, _answer, _processes = self.gate(reading=unanswered, answers=False)
         self.assertEqual(error.code, "acpd_broken")
         self.assertEqual(debug["sypw_check"], "unknown")
         self.assertEqual(debug["acp_read_error"], "ACP receive failed: timed out")
 
     def test_an_unanswered_network_read_with_a_working_acpd_is_the_path(self) -> None:
         unanswered = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
-        error, _debug, _answer, _children = self.gate(reading=unanswered)
+        error, _debug, _answer, _processes = self.gate(reading=unanswered)
         self.assertEqual(error.code, "acp_unreachable")
         self.assertIn("10.0.0.2", str(error))
         self.assertIn("nothing was changed", str(error))
@@ -708,22 +740,21 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         unanswered = AirportAcpReading(password_matches=None, error="No route to host")
         networks = [ipaddress.ip_network("192.168.5.0/24")]
         with mock.patch("timecapsulesmb.services.runtime.device_off_network_message", return_value="off network") as message:
-            error, _debug, _answer, _children = self.gate(reading=unanswered, off_network=networks)
+            error, _debug, _answer, _processes = self.gate(reading=unanswered, off_network=networks)
         self.assertEqual((error.code, str(error)), ("device_off_network", "off network"))
         message.assert_called_once_with("10.0.0.2", networks)
 
     def test_an_ssh_failure_asking_acpd_is_raised_not_blamed_on_acpd(self) -> None:
         # A slow device or a dropped session is not Apple's fault: the SSH
         # error goes up, where the caller reports a slow or unreachable device.
-        for failure in (SshCommandTimeout("Timed out waiting for ssh command to finish"), SshError("Connection reset")):
-            with self.subTest(failure=type(failure).__name__):
-                callbacks = OperationCallbacks()
-                with mock.patch("timecapsulesmb.device.acpd.acpd_answers", side_effect=failure), \
-                        mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children") as children:
-                    with self.assertRaises(type(failure)) as raised:
-                        service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=acp_reading(True))
-                self.assertIs(raised.exception, failure)
-                children.assert_not_called()
+        for read in ("acpd_answers", "restart_never_happened"):
+            for failure in (SshCommandTimeout("Timed out waiting for ssh command to finish"), SshError("Connection reset")):
+                with self.subTest(read=read, failure=type(failure).__name__):
+                    callbacks = OperationCallbacks()
+                    with mock.patch(f"timecapsulesmb.device.acpd.{read}", side_effect=failure):
+                        with self.assertRaises(type(failure)) as raised:
+                            service_runtime.require_acpd_ready(self.CONNECTION, callbacks, reading=acp_reading(True))
+                    self.assertIs(raised.exception, failure)
 
     def test_no_password_to_check_is_not_an_unanswered_read(self) -> None:
         error, _debug, _answer, _children = self.gate(reading=AirportAcpReading(password_matches=None))
@@ -857,8 +888,7 @@ class AirportIdentityTests(unittest.TestCase):
     def test_the_password_check_before_a_reboot_reports_the_device(self) -> None:
         recorder = RecordingCallbacks()
         reading = AirportAcpReading(password_matches=True, airport_mac=DEVICE_AIRPORT_MAC, airport_name="Office")
-        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True), \
-                mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=[]):
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=True):
             service_runtime.require_acpd_ready(SshConnection("root@10.0.0.2", "pw", ""), recorder.callbacks(), reading=reading)
         self.assertEqual(recorder.fields["airport_mac"], DEVICE_AIRPORT_MAC)
         self.assertEqual(recorder.fields["airport_instance_name"], "Office")

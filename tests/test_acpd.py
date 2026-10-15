@@ -1,7 +1,6 @@
-"""Apple ACPd health read over SSH (timecapsulesmb.device.acpd and
-device.processes.acpd_stuck_children). The process listings are rows from
-real devices in telemetry, in PROCESS_SNAPSHOT_COMMAND's layout (pid ppid
-pgid stat sl wchan time ucomm, then the command line)."""
+"""Apple ACPd health read over SSH (timecapsulesmb.device.acpd). The process
+listings are rows from real devices in telemetry, in PROCESS_SNAPSHOT_COMMAND's
+layout (pid ppid pgid stat sl wchan time ucomm, then the command line)."""
 from __future__ import annotations
 
 import subprocess
@@ -12,14 +11,17 @@ from pathlib import Path
 from unittest import mock
 
 from timecapsulesmb.device import acpd
-from timecapsulesmb.device.processes import acpd_stuck_children
+from tests.device_ps import FakePs, process, ps_row
+from timecapsulesmb.device.acpd import acpd_stuck_children
+from timecapsulesmb.device.processes import parse_ps_rows
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
 
 # tests/conftest.py replaces these on the module for every test; keep the real ones.
 REAL_ACPD_ANSWERS = acpd.acpd_answers
-REAL_READ_RESTART_EVIDENCE = acpd.read_restart_evidence
-REAL_READ_ACPD_STUCK_CHILDREN = acpd.read_acpd_stuck_children
+REAL_READ_PROCESSES = acpd.read_processes
+REAL_MARK_RESTART = acpd.mark_restart
+REAL_RESTART_NEVER_HAPPENED = acpd.restart_never_happened
 
 CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
 
@@ -170,49 +172,151 @@ class AcpdAnswersTests(unittest.TestCase):
             self.answers(completed(""), SshCommandTimeout("timed out"))
 
 
-class RestartEvidenceTests(unittest.TestCase):
-    # sysctl -n kern.cp_time, then ps -o ucomm=, from the LAN devices on 2026-10-11.
-    NETBSD6 = "user = 11971, nice = 0, sys = 23734, intr = 17393, idle = 1380088\ninit\nACPd\nsshd\n"
-    NETBSD4 = "user = 2788, nice = 0, sys = 11307, intr = 7549, idle = 1378180\nACPd\nsshd\n"
+class RestartMarkerTests(unittest.TestCase):
+    """The marker written before a restart request, and read while the wait
+    and later commands look for a restart that never happened."""
 
-    def test_the_tick_count_is_the_sum_of_the_five_counters(self) -> None:
-        self.assertEqual(acpd.parse_restart_evidence(self.NETBSD6), acpd.RestartEvidence(1433186, False))
-        self.assertEqual(acpd.parse_restart_evidence(self.NETBSD4), acpd.RestartEvidence(1399824, False))
+    # The LAN NetBSD 4 device's table, in PS_COLUMNS' layout.
+    NETBSD4_ROWS = [
+        process("1 Ss init", ppid="0"),
+        process("190 S ACPd /sbin/ACPd -nofork", wchan="kqread"),
+        process("289 S sshd /usr/sbin/sshd -D -e", ppid="190", wchan="select"),
+    ]
 
-    def test_a_listed_shutdown_or_reboot_is_a_restart_under_way(self) -> None:
-        for name in ("shutdown", "reboot", "  shutdown  "):
-            with self.subTest(name=name):
-                evidence = acpd.parse_restart_evidence(self.NETBSD4 + name + "\n")
-                self.assertTrue(evidence.shutting_down)
-        self.assertFalse(acpd.parse_restart_evidence(self.NETBSD4 + "shutdownd\n").shutting_down)
+    def rows(self, *extra: str) -> str:
+        """NETBSD4_ROWS as STUCK_PROCESS_PS_COMMAND prints them, plus processes named extra."""
+        names = [(int(p["pid"]), str(p["ucomm"])) for p in self.NETBSD4_ROWS]
+        names += [(900 + index, name) for index, name in enumerate(extra)]
+        return "".join(ps_row(pid, name) + "\n" for pid, name in names)
 
-    def test_anything_but_five_counters_is_unreadable(self) -> None:
-        for output in ("", "sysctl: unknown oid 'kern.cp_time'\n", "user = 1, nice = 0, sys = 2\nACPd\n"):
-            with self.subTest(output=output):
-                self.assertIsNone(acpd.parse_restart_evidence(output))
+    def test_the_device_side_commands_write_and_find_the_marker(self) -> None:
+        # The device has no touch: the write is the shell's own redirection.
+        writes: list[str] = []
+        with mock.patch("timecapsulesmb.device.acpd.run_ssh", side_effect=lambda _c, command, **_k: writes.append(command) or completed("")):
+            self.assertTrue(REAL_MARK_RESTART(CONNECTION))
+        reads: list[str] = []
+        with mock.patch("timecapsulesmb.device.acpd.run_ssh", side_effect=lambda _c, command, **_k: reads.append(command) or completed("", 1)):
+            REAL_RESTART_NEVER_HAPPENED(CONNECTION)
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker"
+            # The fake ps fails a listing that asks for command lines, whose
+            # read can wait on a busy process.
+            fake = FakePs(Path(tmp), self.NETBSD4_ROWS)
 
-    def read(self, outcome) -> acpd.RestartEvidence | None:
+            def on_this_host(command: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["/bin/sh", "-c", fake.install(command.replace(acpd.RESTART_MARKER, str(marker)))],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20,
+                )
+
+            absent = on_this_host(reads[0])
+            self.assertNotEqual(absent.returncode, 0)
+            self.assertEqual((absent.stdout, fake.calls), ("", []))
+            self.assertEqual(on_this_host(writes[0]).returncode, 0)
+            self.assertTrue(marker.exists())
+            present = on_this_host(reads[0])
+            self.assertEqual(present.returncode, 0, present.stdout)
+            self.assertEqual([p.ucomm for p in parse_ps_rows(present.stdout)], ["init", "ACPd", "sshd"])
+            self.assertEqual(len(fake.calls), 1)
+            self.assertEqual(fake.command_reads(), [])
+        self.assertTrue(acpd.RESTART_MARKER.startswith("/mnt/Memory/"))
+
+    def never_happened(self, outcome) -> bool:
         run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
         with mock.patch("timecapsulesmb.device.acpd.run_ssh", run):
-            return REAL_READ_RESTART_EVIDENCE(CONNECTION)
+            return REAL_RESTART_NEVER_HAPPENED(CONNECTION)
 
-    def test_one_read_gives_the_evidence(self) -> None:
-        self.assertEqual(self.read(completed(self.NETBSD6)), acpd.RestartEvidence(1433186, False))
+    def test_a_marker_that_outlived_its_request_with_no_shutdown_running_is_a_restart_that_never_happened(self) -> None:
+        self.assertTrue(self.never_happened(completed(self.rows())))
+        self.assertTrue(self.never_happened(completed(self.rows("shutdownd"))))
 
-    def test_a_failed_read_or_ssh_gives_none(self) -> None:
-        for outcome in (completed(self.NETBSD6, 1), SshError("Connection refused"), SshCommandTimeout("timed out")):
+    def test_no_marker_is_a_restart_that_happened(self) -> None:
+        self.assertFalse(self.never_happened(completed("", 1)))
+
+    def test_a_slow_shutdown_still_running_is_a_restart_under_way(self) -> None:
+        for name in ("shutdown", "reboot"):
+            with self.subTest(name=name):
+                self.assertFalse(self.never_happened(completed(self.rows(name))))
+
+    def test_an_ssh_failure_reading_the_marker_is_raised(self) -> None:
+        for error in (SshError("Connection refused"), SshCommandTimeout("timed out")):
+            with self.subTest(error=type(error).__name__):
+                with self.assertRaises(type(error)):
+                    self.never_happened(error)
+
+    def test_a_marker_that_could_not_be_written_says_so(self) -> None:
+        for outcome in (completed("sh: cannot create /mnt/Memory/x: No space left on device\n", 2), SshError("Connection reset"), SshCommandTimeout("timed out")):
             with self.subTest(outcome=outcome):
-                self.assertIsNone(self.read(outcome))
+                run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
+                with mock.patch("timecapsulesmb.device.acpd.run_ssh", run):
+                    self.assertFalse(REAL_MARK_RESTART(CONNECTION))
 
 
-class ReadAcpdStuckChildrenTests(unittest.TestCase):
+class ReadProcessesTests(unittest.TestCase):
     def test_one_listing_is_read(self) -> None:
         with mock.patch("timecapsulesmb.device.acpd.run_ssh", return_value=completed(STUCK_BEFORE_REBOOT)):
-            self.assertEqual(REAL_READ_ACPD_STUCK_CHILDREN(CONNECTION), [352])
+            self.assertEqual(REAL_READ_PROCESSES(CONNECTION), STUCK_BEFORE_REBOOT)
 
-    def test_a_listing_that_does_not_answer_finds_nothing(self) -> None:
+    def test_a_listing_that_does_not_answer_is_empty(self) -> None:
         with mock.patch("timecapsulesmb.device.acpd.run_ssh", side_effect=SshCommandTimeout("timed out")):
-            self.assertEqual(REAL_READ_ACPD_STUCK_CHILDREN(CONNECTION), [])
+            self.assertEqual(REAL_READ_PROCESSES(CONNECTION), "")
+
+
+class AcpdProblemsTests(unittest.TestCase):
+    """The one list of ACPd problems that require_acpd_ready and doctor share."""
+
+    def problems(self, *, never_happened: bool = False, answers: bool = True, listing: str = HEALTHY_NETBSD6, ps_output: str | None = None):
+        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened) as marker, \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as syut, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as ps:
+            problems = acpd.acpd_problems(CONNECTION, ps_output)
+        marker.assert_called_once_with(CONNECTION)
+        self.syut = syut
+        return problems, ps
+
+    def test_a_healthy_acpd_has_none(self) -> None:
+        for listing in (HEALTHY_NETBSD6, HEALTHY_NETBSD4, ""):
+            with self.subTest(listing=listing[:20]):
+                self.assertEqual(self.problems(listing=listing)[0], [])
+
+    def test_each_problem_is_named(self) -> None:
+        problems, _ps = self.problems(never_happened=True)
+        self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
+        self.assertIn("did not restart", problems[0].what)
+        problems, _ps = self.problems(answers=False)
+        self.assertEqual([problem.code for problem in problems], ["syut_silent"])
+        problems, _ps = self.problems(listing=STUCK_BEFORE_REBOOT)
+        self.assertEqual([problem.code for problem in problems], ["stuck_child"])
+        self.assertEqual(problems[0].details, {"acpd_stuck_children": [352]})
+        self.assertIn("pid 352", problems[0].what)
+
+    def test_a_restart_that_never_happened_is_reported_alone(self) -> None:
+        # ACPd tore itself down: its silent syUT and stuck fork are the same
+        # problem, with the same fix, so they are not read or reported again.
+        problems, ps = self.problems(never_happened=True, answers=False, listing=STUCK_AFTER_REQUEST)
+        self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
+        self.syut.assert_not_called()
+        ps.assert_not_called()
+
+    def test_the_other_problems_are_listed_together(self) -> None:
+        problems, _ps = self.problems(answers=False, listing=STUCK_AFTER_REQUEST)
+        self.assertEqual([problem.code for problem in problems], ["syut_silent", "stuck_child"])
+        self.syut.assert_called_once_with(CONNECTION)
+
+    def test_a_listing_already_read_is_not_read_again(self) -> None:
+        problems, ps = self.problems(ps_output=STUCK_BEFORE_REBOOT)
+        ps.assert_not_called()
+        self.assertEqual([problem.code for problem in problems], ["stuck_child"])
+        problems, ps = self.problems(ps_output="", listing=STUCK_BEFORE_REBOOT)
+        ps.assert_not_called()
+        self.assertEqual(problems, [])
+
+    def test_an_ssh_failure_is_raised_not_blamed_on_acpd(self) -> None:
+        for patched in ("restart_never_happened", "acpd_answers"):
+            with self.subTest(read=patched):
+                with mock.patch(f"timecapsulesmb.device.acpd.{patched}", side_effect=SshError("Connection reset")):
+                    with self.assertRaises(SshError):
+                        acpd.acpd_problems(CONNECTION)
 
 
 if __name__ == "__main__":

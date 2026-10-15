@@ -51,14 +51,16 @@ class FakeAcpDevice:
     # Host seconds after the request during which a shutdown process is listed
     # while the old kernel still runs (a slow but real restart).
     shutdown_listed_until: float = 0.0
-    # Host seconds a torn-down ACPd's syUT read takes to give up: the worst
-    # case is the device ending both acpd_answers attempts (2 x 15 s).
-    syut_silent_seconds: float = 30.0
-    # Host seconds each SSH read of device.acpd takes otherwise.
+    # Whether the restart marker can be written on the RAM disk.
+    marker_writable: bool = True
+    # Host seconds each SSH read of device.acpd takes.
     ssh_read_seconds: float = 1.0
     # Seconds from the request until ACP stops answering, and until the new
     # kernel starts (uptime 0).
     shutdown_after: float = 10.0
+    # Seconds from the request that the old kernel's sshd keeps answering in
+    # a real restart, while ACPd tears down before shutdown; None: shutdown_after.
+    old_ssh_until: float | None = None
     kernel_after: float = 40.0
     # Seconds after the new kernel starts that ACP and SSH answer (measured on
     # the devices: ACPd at 4-5 s, sshd at 7-10 s). None: SSH never opens.
@@ -88,9 +90,12 @@ class FakeAcpDevice:
     # Hosts whose shared SSH connections were closed, and whether the reboot
     # request had been sent at the time.
     ssh_master_closes: list[tuple[str, bool]] = field(default_factory=list)
-    # The device.acpd reads over SSH ("restart evidence", "acpd answers"),
-    # each with whether a reboot had been requested; calls keeps ACP traffic.
+    # The device.acpd calls over SSH ("mark", "marker"), each with whether a
+    # reboot had been requested; calls keeps ACP traffic.
     ssh_reads: list[tuple[str, bool]] = field(default_factory=list)
+    # When the restart marker was written on the RAM disk; a new kernel's
+    # RAM disk starts empty.
+    marked_at: float | None = None
 
     def __post_init__(self) -> None:
         self._boot_at = self.now - self.uptime / self.device_rate
@@ -184,45 +189,47 @@ class FakeAcpDevice:
         kernel = self._new_kernel_at()
         if kernel is None:
             return self.ssh_open
-        if self.now < self.requested_at + self.shutdown_after:
+        if self.now < self.requested_at + self._old_ssh_until():
             return self.ssh_open
         if self.ssh_up_after_boot is None:
             return False
         return self.now >= kernel + self.ssh_up_after_boot
 
+    def _old_ssh_until(self) -> float:
+        return self.shutdown_after if self.old_ssh_until is None else self.old_ssh_until
+
     def _ssh_answers(self, host: str) -> bool:
         kernel = self._new_kernel_at()
         if not self._answers_at(host):
             return False
-        if kernel is None or self.requested_at is None or self.now < self.requested_at + self.shutdown_after:
+        if kernel is None or self.requested_at is None or self.now < self.requested_at + self._old_ssh_until():
             return self.ssh_open
         return self.ssh_up_after_boot is not None and self.now >= kernel + self.ssh_up_after_boot
 
-    def restart_evidence(self, connection):
-        """device.acpd.read_restart_evidence: the running kernel's tick count
-        (100 a second since its boot, never the wall clock) and whether a
-        shutdown is listed, while SSH answers."""
-        from timecapsulesmb.device.acpd import RestartEvidence
+    def _marker_present(self) -> bool:
+        kernel = self._new_kernel_at()
+        return self.marked_at is not None and (kernel is None or self.now < kernel)
 
-        self.ssh_reads.append(("restart evidence", self.requested_at is not None))
-        evidence = None
-        if self._ssh_answers(connection.host.removeprefix("root@")):
-            shutting_down = self.requested_at is not None and self.now < self.requested_at + self.shutdown_listed_until
-            evidence = RestartEvidence(self.device_uptime() * 100, shutting_down)
+    def mark_restart(self, connection) -> bool:
+        """device.acpd.mark_restart: the marker lands on the running kernel's RAM disk."""
+        self.ssh_reads.append(("mark", self.requested_at is not None))
+        written = self.marker_writable and self._ssh_answers(connection.host.removeprefix("root@"))
+        if written:
+            self.marked_at = self.now
         self.now += self.ssh_read_seconds
-        return evidence
+        return written
 
-    def acpd_answers(self, connection) -> bool:
-        """device.acpd.acpd_answers: the device's own acp reads syUT, except
-        from a torn-down ACPd."""
-        self.ssh_reads.append(("acpd answers", self.requested_at is not None))
+    def restart_never_happened(self, connection) -> bool:
+        """device.acpd.restart_never_happened: the marker is still there and no
+        shutdown is listed, while SSH answers."""
+        from timecapsulesmb.transport.errors import SshError
+
+        self.ssh_reads.append(("marker", self.requested_at is not None))
         if not self._ssh_answers(connection.host.removeprefix("root@")):
-            from timecapsulesmb.transport.errors import SshError
-
             raise SshError("Connection refused")
-        silent = self.acpd_hangs and self.requested_at is not None and self.now >= self.requested_at + self.shutdown_after
-        self.now += self.syut_silent_seconds if silent else self.ssh_read_seconds
-        return not silent
+        shutting_down = self.requested_at is not None and self.now < self.requested_at + self.shutdown_listed_until
+        self.now += self.ssh_read_seconds
+        return self._marker_present() and not shutting_down
 
     @contextlib.contextmanager
     def patched(self):
@@ -238,8 +245,8 @@ class FakeAcpDevice:
             ),
             mock.patch("timecapsulesmb.integrations.acp.reboot", side_effect=self.reboot),
             mock.patch("timecapsulesmb.services.reboot.tcp_open", side_effect=self.tcp_open),
-            mock.patch("timecapsulesmb.device.acpd.read_restart_evidence", side_effect=self.restart_evidence),
-            mock.patch("timecapsulesmb.device.acpd.acpd_answers", side_effect=self.acpd_answers),
+            mock.patch("timecapsulesmb.device.acpd.mark_restart", side_effect=self.mark_restart),
+            mock.patch("timecapsulesmb.device.acpd.restart_never_happened", side_effect=self.restart_never_happened),
             mock.patch(
                 "timecapsulesmb.services.reboot.close_ssh_masters",
                 side_effect=lambda host: self.ssh_master_closes.append((host, self.requested_at is not None)),

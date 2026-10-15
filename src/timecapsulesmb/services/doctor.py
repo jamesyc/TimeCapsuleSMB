@@ -71,8 +71,9 @@ def doctor_finished_fields(
         # Likewise for Bonjour and printer checks skipped off the device's network.
         "bonjour_link": debug_fields.get("bonjour_link"),
         "nsmb_conf": debug_fields.pop("nsmb_conf", None),
-        # How many devices carry a stuck fork of Apple's ACPd before any reboot.
-        "acpd_child_count": debug_fields.get("acpd_child_count"),
+        # Which of Apple's ACPd problems the device shows (device.acpd.acpd_problems),
+        # on passing runs too, so the share of devices with each is known.
+        "acpd_problems": debug_fields.get("acpd_problems"),
         # Whether doctor waited for device services still starting, and how
         # that ended, on passing runs too.
         "startup_wait": debug_fields.get("startup_wait"),

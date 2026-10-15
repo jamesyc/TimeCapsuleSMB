@@ -1551,7 +1551,7 @@ def complete_deployment_after_upload(
     if no_wait:
         if messages.reboot_request_message:
             callbacks.message(messages.reboot_request_message)
-        reboot_device(connection.host, connection.password, wait=False, callbacks=callbacks)
+        reboot_device(connection.host, connection.password, wait=False, callbacks=callbacks, ssh=connection)
         return DeployCompletionResult(
             payload_dir=plan.payload_dir,
             payload_family=payload_family,

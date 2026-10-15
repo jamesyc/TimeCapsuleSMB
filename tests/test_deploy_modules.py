@@ -2736,7 +2736,9 @@ describe_managed_smbd_status "" ""
                 verify_runtime_func=verify_runtime,
             )
 
-        reboot.assert_called_once_with("root@10.0.0.2", "pw", wait=False, callbacks=callbacks)
+        # The marker still goes on the device, so the next command can tell
+        # a restart that never happened.
+        reboot.assert_called_once_with("root@10.0.0.2", "pw", wait=False, callbacks=callbacks, ssh=connection)
         verify_runtime.assert_not_called()
         self.assertIn("Requesting reboot...", logs)
         self.assertTrue(result.reboot_requested)

@@ -238,9 +238,9 @@ class CliDoctorTests(CliTestCase):
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["nsmb_conf"], summary)
 
-    def test_doctor_telemetry_counts_stuck_apple_acpd_forks_on_a_passing_run(self) -> None:
+    def test_doctor_telemetry_reports_apple_acpd_problems_on_a_passing_run(self) -> None:
         def fake_run_doctor_checks(*_args, **kwargs):
-            kwargs["debug_fields"]["acpd_child_count"] = 0
+            kwargs["debug_fields"]["acpd_problems"] = []
             return [doctor.CheckResult("PASS", "ssh ok", domain="device")], False
 
         with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})), \
@@ -249,7 +249,7 @@ class CliDoctorTests(CliTestCase):
             self.assertEqual(doctor.main([]), 0)
 
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
-        self.assertEqual(finished["acpd_child_count"], 0)
+        self.assertEqual(finished["acpd_problems"], [])
 
     def test_doctor_json_names_each_results_section(self) -> None:
         output = io.StringIO()

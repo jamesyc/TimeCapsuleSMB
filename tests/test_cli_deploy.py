@@ -15,7 +15,7 @@ from timecapsulesmb.services.deploy import (
     DEPLOY_ACPD_STOPPED_MESSAGE,
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
 )
-from timecapsulesmb.services.runtime import ACPD_BROKEN_MESSAGE, AIRPORT_PASSWORD_MISMATCH_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.compat import DeviceCompatibility, classify_device_compatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
@@ -997,19 +997,23 @@ class CliDeployTests(CliTestCase):
         result.mocks.upload_deployment_payload.assert_not_called()
 
     def test_deploy_refuses_a_broken_apple_acpd_before_asking(self) -> None:
-        # Its reboot would stop the services and never restart the device.
+        # The last restart never happened: this one would stop the services
+        # and never restart the device either.
         input_mock = mock.Mock(side_effect=AssertionError("deploy must not ask before the ACPd check"))
-        with mock.patch("timecapsulesmb.device.acpd.read_acpd_stuck_children", return_value=[352]):
-            result = self.run_deploy_cli(
-                [],
-                artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
-                patch_actions=True,
-                patch_upload=True,
-                input_side_effect=input_mock,
-                raises=SystemExit,
-            )
+        device = FakeAcpDevice()
+        device.restart_never_happened = lambda connection: True
+        result = self.run_deploy_cli(
+            [],
+            device=device,
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            input_side_effect=input_mock,
+            raises=SystemExit,
+        )
 
-        self.assertIn(ACPD_BROKEN_MESSAGE, str(result.exception.code))
+        self.assertIn("Apple ACPd is broken: the device did not restart", str(result.exception.code))
+        self.assertIn("Nothing was changed", str(result.exception.code))
         input_mock.assert_not_called()
         self.assertNotIn("request", result.mocks.device.calls)
         result.mocks.run_remote_actions.assert_not_called()
