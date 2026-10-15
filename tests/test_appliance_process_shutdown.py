@@ -378,7 +378,8 @@ FSCK_OTHER_MOUNTS = [
 
 
 def _run_fsck_script(tmp_path, *, stubborn=None, fsck_rc=0,
-                     mounts=None, umount_unmounts=True, mount_fails=False):
+                     mounts=None, umount_unmounts=True, mount_fails=False,
+                     extra_rows=None, ps_fails=False):
     """Run the real fsck script against fake ps/kill/umount/mount/fsck tools.
 
     Returns (result, logged tool calls, pids still running, mounts left).
@@ -397,6 +398,7 @@ def _run_fsck_script(tmp_path, *, stubborn=None, fsck_rc=0,
         '41': '41 S afpserver /sbin/afpserver',
         '42': '42 S wcifsfs /sbin/wcifsfs',
         '90': '90 S mDNSResponder /sbin/mDNSResponder -d',
+        **(extra_rows or {}),
     }
     state.write_text(json.dumps({'rows': rows, 'mounts': mounts}))
     log = tmp_path / 'log'
@@ -412,6 +414,8 @@ status = 0
 def drop(pid):
     if pid != {stubborn!r}:
         rows.pop(pid, None)
+if cmd == 'ps' and {ps_fails!r}:
+    sys.exit(1)
 if cmd == 'ps':
     status = ps(rows.values())
 elif cmd == 'kill':
@@ -665,3 +669,44 @@ def test_stop_idle_jobs_never_signals_an_unreadable_process(tmp_path, shell):
     assert result.stderr.splitlines() == ['process sh did not show its command line (pid 17)']
     assert fake.signals == [['-TERM', '18']]
     assert fake.pids == {'17'}
+
+
+def test_fsck_touches_nothing_while_an_earlier_fsck_hfs_still_runs(tmp_path):
+    # A repair whose session dropped keeps running; a second fsck_hfs on the
+    # same disk would repair it under the first. Nothing is stopped either.
+    from timecapsulesmb.services.maintenance import (
+        FSCK_ALREADY_RUNNING_LINE,
+        FSCK_ALREADY_RUNNING_MESSAGE,
+        fsck_exit_status,
+        fsck_failure_message,
+    )
+
+    result, calls, remaining, mounts = _run_fsck_script(
+        tmp_path, mounts=FSCK_OTHER_MOUNTS, extra_rows={'77': '77 D fsck_hfs /sbin/fsck_hfs -fy /dev/dk2'})
+
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [FSCK_ALREADY_RUNNING_LINE]
+    assert calls == []
+    assert {'30', '40', '41', '77'} <= remaining
+    assert mounts == FSCK_OTHER_MOUNTS
+    assert fsck_exit_status(result.stdout) is None
+    assert fsck_failure_message(None, result.stdout) == FSCK_ALREADY_RUNNING_MESSAGE
+
+
+def test_fsck_ignores_a_finished_fsck_hfs_left_as_a_zombie(tmp_path):
+    result, calls, _remaining, _ = _run_fsck_script(
+        tmp_path, extra_rows={'77': '77 Z fsck_hfs fsck_hfs'})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2']
+
+
+def test_fsck_refuses_when_it_cannot_tell_whether_fsck_hfs_runs(tmp_path):
+    from timecapsulesmb.services.maintenance import FSCK_ALREADY_RUNNING_LINE
+
+    result, calls, remaining, _ = _run_fsck_script(tmp_path, ps_fails=True)
+
+    assert result.returncode == 1
+    assert FSCK_ALREADY_RUNNING_LINE in result.stdout.splitlines()
+    assert calls == []
+    assert '30' in remaining

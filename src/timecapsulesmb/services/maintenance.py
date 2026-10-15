@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
+import re
 import shlex
+import time
 
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
 from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_actions, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
+from timecapsulesmb.device.processes import render_process_present_by_ucomm
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import (
@@ -37,6 +41,41 @@ FSCK_NOT_UNMOUNTED_LINE = "tcapsule-fsck: volume not unmounted"
 FSCK_NOT_UNMOUNTED_MESSAGE = (
     "fsck did not run: the volume could not be confirmed unmounted. "
     "File sharing stays off until the device restarts; restart it, then retry fsck."
+)
+FSCK_ALREADY_RUNNING_LINE = "tcapsule-fsck: fsck_hfs already running"
+FSCK_ALREADY_RUNNING_CODE = "fsck_already_running"
+FSCK_ALREADY_RUNNING_MESSAGE = (
+    "fsck did not run: fsck_hfs from an earlier disk repair is still running on the device. "
+    "Keep the Time Capsule plugged in, wait for it to finish, then run Disk Repair again."
+)
+FSCK_SESSION_DROPPED_CODE = "fsck_session_dropped"
+FSCK_SESSION_DROPPED_MESSAGE = (
+    "The connection to the device ended while fsck_hfs was running. The repair keeps running "
+    "on the device: keep the Time Capsule plugged in and do not restart it. Run Disk Repair "
+    "again later; it will not start while the earlier repair runs, and it restarts the device when done."
+)
+FSCK_STARTED_LINE_PREFIX = "--- fsck_hfs "
+FSCK_DURATION_WARNING = (
+    "This can take an hour or more on a large disk. "
+    "Keep the Time Capsule plugged in until it finishes."
+)
+# fsck_hfs prints a line for each damaged file; past this many, the log
+# keeps only its "** " step lines and the script's own.
+FSCK_DETAIL_LINE_LIMIT = 200
+# fsck_hfs's "** " lines that start a step, as the progress phase they report.
+# A repair runs every check again after "Rechecking volume.", and may repair
+# and recheck more than once.
+FSCK_PHASES = (
+    (re.compile(r"Checking (Journaled )?HFS.* volume\.", re.IGNORECASE), "start"),
+    (re.compile(r"Checking Extents Overflow file\.", re.IGNORECASE), "extents"),
+    (re.compile(r"Checking Catalog file\.", re.IGNORECASE), "catalog"),
+    (re.compile(r"Checking multi-linked (files|directories)\.", re.IGNORECASE), "multilinked"),
+    (re.compile(r"Checking Catalog hierarchy\.", re.IGNORECASE), "hierarchy"),
+    (re.compile(r"Checking Extended Attributes file\.", re.IGNORECASE), "attributes"),
+    (re.compile(r"Checking volume bitmap\.", re.IGNORECASE), "bitmap"),
+    (re.compile(r"Checking volume information\.", re.IGNORECASE), "volume_info"),
+    (re.compile(r"Repairing volume\.", re.IGNORECASE), "repairing"),
+    (re.compile(r"Rechecking volume\.", re.IGNORECASE), "rechecking"),
 )
 
 NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
@@ -135,11 +174,22 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
 
 
 def build_remote_fsck_script(device: str, mountpoint: str) -> str:
+    # The host gives this script a terminal so that fsck_hfs writes each step
+    # as it starts. A dropped session would then hang up the terminal, so
+    # ignore that: fsck_hfs, which inherits it, must not stop mid-repair.
+    lines = ["trap '' HUP"]
+    # That fsck_hfs then outlives the session that started it. A second one on
+    # the same disk would repair it while the first still writes, so touch
+    # nothing while any runs (or when the process list cannot be read).
+    lines.append(
+        f"if ( {render_process_present_by_ucomm('fsck_hfs')} ); then "
+        f"echo '{FSCK_ALREADY_RUNNING_LINE}'; exit 1; fi"
+    )
     # Never repair a volume the manager could remount or smbd could write:
     # abort unless every managed process has stopped. AFP could write it too,
     # so afpserver stops even without a reboot; file sharing then stays off
     # until the next reboot either way.
-    lines = [
+    lines += [
         f"( {command} ) || exit 1"
         for command in render_remote_actions(managed_stop_actions(stop_afpserver=True))
     ]
@@ -154,7 +204,7 @@ def build_remote_fsck_script(device: str, mountpoint: str) -> str:
         'case "\n$mounts" in',
         f'    *"\n"{shlex.quote(device + " on ")}*) echo \'{FSCK_NOT_UNMOUNTED_LINE}\'; exit 1 ;;',
         "esac",
-        f"echo '--- fsck_hfs {device} ---'",
+        f"echo '{FSCK_STARTED_LINE_PREFIX}{device} ---'",
         f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1",
         "fsck_status=$?",
         f'echo "{FSCK_STATUS_PREFIX}$fsck_status"',
@@ -163,6 +213,80 @@ def build_remote_fsck_script(device: str, mountpoint: str) -> str:
     # this script has reported, through the same ACP request as every flow.
     lines.append('exit "$fsck_status"')
     return "\n".join(lines)
+
+
+def fsck_phase(line: str) -> str | None:
+    """The progress phase a fsck_hfs output line starts, if it starts one."""
+    if not line.startswith("** "):
+        return None
+    text = line[3:].strip()
+    for pattern, phase in FSCK_PHASES:
+        if pattern.fullmatch(text):
+            return phase
+    return None
+
+
+@dataclass
+class FsckOutputLog:
+    """Logs the remote fsck script's output as it arrives and reports fsck_hfs's steps.
+
+    Each step is a progress event with its phase and whether it rechecks a
+    repaired volume, and is timed for telemetry. A damaged disk
+    prints a line per file: the log keeps the first FSCK_DETAIL_LINE_LIMIT.
+    """
+
+    callbacks: OperationCallbacks
+    now: Callable[[], float] = time.monotonic
+    started: bool = False
+    recheck: bool = False
+    phase_seconds: dict[str, float] = field(default_factory=dict)
+    detail_lines: int = 0
+    hidden_lines: int = 0
+    _phase_key: str | None = None
+    _phase_start: float = 0.0
+
+    def line(self, text: str) -> None:
+        if text.startswith(FSCK_STARTED_LINE_PREFIX):
+            self.started = True
+        phase = fsck_phase(text)
+        if phase is not None:
+            self._start_phase(phase)
+        if not self.started or text.startswith(("** ", FSCK_STATUS_PREFIX, FSCK_STARTED_LINE_PREFIX)):
+            self.callbacks.message(text)
+            return
+        self.detail_lines += 1
+        if self.detail_lines <= FSCK_DETAIL_LINE_LIMIT:
+            self.callbacks.message(text)
+        else:
+            self.hidden_lines += 1
+
+    def finish(self, status: int | None) -> None:
+        self._end_phase()
+        if self.hidden_lines:
+            self.callbacks.message(f"{self.hidden_lines} more fsck_hfs lines were not logged.")
+        self.callbacks.measurement(
+            "fsck_run",
+            started=self.started,
+            last_phase=self._phase_key,
+            phase_seconds={key: round(seconds, 1) for key, seconds in self.phase_seconds.items()},
+            # fsck_hfs started but its result never arrived: the connection
+            # dropped or the device restarted while it ran.
+            session_dropped=self.started and status is None,
+            detail_lines=self.detail_lines,
+        )
+
+    def _start_phase(self, phase: str) -> None:
+        self._end_phase()
+        if phase == "rechecking":
+            self.recheck = True
+        self._phase_key = f"recheck_{phase}" if self.recheck and phase != "rechecking" else phase
+        self._phase_start = self.now()
+        self.callbacks.progress("run_fsck", phase=phase, recheck=self.recheck and phase != "rechecking")
+
+    def _end_phase(self) -> None:
+        if self._phase_key is not None:
+            elapsed = self.now() - self._phase_start
+            self.phase_seconds[self._phase_key] = self.phase_seconds.get(self._phase_key, 0.0) + elapsed
 
 
 def fsck_exit_status(output: str) -> int | None:
@@ -179,8 +303,27 @@ def fsck_exit_status(output: str) -> int | None:
     return None
 
 
-def fsck_failure_message(status: int | None, output: str = "") -> str | None:
+def fsck_failure_code(status: int | None, output: str = "", *, started: bool = False) -> str | None:
+    """The error code of a run without a status line, when it has its own.
+
+    `started` says fsck_hfs started: its result was lost, not never made.
+    """
+    if status is not None:
+        return None
+    if any(line.strip() == FSCK_ALREADY_RUNNING_LINE for line in output.splitlines()):
+        return FSCK_ALREADY_RUNNING_CODE
+    if started:
+        return FSCK_SESSION_DROPPED_CODE
+    return None
+
+
+def fsck_failure_message(status: int | None, output: str = "", *, started: bool = False) -> str | None:
     if status is None:
+        code = fsck_failure_code(status, output, started=started)
+        if code == FSCK_ALREADY_RUNNING_CODE:
+            return FSCK_ALREADY_RUNNING_MESSAGE
+        if code == FSCK_SESSION_DROPPED_CODE:
+            return FSCK_SESSION_DROPPED_MESSAGE
         if any(line.strip() == FSCK_NOT_UNMOUNTED_LINE for line in output.splitlines()):
             return FSCK_NOT_UNMOUNTED_MESSAGE
         return FSCK_DID_NOT_RUN_MESSAGE
@@ -201,6 +344,8 @@ class FsckOutcome:
     # The error's own code when one explains it better than "did not restart":
     # no payload on any disk, which only a reinstall fixes.
     runtime_restart_code: str | None = None
+    # fsck_failure_code's: why a run without a status line has no result.
+    failure_code: str | None = None
 
 
 def run_fsck(
@@ -211,8 +356,9 @@ def run_fsck(
     wait: bool,
     callbacks: OperationCallbacks,
     netbsd4_autostart: bool | None = None,
+    now: Callable[[], float] = time.monotonic,
 ) -> FsckOutcome:
-    """Run the remote fsck script, log its output, then reboot if asked.
+    """Run the remote fsck script, log its output as it runs, then reboot if asked.
 
     `netbsd4_autostart` is services.activation.installed_netbsd4_autostart,
     read before the repair: None when nothing needs starting after the reboot.
@@ -223,19 +369,36 @@ def run_fsck(
     """
     callbacks.stage("run_fsck")
     script = build_remote_fsck_script(target.device, target.mountpoint)
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
-    output = proc.stdout or ""
-    for line in output.splitlines():
-        callbacks.message(line)
-    status = fsck_exit_status(output)
-    callbacks.update(returncode=status if status is not None else proc.returncode)
+    log = FsckOutputLog(callbacks, now=now)
+    status = None
+    returncode = None
+    output = ""
+    try:
+        # fsck_hfs buffers its output on a pipe until it exits; on a terminal
+        # each step arrives as it starts.
+        proc = run_ssh(
+            connection, f"/bin/sh -c {shlex.quote(script)}", check=False,
+            timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS, tty=True, on_line=log.line,
+        )
+        output = proc.stdout or ""
+        returncode = proc.returncode
+        status = fsck_exit_status(output)
+    except TransportError as exc:
+        # Once fsck_hfs has started, a lost session (or the command timeout)
+        # does not stop it: report that, not a connection failure.
+        if not log.started:
+            raise
+        callbacks.debug(fsck_transport_error=str(exc))
+    finally:
+        log.finish(status)
+    callbacks.update(returncode=status if status is not None else returncode)
     # Without a status line fsck never ran (or its result was lost), so the
     # volume may still be mounted: do not reboot. A failed repair still
     # reboots: that is what restarts file sharing. If the session dropped
     # after fsck finished, sharing stays off until the user restarts, as with
     # --no-reboot.
     rebooting = reboot and status is not None
-    failure = fsck_failure_message(status, output)
+    failure = fsck_failure_message(status, output, started=log.started)
     try:
         if rebooting:
             if not wait and netbsd4_autostart is False:
@@ -295,6 +458,7 @@ def run_fsck(
         waited=rebooting and wait,
         runtime_restart_error=runtime_restart_error,
         runtime_restart_code=runtime_restart_code,
+        failure_code=fsck_failure_code(status, output, started=log.started),
     )
 
 

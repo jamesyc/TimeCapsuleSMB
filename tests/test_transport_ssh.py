@@ -1539,6 +1539,15 @@ if "-N" in args:
         listener.listen()
     time.sleep(60)
     sys.exit(0)
+if "-tt" in args:
+    # A remote terminal: one stream, with \r\n line endings.
+    child = subprocess.Popen(["/bin/sh", "-c", args[-1]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for chunk in iter(lambda: os.read(child.stdout.fileno(), 4096), b""):
+        os.write(1, chunk.replace(b"\n", b"\r\n"))
+    status = child.wait()
+    # ssh's own words when a terminal session ends, on its stderr.
+    os.write(2, b"Shared connection to device closed.\r\n")
+    sys.exit(status)
 sys.exit(subprocess.run(["/bin/sh", "-c", args[-1]]).returncode)
 '''
 
@@ -1613,6 +1622,78 @@ class RealSshProcessTests(unittest.TestCase):
             input_bytes=b"request\n",
         )
         self.assertEqual((proc.stdout, proc.stderr), (b"REQUEST\n", b"note\n"))
+
+    def streamed(self, remote_cmd: str, *, tty: bool = True, timeout: int = 30, on_line=None):
+        lines: list[str] = []
+        proc = ssh_transport.run_ssh(
+            ssh_transport.SshConnection("root@device", "pa ss$1", ""), remote_cmd,
+            check=False, timeout=timeout, tty=tty, on_line=on_line or lines.append,
+        )
+        return proc, lines
+
+    def test_streamed_lines_arrive_while_the_command_still_runs(self) -> None:
+        # The command waits for the first line to reach the host before it
+        # writes the second, so this only finishes if lines stream.
+        ack = self.tmp / "ack"
+        lines: list[str] = []
+
+        def on_line(line: str) -> None:
+            lines.append(line)
+            ack.touch()
+
+        remote = f"echo first; while [ ! -e {shlex.quote(str(ack))} ]; do sleep 0.05; done; echo second"
+        proc, _ = self.streamed(remote, timeout=20, on_line=on_line)
+        self.assertEqual(lines, ["first", "second"])
+        self.assertEqual(proc.stdout, "first\nsecond\n")
+        self.assertEqual(proc.returncode, 0)
+
+    def test_a_terminal_command_gets_a_terminal_and_loses_its_carriage_returns(self) -> None:
+        proc, lines = self.streamed("echo one; echo two >&2; exit 4")
+        [run] = self.recorded()
+        self.assertIn("-tt", run["args"])
+        self.assertNotIn("-T", run["args"])
+        # ssh's own "Shared connection ... closed." is not the command's output.
+        self.assertEqual(lines, ["one", "two"])
+        # Callers parse the same text as without a terminal.
+        self.assertEqual((proc.stdout, proc.returncode), ("one\ntwo\n", 4))
+
+    def test_streaming_without_a_terminal_returns_what_run_ssh_returns(self) -> None:
+        remote = "echo out; echo err >&2; printf 'last'"
+        streamed, lines = self.streamed(remote, tty=False)
+        plain = ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "pa ss$1", ""), remote, check=False)
+        self.assertEqual((streamed.stdout, streamed.returncode), (plain.stdout, plain.returncode))
+        self.assertIn("-T", self.recorded()[0]["args"])
+        # A last line without a newline still reaches the caller.
+        self.assertEqual(sorted(lines), ["err", "last", "out"])
+
+    def test_a_streamed_command_that_hangs_times_out_after_its_lines(self) -> None:
+        lines: list[str] = []
+        with self.assertRaises(ssh_transport.SshCommandTimeout) as raised:
+            self.streamed("echo started; sleep 30", timeout=1, on_line=lines.append)
+        self.assertEqual(lines, ["started"])
+        self.assertEqual(str(raised.exception), "Timed out waiting for ssh command to finish: echo started; sleep 30")
+
+    def test_a_terminal_command_without_a_line_reader_also_drops_sshs_own_message(self) -> None:
+        proc = ssh_transport.run_ssh(
+            ssh_transport.SshConnection("root@device", "pa ss$1", ""), "echo out; echo err >&2", tty=True,
+        )
+        self.assertEqual(proc.stdout, "out\nerr\n")
+
+    def test_a_streamed_command_refused_once_streams_only_its_real_run(self) -> None:
+        self.scenario(rejections=1)
+        proc, lines = self.streamed("echo ran")
+        self.assertEqual((proc.stdout, lines), ("ran\n", ["ran"]))
+        self.assertEqual(len(self.recorded()), 2)
+
+    def test_streaming_needs_joined_output_and_no_input(self) -> None:
+        connection = ssh_transport.SshConnection("root@device", "pa ss$1", "")
+        for kwargs in ({"input_bytes": b"x", "merge_stderr": True}, {"merge_stderr": False}):
+            with self.subTest(**{key: repr(value) for key, value in kwargs.items()}):
+                with self.assertRaises(ValueError):
+                    ssh_transport._run_ssh(
+                        connection, "true", timeout=5, timeout_message="t", on_line=lambda _line: None, **kwargs,
+                    )
+        self.assertEqual(self.recorded(), [])
 
     def test_wrong_password_is_refused_three_times(self) -> None:
         with self.assertRaises(ssh_transport.SshAuthenticationError):

@@ -8,6 +8,8 @@ struct OperationStageState: Equatable {
     let description: String?
     /// The latest "progress" event's text, shown instead of the stage's detail.
     let progressDetail: String?
+    /// When the stage's event arrived.
+    let startedAt: Date?
 
     init(
         operation: String,
@@ -15,7 +17,8 @@ struct OperationStageState: Equatable {
         risk: String? = nil,
         cancellable: Bool? = nil,
         description: String? = nil,
-        progressDetail: String? = nil
+        progressDetail: String? = nil,
+        startedAt: Date? = nil
     ) {
         self.operation = operation
         self.stage = stage
@@ -23,6 +26,7 @@ struct OperationStageState: Equatable {
         self.cancellable = cancellable
         self.description = description
         self.progressDetail = progressDetail
+        self.startedAt = startedAt
     }
 
     /// This stage with a progress event's text, or nil when the event is not
@@ -34,7 +38,7 @@ struct OperationStageState: Equatable {
         }
         return OperationStageState(
             operation: operation, stage: stage, risk: risk, cancellable: cancellable,
-            description: description, progressDetail: detail
+            description: description, progressDetail: detail, startedAt: startedAt
         )
     }
 
@@ -48,6 +52,7 @@ struct OperationStageState: Equatable {
         self.cancellable = event.cancellable
         self.description = event.description
         self.progressDetail = nil
+        self.startedAt = event.receivedAt
     }
 }
 

@@ -479,6 +479,28 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
+    # A repair whose session dropped keeps running on the device
+    # (services.maintenance): a second one must wait for it.
+    ("fsck", "fsck_already_running"): RecoveryInfo(
+        "Disk repair already running",
+        "fsck_hfs from an earlier disk repair is still running on the device. Restarting or unplugging the device now would interrupt it.",
+        (
+            "Keep the Time Capsule plugged in and wait; on a large disk the repair can take an hour or more.",
+            "Then run Disk Repair again. It restarts the device when it finishes.",
+        ),
+        retryable=True,
+        action_ids=("disk_repair",),
+    ),
+    ("fsck", "fsck_session_dropped"): RecoveryInfo(
+        "Connection lost during disk repair",
+        "The connection to the device ended while fsck_hfs was repairing the disk. The repair keeps running on the device, and file sharing stays off until the device restarts.",
+        (
+            "Keep the Time Capsule plugged in and do not restart it; on a large disk the repair can take an hour or more.",
+            "Later, run Disk Repair again. It will not start while the earlier repair runs, and it restarts the device when it finishes.",
+        ),
+        retryable=True,
+        action_ids=("disk_repair",),
+    ),
 }
 
 

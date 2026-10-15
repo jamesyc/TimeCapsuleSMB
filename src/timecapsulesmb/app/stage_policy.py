@@ -115,7 +115,11 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("fsck", "mount_hfs_volumes"): StagePolicy(REMOTE_WRITE, False, "Mount HFS volumes before fsck."),
     ("fsck", "list_fsck_volumes"): StagePolicy(REMOTE_READ, True, "List mounted HFS volumes available for fsck."),
     ("fsck", "select_fsck_volume"): StagePolicy(REMOTE_READ, True, "Select the HFS volume to repair."),
-    ("fsck", "run_fsck"): StagePolicy(DESTRUCTIVE, False, "Unmount the selected disk and run fsck_hfs."),
+    ("fsck", "run_fsck"): StagePolicy(
+        DESTRUCTIVE, False,
+        "Unmount the selected disk and run fsck_hfs. This can take an hour or more on a large disk. "
+        "Keep the Time Capsule plugged in until it finishes.",
+    ),
     ("flash", "load_config"): StagePolicy(LOCAL_READ, True, "Read flash configuration."),
     ("flash", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
     ("flash", "check_compatibility"): StagePolicy(REMOTE_READ, True, "Check NetBSD4 flash compatibility."),

@@ -444,3 +444,154 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertNil(OperationTimelineBuilder.stageDetail(for: "deploy", stage: "netbsd4_activation", fallback: nil))
     }
 }
+
+/// Disk Repair's row while fsck_hfs runs: its step, how long it has run, and
+/// the note to leave the device plugged in.
+final class FsckProgressTimelineTests: XCTestCase {
+    private var originalLanguage: AppLanguage!
+
+    override func setUp() {
+        super.setUp()
+        originalLanguage = L10n.currentLanguage
+        L10n.apply(language: .english)
+    }
+
+    override func tearDown() {
+        L10n.apply(language: originalLanguage)
+        super.tearDown()
+    }
+
+    private let started = Date(timeIntervalSince1970: 1_000_000)
+    /// services.maintenance.FSCK_PHASES: what the helper reports.
+    private static let helperPhases = [
+        "start", "extents", "catalog", "multilinked", "hierarchy", "attributes", "bitmap", "volume_info",
+        "repairing", "rechecking"
+    ]
+
+    private func fsckStage() -> BackendEvent {
+        BackendEvent(type: "stage", operation: "fsck", stage: "run_fsck", cancellable: false, receivedAt: started)
+    }
+
+    private func step(_ phase: String, recheck: Bool = false) -> BackendEvent {
+        BackendEvent(type: "progress", operation: "fsck", stage: "run_fsck", phase: phase, recheck: recheck)
+    }
+
+    func testProgressEventDecodesTheStepAndRecordsWhenItArrived() throws {
+        let data = """
+        {"schema_version":1,"type":"progress","operation":"fsck","stage":"run_fsck","phase":"catalog","recheck":true}
+        """.data(using: .utf8)!
+        let before = Date()
+
+        let event = try JSONDecoder().decode(BackendEvent.self, from: data)
+
+        XCTAssertEqual(event.phase, "catalog")
+        XCTAssertEqual(event.recheck, true)
+        XCTAssertNil(event.entries)
+        XCTAssertGreaterThanOrEqual(event.receivedAt, before)
+        XCTAssertEqual(event.withRequestId("req-2").receivedAt, event.receivedAt)
+        XCTAssertEqual(event.summary, "Checking the catalog file (recheck)")
+    }
+
+    func testRunningRepairShowsItsLatestStepTimeAndNote() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            fsckStage(),
+            BackendEvent(type: "log", operation: "fsck", message: "** Checking HFS Plus volume."),
+            step("start"),
+            step("catalog")
+        ])
+
+        XCTAssertEqual(timeline.count, 1)
+        XCTAssertEqual(timeline[0].title, "Repairing Disk")
+        XCTAssertEqual(timeline[0].detail, "Checking the catalog file")
+        XCTAssertEqual(timeline[0].state, .running)
+        XCTAssertEqual(timeline[0].elapsedSince, started)
+        XCTAssertEqual(
+            timeline[0].note,
+            "This can take an hour or more on a large disk. Keep the Time Capsule plugged in until it finishes."
+        )
+    }
+
+    func testRepairBeforeItsFirstStepSaysWhatItIsDoing() {
+        let timeline = OperationTimelineBuilder.timeline(from: [fsckStage()])
+        XCTAssertEqual(timeline[0].detail, "Stopping file sharing, unmounting the volume and running fsck_hfs.")
+        XCTAssertNotNil(timeline[0].note)
+    }
+
+    func testTheRecheckAfterARepairIsMarked() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            fsckStage(), step("repairing"), step("rechecking"), step("bitmap", recheck: true)
+        ])
+        XCTAssertEqual(timeline[0].detail, "Checking the volume bitmap (recheck)")
+        XCTAssertEqual(OperationTimelineBuilder.fsckPhaseDetail("rechecking", recheck: false), "Rechecking the volume")
+    }
+
+    func testAStepThisAppDoesNotKnowKeepsTheLastText() {
+        let timeline = OperationTimelineBuilder.timeline(from: [fsckStage(), step("catalog"), step("journal_replay")])
+        XCTAssertEqual(timeline[0].detail, "Checking the catalog file")
+        XCTAssertNil(OperationTimelineBuilder.fsckPhaseDetail("journal_replay", recheck: false))
+    }
+
+    func testAFinishedRepairDropsTheClockAndTheNote() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            fsckStage(), step("volume_info"),
+            BackendEvent(type: "stage", operation: "fsck", stage: "reboot")
+        ])
+        XCTAssertEqual(timeline[0].state, .succeeded)
+        XCTAssertEqual(timeline[0].detail, "Checking volume information")
+        XCTAssertNil(timeline[0].elapsedSince)
+        XCTAssertNil(timeline[0].note)
+        // The reboot that follows has a plain row.
+        XCTAssertNil(timeline[1].elapsedSince)
+        XCTAssertNil(timeline[1].note)
+    }
+
+    func testOtherStagesNeverShowTheClock() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "migrate_xattrs_copy", receivedAt: started),
+            BackendEvent(type: "progress", operation: "deploy", stage: "migrate_xattrs_copy", entries: 10)
+        ])
+        XCTAssertEqual(timeline[0].state, .running)
+        XCTAssertNil(timeline[0].elapsedSince)
+        XCTAssertNil(timeline[0].note)
+    }
+
+    func testCurrentStageItemCountsFromWhenTheStageArrived() throws {
+        let stage = try XCTUnwrap(OperationStageState(event: fsckStage()))
+        XCTAssertEqual(stage.startedAt, started)
+        let stepped = try XCTUnwrap(stage.updated(by: step("hierarchy")))
+        XCTAssertEqual(stepped.startedAt, started)
+
+        let item = OperationTimelineBuilder.currentStageItem(stepped)
+
+        XCTAssertEqual(item.detail, "Checking the catalog hierarchy")
+        XCTAssertEqual(item.elapsedSince, started)
+        XCTAssertNotNil(item.note)
+        let failed = OperationTimelineBuilder.currentStageItem(stepped, state: .failed)
+        XCTAssertNil(failed.elapsedSince)
+        XCTAssertNil(failed.note)
+    }
+
+    func testElapsedTimeCountsWholeMinutesInTheAppLanguage() {
+        XCTAssertEqual(OperationTimelineBuilder.elapsedText(since: started, now: started), "Running for 0 min")
+        XCTAssertEqual(OperationTimelineBuilder.elapsedText(since: started, now: started + 779), "Running for 12 min")
+        XCTAssertEqual(OperationTimelineBuilder.elapsedText(since: started, now: started + 3780), "Running for 1 hr, 3 min")
+        // A clock that moved backwards is not a negative time.
+        XCTAssertEqual(OperationTimelineBuilder.elapsedText(since: started, now: started - 60), "Running for 0 min")
+
+        L10n.apply(language: .german)
+        XCTAssertEqual(OperationTimelineBuilder.elapsedText(since: started, now: started + 720), "Läuft seit 12 Min.")
+    }
+
+    func testEveryStepHasItsOwnTextInEveryLanguage() {
+        for language in AppLanguage.allCases where language != .system {
+            L10n.apply(language: language)
+            let texts = Self.helperPhases.compactMap {
+                OperationTimelineBuilder.fsckPhaseDetail($0, recheck: false)
+            }
+            XCTAssertEqual(Set(texts).count, Self.helperPhases.count, "\(language)")
+            for text in texts {
+                XCTAssertFalse(text.hasPrefix("timeline.fsck."), "\(language): \(text)")
+            }
+        }
+    }
+}

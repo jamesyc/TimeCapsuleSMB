@@ -6959,10 +6959,13 @@ MaSt = (
             stack.enter_context(mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection))
             stack.enter_context(mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]))
             stack.enter_context(mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted))
-            run_ssh = stack.enter_context(mock.patch(
-                "timecapsulesmb.services.maintenance.run_ssh",
-                return_value=subprocess.CompletedProcess(["ssh"], ssh_returncode, stdout=stdout, stderr=""),
-            ))
+            def remote(*_args, on_line, **_kwargs):
+                # The transport passes each line on as it arrives.
+                for line in stdout.splitlines():
+                    on_line(line)
+                return subprocess.CompletedProcess(["ssh"], ssh_returncode, stdout=stdout, stderr="")
+
+            run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh", side_effect=remote))
             # Before rebooting, fsck probes the device like deploy does.
             stack.enter_context(mock.patch(
                 "timecapsulesmb.app.ops.maintenance.probe_managed_connection_state",
@@ -6988,6 +6991,32 @@ MaSt = (
         self.assertEqual(payload["summary"], "Disk repair completed with fsck.")
         self.assertNotIn("error", payload)
         self.assertTrue(payload["verified"])
+
+    def test_fsck_reports_each_fsck_hfs_step_to_the_app_as_it_starts(self) -> None:
+        rc, collector, _reboot = self._run_confirmed_fsck(
+            "--- fsck_hfs /dev/dk2 ---\n** Checking HFS Plus volume.\n** Checking Catalog file.\n"
+            "** Repairing volume.\n** Rechecking volume.\n** Checking Catalog file.\n"
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            ssh_returncode=0,
+        )
+
+        self.assertEqual(rc, 0)
+        progress = [
+            (event["stage"], event["phase"], event["recheck"]) for event in collector.events_of_type("progress")
+        ]
+        self.assertEqual(progress, [
+            ("run_fsck", "start", False),
+            ("run_fsck", "catalog", False),
+            ("run_fsck", "repairing", False),
+            ("run_fsck", "rechecking", False),
+            ("run_fsck", "catalog", True),
+        ])
+        # Each step comes after the stage it belongs to.
+        events = collector.events
+        stage_index = next(index for index, event in enumerate(events)
+                           if event.get("type") == "stage" and event.get("stage") == "run_fsck")
+        first_progress = next(index for index, event in enumerate(events) if event.get("type") == "progress")
+        self.assertLess(stage_index, first_progress)
 
     def test_fsck_on_netbsd4_starts_file_sharing_after_the_reboot(self) -> None:
         runtime = FakeInstalledRuntime()
@@ -7129,6 +7158,32 @@ MaSt = (
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "remote_error")
                 self.assertIn("fsck did not run", error["message"])
+
+    def test_fsck_while_an_earlier_repair_still_runs_says_so_and_offers_disk_repair_later(self) -> None:
+        rc, collector, reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs already running\n", ssh_returncode=1,
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertNotIn("request", reboot.calls)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "fsck_already_running")
+        self.assertEqual(error["recovery"]["localization_key"], "fsck.fsck_already_running")
+        self.assertEqual(error["recovery"]["action_ids"], ["disk_repair"])
+
+    def test_fsck_whose_session_ends_mid_repair_says_the_repair_goes_on(self) -> None:
+        rc, collector, reboot = self._run_confirmed_fsck(
+            "--- fsck_hfs /dev/dk2 ---\n** Checking HFS Plus volume.\n** Checking Catalog file.\n",
+            ssh_returncode=255,
+        )
+
+        self.assertEqual(rc, 1)
+        # Restarting now would interrupt the repair still running on the device.
+        self.assertNotIn("request", reboot.calls)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "fsck_session_dropped")
+        self.assertIn("keeps running on the device", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "fsck.fsck_session_dropped")
 
     def test_fsck_on_a_volume_that_stayed_mounted_reports_it_without_waiting(self) -> None:
         # The script refuses to repair a volume still in the mount table, so

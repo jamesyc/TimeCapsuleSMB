@@ -30,6 +30,7 @@ from timecapsulesmb.services.activation import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import DeployDeviceError, select_deploy_payload_home
+from timecapsulesmb.services.maintenance import FSCK_ALREADY_RUNNING_CODE, FSCK_SESSION_DROPPED_CODE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 
 RECOVERY_PART = re.compile(r"\.(title|message|action\.\d+)$")
@@ -184,6 +185,19 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                 self.assertTrue(strings.get("backend.error.fsck.runtime_not_restarted"))
                 # Only fsck restarts file sharing after its reboot.
                 self.assertIsNone(strings.get("backend.error.set-ssh.runtime_not_restarted"))
+
+    def test_each_disk_repair_without_a_result_has_its_own_app_text(self) -> None:
+        # An earlier repair still running and a session lost mid-repair need
+        # different advice from "fsck did not run".
+        for code in (FSCK_ALREADY_RUNNING_CODE, FSCK_SESSION_DROPPED_CODE):
+            with self.subTest(code=code):
+                self.assertEqual(recovery.recovery_for("fsck", code)["localization_key"], f"fsck.{code}")
+                for language in LANGUAGES:
+                    with self.subTest(language=language):
+                        strings = catalog(language)
+                        line = app_error_text(strings, "fsck", code)
+                        self.assertTrue(line)
+                        self.assertNotEqual(line, app_error_text(strings, "fsck", "remote_error"))
 
     def test_current_release_is_accepted_without_an_error(self) -> None:
         version = DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok")

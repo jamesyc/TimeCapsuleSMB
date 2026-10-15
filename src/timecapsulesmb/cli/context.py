@@ -222,7 +222,18 @@ class CommandContext:
             report_progress=self.print_progress,
         )
 
-    def print_progress(self, stage: str, *, entries: int, now: Callable[[], float] = time.monotonic) -> None:
+    def print_progress(
+        self,
+        stage: str,
+        *,
+        entries: int | None = None,
+        now: Callable[[], float] = time.monotonic,
+        **_fields: object,
+    ) -> None:
+        # Only a migration's file count prints here. fsck's steps reach the
+        # terminal as fsck_hfs's own lines.
+        if entries is None:
+            return
         # A terminal line every half minute is enough for a walk of many
         # minutes; a new stage (cleanup after copy) gets its first line at once.
         current = now()

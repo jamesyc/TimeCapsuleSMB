@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import threading
+import time
+from collections.abc import Callable
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
@@ -16,6 +20,9 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import installed_netbsd4_autostart
 from timecapsulesmb.services.maintenance import (
+    FSCK_DURATION_WARNING,
+    FSCK_STARTED_LINE_PREFIX,
+    FSCK_STATUS_PREFIX,
     format_fsck_targets,
     fsck_target_from_volume,
     FsckTarget,
@@ -25,6 +32,68 @@ from timecapsulesmb.services.maintenance import (
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config, require_acpd_ready
 from timecapsulesmb.telemetry import TelemetryClient
+
+
+FSCK_STILL_RUNNING_SECONDS = 60
+
+
+class FsckStillRunningNotice:
+    """Prints a line for each minute fsck_hfs runs without printing one.
+
+    One step of a large disk can take most of an hour, and a silent terminal
+    looks like a hang. Pass every log line through `log`; a thread calls
+    `tick` until the context exits.
+    """
+
+    def __init__(
+        self,
+        log: Callable[[str], None],
+        *,
+        interval: float = FSCK_STILL_RUNNING_SECONDS,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._log = log
+        self._interval = interval
+        self._now = now
+        self._lock = threading.Lock()
+        # When fsck_hfs started; None before it starts and after it reports.
+        self._started_at: float | None = None
+        self._last_line = 0.0
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="fsck-still-running", daemon=True)
+
+    def __enter__(self) -> FsckStillRunningNotice:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._done.set()
+        self._thread.join()
+
+    def log(self, message: str) -> None:
+        with self._lock:
+            current = self._now()
+            if message.startswith(FSCK_STARTED_LINE_PREFIX):
+                self._started_at = current
+            elif message.startswith(FSCK_STATUS_PREFIX):
+                self._started_at = None
+            self._last_line = current
+            self._log(message)
+
+    def tick(self) -> None:
+        with self._lock:
+            if self._started_at is None:
+                return
+            current = self._now()
+            if current - self._last_line < self._interval:
+                return
+            minutes = int((current - self._started_at) // 60)
+            self._log(f"fsck_hfs is still running ({minutes} min).")
+            self._last_line = current
+
+    def _run(self) -> None:
+        while not self._done.wait(1.0):
+            self.tick()
 
 
 def prompt_fsck_target(targets: tuple[FsckTarget, ...]) -> FsckTarget:
@@ -98,6 +167,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.update_fields(fsck_device=target.device, fsck_mountpoint=target.mountpoint)
         print(f"Target host: {connection.host}")
         print(f"Mounted HFS volume: {target.device} on {target.mountpoint}")
+        print(FSCK_DURATION_WARNING)
 
         if not args.yes:
             command_context.set_stage("confirm_fsck")
@@ -127,15 +197,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             netbsd4_autostart = installed_netbsd4_autostart(
                 connection, command_context.probe_state, command_context.to_operation_callbacks(),
             )
+        callbacks = command_context.to_operation_callbacks()
         try:
-            outcome = run_fsck(
-                connection,
-                target,
-                reboot=not args.no_reboot,
-                wait=not args.no_wait,
-                callbacks=command_context.to_operation_callbacks(),
-                netbsd4_autostart=netbsd4_autostart,
-            )
+            with FsckStillRunningNotice(print) as notice:
+                outcome = run_fsck(
+                    connection,
+                    target,
+                    reboot=not args.no_reboot,
+                    wait=not args.no_wait,
+                    callbacks=dataclasses.replace(callbacks, log=notice.log),
+                    netbsd4_autostart=netbsd4_autostart,
+                )
         except RebootFlowError as exc:
             print(str(exc))
             command_context.fail_with_error(str(exc))

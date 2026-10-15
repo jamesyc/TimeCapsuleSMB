@@ -74,6 +74,20 @@ struct OperationTimelineRow: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if let start = item.elapsedSince, item.state == .running {
+                    TimelineView(.periodic(from: start, by: 15)) { context in
+                        Text(OperationTimelineBuilder.elapsedText(since: start, now: context.date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                if let note = item.note, !note.isEmpty {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 0)

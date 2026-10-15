@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import os
 import re
+import selectors
 import tempfile
 import threading
 import time
@@ -583,10 +584,12 @@ def _connection_ssh_args(
     stdin_null: bool,
     extra_args: tuple[str, ...] = (),
     shared: bool = False,
+    tty: bool = False,
 ) -> list[str]:
     """Return config-isolated SSH args with transport-owned session behavior.
 
-    `shared` sends the command over the device's shared connection.
+    `shared` sends the command over the device's shared connection; `tty`
+    gives the remote command a terminal.
     """
     tokens = _normalize_ssh_tokens(connection.ssh_opts)
 
@@ -625,7 +628,7 @@ def _connection_ssh_args(
         *keepalive_args,
         "-E", str(client_log),
         *session_args,
-        "-T",
+        "-tt" if tty else "-T",
         "-a",
         "-x",
         *(["-n"] if stdin_null else []),
@@ -649,6 +652,67 @@ def _ssh_env(connection: SshConnection) -> dict[str, str] | None:
     }
 
 
+def _output_line(raw: bytes) -> str:
+    # A remote terminal ends its lines with \r\n.
+    return raw.rstrip(b"\r").decode("utf-8", errors="replace")
+
+
+def _stream_process(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None,
+    timeout: int | None,
+    on_line: Callable[[str], None],
+    join_stderr: bool,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run cmd, passing each line of its stdout to on_line as it arrives.
+
+    `join_stderr` sends stderr down stdout; otherwise it is returned apart.
+    Returns all of the output, as run_process does; a final line without a
+    newline is passed on at the end.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    chunks: dict[int, list[bytes]] = {}
+    pending = b""
+    with popen_process(
+        cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if join_stderr else subprocess.PIPE, env=env,
+    ) as process:
+        try:
+            streams = [stream for stream in (process.stdout, process.stderr) if stream is not None]
+            chunks = {stream.fileno(): [] for stream in streams}
+            stdout_fd = streams[0].fileno()
+            with selectors.DefaultSelector() as selector:
+                for stream in streams:
+                    selector.register(stream, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    for key, _events in selector.select(remaining):
+                        data = os.read(key.fd, 65536)
+                        if not data:
+                            selector.unregister(key.fileobj)
+                            continue
+                        chunks[key.fd].append(data)
+                        if key.fd != stdout_fd:
+                            continue
+                        *lines, pending = (pending + data).split(b"\n")
+                        for line in lines:
+                            on_line(_output_line(line))
+            if pending:
+                on_line(_output_line(pending))
+            process.wait(None if deadline is None else max(deadline - time.monotonic(), 0))
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+    outputs = [b"".join(parts) for parts in chunks.values()]
+    return subprocess.CompletedProcess(
+        process.args, process.returncode, outputs[0], None if join_stderr else outputs[1],
+    )
+
+
 def _run_ssh(
     connection: SshConnection,
     remote_cmd: str,
@@ -659,10 +723,17 @@ def _run_ssh(
     timeout_message: str,
     extra_ssh_args: tuple[str, ...] = (),
     shared: bool = True,
+    tty: bool = False,
+    on_line: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run one remote command over the device's shared SSH connection.
 
-    `shared=False` logs in on a connection of its own instead.
+    `shared=False` logs in on a connection of its own instead. `tty` runs the
+    command on a remote terminal, whose \r\n line endings are returned as
+    \n. The terminal joins the command's stderr to its stdout, so ssh's own
+    stderr ("Shared connection to ... closed.") stays apart even with
+    `merge_stderr`. `on_line` receives each line of the joined output as it
+    arrives; it needs `merge_stderr` and no input.
 
     ssh sends it over the live master, or logs in itself and becomes the
     master (ControlMaster=auto), so the command runs once either way. A
@@ -670,10 +741,13 @@ def _run_ssh(
     run twice. NetBSD 4 devices sometimes refuse the right password while
     busy. Any other failure is returned or raised at once.
     """
+    if on_line is not None and (input_bytes is not None or not merge_stderr):
+        raise ValueError("on_line needs merge_stderr and no input")
     stdin_kwargs: dict[str, object] = (
         {"stdin": subprocess.DEVNULL} if input_bytes is None else {"input": input_bytes}
     )
     executable = require_local_ssh() if connection.password else "ssh"
+    join_stderr = merge_stderr and not tty
     attempt = 0
     while True:
         with _ssh_client_log_path() as client_log:
@@ -685,20 +759,26 @@ def _run_ssh(
                     stdin_null=input_bytes is None,
                     extra_args=extra_ssh_args,
                     shared=shared,
+                    tty=tty,
                 ),
                 connection.host,
                 _with_client_hosts_line(remote_cmd),
             ]
             try:
-                proc = run_process(
-                    cmd,
-                    **stdin_kwargs,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
-                    env=_ssh_env(connection),
-                    timeout=timeout,
-                    check=False,
-                )
+                if on_line is None:
+                    proc = run_process(
+                        cmd,
+                        **stdin_kwargs,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT if join_stderr else subprocess.PIPE,
+                        env=_ssh_env(connection),
+                        timeout=timeout,
+                        check=False,
+                    )
+                else:
+                    proc = _stream_process(
+                        cmd, env=_ssh_env(connection), timeout=timeout, on_line=on_line, join_stderr=join_stderr,
+                    )
             except subprocess.TimeoutExpired as exc:
                 diagnostics = _read_ssh_client_diagnostics(client_log)
                 if diagnostics.error is not None:
@@ -707,13 +787,15 @@ def _run_ssh(
             except OSError as exc:
                 raise SshClientConfigError(f"Could not start local SSH client: {exc}") from exc
             diagnostics = _read_ssh_client_diagnostics(client_log)
+        if tty:
+            proc.stdout = proc.stdout.replace(b"\r\n", b"\n")
         if proc.returncode < 0:
             raise ssh_signal_error(-proc.returncode)
         client_error = _ssh_client_error_for_result(
             diagnostics,
             returncode=proc.returncode,
             startup_output=_decode_remote_error_output(
-                proc.stdout if merge_stderr else proc.stderr, include_stdout=False
+                proc.stdout if join_stderr else proc.stderr, include_stdout=False
             ),
         )
         if client_error is None:
@@ -724,14 +806,28 @@ def _run_ssh(
         time.sleep(1)
 
 
-def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    """Run a command and return its stdout and stderr joined, as text."""
+def run_ssh(
+    connection: SshConnection,
+    remote_cmd: str,
+    *,
+    check: bool = True,
+    timeout: int = 120,
+    tty: bool = False,
+    on_line: Callable[[str], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command and return its stdout and stderr joined, as text.
+
+    `tty` and `on_line` are _run_ssh's: a program that buffers its output on
+    a pipe writes each line at once on a terminal.
+    """
     proc = _run_ssh(
         connection,
         remote_cmd,
         merge_stderr=True,
         timeout=timeout,
         timeout_message=f"Timed out waiting for ssh command to finish: {_summarize_remote_command(remote_cmd)}",
+        tty=tty,
+        on_line=on_line,
     )
     stdout = proc.stdout.decode("utf-8", errors="replace")
     if check and proc.returncode != 0:

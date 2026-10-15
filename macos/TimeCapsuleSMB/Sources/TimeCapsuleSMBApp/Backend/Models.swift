@@ -96,6 +96,12 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
     public let description: String?
     // A "progress" event: how many files a metadata migration has checked.
     public let entries: Int64?
+    // A "progress" event: the fsck_hfs step Disk Repair has reached, and
+    // whether it rechecks the volume after a repair.
+    public let phase: String?
+    public let recheck: Bool?
+    // When the app received the event; a running Disk Repair counts its time from it.
+    public private(set) var receivedAt = Date()
 
     public init(
         schemaVersion: Int? = 1,
@@ -117,7 +123,10 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         risk: String? = nil,
         cancellable: Bool? = nil,
         description: String? = nil,
-        entries: Int64? = nil
+        entries: Int64? = nil,
+        phase: String? = nil,
+        recheck: Bool? = nil,
+        receivedAt: Date = Date()
     ) {
         self.schemaVersion = schemaVersion
         self.requestId = requestId
@@ -139,6 +148,9 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         self.cancellable = cancellable
         self.description = description
         self.entries = entries
+        self.phase = phase
+        self.recheck = recheck
+        self.receivedAt = receivedAt
     }
 
     public static func error(
@@ -179,7 +191,10 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
             risk: risk,
             cancellable: cancellable,
             description: description,
-            entries: entries
+            entries: entries,
+            phase: phase,
+            recheck: recheck,
+            receivedAt: receivedAt
         )
     }
 
@@ -204,6 +219,8 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         case cancellable
         case description
         case entries
+        case phase
+        case recheck
     }
 
     public var summary: String {

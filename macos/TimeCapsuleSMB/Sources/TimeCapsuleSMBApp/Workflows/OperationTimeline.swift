@@ -16,6 +16,10 @@ struct OperationTimelineItem: Equatable, Identifiable {
     let state: State
     let risk: String?
     let cancellable: Bool?
+    /// Shown under the detail while the step runs, without the running animation.
+    var note: String? = nil
+    /// Set while a long step runs: the row counts its time from here.
+    var elapsedSince: Date? = nil
 }
 
 private struct OperationStageLocalization {
@@ -76,25 +80,40 @@ enum OperationTimelineBuilder {
     private static let postRebootStartStageLocalizations: [String: OperationStageLocalization] =
         deployStageLocalizations.filter { ["post_reboot_activation", "verify_runtime_activation"].contains($0.key) }
 
+    private static let fsckStageLocalizations: [String: OperationStageLocalization] =
+        postRebootStartStageLocalizations.merging([
+            "run_fsck": .init(titleKey: "timeline.stage.repairing_disk", detailKey: "timeline.fsck.detail.run_fsck")
+        ]) { _, new in new }
+
     private static let stageLocalizations: [String: [String: OperationStageLocalization]] = [
         "activate": activateStageLocalizations,
         "deploy": deployStageLocalizations,
-        "fsck": postRebootStartStageLocalizations
+        "fsck": fsckStageLocalizations
     ]
+
+    /// Whether a running stage shows how long it has run and a note to leave
+    /// the device alone: Disk Repair can spend an hour on one step.
+    private static func isLongDeviceStep(operation: String, stage: String?) -> Bool {
+        operation == "fsck" && stage == "run_fsck"
+    }
 
     static func timeline(from events: [BackendEvent]) -> [OperationTimelineItem] {
         events.enumerated().compactMap { index, event in
             switch event.type {
             case "stage":
+                let state = stageState(forEventAt: index, in: events)
+                let long = state == .running && isLongDeviceStep(operation: event.operation, stage: event.stage)
                 return OperationTimelineItem(
                     id: "\(index):\(event.operation):\(event.stage ?? "stage")",
                     operation: event.operation,
                     title: stageTitle(for: event.operation, stage: event.stage),
                     detail: latestProgressDetail(forStageAt: index, in: events)
                         ?? stageDetail(for: event.operation, stage: event.stage, fallback: event.description),
-                    state: stageState(forEventAt: index, in: events),
+                    state: state,
                     risk: event.risk,
-                    cancellable: event.cancellable
+                    cancellable: event.cancellable,
+                    note: long ? L10n.string("timeline.fsck.keep_plugged_in") : nil,
+                    elapsedSince: long ? event.receivedAt : nil
                 )
             case "result":
                 return OperationTimelineItem(
@@ -131,23 +150,58 @@ enum OperationTimelineBuilder {
         fallback: String? = nil,
         state: OperationTimelineItem.State = .running
     ) -> OperationTimelineItem {
-        OperationTimelineItem(
+        let long = state == .running && isLongDeviceStep(operation: stage.operation, stage: stage.stage)
+        return OperationTimelineItem(
             id: "current:\(stage.operation):\(stage.stage)",
             operation: stage.operation,
             title: stageTitle(for: stage.operation, stage: stage.stage),
             detail: stage.progressDetail ?? stageDetail(for: stage.operation, stage: stage.stage, fallback: fallback),
             state: state,
             risk: stage.risk,
-            cancellable: stage.cancellable
+            cancellable: stage.cancellable,
+            note: long ? L10n.string("timeline.fsck.keep_plugged_in") : nil,
+            elapsedSince: long ? stage.startedAt : nil
         )
     }
 
-    /// "Files checked: N" for a migration's progress event.
+    /// The text of a progress event: "Files checked: N" for a migration, the
+    /// fsck_hfs step for Disk Repair.
     static func progressDetail(for event: BackendEvent) -> String? {
-        guard event.type == "progress", let entries = event.entries else {
+        guard event.type == "progress" else {
             return nil
         }
-        return L10n.format("timeline.progress.migration_files", entries)
+        if let entries = event.entries {
+            return L10n.format("timeline.progress.migration_files", entries)
+        }
+        if let phase = event.phase {
+            return fsckPhaseDetail(phase, recheck: event.recheck == true)
+        }
+        return nil
+    }
+
+    /// The text of an fsck_hfs step the helper reports by name; nil for one
+    /// this app has no text for, so the row keeps its last text.
+    static func fsckPhaseDetail(_ phase: String, recheck: Bool) -> String? {
+        let key = "timeline.fsck.phase.\(phase)"
+        let step = L10n.string(key)
+        guard step != key else {
+            return nil
+        }
+        return recheck ? L10n.format("timeline.fsck.recheck", step) : step
+    }
+
+    /// "Running for 12 min", in the app's language.
+    static func elapsedText(since start: Date, now: Date) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute]
+        formatter.unitsStyle = .short
+        formatter.zeroFormattingBehavior = .dropLeading
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = L10n.currentLanguage.locale
+        formatter.calendar = calendar
+        let minutes = (max(now.timeIntervalSince(start), 0) / 60).rounded(.down)
+        let duration = formatter.string(from: minutes * 60) ?? ""
+        return L10n.format("timeline.fsck.elapsed", duration)
     }
 
     /// The last progress reported for a stage before the operation moved on.

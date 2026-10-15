@@ -1330,6 +1330,14 @@ Arguments:
 
 `tcapsule fsck` runs remote `fsck_hfs` against a mounted HFS volume. It mounts/wakes the Apple volumes, selects or prompts for a volume, stops the managed runtime and Apple's file sharing with the same stop actions deploy uses (and aborts if anything will not stop), unmounts the selected disk, runs `fsck_hfs`, and reboots by default.
 
+A repair can take an hour or more on a large disk, most of it in one step (the catalog file), and a repair checks the volume again afterwards. The command says so before it asks to start; the app's confirmation and its running Disk Repair row say it too, and the row also shows how long the repair has run.
+
+How the repair runs and reports:
+- The remote script runs on a terminal (`ssh -tt`). On a pipe, `fsck_hfs` holds its output until it exits; on a terminal each `** Checking …` step line arrives as the step starts. The step lines become progress events (`phase`, plus `recheck` for steps after `Rechecking volume.`), and the CLI prints `fsck_hfs is still running (N min).` after each minute without a line. A damaged disk prints a line per file; the log keeps the first 200 of them and every step line.
+- The script ignores the terminal's hangup, so a session that drops (or the 3-hour command timeout) does not stop `fsck_hfs` mid-repair. The run then reports `fsck_session_dropped`: the repair keeps going on the device, file sharing stays off, and nothing restarts the device under it.
+- Before it stops anything, the script refuses to start while any `fsck_hfs` runs on the device, or when it cannot read the process list (`fsck_already_running`), so a second repair never runs on the same disk under the first.
+- Telemetry gets one `fsck_run` measurement: whether `fsck_hfs` started, its last step, seconds per step (steps after a repair as `recheck_<step>`), whether the session dropped, and the number of per-file lines.
+
 Arguments:
 - `--config PATH`: use a non-default config
 - `--yes`: do not prompt before disk repair

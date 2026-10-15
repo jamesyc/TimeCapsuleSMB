@@ -21,22 +21,30 @@ from timecapsulesmb.services.activation import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.maintenance import (
+    FSCK_ALREADY_RUNNING_LINE,
+    FSCK_ALREADY_RUNNING_MESSAGE,
+    FSCK_DETAIL_LINE_LIMIT,
     FSCK_DID_NOT_RUN_MESSAGE,
+    FSCK_PHASES,
     FSCK_NOT_UNMOUNTED_LINE,
     FSCK_NOT_UNMOUNTED_MESSAGE,
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
+    FSCK_SESSION_DROPPED_MESSAGE,
     UNINSTALL_FILES_REMAIN_MESSAGE,
     UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
     FsckTarget,
     prepare_uninstall,
     reboot_after_uninstall,
+    build_remote_fsck_script,
+    fsck_phase,
     run_fsck,
 )
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.reboot import REBOOT_NO_DOWN_MESSAGE, REBOOT_UP_TIMEOUT_MESSAGE, REBOOT_UP_TIMEOUT_SECONDS, RebootFlowError
-from timecapsulesmb.transport.errors import SshNetworkError
+from timecapsulesmb.transport.errors import SshNetworkError, TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 from tests.reboot_support import FakeAcpDevice, FakeInstalledRuntime
+from tests.test_summaries import LANGUAGES, catalog, placeholder_types
 
 
 class RecordingCallbacks:
@@ -45,11 +53,15 @@ class RecordingCallbacks:
         self.messages: list[str] = []
         self.fields: dict[str, object] = {}
         self.debug: dict[str, object] = {}
+        self.progress: list[tuple[str, dict[str, object]]] = []
+        self.measurements: list[tuple[str, dict[str, object]]] = []
         self.callbacks = OperationCallbacks(
             set_stage=self.stages.append,
             log=self.messages.append,
             update_fields=self.fields.update,
             add_debug_fields=self.debug.update,
+            report_progress=lambda stage, **fields: self.progress.append((stage, fields)),
+            record_execution_measurement=lambda kind, **fields: self.measurements.append((kind, fields)),
         )
 
 
@@ -66,14 +78,24 @@ class FsckHarness:
 
     def run_fsck(self, stdout: str, *, reboot: bool = True, wait: bool = True, returncode: int = 0,
                  device: FakeAcpDevice | None = None, runtime: FakeInstalledRuntime | None = None,
-                 netbsd4_autostart: bool | None = None):
+                 netbsd4_autostart: bool | None = None, seconds_per_line: float = 0.0,
+                 transport_error: Exception | None = None):
+        """`seconds_per_line` passes before each line arrives; `transport_error`
+        ends the session after the last line."""
         recorder = RecordingCallbacks()
         device = device or FakeAcpDevice()
         runtime = runtime or FakeInstalledRuntime()
         proc = SimpleNamespace(stdout=stdout, returncode=returncode)
+        clock = [0.0]
 
-        def remote(*_args, **_kwargs):
+        def remote(*_args, on_line=None, **_kwargs):
             device.calls.append("run_ssh")
+            # The transport passes each line on as it arrives.
+            for line in stdout.splitlines():
+                clock[0] += seconds_per_line
+                on_line(line)
+            if transport_error is not None:
+                raise transport_error
             return proc
 
         with mock.patch("timecapsulesmb.services.maintenance.run_ssh", side_effect=remote) as run_ssh:
@@ -81,9 +103,9 @@ class FsckHarness:
                 try:
                     outcome = run_fsck(
                         CONNECTION, FSCK_TARGET, reboot=reboot, wait=wait, callbacks=recorder.callbacks,
-                        netbsd4_autostart=netbsd4_autostart,
+                        netbsd4_autostart=netbsd4_autostart, now=lambda: clock[0],
                     )
-                except RebootFlowError as exc:
+                except (RebootFlowError, TransportError) as exc:
                     outcome = exc
         return outcome, recorder, run_ssh, device
 
@@ -103,7 +125,10 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
         self.assertEqual(recorder.fields["returncode"], 0)
         self.assertTrue(recorder.fields["reboot_was_attempted"])
         self.assertTrue(recorder.fields["device_came_back_after_reboot"])
-        self.assertEqual(run_ssh.call_args.kwargs, {"check": False, "timeout": FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS})
+        kwargs = dict(run_ssh.call_args.kwargs)
+        self.assertTrue(callable(kwargs.pop("on_line")))
+        # On a terminal, so that fsck_hfs writes each step as it starts.
+        self.assertEqual(kwargs, {"check": False, "timeout": FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS, "tty": True})
         # The reboot is one ACP request from the host, after fsck has reported.
         self.assertEqual(device.calls[:4], ["run_ssh", "read", "sleep 1", "request"])
         self.assertEqual(device.calls.count("request"), 1)
@@ -191,6 +216,7 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
 
         self.assertIsNone(outcome.status)
         self.assertEqual(outcome.failure, FSCK_DID_NOT_RUN_MESSAGE)
+        self.assertIsNone(outcome.failure_code)
         self.assertEqual((outcome.reboot_requested, outcome.waited), (False, False))
         self.assertEqual(recorder.fields, {"returncode": 1})
         self.assertEqual(device.calls, ["run_ssh"])
@@ -235,6 +261,173 @@ class RunFsckTests(FsckHarness, unittest.TestCase):
             f"{REBOOT_UP_TIMEOUT_MESSAGE}\nfsck_hfs exited with status 8; the disk may still need repair.",
         )
 
+
+
+# What fsck_hfs printed repairing a damaged volume on a Time Capsule.
+REPAIRED_FSCK_OUTPUT = """\
+--- fsck_hfs /dev/dk2 ---
+** /dev/rdk2
+** Checking HFS Plus volume.
+** Checking Extents Overflow file.
+** Checking Catalog file.
+   Incorrect size for file temp1
+   (It should be 0 instead of 4096)
+** Checking multi-linked files.
+** Checking Catalog hierarchy.
+** Checking Extended Attributes file.
+** Checking volume bitmap.
+** Checking volume information.
+** Repairing volume.
+** Rechecking volume.
+** Checking HFS Plus volume.
+** Checking Extents Overflow file.
+** Checking Catalog file.
+** Checking multi-linked files.
+** Checking Catalog hierarchy.
+** Checking Extended Attributes file.
+** Checking volume bitmap.
+** Checking volume information.
+** The volume AirPort Disk was repaired successfully.
+tcapsule-fsck: fsck_hfs exit status 0
+"""
+
+
+class FsckProgressTests(FsckHarness, unittest.TestCase):
+    """fsck_hfs's steps as they arrive: progress, the log and telemetry."""
+
+    def test_each_step_is_reported_once_with_the_recheck_pass_marked(self) -> None:
+        _outcome, recorder, _run_ssh, _device = self.run_fsck(REPAIRED_FSCK_OUTPUT)
+
+        checks = ["start", "extents", "catalog", "multilinked", "hierarchy", "attributes", "bitmap", "volume_info"]
+        expected = (
+            [{"phase": phase, "recheck": False} for phase in checks]
+            + [{"phase": "repairing", "recheck": False}, {"phase": "rechecking", "recheck": False}]
+            + [{"phase": phase, "recheck": True} for phase in checks]
+        )
+        self.assertEqual(recorder.progress, [("run_fsck", fields) for fields in expected])
+
+    def test_a_clean_check_reports_no_repair_steps(self) -> None:
+        clean = "--- fsck_hfs /dev/dk2 ---\n** Checking Journaled HFS Plus volume.\n** Checking Catalog file.\n" \
+            "** The volume Data appears to be OK.\ntcapsule-fsck: fsck_hfs exit status 0\n"
+        _outcome, recorder, _run_ssh, _device = self.run_fsck(clean)
+        self.assertEqual([fields["phase"] for _stage, fields in recorder.progress], ["start", "catalog"])
+        self.assertFalse(any(fields["recheck"] for _stage, fields in recorder.progress))
+
+    def test_only_step_lines_start_a_phase(self) -> None:
+        self.assertEqual(fsck_phase("** Checking catalog file."), "catalog")
+        self.assertEqual(fsck_phase("** Checking multi-linked directories."), "multilinked")
+        self.assertEqual(fsck_phase("** Checking HFSX volume."), "start")
+        for line in ("** /dev/rdk2", "** The volume Data appears to be OK.", "Checking Catalog file.",
+                     "   Incorrect size for file Checking Catalog file.", "** Checking Catalog file. extra"):
+            with self.subTest(line=line):
+                self.assertIsNone(fsck_phase(line))
+
+    def test_telemetry_times_each_step_and_keeps_the_passes_apart(self) -> None:
+        _outcome, recorder, _run_ssh, _device = self.run_fsck(REPAIRED_FSCK_OUTPUT, seconds_per_line=2.0)
+
+        [(kind, run)] = [entry for entry in recorder.measurements if entry[0] == "fsck_run"]
+        self.assertEqual(kind, "fsck_run")
+        self.assertTrue(run["started"])
+        self.assertFalse(run["session_dropped"])
+        self.assertEqual(run["last_phase"], "recheck_volume_info")
+        seconds = run["phase_seconds"]
+        # The catalog step lasted until the next step line: its two detail lines and itself.
+        self.assertEqual(seconds["catalog"], 6.0)
+        self.assertEqual(seconds["recheck_catalog"], 2.0)
+        self.assertEqual(seconds["repairing"], 2.0)
+        # The last step ends when the session does, with the status line.
+        self.assertEqual(seconds["recheck_volume_info"], 4.0)
+        self.assertEqual(run["detail_lines"], 2)
+
+    def test_a_session_lost_after_fsck_started_reports_the_repair_still_running(self) -> None:
+        partial = REPAIRED_FSCK_OUTPUT.split("** Checking Catalog hierarchy.")[0]
+        outcome, recorder, _run_ssh, device = self.run_fsck(
+            partial, transport_error=SshNetworkError("Connection to the device was lost."))
+
+        # fsck_hfs ignores the hangup and keeps repairing: not a connection
+        # failure, and nothing restarts the device under it.
+        self.assertIsNone(outcome.status)
+        self.assertEqual((outcome.failure, outcome.failure_code), (FSCK_SESSION_DROPPED_MESSAGE, "fsck_session_dropped"))
+        self.assertFalse(outcome.reboot_requested)
+        self.assertEqual(recorder.debug["fsck_transport_error"], "Connection to the device was lost.")
+        self.assertIsNone(recorder.fields["returncode"])
+        [(_kind, run)] = recorder.measurements
+        self.assertEqual(run["last_phase"], "multilinked")
+        self.assertTrue(run["session_dropped"])
+        # The lines that arrived before the drop are in the log.
+        self.assertIn("** Checking multi-linked files.", recorder.messages)
+        self.assertNotIn("request", device.calls)
+
+    def test_a_session_that_ends_without_the_status_line_counts_as_dropped(self) -> None:
+        partial = REPAIRED_FSCK_OUTPUT.split("** Repairing volume.")[0]
+        outcome, recorder, _run_ssh, device = self.run_fsck(partial, returncode=255)
+
+        self.assertIsNone(outcome.status)
+        self.assertEqual((outcome.failure, outcome.failure_code), (FSCK_SESSION_DROPPED_MESSAGE, "fsck_session_dropped"))
+        self.assertEqual(recorder.fields["returncode"], 255)
+        [(_kind, run)] = recorder.measurements
+        self.assertTrue(run["session_dropped"])
+        self.assertEqual(run["last_phase"], "volume_info")
+        self.assertNotIn("request", device.calls)
+
+    def test_a_session_lost_before_fsck_started_is_a_connection_failure(self) -> None:
+        outcome, recorder, _run_ssh, device = self.run_fsck(
+            "process smbd stopped\n", transport_error=SshNetworkError("Connection to the device was lost."))
+
+        self.assertIsInstance(outcome, SshNetworkError)
+        [(_kind, run)] = recorder.measurements
+        self.assertEqual((run["started"], run["session_dropped"]), (False, False))
+        self.assertNotIn("request", device.calls)
+
+    def test_an_earlier_repair_still_running_is_reported_and_nothing_restarts(self) -> None:
+        outcome, recorder, _run_ssh, device = self.run_fsck(f"{FSCK_ALREADY_RUNNING_LINE}\n", returncode=1)
+
+        self.assertIsNone(outcome.status)
+        self.assertEqual((outcome.failure, outcome.failure_code), (FSCK_ALREADY_RUNNING_MESSAGE, "fsck_already_running"))
+        self.assertEqual(recorder.measurements[0][1]["session_dropped"], False)
+        self.assertEqual(device.calls, ["run_ssh"])
+
+    def test_fsck_that_never_started_is_not_a_dropped_session(self) -> None:
+        _outcome, recorder, _run_ssh, _device = self.run_fsck("process smbd did not stop\n", returncode=1)
+        [(_kind, run)] = recorder.measurements
+        self.assertEqual(
+            run,
+            {"started": False, "last_phase": None, "phase_seconds": {}, "session_dropped": False, "detail_lines": 0},
+        )
+        self.assertEqual(recorder.progress, [])
+        # What the script printed before fsck_hfs is logged in full.
+        self.assertEqual(recorder.messages[0], "process smbd did not stop")
+
+    def test_a_badly_damaged_volume_logs_its_first_lines_and_every_step(self) -> None:
+        damaged = "".join(f"   Incorrect size for file temp{index}\n" for index in range(FSCK_DETAIL_LINE_LIMIT + 50))
+        output = REPAIRED_FSCK_OUTPUT.replace(
+            "   Incorrect size for file temp1\n   (It should be 0 instead of 4096)\n", damaged)
+        outcome, recorder, _run_ssh, _device = self.run_fsck(output)
+
+        self.assertEqual(outcome.status, 0)
+        detail = [line for line in recorder.messages if line.startswith("   Incorrect size")]
+        self.assertEqual(len(detail), FSCK_DETAIL_LINE_LIMIT)
+        self.assertEqual(detail[-1], f"   Incorrect size for file temp{FSCK_DETAIL_LINE_LIMIT - 1}")
+        for line in ("** Checking volume bitmap.", "** Rechecking volume.",
+                     "** The volume AirPort Disk was repaired successfully.",
+                     "tcapsule-fsck: fsck_hfs exit status 0"):
+            self.assertIn(line, recorder.messages)
+        self.assertIn("50 more fsck_hfs lines were not logged.", recorder.messages)
+        self.assertEqual(recorder.measurements[0][1]["detail_lines"], FSCK_DETAIL_LINE_LIMIT + 50)
+
+    def test_the_app_can_show_every_step_the_helper_reports_in_every_language(self) -> None:
+        phases = {phase for _pattern, phase in FSCK_PHASES}
+        for language in LANGUAGES:
+            strings = catalog(language)
+            with self.subTest(language=language):
+                for phase in phases:
+                    self.assertTrue(strings.get(f"timeline.fsck.phase.{phase}"), phase)
+                self.assertEqual(placeholder_types(strings["timeline.fsck.recheck"]), ("str",))
+                self.assertEqual(placeholder_types(strings["timeline.fsck.elapsed"]), ("str",))
+
+    def test_the_remote_script_ignores_the_terminal_hangup_before_anything_else(self) -> None:
+        script = build_remote_fsck_script("/dev/dk2", "/Volumes/dk2")
+        self.assertEqual(script.splitlines()[0], "trap '' HUP")
 
 class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
     """fsck's reboot stops file sharing on NetBSD4 without the autostart patch;
