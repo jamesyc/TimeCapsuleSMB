@@ -529,9 +529,12 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
     }
 }
 
+/// The timeout only guards against a hang, so it is generous: CI runs these
+/// tests with --parallel on a few cores, where a store's next step can wait
+/// seconds for the main actor. A passing test never waits for it.
 @MainActor
 func waitUntilStoreState(
-    timeoutNanoseconds: UInt64 = 2_000_000_000,
+    timeoutNanoseconds: UInt64 = 20_000_000_000,
     _ condition: @escaping @MainActor () -> Bool
 ) async throws {
     let start = DispatchTime.now().uptimeNanoseconds

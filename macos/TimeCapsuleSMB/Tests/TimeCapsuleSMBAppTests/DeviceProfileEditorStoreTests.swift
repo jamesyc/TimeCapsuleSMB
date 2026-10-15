@@ -586,8 +586,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
         try await waitUntilStoreState { store.state == .saved }
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "set-ssh", "configure"])
-        XCTAssertEqual(fixture.runner.calls[2].params["selected_record"], currentRecord)
-        XCTAssertNil(fixture.runner.calls[2].params["host"])
+        // Unwrapped, so a missing call fails this test instead of trapping
+        // and taking every other test in the process down with it.
+        let configure = try XCTUnwrap(fixture.runner.calls.first { $0.operation == "configure" })
+        XCTAssertEqual(configure.params["selected_record"], currentRecord)
+        XCTAssertNil(configure.params["host"])
     }
 
     func testDashboardUpdateConfiguredAddressRunsConfigureWithCurrentBonjourRecord() async throws {
@@ -636,8 +639,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(session.selectedTab, .settings)
         XCTAssertEqual(saved.host, "root@10.0.0.80")
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "set-ssh", "configure"])
-        XCTAssertEqual(fixture.runner.calls[2].params["selected_record"], currentRecord)
-        XCTAssertNil(fixture.runner.calls[2].params["host"])
+        // Unwrapped, so a missing call fails this test instead of trapping
+        // and taking every other test in the process down with it.
+        let configure = try XCTUnwrap(fixture.runner.calls.first { $0.operation == "configure" })
+        XCTAssertEqual(configure.params["selected_record"], currentRecord)
+        XCTAssertNil(configure.params["host"])
         for tab in DeviceDashboardTab.allCases {
             session.selectedTab = tab
             XCTAssertNil(session.staleEndpointNotice(for: profile))
@@ -689,8 +695,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(session.selectedTab, .settings)
         XCTAssertEqual(saved.host, "root@fd00::80")
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "set-ssh", "configure"])
-        XCTAssertEqual(fixture.runner.calls[2].params["selected_record"], currentRecord)
-        XCTAssertNil(fixture.runner.calls[2].params["host"])
+        // Unwrapped, so a missing call fails this test instead of trapping
+        // and taking every other test in the process down with it.
+        let configure = try XCTUnwrap(fixture.runner.calls.first { $0.operation == "configure" })
+        XCTAssertEqual(configure.params["selected_record"], currentRecord)
+        XCTAssertNil(configure.params["host"])
         XCTAssertNil(fixture.deviceDiscovery.staleEndpointNotice(for: saved))
     }
 
