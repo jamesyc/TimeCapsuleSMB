@@ -26,6 +26,7 @@ TIMINGS=dict(
     TC_STORAGE_SETTLE_MS=500,   # device 5 s
     TC_STORAGE_RETRY_MS=500,    # device 5 s; automatic retries back off 1x, 3x, then 12x
     JOB_RETRY_MS=500,           # device 5 s
+    TC_PAYLOAD_RECHECK_MS=3000, # device 30 s
     TC_STALE_KILL_MS=2000,      # device 10 s
     # Long enough for test_stall_while_stopping_is_still_recovered to see a
     # raise and a wake before the drain ends.
@@ -615,6 +616,68 @@ def test_payload_removal_stops_samba_even_with_other_disk_available(manager):
     inventory(volumes);(root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
     process.send_signal(signal.SIGHUP)
     wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2,20)
+
+
+def test_title_names_a_payload_missing_from_every_disk_until_it_returns(manager):
+    # An Erase in AirPort Utility leaves the disk without a payload while other
+    # disks stay usable. Doctor and activation read payload=missing from the
+    # title to say "reinstall" instead of waiting for Samba.
+    root,start,_,wait,inventory,volumes=manager
+    def last_title():
+        titles=manager_titles(root)
+        return titles[-1] if titles else ''
+    process=start();wait(started('smbd'))
+    assert not any('payload=missing' in title for title in manager_titles(root))
+    inventory(volumes[1:]);(root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='stop' for e in rows),20)
+    wait(lambda _:last_title().endswith(' payload=missing'),20)
+    inventory(volumes);(root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2,20)
+    wait(lambda _:'payload=missing' not in last_title(),20)
+
+
+@pytest.mark.parametrize('case',['unclaimed-disk','failed-inspection','read-only-disk'])
+def test_title_never_calls_a_payload_missing_without_a_definite_absence(manager,case):
+    # The payload disk could not be claimed, its inspection failed, or it is
+    # mounted read-only and so never inspected: each may yet hold the payload,
+    # so none is reported as missing, even with another usable disk that holds
+    # none and after the confirming second pass.
+    root,start,_,wait,_,_=manager
+    if case=='unclaimed-disk':
+        (root/'fail-claim').write_text('dk2')
+    elif case=='failed-inspection':
+        home=root/'dk2/.samba4';(home/'private').rename(home/'private.saved')
+    else:
+        (root/'mounts').write_text(f'{root}/dk2 dk2 0\n{root}/dk3 dk3 1\n')
+    start()
+    if case!='read-only-disk':
+        # The storage pass finished: it logged the failure it will retry.
+        wait_storage_failure(root,'activate' if case=='unclaimed-disk' else 'payload inspection')
+    wait(lambda rows:any(e['role']=='discovery' and '--diskless' in e['args'] for e in rows))
+    # Past the confirming pass a definite absence would have had.
+    time.sleep(TIMINGS['TC_PAYLOAD_RECHECK_MS']/1000+2)
+    assert manager_titles(root)
+    assert not any('payload=missing' in title for title in manager_titles(root))
+
+
+def test_title_waits_for_a_second_pass_before_calling_the_payload_missing(manager):
+    # One pass with no payload anywhere, as when a disk enumerates after boot
+    # settles, is not enough: a payload back by the confirming pass is never
+    # reported missing, and Samba starts again.
+    root,start,_,wait,inventory,volumes=manager
+    process=start();wait(started('smbd'))
+    inventory(volumes[1:]);(root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='stop' for e in rows),20)
+    # The disk arrives: the manager reads MaSt again at once.
+    inventory(volumes);(root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2,20)
+    # Past the confirming pass the first one scheduled.
+    time.sleep(TIMINGS['TC_PAYLOAD_RECHECK_MS']/1000+1)
+    assert not any('payload=missing' in title for title in manager_titles(root))
 
 
 def test_data_disk_removal_reloads_without_restarting_unaffected_samba(manager):

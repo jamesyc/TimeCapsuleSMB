@@ -2085,6 +2085,36 @@ def _runtime_timeout_detail(timeout_seconds: int, final_attempts_allowed: int) -
     return f"runtime verification timed out after {timeout_seconds}s plus {final_attempts_allowed} final checks"
 
 
+DISK_PAYLOAD_MISSING_STEP_ID = "disk_payload"
+_PAYLOAD_MISSING_CAUSE = "the Samba files are missing from every disk, as after an Erase in AirPort Utility"
+_PAYLOAD_MISSING_FIX = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
+# A check result's line, and the sentences an operation's error ends with.
+DISK_PAYLOAD_MISSING_MESSAGE = f"{_PAYLOAD_MISSING_CAUSE}; {_PAYLOAD_MISSING_FIX}"
+DISK_PAYLOAD_MISSING_ERROR = (
+    f"{_PAYLOAD_MISSING_CAUSE[:1].upper()}{_PAYLOAD_MISSING_CAUSE[1:]}. "
+    f"{_PAYLOAD_MISSING_FIX[:1].upper()}{_PAYLOAD_MISSING_FIX[1:]}."
+)
+
+
+def manager_reports_payload_missing(connection: SshConnection) -> bool:
+    """The manager's title says payload=missing. ps only: the startup-age
+    probe also execs the service for a clock reading this does not need."""
+    try:
+        proc = run_ssh(connection, MANAGER_PS_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+    except SshCommandTimeout:
+        return False
+    rows = service_role_lines(proc.stdout or "", "manager") if proc.returncode == 0 else []
+    return len(rows) == 1 and _title_payload_missing(rows[0].split()[6:])
+
+
+def _title_payload_missing(title: list[str]) -> bool:
+    return "payload=missing" in title
+
+
+def runtime_payload_missing(result: ManagedRuntimeProbeResult) -> bool:
+    return any(step.id == DISK_PAYLOAD_MISSING_STEP_ID for step in result.steps)
+
+
 def probe_managed_runtime_conn(
     connection: SshConnection,
     *,
@@ -2112,6 +2142,15 @@ def probe_managed_runtime_conn(
         if result.ready:
             return _runtime_result_with_attempts(
                 result,
+                attempts=attempts,
+                soft_timeout_seconds=timeout_seconds,
+                final_attempts_allowed=final_attempts,
+            )
+        # No payload on any disk keeps Samba off however long this waits.
+        if manager_reports_payload_missing(connection):
+            step = ProbeStepResult(id=DISK_PAYLOAD_MISSING_STEP_ID, status="fail", detail=DISK_PAYLOAD_MISSING_MESSAGE)
+            return _runtime_result_with_attempts(
+                replace(result, detail=DISK_PAYLOAD_MISSING_MESSAGE, extra_steps=result.extra_steps + (step,)),
                 attempts=attempts,
                 soft_timeout_seconds=timeout_seconds,
                 final_attempts_allowed=final_attempts,
@@ -2518,6 +2557,10 @@ class ManagerStartupAgeProbeResult:
     detail: str
     started_monotonic_s: int | None = None
     now_monotonic_ms: int | None = None
+    # The title's payload=missing: every disk was inspected and none holds a
+    # payload, as after an Erase in AirPort Utility. Samba stays off until a
+    # reinstall, however long anything waits.
+    payload_missing: bool = False
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
@@ -2553,7 +2596,12 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
         return ManagerStartupAgeProbeResult(None, "manager is not running")
     if len(rows) > 1:
         return ManagerStartupAgeProbeResult(None, f"{len(rows)} manager processes are running")
-    started_words = [word.removeprefix("started=") for word in rows[0].split()[6:] if word.startswith("started=")]
+    title = rows[0].split()[6:]
+    return replace(_manager_startup_age(title, now_text), payload_missing=_title_payload_missing(title))
+
+
+def _manager_startup_age(title: list[str], now_text: str) -> ManagerStartupAgeProbeResult:
+    started_words = [word.removeprefix("started=") for word in title if word.startswith("started=")]
     if len(started_words) != 1 or not _DECIMAL.fullmatch(started_words[0]):
         return ManagerStartupAgeProbeResult(None, "manager title has no start time (an older release, or its clock read failed)")
     started = int(started_words[0])

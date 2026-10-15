@@ -239,6 +239,15 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="activate",
         action_ids=("start_smb", "run_checkup"),
     ),
+    # Activation or a deploy's check found no payload on any disk
+    # (device.errors.DiskPayloadMissingError).
+    "payload_missing_from_disk": RecoveryInfo(
+        "Samba files are missing",
+        "The TimeCapsuleSMB files are missing from every disk on the device, as after an Erase in AirPort Utility.",
+        ("Run Install / Update Samba.",),
+        retryable=False,
+        suggested_operation="deploy",
+    ),
     "ssh_still_enabled": RecoveryInfo(
         "SSH is still enabled",
         "The device restarted, but SSH was still enabled afterwards.",

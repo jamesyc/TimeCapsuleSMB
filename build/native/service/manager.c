@@ -23,6 +23,13 @@
 #ifndef JOB_RETRY_MS
 #define JOB_RETRY_MS 5000
 #endif
+/* A disk that appears after boot settles (a slow USB spin-up) can leave one
+ * storage pass with no payload anywhere. payload=missing waits for a second
+ * pass this long after the first to agree: longer than a MaSt poll
+ * (INVENTORY_MS) plus TC_STORAGE_SETTLE_MS, so a late disk is in it. */
+#ifndef TC_PAYLOAD_RECHECK_MS
+#define TC_PAYLOAD_RECHECK_MS 30000
+#endif
 #ifndef TC_STALE_KILL_MS
 #define TC_STALE_KILL_MS 10000
 #endif
@@ -107,6 +114,10 @@ struct manager {
      * Staging, and so Samba, waits while the kernel hostname is unset. */
     char hostname[256];
     int hostname_waiting;
+    /* Two storage passes TC_PAYLOAD_RECHECK_MS apart found no payload on any
+     * disk (title). payload_recheck_at is the second pass, 0 when none. */
+    int payload_missing, payload_absent_seen;
+    long long payload_recheck_at;
     long long hostname_wait_since;
     /* When this manager started, on the monotonic clock (-1 if unreadable):
      * the title's started=, from which doctor measures the startup age. */
@@ -142,13 +153,13 @@ static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-/* Doctor reads started= and stuck=PID:COMM:WAIT:SECONDS[,...] from the
- * title (stuck.h tc_manager_title; ps shows a sleep time of at most 127 s,
- * and none for a wait that keeps waking). */
+/* Doctor reads started=, payload=missing and stuck=PID:COMM:WAIT:SECONDS[,...]
+ * from the title (stuck.h tc_manager_title; ps shows a sleep time of at most
+ * 127 s, and none for a wait that keeps waking). */
 static void set_manager_title(const struct manager *m) {
     char title[256];
-    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, &m->stuck, STUCK_TITLE_MAX,
-                     acp_monotonic_ms());
+    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, m->payload_missing, &m->stuck,
+                     STUCK_TITLE_MAX, acp_monotonic_ms());
 #if defined(__NetBSD__)
     setproctitle("%s", title);
 #elif defined(TC_NATIVE_TEST)
@@ -475,11 +486,33 @@ static void pump_storage(struct manager *m, long long now) {
                 stop_role(&m->rsync, now, 1);
                 m->have_applied = 0;
             }
+            {
+                /* Only a definite absence: a failed inspection or a disk still
+                 * being prepared retries, and a read-only disk is never
+                 * inspected; any of them may yet hold the payload. */
+                int absent = m->storage.payload_index < 0 && m->storage.available && !m->storage.readonly &&
+                             !storage_pending(m);
+                int missing = absent && m->payload_absent_seen;
+                if (absent && !m->payload_absent_seen)
+                    m->payload_recheck_at = now + TC_PAYLOAD_RECHECK_MS;
+                else if (!absent)
+                    m->payload_recheck_at = 0;
+                m->payload_absent_seen = absent;
+                if (missing != m->payload_missing) {
+                    m->payload_missing = missing;
+                    set_manager_title(m);
+                }
+            }
         } else {
             tc_storage_retry_finish(&m->storage_retry, now, 1);
             m->storage_at = m->storage_retry.at;
         }
         tc_child_close(&m->storage_job);
+    }
+    if (m->payload_recheck_at && now >= m->payload_recheck_at && !m->storage_job.group) {
+        m->payload_recheck_at = 0;
+        m->storage_dirty = 1;
+        m->storage_at = now;
     }
     if ((m->storage_dirty || (storage_pending(m) && now >= m->storage_retry.at)) && m->have_settings && m->topology.initialized && !m->topology.pending &&
         !m->storage_job.group && !m->stage_job.group && now >= m->storage_at) {
@@ -1205,6 +1238,7 @@ int tc_manager_main(int argc, char **argv) {
                 if (m->storage_dirty) lower(&deadline, m->storage_at);
                 else if (storage_pending(m))
                     lower(&deadline, m->storage_retry.at > m->storage_at ? m->storage_retry.at : m->storage_at);
+                if (m->payload_recheck_at) lower(&deadline, m->payload_recheck_at);
             }
         }
         if (tc_wait_until(&reads, maxfd, now, deadline) < 0) {

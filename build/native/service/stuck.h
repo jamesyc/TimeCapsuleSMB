@@ -88,7 +88,7 @@ void tc_stuck_word(char *out, size_t size, const char *text);
 /* The uninterruptible sleepers in this pass's process table. */
 int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table);
 /* The manager's process title, which doctor reads from ps:
- *   role=manager started=S[ waiting=hostname][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
+ *   role=manager started=S[ waiting=hostname][ payload=missing][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
  * started= is when the manager started, in whole seconds on the kernel's
  * monotonic clock (started_ms; omitted when negative, a failed clock read).
  * Doctor subtracts it from `service --print-monotonic-ms`, the same clock:
@@ -97,7 +97,10 @@ int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table)
  * is rewritten only on changes, so it carries the start, not the age. Stuck
  * entries come last, longest first, at most limit of them and then +N for
  * the rest (stuck=+N alone when limit is 0): a title cut at size loses stuck
- * entries, never started=. Their seconds are now - since. */
-void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, const struct tc_stuck *stuck,
-                      size_t limit, long long now);
+ * entries, never started=. Their seconds are now - since. payload=missing
+ * means every available disk was inspected and none holds a payload, as after
+ * an Erase in AirPort Utility: Samba stays off until the payload is
+ * reinstalled, so doctor and activation report that instead of waiting. */
+void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, int payload_missing,
+                      const struct tc_stuck *stuck, size_t limit, long long now);
 #endif

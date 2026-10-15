@@ -5,11 +5,13 @@ from collections.abc import Callable
 
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
 from timecapsulesmb.device.probe import (
+    DISK_PAYLOAD_MISSING_ERROR,
     ManagedRuntimeProbeResult,
     probe_managed_runtime_conn,
     read_runtime_log_tails_conn,
+    runtime_payload_missing,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
@@ -65,6 +67,8 @@ def verify_managed_runtime_ready(
     except Exception as exc:
         callbacks.debug(remote_runtime_log_tail_error=system_exit_message(exc))
 
+    if runtime_payload_missing(verification):
+        raise DiskPayloadMissingError(f"{failure_message.rstrip()} {DISK_PAYLOAD_MISSING_ERROR}")
     if detail:
         failure_message = f"{failure_message.rstrip()} {detail}"
     raise DeviceError(failure_message)

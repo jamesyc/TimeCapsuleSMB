@@ -7021,6 +7021,21 @@ MaSt = (
         self.assertEqual(error["recovery"]["suggested_operation"], "activate")
         self.assertEqual(error["recovery"]["action_ids"], ["start_smb", "run_checkup"])
 
+    def test_fsck_on_netbsd4_whose_disk_has_no_payload_offers_a_reinstall(self) -> None:
+        rc, collector, _reboot = self._run_confirmed_fsck(
+            "tcapsule-fsck: fsck_hfs exit status 0\n",
+            ssh_returncode=0,
+            probe_state=netbsd4_probed_state(),
+            runtime=FakeInstalledRuntime(payload_missing=True),
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "payload_missing_from_disk")
+        self.assertTrue(error["message"].startswith("Disk repair completed. "))
+        self.assertEqual(error["recovery"]["localization_key"], "payload_missing_from_disk")
+        self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+
     def test_fsck_whose_device_probe_fails_stops_before_touching_the_disk(self) -> None:
         # Without the probe fsck cannot know whether file sharing must be
         # started after the reboot; it fails before the repair, not after.

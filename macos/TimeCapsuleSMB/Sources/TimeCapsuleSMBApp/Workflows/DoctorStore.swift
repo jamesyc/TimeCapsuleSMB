@@ -41,6 +41,7 @@ struct DoctorSummary: Equatable {
     static let runtimeNotInstalledResultCode = "runtime_not_installed"
     static let runtimeNotStartedResultCode = "runtime_not_started"
     static let deviceStartingUpResultCode = "device_starting_up"
+    static let payloadMissingFromDiskResultCode = "payload_missing_from_disk"
 
     let passCount: Int
     let warnCount: Int
@@ -49,6 +50,8 @@ struct DoctorSummary: Equatable {
     let runtimeNotInstalled: Bool
     let runtimeNotStarted: Bool
     let deviceStartingUp: Bool
+    /// No disk holds the installed files, as after an Erase in AirPort Utility.
+    let payloadMissingFromDisk: Bool
     let checks: [DoctorCheckPayload]
     let sections: [DoctorCheckDomain: DoctorSection]
     /// nil only for a payload without one, which the bundled helper never sends.
@@ -69,6 +72,7 @@ struct DoctorSummary: Equatable {
         self.runtimeNotInstalled = Self.containsResultCode(Self.runtimeNotInstalledResultCode, in: payload)
         self.runtimeNotStarted = Self.containsResultCode(Self.runtimeNotStartedResultCode, in: payload)
         self.deviceStartingUp = Self.containsResultCode(Self.deviceStartingUpResultCode, in: payload)
+        self.payloadMissingFromDisk = Self.containsResultCode(Self.payloadMissingFromDiskResultCode, in: payload)
         self.checks = payload.results
         self.sections = Dictionary(
             (payload.sections ?? [:]).map { (DoctorCheckDomainPolicy.domain(for: $0.key), $0.value) },

@@ -135,6 +135,8 @@ from timecapsulesmb.device.probe import (
     probe_device_hostname_conn,
     probe_managed_smbd_conn,
     probe_manager_startup_age_conn,
+    DISK_PAYLOAD_MISSING_MESSAGE,
+    ManagerStartupAgeProbeResult,
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
     read_file_locks_conn,
@@ -2495,7 +2497,9 @@ def _doctor_check_runtime_ram_root(target: DoctorTarget, remote: RemoteAccess, s
     return StepDecision()
 
 
-def _doctor_probe_startup_age(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> float | None:
+def _doctor_probe_startup_age(
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink,
+) -> ManagerStartupAgeProbeResult | None:
     if not remote.remote_checks_enabled:
         return None
     try:
@@ -2510,8 +2514,18 @@ def _doctor_probe_startup_age(target: DoctorTarget, remote: RemoteAccess, sink: 
             "started_monotonic_s": probe.started_monotonic_s,
             "now_monotonic_ms": probe.now_monotonic_ms,
             "detail": probe.detail,
+            "payload_missing": probe.payload_missing,
         }
-    return probe.manager_started_seconds_ago
+    return probe
+
+
+def _doctor_check_disk_payload(manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink) -> StepDecision:
+    """The manager found no payload on any disk: Samba stays off until a
+    reinstall, so this is the whole verdict, before any startup wait."""
+    if manager is None or not manager.payload_missing:
+        return StepDecision()
+    sink.add(CheckResult("FAIL", DISK_PAYLOAD_MISSING_MESSAGE, details={"code": DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK}))
+    return StepDecision(stop=True)
 
 
 def _apply_startup_grace(

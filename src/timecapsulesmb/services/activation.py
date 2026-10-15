@@ -5,13 +5,15 @@ from typing import Literal
 
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
 from timecapsulesmb.device.probe import (
+    DISK_PAYLOAD_MISSING_ERROR,
     ManagedRuntimeProbeResult,
     ProbedDeviceState,
     flash_runtime_config_present_conn,
     probe_managed_runtime_conn,
     read_deployed_version_conn,
+    runtime_payload_missing,
 )
 from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import run_remote_actions
@@ -276,6 +278,10 @@ def activate_runtime(
         activation_decision=decision.reason,
         manual_activation_required=decision.run_actions,
     )
+    if decision.run_actions and decision.runtime is not None and runtime_payload_missing(decision.runtime):
+        # The running manager already found no payload: starting it again
+        # cannot help.
+        raise DiskPayloadMissingError(f"NetBSD4 activation failed. {DISK_PAYLOAD_MISSING_ERROR}")
     callbacks.message(decision.detail)
     if decision.run_actions:
         run_activation_actions_and_verify(

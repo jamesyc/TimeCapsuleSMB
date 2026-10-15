@@ -286,7 +286,7 @@
 "dialog.forget.message" = "¿Quitar %@ de esta Mac? Esto no desinstala Samba del dispositivo.";
 "dialog.forget.title" = "¿Olvidar este dispositivo?";
 "doctor.check.device_starting_up" = "El dispositivo aún se está iniciando. Espere unos minutos y repita la comprobación.";
-"doctor.check.payload_missing_from_disk" = "Falta la carpeta Samba en el disco de datos; puede que se haya borrado el disco. Ejecute «Instalar / actualizar Samba» para reinstalar.";
+"doctor.check.payload_missing_from_disk" = "Faltan los archivos de Samba en todos los discos, como tras «Borrar disco» en Utilidad AirPort. Ejecute «Instalar / actualizar Samba» para reinstalar.";
 "doctor.check.metadata_migration_in_progress" = "Una migración de metadatos sigue en curso en el dispositivo. «Instalar / actualizar Samba» espera a que termine antes de instalar.";
 "doctor.check.client_on_unshared_network" = "Este Mac está en una red en la que el dispositivo no comparte sus discos, como su lado de Internet (WAN) o su red de invitados. Conecte este Mac a la red principal del dispositivo por Wi-Fi o mediante uno de sus puertos LAN y repita la comprobación.";
 "doctor.check.mac_smb3_disabled" = "%@ desactiva SMB 3 (protocol_vers_map), y Time Machine necesita SMB 3. Elimine esa línea y, después, quite el disco en los ajustes de Time Machine y vuelva a añadirlo.";
@@ -649,6 +649,7 @@
 "backend.error.acpd_broken" = "Apple ACPd está bloqueado en el dispositivo.";
 "backend.error.acp_unreachable" = "Este Mac no puede acceder a AirPort ACP en el dispositivo.";
 "backend.error.ssh_still_enabled" = "SSH sigue habilitado después del reinicio, por lo que deshabilitarlo no surtió efecto.";
+"backend.error.payload_missing_from_disk" = "Faltan los archivos de Samba en todos los discos del dispositivo, como tras «Borrar disco» en Utilidad AirPort. Ejecute «Instalar / actualizar Samba» para reinstalar.";
 "backend.error.fsck.runtime_not_restarted" = "La reparación de disco terminó, pero el uso compartido de archivos no se reanudó después de reiniciar el dispositivo.";
 "backend.recovery.auth_failed.title" = "Error de autenticación";
 "backend.recovery.auth_failed.message" = "El dispositivo rechazó la contraseña o las credenciales SSH proporcionadas.";
@@ -858,6 +859,9 @@
 "backend.recovery.acp_unreachable.message" = "Este Mac no puede acceder a AirPort ACP (puerto 5009) en el dispositivo, aunque el ACP del propio dispositivo funciona.";
 "backend.recovery.acp_unreachable.action.1" = "Conecte este Mac a la red del dispositivo por Wi-Fi o mediante uno de sus puertos LAN.";
 "backend.recovery.acp_unreachable.action.2" = "Desactive cualquier VPN o cortafuegos que filtre el tráfico de la red local y vuelva a intentarlo.";
+"backend.recovery.payload_missing_from_disk.title" = "Faltan los archivos de Samba";
+"backend.recovery.payload_missing_from_disk.message" = "Faltan los archivos de TimeCapsuleSMB en todos los discos del dispositivo, como tras «Borrar disco» en Utilidad AirPort.";
+"backend.recovery.payload_missing_from_disk.action.1" = "Ejecute «Instalar / actualizar Samba».";
 "backend.recovery.runtime_not_restarted.title" = "El uso compartido de archivos no se reanudó";
 "backend.recovery.runtime_not_restarted.message" = "El dispositivo se reinició, pero los servicios de TimeCapsuleSMB instalados no se iniciaron.";
 "backend.recovery.runtime_not_restarted.action.1" = "Ejecute «Activar».";

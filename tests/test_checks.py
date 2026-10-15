@@ -88,6 +88,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.device.probe import (
+    DISK_PAYLOAD_MISSING_MESSAGE,
     FILE_LOCKS_DISK_TDBS,
     FILE_LOCKS_RAM_TDBS,
     FOREIGN_WCIFSND_RUNNING,
@@ -3217,6 +3218,50 @@ class CheckTests(unittest.TestCase):
             },
         )
 
+    def run_doctor_with_manager(self, manager: ManagerStartupAgeProbeResult, *, debug_fields=None, log_tails=None):
+        smbd = mock.Mock(side_effect=AssertionError("the startup wait probed smbd"))
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(return_value=manager),
+                "timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": smbd,
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value=log_tails or {}),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+            },
+        )
+        return run, smbd
+
+    def test_doctor_stops_at_a_payload_missing_from_every_disk_without_waiting_for_startup(self) -> None:
+        # An Erase in AirPort Utility: Samba stays off until a reinstall, so
+        # doctor neither waits out the startup window nor lists what follows.
+        debug_fields: dict[str, object] = {}
+        erase = "umount: /Volumes/dk2: Device busy\nInitialized /dev/rdk2 as a 1861 GB HFS Plus volume"
+        run, smbd = self.run_doctor_with_manager(
+            ManagerStartupAgeProbeResult(12.0, "manager started 12s ago", payload_missing=True),
+            debug_fields=debug_fields,
+            log_tails={"remote_manager_log_tail": erase},
+        )
+
+        failure = run.results[-1]
+        self.assertEqual((failure.status, failure.message), ("FAIL", DISK_PAYLOAD_MISSING_MESSAGE))
+        self.assertEqual(failure.details["code"], DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK)
+        self.assertTrue(run.fatal)
+        smbd.assert_not_called()
+        self.assertEqual(sum(result.status == "FAIL" for result in run.results), 1)
+        self.assertTrue(debug_fields["manager_startup_age"]["payload_missing"])
+        # The manager's log reaches telemetry: it shows what removed the payload.
+        self.assertEqual(debug_fields["remote_manager_log_tail"], erase)
+        self.assertEqual(debug_fields["remote_runtime_ram_diagnostics"], "ram ok")
+
+    def test_doctor_goes_on_to_the_samba_checks_when_the_payload_is_present(self) -> None:
+        run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
+
+        self.assertNotIn(DISK_PAYLOAD_MISSING_MESSAGE, [result.message for result in run.results])
+        self.assertTrue(any("smbd" in result.message for result in run.results))
+
     MAPPED = ("127.0.0.1\tcapsule capsule.local",)
     WAITING_MESSAGE = (
         "Samba is waiting for the device hostname (ACPd has not set it); "
@@ -3376,7 +3421,8 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(debug_fields["startup_grace_applied"])
         self.assertEqual(
             debug_fields["manager_startup_age"],
-            {"seconds_ago": 41.0, "started_monotonic_s": None, "now_monotonic_ms": None, "detail": "manager started 41s ago"},
+            {"seconds_ago": 41.0, "started_monotonic_s": None, "now_monotonic_ms": None, "detail": "manager started 41s ago",
+             "payload_missing": False},
         )
         # The synthesized failure is streamed so live consumers (CLI) see it last.
         self.assertEqual(streamed[-1].details.get("code"), DOCTOR_CODE_DEVICE_STARTING_UP)

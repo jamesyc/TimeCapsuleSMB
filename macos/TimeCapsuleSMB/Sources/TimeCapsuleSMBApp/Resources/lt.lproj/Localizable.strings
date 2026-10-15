@@ -286,7 +286,7 @@
 "dialog.forget.message" = "Pašalinti %@ iš šio Mac? Samba iš įrenginio nepašalinama.";
 "dialog.forget.title" = "Pamiršti šį įrenginį?";
 "doctor.check.device_starting_up" = "Įrenginys vis dar paleidžiamas. Palaukite kelias minutes ir paleiskite patikrinimą iš naujo.";
-"doctor.check.payload_missing_from_disk" = "Duomenų diske trūksta Samba aplanko; diskas galėjo būti ištrintas. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
+"doctor.check.payload_missing_from_disk" = "Visuose diskuose trūksta Samba diegimo failų, pavyzdžiui, po disko ištrynimo su AirPort Utility (Erase Disk). Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
 "doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir paleiskite patikrinimą iš naujo.";
 "doctor.check.mac_smb3_disabled" = "%@ išjungia SMB 3 (protocol_vers_map), o Time Machine reikia SMB 3. Ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
@@ -649,6 +649,7 @@
 "backend.error.acpd_broken" = "Apple ACPd įrenginyje užstrigo.";
 "backend.error.acp_unreachable" = "Šis Mac negali pasiekti įrenginio AirPort ACP.";
 "backend.error.ssh_still_enabled" = "SSH po paleidimo iš naujo vis dar įjungta, todėl išjungimas neįsigaliojo.";
+"backend.error.payload_missing_from_disk" = "Visuose įrenginio diskuose trūksta Samba diegimo failų, pavyzdžiui, po disko ištrynimo su AirPort Utility (Erase Disk). Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "backend.error.fsck.runtime_not_restarted" = "Disko taisymas baigtas, bet paleidus įrenginį iš naujo failų bendrinimas vėl neįsijungė.";
 "backend.recovery.auth_failed.title" = "Autentifikacija nepavyko";
 "backend.recovery.auth_failed.message" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
@@ -858,6 +859,9 @@
 "backend.recovery.acp_unreachable.message" = "Šis Mac negali pasiekti įrenginio AirPort ACP (prievadas 5009), nors paties įrenginio ACP veikia.";
 "backend.recovery.acp_unreachable.action.1" = "Prijunkite šį Mac prie įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų.";
 "backend.recovery.acp_unreachable.action.2" = "Išjunkite VPN arba užkardą, kurie filtruoja vietinio tinklo srautą, tada bandykite dar kartą.";
+"backend.recovery.payload_missing_from_disk.title" = "Trūksta Samba diegimo failų";
+"backend.recovery.payload_missing_from_disk.message" = "Visuose įrenginio diskuose trūksta TimeCapsuleSMB diegimo failų, pavyzdžiui, po disko ištrynimo su AirPort Utility (Erase Disk).";
+"backend.recovery.payload_missing_from_disk.action.1" = "Paleiskite „Įdiegti / atnaujinti Samba“.";
 "backend.recovery.runtime_not_restarted.title" = "Failų bendrinimas vėl neįsijungė";
 "backend.recovery.runtime_not_restarted.message" = "Įrenginys paleistas iš naujo, bet įdiegtos TimeCapsuleSMB paslaugos nepasileido.";
 "backend.recovery.runtime_not_restarted.action.1" = "Paleiskite „Aktyvuoti“.";

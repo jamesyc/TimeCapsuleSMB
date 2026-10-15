@@ -73,7 +73,8 @@ enum DeviceDashboardSnapshotMapper {
                 recovery: nil
             )
         case .fail:
-            if summary.runtimeNotInstalled {
+            // Installed files gone from every disk: only Install brings Samba back.
+            if summary.runtimeNotInstalled || summary.payloadMissingFromDisk {
                 return DeviceRuntimeStateSnapshot(
                     state: .notInstalled,
                     source: .doctor,
@@ -81,7 +82,9 @@ enum DeviceDashboardSnapshotMapper {
                     payloadFamily: payloadFamily,
                     verified: false,
                     summary: "",
-                    errorCode: DoctorSummary.runtimeNotInstalledResultCode,
+                    errorCode: summary.payloadMissingFromDisk
+                        ? DoctorSummary.payloadMissingFromDiskResultCode
+                        : DoctorSummary.runtimeNotInstalledResultCode,
                     errorMessage: nil,
                     recovery: nil
                 )

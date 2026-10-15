@@ -34,6 +34,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_managed_mdns,
     _doctor_check_managed_rsync,
     _doctor_check_device_hostname,
+    _doctor_check_disk_payload,
     _doctor_check_diskd_rpc,
     _doctor_check_managed_smbd,
     _doctor_check_nbns,
@@ -117,7 +118,12 @@ def run_doctor_checks(
     if _doctor_check_runtime_ram_root(target, remote, sink).stop:
         return sink.results, sink.fatal()
 
-    startup_age = _doctor_probe_startup_age(target, remote, sink)
+    manager = _doctor_probe_startup_age(target, remote, sink)
+    if _doctor_check_disk_payload(manager, sink).stop:
+        # The manager's log shows what removed the payload, such as an Erase.
+        _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
+        return sink.results, sink.fatal()
+    startup_age = manager.manager_started_seconds_ago if manager is not None else None
     startup_deadline = _doctor_startup_deadline(remote, sink, startup_age, enabled=startup_grace)
     readiness = _doctor_wait_for_startup(target, remote, sink, startup_deadline)
 

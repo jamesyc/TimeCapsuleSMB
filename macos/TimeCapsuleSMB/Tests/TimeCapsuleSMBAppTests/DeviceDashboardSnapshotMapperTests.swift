@@ -103,6 +103,23 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(snapshot.thisMac?.status, .fail)
     }
 
+    func testPayloadMissingFromDiskNeedsInstallEvenOnNetBSD4() throws {
+        // Erased disk: Activate cannot help, only Install / Update can. The
+        // same Checkup on NetBSD 4 must not ask for Activate.
+        let profile = try makeProfile(payloadFamily: "netbsd4le_samba4")
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "FAIL", message: "the Samba files are missing from every disk",
+                            domain: "device", code: "payload_missing_from_disk")
+        ])
+
+        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+
+        XCTAssertTrue(summary.payloadMissingFromDisk)
+        XCTAssertEqual(runtimeState?.state, .notInstalled)
+        XCTAssertEqual(runtimeState?.errorCode, DoctorSummary.payloadMissingFromDiskResultCode)
+    }
+
     func testDeviceStillStartingUpIsUnverifiedNotUnhealthy() throws {
         let summary = try makeDoctorSummary(checks: [
             testDoctorCheck(status: "FAIL", message: "some checks failed while the device was still starting up",

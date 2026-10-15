@@ -463,6 +463,14 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             return runtimeNotInstalledRow()
         }
         switch runtimeState.state {
+        case .notInstalled where runtimeState.errorCode == DoctorSummary.payloadMissingFromDiskResultCode:
+            return DashboardHealthRow(
+                id: "runtime-payload-missing",
+                title: DashboardHealthDomain.runtime.title,
+                detail: L10n.string("doctor.check.payload_missing_from_disk"),
+                status: .failed,
+                action: .installUpdate
+            )
         case .unknown, .notInstalled:
             return runtimeNotInstalledRow()
         case .installing:

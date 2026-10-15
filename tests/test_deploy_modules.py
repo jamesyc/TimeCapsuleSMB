@@ -75,6 +75,9 @@ from timecapsulesmb.device.processes import (
     render_process_present_by_ucomm,
 )
 from timecapsulesmb.device.probe import (
+    DISK_PAYLOAD_MISSING_ERROR,
+    DISK_PAYLOAD_MISSING_MESSAGE,
+    runtime_payload_missing,
     FOREIGN_WCIFSND_RUNNING,
     NATIVE_NBNS_OFF_DETAIL,
     MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
@@ -105,7 +108,8 @@ from timecapsulesmb.device.storage import (
     PayloadVerificationResult,
     mounted_mast_volumes_conn,
 )
-from timecapsulesmb.services.activation import decide_manual_activation
+from timecapsulesmb.services.activation import activate_runtime, decide_manual_activation
+from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
@@ -2529,7 +2533,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=[runtime_timeout, runtime_ready]) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=[runtime_timeout, runtime_ready]) as runtime_once:
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=10,
@@ -2551,7 +2555,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(False, "managed mDNS registrant not active", ("FAIL:managed mDNS registrant not active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=0,
@@ -2574,7 +2578,7 @@ describe_managed_smbd_status "" ""
         )
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.1, 5.2, 5.3, 5.4])
-        with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
             with mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(monotonic_values)):
                 result = probe_managed_runtime_conn(
                     connection,
@@ -2595,7 +2599,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready):
+        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready):
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=0,
@@ -2606,6 +2610,102 @@ describe_managed_smbd_status "" ""
         self.assertFalse(result.ready)
         self.assertIn("runtime verification timed out after 0s plus 2 final checks", result.detail)
         self.assertIn("FAIL:runtime verification timed out after 0s plus 2 final checks", result.lines)
+
+    @staticmethod
+    def _runtime_not_ready() -> ManagedRuntimeProbeResult:
+        return ManagedRuntimeProbeResult(
+            ready=False,
+            detail="managed smbd not ready; managed mDNS registrant not active",
+            smbd=readiness_result(False, "managed smbd not ready", ("FAIL:managed smbd not ready",)),
+            mdns=readiness_result(False, "managed mDNS registrant not active", ("FAIL:managed mDNS registrant not active",)),
+        )
+
+    def _payload_missing_runtime(self) -> ManagedRuntimeProbeResult:
+        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=True):
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=self._runtime_not_ready()):
+                return probe_managed_runtime_conn(
+                    SshConnection("host", "pw", "-o foo"), timeout_seconds=200, poll_interval_seconds=0.0,
+                    smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
+                )
+
+    def test_probe_managed_runtime_stops_waiting_when_no_disk_holds_the_payload(self) -> None:
+        # The manager's payload=missing keeps Samba off however long the
+        # verification waits: it ends after the first attempt, not at 200 s.
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=True) as missing:
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=self._runtime_not_ready()) as runtime_once:
+                result = probe_managed_runtime_conn(
+                    connection, timeout_seconds=200, poll_interval_seconds=0.0,
+                    smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
+                )
+        self.assertFalse(result.ready)
+        self.assertEqual(runtime_once.call_count, 1)
+        missing.assert_called_once_with(connection)
+        self.assertTrue(runtime_payload_missing(result))
+        self.assertEqual(result.detail, DISK_PAYLOAD_MISSING_MESSAGE)
+        self.assertIn(f"FAIL:{DISK_PAYLOAD_MISSING_MESSAGE}", result.lines)
+
+    def test_probe_managed_runtime_does_not_ask_about_the_payload_once_ready(self) -> None:
+        runtime_ready = ManagedRuntimeProbeResult(
+            ready=True,
+            detail="managed runtime is ready",
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
+        )
+        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing") as missing:
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_ready):
+                result = probe_managed_runtime_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=200)
+        self.assertTrue(result.ready)
+        missing.assert_not_called()
+        self.assertFalse(runtime_payload_missing(result))
+
+    def test_verify_managed_runtime_ready_raises_the_payload_code_only_for_a_missing_payload(self) -> None:
+        def verify(verification: ManagedRuntimeProbeResult) -> None:
+            verify_managed_runtime_ready(
+                SshConnection("host", "pw", ""),
+                callbacks=OperationCallbacks(),
+                stage="verify_runtime_activation",
+                timeout_seconds=200,
+                heading="Runtime verification:",
+                failure_message="NetBSD4 activation failed.",
+                probe_runtime=mock.Mock(return_value=verification),
+                read_runtime_logs=mock.Mock(return_value={}),
+            )
+
+        with self.assertRaises(DiskPayloadMissingError) as raised:
+            verify(self._payload_missing_runtime())
+        self.assertEqual(raised.exception.code, "payload_missing_from_disk")
+        self.assertEqual(str(raised.exception), f"NetBSD4 activation failed. {DISK_PAYLOAD_MISSING_ERROR}")
+
+        with self.assertRaises(DeviceError) as raised:
+            verify(self._runtime_not_ready())
+        self.assertNotIsInstance(raised.exception, DiskPayloadMissingError)
+
+    def test_activate_refuses_before_starting_when_the_manager_found_no_payload(self) -> None:
+        # The manager already runs and found no payload (the disk was erased
+        # while it ran): starting it again cannot help, only a reinstall.
+        messages: list[str] = []
+        callbacks = OperationCallbacks(log=messages.append)
+        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"):
+            with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
+                            return_value=self._payload_missing_runtime()):
+                with mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
+                    with self.assertRaises(DiskPayloadMissingError) as raised:
+                        activate_runtime(SshConnection("host", "pw", ""), [], callbacks=callbacks)
+        run_actions.assert_not_called()
+        self.assertEqual(raised.exception.code, "payload_missing_from_disk")
+        # One sentence, said once: the progress line is not repeated by the error.
+        self.assertEqual(str(raised.exception), f"NetBSD4 activation failed. {DISK_PAYLOAD_MISSING_ERROR}")
+        self.assertNotIn(DISK_PAYLOAD_MISSING_MESSAGE, messages)
+
+    def test_activate_runs_when_the_runtime_is_only_not_ready(self) -> None:
+        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"):
+            with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
+                            return_value=self._runtime_not_ready()):
+                with mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
+                    decision = activate_runtime(SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks())
+        run_actions.assert_called_once()
+        self.assertTrue(decision.run_actions)
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         payload_dir_name = "samba4"

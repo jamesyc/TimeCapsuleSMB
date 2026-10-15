@@ -291,6 +291,8 @@ class FakeInstalledRuntime:
     version_code: int | None = None
     # Whether the runtime becomes ready once started.
     becomes_ready: bool = True
+    # Whether the started manager finds no payload on any disk.
+    payload_missing: bool = False
     calls: list[str] = field(default_factory=list)
     # The SSH target each start and wait reached the device at.
     hosts: list[str] = field(default_factory=list)
@@ -318,6 +320,11 @@ class FakeInstalledRuntime:
         callbacks.stage(stage)
         self.hosts.append(connection.host)
         self.calls.append(f"verify {timeout_seconds}s")
+        if self.payload_missing:
+            from timecapsulesmb.device.errors import DiskPayloadMissingError
+            from timecapsulesmb.device.probe import DISK_PAYLOAD_MISSING_ERROR
+
+            raise DiskPayloadMissingError(f"{failure_message} {DISK_PAYLOAD_MISSING_ERROR}")
         if not self.becomes_ready:
             raise DeviceError(f"{failure_message} {self.NOT_READY_DETAIL}")
 

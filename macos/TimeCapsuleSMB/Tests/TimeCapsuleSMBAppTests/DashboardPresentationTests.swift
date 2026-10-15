@@ -101,7 +101,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.domain, .device)
         XCTAssertEqual(
             row.message,
-            "The Samba folder is missing from the data disk; the disk may have been erased. Run “Install / Update Samba” to reinstall."
+            "The Samba files are missing from every disk, as after an Erase in AirPort Utility. Run “Install / Update Samba” to reinstall."
         )
         XCTAssertFalse(row.message.contains("managed runtime payload directory"))
     }
@@ -149,7 +149,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.domain, .device)
         XCTAssertEqual(
             row.message,
-            "The Samba folder is missing from the data disk; the disk may have been erased. Run “Install / Update Samba” to reinstall."
+            "The Samba files are missing from every disk, as after an Erase in AirPort Utility. Run “Install / Update Samba” to reinstall."
         )
         XCTAssertFalse(row.message.contains("xattr_tdb"))
     }
@@ -810,6 +810,25 @@ final class DashboardPresentationTests: XCTestCase {
         ))
         XCTAssertEqual(try row(.runtime, in: activation).status, .warning)
         XCTAssertEqual(try row(.runtime, in: activation).action, .startSMB)
+
+        // Checkup found the installed files gone from every disk: say so, and
+        // offer Install rather than the generic "not installed" text.
+        var erasedProfile = netbsd4Profile
+        erasedProfile.runtimeState = testRuntimeState(
+            state: .notInstalled, source: .doctor, payloadFamily: "netbsd4_samba4", verified: false,
+            summary: "", errorCode: DoctorSummary.payloadMissingFromDiskResultCode)
+        let erased = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: erasedProfile,
+            passwordState: .available,
+            displayStatus: .readyToInstall,
+            primaryAction: .installSMB,
+            hostWarning: nil
+        ))
+        let erasedRow = try row(.runtime, in: erased)
+        XCTAssertEqual(erasedRow.id, "runtime-payload-missing")
+        XCTAssertEqual(erasedRow.status, .failed)
+        XCTAssertEqual(erasedRow.action, .installUpdate)
+        XCTAssertEqual(erasedRow.detail, L10n.string("doctor.check.payload_missing_from_disk"))
 
         let warning = HostCompatibilityWarning(title: "macOS Warning", message: "Time Machine warning.")
         let hostWarning = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(

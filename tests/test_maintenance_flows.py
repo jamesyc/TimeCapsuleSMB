@@ -9,7 +9,7 @@ from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
-from timecapsulesmb.device.probe import DeployedVersionProbeResult
+from timecapsulesmb.device.probe import DISK_PAYLOAD_MISSING_ERROR, DeployedVersionProbeResult
 from timecapsulesmb.services.activation import (
     MANUAL_START_AFTER_REBOOT_MESSAGE,
     OLDEST_ACTIVATABLE_RELEASE_TAG,
@@ -289,6 +289,22 @@ class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
         self.assertEqual(outcome.failure, f"Disk repair completed. {error}")
         self.assertFalse(recorder.fields["runtime_restarted"])
 
+    def test_runtime_that_finds_no_payload_keeps_the_payload_code(self) -> None:
+        # The disk was erased: only a reinstall starts file sharing again, so
+        # the outcome says so instead of "did not restart".
+        outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(payload_missing=True))
+
+        self.assertEqual(outcome.status, 0)
+        self.assertEqual(outcome.runtime_restart_code, "payload_missing_from_disk")
+        self.assertIn(DISK_PAYLOAD_MISSING_ERROR, outcome.failure)
+        self.assertTrue(outcome.failure.startswith("Disk repair completed. "))
+        self.assertFalse(recorder.fields["runtime_restarted"])
+
+    def test_runtime_that_does_not_start_has_no_code_of_its_own(self) -> None:
+        outcome, _recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(becomes_ready=False))
+
+        self.assertIsNone(outcome.runtime_restart_code)
+
     def test_lost_ssh_after_the_reboot_is_reported_not_skipped(self) -> None:
         # The device was known to need starting before the reboot, so an SSH
         # failure afterwards cannot leave file sharing silently off.
@@ -565,7 +581,9 @@ class ActivateRuntimeTests(unittest.TestCase):
         installed: tuple[str | None, int | None] = (RELEASE_TAG, CLI_VERSION_CODE),
     ):
         recorder = RecordingCallbacks()
-        runtime = SimpleNamespace(ready=ready, detail="managed runtime is ready" if ready else "managed runtime is not ready")
+        runtime = SimpleNamespace(
+            ready=ready, detail="managed runtime is ready" if ready else "managed runtime is not ready", steps=(),
+        )
         version = DeployedVersionProbeResult(installed[0], installed[1], "ok")
         with mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", return_value=config_present):
             with mock.patch("timecapsulesmb.services.activation.read_deployed_version_conn", return_value=version):

@@ -359,6 +359,10 @@ Wait a little, then run:
 .venv/bin/tcapsule doctor
 ```
 
+### Samba Stopped After Erasing The Disk
+
+Erasing the disk in AirPort Utility also removes TimeCapsuleSMB's files from it. Checkup and `activate` then report that the Samba files are missing. Run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`, to put them back.
+
 ### I Want The Full Technical Story
 
 Read:

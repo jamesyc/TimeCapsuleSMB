@@ -286,7 +286,7 @@
 "dialog.forget.message" = "Удалить %@ с этого Mac? При этом Samba не удаляется с устройства.";
 "dialog.forget.title" = "Забыть это устройство?";
 "doctor.check.device_starting_up" = "Устройство еще запускается. Подождите несколько минут и запустите проверку снова.";
-"doctor.check.payload_missing_from_disk" = "Папка Samba отсутствует на диске данных; возможно, диск был стерт. Запустите «Установить/обновить Samba», чтобы установить заново.";
+"doctor.check.payload_missing_from_disk" = "Файлы Samba отсутствуют на всех дисках, например после «Стереть диск» в Утилите AirPort. Запустите «Установить/обновить Samba», чтобы установить заново.";
 "doctor.check.metadata_migration_in_progress" = "На устройстве все еще выполняется перенос метаданных. «Установить/обновить Samba» дождется его завершения перед установкой.";
 "doctor.check.client_on_unshared_network" = "Этот Mac находится в сети, в которой устройство не открывает общий доступ к своим дискам, например на стороне интернета (WAN) или в гостевой сети устройства. Подключите этот Mac к основной сети устройства по Wi-Fi или через один из его портов LAN и запустите проверку снова.";
 "doctor.check.mac_smb3_disabled" = "%@ отключает SMB 3 (protocol_vers_map), а Time Machine нужен SMB 3. Удалите эту строку, затем удалите диск в настройках Time Machine и добавьте его снова.";
@@ -649,6 +649,7 @@
 "backend.error.acpd_broken" = "Apple ACPd на устройстве завис.";
 "backend.error.acp_unreachable" = "Этот Mac не может связаться с AirPort ACP на устройстве.";
 "backend.error.ssh_still_enabled" = "SSH по-прежнему включен после перезагрузки, поэтому отключение не вступило в силу.";
+"backend.error.payload_missing_from_disk" = "Файлы Samba отсутствуют на всех дисках устройства, например после «Стереть диск» в Утилите AirPort. Запустите «Установить/обновить Samba», чтобы установить заново.";
 "backend.error.fsck.runtime_not_restarted" = "Исправление диска завершено, но общий доступ к файлам не возобновился после перезагрузки устройства.";
 "backend.recovery.auth_failed.title" = "Ошибка аутентификации";
 "backend.recovery.auth_failed.message" = "Устройство отклонило указанный пароль или учетные данные SSH.";
@@ -858,6 +859,9 @@
 "backend.recovery.acp_unreachable.message" = "Этот Mac не может связаться с AirPort ACP (порт 5009) на устройстве, хотя ACP на самом устройстве работает.";
 "backend.recovery.acp_unreachable.action.1" = "Подключите этот Mac к сети устройства по Wi-Fi или через один из его портов LAN.";
 "backend.recovery.acp_unreachable.action.2" = "Отключите VPN или брандмауэр, который фильтрует трафик локальной сети, затем повторите попытку.";
+"backend.recovery.payload_missing_from_disk.title" = "Файлы Samba отсутствуют";
+"backend.recovery.payload_missing_from_disk.message" = "Файлы TimeCapsuleSMB отсутствуют на всех дисках устройства, например после «Стереть диск» в Утилите AirPort.";
+"backend.recovery.payload_missing_from_disk.action.1" = "Запустите «Установить/обновить Samba».";
 "backend.recovery.runtime_not_restarted.title" = "Общий доступ к файлам не возобновился";
 "backend.recovery.runtime_not_restarted.message" = "Устройство перезагрузилось, но установленные службы TimeCapsuleSMB не запустились.";
 "backend.recovery.runtime_not_restarted.action.1" = "Запустите «Активировать».";

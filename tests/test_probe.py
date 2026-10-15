@@ -290,6 +290,59 @@ class ProbeTests(unittest.TestCase):
                 ))
                 self.assertEqual(result.manager_started_seconds_ago, 41.0)
 
+    def test_probe_manager_startup_age_conn_reads_a_missing_payload_from_the_title(self) -> None:
+        # payload=missing: every disk was inspected and none holds a payload.
+        for title, missing in (
+            ("service: role=manager started=19 payload=missing", True),
+            ("service: role=manager started=19 waiting=hostname payload=missing stuck=3166:smbd:needbuf:600", True),
+            ("service: role=manager started=19", False),
+            ("service: role=manager started=19 payload=present", False),
+        ):
+            with self.subTest(title=title):
+                result, _ = self._probe_manager_age(self._manager_age_output(
+                    *self._MANAGER_PEERS, f"  250     1 Ss 0:41 service       {title}", now_ms="60000"
+                ))
+                self.assertEqual(result.payload_missing, missing)
+                self.assertEqual(result.manager_started_seconds_ago, 41.0)
+
+    def test_probe_manager_startup_age_conn_reports_a_missing_payload_without_an_age(self) -> None:
+        # A failed clock read loses the age, never the payload state.
+        result, _ = self._probe_manager_age(self._manager_age_output(
+            " 250 1 Ss 0:41 service service: role=manager started=19 payload=missing", now_ms=""
+        ))
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertTrue(result.payload_missing)
+
+    def test_probe_manager_startup_age_conn_reports_no_missing_payload_without_a_manager(self) -> None:
+        result, _ = self._probe_manager_age(self._manager_age_output(*self._MANAGER_PEERS))
+        self.assertEqual(result.detail, "manager is not running")
+        self.assertFalse(result.payload_missing)
+
+    def test_manager_reports_payload_missing_reads_only_the_process_list(self) -> None:
+        # Polled while a deploy or activation waits: ps alone, no exec of the
+        # service for a clock reading.
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        manager = "  250     1 Ss 0:41 service       service: role=manager started=19{}"
+        cases = (
+            ("ok", [*self._MANAGER_PEERS, manager.format(" payload=missing")], 0, True),
+            ("present", [*self._MANAGER_PEERS, manager.format("")], 0, False),
+            ("no manager", list(self._MANAGER_PEERS), 0, False),
+            ("two managers", [manager.format(" payload=missing"), manager.replace("250", "251").format(" payload=missing")], 0, False),
+            ("ps failed", [manager.format(" payload=missing")], 1, False),
+        )
+        for name, rows, returncode, expected in cases:
+            with self.subTest(name):
+                proc = subprocess.CompletedProcess(args=["ssh"], returncode=returncode, stdout="".join(f"{row}\n" for row in rows))
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+                    self.assertEqual(probe.manager_reports_payload_missing(connection), expected)
+                self.assertEqual(run_ssh_mock.call_args.args[1], probe.MANAGER_PS_COMMAND)
+                self.assertFalse(run_ssh_mock.call_args.kwargs["check"])
+
+    def test_manager_reports_payload_missing_is_false_when_ps_times_out(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshCommandTimeout("ps")):
+            self.assertFalse(probe.manager_reports_payload_missing(connection))
+
     def test_probe_manager_startup_age_conn_counts_the_second_the_manager_started_in(self) -> None:
         # started= is whole seconds; the age is too, so a reading in the same
         # second is 0, never negative.

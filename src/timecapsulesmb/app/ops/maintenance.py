@@ -290,7 +290,10 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     if outcome.status is None:
         raise AppOperationError(outcome.failure or FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
     if outcome.runtime_restart_error is not None:
-        raise AppOperationError(outcome.failure or outcome.runtime_restart_error, code=RUNTIME_NOT_RESTARTED_CODE)
+        raise AppOperationError(
+            outcome.failure or outcome.runtime_restart_error,
+            code=outcome.runtime_restart_code or RUNTIME_NOT_RESTARTED_CODE,
+        )
     if outcome.failure is not None:
         context.set_error(outcome.failure)
     return OperationResult(outcome.failure is None, fsck_result_payload(

@@ -7,7 +7,7 @@ from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
 from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_actions, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import (
@@ -198,6 +198,9 @@ class FsckOutcome:
     waited: bool
     # Set when file sharing was to be started after the reboot and did not start.
     runtime_restart_error: str | None = None
+    # The error's own code when one explains it better than "did not restart":
+    # no payload on any disk, which only a reinstall fixes.
+    runtime_restart_code: str | None = None
 
 
 def run_fsck(
@@ -253,6 +256,7 @@ def run_fsck(
         # stays first so its known message prefixes still match.
         raise RebootFlowError(f"{exc}\n{failure}", exc.code) from exc
     runtime_restart_error = None
+    runtime_restart_code = None
     if rebooting and wait and netbsd4_autostart is not None:
         # A failed repair still starts file sharing: the reboot does on every
         # device that starts it by itself.
@@ -264,6 +268,9 @@ def run_fsck(
                 callbacks=callbacks,
                 messages=RESTART_AFTER_REBOOT_MESSAGES,
             )
+        except DiskPayloadMissingError as exc:
+            runtime_restart_error = str(exc)
+            runtime_restart_code = exc.code
         except DeviceError as exc:
             runtime_restart_error = str(exc)
         except TransportError as exc:
@@ -287,6 +294,7 @@ def run_fsck(
         reboot_requested=rebooting,
         waited=rebooting and wait,
         runtime_restart_error=runtime_restart_error,
+        runtime_restart_code=runtime_restart_code,
     )
 
 

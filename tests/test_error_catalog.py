@@ -13,6 +13,7 @@ from unittest import mock
 
 from tests.test_summaries import LANGUAGES, catalog, placeholder_types
 from timecapsulesmb.app import recovery
+from timecapsulesmb.device.errors import DiskPayloadMissingError
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.probe import DeployedVersionProbeResult
 from timecapsulesmb.device.storage import (
@@ -162,6 +163,18 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                 for language in LANGUAGES:
                     with self.subTest(language=language):
                         self.assertTrue(app_error_text(catalog(language), "activate", code))
+
+    def test_a_payload_missing_from_every_disk_points_to_a_reinstall_everywhere(self) -> None:
+        # Raised by activation and by a deploy's runtime check alike.
+        code = DiskPayloadMissingError("x").code
+        for operation in ("activate", "deploy"):
+            with self.subTest(operation=operation):
+                payload = recovery.recovery_for(operation, code)
+                self.assertEqual(payload["localization_key"], code)
+                self.assertEqual(payload["suggested_operation"], "deploy")
+                for language in LANGUAGES:
+                    with self.subTest(language=language):
+                        self.assertTrue(app_error_text(catalog(language), operation, code))
 
     def test_file_sharing_that_did_not_restart_after_fsck_has_its_own_text(self) -> None:
         # The error line says what did succeed: the disk repair.
