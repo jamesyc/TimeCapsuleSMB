@@ -284,6 +284,13 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
 }
 
 
+_UNREADABLE_FOLDER_TITLE = "A folder on the disk cannot be read"
+_UNREADABLE_FOLDER_MESSAGE = (
+    "The device could not list the contents of a folder the Samba metadata migration must read; the operation "
+    "log names the folder. Samba was stopped for the install and is not running now."
+)
+_UNREADABLE_FOLDER_REPAIR = "Run Disk Repair on the disk, then run Install / Update Samba again."
+
 _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ("deploy", "reboot_not_finished"): RecoveryInfo(
         "Reboot did not finish",
@@ -402,6 +409,37 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ("Wait a minute, then retry deploy.", "Restart the device if the disk still does not mount."),
         retryable=True,
         suggested_operation="deploy",
+    ),
+    # Deploy offers this only when uninstall deletes every legacy database
+    # (services.deploy), so the second step cannot fail the same way.
+    ("deploy", "xattr_migration_unreadable_folder"): RecoveryInfo(
+        _UNREADABLE_FOLDER_TITLE,
+        _UNREADABLE_FOLDER_MESSAGE,
+        (
+            _UNREADABLE_FOLDER_REPAIR,
+            "If it still fails, run Uninstall, then Install / Update Samba. Uninstall also deletes any Samba "
+            "metadata from an earlier version that is not migrated yet, such as Finder tags; your files stay on "
+            "the disk.",
+        ),
+        # Running deploy again unchanged fails the same way.
+        retryable=False,
+        action_ids=("disk_repair", "uninstall"),
+    ),
+    # A legacy database outside the install folder survives Uninstall, and one
+    # on a disk this deploy could not mount was never seen, so the next deploy
+    # could walk the same folder: Uninstall is not offered. Copy Diagnostics is
+    # on every recovery card.
+    ("deploy", "xattr_migration_unreadable_folder_repair_only"): RecoveryInfo(
+        _UNREADABLE_FOLDER_TITLE,
+        _UNREADABLE_FOLDER_MESSAGE,
+        (
+            _UNREADABLE_FOLDER_REPAIR,
+            "If it still fails, the disk may be failing. Copy Diagnostics and report it at "
+            "https://github.com/jamesyc/TimeCapsuleSMB/issues. Reports there are public, so remove any names you "
+            "do not want to share.",
+        ),
+        retryable=False,
+        action_ids=("disk_repair",),
     ),
     ("deploy", "deploy_disk_not_confirmed"): RecoveryInfo(
         "Disk not kept mounted",

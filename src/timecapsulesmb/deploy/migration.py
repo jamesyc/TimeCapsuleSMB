@@ -15,6 +15,7 @@ import shlex
 import time
 import uuid
 
+from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn, read_mast_volumes_conn
 from timecapsulesmb.transport.errors import SshError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
@@ -401,6 +402,51 @@ def _saved_log_snapshot(connection: SshConnection, log: str | None) -> str:
         return tail[-8192:] if tail else "unavailable"
     except Exception:
         return "unavailable"
+
+
+# The migrator logs each folder it cannot list as "readdir failed path=P
+# error=E" and ends a failed walk with "multi migration failed phase=X error=E
+# path=P", P being the walk's first error. strerror() text never holds "=", so
+# each pattern takes the last "error=" on its line and a path may hold anything
+# but a newline; a path with a newline matches neither, which only loses the
+# folder message. Every matching line comes back over SSH: the one naming P is
+# last, so the output cannot be cut short.
+UNREADABLE_FOLDERS_SED = (
+    r"/usr/bin/sed -n -e 's/^readdir failed path=\(.*\) error=[^=]*$/R \1/p'"
+    r" -e 's/^multi migration failed phase=[a-z]* error=[^=]* path=\(.*\)$/F \1/p'"
+)
+
+
+def unreadable_folder(connection: SshConnection, log: str) -> str | None:
+    """The folder that failed a walk, when its first error was a folder the
+    device could not list.
+
+    None when the disk went away mid-walk (the last line names no path), when
+    the walk failed on a file, or when the log cannot be read.
+    """
+    try:
+        output = run_ssh(connection, f"{UNREADABLE_FOLDERS_SED} {shlex.quote(log)}", check=False,
+                         timeout=DIAGNOSTIC_TIMEOUT_SECONDS).stdout
+    except SshError:
+        return None
+    lines = [line.partition(" ") for line in output.splitlines()]
+    first = next((path for kind, _, path in lines if kind == "F"), None)
+    return first if any(kind == "R" and path == first for kind, _, path in lines) else None
+
+
+def uninstall_removes_sources(inventory: MigrationInventory) -> bool:
+    """Whether uninstall, which deletes MANAGED_PAYLOAD_DIR_NAME on each
+    volume, deletes every legacy database and every name it has, so the next
+    deploy finds none of them. A volume that did not mount was never searched,
+    so it may hold one this deploy did not see. It runs while deploy reports a
+    failure, so it only compares canonical paths and cannot raise in place of
+    that failure."""
+    if inventory.unavailable:
+        return False
+    payloads = tuple(f"{volume.volume_root.rstrip('/')}/{MANAGED_PAYLOAD_DIR_NAME}/" for volume in inventory.volumes)
+    return bool(inventory.sources) and all(
+        path.startswith(payloads) for source in inventory.sources for path in (source["path"], *source["aliases"])
+    )
 
 
 def _native(connection: SshConnection, arguments: list[str], *, request: bytes = b"", log: str | None = None) -> dict:

@@ -27,7 +27,12 @@ from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.migration import OversizedSummary, OversizedValue, SkippedEntry, SkippedSummary
 from timecapsulesmb.services.maintenance import fsck_failure_message, fsck_plan_to_jsonable, FsckTarget
 from timecapsulesmb.services.reachability import ReachabilityCheck, ReachabilityResult, result_from_checks, run_reachability
-from timecapsulesmb.services.deploy import WAITING_FOR_PREVIOUS_MIGRATION, _oversized_summaries, _skipped_summaries
+from timecapsulesmb.services.deploy import (
+    WAITING_FOR_PREVIOUS_MIGRATION,
+    _oversized_summaries,
+    _skipped_summaries,
+    unreadable_folder_summary,
+)
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult, disable_set_ssh, enable_set_ssh
 from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.transport.ssh import SshConnection
@@ -251,6 +256,8 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
     rows.extend(_kept_values_logs())
     rows.extend(_skipped_logs())
     rows.append(("log_waiting_for_previous_migration", "log", "deploy", True, WAITING_FOR_PREVIOUS_MIGRATION))
+    rows.append(("log_unreadable_folder", "log", "deploy", True,
+                 unreadable_folder_summary("Data/MacBook Pro.incomplete/bands")))
     return rows
 
 

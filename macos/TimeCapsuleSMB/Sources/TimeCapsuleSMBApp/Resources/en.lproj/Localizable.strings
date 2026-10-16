@@ -313,6 +313,7 @@
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash restore write validated; device rebooted.";
 "backend.summary.flash_write_completed" = "Flash write completed.";
 "backend.summary.migration.skipped_path" = "  %@";
+"backend.summary.migration.unreadable_folder" = "The device could not read this folder: %@";
 "backend.summary.migration.waiting_for_previous" = "Waiting for the metadata migration from an earlier installation to finish...";
 "backend.summary.flash_write_not_needed" = "Flash write was not needed.";
 "backend.summary.fsck_completed" = "Disk repair completed with fsck.";
@@ -628,6 +629,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "A valid HFS disk was found, but TimeCapsuleSMB could not write the payload to it. Wake or remount the disk, check free space, then retry.";
 "backend.error.deploy.deploy_disk_not_mounted" = "A valid HFS disk was found, but it is not mounted, and the device did not mount it when asked. Wait a minute, then retry, or restart the device.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "A valid HFS disk is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be unmounted during the install. Wait a minute, then retry, or restart the device.";
+"backend.error.deploy.xattr_migration_unreadable_folder" = "The device could not read a folder on the disk, so the Samba metadata migration failed. The operation log names the folder; run “Disk Repair”, then “Install / Update Samba” again.";
+"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "The device could not read a folder on the disk, so the Samba metadata migration failed. The operation log names the folder; run “Disk Repair”, then “Install / Update Samba” again.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is not installed on this device. Run “Install / Update Samba” first.";
 "backend.error.flash.secondary_bank_invalid" = "Patching was refused because the backup (secondary) firmware bank is damaged. Choose “Plan Restore” to rewrite it with Apple firmware, then choose “Back Up and Inspect Again” and patch.";
 "backend.error.flash.secondary_bank_read_mismatch" = "The backup (secondary) firmware bank read differently in this backup and in the device's own check, so it was not rewritten and patching was refused. Choose “Back Up and Inspect”.";
@@ -782,6 +785,14 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "An HFS volume is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be unmounted during deploy.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Wait a minute, then retry deploy.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Restart the device if this keeps happening.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "A folder on the disk cannot be read";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "The device could not list the contents of a folder the Samba metadata migration must read; the operation log names the folder. Samba was stopped for the install and is not running now.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Run Disk Repair on the disk, then run Install / Update Samba again.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.2" = "If it still fails, run Uninstall, then Install / Update Samba. Uninstall also deletes any Samba metadata from an earlier version that is not migrated yet, such as Finder tags; your files stay on the disk.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.title" = "A folder on the disk cannot be read";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.message" = "The device could not list the contents of a folder the Samba metadata migration must read; the operation log names the folder. Samba was stopped for the install and is not running now.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.1" = "Run Disk Repair on the disk, then run Install / Update Samba again.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.2" = "If it still fails, the disk may be failing. Copy Diagnostics and report it at https://github.com/jamesyc/TimeCapsuleSMB/issues. Reports there are public, so remove any names you do not want to share.";
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB not installed";
 "backend.recovery.activate.runtime_not_installed.message" = "The device has no TimeCapsuleSMB installation to start.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Run Install / Update Samba.";

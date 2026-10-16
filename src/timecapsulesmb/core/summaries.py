@@ -108,6 +108,8 @@ SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "migration.skipped_not_a_file": ("int",),
     "migration.skipped_path": ("str",),
     "migration.skipped_more": ("int",),
+    # The folder the device could not list when that failed the migration.
+    "migration.unreadable_folder": ("str",),
 }
 
 

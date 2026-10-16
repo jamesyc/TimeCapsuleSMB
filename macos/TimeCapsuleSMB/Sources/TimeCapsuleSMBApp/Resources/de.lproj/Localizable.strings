@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_rebooted" = "Wiederherstellung im Flash-Speicher geprüft; Gerät neu gestartet.";
 "backend.summary.flash_write_completed" = "Schreiben in den Flash-Speicher abgeschlossen.";
 "backend.summary.migration.skipped_path" = "  %@";
+"backend.summary.migration.unreadable_folder" = "Das Gerät konnte diesen Ordner nicht lesen: %@";
 "backend.summary.migration.waiting_for_previous" = "Warten, bis die Metadaten-Migration einer früheren Installation abgeschlossen ist...";
 "backend.summary.flash_write_not_needed" = "Schreiben in den Flash-Speicher war nicht erforderlich.";
 "backend.summary.fsck_completed" = "Festplattenreparatur mit fsck abgeschlossen.";
@@ -630,6 +631,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "Ein gültiger HFS-Datenträger wurde gefunden, aber TimeCapsuleSMB konnte die Installationsdateien nicht darauf schreiben. Wecken oder binden Sie ihn erneut ein, prüfen Sie den freien Speicherplatz und versuchen Sie es erneut.";
 "backend.error.deploy.deploy_disk_not_mounted" = "Ein gültiger HFS-Datenträger wurde gefunden, ist aber nicht eingebunden, und das Gerät hat ihn auf Anforderung nicht eingebunden. Warten Sie eine Minute und versuchen Sie es dann erneut, oder starten Sie das Gerät neu.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Ein gültiger HFS-Datenträger ist eingebunden, aber das Gerät hat es abgelehnt, ihn für TimeCapsuleSMB eingebunden zu halten, sodass er während der Installation ausgehängt werden könnte. Warten Sie eine Minute und versuchen Sie es dann erneut, oder starten Sie das Gerät neu.";
+"backend.error.deploy.xattr_migration_unreadable_folder" = "Das Gerät konnte einen Ordner auf der Festplatte nicht lesen, daher ist die Samba-Metadaten-Migration fehlgeschlagen. Das Vorgangsprotokoll nennt den Ordner; führen Sie die „Festplattenreparatur“ und danach erneut „Samba installieren / aktualisieren“ aus.";
+"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "Das Gerät konnte einen Ordner auf der Festplatte nicht lesen, daher ist die Samba-Metadaten-Migration fehlgeschlagen. Das Vorgangsprotokoll nennt den Ordner; führen Sie die „Festplattenreparatur“ und danach erneut „Samba installieren / aktualisieren“ aus.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB ist auf diesem Gerät nicht installiert. Führen Sie zuerst „Samba installieren / aktualisieren“ aus.";
 "backend.error.flash.secondary_bank_invalid" = "Das Patchen wurde verweigert, weil die Backup-Firmware-Bank (sekundär) beschädigt ist. Wählen Sie „Wiederherstellung planen“, um sie mit Apple-Firmware neu zu schreiben, wählen Sie dann „Sichern und erneut prüfen“ und patchen Sie.";
 "backend.error.flash.secondary_bank_read_mismatch" = "Die Backup-Firmware-Bank (sekundär) wurde in dieser Sicherung anders gelesen als bei der Prüfung durch das Gerät selbst. Daher wurde sie nicht neu geschrieben und das Patchen wurde verweigert. Wählen Sie „Sichern und prüfen“.";
@@ -784,6 +787,14 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Ein HFS-Volume ist eingebunden, aber das Gerät hat es abgelehnt, es für TimeCapsuleSMB eingebunden zu halten; es könnte daher während der Installation / Aktualisierung ausgehängt werden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Starten Sie das Gerät neu, wenn dies weiterhin passiert.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Ein Ordner auf der Festplatte kann nicht gelesen werden";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Das Gerät konnte den Inhalt eines Ordners nicht auflisten, den die Samba-Metadaten-Migration lesen muss; das Vorgangsprotokoll nennt den Ordner. Samba wurde für die Installation beendet und läuft gerade nicht.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Führen Sie die „Festplattenreparatur“ für die Festplatte und danach erneut „Samba installieren / aktualisieren“ aus.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.2" = "Wenn es weiterhin fehlschlägt, führen Sie „Deinstallieren“ und danach „Samba installieren / aktualisieren“ aus. „Deinstallieren“ löscht auch die Samba-Metadaten einer früheren Version, die noch nicht migriert sind, etwa Finder-Tags; Ihre Dateien bleiben auf der Festplatte.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.title" = "Ein Ordner auf der Festplatte kann nicht gelesen werden";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.message" = "Das Gerät konnte den Inhalt eines Ordners nicht auflisten, den die Samba-Metadaten-Migration lesen muss; das Vorgangsprotokoll nennt den Ordner. Samba wurde für die Installation beendet und läuft gerade nicht.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.1" = "Führen Sie die „Festplattenreparatur“ für die Festplatte und danach erneut „Samba installieren / aktualisieren“ aus.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.2" = "Wenn es weiterhin fehlschlägt, fällt die Festplatte möglicherweise aus. Klicken Sie auf „Diagnosedaten kopieren“ und melden Sie das Problem unter https://github.com/jamesyc/TimeCapsuleSMB/issues. Berichte dort sind öffentlich; entfernen Sie daher Namen, die Sie nicht teilen möchten.";
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB nicht installiert";
 "backend.recovery.activate.runtime_not_installed.message" = "Auf dem Gerät ist keine TimeCapsuleSMB-Installation vorhanden, die gestartet werden könnte.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Führen Sie „Samba installieren / aktualisieren“ aus.";

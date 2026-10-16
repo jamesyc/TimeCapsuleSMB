@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_rebooted" = "Herstel naar flash geverifieerd; apparaat herstart.";
 "backend.summary.flash_write_completed" = "Schrijven naar flash voltooid.";
 "backend.summary.migration.skipped_path" = "  %@";
+"backend.summary.migration.unreadable_folder" = "Het apparaat kon deze map niet lezen: %@";
 "backend.summary.migration.waiting_for_previous" = "Wachten tot de metadatamigratie van een eerdere installatie klaar is...";
 "backend.summary.flash_write_not_needed" = "Schrijven naar flash was niet nodig.";
 "backend.summary.fsck_completed" = "Schijfreparatie voltooid met fsck.";
@@ -630,6 +631,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "Er is een geldige HFS-schijf gevonden, maar TimeCapsuleSMB kon de installatiebestanden niet schrijven. Haal de schijf uit de slaapstand of koppel deze opnieuw, controleer de vrije ruimte en probeer het opnieuw.";
 "backend.error.deploy.deploy_disk_not_mounted" = "Er is een geldige HFS-schijf gevonden, maar deze is niet gekoppeld en het apparaat heeft deze op verzoek niet gekoppeld. Wacht een minuut en probeer het opnieuw, of herstart het apparaat.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Er is een geldige HFS-schijf gekoppeld, maar het apparaat wilde deze niet gekoppeld houden voor TimeCapsuleSMB, waardoor deze tijdens de installatie ontkoppeld zou kunnen worden. Wacht een minuut en probeer het opnieuw, of herstart het apparaat.";
+"backend.error.deploy.xattr_migration_unreadable_folder" = "Het apparaat kon een map op de schijf niet lezen, dus de Samba-metadatamigratie is mislukt. Het logboek van de bewerking noemt de map; voer ‘Schijfreparatie’ uit en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "Het apparaat kon een map op de schijf niet lezen, dus de Samba-metadatamigratie is mislukt. Het logboek van de bewerking noemt de map; voer ‘Schijfreparatie’ uit en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is niet geïnstalleerd op dit apparaat. Voer eerst ‘Samba installeren / bijwerken’ uit.";
 "backend.error.flash.secondary_bank_invalid" = "Patchen is geweigerd omdat de reservefirmwarebank (secundair) beschadigd is. Kies ‘Herstel plannen’ om deze opnieuw te schrijven met Apple-firmware, kies daarna ‘Back-up maken en opnieuw inspecteren’ en patch.";
 "backend.error.flash.secondary_bank_read_mismatch" = "De reservefirmwarebank (secundair) werd in deze back-up anders gelezen dan bij de controle door het apparaat zelf, dus deze is niet opnieuw geschreven en patchen is geweigerd. Kies ‘Back-up maken en inspecteren’.";
@@ -784,6 +787,14 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Er is een HFS-volume gekoppeld, maar het apparaat wilde het niet gekoppeld houden voor TimeCapsuleSMB, waardoor het tijdens het installeren ontkoppeld zou kunnen worden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Wacht een minuut en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Herstart het apparaat als dit blijft gebeuren.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Een map op de schijf kan niet worden gelezen";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Het apparaat kon de inhoud van een map die de Samba-metadatamigratie moet lezen niet ophalen; het logboek van de bewerking noemt de map. Samba is voor de installatie gestopt en is nu niet actief.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Voer ‘Schijfreparatie’ uit op de schijf en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.2" = "Mislukt het nog steeds, voer dan ‘Verwijderen’ uit en voer daarna ‘Samba installeren / bijwerken’ uit. ‘Verwijderen’ wist ook Samba-metadata van een eerdere versie die nog niet zijn gemigreerd, zoals Finder-tags; uw bestanden blijven op de schijf staan.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.title" = "Een map op de schijf kan niet worden gelezen";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.message" = "Het apparaat kon de inhoud van een map die de Samba-metadatamigratie moet lezen niet ophalen; het logboek van de bewerking noemt de map. Samba is voor de installatie gestopt en is nu niet actief.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.1" = "Voer ‘Schijfreparatie’ uit op de schijf en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.2" = "Mislukt het nog steeds, dan is de schijf mogelijk defect. Klik op ‘Diagnostische gegevens kopiëren’ en meld het probleem op https://github.com/jamesyc/TimeCapsuleSMB/issues. Meldingen daar zijn openbaar, dus verwijder namen die u niet wilt delen.";
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB niet geïnstalleerd";
 "backend.recovery.activate.runtime_not_installed.message" = "Er is geen TimeCapsuleSMB-installatie op het apparaat die kan worden gestart.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";

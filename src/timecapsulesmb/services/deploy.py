@@ -34,6 +34,8 @@ from timecapsulesmb.deploy.migration import (
     SkippedSummary,
     inspect_sources,
     inventory_metadata,
+    uninstall_removes_sources,
+    unreadable_folder,
 )
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -182,6 +184,36 @@ XATTR_MIGRATION_CONNECTION_LOST_MESSAGE = (
     "The connection to the device was lost during the Samba metadata migration. The migration may still be "
     "running on the device. Rerun deploy: it waits for a running migration to finish first."
 )
+# The device could not list a folder the migration must walk.
+XATTR_MIGRATION_UNREADABLE_FOLDER_MESSAGE = (
+    "The device could not read the folder \"{folder}\", so the Samba metadata migration failed. "
+    "Samba was stopped for the install and is not running now. "
+    "Run \"Disk Repair\" in the macOS app (or tcapsule fsck), then \"Install / Update Samba\" (or tcapsule deploy) "
+    "again."
+)
+# Uninstall is the way out when Disk Repair cannot fix the folder, offered only
+# when uninstall is known to delete every legacy database
+# (uninstall_removes_sources): otherwise the next deploy could find one and
+# fail the same way. What was
+# already migrated stays on the files; only what was not is lost.
+XATTR_MIGRATION_UNREADABLE_FOLDER_UNINSTALL = (
+    "If it still fails, run \"Uninstall\" (tcapsule uninstall), then \"Install / Update Samba\". Uninstall also deletes "
+    "any Samba metadata from an earlier version that is not migrated yet, such as Finder tags; your files stay on "
+    "the disk."
+)
+# Without Uninstall, nothing the app offers gets past a folder Disk Repair
+# cannot fix.
+XATTR_MIGRATION_UNREADABLE_FOLDER_REPORT = (
+    "If it still fails, the disk may be failing: report it at https://github.com/jamesyc/TimeCapsuleSMB/issues "
+    "with this output. Reports there are public, so remove any names you do not want to share."
+)
+
+
+def unreadable_folder_summary(folder: str) -> Summary:
+    """The app's error line is fixed text: this line names the folder in its log."""
+    return Summary("migration.unreadable_folder", f"The device could not read this folder: {folder}", (folder,))
+
+
 PREVIOUS_MIGRATION_STALLED_MESSAGE = (
     "A metadata migration left on the device by an earlier installation stopped making progress, "
     "often due to a failing disk. Unplug the device, plug it back in, and try again."
@@ -1187,6 +1219,19 @@ def upload_and_verify_deployment_payload(
             raise DeployDeviceError(
                 f"{message.format(signal=exit_signal)}\n{diagnostic}\n{exc}",
                 code="xattr_migration_crashed" if crashed else "xattr_migration_stopped",
+            ) from exc
+        folder = unreadable_folder(connection, log) if isinstance(exc, MigrationExitError) and log else None
+        if folder:
+            shown = share_path(folder)
+            callbacks.message(unreadable_folder_summary(shown))
+            uninstall = uninstall_removes_sources(inventory)
+            message = " ".join((
+                XATTR_MIGRATION_UNREADABLE_FOLDER_MESSAGE.format(folder=shown),
+                XATTR_MIGRATION_UNREADABLE_FOLDER_UNINSTALL if uninstall else XATTR_MIGRATION_UNREADABLE_FOLDER_REPORT,
+            ))
+            raise DeployDeviceError(
+                f"{message}\n{diagnostic}\n{exc}",
+                code="xattr_migration_unreadable_folder" if uninstall else "xattr_migration_unreadable_folder_repair_only",
             ) from exc
         raise DeployDeviceError(
             f"Native HFS metadata migration ({phase}) failed.\n{diagnostic}\n{exc}",

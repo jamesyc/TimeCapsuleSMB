@@ -17,6 +17,7 @@ import pytest
 
 from timecapsulesmb.deploy import migration as m
 from timecapsulesmb.device.storage import MaStVolume
+from timecapsulesmb.transport.errors import SshCommandTimeout
 from timecapsulesmb.transport.ssh import SshConnection
 
 UUID_A = "11111111-1111-1111-1111-111111111111"
@@ -1043,3 +1044,113 @@ def test_a_stale_alias_receipt_after_a_drop_is_ignored_and_rewritten(device):
     device.phase(inv, "copy"); device.phase(inv, "cleanup")
     assert not device.scan_calls() and "K 0 M" not in retire_request(device).decode()
     assert device.native[UUID_A] == "new native edit" and inv.dropped_rows == 0
+
+
+def run_locally(monkeypatch, *, fail=None):
+    """Run the device command in a local shell: the folder parser is sed, and
+    its patterns are what needs testing. fail is an exception to raise
+    instead."""
+    def run(_connection, command, *, check, timeout):
+        if fail is not None:
+            raise fail
+        proc = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
+        return SimpleNamespace(stdout=proc.stdout, returncode=proc.returncode)
+
+    monkeypatch.setattr(m, "run_ssh", run)
+
+
+def migration_log(tmp_path, *lines):
+    log = tmp_path / "xattr migration-copy.log"
+    log.write_text("".join(line + "\n" for line in lines))
+    return str(log)
+
+
+BANDS = "/Volumes/dk2/ShareRoot/Mac de Eric.incomplete/bands"
+# A path may hold " error=": strerror() text never holds "=".
+ODD = "/Volumes/dk2/ShareRoot/odd error=x/dir"
+NEWLINE = "/Volumes/dk2/ShareRoot/two\nlines"
+
+
+@pytest.mark.parametrize("last_error", [ODD, BANDS])
+def test_unreadable_folder_names_the_folder_that_failed_the_walk_first(tmp_path, monkeypatch, last_error):
+    run_locally(monkeypatch)
+    log = migration_log(
+        tmp_path,
+        "phase=copy sources=1 stall_seconds=300",
+        f"readdir failed path={BANDS} error=Bad file descriptor",
+        "progress phase=copy volume=x entries=17152 matched=48 total=3056",
+        f"readdir failed path={ODD} error=Input/output error",
+        f"multi migration failed phase=copy error=Input/output error path={last_error}",
+    )
+    assert m.unreadable_folder(SshConnection("host", "pw", ""), log) == last_error
+
+
+@pytest.mark.parametrize("lines", [
+    # The disk went away mid-walk: the last line names no path.
+    [f"readdir failed path={BANDS} error=Bad file descriptor",
+     "multi migration failed phase=copy error=Stale NFS file handle"],
+    # The walk's first error was a file, not a folder it could not list.
+    [f"readdir failed path={BANDS} error=Bad file descriptor",
+     "multi migration failed phase=copy error=Invalid argument path=/Volumes/dk2/ShareRoot/file.txt"],
+    # A path with a newline splits both lines, so neither pattern matches it.
+    [f"readdir failed path={NEWLINE} error=Bad file descriptor",
+     f"multi migration failed phase=copy error=Bad file descriptor path={NEWLINE}"],
+])
+def test_unreadable_folder_is_none_unless_a_folder_was_the_first_error(tmp_path, monkeypatch, lines):
+    run_locally(monkeypatch)
+    assert m.unreadable_folder(SshConnection("host", "pw", ""), migration_log(tmp_path, *lines)) is None
+
+
+def test_unreadable_folder_is_none_when_the_log_cannot_be_read(tmp_path, monkeypatch):
+    run_locally(monkeypatch)
+    assert m.unreadable_folder(SshConnection("host", "pw", ""), str(tmp_path / "missing.log")) is None
+    log = migration_log(tmp_path, f"readdir failed path={BANDS} error=Bad file descriptor",
+                        f"multi migration failed phase=copy error=Bad file descriptor path={BANDS}")
+    for error in (m.SshError("connection refused"), SshCommandTimeout("timed out")):
+        run_locally(monkeypatch, fail=error)
+        assert m.unreadable_folder(SshConnection("host", "pw", ""), log) is None
+
+
+def test_unreadable_folder_only_swallows_ssh_failures(tmp_path, monkeypatch):
+    # Any other exception is a bug, not a log the device could not read.
+    run_locally(monkeypatch, fail=ValueError("bad command"))
+    with pytest.raises(ValueError):
+        m.unreadable_folder(SshConnection("host", "pw", ""), str(tmp_path / "x.log"))
+
+
+def legacy_source(volume_root, uuid, relative, aliases=()):
+    return {"uuid": uuid, "path": f"{volume_root}/{relative}", "aliases": [f"{volume_root}/{a}" for a in aliases]}
+
+
+@pytest.mark.parametrize("sources, removed", [
+    ([], False),
+    ([legacy_source("/Volumes/dk2", UUID_A, ".samba4/private/xattr.tdb")], True),
+    ([legacy_source("/Volumes/dk2", UUID_A, ".samba4/var/locks/xattr.tdb"),
+      legacy_source("/Volumes/dk3", UUID_B, ".samba4/private/xattr.tdb")], True),
+    # Uninstall deletes only .samba4: the next deploy would find this one.
+    ([legacy_source("/Volumes/dk2", UUID_A, ".samba4/private/xattr.tdb"),
+      legacy_source("/Volumes/dk3", UUID_B, "tc-netbsd4le/private/xattr.tdb")], False),
+    # A hard link outside .samba4 keeps the database after uninstall.
+    ([legacy_source("/Volumes/dk2", UUID_A, ".samba4/private/xattr.tdb", aliases=("samba4/private/xattr.tdb",))],
+     False),
+    # A name that only starts like the payload folder is another folder.
+    ([legacy_source("/Volumes/dk2", UUID_A, ".samba4-old/private/xattr.tdb")], False),
+    # A volume MaSt no longer lists is not one uninstall mounts.
+    ([legacy_source("/Volumes/dk4", UUID_C, ".samba4/private/xattr.tdb")], False),
+])
+def test_uninstall_removes_sources_only_when_every_name_is_in_the_managed_payload(sources, removed):
+    inventory = m.MigrationInventory(
+        (volume("/Volumes/dk2", "dk2", UUID_A), volume("/Volumes/dk3/", "dk3", UUID_B)), [], [], [], "")
+    inventory.sources = sources
+    assert m.uninstall_removes_sources(inventory) is removed
+
+
+def test_uninstall_removes_sources_is_unknown_while_a_volume_did_not_mount():
+    # The deploy never searched an unmounted volume, which may hold a legacy
+    # database that survives uninstall.
+    inventory = m.MigrationInventory(
+        (volume("/Volumes/dk2", "dk2", UUID_A), volume("/Volumes/dk3", "dk3", UUID_B)), [], [], ["/Volumes/dk3"], "")
+    inventory.sources = [legacy_source("/Volumes/dk2", UUID_A, ".samba4/private/xattr.tdb")]
+    assert m.uninstall_removes_sources(inventory) is False
+    inventory.unavailable = []
+    assert m.uninstall_removes_sources(inventory) is True

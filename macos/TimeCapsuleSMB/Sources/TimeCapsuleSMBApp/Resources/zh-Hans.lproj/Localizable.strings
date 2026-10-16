@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_rebooted" = "闪存恢复写入已验证；设备已重启。";
 "backend.summary.flash_write_completed" = "闪存写入已完成。";
 "backend.summary.migration.skipped_path" = "  %@";
+"backend.summary.migration.unreadable_folder" = "设备无法读取此文件夹：%@";
 "backend.summary.migration.waiting_for_previous" = "正在等待之前一次安装的元数据迁移完成...";
 "backend.summary.flash_write_not_needed" = "无需闪存写入。";
 "backend.summary.fsck_completed" = "已使用 fsck 完成磁盘修复。";
@@ -630,6 +631,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "已找到有效的 HFS 磁盘，但 TimeCapsuleSMB 无法写入安装文件。请唤醒或重新挂载磁盘，检查可用空间，然后重试。";
 "backend.error.deploy.deploy_disk_not_mounted" = "已找到有效的 HFS 磁盘，但它尚未挂载，设备也未按请求将其挂载。请等待一分钟后重试，或重启设备。";
 "backend.error.deploy.deploy_disk_not_confirmed" = "有效的 HFS 磁盘已挂载，但设备拒绝为 TimeCapsuleSMB 保持其挂载状态，因此它可能会在安装过程中被卸载。请等待一分钟后重试，或重启设备。";
+"backend.error.deploy.xattr_migration_unreadable_folder" = "设备无法读取磁盘上的一个文件夹，因此 Samba 元数据迁移失败。操作日志中列出了该文件夹；请运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
+"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "设备无法读取磁盘上的一个文件夹，因此 Samba 元数据迁移失败。操作日志中列出了该文件夹；请运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
 "backend.error.activate.runtime_not_installed" = "此设备上未安装 TimeCapsuleSMB。请先运行“安装 / 更新 Samba”。";
 "backend.error.flash.secondary_bank_invalid" = "已拒绝打补丁，因为备用（第二）固件区已损坏。请选择“规划恢复”用苹果固件重新写入它，然后选择“再次备份并检查”并打补丁。";
 "backend.error.flash.secondary_bank_read_mismatch" = "此备份读取的备用（第二）固件区与设备自身的检查结果不一致，因此未重新写入它，并已拒绝打补丁。请选择“备份并检查”。";
@@ -784,6 +787,14 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "HFS 卷已挂载，但设备拒绝为 TimeCapsuleSMB 保持其挂载状态，因此它可能会在安装 / 更新过程中被卸载。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "等待一分钟，然后重新运行“安装 / 更新 Samba”。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "如果此问题反复出现，请重启设备。";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "无法读取磁盘上的文件夹";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Samba 元数据迁移必须读取一个文件夹，但设备无法列出其内容；操作日志中列出了该文件夹。Samba 已为安装而停止，目前未运行。";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "对该磁盘运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.2" = "如果仍然失败，请运行“卸载”，然后运行“安装 / 更新 Samba”。“卸载”也会删除早期版本保存但尚未迁移的 Samba 元数据，例如访达标签；文件仍保留在磁盘上。";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.title" = "无法读取磁盘上的文件夹";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.message" = "Samba 元数据迁移必须读取一个文件夹，但设备无法列出其内容；操作日志中列出了该文件夹。Samba 已为安装而停止，目前未运行。";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.1" = "对该磁盘运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.2" = "如果仍然失败，磁盘可能出现故障。请点击“复制诊断信息”，然后在 https://github.com/jamesyc/TimeCapsuleSMB/issues 报告此问题。那里的报告是公开的，请先删掉不想公开的名称。";
 "backend.recovery.activate.runtime_not_installed.title" = "未安装 TimeCapsuleSMB";
 "backend.recovery.activate.runtime_not_installed.message" = "设备上没有可启动的 TimeCapsuleSMB 安装。";
 "backend.recovery.activate.runtime_not_installed.action.1" = "运行“安装 / 更新 Samba”。";

@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_rebooted" = "Flash atminties atkūrimo įrašymas patvirtintas; įrenginys paleistas iš naujo.";
 "backend.summary.flash_write_completed" = "Įrašymas į flash atmintį baigtas.";
 "backend.summary.migration.skipped_path" = "  %@";
+"backend.summary.migration.unreadable_folder" = "Įrenginys negalėjo perskaityti šio aplanko: %@";
 "backend.summary.migration.waiting_for_previous" = "Laukiama, kol baigsis ankstesnio diegimo metaduomenų perkėlimas...";
 "backend.summary.flash_write_not_needed" = "Įrašyti į flash atmintį nereikėjo.";
 "backend.summary.fsck_completed" = "Disko taisymas su fsck baigtas.";
@@ -630,6 +631,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "Rastas tinkamas HFS diskas, bet TimeCapsuleSMB negalėjo į jį įrašyti diegimo failų. Pažadinkite arba iš naujo prijunkite diską, patikrinkite laisvą vietą ir bandykite dar kartą.";
 "backend.error.deploy.deploy_disk_not_mounted" = "Rastas tinkamas HFS diskas, bet jis neprijungtas, o įrenginys, paprašytas jį prijungti, to nepadarė. Palaukite minutę ir bandykite dar kartą arba paleiskite įrenginį iš naujo.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Tinkamas HFS diskas prijungtas, bet įrenginys nesutiko išlaikyti jo prijungto TimeCapsuleSMB reikmėms, todėl diegimo metu jis galėtų būti atjungtas. Palaukite minutę ir bandykite dar kartą arba paleiskite įrenginį iš naujo.";
+"backend.error.deploy.xattr_migration_unreadable_folder" = "Įrenginys negalėjo perskaityti aplanko diske, todėl Samba metaduomenų perkėlimas nepavyko. Aplankas nurodytas operacijos žurnale; paleiskite operaciją „Disko taisymas“, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "Įrenginys negalėjo perskaityti aplanko diske, todėl Samba metaduomenų perkėlimas nepavyko. Aplankas nurodytas operacijos žurnale; paleiskite operaciją „Disko taisymas“, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
 "backend.error.activate.runtime_not_installed" = "Šiame įrenginyje TimeCapsuleSMB neįdiegta. Pirmiausia paleiskite „Įdiegti / atnaujinti Samba“.";
 "backend.error.flash.secondary_bank_invalid" = "Pataisymas atmestas, nes atsarginis (antrinis) programinės įrangos bankas sugadintas. Pasirinkite „Planuoti atkūrimą“, kad perrašytumėte jį Apple programine įranga, tada pasirinkite „Sukurti atsarginę kopiją ir patikrinti dar kartą“ ir taikykite pataisymą.";
 "backend.error.flash.secondary_bank_read_mismatch" = "Atsarginis (antrinis) programinės įrangos bankas šioje atsarginėje kopijoje nuskaitytas kitaip nei paties įrenginio patikroje, todėl jis neperrašytas, o pataisymas atmestas. Pasirinkite „Sukurti atsarginę kopiją ir patikrinti“.";
@@ -784,6 +787,14 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "HFS tomas prijungtas, bet įrenginys nesutiko išlaikyti jo prijungto TimeCapsuleSMB reikmėms, todėl diegimo metu jis galėtų būti atjungtas.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Palaukite minutę, tada bandykite diegti dar kartą.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Jei tai kartojasi, paleiskite įrenginį iš naujo.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Nepavyksta perskaityti aplanko diske";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Samba metaduomenų perkėlimas turi perskaityti aplanką, bet įrenginys negalėjo išvardyti jo turinio; aplankas nurodytas operacijos žurnale. Samba buvo sustabdyta diegimui ir dabar neveikia.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Paleiskite operaciją „Disko taisymas“ šiam diskui, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.2" = "Jei vis tiek nepavyksta, paleiskite operaciją „Pašalinimas“, tada paleiskite „Įdiegti / atnaujinti Samba“. Pašalinimas taip pat ištrina dar neperkeltus ankstesnės versijos Samba metaduomenis, pvz., Finder žymas; jūsų failai lieka diske.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.title" = "Nepavyksta perskaityti aplanko diske";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.message" = "Samba metaduomenų perkėlimas turi perskaityti aplanką, bet įrenginys negalėjo išvardyti jo turinio; aplankas nurodytas operacijos žurnale. Samba buvo sustabdyta diegimui ir dabar neveikia.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.1" = "Paleiskite operaciją „Disko taisymas“ šiam diskui, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.2" = "Jei vis tiek nepavyksta, diskas gali gesti. Spustelėkite „Kopijuoti diagnostiką“ ir praneškite apie problemą adresu https://github.com/jamesyc/TimeCapsuleSMB/issues. Ten pateikti pranešimai yra vieši, todėl pašalinkite vardus, kuriais nenorite dalytis.";
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB neįdiegta";
 "backend.recovery.activate.runtime_not_installed.message" = "Įrenginyje nėra įdiegtos TimeCapsuleSMB, kurią būtų galima paleisti.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Paleiskite „Įdiegti / atnaujinti Samba“.";

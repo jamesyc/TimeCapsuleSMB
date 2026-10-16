@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_rebooted" = "Écriture de restauration en mémoire flash vérifiée ; appareil redémarré.";
 "backend.summary.flash_write_completed" = "Écriture en mémoire flash terminée.";
 "backend.summary.migration.skipped_path" = "  %@";
+"backend.summary.migration.unreadable_folder" = "L’appareil n’a pas pu lire ce dossier : %@";
 "backend.summary.migration.waiting_for_previous" = "Attente de la fin de la migration des métadonnées d’une installation précédente...";
 "backend.summary.flash_write_not_needed" = "L’écriture en mémoire flash n’était pas nécessaire.";
 "backend.summary.fsck_completed" = "Réparation du disque terminée avec fsck.";
@@ -630,6 +631,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "Un disque HFS valide a été trouvé, mais TimeCapsuleSMB n’a pas pu y écrire les fichiers d’installation. Sortez le disque de veille ou remontez-le, vérifiez l’espace libre, puis réessayez.";
 "backend.error.deploy.deploy_disk_not_mounted" = "Un disque HFS valide a été trouvé, mais il n’est pas monté, et l’appareil ne l’a pas monté quand on le lui a demandé. Patientez une minute, puis réessayez, ou redémarrez l’appareil.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Un disque HFS valide est monté, mais l’appareil a refusé de le garder monté pour TimeCapsuleSMB : il pourrait donc être démonté pendant l’installation. Patientez une minute, puis réessayez, ou redémarrez l’appareil.";
+"backend.error.deploy.xattr_migration_unreadable_folder" = "L’appareil n’a pas pu lire un dossier du disque ; la migration des métadonnées Samba a donc échoué. Le journal de l’opération indique le dossier ; lancez « Réparation de disque », puis relancez « Installer / mettre à jour Samba ».";
+"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "L’appareil n’a pas pu lire un dossier du disque ; la migration des métadonnées Samba a donc échoué. Le journal de l’opération indique le dossier ; lancez « Réparation de disque », puis relancez « Installer / mettre à jour Samba ».";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB n’est pas installé sur cet appareil. Exécutez d’abord « Installer / mettre à jour Samba ».";
 "backend.error.flash.secondary_bank_invalid" = "Le correctif a été refusé car la banque de firmware de secours (secondaire) est endommagée. Choisissez « Planifier la restauration » pour la réécrire avec le firmware Apple, puis choisissez « Sauvegarder et inspecter à nouveau » et appliquez le correctif.";
 "backend.error.flash.secondary_bank_read_mismatch" = "La banque de firmware de secours (secondaire) a été lue différemment dans cette sauvegarde et lors de la vérification par l’appareil lui-même : elle n’a donc pas été réécrite et le correctif a été refusé. Choisissez « Sauvegarder et inspecter ».";
@@ -784,6 +787,14 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Un volume HFS est monté, mais l’appareil a refusé de le garder monté pour TimeCapsuleSMB : il pourrait donc être démonté pendant l’installation.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Patientez une minute, puis relancez « Installer / mettre à jour Samba ».";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Redémarrez l’appareil si le problème persiste.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Un dossier du disque est illisible";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "L’appareil n’a pas pu lister le contenu d’un dossier que la migration des métadonnées Samba doit lire ; le journal de l’opération indique ce dossier. Samba a été arrêté pour l’installation et n’est actuellement pas en cours d’exécution.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Lancez « Réparation de disque » sur le disque, puis relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.2" = "Si l’échec persiste, lancez « Désinstaller », puis « Installer / mettre à jour Samba ». « Désinstaller » supprime aussi les métadonnées Samba d’une version antérieure qui ne sont pas encore migrées, comme les tags du Finder ; vos fichiers restent sur le disque.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.title" = "Un dossier du disque est illisible";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.message" = "L’appareil n’a pas pu lister le contenu d’un dossier que la migration des métadonnées Samba doit lire ; le journal de l’opération indique ce dossier. Samba a été arrêté pour l’installation et n’est actuellement pas en cours d’exécution.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.1" = "Lancez « Réparation de disque » sur le disque, puis relancez « Installer / mettre à jour Samba ».";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.2" = "Si l’échec persiste, le disque est peut-être défaillant. Cliquez sur « Copier le diagnostic » et signalez le problème sur https://github.com/jamesyc/TimeCapsuleSMB/issues. Les signalements y sont publics : retirez les noms que vous ne souhaitez pas partager.";
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB n’est pas installé";
 "backend.recovery.activate.runtime_not_installed.message" = "L’appareil ne contient aucune installation de TimeCapsuleSMB à démarrer.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Exécutez « Installer / mettre à jour Samba ».";

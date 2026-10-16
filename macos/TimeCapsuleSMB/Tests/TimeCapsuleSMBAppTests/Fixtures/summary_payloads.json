@@ -2892,5 +2892,20 @@
       "type": "log"
     },
     "name": "log_waiting_for_previous_migration"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "The device could not read this folder: Data/MacBook Pro.incomplete/bands",
+      "message_args": [
+        "Data/MacBook Pro.incomplete/bands"
+      ],
+      "message_key": "migration.unreadable_folder",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_unreadable_folder"
   }
 ]

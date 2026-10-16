@@ -315,6 +315,7 @@
 "backend.summary.flash_restore_write_validated_rebooted" = "Восстановление флеш-памяти проверено; устройство перезагружено.";
 "backend.summary.flash_write_completed" = "Запись во флеш-память завершена.";
 "backend.summary.migration.skipped_path" = "  %@";
+"backend.summary.migration.unreadable_folder" = "Устройство не смогло прочитать эту папку: %@";
 "backend.summary.migration.waiting_for_previous" = "Ожидание завершения переноса метаданных от предыдущей установки...";
 "backend.summary.flash_write_not_needed" = "Запись во флеш-память не требовалась.";
 "backend.summary.fsck_completed" = "Исправление диска с помощью fsck завершено.";
@@ -630,6 +631,8 @@
 "backend.error.deploy.deploy_disk_not_writable" = "Найден корректный диск HFS, но TimeCapsuleSMB не смог записать файлы установки. Выведите диск из режима ожидания или перемонтируйте его, проверьте свободное место и повторите попытку.";
 "backend.error.deploy.deploy_disk_not_mounted" = "Найден корректный диск HFS, но он не смонтирован, и устройство не смонтировало его по запросу. Подождите минуту и повторите попытку или перезагрузите устройство.";
 "backend.error.deploy.deploy_disk_not_confirmed" = "Корректный диск HFS смонтирован, но устройство отказалось удерживать его смонтированным для TimeCapsuleSMB, поэтому во время установки он может быть размонтирован. Подождите минуту и повторите попытку или перезагрузите устройство.";
+"backend.error.deploy.xattr_migration_unreadable_folder" = "Устройство не смогло прочитать папку на диске, поэтому перенос метаданных Samba не удался. Папка указана в журнале операции; запустите «Исправление диска», затем снова запустите «Установить/обновить Samba».";
+"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "Устройство не смогло прочитать папку на диске, поэтому перенос метаданных Samba не удался. Папка указана в журнале операции; запустите «Исправление диска», затем снова запустите «Установить/обновить Samba».";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB не установлен на этом устройстве. Сначала запустите «Установить/обновить Samba».";
 "backend.error.flash.secondary_bank_invalid" = "Установка патча отклонена, потому что резервный (вторичный) банк прошивки повреждён. Выберите «Спланировать восстановление», чтобы перезаписать его прошивкой Apple, затем выберите «Снова создать резервную копию и проверить» и установите патч.";
 "backend.error.flash.secondary_bank_read_mismatch" = "Резервный (вторичный) банк прошивки прочитан в этой резервной копии иначе, чем при проверке самим устройством, поэтому он не перезаписан, а установка патча отклонена. Выберите «Создать резервную копию и проверить».";
@@ -784,6 +787,14 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Том HFS смонтирован, но устройство отказалось удерживать его смонтированным для TimeCapsuleSMB, поэтому во время установки он может быть размонтирован.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Если это повторяется, перезагрузите устройство.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Не удается прочитать папку на диске";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Устройство не смогло получить содержимое папки, которую должен прочитать перенос метаданных Samba; папка указана в журнале операции. Samba остановлен на время установки и сейчас не работает.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Запустите «Исправление диска» для этого диска, затем снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.xattr_migration_unreadable_folder.action.2" = "Если ошибка повторится, запустите «Удалить», затем «Установить/обновить Samba». «Удалить» также стирает еще не перенесенные метаданные Samba предыдущей версии, например теги Finder; ваши файлы остаются на диске.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.title" = "Не удается прочитать папку на диске";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.message" = "Устройство не смогло получить содержимое папки, которую должен прочитать перенос метаданных Samba; папка указана в журнале операции. Samba остановлен на время установки и сейчас не работает.";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.1" = "Запустите «Исправление диска» для этого диска, затем снова запустите «Установить/обновить Samba».";
+"backend.recovery.deploy.xattr_migration_unreadable_folder_repair_only.action.2" = "Если ошибка повторится, возможно, диск неисправен. Нажмите «Скопировать диагностику» и сообщите о проблеме на https://github.com/jamesyc/TimeCapsuleSMB/issues. Сообщения там видны всем, поэтому уберите имена, которыми не хотите делиться.";
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB не установлен";
 "backend.recovery.activate.runtime_not_installed.message" = "На устройстве нет установленного TimeCapsuleSMB, который можно запустить.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Запустите «Установить/обновить Samba».";

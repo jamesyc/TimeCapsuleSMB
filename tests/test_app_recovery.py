@@ -25,6 +25,38 @@ class AppRecoveryTests(unittest.TestCase):
             ],
         )
 
+    def test_an_unreadable_folder_offers_disk_repair_then_uninstall_and_no_plain_retry(self) -> None:
+        recovery = recovery_for("deploy", "xattr_migration_unreadable_folder", stage="migrate_xattrs_copy")
+
+        self.assertEqual(recovery["localization_key"], "deploy.xattr_migration_unreadable_folder")
+        self.assertEqual(recovery["action_ids"], ["disk_repair", "uninstall"])
+        # Running deploy again unchanged fails the same way.
+        self.assertFalse(recovery["retryable"])
+        # Disk Repair can start an older install again, so only the present is claimed.
+        self.assertIn("is not running now", recovery["message"])
+        self.assertIn("Finder tags", recovery["actions"][1])
+        # What a migration already moved stays on the files.
+        self.assertIn("not migrated yet", recovery["actions"][1])
+        # A backup's own metadata can be among what Uninstall deletes.
+        self.assertNotIn("Time Machine", recovery["actions"][1])
+
+    def test_an_unreadable_folder_uninstall_would_not_clear_offers_disk_repair_only(self) -> None:
+        recovery = recovery_for("deploy", "xattr_migration_unreadable_folder_repair_only", stage="migrate_xattrs_copy")
+        full = recovery_for("deploy", "xattr_migration_unreadable_folder", stage="migrate_xattrs_copy")
+
+        self.assertEqual(recovery["localization_key"], "deploy.xattr_migration_unreadable_folder_repair_only")
+        # Uninstall would keep a legacy database, so the next deploy would fail the same way.
+        self.assertEqual(recovery["action_ids"], ["disk_repair"])
+        self.assertFalse(recovery["retryable"])
+        self.assertEqual((recovery["title"], recovery["message"], recovery["actions"][0]),
+                         (full["title"], full["message"], full["actions"][0]))
+        # Past a folder Disk Repair cannot fix, the card's Copy Diagnostics and a report are the next step.
+        self.assertNotIn("Uninstall", recovery["actions"][1])
+        self.assertIn("Copy Diagnostics", recovery["actions"][1])
+        self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues", recovery["actions"][1])
+        # Issues there are public, and the report names folders.
+        self.assertIn("Reports there are public", recovery["actions"][1])
+
     def test_unsupported_device_recovery_names_express_only_where_the_model_is_the_cause(self) -> None:
         # configure and deploy fail on unsupported_device only for an unsupported model.
         for operation in ("configure", "deploy"):

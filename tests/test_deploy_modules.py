@@ -20,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
 from tests.test_xattr_migration import fake_inventory
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.commands import (
     EnsureVolumeMountedAction,
     InstallPermissionsAction,
@@ -46,6 +47,7 @@ from timecapsulesmb.deploy.executor import (
 )
 from timecapsulesmb.deploy.migration import (
     MigrationExitError,
+    MigrationInventory,
     MigrationStalledError,
     OversizedSummary,
     OversizedValue,
@@ -174,6 +176,8 @@ class DeployModuleTests(unittest.TestCase):
             ("inventory_metadata", {"side_effect": lambda *_a: fake_inventory()}),
             ("probe_migration_activity", {"return_value": MigrationActivity(())}),
             ("inspect_sources", {}),
+            # Reads the migration log over SSH after a failed walk.
+            ("unreadable_folder", {"return_value": None}),
             ("flush_remote_filesystem_writes", {}),
             # No flash file holds its new bytes yet: every file is written.
             ("_flash_files_holding_new_bytes", {"return_value": set()}),
@@ -1236,6 +1240,121 @@ class DeployModuleTests(unittest.TestCase):
             )
         migration = next(fields for kind, fields in measurements if kind == "xattr_migration")
         self.assertEqual((migration["exit_status"], migration["exit_signal"]), (None, None))
+
+    def _fail_migration(self, error: Exception, *, phase: str = "copy", source_dir: str = ".samba4", aliases=(),
+                        unavailable=(), folder=None):
+        """Run a deploy whose migration phase fails with error, the walk's log
+        naming the folder that failed it. Returns the error, the summaries
+        shown, the unreadable_folder mock and the payload folder."""
+        volume = self._mast_volume()
+        path = f"/Volumes/dk2/{source_dir}/private/xattr.tdb"
+        inventory = MigrationInventory((volume,), [{"path": path}], [], list(unavailable), "")
+        inventory.sources = [{"uuid": volume.adisk_uuid, "path": path, "aliases": list(aliases)}]
+        summaries: list[Summary] = []
+        prepared = self._prepared_deploy_plan()
+
+        def migrate(_connection, _plan, *, phase: str, inventory, failing=phase):
+            if phase == failing:
+                raise error
+            return XattrMigrationResult(f"phase={phase}", (volume,), (), None, 0, False, None)
+
+        with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", return_value=inventory), \
+                mock.patch("timecapsulesmb.services.deploy.unreadable_folder", return_value=folder) as unreadable:
+            with self.assertRaises(DeployDeviceError) as caught:
+                upload_and_verify_deployment_payload(
+                    AppConfig.from_values({}), SshConnection("host", "pw", ""), prepared, DeployRuntimeConfig(),
+                    callbacks=OperationCallbacks(log_summary=summaries.append),
+                    run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
+                    migrate_xattrs_func=migrate,
+                    probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    flush_remote_writes=mock.Mock(),
+                    verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+                )
+        return caught.exception, summaries, unreadable, prepared.plan.payload_dir
+
+    def _assert_names_folder(self, summaries: list[Summary]) -> None:
+        # The app's error line is fixed text, so its log names the folder.
+        self.assertEqual([(s.key, s.args, s.text) for s in summaries if s.key == "migration.unreadable_folder"],
+                         [("migration.unreadable_folder", ("Data/Mac.incomplete/bands",),
+                           "The device could not read this folder: Data/Mac.incomplete/bands")])
+
+    def test_a_folder_the_device_cannot_list_points_to_disk_repair_then_uninstall(self) -> None:
+        bands = "/Volumes/dk2/ShareRoot/Mac.incomplete/bands"
+        error = MigrationExitError("Native metadata migration failed with exit status 4.", 4)
+        for phase in ("copy", "cleanup"):
+            with self.subTest(phase=phase):
+                caught, summaries, unreadable, payload_dir = self._fail_migration(error, phase=phase, folder=bands)
+                self.assertEqual(caught.code, "xattr_migration_unreadable_folder")
+                message = str(caught)
+                # The CLI names the folder as the Mac sees it, inside its share.
+                self.assertTrue(message.startswith(
+                    'The device could not read the folder "Data/Mac.incomplete/bands", '
+                    "so the Samba metadata migration failed."))
+                self.assertIn('Run "Disk Repair" in the macOS app (or tcapsule fsck)', message)
+                self.assertIn('"Install / Update Samba" (or tcapsule deploy) again. If it still fails, run "Uninstall" '
+                              "(tcapsule uninstall)", message)
+                # What a migration already moved stays on the files.
+                self.assertIn("metadata from an earlier version that is not migrated yet", message)
+                self.assertNotIn("report it", message)
+                self.assertIn("exit status 4", message)
+                self.assertIn("your files stay on the disk", message)
+                self._assert_names_folder(summaries)
+                # The log read is the failed phase's own.
+                unreadable.assert_called_once_with(mock.ANY, f"{payload_dir}/logs/xattr-migration-{phase}.log")
+
+    def test_an_unreadable_folder_points_only_to_disk_repair_when_uninstall_would_keep_a_database(self) -> None:
+        bands = "/Volumes/dk2/ShareRoot/Mac.incomplete/bands"
+        error = MigrationExitError("Native metadata migration failed with exit status 4.", 4)
+        cases = (
+            # Uninstall deletes only .samba4, so the next deploy would find this database.
+            {"source_dir": "tc-netbsd4le"},
+            {"aliases": ("/Volumes/dk2/samba4/private/xattr.tdb",)},
+            # A disk that did not mount was never searched for another database.
+            {"unavailable": ("/Volumes/dk3",)},
+        )
+        for case in cases:
+            with self.subTest(**case):
+                caught, summaries, _unreadable, _dir = self._fail_migration(error, folder=bands, **case)
+                self.assertEqual(caught.code, "xattr_migration_unreadable_folder_repair_only")
+                message = str(caught)
+                self.assertTrue(message.startswith('The device could not read the folder "Data/Mac.incomplete/bands", '))
+                self.assertIn('Run "Disk Repair" in the macOS app (or tcapsule fsck)', message)
+                # Uninstall would leave the database, and the next deploy would fail the same way.
+                self.assertNotIn("Uninstall", message)
+                # The next step past a folder Disk Repair cannot fix is a report.
+                self.assertIn("the disk may be failing: report it at https://github.com/jamesyc/TimeCapsuleSMB/issues",
+                              message)
+                self.assertIn("Reports there are public, so remove any names", message)
+                self.assertIn("exit status 4", message)
+                self._assert_names_folder(summaries)
+
+    def test_a_walk_that_failed_on_no_folder_keeps_the_generic_failure(self) -> None:
+        error = MigrationExitError("Native metadata migration failed with exit status 4.", 4)
+        caught, summaries, unreadable, payload_dir = self._fail_migration(error, folder=None)
+        unreadable.assert_called_once_with(mock.ANY, f"{payload_dir}/logs/xattr-migration-copy.log")
+        self.assertEqual(caught.code, "xattr_migration_failed")
+        self.assertTrue(str(caught).startswith("Native HFS metadata migration (copy) failed."))
+        self.assertFalse(any(s.key == "migration.unreadable_folder" for s in summaries))
+
+    def test_a_migrator_that_did_not_report_a_walk_failure_never_reads_the_log_for_folders(self) -> None:
+        from timecapsulesmb.transport.errors import SshCommandTimeout
+
+        bands = "/Volumes/dk2/ShareRoot/Mac.incomplete/bands"
+        cases = (
+            (MigrationStalledError("no progress"), "xattr_migration_stalled"),
+            (SshCommandTimeout("migration emergency deadline exceeded"), "xattr_migration_timeout"),
+            (MigrationExitError("Native metadata migration failed with exit status 255.", 255),
+             "xattr_migration_connection_lost"),
+            (MigrationExitError("Native metadata migration failed with exit status 139.", 139),
+             "xattr_migration_crashed"),
+            # The migrator exited but its response was not a failed walk's.
+            (RuntimeError("Invalid migration response"), "xattr_migration_failed"),
+        )
+        for error, code in cases:
+            with self.subTest(code=code, error=type(error).__name__):
+                caught, _summaries, unreadable, _dir = self._fail_migration(error, folder=bands)
+                self.assertEqual(caught.code, code)
+                unreadable.assert_not_called()
 
     def test_source_inspection_stall_uses_migration_classification(self) -> None:
         remote_actions = mock.Mock()
