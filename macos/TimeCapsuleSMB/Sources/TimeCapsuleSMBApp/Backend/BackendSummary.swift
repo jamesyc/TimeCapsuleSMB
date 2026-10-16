@@ -240,8 +240,6 @@ extension SSHAccessPayload: BackendSummarized {}
 extension DoctorCheckPayload {
     var localizedMessage: String {
         switch code {
-        case "device_starting_up":
-            return L10n.string("doctor.check.device_starting_up")
         case "payload_missing_from_disk":
             return L10n.string("doctor.check.payload_missing_from_disk")
         case "metadata_migration_in_progress":

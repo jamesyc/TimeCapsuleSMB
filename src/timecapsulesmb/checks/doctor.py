@@ -17,7 +17,6 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_usb_printer,
     _build_doctor_target,
     _doctor_add_bonjour_naming_info,
-    _doctor_apply_startup_grace,
     _doctor_check_active_smb_conf,
     _doctor_check_admin_password,
     _doctor_check_authenticated_smb,
@@ -46,9 +45,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_unshared_network,
     _doctor_report_unanswered_device,
     _doctor_probe_startup_age,
-    _doctor_startup_deadline,
     _doctor_wait_for_startup,
-    _startup_window_ended,
     _doctor_validate_config,
 )
 from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
@@ -68,7 +65,6 @@ def run_doctor_checks(
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
-    startup_grace: bool = True,
     local_network_permission: str | None = None,
     on_result: Optional[Callable[[CheckResult], None]] = None,
     on_stage: Optional[Callable[[str, str | None], None]] = None,
@@ -124,18 +120,13 @@ def run_doctor_checks(
         _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
         return sink.results, sink.fatal()
     startup_age = manager.manager_started_seconds_ago if manager is not None else None
-    startup_deadline = _doctor_startup_deadline(remote, sink, startup_age, enabled=startup_grace)
-    readiness = _doctor_wait_for_startup(target, remote, sink, startup_deadline)
+    readiness = _doctor_wait_for_startup(target, remote, sink, startup_age)
 
     naming = _doctor_check_runtime_naming_identity(target, remote, sink)
     probed_mac = _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_device_hostname(target, remote, sink)
     smbd_serving = _doctor_check_managed_smbd(target, remote, sink, readiness.smbd)
     native_nbns, bonjour_registered, link_plan = _doctor_check_managed_mdns(target, remote, sink, readiness.mdns)
-    # Measured once Samba and mDNS have been checked: if the window has ended
-    # by then, nothing is collapsed into "starting up". Network checks below
-    # that fail after the window ends during them can still be collapsed.
-    startup_window_ended = _startup_window_ended(startup_deadline)
     _doctor_check_managed_rsync(target, remote, sink)
     _doctor_check_diskd_rpc(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
@@ -174,5 +165,4 @@ def run_doctor_checks(
             )
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
-    _doctor_apply_startup_grace(sink, startup_age, enabled=startup_grace and not startup_window_ended)
     return sink.results, sink.fatal()

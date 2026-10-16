@@ -185,10 +185,9 @@ DOCTOR_TRANSIENT_RETRY_DELAYS = (10, 15)
 # Apple's client gives each NetBIOS name 20 x 5 s. Registration normally takes
 # ~2 s per name (~24 s through WINS), so only "still starting" waits this long.
 DOCTOR_NBNS_STARTING_RETRY_DELAYS = (20, 25, 30)
-# While the manager is younger than the startup grace, Samba and mDNS still
-# starting are polled this often until the grace ends, instead of being
-# reported as "starting up": after a boot, native NBNS can take ~2 minutes to
-# register. A window shorter than one poll keeps the usual retries.
+# While the manager is younger than DOCTOR_STARTUP_WINDOW_SECONDS, Samba and
+# mDNS still starting are polled this often until they are ready or the
+# window ends: after a boot, native NBNS can take ~2 minutes to register.
 DOCTOR_STARTUP_POLL_SECONDS = 10
 DOCTOR_STAGE_RUN_CHECKS = "run_checks"
 DOCTOR_STAGE_WAIT_FOR_STARTUP = "wait_for_device_startup"
@@ -207,6 +206,22 @@ TRANSIENT_SMBD_READINESS_FAILURES = {
     MANAGER_UNREADABLE,
     "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
 }
+# A boot empties the RAM runtime, and the manager stages it again only once the
+# disks are mounted and ACPd has set the hostname. Until then the smbd probe
+# reports these too; the startup wait waits them out, and only it: after the
+# window they are failures like any other.
+SMBD_NOT_STAGED_FAILURES = {
+    "managed runtime smbd binary missing",
+    "managed runtime smb.conf missing",
+    "active smb.conf passdb backend is not staged in RAM",
+    "active smb.conf username map is not staged in RAM",
+    "active smb.conf xattr_tdb:file is not persistent disk storage",
+    "one or more managed share volumes are not mounted",
+    "manager is not running for managed runtime",
+    "managed smbd readiness probe timed out",
+    "device Samba version unavailable (managed runtime smbd binary missing)",
+}
+STARTING_SMBD_READINESS_FAILURES = TRANSIENT_SMBD_READINESS_FAILURES | SMBD_NOT_STAGED_FAILURES
 TRANSIENT_MDNS_READINESS_FAILURES = {
     "discovery process is not running",
     DISCOVERY_UNREADABLE,
@@ -226,14 +241,10 @@ TRANSIENT_RSYNC_READINESS_FAILURES = {
     "managed rsync process is not running",
     "managed rsync is not bound to TCP 873",
 }
-STARTUP_GRACE_MASK = "mask"
-STARTUP_GRACE_PRESERVE = "preserve"
-STARTUP_GRACE_DETAIL_KEY = "startup_grace"
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 # Installed (the checks above passed) but not running. On NetBSD4 the app
 # offers Activate for it: stock firmware does not start Samba at boot.
 DOCTOR_CODE_RUNTIME_NOT_STARTED = "runtime_not_started"
-DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
 # A migration an interrupted deploy left running; the installed version and
 # runtime are whatever that deploy had reached, so nothing after it applies.
 DOCTOR_CODE_METADATA_MIGRATION_IN_PROGRESS = "metadata_migration_in_progress"
@@ -272,41 +283,7 @@ DEVICE_SMB_NOT_RUN = "not_run"            # SSH skipped or failed, or SMB checks
 DEVICE_SMB_BLOCKED = "blocked"
 SMB_LOGIN_REJECTED_TOKENS = ("NT_STATUS_LOGON_FAILURE", "NT_STATUS_WRONG_PASSWORD")
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
-DOCTOR_STARTUP_GRACE_SECONDS = 180
-STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
-    "managed runtime smbd binary missing",
-    "managed runtime smb.conf missing",
-    "active smb.conf passdb backend is not staged in RAM",
-    "active smb.conf username map is not staged in RAM",
-    "active smb.conf xattr_tdb:file is not persistent disk storage",
-    "one or more managed share volumes are not mounted",
-    "manager is not running for managed runtime",
-    "managed smbd readiness probe timed out",
-    "device Samba version unavailable (managed runtime smbd binary missing)",
-    *TRANSIENT_SMBD_READINESS_FAILURES,
-    *TRANSIENT_MDNS_READINESS_FAILURES,
-    *TRANSIENT_RSYNC_READINESS_FAILURES,
-}
-SMB_CONNECTION_SHAPED_FAILURE_TOKENS = (
-    "NT_STATUS_CONNECTION_REFUSED",
-    "NT_STATUS_HOST_UNREACHABLE",
-    "NT_STATUS_IO_TIMEOUT",
-    "NT_STATUS_CONNECTION_RESET",
-    "NT_STATUS_INVALID_NETWORK_RESPONSE",
-    "NT_STATUS_BAD_NETWORK_NAME",
-    "Connection refused",
-    "Connection reset",
-    "Host is down",
-    "No route to host",
-    "Network is unreachable",
-    "Operation timed out",
-    "timed out",
-)
-SMB_PERSISTENT_FAILURE_TOKENS = (
-    "NT_STATUS_LOGON_FAILURE",
-    "NT_STATUS_ACCESS_DENIED",
-    "NT_STATUS_WRONG_PASSWORD",
-)
+DOCTOR_STARTUP_WINDOW_SECONDS = 180
 
 
 def _run_doctor_retryable_check(
@@ -352,26 +329,10 @@ def _readiness_probe_retryable(probe: ReadinessProbeResult, retryable_failures: 
     return bool(failure_details) and all(detail in retryable_failures for detail in failure_details)
 
 
-def _with_startup_grace_policy(result: CheckResult, policy: str) -> CheckResult:
-    details = dict(result.details)
-    details[STARTUP_GRACE_DETAIL_KEY] = policy
-    return CheckResult(result.status, result.message, details)
-
-
-def _startup_transient_result(status: str, message: str, details: dict[str, object] | None = None) -> CheckResult:
-    resolved_details = dict(details or {})
-    resolved_details[STARTUP_GRACE_DETAIL_KEY] = STARTUP_GRACE_MASK
-    return CheckResult(status, message, resolved_details)
-
-
 def _probe_failure_details(message: str) -> dict[str, object]:
-    details: dict[str, object] = {}
     if message == DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE:
-        details["code"] = DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK
-        details[STARTUP_GRACE_DETAIL_KEY] = STARTUP_GRACE_PRESERVE
-    elif message in STARTUP_GRACE_TRANSIENT_PROBE_FAILURES:
-        details[STARTUP_GRACE_DETAIL_KEY] = STARTUP_GRACE_MASK
-    return details
+        return {"code": DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK}
+    return {}
 
 
 def _smb_failure_texts(result: CheckResult) -> list[str]:
@@ -390,21 +351,6 @@ def _smb_failure_texts(result: CheckResult) -> list[str]:
         if isinstance(value, str) and value:
             texts.append(value)
     return texts
-
-
-def _smb_failure_is_connection_shaped(result: CheckResult) -> bool:
-    if result.status != "FAIL":
-        return False
-    texts = _smb_failure_texts(result)
-    if any(token in text for token in SMB_PERSISTENT_FAILURE_TOKENS for text in texts):
-        return False
-    return any(token in text for token in SMB_CONNECTION_SHAPED_FAILURE_TOKENS for text in texts)
-
-
-def _tag_smb_startup_transient_if_connection_shaped(result: CheckResult) -> CheckResult:
-    if _smb_failure_is_connection_shaped(result):
-        return _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
-    return result
 
 
 def _authenticated_smb_listing_with_doctor_retries(
@@ -465,7 +411,7 @@ def _add_probe_line_results(
     if fallback_ready:
         add_result(CheckResult("PASS", fallback_pass_message))
     else:
-        add_result(_startup_transient_result("FAIL", fallback_fail_message))
+        add_result(CheckResult("FAIL", fallback_fail_message))
 
 
 def _add_local_tool_results(add_result: Callable[[CheckResult], None]) -> None:
@@ -1716,12 +1662,10 @@ def _add_nbns_results(
 
         if native_nbns == NATIVE_NBNS_NOT_READY:
             # The device has not finished registering its name yet: a
-            # timeout may clear, and during startup grace it is a startup
-            # failure. Once native NBNS is ready a timeout is a network
-            # problem between here and the device that waiting cannot fix.
+            # timeout may clear. Once native NBNS is ready a timeout is a
+            # network problem between here and the device that waiting
+            # cannot fix.
             result = _run_doctor_retryable_check(query, _nbns_query_timed_out)
-            if _nbns_query_timed_out(result):
-                result = _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
         else:
             result = query()
         if _nbns_off_subnet_symptom(result) is not None and probe_device_subnets is not None:
@@ -1959,7 +1903,7 @@ def _add_tunneled_authenticated_smb_results(
                 ))
                 add_result(_device_smb_not_checked("Samba rejected the saved password (see This computer)"))
                 return DEVICE_SMB_BLOCKED
-            add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
+            add_result(listing_result)
             if listing_result.status != "PASS":
                 return DEVICE_SMB_FAILED
             share_name = _select_smb_file_ops_share(
@@ -1979,7 +1923,7 @@ def _add_tunneled_authenticated_smb_results(
                 share_name,
                 port=local_port,
             ):
-                add_result(_tag_smb_startup_transient_if_connection_shaped(result))
+                add_result(result)
                 if result.status == "FAIL":
                     file_ops_ok = False
             return DEVICE_SMB_PASSED if file_ops_ok else DEVICE_SMB_FAILED
@@ -2120,7 +2064,7 @@ def _add_authenticated_smb_results(
             listing_result.message,
             {**listing_result.details, "code": DOCTOR_CODE_SMB_LISTING_FAILED},
         )
-    add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
+    add_result(listing_result)
 
 
 def _add_lan_smb_file_ops_results(
@@ -2155,7 +2099,7 @@ def _add_lan_smb_file_ops_results(
         port=445,
         **file_ops_kwargs,
     ):
-        add_result(_tag_smb_startup_transient_if_connection_shaped(result))
+        add_result(result)
 
 
 def _doctor_validate_config(inputs: DoctorInputs, sink: DoctorSink) -> StepDecision:
@@ -2361,8 +2305,8 @@ def _doctor_check_apple_acpd(
     """Apple's ACPd: a restart it took but never ran, a stuck fork of it that
     hangs the next restart, and a syUT read it does not answer
     (DETAIL.md, "Apple ACPd can hang during its own restart"). None clears by
-    waiting, so startup grace leaves them alone. Read from the stuck-process
-    step's listing; a device whose ps did not answer is asked nothing more."""
+    waiting. Read from the stuck-process step's listing; a device whose ps did
+    not answer is asked nothing more."""
     if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
         return
     try:
@@ -2549,101 +2493,6 @@ def _doctor_check_disk_payload(manager: ManagerStartupAgeProbeResult | None, sin
     return StepDecision(stop=True)
 
 
-def _apply_startup_grace(
-    results: list[CheckResult],
-    manager_started_seconds_ago: float | None,
-    *,
-    grace_seconds: int = DOCTOR_STARTUP_GRACE_SECONDS,
-) -> tuple[list[CheckResult], tuple[CheckResult, ...]]:
-    """Collapse pure startup-window failures into a single actionable FAIL.
-
-    When the device's manager started less than grace_seconds ago, failures are
-    only maskable when every FAIL explicitly opted in with startup_grace=mask.
-    Unknown or persistent failures keep the original results so "wait and retry"
-    is never the headline for a failure that waiting cannot fix.
-    """
-    if manager_started_seconds_ago is None:
-        return results, ()
-    if not 0 <= manager_started_seconds_ago < grace_seconds:
-        return results, ()
-    # Waiting fixes nothing on this computer (its tools, its network, its
-    # settings), so those failures neither block the collapse nor get a "may
-    # resolve" note. Its view of a device service still starting can, and
-    # those failures say so with startup_grace=mask.
-    failures = [
-        result for result in results
-        if result.status == "FAIL"
-        and (result.domain != DOMAIN_COMPUTER or _startup_grace_can_mask_failure(result))
-    ]
-    if not failures:
-        return results, ()
-    if not all(_startup_grace_can_mask_failure(result) for result in failures):
-        recent_startup_note = CheckResult(
-            "INFO",
-            f"device services started {int(manager_started_seconds_ago)}s ago; "
-            "some failures above may resolve once startup completes",
-            {
-                "manager_started_seconds_ago": int(manager_started_seconds_ago),
-                "startup_grace_seconds": grace_seconds,
-            },
-            domain=DOMAIN_DEVICE,
-        )
-        return [*results, recent_startup_note], (recent_startup_note,)
-    masked = {id(result) for result in failures}
-    transformed: list[CheckResult] = []
-    for result in results:
-        if id(result) in masked:
-            details = dict(result.details)
-            details["masked_by"] = DOCTOR_CODE_DEVICE_STARTING_UP
-            transformed.append(CheckResult("INFO", result.message, details, domain=result.domain))
-        else:
-            transformed.append(result)
-    startup_fail = CheckResult(
-        "FAIL",
-        f"some checks failed while the device was still starting up "
-        f"(managed services started {int(manager_started_seconds_ago)}s ago); "
-        "wait a few minutes and run doctor again",
-        {
-            "code": DOCTOR_CODE_DEVICE_STARTING_UP,
-            "manager_started_seconds_ago": int(manager_started_seconds_ago),
-            "startup_grace_seconds": grace_seconds,
-            "masked_failures": [result.message for result in failures],
-        },
-        domain=DOMAIN_DEVICE,
-    )
-    transformed.append(startup_fail)
-    return transformed, (startup_fail,)
-
-
-def _startup_grace_can_mask_failure(result: CheckResult) -> bool:
-    return result.details.get(STARTUP_GRACE_DETAIL_KEY) == STARTUP_GRACE_MASK
-
-
-def _doctor_apply_startup_grace(
-    sink: DoctorSink,
-    manager_started_seconds_ago: float | None,
-    *,
-    enabled: bool = True,
-) -> None:
-    if not enabled:
-        return
-    transformed, synthesized_results = _apply_startup_grace(sink.results, manager_started_seconds_ago)
-    if not synthesized_results:
-        return
-    # Replace the collected results directly: the demoted failures were already
-    # streamed via on_result with their original FAIL status, so only synthesized
-    # grace results are streamed here.
-    sink.results[:] = transformed
-    if sink.on_result is not None:
-        for result in synthesized_results:
-            sink.on_result(result)
-    if sink.debug_fields is not None:
-        if any(result.status == "FAIL" for result in synthesized_results):
-            sink.debug_fields["startup_grace_applied"] = True
-        else:
-            sink.debug_fields["startup_grace_mixed_failures"] = True
-
-
 def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> RuntimeNamingState:
     if not remote.remote_checks_enabled:
         return RuntimeNamingState(identity=None)
@@ -2756,7 +2605,7 @@ def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, si
         sink.add(CheckResult("FAIL", f"could not read the device hostname: {probe.error}"))
         return
     if probe.manager_waiting or not probe.hostname:
-        sink.add(_startup_transient_result(
+        sink.add(CheckResult(
             "FAIL",
             "Samba is waiting for the device hostname (ACPd has not set it); "
             "Samba cannot start or restage until it is set, and the Samba and "
@@ -2764,7 +2613,7 @@ def _doctor_check_device_hostname(target: DoctorTarget, remote: RemoteAccess, si
             {"code": DOCTOR_CODE_HOSTNAME_WAITING, "hostname": probe.hostname},
         ))
     elif not probe.mapped:
-        sink.add(_startup_transient_result(
+        sink.add(CheckResult(
             "FAIL",
             f"device hostname {probe.hostname} is not mapped in /etc/hosts; "
             "Samba logins stall until it is (issue #54)",
@@ -2812,33 +2661,6 @@ def _doctor_check_managed_smbd(
     return not set(_readiness_failure_details(smbd_probe)) & TRANSIENT_SMBD_READINESS_FAILURES
 
 
-def _startup_window_deadline(startup_age: float | None) -> float | None:
-    """When the manager's startup grace ends, on this computer's monotonic
-    clock, or None when it already has. Taken right after the age is read."""
-    if startup_age is None or startup_age >= DOCTOR_STARTUP_GRACE_SECONDS:
-        return None
-    return _clock.monotonic() + DOCTOR_STARTUP_GRACE_SECONDS - startup_age
-
-
-def _startup_window_ended(deadline: float | None) -> bool:
-    """Whether this run's startup window has ended: what fails after it is
-    not the device starting up, however early it was seen to fail."""
-    return deadline is not None and _clock.monotonic() >= deadline
-
-
-def _doctor_startup_deadline(
-    remote: RemoteAccess, sink: DoctorSink, startup_age: float | None, *, enabled: bool,
-) -> float | None:
-    """The startup window's deadline for this run, or None when nothing waits:
-    startup grace is off (--no-startup-grace), or the window already ended."""
-    if not remote.remote_checks_enabled:
-        return None
-    deadline = _startup_window_deadline(startup_age) if enabled else None
-    if deadline is None and sink.debug_fields is not None:
-        sink.debug_fields["startup_wait"] = {"outcome": "no_window" if enabled else "disabled"}
-    return deadline
-
-
 @dataclass(frozen=True)
 class StartupReadiness:
     """The startup wait's last Samba and mDNS probes, which their checks
@@ -2855,7 +2677,7 @@ def _readiness_broken(probe: ReadinessProbeResult, transient: set[str]) -> bool:
 def _startup_pending_services(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> str:
     """What the wait is for, named for people: Samba, NetBIOS, Bonjour."""
     names: list[str] = []
-    if _readiness_probe_retryable(smbd, TRANSIENT_SMBD_READINESS_FAILURES):
+    if _readiness_probe_retryable(smbd, STARTING_SMBD_READINESS_FAILURES):
         names.append("Samba")
     if _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
         details = _readiness_failure_details(mdns)
@@ -2872,31 +2694,31 @@ def _startup_pending_services(smbd: ReadinessProbeResult, mdns: ReadinessProbeRe
 
 
 def _doctor_wait_for_startup(
-    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, deadline: float | None,
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, startup_age: float | None,
 ) -> StartupReadiness:
-    """Poll Samba and mDNS while either is still starting, until the startup
-    window ends: native NBNS can take minutes after a boot, and Samba starts
-    just before it.
+    """Poll Samba and mDNS while either is still starting, until the manager
+    is DOCTOR_STARTUP_WINDOW_SECONDS old: native NBNS can take minutes after a
+    boot, and Samba starts just before it.
 
     Stops early once nothing is starting, or when either reports a state
     waiting cannot fix. Only what is still starting is probed again. Runs
-    before the device checks, so they see the device after the wait. A
-    window shorter than one poll does not wait: each check keeps its usual
-    retries.
+    before the device checks, so they see the device after the wait and
+    report what they find: nothing is excused as still starting.
     """
-    if not remote.remote_checks_enabled or deadline is None:
+    if not remote.remote_checks_enabled:
+        return StartupReadiness()
+    window_left = DOCTOR_STARTUP_WINDOW_SECONDS - startup_age if startup_age is not None else 0.0
+    if window_left <= 0:
+        if sink.debug_fields is not None:
+            sink.debug_fields["startup_wait"] = {"outcome": "no_window"}
         return StartupReadiness()
     started = _clock.monotonic()
-    window_left = deadline - started
-    if window_left < DOCTOR_STARTUP_POLL_SECONDS:
-        if sink.debug_fields is not None:
-            sink.debug_fields["startup_wait"] = {"window_left_sec": round(max(window_left, 0.0), 1), "outcome": "no_window"}
-        return StartupReadiness()
+    deadline = started + window_left
 
     def settling(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> bool:
-        if _readiness_broken(smbd, TRANSIENT_SMBD_READINESS_FAILURES) or _readiness_broken(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
+        if _readiness_broken(smbd, STARTING_SMBD_READINESS_FAILURES) or _readiness_broken(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
             return False
-        return (_readiness_probe_retryable(smbd, TRANSIENT_SMBD_READINESS_FAILURES)
+        return (_readiness_probe_retryable(smbd, STARTING_SMBD_READINESS_FAILURES)
                 or _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES))
 
     smbd, mdns = probe_managed_smbd_conn(target.connection), probe_managed_mdns_conn(target.connection)
@@ -2910,11 +2732,11 @@ def _doctor_wait_for_startup(
             waiting = True
             sink.stage(
                 DOCTOR_STAGE_WAIT_FOR_STARTUP,
-                f"device services started {int(DOCTOR_STARTUP_GRACE_SECONDS - left)}s ago; waiting up to "
+                f"device services started {int(DOCTOR_STARTUP_WINDOW_SECONDS - left)}s ago; waiting up to "
                 f"{int(left + 0.999)}s for {_startup_pending_services(smbd, mdns)} to finish starting...",
             )
         _clock.sleep(min(DOCTOR_STARTUP_POLL_SECONDS, left))
-        if _readiness_probe_retryable(smbd, TRANSIENT_SMBD_READINESS_FAILURES):
+        if _readiness_probe_retryable(smbd, STARTING_SMBD_READINESS_FAILURES):
             smbd = probe_managed_smbd_conn(target.connection)
         if _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
             mdns = probe_managed_mdns_conn(target.connection)
@@ -2929,7 +2751,7 @@ def _doctor_wait_for_startup(
         outcome = "structural"
     if sink.debug_fields is not None:
         sink.debug_fields["startup_wait"] = {
-            "manager_age_sec": round(DOCTOR_STARTUP_GRACE_SECONDS - window_left),
+            "manager_age_sec": round(DOCTOR_STARTUP_WINDOW_SECONDS - window_left),
             "window_left_sec": round(window_left, 1),
             "waited_sec": round(_clock.monotonic() - started, 1),
             "probes": rounds,

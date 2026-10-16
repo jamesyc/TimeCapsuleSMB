@@ -106,28 +106,6 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(row.message.contains("managed runtime payload directory"))
     }
 
-    func testCheckupPresentationLocalizesDeviceStartingUpCheck() throws {
-        let originalLanguage = L10n.currentLanguage
-        defer { L10n.apply(language: originalLanguage) }
-        L10n.apply(language: .english)
-
-        let payload = try testDoctorPayload(checks: [
-            testDoctorCheck(
-                status: "FAIL",
-                message: "some checks failed while the device was still starting up (managed services started 41s ago); wait a few minutes and run doctor again",
-                domain: "device",
-                code: "device_starting_up"
-            )
-        ]).decode(DoctorPayload.self)
-        let summary = DoctorSummary(payload: payload)
-
-        let presentation = CheckupPresentation(summary: summary, state: .failed)
-        let row = try XCTUnwrap(presentation.domains.first?.rows.first)
-
-        XCTAssertEqual(presentation.domains.first?.domain, .device)
-        XCTAssertEqual(row.message, "The device is still starting up. Wait a few minutes, then run Checkup again.")
-    }
-
     func testCheckupPresentationLocalizesPayloadMissingFromDiskCheck() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

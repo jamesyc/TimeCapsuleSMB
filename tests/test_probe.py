@@ -411,7 +411,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_probe_manager_startup_age_conn_ignores_a_manager_before_its_first_title(self) -> None:
         # Between exec and its first setproctitle, ps shows the manager's argv,
-        # which has no start yet: like no manager, it gets no startup grace.
+        # which has no start yet: like no manager, it gets no startup wait.
         result, _ = self._probe_manager_age(self._manager_age_output(
             " 250 1 250 Ss 0 - 0:00 service /mnt/Flash/service manager"
         ))

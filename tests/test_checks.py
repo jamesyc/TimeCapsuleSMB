@@ -43,13 +43,8 @@ from timecapsulesmb.checks.doctor_state import DoctorSink
 from timecapsulesmb.checks.doctor_steps import (
     _add_admin_password_result,
     DEVICE_SMB_PASSED,
-    DOCTOR_CODE_DEVICE_STARTING_UP,
     DOCTOR_CODE_HOSTNAME_UNMAPPED,
     DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK,
-    DOCTOR_STARTUP_GRACE_SECONDS,
-    STARTUP_GRACE_DETAIL_KEY,
-    STARTUP_GRACE_MASK,
-    _apply_startup_grace,
     _doctor_device_blocks,
     NATIVE_NBNS_NOT_READY,
     NATIVE_NBNS_OFF,
@@ -316,7 +311,6 @@ class CheckTests(unittest.TestCase):
         skip_ssh: bool = False,
         skip_bonjour: bool = False,
         skip_smb: bool = False,
-        startup_grace: bool = True,
         debug_fields=None,
         on_result=None,
         on_stage=None,
@@ -496,7 +490,6 @@ class CheckTests(unittest.TestCase):
                 skip_ssh=skip_ssh,
                 skip_bonjour=skip_bonjour,
                 skip_smb=skip_smb,
-                startup_grace=startup_grace,
                 local_network_permission=local_network_permission,
                 on_result=on_result,
                 on_stage=on_stage,
@@ -3112,12 +3105,11 @@ class CheckTests(unittest.TestCase):
         run.snapshot.assert_not_called()
         self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
 
-    def test_run_doctor_checks_startup_grace_does_not_mask_stuck_processes(self) -> None:
+    def test_run_doctor_checks_reports_stuck_processes_while_the_device_starts(self) -> None:
         run = self.run_doctor_with_process_snapshot(self.STUCK_SMBD_ROW, manager_started_seconds_ago=41.0)
 
         failures = [result for result in run.results if result.status == "FAIL"]
         self.assertTrue(any("blocked in the kernel" in result.message for result in failures))
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in failures))
 
     STUCK_ACPD_ROWS = "\n".join((
         "  119 1 2 Sl 0 kqueue 0:00.00 ACPd",
@@ -3127,7 +3119,7 @@ class CheckTests(unittest.TestCase):
     def apple_acpd_failures(self, run) -> list[CheckResult]:
         return [result for result in run.results if result.details.get("code") == "apple_acpd_broken"]
 
-    def test_run_doctor_checks_fails_a_stuck_fork_of_apple_acpd_even_in_startup_grace(self) -> None:
+    def test_run_doctor_checks_fails_a_stuck_fork_of_apple_acpd_while_the_device_starts(self) -> None:
         run = self.run_doctor_with_process_snapshot(
             "\n".join([self.HEALTHY_SMBD_ROW, self.STUCK_ACPD_ROWS]), manager_started_seconds_ago=41.0,
         )
@@ -3141,7 +3133,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(run.debug_fields["acpd_problems"], ["stuck_child"])
         self.assertTrue(run.fatal)
 
-    def test_run_doctor_checks_fails_a_restart_that_never_happened_even_in_startup_grace(self) -> None:
+    def test_run_doctor_checks_fails_a_restart_that_never_happened_while_the_device_starts(self) -> None:
         with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True) as marker:
             run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, manager_started_seconds_ago=41.0)
 
@@ -3203,103 +3195,6 @@ class CheckTests(unittest.TestCase):
 
                 self.assertEqual(self.apple_acpd_failures(run), [])
                 self.assertNotIn("acpd_problems", run.debug_fields)
-
-    def test_apply_startup_grace_masks_failures_within_grace_window(self) -> None:
-        results = [
-            CheckResult("PASS", "ssh ok"),
-            CheckResult("FAIL", "managed runtime smbd binary missing", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK}),
-            CheckResult("WARN", "could not inspect active smb.conf"),
-            CheckResult(
-                "FAIL",
-                "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
-                {"domain": "Runtime", STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK},
-            ),
-        ]
-
-        transformed, synthesized = _apply_startup_grace(results, 41.0)
-        startup_fail = synthesized[0]
-
-        self.assertEqual(len(synthesized), 1)
-        self.assertEqual(
-            [(result.status, result.message) for result in transformed],
-            [
-                ("PASS", "ssh ok"),
-                ("INFO", "managed runtime smbd binary missing"),
-                ("WARN", "could not inspect active smb.conf"),
-                ("INFO", "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener"),
-                ("FAIL", startup_fail.message),
-            ],
-        )
-        self.assertIn("still starting up", startup_fail.message)
-        self.assertIn("41s ago", startup_fail.message)
-        self.assertEqual(startup_fail.details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
-        self.assertEqual(startup_fail.domain, "device")
-        self.assertEqual(startup_fail.details["manager_started_seconds_ago"], 41)
-        self.assertEqual(startup_fail.details["startup_grace_seconds"], DOCTOR_STARTUP_GRACE_SECONDS)
-        self.assertEqual(
-            startup_fail.details["masked_failures"],
-            ["managed runtime smbd binary missing", "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener"],
-        )
-        demoted = transformed[3]
-        self.assertEqual(demoted.details["masked_by"], DOCTOR_CODE_DEVICE_STARTING_UP)
-        self.assertEqual(demoted.details["domain"], "Runtime")
-
-    def test_apply_startup_grace_leaves_passing_results_untouched_within_grace_window(self) -> None:
-        results = [CheckResult("PASS", "ssh ok"), CheckResult("WARN", "minor")]
-
-        transformed, synthesized = _apply_startup_grace(results, 41.0)
-
-        self.assertEqual(synthesized, ())
-        self.assertEqual(transformed, results)
-
-    def test_apply_startup_grace_skips_when_manager_started_long_ago(self) -> None:
-        results = [CheckResult("FAIL", "managed runtime smbd binary missing", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK})]
-
-        transformed, synthesized = _apply_startup_grace(results, float(DOCTOR_STARTUP_GRACE_SECONDS))
-
-        self.assertEqual(synthesized, ())
-        self.assertEqual(transformed, results)
-
-    def test_apply_startup_grace_skips_when_manager_age_unknown(self) -> None:
-        results = [CheckResult("FAIL", "managed runtime smbd binary missing", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK})]
-
-        transformed, synthesized = _apply_startup_grace(results, None)
-
-        self.assertEqual(synthesized, ())
-        self.assertEqual(transformed, results)
-
-    def test_apply_startup_grace_keeps_persistent_failures_and_adds_recent_startup_note(self) -> None:
-        results = [
-            CheckResult("FAIL", "missing local tool smbclient, please install smbclient on your computer"),
-            CheckResult(
-                "FAIL",
-                "Detected NetBSD 6.0 (earmv4) with big-endian binaries, "
-                "which is not supported by the current Samba payload.",
-            ),
-            CheckResult(
-                "FAIL",
-                "active smb.conf xattr_tdb:file parent is missing",
-                {"code": DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK},
-            ),
-        ]
-
-        transformed, synthesized = _apply_startup_grace(results, 41.0)
-
-        self.assertEqual(len(synthesized), 1)
-        self.assertEqual(synthesized[0].status, "INFO")
-        self.assertIn("device services started 41s ago", synthesized[0].message)
-        self.assertEqual(transformed[:-1], results)
-        self.assertEqual(transformed[-1], synthesized[0])
-
-    def test_apply_startup_grace_preserves_unknown_failures_by_default(self) -> None:
-        results = [CheckResult("FAIL", "new failure without startup policy")]
-
-        transformed, synthesized = _apply_startup_grace(results, 41.0)
-
-        self.assertEqual(len(synthesized), 1)
-        self.assertEqual(transformed[0], results[0])
-        self.assertEqual(transformed[1].status, "INFO")
-        self.assertIn("some failures above may resolve", transformed[1].message)
 
     def run_doctor_with_hostname(self, probe: DeviceHostnameProbeResult, *, started_seconds_ago: float = 3600.0):
         return self.run_doctor_with_mocks(
@@ -3414,19 +3309,18 @@ class CheckTests(unittest.TestCase):
             "device hostname capsule is not mapped in /etc/hosts; Samba logins stall until it is (issue #54)",
         )
 
-    def test_doctor_masks_hostname_failures_while_the_device_is_starting_up(self) -> None:
+    def test_doctor_fails_hostname_problems_while_the_device_starts(self) -> None:
+        # Samba starts only once the hostname is mapped, so the startup wait
+        # has already waited for it: what is left is a real failure.
         for probe, code in (
             (DeviceHostnameProbeResult("", (), manager_waiting=True), "hostname_waiting"),
             (DeviceHostnameProbeResult("capsule", ()), "hostname_unmapped"),
         ):
             with self.subTest(code=code):
                 run = self.run_doctor_with_hostname(probe, started_seconds_ago=20.0)
-                masked = next(result for result in run.results if result.details.get("code") == code)
-                self.assertEqual(masked.status, "INFO")
-                self.assertEqual(masked.details["masked_by"], DOCTOR_CODE_DEVICE_STARTING_UP)
-                starting = [result for result in run.results if result.status == "FAIL"]
-                self.assertEqual([result.details["code"] for result in starting], [DOCTOR_CODE_DEVICE_STARTING_UP])
-                self.assertIn(masked.message, starting[0].details["masked_failures"])
+                failure = next(result for result in run.results if result.details.get("code") == code)
+                self.assertEqual(failure.status, "FAIL")
+                self.assertTrue(run.fatal)
 
     def test_doctor_reports_the_boot_wait_and_stale_mappings_as_info(self) -> None:
         run = self.run_doctor_with_hostname(DeviceHostnameProbeResult(
@@ -3485,78 +3379,39 @@ class CheckTests(unittest.TestCase):
 
         self._diskd_rpc_probe.assert_not_called()
 
-    def test_run_doctor_checks_collapses_startup_failures_into_single_fail(self) -> None:
-        debug_fields: dict[str, object] = {}
-        streamed: list[CheckResult] = []
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            smb_instance=[],
-            smb_listing=self.smb_listing_result(),
-            smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
-            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
-            debug_fields=debug_fields,
-            on_result=streamed.append,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
-                    return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
-                ),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
-            },
-        )
+    def test_run_doctor_checks_reports_device_failures_as_themselves_at_any_manager_age(self) -> None:
+        for age in (41.0, 400.0):
+            with self.subTest(age=age):
+                debug_fields: dict[str, object] = {}
+                streamed: list[CheckResult] = []
+                run = self.run_doctor_with_mocks(
+                    ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                    smb_port=mock.Mock(status="PASS", message="445 ok"),
+                    smb_instance=[],
+                    smb_listing=self.smb_listing_result(),
+                    smb_file_ops=[],
+                    mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
+                    run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
+                    debug_fields=debug_fields,
+                    on_result=streamed.append,
+                    extra_patches={
+                        "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                            return_value=ManagerStartupAgeProbeResult(age, f"manager started {int(age)}s ago")
+                        ),
+                        "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                        "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+                    },
+                )
 
-        self.assertTrue(run.fatal)
-        failures = [result for result in run.results if result.status == "FAIL"]
-        self.assertEqual(len(failures), 1)
-        self.assertEqual(failures[0].details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
-        demoted = [result for result in run.results if result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP]
-        self.assertTrue(demoted)
-        self.assertTrue(all(result.status == "INFO" for result in demoted))
-        self.assertTrue(any("managed mDNS registrant is not active" in result.message for result in demoted))
-        self.assertEqual(failures[0].details["masked_failures"], [result.message for result in demoted])
-        self.assertTrue(debug_fields["startup_grace_applied"])
-        self.assertEqual(
-            debug_fields["manager_startup_age"],
-            {"seconds_ago": 41.0, "started_monotonic_s": None, "now_monotonic_ms": None, "detail": "manager started 41s ago",
-             "payload_missing": False},
-        )
-        # The synthesized failure is streamed so live consumers (CLI) see it last.
-        self.assertEqual(streamed[-1].details.get("code"), DOCTOR_CODE_DEVICE_STARTING_UP)
+                self.assertTrue(run.fatal)
+                failure = next(result for result in run.results if result.status == "FAIL")
+                self.assertIn("managed mDNS registrant is not active", failure.message)
+                self.assertEqual(failure.domain, "device")
+                # Streamed as found, with nothing added after the checks.
+                self.assertEqual(streamed, run.results)
+                self.assertEqual(debug_fields["manager_startup_age"]["seconds_ago"], age)
 
-    def test_run_doctor_checks_can_disable_startup_grace_transform(self) -> None:
-        debug_fields: dict[str, object] = {}
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            smb_instance=[],
-            smb_listing=self.smb_listing_result(),
-            smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
-            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
-            startup_grace=False,
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
-                    return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
-                ),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
-            },
-        )
-
-        self.assertTrue(run.fatal)
-        self.assertTrue(
-            any(
-                result.status == "FAIL" and "managed mDNS registrant is not active" in result.message
-                for result in run.results
-            )
-        )
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
-        self.assertNotIn("startup_grace_applied", debug_fields)
-
-    def test_run_doctor_checks_keeps_smb_auth_failure_during_startup_grace(self) -> None:
+    def test_run_doctor_checks_reports_smb_auth_failure_while_the_device_starts(self) -> None:
         debug_fields: dict[str, object] = {}
         auth_failure = CheckResult(
             "FAIL",
@@ -3584,19 +3439,12 @@ class CheckTests(unittest.TestCase):
             },
         )
 
-        # Samba rejecting the saved password is this computer's setup: waiting
-        # cannot fix it, so it stays a failure, while the device's startup
-        # failures still collapse into "starting up".
+        # Samba rejecting the saved password is this computer's setup.
         rejected = [result for result in run.results if result.details.get("code") == "smb_login_rejected"]
         self.assertEqual([(result.status, result.domain) for result in rejected], [("FAIL", "computer")])
         self.assertIn("NT_STATUS_LOGON_FAILURE", rejected[0].message)
-        self.assertTrue(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
-        self.assertFalse(any(
-            result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP and result.domain == "computer"
-            for result in run.results
-        ))
 
-    def test_run_doctor_checks_masks_connection_shaped_smb_failure_during_startup_grace(self) -> None:
+    def test_run_doctor_checks_reports_an_smb_timeout_after_its_retries_while_the_device_starts(self) -> None:
         connection_failure = CheckResult(
             "FAIL",
             "authenticated SMB listing failed after 1 attempt(s): attempt 1 home.local: NT_STATUS_IO_TIMEOUT",
@@ -3621,46 +3469,12 @@ class CheckTests(unittest.TestCase):
             )
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [10, 15])
 
+        # Samba was ready, so a timeout from here is a failure, not startup.
         failures = [result for result in run.results if result.status == "FAIL"]
         self.assertEqual(len(failures), 1)
-        self.assertEqual(failures[0].details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
-        demoted = [result for result in run.results if result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP]
-        self.assertEqual(len(demoted), 1)
-        self.assertIn("NT_STATUS_IO_TIMEOUT", demoted[0].message)
+        self.assertIn("NT_STATUS_IO_TIMEOUT", failures[0].message)
 
-    def test_run_doctor_checks_keeps_failures_when_manager_started_long_ago(self) -> None:
-        debug_fields: dict[str, object] = {}
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            smb_instance=[],
-            smb_listing=self.smb_listing_result(),
-            smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
-            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
-                    return_value=ManagerStartupAgeProbeResult(400.0, "manager started 400s ago")
-                ),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
-            },
-        )
-
-        self.assertTrue(run.fatal)
-        self.assertTrue(
-            any(
-                result.status == "FAIL" and "managed mDNS registrant is not active" in result.message
-                for result in run.results
-            )
-        )
-        self.assertFalse(
-            any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results)
-        )
-        self.assertNotIn("startup_grace_applied", debug_fields)
-
-    def test_run_doctor_checks_keeps_compatibility_failure_during_startup_grace(self) -> None:
+    def test_run_doctor_checks_reports_compatibility_failure_while_the_device_starts(self) -> None:
         unsupported_state = mock.Mock(
             probe_result=mock.Mock(
                 ssh_authenticated=True,
@@ -3703,18 +3517,6 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(
             any("not supported by the current Samba payload" in result.message for result in failures)
         )
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in failures))
-        demoted = [result for result in run.results if result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP]
-        self.assertEqual(demoted, [])
-        self.assertFalse(
-            any("not supported by the current Samba payload" in result.message for result in demoted)
-        )
-        self.assertTrue(
-            any(
-                result.status == "INFO" and "device services started 41s ago" in result.message
-                for result in run.results
-            )
-        )
 
     def test_run_doctor_checks_passing_run_is_untouched_by_recent_startup(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -3735,10 +3537,6 @@ class CheckTests(unittest.TestCase):
 
         self.assertFalse(run.fatal)
         self.assertFalse(any(result.status == "FAIL" for result in run.results))
-        self.assertFalse(
-            any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results)
-        )
-        self.assertNotIn("startup_grace_applied", debug_fields)
 
     def test_run_doctor_checks_adds_mast_probe_for_xattr_parent_missing(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -4107,7 +3905,6 @@ class CheckTests(unittest.TestCase):
         socket_debug_mock=None,
         debug_fields: dict[str, object] | None = None,
         startup_age_mock=None,
-        startup_grace: bool = True,
         on_stage=None,
         probe_seconds: float = 0.0,
         smbd_mock=None,
@@ -4135,7 +3932,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             client_source=client_source,
             debug_fields=debug_fields,
-            startup_grace=startup_grace,
             on_stage=on_stage,
             clock=clock,
             extra_patches={
@@ -4209,7 +4005,6 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         self.assertEqual(sleeps, [10] * 8)
         self.assertEqual(mdns_mock.call_count, 9)
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
         nbns_mock.assert_called_once()
         # The wait is announced once, with how long it may take, then checks resume.
         self.assertEqual(stages, [
@@ -4270,8 +4065,8 @@ class CheckTests(unittest.TestCase):
         return mock.Mock(ready=ready, detail="smbd ok" if ready else failure, lines=lines, steps=())
 
     def test_run_doctor_checks_waits_for_samba_starting_before_the_device_checks(self) -> None:
-        # smbd not yet listening at age 45 is waited for, not collapsed into
-        # "still starting up"; it is reported once, from the wait's probe.
+        # smbd not yet listening at age 45 is waited for; its check reports
+        # the wait's last probe.
         smbd_mock = mock.Mock(side_effect=[self._smbd_probe(False)] * 3 + [self._smbd_probe(True)])
         stages: list[tuple[str, str | None]] = []
 
@@ -4321,7 +4116,6 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertIn("managed smbd parent process is not running",
                       [result.message for result in run.results if result.status == "FAIL"])
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
         self.assertEqual(debug_fields["startup_wait"]["outcome"], "outlasted")
 
     def test_run_doctor_checks_names_every_service_it_waits_for(self) -> None:
@@ -4362,9 +4156,90 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["startup_wait"]["outcome"], "structural")
         self.assertTrue(run.fatal)
 
+    @staticmethod
+    def _smbd_not_staged_probe() -> mock.Mock:
+        # What the probe reports after a boot before the manager first stages
+        # Samba: the RAM runtime is empty and the data disk is not mounted yet.
+        failures = (
+            "managed runtime smbd binary missing",
+            "managed runtime smb.conf missing",
+            "active smb.conf passdb backend is not staged in RAM",
+            "active smb.conf username map is not staged in RAM",
+            "active smb.conf xattr_tdb:file is not persistent disk storage",
+            "one or more managed share volumes are not mounted",
+            "manager is not running for managed runtime",
+            "managed smbd parent process is not running",
+            "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
+            "device Samba version unavailable (managed runtime smbd binary missing)",
+        )
+        return mock.Mock(ready=False, detail="; ".join(failures), lines=tuple(f"FAIL:{f}" for f in failures), steps=())
+
+    def test_run_doctor_checks_waits_for_samba_staging_after_a_boot(self) -> None:
+        # A boot empties the RAM runtime; the manager stages it once the disk
+        # mounts and the hostname is set, then starts smbd. All of that is
+        # waited for, and nothing seen before it is reported.
+        timed_out = mock.Mock(ready=False, detail="managed smbd readiness probe timed out",
+                              lines=("FAIL:managed smbd readiness probe timed out",), steps=())
+        smbd_mock = mock.Mock(side_effect=[
+            self._smbd_not_staged_probe(), timed_out, self._smbd_not_staged_probe(),
+            self._smbd_probe(False), self._smbd_probe(True),
+        ])
+        stages: list[tuple[str, str | None]] = []
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=8.0, smbd_mock=smbd_mock, on_stage=lambda *stage: stages.append(stage),
+            debug_fields=debug_fields,
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(sleeps, [10] * 4)
+        self.assertEqual(smbd_mock.call_count, 5)
+        self.assertEqual(stages[0], ("wait_for_device_startup",
+                                     "device services started 8s ago; waiting up to 172s for Samba to finish starting..."))
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "ready")
+        self.assertEqual([result for result in run.results if result.status == "FAIL"], [])
+
+    def test_run_doctor_checks_reports_samba_never_staged_in_the_window_as_itself(self) -> None:
+        # A disk that never mounts keeps Samba unstaged: once the window ends,
+        # each missing piece is its own failure.
+        smbd_mock = mock.Mock(return_value=self._smbd_not_staged_probe())
+        debug_fields: dict[str, object] = {}
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=150.0, smbd_mock=smbd_mock, debug_fields=debug_fields,
+        )
+
+        self.assertEqual(sleeps, [10, 10, 10])
+        self.assertEqual(smbd_mock.call_count, 4)
+        self.assertTrue(run.fatal)
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "outlasted")
+        failures = {result.message for result in run.results if result.status == "FAIL"}
+        self.assertLessEqual({"managed runtime smb.conf missing", "one or more managed share volumes are not mounted"}, failures)
+
+    def test_run_doctor_checks_does_not_retry_unstaged_samba_after_the_window(self) -> None:
+        # Outside the window, an unstaged runtime is not a smbd still binding
+        # its listener: it is reported at once, without the usual retries.
+        smbd_mock = mock.Mock(return_value=self._smbd_not_staged_probe())
+
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=400.0, smbd_mock=smbd_mock,
+        )
+
+        self.assertEqual(sleeps, [])
+        smbd_mock.assert_called_once()
+        self.assertTrue(run.fatal)
+        self.assertIn("managed runtime smb.conf missing",
+                      [result.message for result in run.results if result.status == "FAIL"])
+
     def test_run_doctor_checks_reports_failures_seen_after_the_window_as_themselves(self) -> None:
-        # After the window, a failure startup grace could otherwise collapse
-        # (here the hostname not mapped yet) is the device's real state.
+        # After the window, a hostname still not mapped is the device's real state.
         unmapped = mock.Mock(return_value=DeviceHostnameProbeResult("timecapsule", ()))
         starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
 
@@ -4378,9 +4253,10 @@ class CheckTests(unittest.TestCase):
         failures = {result.details.get("code") or result.message for result in run.results if result.status == "FAIL"}
         self.assertEqual(failures, {DOCTOR_CODE_HOSTNAME_UNMAPPED, "discovery native NBNS is still starting"})
 
-    def test_run_doctor_checks_still_collapses_startup_failures_when_the_wait_ends_early(self) -> None:
-        # Everything the wait polls was ready at once, so the window is still
-        # open: a hostname not mapped yet is the device starting up.
+    def test_run_doctor_checks_reports_failures_inside_the_window_when_the_wait_ends_early(self) -> None:
+        # Everything the wait polls was ready at once. Samba starts only once
+        # the hostname is mapped, so an unmapped one is a real failure even
+        # though the window is still open.
         unmapped = mock.Mock(return_value=DeviceHostnameProbeResult("timecapsule", ()))
 
         run, sleeps = self._run_doctor_nbns(
@@ -4392,7 +4268,7 @@ class CheckTests(unittest.TestCase):
 
         self.assertEqual(sleeps, [])
         failures = [result for result in run.results if result.status == "FAIL"]
-        self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_DEVICE_STARTING_UP])
+        self.assertEqual([result.details.get("code") for result in failures], [DOCTOR_CODE_HOSTNAME_UNMAPPED])
 
     def test_run_doctor_checks_startup_window_ends_on_time_with_slow_probes(self) -> None:
         # Each probe takes 7 s of an 80 s window: the last sleep is cut to the
@@ -4431,12 +4307,14 @@ class CheckTests(unittest.TestCase):
             "manager_age_sec": 41, "window_left_sec": 139.0, "waited_sec": 139.0, "probes": 15, "outcome": "outlasted",
         })
 
-    def test_run_doctor_checks_startup_window_shorter_than_a_poll_keeps_the_usual_retries(self) -> None:
+    def test_run_doctor_checks_waits_out_a_window_shorter_than_a_poll(self) -> None:
+        # Any time left in the window is waited out; only after it do the
+        # checks' own retries run.
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
         cases = (
             # age: (sleeps, probes, startup_wait)
             (170.0, [10], 2, {"manager_age_sec": 170, "window_left_sec": 10.0, "waited_sec": 10.0, "probes": 2, "outcome": "outlasted"}),
-            (175.0, [10, 15], 3, {"window_left_sec": 5.0, "outcome": "no_window"}),
+            (175.0, [5], 2, {"manager_age_sec": 175, "window_left_sec": 5.0, "waited_sec": 5.0, "probes": 2, "outcome": "outlasted"}),
             (180.0, [10, 15], 3, {"outcome": "no_window"}),
             (400.0, [10, 15], 3, {"outcome": "no_window"}),
         )
@@ -4456,25 +4334,6 @@ class CheckTests(unittest.TestCase):
                 self.assertEqual(debug_fields["startup_wait"], startup_wait)
                 failures = [result for result in run.results if result.status == "FAIL"]
                 self.assertEqual([result.message for result in failures], ["discovery native NBNS is not ready"])
-
-    def test_run_doctor_checks_without_startup_grace_never_waits_for_startup(self) -> None:
-        # --no-startup-grace (the app's startup_grace=false) reports what it
-        # finds: the usual retries, no startup window, no collapse.
-        not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
-        stages: list[tuple[str, str | None]] = []
-        debug_fields: dict[str, object] = {}
-
-        run, sleeps = self._run_doctor_nbns(
-            mock.Mock(return_value=not_ready),
-            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
-            startup_age=41.0, startup_grace=False, on_stage=lambda *stage: stages.append(stage), debug_fields=debug_fields,
-        )
-
-        self.assertEqual(sleeps, [10, 15])
-        self.assertEqual(stages, [])
-        self.assertEqual(debug_fields["startup_wait"], {"outcome": "disabled"})
-        failures = [result for result in run.results if result.status == "FAIL"]
-        self.assertEqual([result.message for result in failures], ["discovery native NBNS is not ready"])
 
     def test_run_doctor_checks_waits_up_to_apple_budget_while_native_nbns_starts(self) -> None:
         starting = self._native_nbns_probe("fail", "discovery native NBNS is still starting")
@@ -4518,8 +4377,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_reports_query_timeout_at_once_when_native_nbns_is_ready(self) -> None:
         # Native NBNS registered its name, so a timeout is between this host
-        # and the device; waiting cannot fix it and startup grace must not
-        # hide it, even right after a boot.
+        # and the device; waiting cannot fix it, even right after a boot.
         ready = self._native_nbns_probe("pass", "Apple wcifsnd is ready on UDP 137 and 138")
         nbns_mock = mock.Mock(return_value=self._nbns_query_timeout())
 
@@ -4530,8 +4388,6 @@ class CheckTests(unittest.TestCase):
         nbns_mock.assert_called_once()
         query = next(result for result in run.results if "NBNS query" in result.message)
         self.assertEqual(query.status, "FAIL")
-        self.assertNotIn("startup_grace", query.details)
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
 
     def test_run_doctor_checks_retries_query_while_native_nbns_is_not_ready(self) -> None:
         not_ready = self._native_nbns_probe("fail", "discovery native NBNS is not ready")
@@ -4561,7 +4417,6 @@ class CheckTests(unittest.TestCase):
                 self.assertEqual(nbns_mock.call_count, 3)
                 failures = [result for result in run.results if result.status == "FAIL"]
                 self.assertEqual({result.message for result in failures}, {"discovery native NBNS is not ready"})
-                self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
                 # The device reported NBNS not ready, so this computer's query
                 # timing out is not counted against it.
                 query = next(result for result in run.results if result.details.get("code") == NBNS_QUERY_TIMEOUT_CODE)
@@ -5068,7 +4923,6 @@ class CheckTests(unittest.TestCase):
         # computer's off-subnet query is neither a failure nor folded into it.
         failures = [result for result in run.results if result.status == "FAIL"]
         self.assertEqual([result.message for result in failures], ["discovery native NBNS is not ready"])
-        self.assertFalse(any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results))
         nbns_result = next(result for result in run.results if "NBNS query" in result.message)
         self.assertEqual(nbns_result.status, "SKIP")
 
@@ -5374,27 +5228,6 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=1, stdout="")):
             result = check_ssh_login(connection)
         self.assertEqual(result.details["code"], "ssh_command_failed")
-
-    def test_apply_startup_grace_ignores_this_computers_own_failures(self) -> None:
-        starting = CheckResult("FAIL", "managed smbd parent process is not running", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK})
-        tools = CheckResult("FAIL", "missing local tool smbclient", domain="computer")
-        transformed, synthesized = _apply_startup_grace([starting, tools], 41.0)
-        # Waiting fixes nothing here, so it neither blocks the collapse nor gets the note.
-        self.assertEqual(synthesized[0].details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
-        self.assertEqual(synthesized[0].domain, "device")
-        self.assertIs(transformed[1], tools)
-        self.assertEqual(transformed[0].status, "INFO")
-
-        alone, note = _apply_startup_grace([tools], 41.0)
-        self.assertEqual((alone, note), ([tools], ()))
-
-    def test_apply_startup_grace_masks_this_computers_view_of_a_device_still_starting(self) -> None:
-        # The LAN listing timing out while smbd starts can resolve by waiting.
-        lan = CheckResult("FAIL", "listing timed out", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK}, domain="computer")
-        transformed, synthesized = _apply_startup_grace([lan], 41.0)
-        self.assertEqual(transformed[0].status, "INFO")
-        self.assertEqual(transformed[0].domain, "computer")
-        self.assertEqual(synthesized[0].details["masked_failures"], ["listing timed out"])
 
     def test_doctor_sink_counts_a_failure_the_device_explains_against_the_device(self) -> None:
         sink = DoctorSink(on_result=None, debug_fields=None)
@@ -7836,7 +7669,6 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             runtime_naming_identity=self.runtime_identity_from_values(values),
-            startup_grace=False,
             skip_bonjour=True,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
@@ -7875,7 +7707,6 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             runtime_naming_identity=self.runtime_identity_from_values(values),
-            startup_grace=False,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
@@ -7910,7 +7741,6 @@ bridge1: flags=e002<BROADCAST,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             runtime_naming_identity=self.runtime_identity_from_values(values),
-            startup_grace=False,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),

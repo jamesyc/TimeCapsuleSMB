@@ -1321,7 +1321,6 @@ Arguments:
 - `--skip-ssh`: skip SSH reachability and remote checks
 - `--skip-bonjour`: skip Bonjour browse/resolve checks
 - `--skip-smb`: skip authenticated SMB listing and file-operation checks
-- `--no-startup-grace`: show raw startup-window failures instead of collapsing eligible transient failures into one wait-and-retry result
 - `--json`: emit one structured final doctor payload
 
 `doctor` is the preferred post-deploy and post-reboot verification command. Its default SMB CRUD checks temporarily create, modify, and remove a hidden `.doctor-fileops-*` directory on a share. A timeout, interruption, or early failure can leave that directory behind; use `--skip-smb` when the diagnostic run must not write through SMB.
@@ -1505,7 +1504,7 @@ Its authenticated SMB CRUD checks do temporarily write to a share. They normally
 Current output behavior:
 - in normal human-readable mode, checks are printed as they complete rather than being buffered until the end
 - `--json` still emits one structured payload at the end
-- during the first `180` seconds after the manager starts, eligible transient startup failures are demoted to context and replaced by one actionable wait-and-retry failure; `--no-startup-grace` disables that transformation
+- during the first `180` seconds after the manager starts, doctor first waits, polling every 10 seconds, while Samba (including its staging after a boot) or mDNS and NBNS are still starting, until they are ready or the 180 seconds end; the checks then report what they find, with nothing excused as still starting
 
 Typical usage:
 
@@ -1859,7 +1858,7 @@ What TimeCapsuleSMB does about it:
 - **The reboot wait** (`services/reboot.py`) looks for the marker once ACP has been quiet for 90 s, at most every 30 s, when port 22 answers. The marker found on two looks in a row ends the wait as `acpd_broken` (`reboot_cycle` result `acpd_stopped_without_reboot`, about 130 s after the request instead of 10 minutes); `reboot_cycle` counts the looks in `acpd_hang_checks`, records the last one's outcome in `hang_check_last` (`ssh_closed`, `marked`, `restarting` for no marker or a shutdown under way, or `ssh_failed`) and the longest run of marked looks in `acpd_marked_checks_max`. A closed SSH port, as in a real restart, starts the run again; a read that fails with the port open shows nothing either way and leaves the run as it is. A look that reached sshd may have opened a shared SSH connection to the old kernel, so once the new boot is seen the wait closes it and the next command logs in afresh.
   - Two looks, not one: the result tells the user to unplug the device, and during a real restart whose ACPd is still tearing down (old sshd up, no `shutdown` yet) that could cut ACPd's own flash writes. In v3.4.0 and v3.5.0 telemetry every look that found SSH answering reached the new kernel, but only 22 restarts got that far.
 - **MaSt and `diskd.useVolume`** (`device/storage.py`): a failed or hung call is confirmed with one `syUT` check per disk wait. A failing one raises `acpd_broken`; an answering one keeps the usual disk handling, and a hung call stays a timeout with the SSH error as its cause when SSH itself fails.
-- **Doctor** has its own step right after the stuck-process step, reusing that step's process list. It FAILs each problem (code `apple_acpd_broken`, with `acpd_problem` naming it; never masked by startup grace), and `doctor_finished` reports `acpd_problems` on passing runs too. It skips when SSH checks are off or the process list timed out.
+- **Doctor** has its own step right after the stuck-process step, reusing that step's process list. It FAILs each problem (code `apple_acpd_broken`, with `acpd_problem` naming it), and `doctor_finished` reports `acpd_problems` on passing runs too. It skips when SSH checks are off or the process list timed out.
 - **No automatic fix:** nothing sends a second `acRB` or reboots the OS itself; the user unplugs the device, which also clears the marker.
 - **Not caught:** a NetBSD 4 hang that also takes SSH and the network down until the device is unplugged; nothing can read the marker then, and the wait ends at its 10-minute limit.
 

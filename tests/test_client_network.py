@@ -15,14 +15,9 @@ from unittest import mock
 from timecapsulesmb.checks.doctor_state import DoctorSink, RemoteAccess
 from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK,
-    DOCTOR_CODE_DEVICE_STARTING_UP,
-    STARTUP_GRACE_DETAIL_KEY,
-    STARTUP_GRACE_MASK,
-    _apply_startup_grace,
     _doctor_check_unshared_network,
     client_on_unshared_network_message,
 )
-from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
 from timecapsulesmb.checks.network import LocalInterfaceNetwork, host_networks, interface_kind, local_lan_networks
 from timecapsulesmb.device.probe import (
     ReadinessProbeResult,
@@ -503,30 +498,6 @@ class UnsharedNetworkCheckTests(unittest.TestCase):
         guest = client_on_unshared_network_message(
             [net("169.254.0.0/16")], ["guest"], [net("10.0.1.0/24")], platform="linux", cabled=True)
         self.assertTrue(guest.startswith("this computer is on the device's guest network (169.254.0.0/16)"))
-
-
-class StartupGraceTests(unittest.TestCase):
-    # Reported in the computer section, as doctor's run does.
-    UNSHARED = CheckResult(
-        "FAIL",
-        "this Mac is on the device's internet (WAN) side",
-        {"code": DOCTOR_CODE_CLIENT_ON_UNSHARED_NETWORK},
-        domain=DOMAIN_COMPUTER,
-    )
-    STARTING = CheckResult("FAIL", "managed smbd is not running", {STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK})
-
-    def test_waiting_is_never_suggested_for_being_on_the_wrong_network(self) -> None:
-        results = [CheckResult("PASS", "SSH works"), self.UNSHARED]
-        transformed, synthesized = _apply_startup_grace(results, 41.0)
-        self.assertEqual(transformed, results)
-        self.assertEqual(synthesized, ())
-
-    def test_startup_failures_still_collapse_and_the_network_failure_stays(self) -> None:
-        transformed, synthesized = _apply_startup_grace([self.STARTING, self.UNSHARED], 41.0)
-        self.assertEqual([result.status for result in transformed], ["INFO", "FAIL", "FAIL"])
-        self.assertIs(transformed[1], self.UNSHARED)
-        self.assertEqual(synthesized[0].details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
-        self.assertEqual(synthesized[0].details["masked_failures"], ["managed smbd is not running"])
 
 
 class ReadinessProbeResultTests(unittest.TestCase):

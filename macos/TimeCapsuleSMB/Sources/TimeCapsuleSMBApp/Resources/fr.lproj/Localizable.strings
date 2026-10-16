@@ -285,7 +285,6 @@
 "dialog.forget.error_title" = "Impossible d’oublier l’appareil";
 "dialog.forget.message" = "Supprimer %@ de ce Mac ? Cela ne désinstalle pas Samba de l’appareil.";
 "dialog.forget.title" = "Oublier cet appareil ?";
-"doctor.check.device_starting_up" = "L’appareil est encore en cours de démarrage. Patientez quelques minutes, puis relancez la vérification.";
 "doctor.check.payload_missing_from_disk" = "Les fichiers Samba sont absents de tous les disques, comme après « Effacer le disque » dans Utilitaire AirPort. Exécutez « Installer / mettre à jour Samba » pour réinstaller.";
 "doctor.check.metadata_migration_in_progress" = "Une migration des métadonnées est encore en cours sur l’appareil. « Installer / mettre à jour Samba » attend qu’elle se termine avant d’installer.";
 "doctor.check.client_on_unshared_network" = "Ce Mac est sur un réseau où l’appareil ne partage pas ses disques, comme son côté Internet (WAN) ou son réseau invité. Connectez ce Mac au réseau principal de l’appareil en Wi-Fi ou par l’un de ses ports LAN, puis relancez la vérification.";

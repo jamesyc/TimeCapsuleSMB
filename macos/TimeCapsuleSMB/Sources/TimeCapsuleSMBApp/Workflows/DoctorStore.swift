@@ -40,7 +40,6 @@ enum DoctorSectionStatus: String, Equatable, Codable {
 struct DoctorSummary: Equatable {
     static let runtimeNotInstalledResultCode = "runtime_not_installed"
     static let runtimeNotStartedResultCode = "runtime_not_started"
-    static let deviceStartingUpResultCode = "device_starting_up"
     static let payloadMissingFromDiskResultCode = "payload_missing_from_disk"
 
     let passCount: Int
@@ -49,7 +48,6 @@ struct DoctorSummary: Equatable {
     let infoCount: Int
     let runtimeNotInstalled: Bool
     let runtimeNotStarted: Bool
-    let deviceStartingUp: Bool
     /// No disk holds the installed files, as after an Erase in AirPort Utility.
     let payloadMissingFromDisk: Bool
     let checks: [DoctorCheckPayload]
@@ -71,7 +69,6 @@ struct DoctorSummary: Equatable {
         self.infoCount = Self.count(status: "INFO", in: payload)
         self.runtimeNotInstalled = Self.containsResultCode(Self.runtimeNotInstalledResultCode, in: payload)
         self.runtimeNotStarted = Self.containsResultCode(Self.runtimeNotStartedResultCode, in: payload)
-        self.deviceStartingUp = Self.containsResultCode(Self.deviceStartingUpResultCode, in: payload)
         self.payloadMissingFromDisk = Self.containsResultCode(Self.payloadMissingFromDiskResultCode, in: payload)
         self.checks = payload.results
         self.sections = Dictionary(

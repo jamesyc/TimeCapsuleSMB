@@ -285,7 +285,6 @@
 "dialog.forget.error_title" = "Nepavyko pamiršti įrenginio";
 "dialog.forget.message" = "Pašalinti %@ iš šio Mac? Samba iš įrenginio nepašalinama.";
 "dialog.forget.title" = "Pamiršti šį įrenginį?";
-"doctor.check.device_starting_up" = "Įrenginys vis dar paleidžiamas. Palaukite kelias minutes ir paleiskite patikrinimą iš naujo.";
 "doctor.check.payload_missing_from_disk" = "Visuose diskuose trūksta Samba diegimo failų, pavyzdžiui, po disko ištrynimo su AirPort Utility (Erase Disk). Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
 "doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir paleiskite patikrinimą iš naujo.";

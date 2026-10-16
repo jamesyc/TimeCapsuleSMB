@@ -97,7 +97,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
         "doctor",
         doctor_operation,
         # bonjour_timeout is retired and accepted only to be ignored.
-        frozenset({"bonjour_timeout", "skip_bonjour", "skip_smb", "skip_ssh", "startup_grace"})
+        frozenset({"bonjour_timeout", "skip_bonjour", "skip_smb", "skip_ssh"})
         | frozenset(LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS),
         telemetry=True,
         keep_awake=True,

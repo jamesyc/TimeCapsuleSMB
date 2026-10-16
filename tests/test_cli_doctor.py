@@ -60,13 +60,6 @@ class CliDoctorTests(CliTestCase):
         json.loads(output)
         self.assertIn("wait_for_device_startup", stages)
 
-    def test_doctor_no_startup_grace_reaches_the_checks(self) -> None:
-        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
-            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([], False)) as checks:
-                with redirect_stdout(io.StringIO()):
-                    doctor.main(["--no-startup-grace"])
-        self.assertIs(checks.call_args.kwargs["startup_grace"], False)
-
     def test_doctor_failure_telemetry_includes_bonjour_candidate_context(self) -> None:
         output = io.StringIO()
         results = [
@@ -616,17 +609,6 @@ class CliDoctorTests(CliTestCase):
                     rc = doctor.main([])
         self.assertEqual(rc, 0)
         self.assertNotIn("bonjour_timeout", checks_mock.call_args.kwargs)
-        self.assertIs(checks_mock.call_args.kwargs["startup_grace"], True)
-
-    def test_doctor_no_startup_grace_flag_disables_grace_transform(self) -> None:
-        output = io.StringIO()
-        fake_result = doctor.CheckResult("PASS", "ok")
-        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
-            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], False)) as checks_mock:
-                with redirect_stdout(output):
-                    rc = doctor.main(["--no-startup-grace"])
-        self.assertEqual(rc, 0)
-        self.assertIs(checks_mock.call_args.kwargs["startup_grace"], False)
 
     def test_doctor_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()

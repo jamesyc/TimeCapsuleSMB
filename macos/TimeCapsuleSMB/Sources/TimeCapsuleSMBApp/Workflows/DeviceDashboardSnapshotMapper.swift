@@ -57,9 +57,7 @@ enum DeviceDashboardSnapshotMapper {
                 errorMessage: nil,
                 recovery: nil
             )
-        case .warn,
-             // Still starting up is not broken; waiting fixes it.
-             .fail where summary.deviceStartingUp:
+        case .warn:
             return DeviceRuntimeStateSnapshot(
                 state: .installedUnverified,
                 source: .doctor,

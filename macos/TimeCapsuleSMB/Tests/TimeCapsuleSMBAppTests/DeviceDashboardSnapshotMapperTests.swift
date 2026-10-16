@@ -120,16 +120,6 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(runtimeState?.errorCode, DoctorSummary.payloadMissingFromDiskResultCode)
     }
 
-    func testDeviceStillStartingUpIsUnverifiedNotUnhealthy() throws {
-        let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "FAIL", message: "some checks failed while the device was still starting up",
-                            domain: "device", code: "device_starting_up")
-        ])
-        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
-            profile: try makeProfile(payloadFamily: "netbsd6_samba4"), skipSSH: false, state: .failed, summary: summary)
-        XCTAssertEqual(runtimeState?.state, .installedUnverified)
-    }
-
     func testASectionDecodesWithoutItsTelemetryCodeLists() throws {
         // fail_codes and warn_codes are for telemetry; the app reads only the
         // status and counts.

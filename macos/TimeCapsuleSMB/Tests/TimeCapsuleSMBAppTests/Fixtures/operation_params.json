@@ -71,8 +71,7 @@
       "macos_local_network_preflight_service",
       "skip_bonjour",
       "skip_smb",
-      "skip_ssh",
-      "startup_grace"
+      "skip_ssh"
     ],
     "flash": [
       "action",
