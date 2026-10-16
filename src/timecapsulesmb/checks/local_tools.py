@@ -8,6 +8,7 @@ from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh_client import require_local_ssh
 from timecapsulesmb.transport.errors import SshError
+from timecapsulesmb.transport.openssl_sha1 import SHA1_OPENSSL_CONF_PATH, sha1_signature_env
 from timecapsulesmb.transport.ssh import SSH_ASKPASS_PATH
 
 
@@ -33,6 +34,20 @@ def check_required_local_tools() -> list[CheckResult]:
             f"local tool ssh-askpass, the SSH password helper, is missing or not executable at {SSH_ASKPASS_PATH}; "
             "reinstall TimeCapsuleSMB",
         ))
+    # This computer's OpenSSL may refuse the Time Capsule's SHA-1 signature;
+    # ssh gets this config to allow it (transport.openssl_sha1).
+    if sha1_signature_env(os.environ):
+        if SHA1_OPENSSL_CONF_PATH.is_file():
+            results.append(CheckResult(
+                "PASS",
+                "found the OpenSSL config that lets SSH accept the Time Capsule's SHA-1 signature",
+            ))
+        else:
+            results.append(CheckResult(
+                "FAIL",
+                "the OpenSSL config that lets SSH accept the Time Capsule's SHA-1 signature is missing at "
+                f"{SHA1_OPENSSL_CONF_PATH}; reinstall TimeCapsuleSMB",
+            ))
     return results
 
 

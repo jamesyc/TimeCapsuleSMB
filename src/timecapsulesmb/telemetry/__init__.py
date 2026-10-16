@@ -11,10 +11,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.os_release import parse_os_release
 from timecapsulesmb.core.process import run_process
 from timecapsulesmb.core.release import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
 from timecapsulesmb.identity import load_install_identity
 from timecapsulesmb.transport.http import HttpError, http_post_json
+from timecapsulesmb.transport.openssl_sha1 import sha1_signature_policy
 
 
 SCHEMA_VERSION = 5
@@ -38,6 +40,10 @@ class TelemetryContext:
     host_os: str
     host_os_version: str
     configure_id: str | None = None
+    # Whether this computer's OpenSSL may refuse the Time Capsule's SHA-1
+    # signature, and if so whether ssh gets the OpenSSL config that allows it
+    # (transport.openssl_sha1.sha1_signature_policy).
+    ssh_openssl_sha1: str | None = None
 
 
 class TelemetryClient:
@@ -69,6 +75,7 @@ class TelemetryClient:
             host_os=detect_host_os(),
             host_os_version=detect_host_os_version(),
             configure_id=config.get("TC_CONFIGURE_ID") or None,
+            ssh_openssl_sha1=sha1_signature_policy(os.environ),
         )
         return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)
 
@@ -116,6 +123,8 @@ class TelemetryClient:
                 payload["client"] = client
             if self.context.configure_id:
                 payload["configure_id"] = self.context.configure_id
+            if self.context.ssh_openssl_sha1:
+                payload["ssh_openssl_sha1"] = self.context.ssh_openssl_sha1
             if options is not None:
                 payload["options"] = options
             if details is not None:
@@ -223,20 +232,6 @@ def infer_operation_phase(event: str) -> tuple[str | None, str | None]:
     if event.endswith("_finished"):
         return event.removesuffix("_finished").replace("_", "-"), "finished"
     return None, None
-
-
-def parse_os_release() -> dict[str, str]:
-    path = Path("/etc/os-release")
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key] = value.strip().strip('"').strip("'")
-    return values
 
 
 def detect_linux_id() -> str | None:

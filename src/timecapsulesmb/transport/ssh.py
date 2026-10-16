@@ -12,6 +12,7 @@ import subprocess
 import os
 import re
 import selectors
+import sys
 import tempfile
 import threading
 import time
@@ -35,6 +36,7 @@ from timecapsulesmb.transport.errors import (
 from timecapsulesmb.core.process import popen_process, run_process
 
 from .local import tcp_open
+from .openssl_sha1 import sha1_signature_env
 from .ssh_client import require_local_ssh
 
 
@@ -84,6 +86,32 @@ SSH_STARTUP_CONFIG_ERROR_PATTERNS = (
     "unknown option -- e",
 )
 SSH_CLIENT_LOG_PREFIX = "timecapsulesmb-ssh-"
+# OpenSSL refused part of the key exchange. Against a Time Capsule that is
+# its SHA-1 ssh-rsa signature, where openssl_sha1's config cannot take
+# effect (FIPS mode, or a config of the user's own). The default policy is
+# already overridden, so the advice adds SHA1 to whatever policy is set
+# rather than replacing it with DEFAULT:SHA1.
+SSH_LIBCRYPTO_FAILURE = "error in libcrypto"
+SSH_SHA1_ALLOW_COMMAND = 'sudo update-crypto-policies --set "$(update-crypto-policies --show):SHA1"'
+SSH_SHA1_REFUSED_MESSAGE = "This computer's OpenSSL refused the SHA-1 signature the Time Capsule's SSH server uses"
+# Linux only: the command comes last, so copying it to the end of the line
+# takes no full stop into the policy name.
+SSH_SHA1_ALLOW_ADVICE = (
+    "With an OPENSSL_CONF of your own, set rh-allow-sha1-signatures = yes in the section its alg_section "
+    "names. Otherwise add SHA-1 to this computer's crypto policy (Fedora, RHEL and similar Linux) with: "
+    f"{SSH_SHA1_ALLOW_COMMAND}"
+)
+
+
+def sha1_refused_message(line: str, *, platform: str | None = None) -> str:
+    """The refused-signature error for ssh's log line. Only Red Hat's OpenSSL
+    refuses SHA-1 signatures, so only Linux gets the crypto-policy advice."""
+    message = f"{SSH_SHA1_REFUSED_MESSAGE} ({line})."
+    if not (platform or sys.platform).startswith("linux"):
+        return message
+    return f"{message} {SSH_SHA1_ALLOW_ADVICE}"
+
+
 # ssh runs this with each prompt; it answers the password from SSH_PASSWORD_ENV.
 SSH_ASKPASS_PATH = Path(__file__).with_name("ssh-askpass")
 SSH_PASSWORD_ENV = "TCAPSULE_SSH_PASSWORD"
@@ -198,6 +226,12 @@ def _classify_ssh_client_error_line(line: str) -> SshError | None:
         return algorithm_error
 
     lowered = line.lower()
+    if lowered.endswith(SSH_LIBCRYPTO_FAILURE):
+        return SshAlgorithmNegotiationError(
+            sha1_refused_message(line),
+            algorithm="signature",
+            offered=(),
+        )
     if "bad configuration option" in lowered:
         return SshClientConfigError(f"Connecting to the device failed, SSH error: {line}")
     if SSH_ASKPASS_EXEC_FAILURE in line:
@@ -636,20 +670,25 @@ def _connection_ssh_args(
 
 
 def _ssh_env(connection: SshConnection) -> dict[str, str] | None:
-    """The environment that gives ssh the password, or None to inherit ours.
+    """ssh's environment, or None to inherit ours.
 
     ssh asks SSH_ASKPASS for every prompt when SSH_ASKPASS_REQUIRE is force
     (OpenSSH 8.4+), so it needs no terminal and starts like any other program.
-    Only this child's copy holds the password.
+    Only this child's copy holds the password. Where Red Hat's OpenSSL
+    refuses SHA-1 signatures, ssh gets an OpenSSL config that allows them
+    (openssl_sha1), with or without a password: the refusal fails the key
+    exchange before any login.
     """
-    if not connection.password:
+    extra = sha1_signature_env(os.environ)
+    if connection.password:
+        extra.update({
+            "SSH_ASKPASS": str(SSH_ASKPASS_PATH),
+            "SSH_ASKPASS_REQUIRE": "force",
+            SSH_PASSWORD_ENV: connection.password,
+        })
+    if not extra:
         return None
-    return {
-        **os.environ,
-        "SSH_ASKPASS": str(SSH_ASKPASS_PATH),
-        "SSH_ASKPASS_REQUIRE": "force",
-        SSH_PASSWORD_ENV: connection.password,
-    }
+    return {**os.environ, **extra}
 
 
 def _output_line(raw: bytes) -> str:

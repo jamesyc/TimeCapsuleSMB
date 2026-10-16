@@ -2363,6 +2363,34 @@ class CheckTests(unittest.TestCase):
                     self.assertEqual([r.status for r in results], ["PASS", "PASS", "FAIL"])
                     self.assertIn(f"is missing or not executable at {helper}; reinstall TimeCapsuleSMB", results[2].message)
 
+    def test_check_required_local_tools_checks_the_openssl_config_only_where_openssl_refuses_sha1(self) -> None:
+        # ssh needs openssl-sha1.cnf only where OpenSSL refuses the Time
+        # Capsule's SHA-1 signature; elsewhere it is not reported at all.
+        override = {"OPENSSL_CONF": "/pkg/openssl-sha1.cnf", "TCAPSULE_OPENSSL_BASE_CONF": "/etc/pki/tls/openssl.cnf"}
+        with tempfile.TemporaryDirectory() as tmp:
+            present = Path(tmp) / "openssl-sha1.cnf"
+            present.write_text(".include $ENV::TCAPSULE_OPENSSL_BASE_CONF\n")
+            cases = (
+                ("not needed", {}, present, None),
+                ("installed", override, present, "PASS"),
+                ("missing", override, Path(tmp) / "gone.cnf", "FAIL"),
+            )
+            for name, env, config, status in cases:
+                with self.subTest(name):
+                    with mock.patch("timecapsulesmb.checks.local_tools.command_exists", return_value=True), \
+                         mock.patch("timecapsulesmb.checks.local_tools.require_local_ssh", return_value="/tested/ssh"), \
+                         mock.patch("timecapsulesmb.checks.local_tools.sha1_signature_env", return_value=env), \
+                         mock.patch("timecapsulesmb.checks.local_tools.SHA1_OPENSSL_CONF_PATH", config):
+                        results = check_required_local_tools()
+                    openssl = [r for r in results if "OpenSSL config" in r.message]
+                    if status is None:
+                        self.assertEqual(openssl, [])
+                        continue
+                    self.assertEqual([r.status for r in openssl], [status])
+                    if status == "FAIL":
+                        self.assertIn(f"is missing at {config}; reinstall TimeCapsuleSMB", openssl[0].message)
+                        self.assertTrue(any(r.status == "FAIL" for r in results))
+
     def test_run_doctor_checks_reports_local_tools_after_a_valid_config(self) -> None:
         tools = [CheckResult("FAIL", "missing local tool smbclient, please install smbclient on your computer")]
         run = self.run_doctor_with_mocks(

@@ -144,6 +144,23 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(payload["host_os"], "macOS" if sys.platform == "darwin" else payload["host_os"])
         self.assertNotIn("command_id", payload)
 
+    def test_emit_reports_the_crypto_policy_state_only_where_it_refuses_sha1(self) -> None:
+        for state in ("override", "refused", None):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
+                bootstrap_path = Path(tmp) / ".bootstrap"
+                bootstrap_path.write_text("INSTALL_ID=test-install\n")
+                with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False), \
+                     mock.patch("timecapsulesmb.telemetry.sha1_signature_policy", return_value=state) as policy:
+                    client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
+                    with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                        client.emit("configure_started")
+                policy.assert_called_once_with(os.environ)
+                payload = dispatch_mock.call_args.args[0]
+                if state is None:
+                    self.assertNotIn("ssh_openssl_sha1", payload)
+                else:
+                    self.assertEqual(payload["ssh_openssl_sha1"], state)
+
     def test_flash_events_exclude_config_device_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"

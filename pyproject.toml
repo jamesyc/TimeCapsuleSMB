@@ -75,6 +75,7 @@ package-dir = {"" = "src"}
 timecapsulesmb = [
   "assets/artifact-manifest.json",
   "assets/boot/samba4/*",
+  "transport/openssl-sha1.cnf",
   "transport/ssh-askpass",
 ]
 

@@ -1,0 +1,10 @@
+# OPENSSL_CONF for ssh children where Red Hat's OpenSSL may refuse SHA-1
+# signatures: Fedora, RHEL and their derivatives, unless the crypto policy
+# allows them (transport/openssl_sha1.py). It loads the config OpenSSL would
+# otherwise read, then allows the SHA-1 signature the Time Capsule's ssh-rsa
+# host key makes. OpenSSL reads the key from the evp_properties section that
+# Red Hat's system config names as its alg_section.
+.include $ENV::TCAPSULE_OPENSSL_BASE_CONF
+
+[evp_properties]
+rh-allow-sha1-signatures = yes

@@ -31,6 +31,21 @@ def block_unmocked_telemetry_posts(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def hide_host_crypto_policy(monkeypatch: pytest.MonkeyPatch):
+    # On Fedora and RHEL the host's OpenSSL refuses SHA-1 signatures, which
+    # gives every ssh child an OpenSSL config and doctor another check.
+    # Tests see neither the host's distribution nor its policy unless they
+    # pass their own paths.
+    import os
+    from pathlib import Path
+
+    missing = Path(os.devnull) / "missing"
+    monkeypatch.setattr("timecapsulesmb.transport.openssl_sha1.OS_RELEASE_PATH", missing)
+    monkeypatch.setattr("timecapsulesmb.transport.openssl_sha1.CRYPTO_POLICY_OPENSSL_PATH", missing)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def block_real_keep_awake(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     # Device commands hold off macOS sleep with a real caffeinate child.
     # Only tests marked real_keep_awake may start one.

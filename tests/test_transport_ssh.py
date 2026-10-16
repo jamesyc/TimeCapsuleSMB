@@ -799,6 +799,61 @@ class SSHTransportTests(unittest.TestCase):
         # A key login needs no password helper: ssh inherits our environment.
         self.assertIsNone(run.call_args.kwargs["env"])
 
+    def test_a_crypto_policy_refusing_sha1_gives_ssh_the_openssl_config_with_or_without_a_password(self) -> None:
+        # The policy fails the key exchange before any login, so a key login
+        # needs the config as much as a password one.
+        override = {"OPENSSL_CONF": "/pkg/openssl-sha1.cnf", "TCAPSULE_OPENSSL_BASE_CONF": "/etc/pki/tls/openssl.cnf"}
+        process = subprocess.CompletedProcess(["ssh"], 0, b"bank", b"")
+        with mock.patch("timecapsulesmb.transport.ssh.sha1_signature_env", return_value=dict(override)), \
+             mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=self.completed_run(process)) as run:
+            ssh_transport.run_ssh_capture_bytes(ssh_transport.SshConnection("device", "", ""), "dd")
+            key_env = run.call_args.kwargs["env"]
+            ssh_transport.run_ssh_capture_bytes(ssh_transport.SshConnection("root@device", "secret", ""), "dd")
+            password_env = run.call_args.kwargs["env"]
+
+        for env in (key_env, password_env):
+            self.assertEqual({key: env[key] for key in override}, override)
+            self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
+        self.assertNotIn("SSH_ASKPASS", key_env)
+        self.assertEqual(password_env[ssh_transport.SSH_PASSWORD_ENV], "secret")
+        self.assertEqual(password_env["SSH_ASKPASS_REQUIRE"], "force")
+        # Only the child's copy changes.
+        self.assertNotEqual(os.environ.get("OPENSSL_CONF"), override["OPENSSL_CONF"])
+
+    def test_openssl_refusing_the_key_exchange_is_an_ssh_compatibility_failure(self) -> None:
+        line = "ssh_dispatch_run_fatal: Connection to 10.0.1.1 port 22: error in libcrypto"
+        run = self.ssh_runs((255, "", f"Warning: Permanently added '10.0.1.1' (RSA) to the list of known hosts.\n{line}\n"))
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True), \
+             mock.patch("timecapsulesmb.transport.ssh.run_process", side_effect=run):
+            with self.assertRaises(ssh_transport.SshAlgorithmNegotiationError) as raised:
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@10.0.1.1", "pw", ""), "true", timeout=10)
+
+        self.assertEqual(raised.exception.algorithm, "signature")
+        self.assertEqual(raised.exception.offered, ())
+        self.assertEqual(str(raised.exception), ssh_transport.sha1_refused_message(line))
+
+    def test_only_linux_gets_the_crypto_policy_advice_and_its_command_comes_last(self) -> None:
+        line = "ssh_dispatch_run_fatal: Connection to 10.0.1.1 port 22: error in libcrypto"
+        linux = ssh_transport.sha1_refused_message(line, platform="linux")
+        self.assertTrue(linux.startswith(f"{ssh_transport.SSH_SHA1_REFUSED_MESSAGE} ({line}). "))
+        # Copying the command to the end of the line takes no trailing
+        # punctuation into it.
+        self.assertTrue(linux.endswith(f": {ssh_transport.SSH_SHA1_ALLOW_COMMAND}"))
+        # The advice adds SHA1 to the current policy, never resets it to DEFAULT.
+        self.assertNotIn("DEFAULT", linux)
+        # A Mac has no crypto policy to change.
+        self.assertEqual(
+            ssh_transport.sha1_refused_message(line, platform="darwin"),
+            f"{ssh_transport.SSH_SHA1_REFUSED_MESSAGE} ({line}).",
+        )
+
+    def test_other_libcrypto_mentions_are_not_a_refused_signature(self) -> None:
+        # Only ssh's fatal line ends with it; a debug line or banner does not count.
+        for text in ("debug1: error in libcrypto\n", "OpenSSL error in libcrypto path\n"):
+            with self.subTest(text=text):
+                self.assertIsNone(ssh_transport.parse_ssh_client_diagnostics(text).error)
+
     def test_run_ssh_capture_bytes_does_not_decode_successful_binary_stdout(self) -> None:
         payload = DecodeTrapBytes(b"\x00firmware\xff" * 4096)
         process = subprocess.CompletedProcess(["ssh"], 0, payload, b"")
@@ -1495,6 +1550,8 @@ with open(runs, "a") as record:
         "pid": os.getpid(),
         "askpass": os.environ.get("SSH_ASKPASS"),
         "require": os.environ.get("SSH_ASKPASS_REQUIRE"),
+        "openssl_conf": os.environ.get("OPENSSL_CONF"),
+        "openssl_base_conf": os.environ.get("TCAPSULE_OPENSSL_BASE_CONF"),
     }) + "\n")
 attempt = sum(1 for _ in open(runs))
 log = args[args.index("-E") + 1]
@@ -1716,6 +1773,36 @@ class RealSshProcessTests(unittest.TestCase):
         [run] = self.recorded()
         self.assertIsNone(run["askpass"])
         self.assertIn("BatchMode=yes", run["args"])
+        # OpenSSL allows SHA-1 here: ssh inherits our environment unchanged.
+        self.assertIsNone(run["openssl_conf"])
+
+    def test_every_ssh_the_transport_starts_gets_the_openssl_config_where_openssl_refuses_sha1(self) -> None:
+        # Plain and streamed commands and the SMB tunnel each start their own
+        # ssh, and whichever starts first negotiates with the device, with a
+        # password or a key.
+        override = {"OPENSSL_CONF": "/pkg/openssl-sha1.cnf", "TCAPSULE_OPENSSL_BASE_CONF": "/etc/pki/tls/openssl.cnf"}
+        connection = ssh_transport.SshConnection("root@device", "pa ss$1", "")
+        with mock.patch.object(ssh_transport, "sha1_signature_env", side_effect=lambda _environ: dict(override)):
+            self.assertEqual(ssh_transport.run_ssh(connection, "echo plain").stdout, "plain\n")
+            _proc, lines = self.streamed("echo streamed")
+            self.assertEqual(lines, ["streamed"])
+            with self.forward():
+                pass
+            self.scenario(key_login=True)
+            self.assertEqual(
+                ssh_transport.run_ssh(ssh_transport.SshConnection("root@device", "", ""), "echo key").stdout, "key\n",
+            )
+
+        runs = self.recorded()
+        self.assertEqual(len(runs), 4)
+        for run in runs:
+            self.assertEqual(
+                (run["openssl_conf"], run["openssl_base_conf"]),
+                (override["OPENSSL_CONF"], override["TCAPSULE_OPENSSL_BASE_CONF"]),
+            )
+        self.assertIn("-tt", runs[1]["args"])
+        self.assertIn("-N", runs[2]["args"])
+        self.assertEqual([run["askpass"] is not None for run in runs], [True, True, True, False])
 
     def test_an_externally_stopped_ssh_is_not_retried_or_classified_as_a_filter(self) -> None:
         self.scenario(stop=True)
