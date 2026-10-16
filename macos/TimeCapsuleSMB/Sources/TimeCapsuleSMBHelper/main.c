@@ -1,3 +1,4 @@
+#include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
@@ -6,6 +7,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+typedef int (*py_bytes_main_t)(int, char **);
 
 static int is_empty_env(const char *name) {
     const char *value = getenv(name);
@@ -124,24 +127,16 @@ static void mkdir_p(const char *path) {
     free(copy);
 }
 
-static void configure_environment(const char *contents_dir, char **python_out) {
+/* Sets the bundled runtime's environment and returns the bundled Python
+ * framework library to run in this process. */
+static char *configure_environment(const char *contents_dir) {
     char *resources_dir = join_path(contents_dir, "Resources");
     char *python_home = join_path(resources_dir, "Python/Runtime/Python.framework/Versions/Current");
-    char *default_python = join_path(python_home, "bin/python3");
     char *python_packages = join_path(resources_dir, "Python/site-packages");
     char *ca_cert_file = join_path(python_packages, "certifi/cacert.pem");
+    char *library = join_path(python_home, "Python");
 
-    if (is_empty_env("TCAPSULE_APP_PYTHON")) {
-        *python_out = default_python;
-        setenv("PYTHONHOME", python_home, 1);
-    } else {
-        *python_out = strdup(getenv("TCAPSULE_APP_PYTHON"));
-        free(default_python);
-        if (*python_out == NULL) {
-            perror("strdup");
-            exit(70);
-        }
-    }
+    setenv("PYTHONHOME", python_home, 1);
 
     char *state_dir = join_path(getenv("HOME") ? getenv("HOME") : "", "Library/Application Support/TimeCapsuleSMB");
     set_if_empty("TCAPSULE_STATE_DIR", state_dir);
@@ -201,29 +196,42 @@ static void configure_environment(const char *contents_dir, char **python_out) {
     free(tools_bin);
     free(path_value);
     free(pythonpath_value);
+    return library;
 }
 
 int main(int argc, char **argv) {
     char *helper_path = executable_path();
     char *helpers_dir = parent_dir(helper_path);
     char *contents_dir = parent_dir(helpers_dir);
-    char *python = NULL;
-
-    configure_environment(contents_dir, &python);
+    char *library = configure_environment(contents_dir);
 
     char **python_argv = calloc((size_t)argc + 3, sizeof(char *));
     if (python_argv == NULL) {
         perror("calloc");
         return 70;
     }
-    python_argv[0] = python;
+    python_argv[0] = helper_path;
     python_argv[1] = "-m";
     python_argv[2] = "timecapsulesmb.cli.main";
     for (int i = 1; i < argc; i++) {
         python_argv[i + 2] = argv[i];
     }
 
-    execvp(python, python_argv);
-    fprintf(stderr, "exec %s failed: %s\n", python, strerror(errno));
-    return 70;
+    /* Run Python in this process instead of exec'ing the framework's
+     * bin/python3, which re-execs Resources/Python.app. macOS gives an app
+     * bundle's main executable its own Local Network permission
+     * ("Python"), while a helper like this one shares the app's.
+     * RTLD_GLOBAL: the framework's extension modules leave Py* symbols
+     * undefined and find them in the global namespace when they load. */
+    void *handle = dlopen(library, RTLD_NOW | RTLD_GLOBAL);
+    if (handle == NULL) {
+        fprintf(stderr, "load %s failed: %s\n", library, dlerror());
+        return 70;
+    }
+    py_bytes_main_t py_bytes_main = (py_bytes_main_t)dlsym(handle, "Py_BytesMain");
+    if (py_bytes_main == NULL) {
+        fprintf(stderr, "load %s failed: %s\n", library, dlerror());
+        return 70;
+    }
+    return py_bytes_main(argc + 2, python_argv);
 }

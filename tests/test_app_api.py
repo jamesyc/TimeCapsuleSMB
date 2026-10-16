@@ -4327,7 +4327,7 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("macos_local_network_preflight_result=denied", telemetry_error)
         self.assertIn("macos_local_network_preflight_error=policy denied", telemetry_error)
 
-    def test_configure_acp_port_errno65_on_macos_gui_marks_local_network_privacy_suspected(self) -> None:
+    def test_configure_reports_an_unanswered_acp_port_on_this_macs_network(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
@@ -4347,25 +4347,23 @@ class AppApiTests(unittest.TestCase):
             )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
                     mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)):
-                with mock.patch("timecapsulesmb.services.acp_ssh.sys.platform", "darwin"):
-                    with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}):
-                        with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="[Errno 65] No route to host"):
-                            with mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"):
-                                rc = service.run_api_request(
-                                    {
-                                        "operation": "configure",
-                                        "params": params,
-                                    },
-                                    collector.sink,
-                                )
+                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="[Errno 65] No route to host"):
+                    with mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"):
+                        rc = service.run_api_request(
+                            {
+                                "operation": "configure",
+                                "params": params,
+                            },
+                            collector.sink,
+                        )
 
         self.assertEqual(rc, 1)
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "remote_error")
+        self.assertIn("No AirPort ACP service responded at this address", error["message"])
+        self.assertFalse(config_path.exists())
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("acp_port_probe_last_error=[Errno 65] No route to host", telemetry_error)
-        self.assertIn("macos_local_network_privacy_suspected=true", telemetry_error)
-        self.assertIn("macos_local_network_privacy_signal=errno65_no_route_to_host", telemetry_error)
 
     def test_configure_reports_unsupported_device(self) -> None:
         collector = CollectingSink()

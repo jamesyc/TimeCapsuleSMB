@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import os
 import sys
 import time
 
@@ -73,15 +72,6 @@ def client_networks_if_off_network(host: str) -> list[IpNetwork] | None:
         return None
     client, _device = link.compared()
     return list(client)
-
-
-def is_macos_gui_local_network_privacy_signal(error: object) -> bool:
-    if sys.platform != "darwin":
-        return False
-    if os.getenv("TCAPSULE_CLIENT") != "macos_gui":
-        return False
-    text = str(error)
-    return "[Errno 65]" in text or "No route to host" in text
 
 
 def _run_enable_ssh(
@@ -161,11 +151,6 @@ def _probe_acp_port(
         "acp_port_probe_errors": errors,
         "acp_port_probe_last_error": last_error,
     }
-    if is_macos_gui_local_network_privacy_signal(last_error):
-        debug_fields.update(
-            macos_local_network_privacy_suspected=True,
-            macos_local_network_privacy_signal="errno65_no_route_to_host",
-        )
     callbacks.debug(**debug_fields)
     callbacks.update(
         acp_port_probe_succeeded=False,
