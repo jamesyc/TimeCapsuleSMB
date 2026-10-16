@@ -112,7 +112,12 @@ class ConfigureFlowRequest:
 @dataclass(frozen=True)
 class ConfigureFlowHooks:
     after_probe: Callable[[SshConnection, ProbedDeviceState], None] | None = None
+    # Runs before configure checks AirPort ACP to turn SSH on, to refuse
+    # enabling SSH at all.
     before_enable_ssh: Callable[[SshConnection, ProbedDeviceState], None] | None = None
+    # Gets the address that answered AirPort ACP, just before SSH is turned on
+    # there: the place to ask before a device reboots.
+    confirm_enable_ssh: Callable[[str], None] | None = None
     save_without_authentication: Callable[[ProbedDeviceState], bool] | None = None
 
 
@@ -152,6 +157,7 @@ def enable_ssh_and_reprobe(
     callbacks: OperationCallbacks | None = None,
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
     record: BonjourResolvedService | None = None,
+    before_enable: Callable[[str], None] | None = None,
 ) -> tuple[SshConnection, ProbedDeviceState | None]:
     """Turn SSH on through ACP, reboot, and probe again.
 
@@ -166,13 +172,14 @@ def enable_ssh_and_reprobe(
         configure_acp_enable_attempted=True,
         ssh_initially_reachable=False,
     )
-    callbacks.message("\nSSH is not reachable. Attempting to enable SSH on the device...")
+    callbacks.message("\nSSH is not reachable. Checking AirPort ACP so SSH can be turned on...")
     try:
         host = enable_ssh_with_port_preflight(
             endpoint_host(connection.host),
             connection.password,
             callbacks=callbacks,
             record=record,
+            before_enable=before_enable,
         )
     except ACPAuthError:
         callbacks.debug(
@@ -299,6 +306,7 @@ def run_configure_flow(
                 callbacks=callbacks,
                 probe=probe_connection,
                 record=request.selected_record,
+                before_enable=hooks.confirm_enable_ssh,
             )
         except ACPAuthError as exc:
             raise ConfigureFlowError(

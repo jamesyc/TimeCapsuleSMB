@@ -104,7 +104,11 @@ def enable_set_ssh(
     callbacks: OperationCallbacks | None = None,
     initial: SetSshStatusResult | None = None,
     probe: Callable[[str], SetSshStatusResult] | None = None,
+    before_enable: Callable[[str], None] | None = None,
 ) -> SetSshResult:
+    """Turn SSH on through ACP and reboot, unless it is already open.
+    `before_enable` gets the address once its ACP answers, before anything
+    changes (enable_ssh_with_port_preflight)."""
     callbacks = callbacks or OperationCallbacks()
     target_host = endpoint_host(connection.host)
     initial_status = initial or (probe or probe_set_ssh_status)(connection.host)
@@ -127,7 +131,9 @@ def enable_set_ssh(
             summary=Summary("ssh.already_enabled", "SSH is already enabled."),
         )
 
-    target_host = enable_ssh_with_port_preflight(target_host, connection.password, callbacks=callbacks)
+    target_host = enable_ssh_with_port_preflight(
+        target_host, connection.password, callbacks=callbacks, before_enable=before_enable,
+    )
     target_host = endpoint_host(reboot_device(
         target_host,
         connection.password,

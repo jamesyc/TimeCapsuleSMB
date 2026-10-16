@@ -11,7 +11,7 @@ from timecapsulesmb.core.config import (
     parse_env_file,
     vfs_aio_fork_enabled_in,
 )
-from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device.probe import probe_connection_state
@@ -224,9 +224,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
 
-    def before_enable_ssh(_connection, _probed_state) -> None:
+    def confirm_enable_ssh(acp_host: str) -> None:
+        # Name the address ACP answered at: the device may have moved.
         context.stage("confirm_enable_ssh")
-        require_enable_ssh_confirmation(params, host=host)
+        located = host if acp_host == endpoint_host(host) else canonical_ssh_target(acp_host)
+        require_enable_ssh_confirmation(params, host=located)
 
     def probe_for_context(connection):
         context.connection = connection
@@ -293,7 +295,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             callbacks=context.to_operation_callbacks(),
             hooks=ConfigureFlowHooks(
                 after_probe=apply_probe_to_context,
-                before_enable_ssh=before_enable_ssh,
+                confirm_enable_ssh=confirm_enable_ssh,
             ),
         )
     except ConfigureFlowError as exc:

@@ -209,13 +209,16 @@ def enable_ssh_with_port_preflight(
     record: BonjourResolvedService | None = None,
     tcp_connect_error_func: Callable[[str, int], str | None] | None = None,
     sleep_func: Callable[[float], None] | None = None,
+    before_enable: Callable[[str], None] | None = None,
 ) -> str:
     """Ask ACP to turn SSH on at the next boot, once its port answers.
 
     Returns the address that was used. With `record`, the Bonjour record
     `host` came from, a device no longer at `host` is looked for by the
     record's AirPort MAC, and an AirPort with another MAC at `host` is never
-    changed.
+    changed. `before_enable` gets that address once ACP answers there and
+    before anything is changed, so a confirmation names the device that will
+    reboot and a device that does not answer is never offered a reboot.
     """
     callbacks = callbacks or OperationCallbacks()
     tcp_connect_error_func = tcp_connect_error_func or tcp_connect_error
@@ -235,6 +238,8 @@ def enable_ssh_with_port_preflight(
         if airport_mac:
             host = _confirm_identity(host, password, airport_mac, callbacks)
 
+    if before_enable is not None:
+        before_enable(host)
     _run_enable_ssh(
         host,
         password,

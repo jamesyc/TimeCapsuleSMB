@@ -19,6 +19,7 @@ from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.probe import AirportAcpReading, ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACP_PORT, DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
+from timecapsulesmb.services import acp_ssh
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.configure import (
@@ -311,7 +312,7 @@ class ConfigureServiceTests(unittest.TestCase):
         )
         self.assertEqual(update_fields, [PROBE_SUCCEEDED, PROBE_CONTEXT, {"ssh_final_reachable": True}])
         self.probe_context.assert_called_once_with("10.0.0.2", None)
-        self.assertIn("Attempting to enable SSH", logs[0])
+        self.assertIn("SSH is not reachable. Checking AirPort ACP", logs[0])
 
     def test_enable_ssh_with_port_preflight_happy_path_runs_enable_without_retry(self) -> None:
         callbacks, stages, _logs, debug_fields, _update_fields = self.callbacks()
@@ -449,6 +450,7 @@ class ConfigureServiceTests(unittest.TestCase):
         located: LocateResult | None = None,
         reading: AirportAcpReading | None = None,
         record: BonjourResolvedService = RECORD_WITH_MAC,
+        before_enable=None,
     ):
         """enable_ssh_with_port_preflight against the record's 192.168.1.218.
 
@@ -470,10 +472,110 @@ class ConfigureServiceTests(unittest.TestCase):
                     record=record,
                     tcp_connect_error_func=mock.Mock(return_value=None if port_answers else "timed out"),
                     sleep_func=mock.Mock(),
+                    before_enable=before_enable,
                 )
             except Exception as exc:
                 outcome = exc
         return SimpleNamespace(outcome=outcome, set_dbug=set_dbug, locate=locate, read=read, logs=logs, updates=update_fields)
+
+    def asked_preflight(self, **kwargs):
+        """preflight with a before_enable that records the address it got and
+        whether SSH had already been turned on by then."""
+        asked: list[tuple[str, bool]] = []
+
+        def before_enable(host: str) -> None:
+            # preflight's set_dbug mock is the one patched in while this runs.
+            asked.append((host, acp_ssh.set_dbug.called))
+
+        run = self.preflight(before_enable=before_enable, **kwargs)
+        run.asked = asked
+        return run
+
+    def test_before_enable_gets_the_answering_address_before_ssh_is_turned_on(self) -> None:
+        cases = {
+            "device where it was": (None, "192.168.1.218"),
+            "device that moved": (LocateResult("found", host="root@192.168.1.40", address="192.168.1.40"), "192.168.1.40"),
+        }
+        for case, (located, address) in cases.items():
+            with self.subTest(case=case):
+                run = self.asked_preflight(port_answers=located is None, located=located)
+
+                self.assertEqual(run.outcome, address)
+                self.assertEqual(run.asked, [(address, False)])
+                self.assertEqual(run.set_dbug.call_args.args[0], address)
+
+    def test_before_enable_is_never_called_for_a_device_that_cannot_be_changed(self) -> None:
+        other = AirportAcpReading(password_matches=True, airport_mac="02:00:00:00:00:02")
+        cases = {
+            "ACP does not answer": dict(port_answers=False),
+            "password rejected": dict(port_answers=True, reading=acp_reading(False)),
+            "another AirPort holds the address": dict(port_answers=True, reading=other),
+        }
+        for case, kwargs in cases.items():
+            with self.subTest(case=case):
+                run = self.asked_preflight(**kwargs)
+
+                self.assertIsInstance(run.outcome, Exception)
+                self.assertEqual(run.asked, [])
+                run.set_dbug.assert_not_called()
+
+    def test_a_refusal_to_enable_ssh_comes_before_the_acp_check(self) -> None:
+        # The CLI's --no-enable-ssh and non-interactive refusals need no ACP.
+        refusal = ConfigureFlowError("SSH is not reachable and --no-enable-ssh was provided.", code="ssh_unreachable")
+        confirm = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error") as tcp_connect_error, \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug:
+                with self.assertRaises(ConfigureFlowError) as raised:
+                    run_configure_flow(
+                        self.configure_request(Path(tmp) / ".env", mock.Mock(return_value=self.make_ssh_closed_probe_state())),
+                        hooks=ConfigureFlowHooks(before_enable_ssh=mock.Mock(side_effect=refusal), confirm_enable_ssh=confirm),
+                    )
+
+        self.assertIs(raised.exception, refusal)
+        tcp_connect_error.assert_not_called()
+        set_dbug.assert_not_called()
+        confirm.assert_not_called()
+
+    def test_run_configure_flow_confirms_at_the_address_acp_answered_before_enabling(self) -> None:
+        asked: list[tuple[str, bool]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
+                    mock.patch("timecapsulesmb.services.configure.reboot_device", side_effect=RebootFlowError("stop", "reboot_failed")):
+                with self.assertRaises(ConfigureFlowError):
+                    run_configure_flow(
+                        self.configure_request(Path(tmp) / ".env", mock.Mock(return_value=self.make_ssh_closed_probe_state())),
+                        hooks=ConfigureFlowHooks(confirm_enable_ssh=lambda host: asked.append((host, set_dbug.called))),
+                    )
+
+        self.assertEqual(asked, [("10.0.0.2", False)])
+        set_dbug.assert_called_once()
+
+    def test_a_run_stopped_at_the_confirmation_sends_nothing_to_the_device(self) -> None:
+        callbacks, stages, logs, debug_fields, _update_fields = self.callbacks()
+        refusal = RuntimeError("confirm first")
+        with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug:
+            with self.assertRaises(RuntimeError):
+                enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks, before_enable=mock.Mock(side_effect=refusal))
+
+        # The ACP change was never sent, and the log says only that ACP is being checked.
+        set_dbug.assert_not_called()
+        self.assertEqual(stages, ["acp_port_probe"])
+        self.assertFalse(any("acp_ssh_enable_attempted" in fields for fields in debug_fields), debug_fields)
+        self.assertIn("SSH is not reachable. Checking AirPort ACP", logs[0])
+
+    def test_a_refusal_in_before_enable_leaves_ssh_untouched(self) -> None:
+        refusal = RuntimeError("confirm first")
+
+        def refuse(_host: str) -> None:
+            raise refusal
+
+        run = self.preflight(port_answers=True, before_enable=refuse)
+
+        self.assertIs(run.outcome, refusal)
+        run.set_dbug.assert_not_called()
 
     def test_a_device_that_moved_gets_ssh_turned_on_at_its_new_address(self) -> None:
         run = self.preflight(port_answers=False, located=LocateResult("found", host="root@192.168.1.40", address="192.168.1.40"))

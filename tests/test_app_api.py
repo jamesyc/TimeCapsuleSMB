@@ -68,7 +68,7 @@ from timecapsulesmb.device.storage import (
 from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
+from timecapsulesmb.integrations.acp import DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.activation import OLDEST_ACTIVATABLE_RELEASE_TAG
 from timecapsulesmb.services.app import AppOperationError, jsonable
@@ -2816,10 +2816,11 @@ class AppApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
             params = {"config": str(config_path), "selected_record": record, "password": "pw"}
+            # The confirmation names the address whose ACP answered: the one that reboots.
             params["confirmation_id"] = self.confirmation_id_for(
                 "configure",
                 params,
-                {"host": "root@192.168.31.80", "device_name": "Office Capsule", "requires_reboot": True},
+                {"host": "root@192.168.31.81", "device_name": "Office Capsule", "requires_reboot": True},
             )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", side_effect=capture_probe), \
                     mock.patch(
@@ -3354,20 +3355,23 @@ class AppApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
-                    rc = service.run_api_request(
-                        {
-                            "operation": "configure",
-                            "params": {
-                                "config": str(config_path),
-                                "host": "root@10.0.0.2",
-                                "password": "secret",
+                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None) as tcp_connect_error:
+                    with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+                        rc = service.run_api_request(
+                            {
+                                "operation": "configure",
+                                "params": {
+                                    "config": str(config_path),
+                                    "host": "root@10.0.0.2",
+                                    "password": "secret",
+                                },
                             },
-                        },
-                        collector.sink,
-                    )
+                            collector.sink,
+                        )
 
         self.assertEqual(rc, 1)
+        # ACP answered before the reboot was offered; nothing was changed.
+        tcp_connect_error.assert_called_once_with("10.0.0.2", 5009)
         enable_ssh.assert_not_called()
         self.assertFalse(config_path.exists())
         details = self.assert_confirmation(
@@ -3376,13 +3380,45 @@ class AppApiTests(unittest.TestCase):
             {"device_name": "10.0.0.2", "requires_reboot": True},
         )
         self.assertEqual(details["context"]["host"], "root@10.0.0.2")
+        stages = [event["stage"] for event in collector.events_of_type("stage")]
+        self.assertLess(stages.index("acp_port_probe"), stages.index("confirm_enable_ssh"))
         self.assertNotIn("secret", json.dumps(collector.events))
+
+    def test_configure_never_offers_a_reboot_to_a_device_whose_acp_does_not_answer(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="timed out"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "secret",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        self.assertFalse(config_path.exists())
+        # The only terminal event is the ACP error, not a confirmation.
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertIn("No AirPort ACP service responded at this address", error["message"])
 
     def test_configure_confirmed_ssh_enable_reprobes_and_writes_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
             first_collector = CollectingSink()
-            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
                 service.run_api_request(
                     {
                         "operation": "configure",
@@ -3695,7 +3731,8 @@ class AppApiTests(unittest.TestCase):
                     ssh_port_reachable=False,
                 ),
             ):
-                with mock.patch("timecapsulesmb.app.ops.set_ssh.enable_set_ssh") as enable_ssh:
+                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None) as tcp_connect_error, \
+                        mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
                     rc = service.run_api_request(
                         {
                             "operation": "set-ssh",
@@ -3709,6 +3746,8 @@ class AppApiTests(unittest.TestCase):
                     )
 
         self.assertEqual(rc, 1)
+        # ACP answered before the reboot was offered; nothing was changed.
+        tcp_connect_error.assert_called_once_with("10.0.0.2", 5009)
         enable_ssh.assert_not_called()
         details = self.assert_confirmation(
             collector,
@@ -3730,6 +3769,60 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished.args, ("set_ssh_finished",))
         self.assertEqual(finished.kwargs["result"], "confirmation_required")
 
+    def test_set_ssh_enable_never_offers_a_reboot_to_a_device_whose_acp_does_not_answer(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch(
+                "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False),
+            ), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="timed out"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+                rc = service.run_api_request(
+                    {"operation": "set-ssh", "params": {"config": str(config_path), "action": "enable", "password": "secret"}},
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        # The only terminal event says the saved address does not answer: no confirmation.
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "device_unreachable")
+        self.assertIn("Could not connect to ACP on 10.0.0.2:5009", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "device_unreachable")
+        self.assertEqual(self._telemetry_client.emit.call_args_list[-1].kwargs["result"], "failure")
+
+    def test_set_ssh_enable_that_loses_acp_while_writing_stays_a_remote_error(self) -> None:
+        # ACP answered and the reboot was confirmed: the device is there, so
+        # this is not an address problem.
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            initial_status = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=True, ssh_port_reachable=False)
+            params = {"config": str(config_path), "action": "enable", "password": "secret"}
+            first_collector = CollectingSink()
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
+                service.run_api_request({"operation": "set-ssh", "params": params}, first_collector.sink)
+            params["confirmation_id"] = self.assert_confirmation(first_collector, "ssh_access.enable_reboot")["confirmation_id"]
+
+            collector = CollectingSink()
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug", side_effect=ACPConnectionError("ACP connection closed")), \
+                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device") as reboot:
+                rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        reboot.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["message"], "Failed to enable SSH via ACP: ACP connection closed")
+
     def test_set_ssh_confirmed_enable_returns_normalized_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
@@ -3739,7 +3832,8 @@ class AppApiTests(unittest.TestCase):
                 acp_port_reachable=True,
                 ssh_port_reachable=False,
             )
-            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
                 first_collector = CollectingSink()
                 rc = service.run_api_request(
                     {
@@ -3755,36 +3849,30 @@ class AppApiTests(unittest.TestCase):
                 self.assertEqual(rc, 1)
             confirmation_id = self.assert_confirmation(first_collector, "ssh_access.enable_reboot")["confirmation_id"]
 
+            # The confirmed run goes through the real enable path, where the
+            # confirmation is checked once ACP answers: it must be accepted.
             confirmed_collector = CollectingSink()
-            result = SetSshResult(
-                host="10.0.0.2",
-                action="enable_ssh",
-                ssh_initially_reachable=False,
-                ssh_final_reachable=True,
-                acp_port_reachable=True,
-                reboot_requested=True,
-                waited=True,
-                summary=Summary("ssh.configured", "SSH is configured."),
-            )
-            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
-                with mock.patch("timecapsulesmb.app.ops.set_ssh.enable_set_ssh", return_value=result) as enable_ssh:
-                    rc = service.run_api_request(
-                        {
-                            "operation": "set-ssh",
-                            "params": {
-                                "config": str(config_path),
-                                "action": "enable",
-                                "password": "secret",
-                                "confirmation_id": confirmation_id,
-                            },
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
+                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot:
+                rc = service.run_api_request(
+                    {
+                        "operation": "set-ssh",
+                        "params": {
+                            "config": str(config_path),
+                            "action": "enable",
+                            "password": "secret",
+                            "confirmation_id": confirmation_id,
                         },
-                        confirmed_collector.sink,
-                    )
+                    },
+                    confirmed_collector.sink,
+                )
 
         self.assertEqual(rc, 0)
-        enable_ssh.assert_called_once()
-        self.assertEqual(enable_ssh.call_args.args[0].host, "root@10.0.0.2")
-        self.assertFalse(enable_ssh.call_args.kwargs["no_wait"])
+        set_dbug.assert_called_once_with("10.0.0.2", "secret", DBUG_SSH_VALUE, log=mock.ANY, timeout=25.0)
+        self.assertEqual(reboot.call_args.args, ("10.0.0.2", "secret"))
+        self.assertTrue(reboot.call_args.kwargs["wait"])
         payload = self.assert_single_terminal_event(confirmed_collector, "result")["payload"]
         self.assertEqual(payload["action"], "enable_ssh")
         self.assertTrue(payload["ssh_port_reachable"])
@@ -3805,7 +3893,8 @@ class AppApiTests(unittest.TestCase):
                 ssh_port_reachable=False,
             )
             first_collector = CollectingSink()
-            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
                 rc = service.run_api_request(
                     {
                         "operation": "set-ssh",
@@ -3848,17 +3937,13 @@ class AppApiTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(collector.events))
 
     def test_set_ssh_enable_for_a_saved_address_off_this_macs_network_says_so(self) -> None:
-        # The Mac moved to another network since the device was saved.
+        # The Mac moved to another network since the device was saved: said
+        # before any reboot is offered.
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
             config_path.write_text("TC_HOST=root@10.0.0.2\n")
             initial_status = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False)
             params = {"config": str(config_path), "action": "enable", "password": "secret"}
-            first_collector = CollectingSink()
-            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
-                service.run_api_request({"operation": "set-ssh", "params": params}, first_collector.sink)
-            params["confirmation_id"] = self.assert_confirmation(first_collector, "ssh_access.enable_reboot")["confirmation_id"]
-
             collector = CollectingSink()
             elsewhere = (LocalInterfaceNetwork("en0", "192.168.20.5", ipaddress.ip_network("192.168.20.0/24")),)
             with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
@@ -3888,7 +3973,8 @@ class AppApiTests(unittest.TestCase):
                 ssh_port_reachable=False,
             )
             first_collector = CollectingSink()
-            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
                 rc = service.run_api_request(
                     {
                         "operation": "set-ssh",

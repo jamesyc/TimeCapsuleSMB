@@ -5,7 +5,7 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import set_ssh_payload
 from timecapsulesmb.app.ops.common import load_request_config, require_request_acpd_ready
 from timecapsulesmb.core.net import endpoint_host
-from timecapsulesmb.integrations.acp import ACPAuthError
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
 from timecapsulesmb.services.reboot import RebootFlowError
@@ -42,16 +42,21 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
     _update_status_fields(context, initial)
 
     if action == "enable":
-        if not initial.ssh_port_reachable:
+        def confirm_enable_ssh(answering_host: str) -> None:
+            # Asked once ACP answers, so a device that does not is never offered a reboot.
             context.stage("confirm_enable_ssh")
-            _require_enable_confirmation(params, context=context, connection_host=connection.host, acp_host=acp_host)
+            _require_enable_confirmation(params, context=context, connection_host=connection.host, acp_host=answering_host)
+
         try:
             result = enable_set_ssh(
                 connection,
                 no_wait=bool_param(params, "no_wait"),
                 callbacks=context.to_operation_callbacks(),
                 initial=initial,
+                before_enable=confirm_enable_ssh,
             )
+        except AppOperationError:
+            raise
         except ACPAuthError as exc:
             raise AppOperationError(
                 "The AirPort admin password did not work.",
@@ -60,6 +65,12 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
             ) from exc
         except ACPDeviceOffNetworkError as exc:
             raise AppOperationError(str(exc), code="device_off_network") from exc
+        except ACPConnectionError as exc:
+            if context.current_stage == "acp_port_probe":
+                # Neither SSH nor ACP answers at the saved address: the app then
+                # looks for the device elsewhere.
+                raise AppOperationError(str(exc), code="device_unreachable") from exc
+            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
         except RebootFlowError as exc:
             # SSH not opening in time keeps its own guidance: enabling it can be slow.
             code = "ssh_enable_timeout" if exc.code == "reboot_not_finished" else exc.code
