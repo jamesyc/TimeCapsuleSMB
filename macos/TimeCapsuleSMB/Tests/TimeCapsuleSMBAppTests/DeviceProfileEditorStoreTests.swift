@@ -578,7 +578,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         fixture.deviceDiscovery.refresh()
         try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
-        try await waitUntilStoreState { fixture.runner.calls.contains { $0.operation == "set-ssh" } }
+        // The check holds the device until it finishes, and a save asked for meanwhile does nothing.
+        try await waitUntilStoreState {
+            fixture.runner.calls.contains { $0.operation == "set-ssh" }
+                && !fixture.appStore.operationCoordinator.isDeviceBusy(profile)
+        }
         let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
         store.draft.host = "10.0.0.80"
 
@@ -625,7 +629,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         fixture.deviceDiscovery.refresh()
         try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
-        try await waitUntilStoreState { fixture.runner.calls.contains { $0.operation == "set-ssh" } }
+        // The check holds the device until it finishes, and a save asked for meanwhile does nothing.
+        try await waitUntilStoreState {
+            fixture.runner.calls.contains { $0.operation == "set-ssh" }
+                && !fixture.appStore.operationCoordinator.isDeviceBusy(profile)
+        }
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
         for tab in DeviceDashboardTab.allCases {
             session.selectedTab = tab
@@ -685,7 +693,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         fixture.deviceDiscovery.refresh()
         try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
-        try await waitUntilStoreState { fixture.runner.calls.contains { $0.operation == "set-ssh" } }
+        // The check holds the device until it finishes, and a save asked for meanwhile does nothing.
+        try await waitUntilStoreState {
+            fixture.runner.calls.contains { $0.operation == "set-ssh" }
+                && !fixture.appStore.operationCoordinator.isDeviceBusy(profile)
+        }
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
 
         session.updateConfiguredAddressFromDiscovery(profile: profile)

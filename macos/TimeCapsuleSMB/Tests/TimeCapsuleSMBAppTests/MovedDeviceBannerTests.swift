@@ -125,27 +125,36 @@ final class MovedDeviceBannerTests: XCTestCase {
 
     func testAChangedAddressSaysWhatFoundIt() async throws {
         // Telemetry: the saved MAC at the new address, the saved name (the
-        // banner of a profile without a MAC), or neither.
-        let cases: [(String, String?, [JSONValue], String, String)] = [
-            ("banner by MAC", mac, [record(host: "10.0.0.80", mac: mac)], "10.0.0.80", "mac"),
-            ("banner by name", nil, [record(host: "10.0.0.80", mac: mac)], "10.0.0.80", "name"),
-            ("typed, nothing there", mac, [record(host: "10.0.0.80", mac: mac)], "10.0.0.90", "manual"),
+        // banner of a profile without a MAC), or neither. A device discovery
+        // takes for the saved one also gets the app's background SSH check.
+        let cases: [(String, String?, [JSONValue], String, String, Bool)] = [
+            ("banner by MAC", mac, [record(host: "10.0.0.80", mac: mac)], "10.0.0.80", "mac", true),
+            ("banner by name", nil, [record(host: "10.0.0.80", mac: mac)], "10.0.0.80", "name", false),
+            ("typed, nothing there", mac, [record(host: "10.0.0.80", mac: mac)], "10.0.0.90", "manual", true),
             // Matched only by its saved address: nothing says the new one is the same device.
             ("typed, matched by address", nil, [testDeviceRecord(name: "Den", hostname: "den.local.", ipv4: ["10.0.0.77", "10.0.0.2"],
-                                                                  fullname: "Den._airport._tcp.local.")], "10.0.0.77", "manual"),
+                                                                  fullname: "Den._airport._tcp.local.")], "10.0.0.77", "manual", true),
         ]
-        for (label, savedMAC, records, newHost, expected) in cases {
-            let fixture = try await makeFixture([
-                discoverResponse(records),
+        for (label, savedMAC, records, newHost, expected, checksSSH) in cases {
+            let sshCheck: [StoreTestRunner.Response] = checksSSH ? [.init(events: [BackendEvent(
+                type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))])] : []
+            let fixture = try await makeFixture([discoverResponse(records)] + sshCheck + [
                 .init(events: [BackendEvent(type: "result", operation: "configure", ok: true,
                     payload: testConfigurePayload(host: "root@\(newHost)", airportMAC: mac))]),
             ])
             let profile = try await saveOldProfile(fixture, mac: savedMAC)
             try await discover(fixture)
+            if checksSSH {
+                // The check holds the device until it finishes, and a save asked for meanwhile does nothing.
+                try await waitUntilStoreState {
+                    fixture.runner.calls.contains { $0.operation == "set-ssh" } && !fixture.coordinator.isDeviceBusy(profile)
+                }
+            }
             let editor = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
             editor.draft.host = newHost
             await editor.save(profile: profile)
             try await waitUntilStoreState { fixture.runner.calls.contains { $0.operation == "configure" } }
+            XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover"] + (checksSSH ? ["set-ssh"] : []) + ["configure"], label)
             let configure = try XCTUnwrap(fixture.runner.calls.first { $0.operation == "configure" })
             XCTAssertEqual(configure.params["address_source"], .string(expected), label)
         }
