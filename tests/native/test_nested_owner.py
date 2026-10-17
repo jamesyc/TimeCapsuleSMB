@@ -5,16 +5,28 @@ import signal
 import pytest
 from tests.native.build import ROOT, compile_modules
 
+ACP_TIMEOUT_SECONDS = 3
+COMMAND_TIMEOUT_SECONDS = 3
+
 @pytest.fixture(scope='module')
 def owner_driver(tmp_path_factory):
     root = tmp_path_factory.mktemp('nested-owner')
     binary = root / 'owner'
     modules = [f'native/common/{name}.c' for name in ('process', 'worker', 'parent', 'acp')]
     compile_modules(binary, modules,
-                    flags=('-DTC_CHILD_GRACE_MS=150', '-DTC_ACP_TIMEOUT_SECONDS=1',
+                    flags=('-DTC_CHILD_GRACE_MS=150', f'-DTC_ACP_TIMEOUT_SECONDS={ACP_TIMEOUT_SECONDS}',
+                           f'-DTEST_COMMAND_TIMEOUT_SECONDS={COMMAND_TIMEOUT_SECONDS}',
                            f'-DTC_ACP_PATH="{binary}"', '-I', str(ROOT / 'build/native')),
                     extra_sources=(ROOT / 'tests/native/unit/test_nested_owner.c',))
     return binary
+
+@pytest.fixture(scope='module')
+def owner_hang_seconds(owner_driver):
+    # The driver derives its alarm from the timeouts it was built with. This
+    # run also pays macOS's first-exec check outside the child's deadline.
+    result = subprocess.run([str(owner_driver), 'hang-seconds'], capture_output=True, text=True,
+                            check=True, timeout=10)
+    return int(result.stdout)
 
 @pytest.mark.parametrize('record,expected', [
     (None, '0 0'),
@@ -32,10 +44,11 @@ def test_record_reader_waits_for_complete_process_identity(owner_driver, tmp_pat
     assert result.stdout.strip() == expected
 
 @pytest.mark.parametrize('case', ['crash', 'term', 'parent-eof', 'timeout', 'grandchild', 'acp', 'acp-descendant', 'acp-timeout'])
-def test_nested_command_cannot_outlive_drained_job(owner_driver, tmp_path, case):
+def test_nested_command_cannot_outlive_drained_job(owner_driver, owner_hang_seconds, tmp_path, case):
     try:
+        # The driver's own alarm fires first; this only bounds a driver that ignores it.
         result = subprocess.run([str(owner_driver), case], cwd=tmp_path, start_new_session=True,
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=owner_hang_seconds + 10)
         assert result.returncode == 0, result.stderr
     finally:
         # A failed assertion must not leave the deliberately stubborn fixture.
@@ -46,4 +59,5 @@ def test_nested_command_cannot_outlive_drained_job(owner_driver, tmp_path, case)
                 group = int(fields[2])
                 assert group != os.getpgrp()
                 try: os.killpg(group, signal.SIGKILL)
-                except ProcessLookupError: pass
+                # macOS reports EPERM for a group left with only zombies.
+                except (ProcessLookupError, PermissionError): pass

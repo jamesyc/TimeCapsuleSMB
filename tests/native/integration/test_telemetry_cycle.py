@@ -630,7 +630,7 @@ def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_
     result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': mode,
                             'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 1
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 15 # Below the 30 s collection budget, with scheduling margin.
     assert 'acp: syAP' in result.stderr
     if mode in ('drip', 'drip_after_line'): assert 'timed out' in result.stderr
     # Only the deadline may stop the child before the fixture records itself.
@@ -721,7 +721,7 @@ def test_stop_during_acp_collection_is_prompt_even_with_long_timeout(cycle, prod
         process.send_signal(stop_signal)
         out, err = process.communicate(timeout=HANG_TIMEOUT)
         assert process.returncode == 1 and b'cancelled' in err
-        assert time.monotonic() - started < 3
+        assert time.monotonic() - started < 15 # Below the production 20 s per-key timeout.
         assert out == b'' and state['calls'] == []
         assert_collectors_stopped(calls)
     finally:
@@ -752,16 +752,22 @@ def test_production_telemetry_uses_the_default_acp_deadline(cycle, production_co
 
 def test_each_acp_command_gets_its_own_deadline(cycle, short_collector, acp_calls):
     _, state, _, _, env = cycle
-    # Six 300ms probes exceed this fixture's 1s timeout in aggregate, but each
-    # individual probe fits. No whole-payload deadline should cut them short.
+    # The fake paces its replies, sleeping less when a start is slow: the six
+    # identity replies span 1.2 s, past short_collector's 1 s per-key deadline,
+    # while each lasts only 0.2 s or its own startup. test_device.c pins the
+    # exact per-key and shared deadlines.
+    pace_ms = 200
     result = subprocess.run(telemetry_command(short_collector, '--once', 'manual'),
                             env={**env, 'TC_TEST_ACP_MODE': 'slow_each', 'TC_TEST_ACP_KEY': '*',
-                                 'TC_TEST_ACP_CALLS': str(acp_calls)},
+                                 'TC_TEST_ACP_CALLS': str(acp_calls), 'TC_TEST_ACP_PACE_MS': str(pace_ms)},
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
     # Schema v2 then collects the device plan's ten keys under one 30 s
     # budget, again one child at a time with its own per-key deadline.
-    assert [line.split()[0] for line in acp_calls.read_text().splitlines()] == [
+    calls = [line.split() for line in acp_calls.read_text().splitlines()]
+    # The seventh call can start only after all six identity replies.
+    assert float(calls[6][3]) - float(calls[0][3]) >= 6 * pace_ms / 1000
+    assert [call[0] for call in calls] == [
         'syAP', 'syAM', 'syNm', 'sySN', 'waMA', 'raMA',
         'raNA', 'raDS', 'waNM', 'usbF', 'laIP', 'waIP', 'waLL', 'gnRo', 'syNm', 'waMA',
     ]

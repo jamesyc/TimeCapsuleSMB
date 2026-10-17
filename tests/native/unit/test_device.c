@@ -10,6 +10,7 @@ static int injected, forks, pipe_calls, fd_sets, clocks, waits;
  * loaded host cannot move the deadline. */
 static struct timespec virtual_base;
 static long long virtual_ms;
+static int advanced_key;
 static int virtual_clock(void) {
     return getpid() == owner && !strncmp(scenario, "deadline_", 9);
 }
@@ -75,6 +76,20 @@ int test_clock_gettime(clockid_t clock, struct timespec *value) {
 int test_select(int count, fd_set *readable, fd_set *writable, fd_set *errors, struct timeval *timeout) {
     if (once("select_error")) { errno = EBADF; return -1; }
     if (once("select_eintr")) { errno = EINTR; return -1; }
+    if (virtual_clock() && !strcmp(scenario, "deadline_each")) {
+        if (forks == 3) {
+            /* The third answer is due at 36 s. Keep it unread until the
+             * shared budget stops the child at 30 s. */
+            virtual_ms += timeout->tv_sec * 1000LL + timeout->tv_usec / 1000;
+            return 0;
+        }
+        int ready = select(count, readable, writable, errors, timeout);
+        if (ready > 0 && advanced_key != forks) {
+            virtual_ms += 12000;
+            advanced_key = forks;
+        }
+        return ready;
+    }
     if (virtual_clock() && !strcmp(scenario, "deadline_success")) {
         /* The reply arrives 18 s into the wait. Real waits for the child to
          * write or exit leave the clock alone. */
@@ -137,6 +152,29 @@ int main(int argc, char **argv) {
     }
     /* The guard shares telemetry's group, outside the collector's group. */
     before = open_fds();
+    if (!strcmp(scenario, "deadline_each")) {
+        char values[3][256];
+        struct acp_request requests[3] = {0};
+        const char *keys[] = {"syAP", "syAM", "syNm"};
+        size_t i;
+        for (i = 0; i < 3; i++) {
+            requests[i].key = keys[i];
+            requests[i].output = values[i];
+            requests[i].capacity = sizeof(values[i]);
+        }
+        assert(acp_collect_run(requests, 3, 20000, 30000) == -1);
+        assert(requests[0].status == ACP_OK && !strcmp(values[0], "0x77"));
+        assert(requests[1].status == ACP_OK && !strcmp(values[1], "TimeCapsule8,119"));
+        assert(requests[2].status == ACP_ABORT && !values[2][0]);
+        assert(forks == 3 && virtual_ms == 30000);
+        assert(open_fds() == before);
+        errno = 0;
+        assert(waitpid(collector, &status, WNOHANG) == -1 && errno == ECHILD);
+        assert(kill(guard, 0) == 0);
+        kill(guard, SIGKILL);
+        assert(waitpid(guard, &status, 0) == guard);
+        return 0;
+    }
     success = !strcmp(scenario, "normal") || !strcmp(scenario, "byte_reads") ||
               !strcmp(scenario, "select_eintr") || !strcmp(scenario, "read_eintr") ||
               !strcmp(scenario, "read_eagain") || !strcmp(scenario, "wait_eintr") ||

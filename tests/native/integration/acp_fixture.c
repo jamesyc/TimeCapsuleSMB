@@ -4,6 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
+
+static double monotonic_seconds(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) _exit(97);
+    return now.tv_sec + now.tv_nsec / 1e9;
+}
 
 static void record(const char *key, const char *kind) {
     const char *path = getenv("TC_TEST_ACP_CALLS");
@@ -11,8 +18,31 @@ static void record(const char *key, const char *kind) {
     if (!path) return;
     file = fopen(path, "a");
     if (!file) _exit(90);
-    fprintf(file, "%s %ld %s\n", key, (long)getpid(), kind);
+    fprintf(file, "%s %ld %s %.9f\n", key, (long)getpid(), kind, monotonic_seconds());
     fclose(file);
+}
+
+/* Pace the sequence, not each spawn: reply N is due TC_TEST_ACP_PACE_MS * N
+ * after the first call, so a late interpreter/sanitizer start spends less
+ * time sleeping. Keep the existing key/PID/role record fields. */
+static void paced_reply(void) {
+    const char *path = getenv("TC_TEST_ACP_CALLS"), *pace_ms = getenv("TC_TEST_ACP_PACE_MS");
+    char line[256], key[5], role[16];
+    long pid;
+    unsigned count = 0;
+    double at, first = 0, remaining;
+    FILE *file = path ? fopen(path, "r") : NULL;
+    if (!file || !pace_ms) _exit(98);
+    while (fgets(line, sizeof(line), file)) {
+        if (sscanf(line, "%4s %ld %15s %lf", key, &pid, role, &at) == 4 && !strcmp(role, "parent")) {
+            if (!count) first = at;
+            count++;
+        }
+    }
+    fclose(file);
+    if (!count) _exit(99);
+    remaining = first + count * (atoi(pace_ms) / 1000.0) - monotonic_seconds();
+    if (remaining > 0) usleep((useconds_t)(remaining * 1e6));
 }
 
 /* TC_TEST_ACP_KEY is one key, a comma-separated list, or "*" for all. */
@@ -84,7 +114,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "nonzero")) { puts("untrusted output"); return 1; }
     if (!strcmp(mode, "empty")) { puts(""); return 0; }
     if (!strcmp(mode, "slow")) usleep(1500000);
-    if (!strcmp(mode, "slow_each")) usleep(300000);
+    if (!strcmp(mode, "slow_each")) paced_reply();
     if (!strcmp(argv[2], "syAP")) value = "0x77";
     if (!strcmp(argv[2], "syAM")) value = "TimeCapsule8,119";
     if (!strcmp(argv[2], "syNm")) value = "Test Capsule";

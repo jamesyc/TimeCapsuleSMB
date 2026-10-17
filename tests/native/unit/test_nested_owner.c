@@ -5,6 +5,16 @@
 #include "common/acp.h"
 #include <assert.h>
 
+/* The slowest drain the cases expect: the longer of the ACP and command
+ * timeouts, stop_acp_child's 1 s TERM grace and up to 1 s reap, then the outer
+ * group's grace and its 1 s SIGKILL retry. The guards keep 5x that, and the
+ * alarm also covers the record waits before the drain starts. */
+#define LONGEST_TIMEOUT_MS ((TC_ACP_TIMEOUT_SECONDS > TEST_COMMAND_TIMEOUT_SECONDS ? \
+                             TC_ACP_TIMEOUT_SECONDS : TEST_COMMAND_TIMEOUT_SECONDS) * 1000LL)
+#define DRAIN_MS (LONGEST_TIMEOUT_MS + 2000 + TC_CHILD_GRACE_MS + 1000)
+#define DRAIN_GUARD_MS (5 * DRAIN_MS)
+#define HANG_SECONDS ((unsigned)((6000 + DRAIN_GUARD_MS) / 1000 + 5))
+
 static const char *program, *mode;
 static volatile sig_atomic_t signalled;
 static void term(int sig) { (void)sig; signalled = 1; }
@@ -38,7 +48,7 @@ static int job(void *unused) {
             assert(!!acp_stop_requested == !strcmp(mode, "acp-descendant"));
             return tc_worker_finish(7);
         }
-    } else rc = tc_command_run(args, !strcmp(mode, "timeout") ? 1 : 30);
+    } else rc = tc_command_run(args, !strcmp(mode, "timeout") ? TEST_COMMAND_TIMEOUT_SECONDS : 30);
     return tc_worker_finish(rc ? 1 : 0);
 }
 int main(int argc, char **argv) {
@@ -53,6 +63,10 @@ int main(int argc, char **argv) {
         printf("%ld %ld\n", (long)nested, (long)pgid);
         return 0;
     }
+    if (!strcmp(mode, "hang-seconds")) {
+        printf("%u\n", HANG_SECONDS);
+        return 0;
+    }
     if (!strcmp(mode, "external") || !strcmp(mode, "-q")) {
         signal(SIGTERM, SIG_IGN);
         record("command");
@@ -65,7 +79,7 @@ int main(int argc, char **argv) {
         }
         for (;;) pause();
     }
-    alarm(12);
+    alarm(HANG_SECONDS);
     if (getpgrp() != getpid()) assert(!setpgid(0, 0));
     signal(SIGTERM, term);
     if (!strcmp(mode, "acp-descendant")) assert(!setenv("TC_NESTED_DESCENDANT", "1", 1));
@@ -86,7 +100,7 @@ int main(int argc, char **argv) {
                strcmp(mode, "acp-descendant") && strcmp(mode, "acp-timeout")) {
         assert(!kill(outer.pid, SIGKILL));
     }
-    end = acp_monotonic_ms() + 5000;
+    end = acp_monotonic_ms() + DRAIN_GUARD_MS;
     while (!(done = tc_child_poll(&outer, acp_monotonic_ms())) && acp_monotonic_ms() < end) usleep(1000);
     assert(done && !signalled);
     if (!strcmp(mode, "acp-descendant") || !strcmp(mode, "acp-timeout"))

@@ -113,11 +113,28 @@ static void changing_wait_channel_is_one_episode(void) {
 
 static void cpu_progress_is_not_stuck(void) {
     struct tc_stuck s;
-    long long t;
+    const long long times[] = {0, 1000, MS + 2000, 4 * MS, 9 * MS};
+    size_t i;
     fresh(&s);
-    /* Seen waiting on the disk in every sample, but running in between. */
-    for (t = 0; t <= 3 * MS; t += 1000)
-        assert(step1(&s, thread(44, 0, 0, (unsigned long long)t * 50, "biowait"), t) == 0);
+    /* CPU and observation time advance together, even across scheduler gaps. */
+    for (i = 0; i < sizeof(times) / sizeof(times[0]); i++)
+        assert(step1(&s, thread(44, 0, 0, (unsigned long long)times[i] * 50, "biowait"), times[i]) == 0);
+    /* The same sampled waiter without CPU progress really is stuck. */
+    fresh(&s);
+    assert(step1(&s, thread(44, 0, 0, 0, "biowait"), 0) == 0);
+    assert(step1(&s, thread(44, 0, 0, 0, "biowait"), MS + 2000) == 1);
+    assert(events[0].change == TC_STUCK_STARTED);
+}
+
+static void short_episode_is_not_reported(void) {
+    struct tc_stuck s;
+    fresh(&s);
+    assert(step1(&s, thread(46, 0, 0, 0, "biowait"), 0) == 0);
+    assert(step1(&s, thread(46, 0, 0, 0, "biowait"), MS) == 1);
+    assert(events[0].change == TC_STUCK_STARTED);
+    assert(step0(&s, REPORT - 1) == 1);
+    assert(events[0].change == TC_STUCK_CLEARED && !events[0].entry.reported);
+    assert(step0(&s, REPORT + 1) == 0);
 }
 
 static void long_retrying_wait_stays_one_episode(void) {
@@ -364,6 +381,7 @@ static void read_from_table(const char *dir) {
 
 int main(int argc, char **argv) {
     assert(argc == 2);
+    short_episode_is_not_reported();
     uninterruptible();
     single_sleep_crosses_the_threshold_once();
     kernel_sleep_time_counts_before_the_first_sample();
