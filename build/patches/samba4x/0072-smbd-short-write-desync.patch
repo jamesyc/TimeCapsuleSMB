@@ -1,7 +1,7 @@
 diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
 --- a/source3/smbd/smb2_server.c
 +++ b/source3/smbd/smb2_server.c
-@@ -5046,6 +5046,57 @@ static NTSTATUS smbd_smb2_flush_send_queue(struct smbXsrv_connection *xconn)
+@@ -5057,6 +5057,57 @@ static NTSTATUS smbd_smb2_flush_send_queue(struct smbXsrv_connection *xconn)
  	return status;
  }
  
@@ -59,7 +59,7 @@ diff --git a/source3/smbd/smb2_server.c b/source3/smbd/smb2_server.c
  static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, size_t n)
  {
  	struct smbd_server_connection *sconn = xconn->client->sconn;
-@@ -5155,11 +5206,25 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
+@@ -5166,11 +5217,25 @@ static NTSTATUS smbd_smb2_advance_incoming(struct smbXsrv_connection *xconn, siz
  
  got_full:
  

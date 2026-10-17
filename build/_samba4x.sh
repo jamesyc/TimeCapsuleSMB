@@ -249,7 +249,7 @@ verify_at_emulation() {
 }
 
 samba4x_max_stripped_bytes() {
-    # Rc2's NetBSD 6 binary adds 35,768 bytes over 4.24.3. Keep every lane
+    # 4.25's NetBSD 6 binary adds 35,768 bytes over 4.24.3. Keep every lane
     # below 10 MiB so the upgrade fits the existing 16 MiB RAM disk without
     # resizing it, while still rejecting accidental dependency/code growth.
     case "$SDK_FAMILY:$NETBSD4_ABI" in

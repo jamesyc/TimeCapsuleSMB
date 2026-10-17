@@ -2,22 +2,23 @@
 
 TimeCapsuleSMB releases contain the macOS app bundle, the Python CLI, boot scripts, and checked-in static NetBSD binaries used by deploy. The release process should make it clear which artifacts were shipped and how to verify them.
 
-## Samba 4.25.0rc2 candidate
+## Samba 4.25.0
 
-The current Samba build is pinned to `samba-4.25.0rc2`. This brings in upstream
+The current Samba build is pinned to `samba-4.25.0`. This brings in upstream
 stream parent-directory resolution and AFP_AfpInfo stat fixes. The downstream
 series fixes NetBSD stream extent error handling, so deleting a file or directory
 with metadata does not fail after removing only its primary stream. It also
-preserves lookup and I/O failures instead of reporting false success.
+preserves lookup and I/O failures instead of reporting false success. 4.25.0
+does not include the extent fix, so the series still carries it.
 
 The existing NetBSD SDKs are retained. A const-preserving charset fallback
 supports their older GCC versions, and the embedded srvsvc and durable-cookie
-patches are adapted to rc2's APIs. `streams_xattr:max xattrs per stream = 35`
-remains necessary with this release candidate.
+patches are adapted to 4.25's APIs. `streams_xattr:max xattrs per stream = 35`
+remains necessary.
 
-Before switching to 4.25 final, reapply the series to the final tag, check whether
-the extent fix is incorporated upstream, and repeat the Samba regression and
-macOS mounted-share checks documented in `tests/samba/README.md`.
+When moving to a later Samba release, reapply the series to its tag, check which
+downstream fixes are now upstream, and repeat the Samba regression and macOS
+mounted-share checks documented in `tests/samba/README.md`.
 
 ## Release Assets
 

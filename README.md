@@ -309,7 +309,7 @@ There are other constraints the Time Capsule places on us:
 - Samba 4.2.x was much harder to compile, and had a `talloc` / `loadparm` use-after-free runtime bug
 - Samba 4.3.x was the first version to work as a network share, but it does not support vfs_fruit for Time Machine backup support
 - Samba 4.8.x was the first version that fully worked, but was extremely slow (less than 1MB/s)
-- Samba 4.25.0rc2 is the current build we ship with.
+- Samba 4.25.0 is the current build we ship with.
 
 ## Troubleshooting
 

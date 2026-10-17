@@ -31,6 +31,66 @@
 /* A call that must fail with this errno and leave the working directory alone. */
 #define FAILS(call, err) do { errno = 0; CHECK((call) == -1); CHECK(errno == (err)); check_cwd(); } while (0)
 
+/* Compile the exact production conversion at both appliance time_t widths.
+ * This also exercises 32-bit overflow on the 64-bit sanitizer host, without
+ * relying on the host libc's time_t or duplicating the conversion logic. */
+struct tc_timespec32 { int32_t tv_sec; long tv_nsec; };
+struct tc_timespec64 { int64_t tv_sec; long tv_nsec; };
+#define NTTIME uint64_t
+#define time_t int32_t
+#define timespec tc_timespec32
+#define nt_time_to_unix_timespec_raw tc_time32
+#include "tc_time_conversion.inc"
+#undef nt_time_to_unix_timespec_raw
+#undef timespec
+#undef time_t
+#define time_t int64_t
+#define timespec tc_timespec64
+#define nt_time_to_unix_timespec_raw tc_time64
+#include "tc_time_conversion.inc"
+#undef nt_time_to_unix_timespec_raw
+#undef timespec
+#undef time_t
+#undef NTTIME
+
+static void check_conversion(uint64_t nt, int64_t seconds, long nanos)
+{
+	struct tc_timespec32 narrow = tc_time32(nt);
+	struct tc_timespec64 wide = tc_time64(nt);
+	int64_t clamped = seconds > INT32_MAX ? INT32_MAX :
+			  seconds < INT32_MIN ? INT32_MIN : seconds;
+
+	CHECK(wide.tv_sec == seconds && wide.tv_nsec == nanos);
+	CHECK(narrow.tv_sec == clamped);
+	CHECK(narrow.tv_nsec == (clamped == seconds ? nanos : 0));
+}
+
+static void test_time_conversion(void)
+{
+	const int64_t seconds[] = {
+		-11644473600LL, /* 1601, the NTTIME epoch */
+		(int64_t)INT32_MIN - 1, INT32_MIN, (int64_t)INT32_MIN + 1,
+		-1, 0, 1, 1790000000, /* ordinary dates must be UBSan-clean too */
+		(int64_t)INT32_MAX - 1, INT32_MAX, (int64_t)INT32_MAX + 1,
+		2212122495LL, /* HFS's last second in 2040; must not wrap to 1903 */
+		253402300799LL, /* 9999-12-31 */
+	};
+	const long fractions[] = { 0, 100, 999999900 };
+	size_t i, j;
+
+	for (i = 0; i < sizeof(seconds) / sizeof(seconds[0]); i++) {
+		for (j = 0; j < sizeof(fractions) / sizeof(fractions[0]); j++) {
+			uint64_t nt = (uint64_t)(seconds[i] + 11644473600LL) *
+				     UINT64_C(10000000) + fractions[j] / 100;
+			check_conversion(nt, seconds[i], fractions[j]);
+		}
+	}
+	/* The largest valid Windows FILETIME and the raw all-ones sentinel.
+	 * The raw helper deliberately does not interpret sentinel semantics. */
+	check_conversion(INT64_MAX, 910692730085LL, 477580700);
+	check_conversion(UINT64_MAX, -11644473600LL, -100);
+}
+
 static char workdir[PATH_MAX];
 static struct stat cwd_st;
 
@@ -1223,6 +1283,7 @@ int main(int argc, char **argv)
 	if (all || strcmp(c, "fds") == 0) test_fds();
 	if (all || strcmp(c, "times") == 0) test_times();
 	if (all || strcmp(c, "time_range") == 0) test_time_range();
+	if (all || strcmp(c, "time_conversion") == 0) test_time_conversion();
 	if (all || strcmp(c, "fdopendir") == 0) test_fdopendir();
 
 	/* Leave nothing on the scratch disk. */

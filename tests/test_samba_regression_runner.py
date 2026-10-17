@@ -163,6 +163,11 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
              "static bool scavenger_wait_hello(int fd, pid_t pid, struct server_id *child)\n{\n"
              "\tif (fd) {\n\t\treturn false;\n\t}\n\treturn true;\n}")
     (smbd / "scavenger.c").write_text("static int before;\n\n" + hello + "\n\nstatic void after(void)\n{\n}\n")
+    util = tmp_path / "lib/util"
+    util.mkdir(parents=True)
+    conversion = ("struct timespec nt_time_to_unix_timespec_raw(NTTIME nt)\n{\n"
+                  "\tstruct timespec ts = { nt, 0 };\n\treturn ts;\n}")
+    (util / "time.c").write_text("#define TIME_FIXUP_CONSTANT_INT INT64_C(11644473600)\n" + conversion)
     run.stage(tmp_path)
     run.stage(tmp_path)
     assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"

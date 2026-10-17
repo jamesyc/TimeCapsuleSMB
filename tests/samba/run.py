@@ -60,7 +60,7 @@ NATIVE_LINKS_CASES = ("apple_format", "format_limits", "parse_rejects", "convert
                       "dos_mode", "nofollow_errno")
 CATIA_LINKS_CASES = ("catia_links",)
 AT_EMULATION_CASES = ("calls", "absolute", "errors", "flags", "renamed", "rename", "long_paths",
-                      "cross_directory", "listing_changes", "fds", "times", "time_range", "fdopendir")
+                      "cross_directory", "listing_changes", "fds", "times", "time_range", "time_conversion", "fdopendir")
 FILE_GROWTH_CASES = ("unchecked", "stale_size", "fits", "exceeds", "boundary", "not_hfs", "no_volume",
                      "fstat_error", "real_volume", "real_resource_fork", "call_write", "call_pwrite_send",
                      "call_set_filelen", "call_offload")
@@ -122,6 +122,13 @@ def stage(source: Path) -> None:
     scavenger = (source / "source3/smbd/scavenger.c").read_text()
     (modules / "tc_scavenger_hello.inc").write_text(
         cut(scavenger, "#ifndef TC_SCAVENGER_HELLO_SECONDS", "static bool scavenger_wait_hello(") + "\n")
+    # Compile the production conversion with both signed time_t widths, so
+    # the host sanitizer run covers NetBSD 4's overflow paths too.
+    time_source = (source / "lib/util/time.c").read_text()
+    epoch = next(line for line in time_source.splitlines()
+                 if line.startswith("#define TIME_FIXUP_CONSTANT_INT "))
+    head = "struct timespec nt_time_to_unix_timespec_raw("
+    (modules / "tc_time_conversion.inc").write_text(epoch + "\n" + cut(time_source, head, head) + "\n")
     script.write_text(original + marker + (HERE / "targets.py").read_text())
 
 

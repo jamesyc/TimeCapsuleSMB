@@ -4,7 +4,7 @@ from __future__ import annotations
 CLI_VERSION = "3.5.0"
 RELEASE_TAG = "v3.5.0"
 CLI_VERSION_CODE = 30500
-SAMBA_VERSION = "4.25.0rc2"
+SAMBA_VERSION = "4.25.0"
 
 
 def release_major(version_code: int) -> int:

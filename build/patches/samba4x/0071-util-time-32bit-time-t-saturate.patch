@@ -1,7 +1,7 @@
 diff --git a/lib/util/time.c b/lib/util/time.c
 --- a/lib/util/time.c
 +++ b/lib/util/time.c
-@@ -844,6 +844,19 @@ struct timespec nt_time_to_unix_timespec_raw(
+@@ -844,6 +844,23 @@ struct timespec nt_time_to_unix_timespec_raw(
  	/* Now adjust by 369 years to make the secs since 1970 */
  	d -= TIME_FIXUP_CONSTANT_INT;
  
@@ -10,11 +10,15 @@ diff --git a/lib/util/time.c b/lib/util/time.c
 +	 * letting the cast wrap, so the callers' TIME_T_MAX and TIME_T_MIN
 +	 * checks see a time out of range: 2040 must not become 1903.
 +	 */
-+	if (d > (int64_t)_TYPE_MAXIMUM(time_t)) {
-+		d = _TYPE_MAXIMUM(time_t);
++	/* Both appliance ABIs use signed time_t. The 64-bit ABI holds the
++	 * entire converted range; use explicit 32-bit limits for the other
++	 * ABI, since _TYPE_MINIMUM shifts signed -1 (undefined in C).
++	 */
++	if (sizeof(time_t) == 4 && d > INT32_MAX) {
++		d = INT32_MAX;
 +		ret.tv_nsec = 0;
-+	} else if (d < (int64_t)_TYPE_MINIMUM(time_t)) {
-+		d = _TYPE_MINIMUM(time_t);
++	} else if (sizeof(time_t) == 4 && d < INT32_MIN) {
++		d = INT32_MIN;
 +		ret.tv_nsec = 0;
 +	}
 +

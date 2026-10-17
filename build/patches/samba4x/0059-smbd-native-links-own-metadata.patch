@@ -304,7 +304,7 @@ diff --git a/source3/smbd/close.c b/source3/smbd/close.c
 diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 --- a/source3/smbd/open.c
 +++ b/source3/smbd/open.c
-@@ -5730,6 +5730,15 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
+@@ -5735,6 +5735,15 @@ static NTSTATUS open_streams_for_delete(connection_struct *conn,
  	} else {
  		pathref = smb_fname;
  	}
@@ -320,7 +320,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  	status = vfs_fstreaminfo(pathref->fsp, talloc_tos(),
  				&num_streams, &stream_info);
  
-@@ -6550,6 +6559,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6555,6 +6564,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  	    && is_named_stream(smb_fname))
  	{
  		uint32_t base_create_disposition;
@@ -328,7 +328,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  		struct smb_filename *smb_fname_base = NULL;
  		uint32_t base_privflags;
  
-@@ -6583,7 +6593,20 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6588,7 +6598,20 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  		 * if the basefile exists we want a handle so we can fstat() it.
  		 */
  
@@ -350,7 +350,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  
  		if (!NT_STATUS_IS_OK(status) &&
  		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
-@@ -6595,8 +6618,13 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6600,8 +6623,13 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  			goto fail;
  		}
  
@@ -365,7 +365,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
  			 * https://bugzilla.samba.org/show_bug.cgi?id=10229
  			 * We need to check if the requested access mask
  			 * could be used to open the underlying file (if
-@@ -6628,7 +6656,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
+@@ -6633,7 +6661,7 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
  					      | FILE_SHARE_WRITE
  					      | FILE_SHARE_DELETE,
  					      base_create_disposition,

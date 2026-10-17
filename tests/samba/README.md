@@ -1,6 +1,6 @@
 # Patched Samba regression tests
 
-These tests compile the actual Samba 4.25.0rc2 sources after applying the repository's
+These tests compile the actual Samba 4.25.0 sources after applying the repository's
 ordered patch series. The AIO, durable and stream drivers include the production C files,
 following Samba's existing VFS unit-test pattern. They use real bundled talloc,
 tevent, worker processes and DB/NDR code. Only I/O failures, process liveness and

@@ -278,7 +278,7 @@ Alternatively, you can `flash` the boot hook. Use the macOS app, or run the `fla
 
 #### Is this secure?
 
-It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.25.0rc2 currently.
+It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.25.0 currently.
 
 #### Can I keep separate private folders for different Time Capsule users?
 

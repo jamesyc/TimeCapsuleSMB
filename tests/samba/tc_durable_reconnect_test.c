@@ -43,7 +43,7 @@ static unsigned lock_depth, attempts;
 static bool fail_db;
 static struct db_context *database;
 static TDB_DATA record_key;
-/* Rc2 serializes global records with the version-1 schema. */
+/* 4.25 serializes global records with the version-1 schema. */
 static struct smbXsrv_open_global record;
 
 static void write_record(void)
