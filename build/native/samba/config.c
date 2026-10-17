@@ -82,7 +82,7 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
             "[global]\n    netbios name = %s\n    workgroup = WORKGROUP\n"
             "    server string = %s\n"
             "    security = user\n    map to guest = Never\n    restrict anonymous = %d\n"
-            "    guest account = nobody\n    null passwords = no\n    ea support = yes\n"
+            "    guest account = nobody\n    ea support = yes\n"
             "    passdb backend = smbpasswd:" TC_RAM_ROOT "/private/smbpasswd\n"
             "    username map = " TC_RAM_ROOT "/private/username.map\n    dos charset = ASCII\n",
             identity->netbios, identity->server, config->browse_compatibility ? 0 : 2);
@@ -115,7 +115,7 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
     fprintf(file,
             "    deadtime = 720\n    max open files = 512\n    max smbd processes = 8\n"
             "    smb3 directory leases = no\n    reset on zero vc = yes\n    fruit:aapl = yes\n"
-            "    fruit:model = %s\n    fruit:advertise_fullsync = true\n    fruit:nfs_aces = no\n"
+            "    fruit:model = %s\n    fruit:nfs_aces = no\n"
             "    fruit:veto_appledouble = yes\n    fruit:wipe_intentionally_left_blank_rfork = yes\n"
             "    fruit:delete_empty_adfiles = yes\n",
             identity->model);
@@ -159,7 +159,7 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
                 "    acl_xattr:ignore system acls = yes\n    smbd max xattr size = 3802\n"
                 "    streams_xattr:max xattrs per stream = 35\n    fruit:resource = file\n"
                 "    fruit:metadata = %s\n    fruit:encoding = native\n    mangled names = no\n"
-                "    fruit:time machine = yes\n    fruit:posix_rename = yes\n    tc:native symlinks = yes\n"
+                "    fruit:time machine = yes\n    tc:native symlinks = yes\n"
                 "    xattr_tdb:file = %s/private/xattr.tdb\n"
                 "    tc:volume uuid = %s\n"
                 "    tc:volume device = %s\n"
