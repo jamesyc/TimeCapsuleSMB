@@ -365,6 +365,16 @@ macOS case stops the smbd serving a mount for `--stall` seconds (default 60; 0 s
 and checks that the Mac's reconnect keeps the handle and its data. It works in a
 `__tc_durable_test__` folder and removes it at the end.
 
+The durable `rename:` cases negotiate AAPL, keep a band open through a parent
+directory rename, reset the connection, and reconnect the same durable handle
+under its new path. They cover one client, non-ASCII names, and another client
+renaming the directory, including a case-only rename. The host durable driver covers descendant name/hash updates,
+streams, duplicate handles, internal path references, unrelated names and
+case-sensitive versus case-insensitive parent matching, UTF-8 names, and the
+real directory-message decoder and receiver. A delayed notification must leave
+a replacement file at the reused old path alone; failed destination stats also
+leave the open untouched.
+
 ### Directory operations: the *at emulation (patch 0002) and directory opens (0063)
 
 Neither Apple kernel has the *at system calls (ENOSYS for openat, fstatat,

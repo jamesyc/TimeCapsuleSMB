@@ -21,6 +21,8 @@
 #define smbXsrv_open_global_traverse regression_open_global_traverse
 #define smbXsrv_open_cleanup regression_open_cleanup
 #define smbXsrv_replay_cleanup regression_replay_cleanup
+#define rename_open_files_below regression_rename_open_files_below
+#define msg_file_was_renamed regression_msg_file_was_renamed
 #include "includes.h"
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
@@ -33,6 +35,7 @@
 #include "librpc/gen_ndr/ndr_smbXsrv.h"
 #include "libcli/security/security.h"
 #include "messages.h"
+#include "librpc/gen_ndr/ndr_open_files.h"
 #include "serverid.h"
 #ifdef HAVE_PTHREAD
 #error These regressions must exercise the no-pthread appliance build.
@@ -150,6 +153,197 @@ static int scavenger_hello(const char *name)
 	return 0;
 }
 
+/* Execute both production rename helpers with real fsp names and file IDs.
+ * Only share-mode locking/notifications are observed; name hashes and stat
+ * preservation use Samba's own fsp_set_smb_fname(). */
+static bool rename_lock_held, fail_rename_copy, fail_rename_stat;
+static unsigned renamed_records;
+static const char *renamed_prefix = "dest space/";
+static int rename_unlock(void *p)
+{
+	(void)p; CHECK(rename_lock_held); rename_lock_held = false; return 0;
+}
+static struct share_mode_lock *rename_lock(TALLOC_CTX *ctx, struct file_id id)
+{
+	void *p;
+	CHECK(!rename_lock_held);
+	if (id.inode == 9) return NULL; /* internal pathref */
+	p = talloc_new(ctx); CHECK(p);
+	rename_lock_held = true;
+	talloc_set_destructor(p, rename_unlock);
+	return (struct share_mode_lock *)p;
+}
+static bool rename_record(struct messaging_context *msg, struct share_mode_lock *lck,
+	struct file_id id, const char *service, uint32_t old_hash, uint32_t new_hash,
+	const struct smb_filename *name)
+{
+	(void)msg; (void)lck; (void)service;
+	CHECK(rename_lock_held && old_hash != new_hash && new_hash != 0);
+	CHECK(id.inode >= 1 && id.inode <= 3);
+	CHECK(strncmp(name->base_name, renamed_prefix, strlen(renamed_prefix)) == 0);
+	renamed_records++;
+	return true;
+}
+static struct smb_filename *rename_copy(TALLOC_CTX *ctx, const struct smb_filename *name)
+{
+	return fail_rename_copy ? NULL : cp_smb_filename(ctx, name);
+}
+/* Destination lookup is an independent filesystem observation: a freshly
+ * opened replacement may have the same old pathname, but a different inode. */
+static int rename_stat(connection_struct *conn, const files_struct *dir,
+	const struct smb_filename *name, SMB_STRUCT_STAT *st, int flags)
+{
+	const char *suffix = name->base_name + strlen(renamed_prefix);
+	CHECK(dir == conn->cwd_fsp && name->stream_name == NULL && flags == 0);
+	if (fail_rename_stat) { errno = EIO; return -1; }
+	ZERO_STRUCTP(st);
+	if (!strcmp(suffix, "sub/band")) st->st_ex_ino = 1;
+	else if (!strcmp(suffix, "sub")) st->st_ex_ino = 3;
+	else { CHECK(!strcmp(suffix, "ref")); st->st_ex_ino = 9; }
+	return 0;
+}
+static struct file_id rename_stat_id(connection_struct *conn, const SMB_STRUCT_STAT *st)
+{
+	(void)conn;
+	return (struct file_id){.inode = st->st_ex_ino};
+}
+#undef SMB_VFS_FSTATAT
+#define SMB_VFS_FSTATAT rename_stat
+#define vfs_file_id_from_sbuf rename_stat_id
+#define get_existing_share_mode_lock rename_lock
+#define rename_share_filename rename_record
+#define cp_smb_filename rename_copy
+#include "tc_rename_open_files.inc"
+#include "tc_rename_message.inc"
+#undef get_existing_share_mode_lock
+#undef rename_share_filename
+#undef cp_smb_filename
+
+static files_struct *rename_fsp(connection_struct *conn, const char *name,
+	const char *stream, unsigned inode)
+{
+	files_struct *fsp = talloc_zero(conn, files_struct);
+	struct smb_filename *fname = synthetic_smb_fname(fsp, name, stream, NULL, 0, 0);
+	CHECK(fsp && fname);
+	fsp->conn = conn;
+	fsp->file_id.inode = inode;
+	CHECK(fsp_set_smb_fname(fsp, fname));
+	fsp->fsp_name->st.st_ex_size = 123;
+	fsp->next = conn->sconn->files;
+	conn->sconn->files = fsp;
+	return fsp;
+}
+
+static int rename_descendants(const char *which)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct smbd_server_connection *sconn = talloc_zero(frame, struct smbd_server_connection);
+	connection_struct *conn = talloc_zero(frame, connection_struct);
+	connection_struct *other = talloc_zero(frame, connection_struct);
+	struct smb_filename src = {.base_name = "./SOURCE"}, dst = {.base_name = "./dest space"};
+	files_struct *band, *duplicate, *stream, *folder, *neighbor, *foreign, *ref, *alias;
+	files_struct *replacement = NULL;
+	uint32_t original_hash;
+	const char *prefix = "source", *destination = "dest space";
+	char *band_name, *folder_name, *ref_name, *new_band, *new_folder, *new_ref;
+	bool no_change = !strcmp(which, "rename_case_sensitive") ||
+		!strcmp(which, "rename_message_other_share") || !strcmp(which, "rename_stat_failure");
+	char work[] = "tc-rename-XXXXXX", data[5] = {0};
+	int here = open(".", O_RDONLY), fd;
+	struct stat st;
+	NTSTATUS status;
+	CHECK(frame && sconn && conn && other && here != -1);
+	conn->sconn = other->sconn = sconn;
+	sconn->connections = conn;
+	conn->next = other;
+	if (!strcmp(which, "rename_unicode")) prefix = "café";
+	if (!strcmp(which, "rename_emoji")) prefix = "folder😀";
+	if (strcmp(prefix, "source") != 0) src.base_name = talloc_asprintf(frame, "./%s", prefix);
+	if (!strcmp(which, "rename_case_only")) {
+		src.base_name = "./source";
+		dst.base_name = "./SOURCE";
+		destination = "SOURCE";
+		renamed_prefix = "SOURCE/";
+	}
+	new_band = talloc_asprintf(frame, "%s/sub/band", destination);
+	new_folder = talloc_asprintf(frame, "%s/sub", destination);
+	new_ref = talloc_asprintf(frame, "%s/ref", destination);
+	CHECK(new_band && new_folder && new_ref);
+	band_name = talloc_asprintf(frame, "%s/sub/band", prefix);
+	folder_name = talloc_asprintf(frame, "%s/sub", prefix);
+	ref_name = talloc_asprintf(frame, "./%s/ref", prefix);
+	CHECK(band_name && folder_name && ref_name && src.base_name);
+	conn->case_sensitive = !strncmp(which, "rename_case_sensitive", 21);
+	if (!strcmp(which, "rename_case_sensitive_match")) src.base_name = "./source";
+	conn->connectpath = talloc_strdup(conn, "/share");
+	other->connectpath = talloc_strdup(other, "/elsewhere");
+	band = rename_fsp(conn, band_name, NULL, 1);
+	duplicate = rename_fsp(conn, band_name, NULL, 1);
+	alias = rename_fsp(conn, "outside-link", NULL, 1);
+	stream = rename_fsp(conn, band_name, ":AFP_AfpInfo", 2);
+	folder = rename_fsp(conn, folder_name, NULL, 3);
+	neighbor = rename_fsp(conn, "source-other/band", NULL, 4);
+	foreign = rename_fsp(other, band_name, NULL, 5);
+	ref = rename_fsp(conn, ref_name, NULL, 9);
+	stream->base_fsp = band;
+	if (!strcmp(which, "rename_message_reused_path"))
+		replacement = rename_fsp(conn, band_name, NULL, 44);
+	fail_rename_stat = !strcmp(which, "rename_stat_failure");
+	original_hash = band->name_hash;
+	fail_rename_copy = !strcmp(which, "rename_allocation_failure");
+	if (!strncmp(which, "rename_message", 14)) {
+		struct file_rename_message msg = {
+			.servicepath = no_change ? "/missing" : conn->connectpath,
+			.base_name = dst.base_name,
+			.old_base_name = src.base_name,
+		};
+		DATA_BLOB blob = data_blob_null;
+		CHECK(NDR_ERR_CODE_IS_SUCCESS(ndr_push_struct_blob(&blob, frame, &msg,
+			(ndr_push_flags_fn_t)ndr_push_file_rename_message)));
+		msg_file_was_renamed(NULL, sconn, MSG_SMB_FILE_RENAME,
+			(struct server_id){.pid = 999}, &blob);
+		status = NT_STATUS_OK;
+	} else {
+		status = rename_open_files_below(conn, &src, &dst);
+	}
+	if (fail_rename_copy || no_change) {
+		CHECK(NT_STATUS_EQUAL(status, fail_rename_copy ? NT_STATUS_NO_MEMORY : NT_STATUS_OK));
+		CHECK(!strcmp(band->fsp_name->base_name, band_name));
+		CHECK(renamed_records == 0 && !rename_lock_held);
+	} else {
+		CHECK(NT_STATUS_IS_OK(status));
+		CHECK(!strcmp(band->fsp_name->base_name, new_band));
+		CHECK(!strcmp(duplicate->fsp_name->base_name, band->fsp_name->base_name));
+		CHECK(!strcmp(stream->fsp_name->base_name, band->fsp_name->base_name));
+		CHECK(!strcmp(stream->fsp_name->stream_name, ":AFP_AfpInfo"));
+		CHECK(!strcmp(folder->fsp_name->base_name, new_folder));
+		CHECK(!strcmp(ref->fsp_name->base_name, new_ref));
+		CHECK(band->name_hash != original_hash && band->name_hash == duplicate->name_hash);
+		CHECK(band->fsp_name->st.st_ex_size == 123 && duplicate->fsp_name->st.st_ex_size == 123);
+		CHECK(renamed_records == 3 && !rename_lock_held);
+		/* The name still locates the same file after closing its descriptor,
+		 * exactly what the appliance's post-close durable stat needs. */
+		CHECK(mkdtemp(work) != NULL && chdir(work) == 0);
+		CHECK(mkdir(prefix, 0700) == 0 && mkdir(folder_name, 0700) == 0);
+		fd = open(band_name, O_CREAT|O_RDWR, 0600); CHECK(fd != -1);
+		CHECK(write(fd, "band", 4) == 4 && fstat(fd, &st) == 0);
+		CHECK(rename(prefix, destination) == 0 && close(fd) == 0);
+		fd = open(band->fsp_name->base_name, O_RDONLY); CHECK(fd != -1);
+		CHECK(read(fd, data, 4) == 4 && !strcmp(data, "band"));
+		CHECK(close(fd) == 0 && unlink(band->fsp_name->base_name) == 0);
+		CHECK(rmdir(new_folder) == 0 && rmdir(destination) == 0);
+		CHECK(fchdir(here) == 0 && rmdir(work) == 0);
+	}
+	CHECK(!strcmp(neighbor->fsp_name->base_name, "source-other/band"));
+	CHECK(!strcmp(foreign->fsp_name->base_name, band_name));
+	CHECK(!strcmp(alias->fsp_name->base_name, "outside-link"));
+	if (replacement != NULL) CHECK(!strcmp(replacement->fsp_name->base_name, band_name));
+	close(here);
+	TALLOC_FREE(frame);
+	printf("PASS %s\n", which);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -172,6 +366,7 @@ int main(int argc, char **argv)
 	unsigned id, expected_attempts = 1;
 	const struct GUID *guid = NULL;
 	CHECK(argc == 2 && frame && table);
+	if (!strncmp(argv[1], "rename_", 7)) return rename_descendants(argv[1]);
 	if (!strncmp(argv[1], "scavenger_hello_", 16)) {
 		return scavenger_hello(argv[1]);
 	}

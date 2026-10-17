@@ -105,8 +105,10 @@ DROP_MODES = ("fin", "rst", "half-open", "half-open+reset", "half-open+previous"
 WRITE_MODES = ("short-write", "smb-in-data")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 SETTIME_MODES = ("data", "attributes")
+RENAME_MODES = ("same", "unicode", "case", "other-client", "other-client-case")
 CASES = (DROP_MODES + ("stopped+previous",) + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
-         + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("expiry",))
+         + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("expiry",)
+         + tuple(f"rename:{mode}" for mode in RENAME_MODES))
 # 0024 grants every durable-v2 open 300 s; the scavenger's timer fires then.
 DURABLE_TIMEOUT_SECONDS = 300
 # A reset connection's smbd exits within this, even when closing its files
@@ -378,6 +380,67 @@ def stopped_previous_case(r: Results, device: Device) -> None:
         for conn in (second.get("conn"), conn1):
             with contextlib.suppress(Exception):
                 conn.disconnect()
+
+
+def rename_case(r: Results, device: Device, mode: str = "same") -> None:
+    """A Mac renames a folder with a durable band open, then reconnects it."""
+    from tests.samba.dir_device import Client, FILE_DIRECTORY_FILE, RENAME_ACCESS
+
+    basename = "café" if mode == "unicode" else f"rename-{mode}"
+    src = f"{TEST_DIR}\\{basename}"
+    dst = f"{TEST_DIR}\\{basename.upper() if mode in ('case', 'other-client-case') else basename + '-moved'}"
+    device.sh(f"mkdir {shlex.quote(device.root + '/' + TEST_DIR + '/' + basename)}")
+    before = set(_smbd_children(device))
+    directory = Client(device, aapl=True)
+    old = sorted(set(_smbd_children(device)) - before)
+    durable = DurableClient(device)
+    # Reconnect with the client identity that obtained the durable handle.
+    durable.client_guid = directory.conn.client_guid
+    renamer = directory
+    dropped = False
+    try:
+        if mode.startswith("other-client"):
+            renamer = Client(device, aapl=True)
+        def renamed_and_reconnected() -> bool:
+            nonlocal dropped
+            band, granted = durable.open_durable(directory.tree, src + "\\band")
+            if not granted:
+                band.close()
+                return False
+            file_id = band.file_id
+            band.write(b"before", 0)
+            folder = renamer.open(src, RENAME_ACCESS, 1, FILE_DIRECTORY_FILE)
+            try:
+                renamer.rename(folder, dst)
+            finally:
+                folder.close()
+            expected = b"before"
+            if renamer is directory:
+                band.write(b" after", 6)
+                expected += b" after"
+            # A foreign rename must work without another round trip on the
+            # owner's connection to help it process the rename notification.
+            _reset(directory.conn)
+            dropped = True
+            # Wait for teardown so success cannot use a still-live descriptor.
+            _scavengers(device, old)
+            conn, _, tree = durable.connect()
+            try:
+                again = durable.reconnect(tree, dst + "\\band", file_id)
+                try:
+                    return again.read(0, len(expected)) == expected
+                finally:
+                    again.close()
+            finally:
+                conn.disconnect()
+
+        r.check(f"rename:{mode}: a durable band reconnects after its parent directory was renamed",
+                renamed_and_reconnected)
+    finally:
+        if renamer is not directory:
+            renamer.close()
+        if not dropped:
+            directory.close()
 
 
 def expiry_case(r: Results, device: Device) -> None:
@@ -815,6 +878,9 @@ def main() -> int:
         for mode in SETTIME_MODES:
             if f"settime:{mode}" in wanted:
                 settime_case(results, device, mode)
+        for mode in RENAME_MODES:
+            if f"rename:{mode}" in wanted:
+                rename_case(results, device, mode)
         if "expiry" in wanted:
             expiry_case(results, device)
         if args.stall and "mac" in wanted:

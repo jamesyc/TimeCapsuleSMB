@@ -133,6 +133,11 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         # The scavenger hello wait tc_durable_reconnect_test compiles.
         self.make_file(src_dir / "source3/smbd/scavenger.c",
                        "#ifndef TC_SCAVENGER_HELLO_SECONDS\n#endif\n\nstatic bool scavenger_wait_hello(void)\n{\n}\n")
+        # The durable driver also compiles the production rename helpers.
+        self.make_file(src_dir / "source3/smbd/smb2_reply.c",
+                       "static void rename_open_files(void)\n{\n}\n\n"
+                       "NTSTATUS rename_open_files_below(void)\n{\n}\n")
+        self.make_file(src_dir / "source3/smbd/open.c", "void msg_file_was_renamed(void)\n{\n}\n")
         # The timestamp regression compiles the production conversion twice.
         self.make_file(src_dir / "lib/util/time.c",
                        "#define TIME_FIXUP_CONSTANT_INT INT64_C(11644473600)\n"

@@ -39,7 +39,11 @@ AIO_CASES = (
 DURABLE_CASES = (
     "transition", "live", "already_disconnected", "client_mismatch",
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
-    "v1_transition", "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_silent",
+    "v1_transition", "rename_open_descendants", "rename_allocation_failure",
+    "rename_case_sensitive", "rename_case_sensitive_match", "rename_unicode", "rename_emoji",
+    "rename_message", "rename_message_other_share", "rename_case_only",
+    "rename_message_reused_path", "rename_stat_failure",
+    "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_silent",
 )
 
 STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
@@ -122,6 +126,13 @@ def stage(source: Path) -> None:
     scavenger = (source / "source3/smbd/scavenger.c").read_text()
     (modules / "tc_scavenger_hello.inc").write_text(
         cut(scavenger, "#ifndef TC_SCAVENGER_HELLO_SECONDS", "static bool scavenger_wait_hello(") + "\n")
+    # Exercise the real descendant rename and its per-file bookkeeping.
+    reply = (source / "source3/smbd/smb2_reply.c").read_text()
+    (modules / "tc_rename_open_files.inc").write_text(
+        cut(reply, "static void rename_open_files(", "NTSTATUS rename_open_files_below(") + "\n")
+    opened = (source / "source3/smbd/open.c").read_text()
+    (modules / "tc_rename_message.inc").write_text(
+        cut(opened, "void msg_file_was_renamed(", "void msg_file_was_renamed(") + "\n")
     # Compile the production conversion with both signed time_t widths, so
     # the host sanitizer run covers NetBSD 4's overflow paths too.
     time_source = (source / "lib/util/time.c").read_text()

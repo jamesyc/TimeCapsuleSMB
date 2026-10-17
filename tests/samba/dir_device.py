@@ -43,11 +43,17 @@ check the directory paths a client can reach:
   write access (smbd works as root; patch 0066), a write open is still
   refused, the maximal-access context still ignores the attribute, and a
   read-only directory opens.
+- rename-open-below: a directory holding a file the client has open is renamed
+  through the handle macOS renames with (read attributes, delete, synchronize).
+  A client without AAPL keeps Windows semantics: ACCESS_DENIED, nothing moves.
+  A Mac (AAPL negotiated, so vfs_fruit marks its opens POSIX) renames it
+  (patch 0076), and the open file keeps working under the new name.
 
 The Mac cases (skipped with --no-mac) mount the share: a 40-file tree with
 Unicode, mapped and case-only renames copied with ditto and compared, a
 150-entry directory listed twice, and a sparsebundle (Time Machine's band
-directory) created, written and detached. Everything happens inside a
+directory) created, written, renamed while attached as Time Machine renames a
+new backup (patch 0076), and detached. Everything happens inside a
 `__tc_dir_test__` folder created over SSH and removed at the end.
 
 --record writes every open-matrix and error status to a JSON file; --compare
@@ -142,10 +148,23 @@ def status_of(fn):
         return error.status, None
 
 
-class Client:
-    """One SMB2 connection to the test share (no AAPL: Windows semantics)."""
+def aapl_query():
+    """macOS's AAPL create context: a server query (command 1) for the server and
+    volume capabilities and the model (bitmap 7), with its client capabilities
+    (7). vfs_fruit refuses any other length than these 24 bytes."""
+    from smbprotocol.create_contexts import SMB2CreateContextRequest
 
-    def __init__(self, device: Device) -> None:
+    context = SMB2CreateContextRequest()
+    context["buffer_name"] = b"AAPL"
+    context["buffer_data"] = struct.pack("<IIQQ", 1, 0, 7, 7)
+    return context
+
+
+class Client:
+    """One SMB2 connection to the test share: Windows semantics, or with aapl a
+    Mac's, whose opens vfs_fruit marks POSIX."""
+
+    def __init__(self, device: Device, aapl: bool = False) -> None:
         from smbprotocol.connection import Connection
         from smbprotocol.session import Session
         from smbprotocol.tree import TreeConnect
@@ -157,6 +176,10 @@ class Client:
         self.sess.connect()
         self.tree = TreeConnect(self.sess, rf"\\{device.host}\{device.share}")
         self.tree.connect()
+        if aapl:
+            # A Mac's first create opens the share root with the AAPL query.
+            self.open("", FILE_READ_ATTRIBUTES | SYNCHRONIZE, 1, FILE_DIRECTORY_FILE,
+                      contexts=[aapl_query()]).close()
 
     def close(self) -> None:
         for step in (self.tree.disconnect, self.sess.disconnect, self.conn.disconnect):
@@ -166,11 +189,12 @@ class Client:
                 pass
 
     def open(self, path: str, access: int, disposition: int = 1, options: int = 0,
-             share: int = SHARE_ALL, attrs: int = 0):
+             share: int = SHARE_ALL, attrs: int = 0, contexts=None):
         from smbprotocol.open import ImpersonationLevel, Open
 
         handle = Open(self.tree, path)
-        handle.create(ImpersonationLevel.Impersonation, access, attrs, share, disposition, options)
+        handle.create(ImpersonationLevel.Impersonation, access, attrs, share, disposition, options,
+                      create_contexts=contexts)
         return handle
 
     def _send(self, req):
@@ -763,11 +787,21 @@ def mac_cases(r: Results, device: Device) -> None:
                 with open(Path(volume) / "data.bin", "wb") as out:
                     for _ in range(20):
                         out.write(os.urandom(1 << 20))
+                # Time Machine renames a new backup's sparsebundle while it is
+                # attached, its bands open (patch 0076).
+                renamed = bundle.with_name("Test Mac.sparsebundle")
+                try:
+                    bundle.rename(renamed)
+                    bundle, refused = renamed, None
+                except OSError as error:
+                    refused = error
+                r.check("mac: the attached sparsebundle renames to a name with spaces"
+                        f"{f' ({refused})' if refused else ''}", lambda: refused is None)
                 detach = subprocess.run(["hdiutil", "detach", volume], capture_output=True, text=True, timeout=600)
                 ok = detach.returncode == 0
             r.check("mac: the sparsebundle attaches, takes 20 MiB and detaches", lambda: ok)
             bands_mount = sorted(os.listdir(bundle / "bands"))
-            bands_device = sorted(device.sh(f"ls {shlex.quote(device.dir)}/test.sparsebundle/bands").split())
+            bands_device = sorted(device.sh(f"ls {shlex.quote(f'{device.dir}/{bundle.name}/bands')}").split())
             r.check(f"mac: the band directory lists the same over SMB and on disk ({len(bands_mount)} bands)",
                     lambda: bands_mount == bands_device and len(bands_mount) > 0)
             shutil.rmtree(bundle)
@@ -936,8 +970,58 @@ def read_only(r: Results, device: Device, record: dict) -> None:
                   check=False)
 
 
+# The access macOS opens a directory with to rename it.
+RENAME_ACCESS = FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE
+
+
+def rename_open_below(r: Results, device: Device, record: dict, connect=None) -> None:
+    """Rename a directory holding a file the client has open, through the handle
+    macOS renames with: refused without AAPL, done for a Mac (patch 0076)."""
+    connect = connect or (lambda aapl: Client(device, aapl=aapl))
+    statuses = record.setdefault("rename-open-below", {})
+    for label, aapl, expected, check in (
+            ("windows", False, STATUS_ACCESS_DENIED,
+             "without AAPL a directory holding an open file is refused (Windows semantics)"),
+            ("mac", True, STATUS_SUCCESS, "a Mac renames a directory holding its open file")):
+        src, dst = f"{label} bundle", f"{label} renamed.sparsebundle"
+        device.sh(f"mkdir -p {shlex.quote(device.dir + '/' + src)}")
+        client = connect(aapl)
+        try:
+            band = client.open(rel(src, "band"), GENERIC_READ | GENERIC_WRITE, DISPOSITIONS["create"],
+                               FILE_NON_DIRECTORY_FILE)
+            try:
+                band.write(b"band", 0)
+                folder = client.open(rel(src), RENAME_ACCESS, 1, FILE_DIRECTORY_FILE)
+                try:
+                    status, _ = status_of(lambda: client.rename(folder, rel(dst)))
+                finally:
+                    folder.close()
+                statuses[label] = f"0x{status:08x}"
+                moved = (on_disk(device, f"{device.dir}/{dst}/band")
+                         and not on_disk(device, f"{device.dir}/{src}"))
+                kept = (on_disk(device, f"{device.dir}/{src}/band")
+                        and not on_disk(device, f"{device.dir}/{dst}"))
+                r.check(f"rename-open-below: {check} (0x{status:08x})",
+                        lambda: status == expected and (moved if expected == STATUS_SUCCESS else kept))
+                if status == STATUS_SUCCESS and moved:
+                    def still_open() -> bool:
+                        band.write(b" data", 4)
+                        again = client.open(rel(dst, "band"), GENERIC_READ, 1, FILE_NON_DIRECTORY_FILE)
+                        try:
+                            return again.read(0, 9) == b"band data"
+                        finally:
+                            again.close()
+
+                    r.check(f"rename-open-below: the {label} client's open file writes on, read under the new "
+                            "name", still_open)
+            finally:
+                band.close()
+        finally:
+            client.close()
+
+
 SMB_CASES = ("open-matrix", "listing", "mapped-names", "renamed-open", "deep", "delete", "times",
-             "listing-changes", "read-only")
+             "listing-changes", "read-only", "rename-open-below")
 
 
 # --quick (AGENTS.md "Test tiers"): no Mac case, and 300 files for
@@ -965,6 +1049,8 @@ def run_case(case: str, r: Results, device: Device, record: dict, quick: bool = 
                         QUICK_LISTING_FILES if quick else 1200)
     elif case == "read-only":
         read_only(r, device, record.setdefault("read-only", {}))
+    elif case == "rename-open-below":
+        rename_open_below(r, device, record)
     elif case == "mac":
         mac_cases(r, device)
 

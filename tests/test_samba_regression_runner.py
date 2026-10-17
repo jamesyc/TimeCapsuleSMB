@@ -163,6 +163,10 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
              "static bool scavenger_wait_hello(int fd, pid_t pid, struct server_id *child)\n{\n"
              "\tif (fd) {\n\t\treturn false;\n\t}\n\treturn true;\n}")
     (smbd / "scavenger.c").write_text("static int before;\n\n" + hello + "\n\nstatic void after(void)\n{\n}\n")
+    rename = ("static void rename_open_files(void)\n{\n}\n\n"
+              "NTSTATUS rename_open_files_below(void)\n{\n    return NT_STATUS_OK;\n}")
+    (smbd / "smb2_reply.c").write_text(rename)
+    (smbd / "open.c").write_text("void msg_file_was_renamed(void)\n{\n}\n")
     util = tmp_path / "lib/util"
     util.mkdir(parents=True)
     conversion = ("struct timespec nt_time_to_unix_timespec_raw(NTTIME nt)\n{\n"

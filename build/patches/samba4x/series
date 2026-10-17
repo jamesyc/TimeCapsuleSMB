@@ -51,6 +51,22 @@
 # setting 2040-02-05 got 1903-12-30 stored, and 2106-02-07 got 1969-12-31.
 # Saturate at time_t's range, so the TIME_T_MAX/TIME_T_MIN clamps apply.
 0071-util-time-32bit-time-t-saturate.patch|saturate NTTIME conversions at a 32-bit time_t
+# Since 4.23 file_find_subpath(), which decides a directory rename without
+# "strict rename", skips a POSIX open below the directory only when the
+# directory's own handle is POSIX too. vfs_fruit marks a Mac's opens POSIX in
+# openat, but a Mac opens the directory it renames with read attributes,
+# delete and synchronize access only, which open_directory() serves without
+# reopening it, so that handle keeps the lookup's non-POSIX flag. Every rename
+# of a folder holding a Mac's open files failed with ACCESS_DENIED, Time
+# Machine's rename of the sparsebundle it has just attached included (upstream
+# bug 15926, which its fix left broken from 4.23 on). Skip POSIX opens below
+# whatever the directory handle is, as 4.22 did and "strict rename" does;
+# other opens below still refuse the rename, as on Windows. Refresh this
+# client's descendant names and their share/lease records after the parent
+# lock is released: durable disconnect closes their fds and stats by name.
+# Compare complete UTF-8 parent names, and broadcast directory renames so
+# clients holding descendants also refresh them when another client renames.
+0076-smbd-dir-rename-posix-opens-below.patch|a directory rename skips POSIX opens below it
 
 # Upstream proposals.
 # Changes upstream would have to agree to; they need no appliance patch.
