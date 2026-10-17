@@ -46,7 +46,7 @@ FSCK_ALREADY_RUNNING_LINE = "tcapsule-fsck: fsck_hfs already running"
 FSCK_ALREADY_RUNNING_CODE = "fsck_already_running"
 FSCK_ALREADY_RUNNING_MESSAGE = (
     "fsck did not run: fsck_hfs from an earlier disk repair is still running on the device. "
-    "Keep the Time Capsule plugged in, wait for it to finish, then run Disk Repair again."
+    "Keep the Time Capsule plugged in, wait for it to finish, then run \"Disk Repair\" again."
 )
 FSCK_SESSION_DROPPED_CODE = "fsck_session_dropped"
 FSCK_SESSION_DROPPED_MESSAGE = (

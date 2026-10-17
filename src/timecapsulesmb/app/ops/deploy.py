@@ -151,7 +151,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     operation = "deploy"
     if "nbns_enabled" in params:
         raise AppOperationError(
-            "nbns_enabled has been removed; Apple’s native NBNS service is always enabled.",
+            "nbns_enabled has been removed; Apple's native NBNS service is always enabled.",
             code="validation_failed",
         )
     dry_run = bool_param(params, "dry_run")

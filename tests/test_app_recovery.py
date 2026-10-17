@@ -122,7 +122,7 @@ class AppRecoveryTests(unittest.TestCase):
 
         self.assertEqual(recovery["localization_key"], "ssh_still_enabled")
         self.assertEqual(recovery["action_ids"], ["open_ssh_access"])
-        self.assertEqual(recovery["actions"][0], "Disable SSH again in SSH Access.")
+        self.assertEqual(recovery["actions"][0], "Disable SSH again in “SSH Access”.")
 
     def test_broken_acpd_says_try_again_only_where_nothing_was_installed(self) -> None:
         # The check before any change refuses with nothing installed.
@@ -135,7 +135,7 @@ class AppRecoveryTests(unittest.TestCase):
         recovery = recovery_for("deploy", "acpd_broken", stage="wait_for_reboot_up")
         self.assertEqual(recovery["localization_key"], "deploy.acpd_broken.wait_for_reboot_up")
         self.assertIn("The update is installed", recovery["message"])
-        self.assertIn("run Activate", recovery["actions"][2])
+        self.assertIn("run “Activate”", recovery["actions"][2])
         self.assertFalse(recovery["retryable"])
 
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
@@ -154,8 +154,8 @@ class AppRecoveryTests(unittest.TestCase):
                 "Wait a few more minutes.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
                 (
-                    "On NetBSD 4 devices, run Activate once SSH is reachable; deploy did not get far "
-                    "enough to activate Samba after reboot."
+                    "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not get far "
+                    "enough to activate Samba after the reboot."
                 ),
                 (
                     "If your device resets itself, see "

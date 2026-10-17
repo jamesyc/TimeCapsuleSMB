@@ -23,7 +23,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             "message": .string("The helper does not accept a parameter this request sent, so the app and helper are out of step."),
             "actions": .array([
                 .string("Update or reinstall TimeCapsuleSMB so the app and helper use the same API contract."),
-                .string("If Helper path is set in Settings, clear it.")
+                .string("If “Helper path” is set in “Settings”, clear it.")
             ]),
             "action_ids": .array([]),
             "retryable": .bool(false),
@@ -39,7 +39,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(RecoveryActionMapper.actions(for: error).map(\.kind), [.copyDiagnostics])
         let guidance = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(guidance.title, "Unknown parameter")
-        XCTAssertEqual(guidance.steps.last, "If Helper path is set in Settings, clear it.")
+        XCTAssertEqual(guidance.steps.last, "If “Helper path” is set in “Settings”, clear it.")
     }
 
     func testBackendErrorViewModelLocalizesAuthFailureMessagesAcrossFlows() {
@@ -174,7 +174,7 @@ final class RecoveryActionMapperTests: XCTestCase {
     func testSuggestedOperationAndActionIDsMapToUserFacingActions() throws {
         let recovery = try recoveryValue(
             title: "Disk issue",
-            actions: ["Wake the disk by opening it in Finder.", "Retry deploy."],
+            actions: ["Wake the disk by opening it in Finder.", "Run “Install / Update Samba” again."],
             suggestedOperation: "fsck",
             actionIDs: ["open_finder", "install_smb"]
         ).decode(BackendRecoveryPayload.self)
@@ -199,7 +199,7 @@ final class RecoveryActionMapperTests: XCTestCase {
     func testDeployRecoveryDoesNotShowInstallSMBOrUnknownActions() throws {
         let recovery = try recoveryValue(
             title: "No HFS volumes found",
-            actions: ["Retry deploy."],
+            actions: ["Run “Install / Update Samba” again."],
             suggestedOperation: "deploy",
             actionIDs: ["open_finder", "install_smb"]
         ).decode(BackendRecoveryPayload.self)
@@ -301,7 +301,7 @@ final class RecoveryActionMapperTests: XCTestCase {
     func testHumanRecoveryTextDoesNotCreateActionButtons() throws {
         let recovery = try recoveryValue(
             title: "Disk issue",
-            actions: ["Wake the disk by opening it in Finder.", "Retry deploy."],
+            actions: ["Wake the disk by opening it in Finder.", "Run “Install / Update Samba” again."],
             suggestedOperation: "unknown"
         ).decode(BackendRecoveryPayload.self)
         let error = BackendErrorViewModel(
@@ -360,7 +360,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             actions: [
                 "Wait a few more minutes.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
-                "On NetBSD 4 devices, run Activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.",
+                "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not get far enough to activate Samba after the reboot.",
                 "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
             ],
             actionIDs: ["run_checkup"],

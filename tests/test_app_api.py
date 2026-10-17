@@ -1381,7 +1381,7 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("config", error["debug"]["accepted_params"])
         self.assertEqual(error["recovery"]["title"], "Unknown parameter")
         self.assertFalse(error["recovery"]["retryable"])
-        self.assertIn("If Helper path is set in Settings, clear it.", error["recovery"]["actions"])
+        self.assertIn("If “Helper path” is set in “Settings”, clear it.", error["recovery"]["actions"])
         # A started and a finished event, like any other failed operation.
         self.assertEqual([call.kwargs["phase"] for call in self._telemetry_client.emit.call_args_list], ["started", "finished"])
         finished = self._telemetry_client.emit.call_args_list[1].kwargs
@@ -5727,7 +5727,7 @@ class AppApiTests(unittest.TestCase):
         # Not the refusal's "try again": the payload is on the device already.
         self.assertEqual(recovery["localization_key"], "deploy.acpd_broken.wait_for_reboot_up")
         self.assertIn("The update is installed", recovery["message"])
-        self.assertEqual(recovery["actions"][1], "Wait 2 minutes for the device to start up, then run Checkup.")
+        self.assertEqual(recovery["actions"][1], "Wait 2 minutes for the device to start up, then run “Checkup”.")
         self.assertFalse(any("try again" in action for action in recovery["actions"]))
         self.assertEqual(recovery["action_ids"], ["run_checkup"])
 
@@ -5913,7 +5913,7 @@ MaSt = (
         self.assertEqual(error["code"], "deploy_no_hfs_partition")
         self.assertEqual(error["recovery"]["title"], "No valid HFS partition")
         self.assertTrue(error["recovery"]["retryable"])
-        self.assertEqual(error["recovery"]["actions"][0], "Retry deploy.")
+        self.assertEqual(error["recovery"]["actions"][0], "Run “Install / Update Samba” again.")
         self.assertEqual(error["recovery"]["action_ids"], [])
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")

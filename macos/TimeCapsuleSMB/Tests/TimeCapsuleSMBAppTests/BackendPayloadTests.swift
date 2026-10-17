@@ -234,7 +234,7 @@ final class BackendPayloadTests: XCTestCase {
             {
               "title": "No HFS volumes found",
               "message": "The device did not report a deployable HFS disk.",
-              "actions": ["Wake the disk.", "Retry deploy."],
+              "actions": ["Wake the disk.", "Run “Install / Update Samba” again."],
               "retryable": true,
               "suggested_operation": "deploy",
               "docs_anchor": "deploy"
@@ -245,7 +245,7 @@ final class BackendPayloadTests: XCTestCase {
         let error = BackendErrorViewModel(event: event)
 
         XCTAssertEqual(error.recovery?.title, "No HFS volumes found")
-        XCTAssertEqual(error.recovery?.actions, ["Wake the disk.", "Retry deploy."])
+        XCTAssertEqual(error.recovery?.actions, ["Wake the disk.", "Run “Install / Update Samba” again."])
         XCTAssertEqual(error.recovery?.suggestedOperation, "deploy")
 
         XCTAssertThrowsError(try BackendEvent(type: "result", operation: "capabilities", ok: true).decodePayload(CapabilitiesPayload.self)) { thrown in

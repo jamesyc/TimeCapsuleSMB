@@ -177,7 +177,7 @@ final class DashboardPresentationTests: XCTestCase {
         var row = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows.first)
         XCTAssertEqual(
             row.message,
-            "This Mac is on a network where the device does not share its disks, such as its internet (WAN) side or its guest network. Join the device's main network by Wi-Fi or one of its LAN ports, then run Checkup again."
+            "This Mac is on a network where the device does not share its disks, such as its internet (WAN) side or its guest network. Join the device's main network by Wi-Fi or one of its LAN ports, then run “Checkup” again."
         )
         XCTAssertFalse(row.message.contains("doctor"))
 

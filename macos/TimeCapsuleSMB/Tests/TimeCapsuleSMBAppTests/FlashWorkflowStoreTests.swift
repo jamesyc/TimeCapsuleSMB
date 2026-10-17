@@ -444,7 +444,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(store.manualPowerCycleNotice?.mode, .patch)
         XCTAssertEqual(
             store.manualPowerCycleNotice?.message,
-            "Flash write validation completed. Unplug the device, wait 10 seconds, then plug it back in. Wait for it to finish booting, then run Checkup. One firmware bank was left untouched."
+            "Flash write validation completed. Unplug the device, wait 10 seconds, then plug it back in. Wait for it to finish booting, then run “Checkup”. One firmware bank was left untouched."
         )
         XCTAssertEqual(store.manualPowerCycleNotice?.viewCheckupActionTitle, "View Checkup")
 

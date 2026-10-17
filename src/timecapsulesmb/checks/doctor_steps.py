@@ -1901,7 +1901,7 @@ def _add_tunneled_authenticated_smb_results(
                     {**listing_result.details, "code": DOCTOR_CODE_SMB_LOGIN_REJECTED},
                     domain=DOMAIN_COMPUTER,
                 ))
-                add_result(_device_smb_not_checked("Samba rejected the saved password (see This computer)"))
+                add_result(_device_smb_not_checked("Samba rejected the saved password (see this computer's checks)"))
                 return DEVICE_SMB_BLOCKED
             add_result(listing_result)
             if listing_result.status != "PASS":
@@ -2582,8 +2582,8 @@ def _add_admin_password_result(connection: SshConnection, sink: DoctorSink, read
         sink.add(CheckResult(
             "WARN",
             "the saved password logs in over SSH but is not the AirPort admin password; "
-            "Install / Update Samba, Disk Repair, Uninstall and SSH Access (tcapsule deploy, fsck, uninstall "
-            "and set-ssh) refuse it until it is re-entered "
+            "\"Install / Update Samba\", \"Disk Repair\", \"Uninstall\" and \"SSH Access\" "
+            "(tcapsule deploy, fsck, uninstall and set-ssh) refuse it until it is re-entered "
             "in the macOS app or with tcapsule configure",
         ))
     else:
@@ -3254,11 +3254,11 @@ def _doctor_check_device_smb(
         )
         return DEVICE_SMB_FAILED
     if not command_exists("smbclient"):
-        sink.add(_device_smb_not_checked("smbclient is missing on this computer (see This computer)"))
+        sink.add(_device_smb_not_checked("smbclient is missing on this computer (see this computer's checks)"))
         return DEVICE_SMB_BLOCKED
     if password_match is False:
         sink.add(_device_smb_not_checked(
-            "the saved password is not the AirPort admin password, so Samba would reject it (see This computer)"
+            "the saved password is not the AirPort admin password, so Samba would reject it (see this computer's checks)"
         ))
         return DEVICE_SMB_BLOCKED
     return _add_tunneled_authenticated_smb_results(

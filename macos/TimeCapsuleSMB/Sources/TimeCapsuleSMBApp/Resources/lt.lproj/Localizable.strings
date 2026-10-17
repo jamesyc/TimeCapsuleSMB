@@ -54,8 +54,8 @@
 "app_readiness.state.validating_install" = "Tikrinami įdiegti failai";
 "app_readiness.error.unexpected_payload" = "%@ grąžino netikėtą atsakymą: %@";
 "app_readiness.recovery.contract_mismatch" = "Atnaujinkite arba iš naujo įdiekite TimeCapsuleSMB, kad programa ir pagalbinė programa naudotų tą pačią API sutartį.";
-"app_readiness.recovery.install_validation_failed" = "Iš naujo įdiekite TimeCapsuleSMB arba atidarykite diagnostiką nepavykusiems patikrinimams peržiūrėti.";
-"app_readiness.recovery.retry_diagnostics" = "Atidarykite diagnostiką ir bandykite programos parengtį dar kartą.";
+"app_readiness.recovery.install_validation_failed" = "Iš naujo įdiekite TimeCapsuleSMB arba atidarykite skiltį „Diagnostika“ nepavykusiems patikrinimams peržiūrėti.";
+"app_readiness.recovery.retry_diagnostics" = "Atidarykite skiltį „Diagnostika“ ir bandykite programos parengtį dar kartą.";
 "app_readiness.recovery.update_required" = "Atsisiųskite naujausią versiją iš %@.";
 "app_readiness.recovery.version_metadata_unavailable" = "Patikrinkite tinklo ryšį arba bandykite vėliau.";
 "app_settings.appearance" = "Išvaizda";
@@ -201,7 +201,7 @@
 "dashboard.health.status.running" = "Vykdoma";
 "dashboard.health.status.unknown" = "Nežinoma";
 "dashboard.health.status.warning" = "Įspėjimas";
-"dashboard.health.unchecked" = "Atlikite patikrinimą šiai sričiai apžiūrėti.";
+"dashboard.health.unchecked" = "Paleiskite operaciją „Patikrinimas“ šiai sričiai apžiūrėti.";
 "dashboard.generation.1" = "1-a karta";
 "dashboard.generation.2" = "2-a karta";
 "dashboard.generation.3" = "3-ia karta";
@@ -283,11 +283,11 @@
 "bundle_issue.version_metadata_unavailable.message" = "Naujinimų metaduomenys nepasiekiami.";
 "dialog.forget.action" = "Pamiršti %@";
 "dialog.forget.error_title" = "Nepavyko pamiršti įrenginio";
-"dialog.forget.message" = "Pašalinti %@ iš šio Mac? Samba iš įrenginio nepašalinama.";
+"dialog.forget.message" = "Pamiršti %@ šiame Mac? Samba iš įrenginio nepašalinama.";
 "dialog.forget.title" = "Pamiršti šį įrenginį?";
 "doctor.check.payload_missing_from_disk" = "Visuose diskuose trūksta Samba diegimo failų, pavyzdžiui, po disko ištrynimo su AirPort Utility (Erase Disk). Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
-"doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir paleiskite patikrinimą iš naujo.";
+"doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir dar kartą paleiskite operaciją „Patikrinimas“.";
 "doctor.check.mac_smb3_disabled" = "%@ išjungia SMB 3 (protocol_vers_map), o Time Machine reikia SMB 3. Ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ išjungia SMB 3 serveriui [%2$@]. Jei tai šis įrenginys, ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.domain.this_mac" = "Šis Mac";
@@ -384,7 +384,7 @@
 "flash.action.plan_restore" = "Planuoti atkūrimą";
 "flash.action.write_patch" = "Įrašyti pataisymą";
 "flash.action.write_restore" = "Įrašyti atkūrimą";
-"flash.manual_power_cycle.message" = "Flash įrašymo tikrinimas baigtas. Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite. Palaukite, kol jis baigs įsikrauti, tada paleiskite patikrinimą. Vienas programinės įrangos bankas paliko nepaliestą.";
+"flash.manual_power_cycle.message" = "Flash įrašymo tikrinimas baigtas. Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite. Palaukite, kol jis baigs įsikrauti, tada paleiskite operaciją „Patikrinimas“. Vienas programinės įrangos bankas liko nepakeistas.";
 "flash.manual_power_cycle.title" = "Reikalingas rankinis paleidimas iš naujo";
 "flash.mode.check_apple" = "Tikrinti Apple programinę įrangą";
 "flash.mode.download_only" = "Patvirtinti Apple atkūrimo programinę įrangą";
@@ -515,7 +515,7 @@
 "workflow.error.ata_standby_invalid" = "ATA budėjimo laikas turi būti tuščias arba neneigiamas sekundžių skaičius.";
 "workflow.error.deploy_options_invalid" = "Diegimo parinktys yra netinkamos.";
 "workflow.error.flash_backup_required" = "Prieš planuodami flash darbus sukurkite atsarginę kopiją ir patikrinkite programinę įrangą.";
-"workflow.error.flash_backup_unavailable" = "Flash atsarginė kopija nepasiekiama.";
+"workflow.error.flash_backup_unavailable" = "Flash atminties atsarginė kopija nepasiekiama.";
 "workflow.error.flash_mode_read_only" = "Šis flash režimas neįrašo programinės įrangos.";
 "workflow.error.flash_plan_required" = "Prieš vykdant planuokite pasirinktą flash įrašymą.";
 "workflow.error.flash_plan_stale" = "Pakeitus Apple programinės įrangos parinktis iš naujo planuokite pasirinktą flash įrašymą.";
@@ -719,7 +719,7 @@
 "backend.recovery.device_probe_failed.title" = "Įrenginio patikra nepavyko";
 "backend.recovery.device_probe_failed.message" = "TimeCapsuleSMB prisijungė per SSH, bet negalėjo nuskaityti įrenginio sistemos informacijos.";
 "backend.recovery.device_probe_failed.action.1" = "Bandykite dar kartą.";
-"backend.recovery.device_probe_failed.action.2" = "Atlikite patikrinimą, kad pamatytumėte išsamią informaciją.";
+"backend.recovery.device_probe_failed.action.2" = "Paleiskite operaciją „Patikrinimas“, kad pamatytumėte išsamią informaciją.";
 "backend.recovery.ssh_enable_timeout.title" = "SSH dar nepasiekiama";
 "backend.recovery.ssh_enable_timeout.message" = "Įjungus SSH įrenginys paleidžiamas iš naujo. Kai kuriems įrenginiams tam reikia daugiau laiko, nei laukia TimeCapsuleSMB.";
 "backend.recovery.ssh_enable_timeout.action.1" = "Palaukite kelias minutes ir bandykite dar kartą.";
@@ -734,7 +734,7 @@
 "backend.recovery.remote_error.title" = "Nuotolinė operacija nepavyko";
 "backend.recovery.remote_error.message" = "Pagalbinė programa negalėjo užbaigti prašomos nuotolinės operacijos įrenginyje.";
 "backend.recovery.remote_error.action.1" = "Peržiūrėkite operacijos žurnalą.";
-"backend.recovery.remote_error.action.2" = "Kai įrenginys bus pasiekiamas, atlikite patikrinimą.";
+"backend.recovery.remote_error.action.2" = "Kai įrenginys bus pasiekiamas, paleiskite operaciją „Patikrinimas“.";
 "backend.recovery.operation_failed.title" = "Operacija nepavyko";
 "backend.recovery.operation_failed.message" = "Vykdydama operaciją, pagalbinė programa susidūrė su netikėta klaida.";
 "backend.recovery.operation_failed.action.1" = "Peržiūrėkite derinimo informaciją.";
@@ -753,9 +753,9 @@
 "backend.recovery.deploy.confirmation_required.action.2" = "Patvirtinkite diegimą ir, jei prašoma, paleidimą iš naujo ar aktyvavimą.";
 "backend.recovery.deploy.validation_failed.title" = "Diegimo tikrinimas nepavyko";
 "backend.recovery.deploy.validation_failed.message" = "Su programa pateikti diegimo failai arba diegimo parametrai yra netinkami.";
-"backend.recovery.deploy.validation_failed.action.1" = "Atidarykite diagnostiką.";
+"backend.recovery.deploy.validation_failed.action.1" = "Atidarykite skiltį „Diagnostika“.";
 "backend.recovery.deploy.validation_failed.action.2" = "Prieš bandydami dar kartą, sutvarkykite trūkstamus failus arba netinkamus laukus.";
-"backend.recovery.deploy.unsupported_device.title" = "Nėra palaikomų diegimo failų";
+"backend.recovery.deploy.unsupported_device.title" = "Nepalaikomas įrenginys";
 "backend.recovery.deploy.unsupported_device.message" = "Šis AirPort modelis negali paleisti TimeCapsuleSMB.";
 "backend.recovery.deploy.unsupported_device.action.1" = "TimeCapsuleSMB palaiko AirPort Time Capsule ir AirPort Extreme. AirPort Express nepalaikomas.";
 "backend.recovery.deploy.unsupported_device.action.2" = "Pamirškite šį įrenginį, tada pridėkite savo Time Capsule arba AirPort Extreme.";
@@ -874,7 +874,7 @@
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.title" = "Apple ACPd sugedo";
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.message" = "Atnaujinimas įdiegtas, bet Apple AirPort tarnyba (ACPd) sustojo nepaleidusi įrenginio iš naujo. Tai Apple programinės įrangos klaida, o ne TimeCapsuleSMB.";
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.1" = "Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite.";
-"backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.2" = "Palaukite 2 minutes, kol įrenginys pasileis, tada atlikite patikrinimą.";
+"backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.2" = "Palaukite 2 minutes, kol įrenginys pasileis, tada paleiskite operaciją „Patikrinimas“.";
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.3" = "NetBSD 4 įrenginiuose paleiskite „Aktyvuoti“, jei patikrinimas rodo, kad Samba neveikia.";
 "backend.recovery.acp_unreachable.title" = "AirPort ACP nepasiekiamas";
 "backend.recovery.acp_unreachable.message" = "Šis Mac negali pasiekti įrenginio AirPort ACP (prievadas 5009), nors paties įrenginio ACP veikia.";
@@ -886,31 +886,31 @@
 "backend.recovery.runtime_not_restarted.title" = "Failų bendrinimas vėl neįsijungė";
 "backend.recovery.runtime_not_restarted.message" = "Įrenginys paleistas iš naujo, bet įdiegtos TimeCapsuleSMB paslaugos nepasileido.";
 "backend.recovery.runtime_not_restarted.action.1" = "Paleiskite „Aktyvuoti“.";
-"backend.recovery.runtime_not_restarted.action.2" = "Atlikite patikrinimą, kad pamatytumėte išsamią informaciją.";
+"backend.recovery.runtime_not_restarted.action.2" = "Paleiskite operaciją „Patikrinimas“, kad pamatytumėte išsamią informaciją.";
 "backend.recovery.ssh_still_enabled.title" = "SSH vis dar įjungta";
 "backend.recovery.ssh_still_enabled.message" = "Įrenginys buvo paleistas iš naujo, bet SSH po to vis dar buvo įjungta.";
 "backend.recovery.ssh_still_enabled.action.1" = "Dar kartą išjunkite SSH skiltyje „SSH prieiga“.";
 "backend.recovery.ssh_still_enabled.action.2" = "Jei SSH lieka įjungta, paleiskite įrenginį iš naujo ir bandykite dar kartą.";
 "backend.recovery.deploy.remote_error.verify_runtime_reboot.title" = "Samba paslaugos neparuoštos";
 "backend.recovery.deploy.remote_error.verify_runtime_reboot.message" = "Įrenginys paleistas iš naujo, bet valdomos Samba paslaugos nepradėjo tinkamai veikti.";
-"backend.recovery.deploy.remote_error.verify_runtime_reboot.action.1" = "Atlikite patikrinimą, kad gautumėte daugiau informacijos.";
+"backend.recovery.deploy.remote_error.verify_runtime_reboot.action.1" = "Paleiskite operaciją „Patikrinimas“, kad gautumėte daugiau informacijos.";
 "backend.recovery.deploy.remote_error.verify_runtime_reboot.action.2" = "Jei patikrinimas vis tiek nepavyksta, peržiūrėkite paleisties žurnalus naudodami komandinės eilutės įrankį.";
 "backend.recovery.deploy.remote_error.activate_runtime.title" = "Samba paslaugų aktyvavimas nepavyko";
 "backend.recovery.deploy.remote_error.activate_runtime.message" = "Nepavyko paleisti įdiegtų Samba paslaugų nepaleidžiant įrenginio iš naujo.";
 "backend.recovery.deploy.remote_error.activate_runtime.action.1" = "Dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.recovery.deploy.remote_error.activate_runtime.action.2" = "Atlikite patikrinimą, kad išsamiai patikrintumėte Samba paslaugas.";
+"backend.recovery.deploy.remote_error.activate_runtime.action.2" = "Paleiskite operaciją „Patikrinimas“, kad išsamiai patikrintumėte Samba paslaugas.";
 "backend.recovery.deploy.remote_error.post_reboot_activation.title" = "Aktyvavimas po paleidimo iš naujo nepavyko";
 "backend.recovery.deploy.remote_error.post_reboot_activation.message" = "Įrenginys paleistas iš naujo, bet grįžus SSH nepavyko paleisti įdiegtų Samba paslaugų.";
 "backend.recovery.deploy.remote_error.post_reboot_activation.action.1" = "Dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.recovery.deploy.remote_error.post_reboot_activation.action.2" = "Atlikite patikrinimą, kad išsamiai patikrintumėte Samba paslaugas.";
+"backend.recovery.deploy.remote_error.post_reboot_activation.action.2" = "Paleiskite operaciją „Patikrinimas“, kad išsamiai patikrintumėte Samba paslaugas.";
 "backend.recovery.deploy.remote_error.verify_runtime_activation.title" = "Aktyvuotos Samba paslaugos neparuoštos";
 "backend.recovery.deploy.remote_error.verify_runtime_activation.message" = "Įdiegtos Samba paslaugos buvo paleistos, bet nepradėjo tinkamai veikti.";
 "backend.recovery.deploy.remote_error.verify_runtime_activation.action.1" = "Dar kartą paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.recovery.deploy.remote_error.verify_runtime_activation.action.2" = "Atlikite patikrinimą, kad išsamiai patikrintumėte Samba paslaugas.";
+"backend.recovery.deploy.remote_error.verify_runtime_activation.action.2" = "Paleiskite operaciją „Patikrinimas“, kad išsamiai patikrintumėte Samba paslaugas.";
 "backend.recovery.uninstall.remote_error.verify_post_uninstall.title" = "Tikrinimas po pašalinimo nepavyko";
 "backend.recovery.uninstall.remote_error.verify_post_uninstall.message" = "Po paleidimo iš naujo įrenginyje vis dar buvo valdomų TimeCapsuleSMB failų.";
 "backend.recovery.uninstall.remote_error.verify_post_uninstall.action.1" = "Bandykite pašalinti dar kartą.";
-"backend.recovery.uninstall.remote_error.verify_post_uninstall.action.2" = "Jei įrenginys pasiekiamas, atlikite patikrinimą.";
+"backend.recovery.uninstall.remote_error.verify_post_uninstall.action.2" = "Jei įrenginys pasiekiamas, paleiskite operaciją „Patikrinimas“.";
 "backend.recovery.fsck.validation_failed.select_fsck_volume.title" = "Nepavyko pasirinkti tomo";
 "backend.recovery.fsck.validation_failed.select_fsck_volume.message" = "Pagalbinė programa negalėjo parinkti lygiai vieno HFS tomo, kuriame vykdyti fsck.";
 "backend.recovery.fsck.validation_failed.select_fsck_volume.action.1" = "Aiškiai pasirinkite tikslinį tomą.";
@@ -924,7 +924,7 @@
 "sidebar.menu.copy_ip_address" = "Kopijuoti IP adresą";
 "sidebar.menu.copy_smb_address" = "Kopijuoti SMB adresą";
 "sidebar.menu.open_overview" = "Atidaryti apžvalgą";
-"sidebar.menu.remove_from_this_mac" = "Pašalinti iš šio Mac";
+"sidebar.menu.remove_from_this_mac" = "Pamiršti šiame Mac";
 "sidebar.settings" = "Nustatymai";
 "status.activation_needed" = "Reikalingas aktyvavimas";
 "status.checking" = "Tikrinama";
@@ -1069,7 +1069,7 @@
 "timeline.stage.starting_smb" = "Paleidžiamas SMB";
 "timeline.stage.validating_app_bundle" = "Tikrinamas programos paketas";
 "toggle.internal_share_use_disk_root" = "Bendrinti vidinio disko šaknį";
-"toggle.smb_browse_compatibility" = "Leisti SMB bendrinimo naršymą";
+"toggle.smb_browse_compatibility" = "Leisti naršyti SMB bendrinamus diskus";
 "toggle.mdns_advertise_afp" = "Skelbti AFP per Bonjour";
 "toggle.mdns_advertise_afp.help" = "Skelbti AFP per Bonjour. Palikite išjungtą: macOS 26.x/27 slepia Time Capsule, kurios skelbia AFP.";
 "toggle.any_protocol" = "Leisti bet kurį SMB protokolą";
@@ -1126,7 +1126,7 @@
 
 "settings.note.rsync" = "Įjungti rsync paslaugą";
 
-"settings.note.browsing" = "Rodyti bendrinimus prieš prisijungiant; failams vis tiek reikia autentifikavimo.";
+"settings.note.browsing" = "Rodyti bendrinamus diskus prieš prisijungiant; failams vis tiek reikia autentifikavimo.";
 
 "settings.note.afp" = "Įjungti AFP skelbimą per Bonjour. Sukelia suderinamumo problemų su macOS 27";
 

@@ -158,7 +158,7 @@
 "confirm.flash.restore_write.action" = "Записать прошивку";
 "confirm.flash.restore_write.message" = "Восстановить оригинальную прошивку Apple в банке прошивки %@ на %@ и перезагрузить устройство после проверки?";
 "confirm.flash.restore_secondary_write.action" = "Записать прошивку";
-"confirm.flash.restore_secondary_write.message" = "Резервный (вторичный) банк прошивки на %@ повреждён. Перезаписать его оригинальной прошивкой Apple? Основной банк не изменяется, перезагрузка не нужна; не отключайте питание устройства несколько минут.";
+"confirm.flash.restore_secondary_write.message" = "Резервный (вторичный) банк прошивки на %@ поврежден. Перезаписать его оригинальной прошивкой Apple? Основной банк не изменяется, перезагрузка не нужна; не отключайте питание устройства несколько минут.";
 "confirm.flash.restore_secondary_write.title" = "Восстановить резервный банк прошивки?";
 "confirm.flash.restore_write.title" = "Восстановить прошивку Apple?";
 "confirm.uninstall.no_reboot.action" = "Удалить";
@@ -201,7 +201,7 @@
 "dashboard.health.status.running" = "Выполняется";
 "dashboard.health.status.unknown" = "Неизвестно";
 "dashboard.health.status.warning" = "Предупреждение";
-"dashboard.health.unchecked" = "Запустите диагностику для проверки этого раздела.";
+"dashboard.health.unchecked" = "Запустите операцию «Проверка», чтобы узнать состояние этого раздела.";
 "dashboard.generation.1" = "1-е поколение";
 "dashboard.generation.2" = "2-е поколение";
 "dashboard.generation.3" = "3-е поколение";
@@ -235,7 +235,7 @@
 "install.completion.title.verified" = "Установка/обновление проверено";
 "install.completion.warning.netbsd4" = "После последующей перезагрузки устройств NetBSD4 может потребоваться действие «Активировать», если хук запуска не изменен.";
 "install.advanced_options.no_wait_note" = "«Не ждать» — параметр для опытных пользователей: после запроса перезагрузки управление возвращается сразу, без последующей активации или проверки.";
-"install.progress.deploying.message" = "Отправка и установка управляемых служб Samba. Это может занять несколько минут…";
+"install.progress.deploying.message" = "Отправка и установка управляемых служб Samba. Это может занять несколько минут...";
 "install.progress.deploying.title" = "Установка/обновление";
 "install.state.awaiting_confirmation" = "Перед тем, как продолжить, просмотрите диалоговое окно подтверждения.";
 "install.state.deploy_failed" = "Ошибка установки/обновления.";
@@ -255,7 +255,7 @@
 "diagnostics.distribution" = "Дистрибутив";
 "diagnostics.helper" = "Вспомогательная программа";
 "diagnostics.runtime_issues" = "Проблемы в работе служб";
-"diagnostics.save" = "Сохранить диагностику…";
+"diagnostics.save" = "Сохранить диагностику...";
 "diagnostics.saved" = "Диагностические данные сохранены.";
 "diagnostics.state" = "Состояние";
 "diagnostics.title" = "Диагностика";
@@ -283,11 +283,11 @@
 "bundle_issue.version_metadata_unavailable.message" = "Метаданные обновления недоступны.";
 "dialog.forget.action" = "Забыть %@";
 "dialog.forget.error_title" = "Не удалось забыть устройство";
-"dialog.forget.message" = "Удалить %@ с этого Mac? При этом Samba не удаляется с устройства.";
+"dialog.forget.message" = "Убрать %@ с этого Mac? При этом Samba не удаляется с устройства.";
 "dialog.forget.title" = "Забыть это устройство?";
 "doctor.check.payload_missing_from_disk" = "Файлы Samba отсутствуют на всех дисках, например после «Стереть диск» в Утилите AirPort. Запустите «Установить/обновить Samba», чтобы установить заново.";
 "doctor.check.metadata_migration_in_progress" = "На устройстве все еще выполняется перенос метаданных. «Установить/обновить Samba» дождется его завершения перед установкой.";
-"doctor.check.client_on_unshared_network" = "Этот Mac находится в сети, в которой устройство не открывает общий доступ к своим дискам, например на стороне интернета (WAN) или в гостевой сети устройства. Подключите этот Mac к основной сети устройства по Wi-Fi или через один из его портов LAN и запустите проверку снова.";
+"doctor.check.client_on_unshared_network" = "Этот Mac находится в сети, в которой устройство не открывает общий доступ к своим дискам, например на стороне интернета (WAN) или в гостевой сети устройства. Подключите этот Mac к основной сети устройства по Wi-Fi или через один из его портов LAN и снова запустите операцию «Проверка».";
 "doctor.check.mac_smb3_disabled" = "%@ отключает SMB 3 (protocol_vers_map), а Time Machine нужен SMB 3. Удалите эту строку, затем удалите диск в настройках Time Machine и добавьте его снова.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ отключает SMB 3 для сервера [%2$@]. Если это и есть данное устройство, удалите эту строку, затем удалите диск в настройках Time Machine и добавьте его снова.";
 "doctor.domain.this_mac" = "Этот Mac";
@@ -384,7 +384,7 @@
 "flash.action.plan_restore" = "Спланировать восстановление";
 "flash.action.write_patch" = "Записать патч";
 "flash.action.write_restore" = "Записать восстановленную прошивку";
-"flash.manual_power_cycle.message" = "Запись во флеш-память проверена. Отключите питание устройства, подождите 10 секунд и подключите его снова. Дождитесь завершения запуска и выполните диагностику. Один банк прошивки остался без изменений.";
+"flash.manual_power_cycle.message" = "Запись во флеш-память проверена. Отключите питание устройства, подождите 10 секунд и подключите его снова. Дождитесь завершения запуска и запустите операцию «Проверка». Один банк прошивки остался без изменений.";
 "flash.manual_power_cycle.title" = "Требуется ручная перезагрузка";
 "flash.mode.check_apple" = "Проверить прошивку Apple";
 "flash.mode.download_only" = "Проверить прошивку восстановления Apple";
@@ -634,7 +634,7 @@
 "backend.error.deploy.xattr_migration_unreadable_folder" = "Устройство не смогло прочитать папку на диске, поэтому перенос метаданных Samba не удался. Папка указана в журнале операции; запустите «Исправление диска», затем снова запустите «Установить/обновить Samba».";
 "backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "Устройство не смогло прочитать папку на диске, поэтому перенос метаданных Samba не удался. Папка указана в журнале операции; запустите «Исправление диска», затем снова запустите «Установить/обновить Samba».";
 "backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB не установлен на этом устройстве. Сначала запустите «Установить/обновить Samba».";
-"backend.error.flash.secondary_bank_invalid" = "Установка патча отклонена, потому что резервный (вторичный) банк прошивки повреждён. Выберите «Спланировать восстановление», чтобы перезаписать его прошивкой Apple, затем выберите «Снова создать резервную копию и проверить» и установите патч.";
+"backend.error.flash.secondary_bank_invalid" = "Установка патча отклонена, потому что резервный (вторичный) банк прошивки поврежден. Выберите «Спланировать восстановление», чтобы перезаписать его прошивкой Apple, затем выберите «Снова создать резервную копию и проверить» и установите патч.";
 "backend.error.flash.secondary_bank_read_mismatch" = "Резервный (вторичный) банк прошивки прочитан в этой резервной копии иначе, чем при проверке самим устройством, поэтому он не перезаписан, а установка патча отклонена. Выберите «Создать резервную копию и проверить».";
 "backend.error.activate.runtime_outdated" = "Установленный на этом устройстве TimeCapsuleSMB слишком старый, и это приложение не может его запустить. Сначала запустите «Установить/обновить Samba».";
 "backend.error.activate.client_outdated" = "Установленный на этом устройстве TimeCapsuleSMB относится к более новой основной версии, чем это приложение. Обновите TimeCapsuleSMB и повторите попытку.";
@@ -654,7 +654,7 @@
 "backend.error.ssh_still_enabled" = "SSH по-прежнему включен после перезагрузки, поэтому отключение не вступило в силу.";
 "backend.error.payload_missing_from_disk" = "Файлы Samba отсутствуют на всех дисках устройства, например после «Стереть диск» в Утилите AirPort. Запустите «Установить/обновить Samba», чтобы установить заново.";
 "backend.error.fsck.runtime_not_restarted" = "Исправление диска завершено, но общий доступ к файлам не возобновился после перезагрузки устройства.";
-"backend.error.fsck.fsck_already_running" = "На устройстве всё ещё выполняется предыдущее исправление диска. Не отключайте Time Capsule от питания, дождитесь его завершения, затем снова запустите «Исправление диска».";
+"backend.error.fsck.fsck_already_running" = "На устройстве все еще выполняется предыдущее исправление диска. Не отключайте Time Capsule от питания, дождитесь его завершения, затем снова запустите «Исправление диска».";
 "backend.error.fsck.fsck_session_dropped" = "Соединение прервалось во время исправления диска. Исправление продолжается на устройстве: не отключайте Time Capsule от питания и не перезагружайте его.";
 "backend.recovery.auth_failed.title" = "Ошибка аутентификации";
 "backend.recovery.auth_failed.message" = "Устройство отклонило указанный пароль или учетные данные SSH.";
@@ -719,7 +719,7 @@
 "backend.recovery.device_probe_failed.title" = "Не удалось проверить устройство";
 "backend.recovery.device_probe_failed.message" = "TimeCapsuleSMB вошел по SSH, но не смог прочитать системные сведения устройства.";
 "backend.recovery.device_probe_failed.action.1" = "Повторите попытку.";
-"backend.recovery.device_probe_failed.action.2" = "Выполните проверку, чтобы узнать подробности.";
+"backend.recovery.device_probe_failed.action.2" = "Запустите операцию «Проверка», чтобы узнать подробности.";
 "backend.recovery.ssh_enable_timeout.title" = "SSH еще не доступен";
 "backend.recovery.ssh_enable_timeout.message" = "При включении SSH устройство перезагружается. Некоторым устройствам на это нужно больше времени, чем ждет TimeCapsuleSMB.";
 "backend.recovery.ssh_enable_timeout.action.1" = "Подождите несколько минут и повторите попытку.";
@@ -734,7 +734,7 @@
 "backend.recovery.remote_error.title" = "Ошибка удаленной операции";
 "backend.recovery.remote_error.message" = "Вспомогательной программе не удалось выполнить запрошенную операцию на удаленном устройстве.";
 "backend.recovery.remote_error.action.1" = "Проверьте журнал операции.";
-"backend.recovery.remote_error.action.2" = "Выполните проверку, когда устройство станет доступным.";
+"backend.recovery.remote_error.action.2" = "Запустите операцию «Проверка», когда устройство станет доступным.";
 "backend.recovery.operation_failed.title" = "Ошибка операции";
 "backend.recovery.operation_failed.message" = "Во время выполнения операции во вспомогательной программе произошел непредвиденный сбой.";
 "backend.recovery.operation_failed.action.1" = "Проверьте отладочные сведения.";
@@ -755,7 +755,7 @@
 "backend.recovery.deploy.validation_failed.message" = "Файлы установки из комплекта приложения или входные данные установки недействительны.";
 "backend.recovery.deploy.validation_failed.action.1" = "Откройте раздел «Диагностика».";
 "backend.recovery.deploy.validation_failed.action.2" = "Прежде чем повторить попытку, восстановите отсутствующие файлы и исправьте недопустимые поля.";
-"backend.recovery.deploy.unsupported_device.title" = "Нет подходящих файлов установки";
+"backend.recovery.deploy.unsupported_device.title" = "Устройство не поддерживается";
 "backend.recovery.deploy.unsupported_device.message" = "Эта модель AirPort не может запускать TimeCapsuleSMB.";
 "backend.recovery.deploy.unsupported_device.action.1" = "TimeCapsuleSMB поддерживает AirPort Time Capsule и AirPort Extreme. AirPort Express не поддерживается.";
 "backend.recovery.deploy.unsupported_device.action.2" = "Забудьте это устройство, затем добавьте свою Time Capsule или AirPort Extreme.";
@@ -798,7 +798,7 @@
 "backend.recovery.activate.runtime_not_installed.title" = "TimeCapsuleSMB не установлен";
 "backend.recovery.activate.runtime_not_installed.message" = "На устройстве нет установленного TimeCapsuleSMB, который можно запустить.";
 "backend.recovery.activate.runtime_not_installed.action.1" = "Запустите «Установить/обновить Samba».";
-"backend.recovery.flash.secondary_bank_invalid.title" = "Резервный банк прошивки повреждён";
+"backend.recovery.flash.secondary_bank_invalid.title" = "Резервный банк прошивки поврежден";
 "backend.recovery.flash.secondary_bank_invalid.message" = "Вторичный (резервный) банк прошивки не является действительной копией, поэтому установка патча в основной банк отклонена: при прерванной записи устройству не с чего было бы загрузиться.";
 "backend.recovery.flash.secondary_bank_invalid.action.1" = "Выберите «Спланировать восстановление», чтобы перезаписать резервный банк прошивкой Apple.";
 "backend.recovery.flash.secondary_bank_invalid.action.2" = "Затем выберите «Снова создать резервную копию и проверить» и установите патч.";
@@ -829,13 +829,13 @@
 "backend.recovery.fsck.validation_failed.action.1" = "Выберите конкретный том HFS.";
 "backend.recovery.fsck.validation_failed.action.2" = "Обновите список смонтированных томов и повторите попытку.";
 "backend.recovery.fsck.fsck_already_running.title" = "Исправление диска уже выполняется";
-"backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs предыдущего исправления диска всё ещё выполняется на устройстве. Перезагрузка или отключение устройства сейчас прервёт его.";
+"backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs предыдущего исправления диска все еще выполняется на устройстве. Перезагрузка или отключение устройства сейчас прервет его.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Не отключайте Time Capsule от питания и подождите; на большом диске исправление может занять час или больше.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Затем снова запустите «Исправление диска». После завершения оно перезагрузит устройство.";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Соединение потеряно во время исправления диска";
-"backend.recovery.fsck.fsck_session_dropped.message" = "Соединение с устройством прервалось, пока fsck_hfs исправлял диск. Исправление продолжается на устройстве, а общий доступ к файлам остаётся выключенным до перезагрузки устройства.";
+"backend.recovery.fsck.fsck_session_dropped.message" = "Соединение с устройством прервалось, пока fsck_hfs исправлял диск. Исправление продолжается на устройстве, а общий доступ к файлам остается выключенным до перезагрузки устройства.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Не отключайте Time Capsule от питания и не перезагружайте его; на большом диске исправление может занять час или больше.";
-"backend.recovery.fsck.fsck_session_dropped.action.2" = "Позже снова запустите «Исправление диска». Оно не начнётся, пока выполняется предыдущее исправление, и перезагрузит устройство после завершения.";
+"backend.recovery.fsck.fsck_session_dropped.action.2" = "Позже снова запустите «Исправление диска». Оно не начнется, пока выполняется предыдущее исправление, и перезагрузит устройство после завершения.";
 "backend.recovery.configure.remote_error.acp_enable_ssh.title" = "Ошибка включения SSH через ACP";
 "backend.recovery.configure.remote_error.acp_enable_ssh.message" = "Вспомогательной программе не удалось включить SSH через AirPort ACP.";
 "backend.recovery.configure.remote_error.acp_enable_ssh.action.1" = "Проверьте пароль администратора AirPort.";
@@ -874,7 +874,7 @@
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.title" = "Apple ACPd не работает";
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.message" = "Обновление установлено, но служба AirPort от Apple (ACPd) остановилась, не перезагрузив устройство. Это ошибка в прошивке Apple, а не в TimeCapsuleSMB.";
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.1" = "Отключите устройство, подождите 10 секунд, затем снова подключите его.";
-"backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.2" = "Подождите 2 минуты, пока устройство запустится, затем выполните проверку.";
+"backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.2" = "Подождите 2 минуты, пока устройство запустится, затем запустите операцию «Проверка».";
 "backend.recovery.deploy.acpd_broken.wait_for_reboot_up.action.3" = "На устройствах NetBSD 4 запустите «Активировать», если проверка покажет, что Samba не работает.";
 "backend.recovery.acp_unreachable.title" = "AirPort ACP недоступен";
 "backend.recovery.acp_unreachable.message" = "Этот Mac не может связаться с AirPort ACP (порт 5009) на устройстве, хотя ACP на самом устройстве работает.";
@@ -886,31 +886,31 @@
 "backend.recovery.runtime_not_restarted.title" = "Общий доступ к файлам не возобновился";
 "backend.recovery.runtime_not_restarted.message" = "Устройство перезагрузилось, но установленные службы TimeCapsuleSMB не запустились.";
 "backend.recovery.runtime_not_restarted.action.1" = "Запустите «Активировать».";
-"backend.recovery.runtime_not_restarted.action.2" = "Выполните проверку, чтобы узнать подробности.";
+"backend.recovery.runtime_not_restarted.action.2" = "Запустите операцию «Проверка», чтобы узнать подробности.";
 "backend.recovery.ssh_still_enabled.title" = "SSH по-прежнему включен";
 "backend.recovery.ssh_still_enabled.message" = "Устройство перезагрузилось, но SSH после этого оставался включен.";
 "backend.recovery.ssh_still_enabled.action.1" = "Снова отключите SSH в разделе «Доступ SSH».";
 "backend.recovery.ssh_still_enabled.action.2" = "Если SSH остается включен, перезагрузите устройство и повторите попытку.";
 "backend.recovery.deploy.remote_error.verify_runtime_reboot.title" = "Службы не готовы";
 "backend.recovery.deploy.remote_error.verify_runtime_reboot.message" = "Устройство перезагрузилось, но управляемые службы Samba не начали работать нормально.";
-"backend.recovery.deploy.remote_error.verify_runtime_reboot.action.1" = "Выполните проверку, чтобы получить подробности.";
+"backend.recovery.deploy.remote_error.verify_runtime_reboot.action.1" = "Запустите операцию «Проверка», чтобы получить подробности.";
 "backend.recovery.deploy.remote_error.verify_runtime_reboot.action.2" = "Если проверка по-прежнему завершается с ошибкой, просмотрите журналы загрузки в командной строке.";
 "backend.recovery.deploy.remote_error.activate_runtime.title" = "Ошибка активации служб";
 "backend.recovery.deploy.remote_error.activate_runtime.message" = "Не удалось запустить установленные службы Samba без перезагрузки.";
 "backend.recovery.deploy.remote_error.activate_runtime.action.1" = "Снова запустите «Установить/обновить Samba».";
-"backend.recovery.deploy.remote_error.activate_runtime.action.2" = "Выполните проверку, чтобы получить подробные сведения о работе служб.";
+"backend.recovery.deploy.remote_error.activate_runtime.action.2" = "Запустите операцию «Проверка», чтобы получить подробные сведения о работе служб.";
 "backend.recovery.deploy.remote_error.post_reboot_activation.title" = "Ошибка активации после перезагрузки";
 "backend.recovery.deploy.remote_error.post_reboot_activation.message" = "Устройство перезагрузилось, но после восстановления доступа по SSH не удалось запустить установленные службы Samba.";
 "backend.recovery.deploy.remote_error.post_reboot_activation.action.1" = "Снова запустите «Установить/обновить Samba».";
-"backend.recovery.deploy.remote_error.post_reboot_activation.action.2" = "Выполните проверку, чтобы получить подробные сведения о работе служб.";
+"backend.recovery.deploy.remote_error.post_reboot_activation.action.2" = "Запустите операцию «Проверка», чтобы получить подробные сведения о работе служб.";
 "backend.recovery.deploy.remote_error.verify_runtime_activation.title" = "Активированные службы не готовы";
 "backend.recovery.deploy.remote_error.verify_runtime_activation.message" = "Установленные службы Samba запущены, но не начали работать нормально.";
 "backend.recovery.deploy.remote_error.verify_runtime_activation.action.1" = "Снова запустите «Установить/обновить Samba».";
-"backend.recovery.deploy.remote_error.verify_runtime_activation.action.2" = "Выполните проверку, чтобы получить подробные сведения о работе служб.";
+"backend.recovery.deploy.remote_error.verify_runtime_activation.action.2" = "Запустите операцию «Проверка», чтобы получить подробные сведения о работе служб.";
 "backend.recovery.uninstall.remote_error.verify_post_uninstall.title" = "Ошибка проверки после удаления";
 "backend.recovery.uninstall.remote_error.verify_post_uninstall.message" = "После перезагрузки файлы, управляемые TimeCapsuleSMB, все еще оставались на устройстве.";
 "backend.recovery.uninstall.remote_error.verify_post_uninstall.action.1" = "Повторите удаление.";
-"backend.recovery.uninstall.remote_error.verify_post_uninstall.action.2" = "Если устройство доступно, выполните проверку.";
+"backend.recovery.uninstall.remote_error.verify_post_uninstall.action.2" = "Если устройство доступно, запустите операцию «Проверка».";
 "backend.recovery.fsck.validation_failed.select_fsck_volume.title" = "Ошибка выбора тома";
 "backend.recovery.fsck.validation_failed.select_fsck_volume.message" = "Вспомогательной программе не удалось однозначно выбрать один том HFS для fsck.";
 "backend.recovery.fsck.validation_failed.select_fsck_volume.action.1" = "Явно выберите нужный том.";
@@ -924,7 +924,7 @@
 "sidebar.menu.copy_ip_address" = "Копировать IP-адрес";
 "sidebar.menu.copy_smb_address" = "Копировать SMB-адрес";
 "sidebar.menu.open_overview" = "Открыть обзор";
-"sidebar.menu.remove_from_this_mac" = "Удалить с этого Mac";
+"sidebar.menu.remove_from_this_mac" = "Убрать с этого Mac";
 "sidebar.settings" = "Настройки";
 "status.activation_needed" = "Требуется активация";
 "status.checking" = "Проверка";
@@ -1163,16 +1163,16 @@
 "backend.error.discover.local_network_permission_denied" = "macOS блокирует доступ TimeCapsuleSMB к устройствам в вашей локальной сети.";
 
 // Appliance identity and explicit reconnect.
-"discovery.identity_unverified" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохранённое устройство.";
-"discovery.identity_conflict" = "Этому устройству соответствуют несколько сохранённых устройств. Проверьте сохранённые устройства и удалите дубликаты с помощью команды «Забыть».";
-"discovery.reconnect_existing" = "Повторно подключить сохранённое устройство «%@»";
-"backend.error.device_identity_mismatch" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохранённое устройство.";
+"discovery.identity_unverified" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохраненное устройство.";
+"discovery.identity_conflict" = "Этому устройству соответствуют несколько сохраненных устройств. Проверьте сохраненные устройства и удалите дубликаты с помощью команды «Забыть».";
+"discovery.reconnect_existing" = "Повторно подключить сохраненное устройство «%@»";
+"backend.error.device_identity_mismatch" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохраненное устройство.";
 "backend.recovery.device_identity_mismatch.title" = "Не удалось подтвердить идентичность устройства";
-"backend.recovery.device_identity_mismatch.message" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохранённое устройство.";
-"backend.recovery.device_identity_mismatch.action.1" = "Обновите поиск и повторно подключите сохранённое устройство.";
+"backend.recovery.device_identity_mismatch.message" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохраненное устройство.";
+"backend.recovery.device_identity_mismatch.action.1" = "Обновите поиск и повторно подключите сохраненное устройство.";
 
-"discovery.identity_owned" = "Это устройство уже сохранено как «%@». Проверьте сохранённые устройства и удалите дубликаты с помощью команды «Забыть».";
-"discovery.open_saved_device" = "Открыть сохранённое устройство «%@»";
+"discovery.identity_owned" = "Это устройство уже сохранено как «%@». Проверьте сохраненные устройства и удалите дубликаты с помощью команды «Забыть».";
+"discovery.open_saved_device" = "Открыть сохраненное устройство «%@»";
 
 "discovery.reconnect_selected" = "При сохранении выбранное устройство будет повторно подключено к «%@» с сохранением его настроек.";
 
