@@ -249,6 +249,17 @@ DOCTOR_CODE_RUNTIME_NOT_STARTED = "runtime_not_started"
 # runtime are whatever that deploy had reached, so nothing after it applies.
 DOCTOR_CODE_METADATA_MIGRATION_IN_PROGRESS = "metadata_migration_in_progress"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
+# The manager's title says a disk MaSt lists has not mounted for 10 minutes
+# and no other holds the Samba files, so Samba is off: Apple's diskd can hang
+# on a disk that stopped answering, which a restart clears; a damaged volume
+# diskd will not mount needs Disk Repair.
+DOCTOR_CODE_DISK_NOT_MOUNTING = "disk_not_mounting"
+DISK_NOT_MOUNTING_MESSAGE = (
+    "a disk on the device will not mount, so file sharing and Time Machine are off; restart the device, "
+    "unplugging it for 10 seconds if it does not come back. If the disk still does not mount, run "
+    '"Disk Repair" in the macOS app, or tcapsule fsck from the command line; if this keeps happening, '
+    "the disk may need replacing"
+)
 DOCTOR_CODE_HOSTNAME_WAITING = "hostname_waiting"
 DOCTOR_CODE_HOSTNAME_UNMAPPED = "hostname_unmapped"
 # This computer is only on networks where the device does not share its disks
@@ -2480,6 +2491,7 @@ def _doctor_probe_startup_age(
             "now_monotonic_ms": probe.now_monotonic_ms,
             "detail": probe.detail,
             "payload_missing": probe.payload_missing,
+            "unmounted_since": probe.unmounted_since,
         }
     return probe
 
@@ -2490,6 +2502,16 @@ def _doctor_check_disk_payload(manager: ManagerStartupAgeProbeResult | None, sin
     if manager is None or not manager.payload_missing:
         return StepDecision()
     sink.add(CheckResult("FAIL", DISK_PAYLOAD_MISSING_MESSAGE, details={"code": DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK}))
+    return StepDecision(stop=True)
+
+
+def _doctor_check_disk_mounting(manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink) -> StepDecision:
+    """A disk has not mounted for 10 minutes and no other holds the Samba
+    files: file sharing is off until a restart, so this is the whole verdict;
+    what follows only restates it."""
+    if manager is None or manager.unmounted_since is None:
+        return StepDecision()
+    sink.add(CheckResult("FAIL", DISK_NOT_MOUNTING_MESSAGE, details={"code": DOCTOR_CODE_DISK_NOT_MOUNTING}))
     return StepDecision(stop=True)
 
 

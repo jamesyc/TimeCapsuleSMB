@@ -1472,6 +1472,7 @@ It checks:
 - whether the required checked-in binaries exist and match the expected checksums
 - deployed release/version metadata in `/mnt/Flash/tcapsulesmb.conf`
 - that the managed RAM runtime directory exists
+- the manager's own verdicts, read from its process title before any startup wait. `payload=missing`: every disk was inspected and none holds the Samba files, as after an Erase in AirPort Utility, so the fix is a reinstall. `unmounted=`: a disk `MaSt` lists has not mounted for 10 minutes (time diskd spends in `fsck_hfs` or `newfs_hfs` not counted) and no other disk holds the Samba files, so Samba is off; diskd can hang on a disk that stopped answering, and the fix is a restart, then Disk Repair. Either one is doctor's whole result. With `unmounted=` doctor also records `MaSt`, the kernel's disk messages and, on NetBSD 6, diskd's threads
 - SSH reachability
 - detected device compatibility and payload family
 - managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, boot.sh's `/sbin/diskd` and `/sbin/wcifsnd` guards (each no longer a hard link to `/sbin/ACPd`; the runtime readiness check that deploy, `activate` and the post-reboot checks share fails on a missing `diskd` guard and only reports a missing `wcifsnd` guard, as it does native NBNS), a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness

@@ -126,6 +126,20 @@ NetBSD 6 kernel threads (pagedaemon) waiting in `needbuf` belong to process 0
 and are not seen; a stall that never clears is never reported, and its stuck
 Samba workers still keep the manager from exiting.
 
+The manager also reports two states nothing in user space can clear; it
+never restarts the device for them. A process asleep uninterruptibly for 2
+minutes without running is named in the title (`stuck=PID:COMM:WAIT:SECONDS`)
+and, after 5 minutes, in a `stuck:<comm>:<wait>:<seconds>` heartbeat
+(`stuck-cleared:...` when a reported one ends). When a disk MaSt lists has
+not mounted for 10 minutes and no other holds the Samba files, so Samba is
+off (diskd can hang on a disk that stopped answering, which a restart
+clears), the title carries `unmounted=<start>` on the `started=` clock and one
+`unmounted:internal` or `unmounted:usb` heartbeat goes out per manager. Time
+diskd spends in `fsck_hfs` or `newfs_hfs` does not count towards the 10
+minutes; a disk that fails while another serves the Samba files is left to
+doctor's share checks. Doctor reads both words from the title; `unmounted=`
+is its whole verdict.
+
 Apple's mDNSResponder and afpserver remain alive; the AFP preference controls
 advertising only. Loopback diskd retains filesystem ownership. Discovery alone
 owns its wcifsnd child, started as `/usr/libexec/wcifsnd` because boot.sh's

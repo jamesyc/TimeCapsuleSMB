@@ -44,6 +44,8 @@ from timecapsulesmb.checks.doctor_steps import (
     _add_admin_password_result,
     DEVICE_SMB_PASSED,
     DOCTOR_CODE_HOSTNAME_UNMAPPED,
+    DISK_NOT_MOUNTING_MESSAGE,
+    DOCTOR_CODE_DISK_NOT_MOUNTING,
     DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK,
     _doctor_device_blocks,
     NATIVE_NBNS_NOT_READY,
@@ -3239,7 +3241,9 @@ class CheckTests(unittest.TestCase):
             },
         )
 
-    def run_doctor_with_manager(self, manager: ManagerStartupAgeProbeResult, *, debug_fields=None, log_tails=None):
+    def run_doctor_with_manager(
+        self, manager: ManagerStartupAgeProbeResult, *, debug_fields=None, log_tails=None, extra_patches=None,
+    ):
         smbd = mock.Mock(side_effect=AssertionError("the startup wait probed smbd"))
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -3251,6 +3255,7 @@ class CheckTests(unittest.TestCase):
                 "timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": smbd,
                 "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value=log_tails or {}),
                 "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+                **(extra_patches or {}),
             },
         )
         return run, smbd
@@ -3281,7 +3286,91 @@ class CheckTests(unittest.TestCase):
         run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
 
         self.assertNotIn(DISK_PAYLOAD_MISSING_MESSAGE, [result.message for result in run.results])
+        self.assertNotIn(DISK_NOT_MOUNTING_MESSAGE, [result.message for result in run.results])
         self.assertTrue(any("smbd" in result.message for result in run.results))
+
+    # diskd takes every claim and never mounts the disk: its second thread
+    # waits on a disk that stopped answering.
+    HUNG_DISK_KERNEL = "wd0: <APPLE HDD ST2000DM001, AP54>"
+    HUNG_DISK_THREADS = (
+        "  PID   LID STAT WCHAN     SL UCOMM\n"
+        "  211     1 S    kqueue     9 diskd\n"
+        "  211     2 D    biowait  127 diskd"
+    )
+
+    @staticmethod
+    def disk_evidence(*, kernel, threads):
+        """read_remote_command_conn for DISK_EVIDENCE_COMMANDS: each result is
+        the output, or an exception it raises."""
+        from timecapsulesmb.device.probe import DISK_EVIDENCE_COMMANDS
+
+        outputs = {
+            DISK_EVIDENCE_COMMANDS["remote_kernel_disk_messages"]: kernel,
+            DISK_EVIDENCE_COMMANDS["remote_diskd_threads"]: threads,
+        }
+
+        def read(_connection, command):
+            result = outputs[command]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return mock.Mock(side_effect=read)
+
+    def run_doctor_with_unmounted_disk(self, *, evidence, debug_fields):
+        mast = mock.Mock(return_value=self.mast_probe_diagnostics())
+        run, smbd = self.run_doctor_with_manager(
+            ManagerStartupAgeProbeResult(14400.0, "manager started 14400s ago", unmounted_since=1260),
+            debug_fields=debug_fields,
+            log_tails={"remote_manager_log_tail": "storage: retry uuid=b035 root=/Volumes/dk2 stage=activate"},
+            extra_patches={
+                "timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn": mast,
+                "timecapsulesmb.checks.doctor_debug.read_remote_command_conn": evidence,
+            },
+        )
+        return run, smbd, mast
+
+    def test_doctor_stops_at_a_disk_that_has_not_mounted_and_says_to_restart(self) -> None:
+        # Samba stays off until a restart, so doctor gives that one verdict
+        # instead of the smbd, rsync and Bonjour failures that follow from it,
+        # and keeps what shows why: MaSt, the kernel's disk lines, diskd's
+        # threads and the manager's log.
+        debug_fields: dict[str, object] = {}
+        run, smbd, mast = self.run_doctor_with_unmounted_disk(
+            evidence=self.disk_evidence(kernel=self.HUNG_DISK_KERNEL + "\n", threads=self.HUNG_DISK_THREADS + "\n"),
+            debug_fields=debug_fields,
+        )
+
+        failure = run.results[-1]
+        self.assertEqual((failure.status, failure.message), ("FAIL", DISK_NOT_MOUNTING_MESSAGE))
+        self.assertEqual(failure.details["code"], DOCTOR_CODE_DISK_NOT_MOUNTING)
+        self.assertTrue(run.fatal)
+        smbd.assert_not_called()
+        self.assertEqual(sum(result.status == "FAIL" for result in run.results), 1)
+        mast.assert_called_once()
+        self.assertEqual(debug_fields["mast_probe_volume_count"], 1)
+        self.assertEqual(debug_fields["remote_kernel_disk_messages"], self.HUNG_DISK_KERNEL)
+        self.assertEqual(debug_fields["remote_diskd_threads"], self.HUNG_DISK_THREADS)
+        self.assertEqual(debug_fields["manager_startup_age"]["unmounted_since"], 1260)
+        self.assertIn("stage=activate", debug_fields["remote_manager_log_tail"])
+
+    def test_doctor_keeps_the_verdict_and_the_kernel_lines_when_the_thread_listing_hangs(self) -> None:
+        # ps can wait on a process that holds its map lock; the kernel's disk
+        # lines, read by a command of their own, are kept.
+        debug_fields: dict[str, object] = {}
+        run, _, _ = self.run_doctor_with_unmounted_disk(
+            evidence=self.disk_evidence(
+                kernel=self.HUNG_DISK_KERNEL,
+                threads=SshCommandTimeout("Timed out waiting for ssh command to finish: /bin/ps -axs"),
+            ),
+            debug_fields=debug_fields,
+        )
+
+        self.assertEqual(run.results[-1].details["code"], DOCTOR_CODE_DISK_NOT_MOUNTING)
+        self.assertEqual(debug_fields["remote_kernel_disk_messages"], self.HUNG_DISK_KERNEL)
+        self.assertNotIn("remote_diskd_threads", debug_fields)
+        self.assertIn("Timed out", debug_fields["remote_diskd_threads_error"])
+        self.assertEqual(debug_fields["mast_probe_volume_count"], 1)
 
     MAPPED = ("127.0.0.1\tcapsule capsule.local",)
     WAITING_MESSAGE = (
@@ -3609,6 +3698,7 @@ class CheckTests(unittest.TestCase):
     def test_run_doctor_checks_adds_mast_probe_for_unmounted_share_volume(self) -> None:
         debug_fields: dict[str, object] = {}
         mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
+        evidence = self.disk_evidence(kernel="sd0: drive offline\n", threads="(not listed on NetBSD 4)\n")
         smbd_probe = mock.Mock(
             ready=False,
             detail="share volume missing",
@@ -3627,11 +3717,15 @@ class CheckTests(unittest.TestCase):
             extra_patches={
                 "timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn": mast_probe_mock,
                 "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                "timecapsulesmb.checks.doctor_debug.read_remote_command_conn": evidence,
             },
         )
 
         mast_probe_mock.assert_called_once()
         self.assertEqual(debug_fields["mast_probe_volume_count"], 1)
+        # The kernel's disk lines and diskd's threads go with every MaSt capture.
+        self.assertEqual(debug_fields["remote_kernel_disk_messages"], "sd0: drive offline")
+        self.assertEqual(debug_fields["remote_diskd_threads"], "(not listed on NetBSD 4)")
 
     def test_run_doctor_checks_adds_mast_probe_for_bad_network_name_file_ops(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -3676,6 +3770,8 @@ class CheckTests(unittest.TestCase):
 
         mast_probe_mock.assert_not_called()
         self.assertNotIn("mast_probe_command", debug_fields)
+        self.assertNotIn("remote_kernel_disk_messages", debug_fields)
+        self.assertNotIn("remote_diskd_threads", debug_fields)
 
     def test_run_doctor_checks_records_mast_probe_exception_without_replacing_failure(self) -> None:
         debug_fields: dict[str, object] = {}

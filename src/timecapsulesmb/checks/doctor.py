@@ -33,6 +33,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_managed_mdns,
     _doctor_check_managed_rsync,
     _doctor_check_device_hostname,
+    _doctor_check_disk_mounting,
     _doctor_check_disk_payload,
     _doctor_check_diskd_rpc,
     _doctor_check_managed_smbd,
@@ -117,6 +118,10 @@ def run_doctor_checks(
     manager = _doctor_probe_startup_age(target, remote, sink)
     if _doctor_check_disk_payload(manager, sink).stop:
         # The manager's log shows what removed the payload, such as an Erase.
+        _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
+        return sink.results, sink.fatal()
+    if _doctor_check_disk_mounting(manager, sink).stop:
+        _doctor_add_mast_probe_on_disk_failure(target, remote, sink, always=True)
         _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
         return sink.results, sink.fatal()
     startup_age = manager.manager_started_seconds_ago if manager is not None else None

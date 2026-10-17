@@ -46,6 +46,7 @@ TIMINGS=dict(
     TC_BUFSTALL_REPORT_TIMEOUT_MS=15000, # device 180 s
     TC_STUCK_MS=1000,            # device 120 s
     TC_STUCK_REPORT_MS=3000,     # device 300 s
+    TC_UNMOUNTED_MS=1500,        # device 600 s
 )
 
 CHILD = '''
@@ -1970,3 +1971,226 @@ def test_failed_report_requeued_into_a_full_queue_drops_the_newest(manager):
     sent=reports(events)
     assert sent[1].startswith('stuck:w1:') and not any(r.startswith('stuck:w5:') for r in sent)
     assert stderr(root).count('report queue full')==1
+
+
+UNMOUNTED_S=TIMINGS['TC_UNMOUNTED_MS']/1000
+
+
+def title_words(root):
+    titles=manager_titles(root)
+    return dict(word.split('=',1) for word in titles[-1].split()[1:] if '=' in word) if titles else {}
+
+
+def unmounted_reports(events):
+    return [reason for reason in reports(events) if reason.startswith('unmounted')]
+
+
+def unmounted_starts(root):
+    """When each episode began, as the manager logs it on the started= clock."""
+    return re.findall(r'manager: storage: no disk with the Samba files has mounted since (\d+)\n',stderr(root))
+
+
+def never_mounts(root,how,disks=('dk2','dk3')):
+    """The disks stay listed in MaSt but are not mounted and do not mount:
+    diskd refuses the claim, or accepts it (useVolume exits 0, as on a hung
+    disk) and mounts nothing. The other fixture disk stays mounted."""
+    (root/'mounts').write_text(''.join(f'{root}/{disk} {disk} 1\n' for disk in ('dk2','dk3') if disk not in disks))
+    (root/'config').write_text((root/'config').read_text()+'DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=0\n')
+    if how=='refused':
+        (root/'fail-claim').write_text('/'+disks[0] if len(disks)==1 else '/dk')
+
+
+def mounts_again(root):
+    (root/'fail-claim').unlink(missing_ok=True)
+    (root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
+
+
+def usb_payload(root):
+    """The USB disk holds Samba files of its own, as the internal one does."""
+    home=root/'dk2/.samba4';external=root/'dk3/.samba4';(external/'private').mkdir(parents=True)
+    shutil.copy2(home/'smbd',external/'smbd')
+
+
+@pytest.mark.parametrize('how',['refused','accepted'])
+def test_disks_that_never_mount_are_titled_and_reported_once_until_one_mounts(manager,how):
+    # Disks that stopped answering: doctor reads unmounted= to say "restart",
+    # and the heartbeat counts it in the field. Both wait out TC_UNMOUNTED_MS.
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    never_mounts(root,how)
+    start()
+    wait_storage_failure(root,'activate')
+    assert 'unmounted' not in title_words(root) and unmounted_reports(events)==[]
+    wait(lambda _:'unmounted' in title_words(root),20)
+    # Since when, on the started= clock: the episode's start.
+    assert [title_words(root)['unmounted']]==unmounted_starts(root)
+    wait(lambda rows:len(unmounted_reports(events))==1)
+    # The internal disk is among them.
+    assert unmounted_reports(events)==['unmounted:internal']
+    assert 'manager: storage: no disk with the Samba files has mounted for ' in stderr(root)
+    mounts_again(root)
+    wait(started('smbd'),25)
+    wait(lambda _:'unmounted' not in title_words(root),20)
+    assert 'manager: storage: a disk with the Samba files is mounted again, or none is listed' in stderr(root)
+    assert len(unmounted_reports(events))==1
+
+
+def test_usb_disk_holding_the_only_samba_files_is_reported_as_usb(manager):
+    # An AirPort Extreme, or a Time Capsule serving from USB: no internal disk
+    # is involved, which the heartbeat says.
+    root,start,events,wait,inventory,volumes=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    inventory(volumes[1:]);usb_payload(root)
+    never_mounts(root,'refused',disks=('dk3',));(root/'mounts').write_text('')
+    start()
+    wait(lambda rows:len(unmounted_reports(events))==1,20)
+    assert unmounted_reports(events)==['unmounted:usb']
+    assert 'unmounted' in title_words(root)
+
+
+@pytest.mark.parametrize('case',['usb-fails','internal-fails-usb-serves'])
+def test_disk_failing_while_another_serves_the_samba_files_is_not_called_unmounted(manager,case):
+    # File sharing still runs (the internal disk beside a dead USB disk, or a
+    # USB disk with its own Samba files beside a hung internal one): the share
+    # checks report the missing disk, and "file sharing is off" would be wrong.
+    root,start,events,wait,_,_=manager
+    if case=='usb-fails':
+        never_mounts(root,'refused',disks=('dk3',))
+    else:
+        usb_payload(root);never_mounts(root,'refused',disks=('dk2',))
+    start()
+    wait(started('smbd'),25)
+    wait_storage_failure(root,'activate')
+    time.sleep(3*UNMOUNTED_S)
+    assert not any('unmounted=' in title for title in manager_titles(root))
+    assert unmounted_starts(root)==[]
+
+
+def test_hung_internal_disk_beside_a_usb_disk_without_samba_files_is_called_unmounted(manager):
+    # The USB disk mounts, but Samba runs only from a disk with its files, so
+    # file sharing is off as surely as with no disk at all.
+    root,start,events,wait,_,_=manager
+    never_mounts(root,'refused',disks=('dk2',))
+    start()
+    wait(lambda _:'unmounted' in title_words(root),20)
+    assert not started('smbd')(events())
+    assert [title_words(root)['unmounted']]==unmounted_starts(root)
+    # Telemetry is off: nothing is queued.
+    time.sleep(1)
+    assert unmounted_reports(events)==[] and 'report queue full' not in stderr(root)
+
+
+@pytest.mark.parametrize('repair',['fsck_hfs','newfs_hfs'])
+def test_time_diskd_spends_repairing_or_formatting_does_not_count(manager,repair):
+    # diskd mounts nothing while its fsck_hfs repairs a volume (up to an hour
+    # after an unclean power-off) or newfs_hfs formats one; the clock waits,
+    # and the title still names when the episode began.
+    root,start,events,wait,_,_=manager
+    never_mounts(root,'refused')
+    processes(root,'repair',f'7000 2 7000 D {repair} /sbin/{repair} /dev/rdk2\n')
+    start()
+    wait_storage_failure(root,'activate')
+    time.sleep(3*UNMOUNTED_S)
+    assert not any('unmounted=' in title for title in manager_titles(root))
+    (root/'procs'/'repair').unlink()
+    gone=time.monotonic()
+    wait(lambda _:'unmounted' in title_words(root),20)
+    # The interval in which the repair ended counts as the repair's, so all
+    # TC_UNMOUNTED_MS comes after it, however far apart the samples are.
+    assert time.monotonic()-gone>=UNMOUNTED_S
+    assert [title_words(root)['unmounted']]==unmounted_starts(root)
+
+
+def test_quick_checks_after_each_claim_do_not_restart_the_unmounted_clock(manager):
+    # diskd runs a second-long fsck_hfs quick check after most claims; with a
+    # sample a second, a clock that restarted on it would never get there.
+    root,start,events,wait,_,_=manager
+    never_mounts(root,'refused')
+    start()
+    wait_storage_failure(root,'activate')
+    deadline=time.monotonic()+20
+    while 'unmounted' not in title_words(root):
+        assert time.monotonic()<deadline, stderr(root)
+        processes(root,'quick','7001 2 7001 D fsck_hfs /sbin/fsck_hfs -q /dev/rdk2\n')
+        time.sleep(.3)
+        (root/'procs'/'quick').unlink()
+        time.sleep(.6)
+    assert len(unmounted_starts(root))==1
+
+
+def test_disk_that_mounts_but_fails_share_preparation_is_not_called_unmounted(manager):
+    root,start,events,wait,_,_=manager
+    (root/'dk2/ShareRoot').write_text('collision')
+    (root/'dk3/ShareRoot').write_text('collision')
+    start()
+    wait_storage_failure(root,'share preparation')
+    time.sleep(3*UNMOUNTED_S)
+    assert not any('unmounted=' in title for title in manager_titles(root))
+    assert unmounted_starts(root)==[]
+
+
+def test_storage_rechecks_keep_the_unmounted_clock(manager):
+    # A HUP or settings change invalidates storage and runs a full pass; the
+    # disks still fail, so the clock keeps the episode's start.
+    root,start,events,wait,_,_=manager
+    never_mounts(root,'refused')
+    process=start()
+    wait_storage_failure(root,'activate')
+    for _ in range(3):
+        process.send_signal(signal.SIGHUP);time.sleep(UNMOUNTED_S/4)
+    wait(lambda _:'unmounted' in title_words(root),20)
+    assert [title_words(root)['unmounted']]==unmounted_starts(root)
+
+
+def test_unmounted_report_dropped_from_a_full_queue_is_sent_once_it_fits(manager):
+    # Stuck processes fill the report queue behind the one in flight. Every
+    # report fails, so the one in flight goes back to the front each time and
+    # the full queue drops its newest, the unmounted report. Failed reports
+    # keep the front, so it never goes out meanwhile; once reports succeed it
+    # is queued again and delivered once.
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'report-exit').write_text('1')
+    sleepers(root,*[(8101+i,8101+i,0,LSSLEEP,0,400,0,'biowait',f'q{i+1}') for i in range(5)])
+    never_mounts(root,'refused')
+    start()
+    until(root,lambda:'report queue full; dropping unmounted:internal' in stderr(root))
+    assert unmounted_reports(events)==[]
+    (root/'report-exit').unlink()
+    wait(lambda rows:len(unmounted_reports(events))==1,20)
+    time.sleep(1)
+    assert unmounted_reports(events)==['unmounted:internal']
+
+
+def test_unmounted_report_waiting_in_flight_is_not_queued_again(manager):
+    # The report is retried until delivered, but never while one is queued or
+    # in flight: a slow POST must not turn into a queue of duplicates.
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'report-hold').touch()
+    never_mounts(root,'refused')
+    start()
+    wait(lambda rows:len(unmounted_reports(events))==1,20)
+    # Several samples while it is held in flight.
+    time.sleep(8*TIMINGS['TC_BUFSTALL_SAMPLE_MS']/1000)
+    (root/'report-hold').unlink()
+    wait(lambda rows:any(e['kind']=='report-done' for e in rows))
+    time.sleep(2)
+    assert unmounted_reports(events)==['unmounted:internal']
+
+
+def test_second_unmounted_episode_in_one_manager_run_is_not_reported_again(manager):
+    root,start,events,wait,_,_=manager
+    (root/'config').write_text('TELEMETRY=1\n')
+    never_mounts(root,'refused')
+    process=start()
+    wait(lambda rows:len(unmounted_reports(events))==1,20)
+    mounts_again(root)
+    wait(started('smbd'),25)
+    wait(lambda _:'unmounted' not in title_words(root),20)
+    never_mounts(root,'refused')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda _:'unmounted' in title_words(root),25)
+    assert len(unmounted_starts(root))==2
+    time.sleep(1)
+    assert len(unmounted_reports(events))==1

@@ -96,7 +96,8 @@ enum DeviceDashboardSnapshotMapper {
                 verified: false,
                 summary: countSummary,
                 summaryRef: countSummaryRef,
-                errorCode: "doctor_failed",
+                // A disk that will not mount has one fix the dashboard names.
+                errorCode: summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode : "doctor_failed",
                 errorMessage: nil,
                 recovery: nil
             )

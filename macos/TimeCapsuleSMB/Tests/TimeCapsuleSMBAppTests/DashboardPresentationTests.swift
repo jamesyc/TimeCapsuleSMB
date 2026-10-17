@@ -157,6 +157,33 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(row.message.contains("tcapsule deploy"))
     }
 
+    func testCheckupPresentationLocalizesDiskNotMountingCheck() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        // The helper's sentence is English; the row follows the app language.
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "a disk on the device will not mount, so file sharing and Time Machine are off; restart the device, unplugging it for 10 seconds if it does not come back. If the disk still does not mount, run \"Disk Repair\" in the macOS app, or tcapsule fsck from the command line; if this keeps happening, the disk may need replacing",
+                domain: "device",
+                code: "disk_not_mounting"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        L10n.apply(language: .english)
+        let english = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows.first)
+        XCTAssertEqual(
+            english.message,
+            "A disk on the device will not mount, so file sharing and Time Machine are off. Restart the device; if it does not come back, unplug it for 10 seconds. If the disk still does not mount, run “Disk Repair”; if this keeps happening, the disk may need replacing."
+        )
+
+        L10n.apply(language: .german)
+        let german = try XCTUnwrap(CheckupPresentation(summary: summary, state: .failed).domains.first?.rows.first)
+        XCTAssertTrue(german.message.hasPrefix("Ein Datenträger auf dem Gerät lässt sich nicht einbinden"))
+    }
+
     func testCheckupPresentationLocalizesClientOnUnsharedNetworkCheck() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
@@ -807,6 +834,34 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(erasedRow.status, .failed)
         XCTAssertEqual(erasedRow.action, .installUpdate)
         XCTAssertEqual(erasedRow.detail, L10n.string("doctor.check.payload_missing_from_disk"))
+
+        // A disk will not mount and none holds the Samba files: say restart,
+        // not only how many checks failed.
+        var stuckProfile = healthyProfile
+        stuckProfile.runtimeState = testRuntimeState(
+            state: .unhealthy, source: .doctor, verified: false,
+            summary: "PASS 20, WARN 0, FAIL 1", errorCode: DoctorSummary.diskNotMountingResultCode)
+        let stuck = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: stuckProfile,
+            passwordState: .available,
+            displayStatus: .failed,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        ))
+        let stuckRow = try row(.runtime, in: stuck)
+        XCTAssertEqual(stuckRow.id, "runtime-disk-not-mounting")
+        XCTAssertEqual(stuckRow.status, .failed)
+        XCTAssertEqual(stuckRow.action, .viewCheckup)
+        XCTAssertEqual(stuckRow.detail, L10n.string("doctor.check.disk_not_mounting"))
+        stuckProfile.runtimeState?.errorCode = "doctor_failed"
+        let other = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: stuckProfile,
+            passwordState: .available,
+            displayStatus: .failed,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        ))
+        XCTAssertEqual(try row(.runtime, in: other).id, "runtime-unhealthy")
 
         let warning = HostCompatibilityWarning(title: "macOS Warning", message: "Time Machine warning.")
         let hostWarning = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(

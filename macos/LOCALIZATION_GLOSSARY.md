@@ -40,7 +40,7 @@ Preserve `%@`, `%d`, `%lld`, positional specifiers, `%%`, URLs, backticks and in
 Apple names are localized where users know a local name:
 
 - **Apple:** `Apple` in the European languages. Chinese prose may say **苹果**, as the maintainer asked; exact compound product names, source titles, URLs and identifiers keep `Apple`. Never translate the company to Russian `Яблоко`.
-- **Time Capsule:** keep **Time Capsule** for choosing and identifying the hardware. Apple's Chinese documentation also calls it **时间返回舱**; `Time Capsule（时间返回舱）` can explain it on a first mention. Do not rename the project `TimeCapsuleSMB` or a discovered device. ([Chinese AirPort guide](https://support.apple.com/zh-cn/guide/aputility/welcome/mac))
+- **Time Capsule:** keep **Time Capsule** for choosing and identifying the hardware. Apple's Chinese documentation also calls it **时间返回舱**; `Time Capsule（时间返回舱）` can explain it on a first mention. Do not rename the project `TimeCapsuleSMB` or a discovered device. A sentence that can be about any supported AirPort, an AirPort Extreme with a USB disk included, says *the device* (*das Gerät*, *l’appareil*, *el dispositivo*, *设备*, *įrenginys*), not Time Capsule. ([Chinese AirPort guide](https://support.apple.com/zh-cn/guide/aputility/welcome/mac))
 - **Time Machine:** **时间机器** in Chinese prose; **Time Machine** in the other languages and in identifiers. ([Chinese backup guide](https://support.apple.com/zh-cn/104984))
 - **Finder:** **访达** in Chinese; **Finder** elsewhere. ([Chinese guide naming Finder and Disk Utility](https://support.apple.com/zh-cn/102184))
 
@@ -124,6 +124,7 @@ Base forms; inflect them naturally rather than splicing them into sentences.
 | Reachable | erreichbar | bereikbaar | accessible | accesible |
 | Enable / disable | aktivieren / deaktivieren | inschakelen / uitschakelen | activer / désactiver | habilitar / deshabilitar |
 | Reboot / restart | Neustart (noun) / neu starten (verb) | herstart (noun) / opnieuw opstarten (verb) | redémarrage (noun) / redémarrer (verb) | reinicio (noun) / reiniciar (verb) |
+| Unplug (cut the device's power) | vom Strom trennen | de stekker eruit halen | débrancher | desenchufar |
 | Device profile | Geräteprofil | apparaatprofiel | profil de l’appareil | perfil del dispositivo |
 | Helper program | Hilfsprogramm | hulpprogramma | programme auxiliaire | programa auxiliar |
 | Discovery | Erkennung (process) / Gerätesuche (operation title) | detectie (process) / apparaatdetectie (operation title) | découverte | descubrimiento |
@@ -163,6 +164,7 @@ Base forms; inflect them naturally rather than splicing them into sentences.
 | Reachable | raggiungibile | acessível | доступен | 可达 (network status sentences) / 可访问 (short status value) | pasiekiamas |
 | Enable / disable | abilitare / disabilitare | ativar / desativar | включить / отключить | 启用 / 禁用 (a feature or setting) / 停用 (other software the user runs) | įjungti / išjungti |
 | Reboot / restart | riavvio (noun) / riavviare (verb) | reinicialização (noun) / reiniciar (verb) | перезагрузка (noun) / перезагрузить (verb) | 重启 | paleidimas iš naujo (noun) / paleisti iš naujo (verb) |
+| Unplug (cut the device's power) | scollegare dall’alimentazione | desconectar da tomada | отключить от питания | 拔掉电源 | atjungti nuo maitinimo |
 | Device profile | profilo del dispositivo | perfil do dispositivo | профиль устройства | 设备配置 | įrenginio profilis |
 | Helper program | programma ausiliario | programa auxiliar | вспомогательная программа | 辅助程序 | pagalbinė programa |
 | Discovery | rilevamento | descoberta | обнаружение | 发现 | paieška |
@@ -197,6 +199,7 @@ Base forms; inflect them naturally rather than splicing them into sentences.
 - **Enable / disable:** one pair per feature everywhere it appears (setting label, confirmation, result summary). It is Apple's enable verb in each language. Spanish and Italian enable with *habilitar*/*abilitare* and keep *activar*/*attivare* for **Activate**; in German, French and Portuguese the two share a verb (see [App labels](#app-labels)).
 - **Reachable:** a network service or host answers on its port. It is not "available" (usable), "accessible" in the disability sense, or "connected".
 - **Reboot / restart:** the whole device starting over, as the AirPort reboot request does. English uses both words for one thing; translate both with the row's term. Chinese says 重启 (or 重新启动), never a bare 启动, which is **Activate**.
+- **Unplug:** take the device off its power to restart it, when a restart request does not work. Say which plug: *vom Strom trennen*, *de stekker eruit halen*, *desenchufar* (or *desconectar la alimentación*), *desconectar da tomada*, *отключить от питания*, *拔掉电源*, *atjungti nuo maitinimo*, not a bare *trennen*, *loskoppelen*, *desconectar* or *отключить*, which can read as unplugging a cable or disconnecting from the network. Older lines that also say to plug it back in (the flash power-cycle steps, the stuck-service error) use the bare forms, which that makes clear.
 - **Host:** a network host, entered as a name or IP address; not a "server" in the client/server sense, and not the person hosting. An SSH or SMB server is a server (Chinese 服务器, Lithuanian *serveris*).
 - **Flash:** the router's NAND flash storage, or writing to it; never a camera flash or Adobe Flash.
 - **Disk mount:** Chinese 挂载 is our general term even though [Disk Utility's button says 装载](https://support.apple.com/zh-cn/guide/disk-utility/dskutl1027/mac) and [uses 卸载](https://support.apple.com/zh-cn/guide/disk-utility/dskud709f49b/mac); quote Disk Utility's own words when giving Disk Utility instructions.

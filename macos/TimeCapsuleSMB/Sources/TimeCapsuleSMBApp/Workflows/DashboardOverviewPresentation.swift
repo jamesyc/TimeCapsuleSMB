@@ -513,6 +513,14 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 status: .warning,
                 action: .startSMB
             )
+        case .unhealthy where runtimeState.errorCode == DoctorSummary.diskNotMountingResultCode:
+            return DashboardHealthRow(
+                id: "runtime-disk-not-mounting",
+                title: DashboardHealthDomain.runtime.title,
+                detail: L10n.string("doctor.check.disk_not_mounting"),
+                status: .failed,
+                action: .viewCheckup
+            )
         case .unhealthy:
             return DashboardHealthRow(
                 id: "runtime-unhealthy",

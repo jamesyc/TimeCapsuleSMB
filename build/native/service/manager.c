@@ -30,6 +30,13 @@
 #ifndef TC_PAYLOAD_RECHECK_MS
 #define TC_PAYLOAD_RECHECK_MS 30000
 #endif
+/* A disk not mounting this long, with no other holding the Samba files, goes
+ * in the title and a heartbeat (sample_unmounted). A claim cycle takes about
+ * a minute (two attempts of DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS); a
+ * spun-down disk mounts in the first. */
+#ifndef TC_UNMOUNTED_MS
+#define TC_UNMOUNTED_MS 600000
+#endif
 #ifndef TC_STALE_KILL_MS
 #define TC_STALE_KILL_MS 10000
 #endif
@@ -118,6 +125,15 @@ struct manager {
      * disk (title). payload_recheck_at is the second pass, 0 when none. */
     int payload_missing, payload_absent_seen;
     long long payload_recheck_at;
+    /* Since when a disk MaSt lists has not mounted while no other holds the
+     * Samba files, on the manager's clock, -1 while that is not so (the
+     * title's unmounted=). unmounted_paused is how much of that diskd spent
+     * checking or formatting a disk, which does not count towards
+     * TC_UNMOUNTED_MS; unmounted_sampled is the previous sample and
+     * unmounted_maintenance whether it saw that. unmounted_reported: its
+     * report was delivered, once per manager. Process-local. */
+    long long unmounted_since, unmounted_paused, unmounted_sampled;
+    int unmounted_shown, unmounted_reported, unmounted_maintenance;
     long long hostname_wait_since;
     /* When this manager started, on the monotonic clock (-1 if unreadable):
      * the title's started=, from which doctor measures the startup age. */
@@ -153,12 +169,13 @@ static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-/* Doctor reads started=, payload=missing and stuck=PID:COMM:WAIT:SECONDS[,...]
+/* Doctor reads started=, payload=missing, unmounted= and stuck=PID:COMM:WAIT:SECONDS[,...]
  * from the title (stuck.h tc_manager_title; ps shows a sleep time of at most
  * 127 s, and none for a wait that keeps waking). */
 static void set_manager_title(const struct manager *m) {
     char title[256];
-    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, m->payload_missing, &m->stuck,
+    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, m->payload_missing,
+                     m->unmounted_shown ? m->unmounted_since : -1, &m->stuck,
                      STUCK_TITLE_MAX, acp_monotonic_ms());
 #if defined(__NetBSD__)
     setproctitle("%s", title);
@@ -685,7 +702,7 @@ static void bufstall_restore(void) {
 static void drop_stuck_report(struct manager *m, const char *reason) {
     /* Logged once until a report fits again. */
     if (!m->stuck_reports_dropped)
-        timestamped_fprintf(stderr, "manager: stuck: report queue full; dropping %s\n", reason);
+        timestamped_fprintf(stderr, "manager: report queue full; dropping %s\n", reason);
     m->stuck_reports_dropped = 1;
 }
 static void push_stuck_report(struct manager *m, const char *reason) {
@@ -695,6 +712,17 @@ static void push_stuck_report(struct manager *m, const char *reason) {
     } else {
         drop_stuck_report(m, reason);
     }
+}
+#define UNMOUNTED_REPORT "unmounted:"
+/* The unmounted report waits in the queue or is in flight. */
+static int unmounted_report_pending(const struct manager *m) {
+    size_t i;
+    if (!strncmp(m->stuck_inflight, UNMOUNTED_REPORT, sizeof(UNMOUNTED_REPORT) - 1))
+        return 1;
+    for (i = 0; i < m->stuck_report_count; i++)
+        if (!strncmp(m->stuck_reports[i], UNMOUNTED_REPORT, sizeof(UNMOUNTED_REPORT) - 1))
+            return 1;
+    return 0;
 }
 static void pop_stuck_report(struct manager *m) {
     if (!m->stuck_report_count)
@@ -724,6 +752,8 @@ static void pump_reports(struct manager *m, long long now) {
                 memcpy(m->stuck_reports[0], m->stuck_inflight, sizeof(m->stuck_inflight));
                 m->stuck_report_count++;
                 m->stuck_report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+            } else if (!strncmp(m->stuck_inflight, UNMOUNTED_REPORT, sizeof(UNMOUNTED_REPORT) - 1)) {
+                m->unmounted_reported = 1;
             }
             m->stuck_inflight[0] = 0;
         } else if (delivered) {
@@ -947,6 +977,70 @@ static int foreign_netbios(const struct manager *m) {
     }
     return 0;
 }
+/* Apple's diskd checks a volume with fsck_hfs before mounting it: about a
+ * second for the quick check after most claims, and up to an hour on 2-3 TB
+ * for the repair after an unclean power-off. newfs_hfs formats one. Neither
+ * is a disk that stopped answering. (An Erase in AirPort Utility also
+ * repartitions the disk, which removes its volumes from MaSt.) */
+static int disk_maintenance(const struct manager *m) {
+    size_t i;
+    for (i = 0; i < m->procs.count; i++) {
+        const struct tc_proc *p = &m->procs.procs[i];
+        if (!tc_proc_exited(p) && (!strcmp(p->comm, "fsck_hfs") || !strcmp(p->comm, "newfs_hfs")))
+            return 1;
+    }
+    return 0;
+}
+/* File sharing has no disk: one MaSt lists failed activation (retry_prepare
+ * without mounted; a disk that mounted but failed later preparation keeps
+ * mounted), and no available disk holds the Samba files, so Samba is off
+ * (pump_storage). diskd can hang on a disk that stopped answering and then
+ * accepts every useVolume without mounting it, until a restart. A disk that
+ * fails while another serves the Samba files is left to the share checks.
+ * The time diskd spends in fsck_hfs or newfs_hfs does not count: the quick
+ * check after each claim must not restart the clock, and a long repair is
+ * not a hang. A sample interval counts as theirs when either end saw them,
+ * since they may have run for most of it. The title keeps the episode's start
+ * either way. Reporting only: the manager never restarts the device. */
+static void sample_unmounted(struct manager *m, long long now) {
+    uint32_t pending = m->storage.retry_prepare & ~m->storage.mounted;
+    int failing = pending && m->storage.payload_index < 0, internal = 0, maintenance, shown;
+    size_t i;
+    maintenance = failing && disk_maintenance(m);
+    if (!failing) {
+        m->unmounted_since = -1;
+    } else if (m->unmounted_since < 0) {
+        m->unmounted_since = now;
+        m->unmounted_paused = 0;
+        timestamped_fprintf(stderr, "manager: storage: no disk with the Samba files has mounted since %lld\n",
+                            now / 1000);
+    } else if (maintenance || m->unmounted_maintenance) {
+        m->unmounted_paused += now - m->unmounted_sampled;
+    }
+    m->unmounted_sampled = now;
+    m->unmounted_maintenance = maintenance;
+    shown = failing && now - m->unmounted_since - m->unmounted_paused >= TC_UNMOUNTED_MS;
+    if (shown != m->unmounted_shown) {
+        m->unmounted_shown = shown;
+        if (shown)
+            timestamped_fprintf(stderr, "manager: storage: no disk with the Samba files has mounted for %lld s\n",
+                                (now - m->unmounted_since) / 1000);
+        else
+            timestamped_fprintf(stderr,
+                                "manager: storage: a disk with the Samba files is mounted again, or none is listed\n");
+        set_manager_title(m);
+    }
+    /* Queued again whenever it is neither delivered nor waiting: a full
+     * queue drops a report, at a push or when a failed one goes back. */
+    if (shown && !m->unmounted_reported && !unmounted_report_pending(m)) {
+        /* Whether the internal disk is among them is what telemetry cannot
+         * tell otherwise; the heartbeat carries the uptime. */
+        for (i = 0; i < m->storage.inventory.count; i++)
+            if ((pending & (1u << i)) && m->storage.inventory.volumes[i].builtin)
+                internal = 1;
+        push_stuck_report(m, internal ? UNMOUNTED_REPORT "internal" : UNMOUNTED_REPORT "usb");
+    }
+}
 /* One process-table read per pass (proctable.h), shared by buffer-stall
  * recovery, stuck-process detection and the next audit. Reading is system
  * calls in this process, no fork, so it works with a full process table; it
@@ -970,6 +1064,7 @@ static void pump_sample(struct manager *m, long long now) {
     m->procs_valid = 1;
     sample_bufstall(m, now);
     sample_stuck(m, now);
+    sample_unmounted(m, now);
     if (!m->stopping && foreign_netbios(m))
         lower(&m->audit_at, now);
 }
@@ -1178,6 +1273,7 @@ int tc_manager_main(int argc, char **argv) {
         return 1;
     }
     m->started_ms = m->hostname_wait_since = acp_monotonic_ms();
+    m->unmounted_since = -1;
     set_manager_title(m);
     m->storage_dirty = 1;
     timestamped_fprintf(stderr, "manager: starting native supervision\n");

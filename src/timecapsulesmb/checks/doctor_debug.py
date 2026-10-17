@@ -5,8 +5,11 @@ from collections.abc import Iterable, Mapping
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.doctor_state import DoctorSink, DoctorTarget, ProcessSnapshotState, RemoteAccess
 from timecapsulesmb.device.probe import (
+    DISK_EVIDENCE_COMMANDS,
     REMOTE_PAYLOAD_LOG_FILENAMES,
     REMOTE_RUNTIME_RAM_LOG_PATHS,
+    limit_remote_log_tail,
+    read_remote_command_conn,
     read_remote_service_socket_diagnostics_conn,
     read_runtime_log_tails_conn,
     read_runtime_ram_diagnostics_conn,
@@ -62,16 +65,25 @@ def _add_remote_service_socket_debug(target: DoctorTarget, remote: RemoteAccess,
         sink.debug_fields["remote_service_sockets_error"] = f"{type(e).__name__}: {e}"
 
 
-def _doctor_add_mast_probe_on_disk_failure(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+def _doctor_add_mast_probe_on_disk_failure(
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, *, always: bool = False,
+) -> None:
     if not remote.remote_checks_enabled or sink.debug_fields is None:
         return
-    if not _doctor_results_need_mast_probe(sink.results):
+    if not always and not _doctor_results_need_mast_probe(sink.results):
         return
 
     try:
         sink.debug_fields.update(mast_probe_debug_summary(probe_mast_diagnostics_conn(target.connection)))
     except Exception as e:
         sink.debug_fields["mast_probe_error"] = f"{type(e).__name__}: {e}"
+    for field, command in DISK_EVIDENCE_COMMANDS.items():
+        try:
+            sink.debug_fields[field] = limit_remote_log_tail(
+                read_remote_command_conn(target.connection, command).rstrip() or "(empty)"
+            )
+        except Exception as e:
+            sink.debug_fields[f"{field}_error"] = f"{type(e).__name__}: {e}"
 
 
 _REMOTE_LOG_TAIL_TIMEOUT_MARKER = "Timed out waiting for ssh command"

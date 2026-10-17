@@ -287,6 +287,7 @@
 "dialog.forget.title" = "Dimenticare questo dispositivo?";
 "doctor.check.payload_missing_from_disk" = "I file Samba mancano da tutti i dischi, come dopo “Inizializza disco” in Utility AirPort. Esegui “Installa/aggiorna Samba” per reinstallare.";
 "doctor.check.metadata_migration_in_progress" = "Sul dispositivo è ancora in corso una migrazione dei metadati. “Installa/aggiorna Samba” attende che termini prima di installare.";
+"doctor.check.disk_not_mounting" = "Non è possibile montare un disco del dispositivo, quindi la condivisione dei file e Time Machine non funzionano. Riavvia il dispositivo; se non ricompare, scollegalo dall’alimentazione per 10 secondi. Se il disco continua a non essere montato, esegui “Riparazione disco”; se il problema persiste, potrebbe essere necessario sostituirlo.";
 "doctor.check.client_on_unshared_network" = "Questo Mac è su una rete in cui il dispositivo non condivide i suoi dischi, come il lato Internet (WAN) o la rete ospiti del dispositivo. Collega questo Mac alla rete principale del dispositivo tramite Wi-Fi o una delle sue porte LAN, poi esegui di nuovo “Controllo”.";
 "doctor.check.mac_smb3_disabled" = "%@ disattiva SMB 3 (protocol_vers_map), ma Time Machine ne ha bisogno. Elimina quella riga, poi rimuovi il disco nelle impostazioni di Time Machine e aggiungilo di nuovo.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ disattiva SMB 3 per il server [%2$@]. Se è questo dispositivo, elimina quella riga, poi rimuovi il disco nelle impostazioni di Time Machine e aggiungilo di nuovo.";

@@ -88,7 +88,7 @@ void tc_stuck_word(char *out, size_t size, const char *text);
 /* The uninterruptible sleepers in this pass's process table. */
 int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table);
 /* The manager's process title, which doctor reads from ps:
- *   role=manager started=S[ waiting=hostname][ payload=missing][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
+ *   role=manager started=S[ waiting=hostname][ payload=missing][ unmounted=S][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
  * started= is when the manager started, in whole seconds on the kernel's
  * monotonic clock (started_ms; omitted when negative, a failed clock read).
  * Doctor subtracts it from `service --print-monotonic-ms`, the same clock:
@@ -100,7 +100,12 @@ int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table)
  * entries, never started=. Their seconds are now - since. payload=missing
  * means every available disk was inspected and none holds a payload, as after
  * an Erase in AirPort Utility: Samba stays off until the payload is
- * reinstalled, so doctor and activation report that instead of waiting. */
+ * reinstalled, so doctor and activation report that instead of waiting.
+ * unmounted= is since when a disk MaSt lists has not mounted while no other
+ * holds the Samba files, so Samba is off; on the same clock as started=
+ * (unmounted_ms; omitted when negative). The manager shows it only once that
+ * has lasted TC_UNMOUNTED_MS, not counting time diskd spent checking or
+ * formatting a disk, and doctor then says to restart. */
 void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, int payload_missing,
-                      const struct tc_stuck *stuck, size_t limit, long long now);
+                      long long unmounted_ms, const struct tc_stuck *stuck, size_t limit, long long now);
 #endif

@@ -309,6 +309,32 @@ class ProbeTests(unittest.TestCase):
                 self.assertEqual(result.payload_missing, missing)
                 self.assertEqual(result.manager_started_seconds_ago, 41.0)
 
+    def test_probe_manager_startup_age_conn_reads_when_a_disk_stopped_mounting_from_the_title(self) -> None:
+        # unmounted=S: a disk MaSt lists has not mounted since S, on the
+        # started= clock; the manager writes it only after 10 minutes.
+        for title, since in (
+            ("service: role=manager started=19 unmounted=1260", 1260),
+            ("service: role=manager started=19 payload=missing unmounted=0 stuck=211:diskd:biowait:600", 0),
+            ("service: role=manager started=19", None),
+            ("service: role=manager started=19 unmounted=", None),
+            ("service: role=manager started=19 unmounted=12x", None),
+            ("service: role=manager started=19 unmounted=5 unmounted=6", None),
+        ):
+            with self.subTest(title=title):
+                result, _ = self._probe_manager_age(self._manager_age_output(
+                    *self._MANAGER_PEERS, f"  250 1 250 Ss 0 - 0:41 service       {title}", now_ms="60000"
+                ))
+                self.assertEqual(result.unmounted_since, since)
+                self.assertEqual(result.manager_started_seconds_ago, 41.0)
+
+    def test_probe_manager_startup_age_conn_reads_an_unmounted_disk_without_an_age(self) -> None:
+        # A failed clock read loses the age, never the disk state.
+        result, _ = self._probe_manager_age(self._manager_age_output(
+            " 250 1 250 Ss 0 - 0:41 service service: role=manager started=19 unmounted=900", now_ms=""
+        ))
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertEqual(result.unmounted_since, 900)
+
     def test_probe_manager_startup_age_conn_reports_a_missing_payload_without_an_age(self) -> None:
         # A failed clock read loses the age, never the payload state.
         result, _ = self._probe_manager_age(self._manager_age_output(

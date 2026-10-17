@@ -2219,6 +2219,11 @@ def _title_payload_missing(title: list[str]) -> bool:
     return "payload=missing" in title
 
 
+def _title_unmounted_since(title: list[str]) -> int | None:
+    values = [word.removeprefix("unmounted=") for word in title if word.startswith("unmounted=")]
+    return int(values[0]) if len(values) == 1 and _DECIMAL.fullmatch(values[0]) else None
+
+
 def runtime_payload_missing(result: ManagedRuntimeProbeResult) -> bool:
     return any(step.id == DISK_PAYLOAD_MISSING_STEP_ID for step in result.steps)
 
@@ -2666,6 +2671,12 @@ class ManagerStartupAgeProbeResult:
     # payload, as after an Erase in AirPort Utility. Samba stays off until a
     # reinstall, however long anything waits.
     payload_missing: bool = False
+    # The title's unmounted=: since when a disk MaSt lists has not mounted
+    # while no other holds the Samba files, so Samba is off; in seconds on the
+    # started= clock. The manager shows it only once that has lasted 10
+    # minutes (TC_UNMOUNTED_MS). diskd can hang on a disk that stopped
+    # answering; a restart clears it.
+    unmounted_since: int | None = None
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
@@ -2704,7 +2715,11 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
     if len(rows) > 1:
         return ManagerStartupAgeProbeResult(None, f"{len(rows)} manager processes are running")
     title = list(rows[0].argv[1:])
-    return replace(_manager_startup_age(title, now_text), payload_missing=_title_payload_missing(title))
+    return replace(
+        _manager_startup_age(title, now_text),
+        payload_missing=_title_payload_missing(title),
+        unmounted_since=_title_unmounted_since(title),
+    )
 
 
 def _manager_startup_age(title: list[str], now_text: str) -> ManagerStartupAgeProbeResult:
@@ -2951,6 +2966,33 @@ KERN_LIMITS_COMMAND = "/sbin/sysctl kern.sbmax kern.maxfiles kern.maxproc"
 def read_kern_limits_conn(connection: SshConnection) -> str:
     """KERN_LIMITS_COMMAND's output, errors included."""
     proc = run_ssh(connection, f"{KERN_LIMITS_COMMAND} 2>&1", check=False, timeout=PROCESS_SNAPSHOT_TIMEOUT_SECONDS)
+    return proc.stdout or ""
+
+
+# What the kernel said about the disks, and diskd's threads: on a disk that
+# stopped mounting, these tell a drive timeout or reset from an idle unmount,
+# and one long-lived diskd thread from a new one per claim. Neither reads the
+# data disk, and each is its own command so that one timing out keeps the
+# other. dmesg's buffer is 16 KB on NetBSD 6 and 4 KB on NetBSD 4, and Wi-Fi
+# lines fill NetBSD 6's, so only disk lines are kept (not the dkN wedge lines,
+# which only repeat the boot's partition table); device sed has no \|.
+# `ps -s` lists threads, with no argv column on NetBSD 6 so it never waits on a
+# process's map lock. NetBSD 4's adds its default columns, the command line
+# among them, and its diskd has one thread, so it is not run there.
+DISK_EVIDENCE_COMMANDS = {
+    "remote_kernel_disk_messages": "/sbin/dmesg | sed -n"
+    + "".join(
+        f" -e '/{pattern}/p'"
+        for pattern in ("wd[0-9]", "sd[0-9]", "atabus", "ahcisata", "umass", "HFS", "rror", "imeout", "reset")
+    ),
+    "remote_diskd_threads": "case $(uname -r) in 4.*) echo '(not listed on NetBSD 4)' ;; "
+    "*) /bin/ps -axs -o pid,lid,stat,wchan,sl,ucomm | sed -n -e 1p -e '/diskd/p' -e '/fsck_hfs/p' -e '/newfs_hfs/p' ;; esac",
+}
+
+
+def read_remote_command_conn(connection: SshConnection, command: str) -> str:
+    """A diagnostic command's output, errors included."""
+    proc = run_ssh(connection, f"{{ {command}; }} 2>&1", check=False, timeout=PROCESS_SNAPSHOT_TIMEOUT_SECONDS)
     return proc.stdout or ""
 
 

@@ -155,7 +155,7 @@ static void title_append(char *out, size_t size, size_t *used, const char *forma
 }
 
 void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, int payload_missing,
-                      const struct tc_stuck *stuck, size_t limit, long long now) {
+                      long long unmounted_ms, const struct tc_stuck *stuck, size_t limit, long long now) {
     const struct tc_stuck_entry *order[TC_STUCK_MAX];
     size_t used = 0, i, shown = 0, more = 0;
     if (!size)
@@ -167,6 +167,8 @@ void tc_manager_title(char *out, size_t size, long long started_ms, int waiting,
         title_append(out, size, &used, " waiting=hostname");
     if (payload_missing)
         title_append(out, size, &used, " payload=missing");
+    if (unmounted_ms >= 0)
+        title_append(out, size, &used, " unmounted=%lld", unmounted_ms / 1000);
     for (i = 0; i < stuck->count; i++)
         if (stuck->entries[i].stuck)
             order[shown++] = &stuck->entries[i];

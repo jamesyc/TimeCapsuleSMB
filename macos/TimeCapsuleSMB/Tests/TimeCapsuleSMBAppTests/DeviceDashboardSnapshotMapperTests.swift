@@ -120,6 +120,31 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(runtimeState?.errorCode, DoctorSummary.payloadMissingFromDiskResultCode)
     }
 
+    func testDiskNotMountingIsUnhealthyWithItsOwnCode() throws {
+        // Installed and running, but no disk mounts: the dashboard names the
+        // restart; any other failure keeps the generic code.
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let stuck = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "FAIL", message: "a disk on the device will not mount",
+                            domain: "device", code: "disk_not_mounting")
+        ])
+        let other = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "FAIL", message: "managed smbd parent process is not running", domain: "device")
+        ])
+
+        let stuckState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: stuck)
+        let otherState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: other)
+
+        XCTAssertTrue(stuck.diskNotMounting)
+        XCTAssertFalse(other.diskNotMounting)
+        XCTAssertEqual(stuckState?.state, .unhealthy)
+        XCTAssertEqual(stuckState?.errorCode, DoctorSummary.diskNotMountingResultCode)
+        XCTAssertEqual(otherState?.state, .unhealthy)
+        XCTAssertEqual(otherState?.errorCode, "doctor_failed")
+    }
+
     func testASectionDecodesWithoutItsTelemetryCodeLists() throws {
         // fail_codes and warn_codes are for telemetry; the app reads only the
         // status and counts.
