@@ -1725,8 +1725,16 @@ class RealSshProcessTests(unittest.TestCase):
 
     def test_a_streamed_command_that_hangs_times_out_after_its_lines(self) -> None:
         lines: list[str] = []
-        with self.assertRaises(ssh_transport.SshCommandTimeout) as raised:
-            self.streamed("echo started; sleep 30", timeout=1, on_line=lines.append)
+        began = time.monotonic()
+        def clock():
+            # Hold the transport's clock at its start until the real fake ssh
+            # has printed its line, then move it past the 1 s timeout and let
+            # it run on. A line that never comes still times out after 10 s.
+            now = time.monotonic()
+            return now + 2.0 if lines or now - began > 10 else began
+        with mock.patch.object(ssh_transport.time, "monotonic", side_effect=clock):
+            with self.assertRaises(ssh_transport.SshCommandTimeout) as raised:
+                self.streamed("echo started; sleep 30", timeout=1, on_line=lines.append)
         self.assertEqual(lines, ["started"])
         self.assertEqual(str(raised.exception), "Timed out waiting for ssh command to finish: echo started; sleep 30")
 

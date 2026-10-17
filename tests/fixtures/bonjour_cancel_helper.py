@@ -17,7 +17,8 @@ from timecapsulesmb.telemetry import TelemetryClient
 def main():
     patch = pytest.MonkeyPatch()
     observations = [dict(records()[0], name=f" Device {i}\u00a0 ", hostname=f"device-{i}.local") for i in range(4)]
-    install_native(patch, Path(sys.argv[1]), observations, address_delay=20, ignore_terminate=True)
+    # Never answers within the scan the test starts: 30 s browse plus 3 s grace.
+    install_native(patch, Path(sys.argv[1]), observations, address_delay=60, ignore_terminate=True)
     launch = native_dns_sd._ProcessOwner.launch
     lock = threading.Lock()
     count = 0

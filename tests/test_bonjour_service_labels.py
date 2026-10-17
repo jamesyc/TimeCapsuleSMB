@@ -412,10 +412,13 @@ def test_provider_api_selection_roundtrip_preserves_label(monkeypatch, tmp_path,
         assert sorted(resources) == ["ipv4", "ipv6"]
 
 
-def test_native_cli_json_preserves_all_three_service_labels(monkeypatch, tmp_path):
+# Slow: five browse children starting one after another outlast the 2 s
+# window, and each -L outlasts its resolve attempt. Real dns-sd starts at once.
+@pytest.mark.parametrize("startup", [0, 0.6], ids=["quick-start", "slow-start"])
+def test_native_cli_json_preserves_all_three_service_labels(monkeypatch, tmp_path, startup):
     name = "AirPort Time\u00a0Capsule "
     observations = [{**r, "name": name} for r in records()[:3]]
-    children = install_native(monkeypatch, tmp_path, observations)
+    children = install_native(monkeypatch, tmp_path, observations, child_startup_delay=startup)
     cap_browse_window(monkeypatch, "dns-sd")
     output = io.StringIO()
     with redirect_stdout(output):

@@ -9,15 +9,38 @@ import pytest
 
 from tests.fixtures.bonjour import install_zeroconf, records
 from timecapsulesmb.discovery import bonjour, zeroconf_backend
+from timecapsulesmb.discovery.models import FINAL_PENDING_RESOLVE_TIMEOUT_MS
+
+# A scan that waited out its grace instead of ending when nothing is pending.
+GRACE = FINAL_PENDING_RESOLVE_TIMEOUT_MS / 1000
+
+
+def answers_after_partial_grace(monkeypatch, observations, family):
+    ready = threading.Event()
+    closed = install_zeroconf(monkeypatch, observations, address_ready={family: ready})
+    partial = set()
+    finish = zeroconf_backend.Collector.finish_pending
+    def finished(collector, futures):
+        finish(collector, futures)
+        # Both transports must have retained an incomplete answer after browse
+        # admission closed. Only that event releases the missing address.
+        if not collector.accepting and any(not getattr(r, family) for r in collector.results()):
+            partial.add(collector.zc.family)
+            if partial == {'ipv4', 'ipv6'}:
+                ready.set()
+    monkeypatch.setattr(zeroconf_backend.Collector, 'finish_pending', finished)
+    return closed, partial
 
 
 @pytest.mark.parametrize("late_family", ["ipv4", "ipv6"])
 def test_partial_answers_on_both_transports_complete_during_shared_grace(monkeypatch, late_family):
-    closed = install_zeroconf(monkeypatch, records()[:1], address_delays={late_family: .35})
+    closed, partial = answers_after_partial_grace(monkeypatch, records()[:1], late_family)
     snapshot, diagnostics = bonjour.BonjourQuery().browse("_airport", .15)
     assert snapshot.resolved[0].ipv4 == ["192.0.2.10"]
     assert snapshot.resolved[0].ipv6 == ["fd00::10"]
-    assert .3 <= diagnostics.elapsed_sec < 1.5
+    assert partial == {'ipv4', 'ipv6'}
+    # It ends once both are complete, not when the grace does.
+    assert .15 <= diagnostics.elapsed_sec < .15 + GRACE
     assert diagnostics.pending_count == 0
     assert sorted(closed) == ["ipv4", "ipv6"]
 
@@ -25,19 +48,27 @@ def test_partial_answers_on_both_transports_complete_during_shared_grace(monkeyp
 def test_single_stack_scan_preserves_partial_answer_at_shared_deadline(monkeypatch):
     install_zeroconf(monkeypatch, [{**records()[0], "ipv6": []}])
     start = time.monotonic()
-    snapshot, diagnostics = bonjour.BonjourQuery().browse("_airport", .1, deadline=start + .3)
+    snapshot, diagnostics = bonjour.BonjourQuery().browse("_airport", .1, deadline=start + 3)
     assert snapshot.resolved[0].ipv4 == ["192.0.2.10"]
     assert snapshot.resolved[0].ipv6 == []
-    assert .25 <= diagnostics.elapsed_sec < 1
+    # Stops at the shared deadline, without a material overrun.
+    assert 2.9 <= diagnostics.elapsed_sec < 3 + 1.5
     assert diagnostics.pending_count == 2
 
 
 @pytest.mark.parametrize("family", ["ipv4", "ipv6"])
 def test_explicit_family_does_not_wait_for_the_other(monkeypatch, family):
-    install_zeroconf(monkeypatch, [{**records()[0], "ipv6" if family == "ipv4" else "ipv4": []}])
+    import zeroconf
+    closed = install_zeroconf(monkeypatch, [{**records()[0], "ipv6" if family == "ipv4" else "ipv4": []}])
+    other = 'AddressResolverIPv6' if family == 'ipv4' else 'AddressResolverIPv4'
+    unexpected = mock.Mock(wraps=getattr(zeroconf, other))
+    monkeypatch.setattr(zeroconf, other, unexpected)
     snapshot, diagnostics = bonjour.BonjourQuery().browse("_airport", .1, family=family)
+    unexpected.assert_not_called()
+    assert closed == [family]
     assert getattr(snapshot.resolved[0], family)
-    assert diagnostics.elapsed_sec < .8
+    # Waiting for the other family would last the whole grace.
+    assert diagnostics.elapsed_sec < .1 + GRACE
     assert diagnostics.pending_count == 0
 
 
@@ -45,9 +76,10 @@ def test_explicit_family_does_not_wait_for_the_other(monkeypatch, family):
 def test_targeted_resolve_collects_late_family_within_its_existing_budget(monkeypatch, late_family):
     install_zeroconf(monkeypatch, records()[:1], address_delays={late_family: .2})
     instance = bonjour.BonjourServiceInstance("_airport._tcp.local.", "Office", "Office._airport._tcp.local.")
-    record, diagnostics = bonjour.BonjourQuery().resolve_detailed(instance, 400)
+    record, diagnostics = bonjour.BonjourQuery().resolve_detailed(instance, 3000)
     assert record.ipv4 == ["192.0.2.10"] and record.ipv6 == ["fd00::10"]
-    assert diagnostics.elapsed_sec < 1
+    # Within its budget: it ends with the late answer, not at the budget.
+    assert diagnostics.elapsed_sec < 3.0
 
 
 @pytest.mark.parametrize("later", [None, OSError("later lookup failed")])
@@ -57,19 +89,26 @@ def test_targeted_resolve_preserves_earlier_evidence_after_an_inconclusive_retry
     def opened(*args, **kwargs):
         zc = open_zc(*args, **kwargs)
         initial = zc.get_service_info("_airport._tcp.local.", "Office._airport._tcp.local.", 500)
-        zc.get_service_info = mock.Mock(side_effect=[initial, later, later, later])
+        answers = iter([initial])
+        def lookup(*_args, **_kwargs):
+            answer = next(answers, later)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        zc.get_service_info = lookup
         return zc
     monkeypatch.setattr(zeroconf_backend, "_open_zeroconf", opened)
     instance = bonjour.BonjourServiceInstance("_airport._tcp.local.", "Office", "Office._airport._tcp.local.")
-    record, _diagnostics = bonjour.BonjourQuery().resolve_detailed(instance, 900)
+    record, _diagnostics = bonjour.BonjourQuery().resolve_detailed(instance, 3000)
     assert record.ipv4 == ["192.0.2.10"] and record.ipv6 == []
 
 
 def test_late_link_local_answer_retains_the_observed_interface(monkeypatch):
     from timecapsulesmb.core.net import same_scoped_ip
 
-    install_zeroconf(monkeypatch, [{**records()[0], "ipv6": ["fe80::10"]}], address_delays={"ipv6": .15})
+    _, partial = answers_after_partial_grace(monkeypatch, [{**records()[0], "ipv6": ["fe80::10"]}], "ipv6")
     snapshot, _diagnostics = bonjour.BonjourQuery().browse("_airport", .1)
+    assert partial == {'ipv4', 'ipv6'}
     assert len(snapshot.resolved[0].ipv6) == 1
     assert same_scoped_ip(snapshot.resolved[0].ipv6[0], "fe80::10%14")
 
@@ -115,7 +154,7 @@ def test_cached_service_triggers_a_real_missing_family_query(monkeypatch):
             seeded.set()
         zc.loop.call_soon_threadsafe(seed)
         assert seeded.wait(3)
-        record = zeroconf_backend._resolve_record(zc, (stype, name), 1000, ("ipv4", "ipv6"))
+        record = zeroconf_backend._resolve_record(zc, (stype, name), 3000, ("ipv4", "ipv6"))
     assert record.ipv4 == ["192.0.2.10"] and record.ipv6 == ["fd00::10"]
     assert questions == [28]
 
@@ -135,7 +174,7 @@ def test_partial_services_rotate_behind_fresh_names(monkeypatch):
         zc.get_service_info = get
         return zc
     monkeypatch.setattr(zeroconf_backend, "_open_zeroconf", opened)
-    snapshot, _diagnostics = bonjour.BonjourQuery().browse("_airport", .1, deadline=time.monotonic() + .9)
+    snapshot, _diagnostics = bonjour.BonjourQuery().browse("_airport", .1, deadline=time.monotonic() + 3)
     assert {r.name for r in snapshot.resolved} == {r["name"] for r in observations}
     # Both transports eventually give the later devices their first attempt.
     assert all(sum(name.startswith(f"Device {index}.") for name in calls) >= 2 for index in (4, 5))

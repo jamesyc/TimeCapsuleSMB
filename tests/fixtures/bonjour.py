@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
+import select
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 from timecapsulesmb.discovery import bonjour, native_dns_sd, zeroconf_backend
 from timecapsulesmb.discovery.models import SERVICE_TYPES
@@ -53,9 +57,12 @@ def native_fullname(name, service_type):
 
 
 def install_zeroconf(monkeypatch, observations, *, fail_family=None, family_observations=None, delays=None,
-                     address_delays=None):
+                     address_delays=None, address_ready=None):
     from zeroconf import IPVersion, ServiceStateChange
     closed = []
+    def missing_families():
+        return {f for f, delay in (address_delays or {}).items() if time.monotonic() < started + delay} | {
+            f for f, ready in (address_ready or {}).items() if not ready.is_set()}
     started = time.monotonic()
     class FakeZeroconf:
         def __init__(self, **kwargs):
@@ -73,8 +80,7 @@ def install_zeroconf(monkeypatch, observations, *, fail_family=None, family_obse
                     return None
             for r in self.observations:
                 if r["service_type"] == stype and f'{r["name"]}.{stype}' == fullname:
-                    return info({**r, **{f: [] for f, delay in (address_delays or {}).items()
-                                         if time.monotonic() < started + delay}})
+                    return info({**r, **{f: [] for f in missing_families()}})
             return None
         def add_listener(self, *args): pass
         def remove_listener(self, *args): pass
@@ -92,6 +98,9 @@ def install_zeroconf(monkeypatch, observations, *, fail_family=None, family_obse
                 self.interface_index = None
                 self.addresses = []
             def request(self, zc, timeout, **kwargs):
+                ready = (address_ready or {}).get(family)
+                if ready is not None and not ready.wait(timeout / 1000):
+                    return False
                 remaining = started + (address_delays or {}).get(family, 0) - time.monotonic()
                 if remaining > 0:
                     time.sleep(min(remaining, timeout / 1000))
@@ -114,13 +123,17 @@ def install_zeroconf(monkeypatch, observations, *, fail_family=None, family_obse
 
 
 def install_native(monkeypatch, tmp_path, observations, *, address_delay=0.02, delayed_family="ipv6", ignore_terminate=False,
-                   fragment_browse=False):
+                   fragment_browse=False, child_startup_delay=0):
     script = tmp_path / "fake-dns-sd.py"
-    script.write_text('''import sys,time,signal,json,threading
+    script.write_text('''import sys,time,signal,json,threading,os
+ready=int(sys.argv.pop(1).split('=',1)[1]); startup=float(sys.argv.pop(1)); query=int(sys.argv.pop(1))
 records = json.loads(sys.argv[1]); delay=float(sys.argv[2]); ignore=sys.argv[3]=='1'; epoch=float(sys.argv[4]); delayed=sys.argv[5]; fragment=sys.argv[6]=='1'; args=sys.argv[7:]
 changes_ready = threading.Event()
 signal.signal(signal.SIGUSR1, lambda *_args: changes_ready.set())
 if ignore: signal.signal(signal.SIGTERM, signal.SIG_IGN)
+time.sleep(startup)
+# Running, with its handlers installed: the launch may now hand it to discovery.
+os.write(ready,b'R'); os.close(ready)
 index=int(args[args.index('-i')+1]) if '-i' in args else None
 # Apple's preamble, captured from macOS 26.6.2. dns-sd flushes stdout only from a
 # callback, so the preamble reaches the pipe with the first answer, never alone.
@@ -168,8 +181,9 @@ elif '-G' in args:
     host=args[args.index('-G')+2]
     r=next((r for r in records if r['hostname']==host and (index is None or index==r.get('interface_index',14))),None)
     if r:
-        for after,ipv4,ipv6 in r.get('address_updates',[]):
-            if time.clock_gettime(time.CLOCK_MONOTONIC) >= epoch+after:
+        # address_updates rows: [nth, ipv4, ipv6], from the host's nth -G child on.
+        for nth,ipv4,ipv6 in r.get('address_updates',[]):
+            if query >= nth:
                 r = dict(r,ipv4=ipv4,ipv6=ipv6)
         protocol=args[args.index('-G')+1]
         for family in (('ipv4','ipv6') if delayed=='ipv6' else ('ipv6','ipv4')):
@@ -184,7 +198,19 @@ elif '-G' in args:
     time.sleep(30)
 ''')
     children = []
-    epochs = {}
+    # dns-sd starts in milliseconds; this fake is a Python interpreter. Each
+    # launch returns once its child runs, so a -L/-G read window, which starts
+    # after launch, never pays for the interpreter; a later attempt retries
+    # what a slow -L left of an attempt. Discovery spawns its browse children
+    # after taking its start time and before its loop, so that wait is
+    # credited back to the module's clock: the window starts once they run.
+    credit = [0.0]
+    monkeypatch.setattr(native_dns_sd, "time", SimpleNamespace(
+        monotonic=lambda: time.monotonic() - credit[0], sleep=lambda seconds: time.sleep(seconds)))
+    # The origin of scripted address delays, and how many -G children each
+    # host has had. Resolves of one host can launch concurrently.
+    scan = SimpleNamespace(epoch=None, queries={})
+    scan_lock = threading.Lock()
     launch = native_dns_sd._ProcessOwner.launch
     wire_observations = [dict(r, native_txt=native_txt_output(r.get("properties", {})),
                              native_fullname=native_fullname(r['name'], r['service_type']),
@@ -193,11 +219,64 @@ elif '-G' in args:
                                                  for action in ("Add", "Rmv")}) for r in observations]
     def fake_launch(owner, args):
         # macOS Python 3.9's monotonic() starts separately in each process.
-        now = time.clock_gettime(time.CLOCK_MONOTONIC)
-        epoch = epochs.setdefault(args[-1], now) if "-G" in args else now
-        proc = launch(owner, [sys.executable, "-u", str(script), json.dumps(wire_observations), str(address_delay), str(int(ignore_terminate)), str(epoch), delayed_family, str(int(fragment_browse)), *args[1:]])
-        children.append(proc)
-        return proc
+        before = time.clock_gettime(time.CLOCK_MONOTONIC)
+        with scan_lock:
+            epoch = scan.epoch if scan.epoch is not None else before
+            query = 0
+            if '-G' in args:
+                key = (args[-1], args[args.index('-i')+1] if '-i' in args else None)
+                query = scan.queries[key] = scan.queries.get(key, 0) + 1
+        ready_read, ready_write = os.pipe()
+        # popen_process uses posix_spawn with inheritable descriptors. Read a
+        # byte, not EOF: simultaneous launches can inherit each other's pipe.
+        os.set_inheritable(ready_write, True)
+        proc = None
+        try:
+            proc = launch(owner, [sys.executable, "-u", str(script), f"--ready={ready_write}", str(child_startup_delay),
+                                 str(query), json.dumps(wire_observations),
+                                 str(address_delay), str(int(ignore_terminate)), str(epoch), delayed_family,
+                                 str(int(fragment_browse)), *args[1:]])
+            children.append(proc)
+            while True:
+                if owner.cancel.is_set():
+                    raise KeyboardInterrupt
+                if owner.stopping:
+                    raise native_dns_sd.subprocess.TimeoutExpired(args, 0)
+                # Observe exit before checking the pipe: a child can write its
+                # byte and exit just after select times out. Polling afterward
+                # would mistake that valid startup for an unready exit.
+                exited = proc.poll() is not None
+                if select.select([ready_read], [], [], .02)[0]:
+                    assert os.read(ready_read, 1) == b'R', 'fake dns-sd exited before readiness'
+                    break
+                if exited:
+                    if owner.stopping or owner.cancel.is_set():
+                        continue
+                    raise AssertionError('fake dns-sd exited before readiness')
+                assert time.clock_gettime(time.CLOCK_MONOTONIC)-before < 10, 'fake dns-sd readiness timed out'
+            ready = time.clock_gettime(time.CLOCK_MONOTONIC)
+            with scan_lock:
+                if '-B' in args:
+                    credit[0] += ready - before
+                    # Scripted delays count from when the browse children run,
+                    # where the credited window starts.
+                    scan.epoch = ready
+                elif scan.epoch is None:
+                    scan.epoch = before # a targeted resolve: from its first launch
+            return proc
+        except BaseException:
+            if proc is not None:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+                for stream in (proc.stdout, proc.stderr):
+                    stream.close()
+                with owner.lock:
+                    owner.children.discard(proc)
+            raise
+        finally:
+            os.close(ready_read)
+            os.close(ready_write)
     monkeypatch.setattr(native_dns_sd._ProcessOwner, "launch", fake_launch)
     parse = native_dns_sd._parse_dns_sd_browse_output
     def strict_parse(*args):

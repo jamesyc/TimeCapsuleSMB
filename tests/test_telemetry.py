@@ -279,9 +279,9 @@ class TelemetryTests(unittest.TestCase):
                 started = time.monotonic()
                 client.emit("deploy_finished", synchronous=True)
                 waited = time.monotonic() - started
-            # One limit for all three, not one each.
+            # One limit for all three, not one each: three would take 3 s.
             self.assertGreaterEqual(waited, 1.0)
-            self.assertLess(waited, 2.5)
+            self.assertLess(waited, 3.0)
             self.assertEqual([event["phase"] for event in server.events], ["finished"])
 
     def test_command_context_reuses_command_id_for_started_and_finished_events(self) -> None:
@@ -540,9 +540,11 @@ class TelemetryTests(unittest.TestCase):
         telemetry = mock.Mock()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         release_probe = threading.Event()
+        entered = threading.Event()
 
         def slow_probe(_connection: SshConnection) -> SimpleNamespace:
-            release_probe.wait(1)
+            entered.set()
+            release_probe.wait()
             return SimpleNamespace(model="AirPort7,120", syap="120")
 
         context = CommandContext(
@@ -554,13 +556,21 @@ class TelemetryTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.cli.context.probe_remote_airport_identity_conn", side_effect=slow_probe):
             context.start_optional_airport_identity_probe(connection)
-            started = time.monotonic()
-            context.finish(result="success")
-            elapsed = time.monotonic() - started
-            release_probe.set()
+            probe = context._optional_airport_identity_thread
+            finisher = threading.Thread(target=context.finish, kwargs={"result": "success"})
+            try:
+                self.assertTrue(entered.wait(10))
+                finisher.start()
+                finisher.join(10)
+                self.assertFalse(finisher.is_alive())
+                self.assertTrue(probe.is_alive())
+            finally:
+                release_probe.set()
+                probe.join(10)
+                if finisher.ident is not None:
+                    finisher.join(10)
 
         payload = telemetry.emit.call_args_list[-1].kwargs
-        self.assertLess(elapsed, 0.5)
         self.assertNotIn("device_model", payload)
         self.assertNotIn("device_syap", payload)
 

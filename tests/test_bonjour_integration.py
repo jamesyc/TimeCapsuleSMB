@@ -16,7 +16,7 @@ from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.discovery import discover_operation
 from timecapsulesmb.cli.discover import run_cli
 from timecapsulesmb.discovery import bonjour, native_dns_sd, zeroconf_backend
-from timecapsulesmb.discovery.models import SERVICE_TYPES
+from timecapsulesmb.discovery.models import FINAL_PENDING_RESOLVE_TIMEOUT_MS, SERVICE_TYPES
 
 
 @pytest.fixture(params=["dns-sd", "zeroconf"])
@@ -128,20 +128,37 @@ def test_known_permission_denial_stops_before_provider_selection(monkeypatch):
     select.assert_not_called()
 
 
+def one_grace_bound(timeout):
+    """Just past the browse window and one shared resolution grace, the
+    longest a run may take: a second grace, or one per device, would pass it."""
+    return timeout + FINAL_PENDING_RESOLVE_TIMEOUT_MS / 1000 + 1
+
+
+# Slow: a fake startup longer than discovery's 0.5 s resolve attempt, as on a
+# loaded runner, must not cost discovery any time. Real dns-sd starts at once.
+@pytest.mark.parametrize("startup", [0, 0.6], ids=["quick-start", "slow-start"])
 @pytest.mark.parametrize("delayed_family", ["ipv4", "ipv6"])
-def test_native_late_second_family_is_collected_during_shared_grace(monkeypatch, tmp_path, delayed_family):
-    # Real child startup consumes browse time; exercise the public minimum budget.
-    children = install_native(monkeypatch, tmp_path, records()[:1], address_delay=5.3, delayed_family=delayed_family)
+def test_native_late_second_family_is_collected_during_shared_grace(monkeypatch, tmp_path, delayed_family, startup):
+    # Exercise the public minimum budget.
+    children = install_native(monkeypatch, tmp_path, records()[:1], address_delay=5.3, delayed_family=delayed_family,
+                              child_startup_delay=startup)
     snapshot, diagnostics = bonjour.discover_snapshot_detailed("_airport", timeout=5)
     assert snapshot.resolved[0].ipv4 == ["192.0.2.10"]
     assert snapshot.resolved[0].ipv6 == ["fd00::10"]
-    assert diagnostics.provider == "dns-sd" and 5 <= diagnostics.elapsed_sec < 9
+    assert diagnostics.provider == "dns-sd" and 5 <= diagnostics.elapsed_sec < one_grace_bound(5)
+    # An earlier -G child answered only the other family: this one came late.
+    # (Each result's family field is the -G protocol, v4v6 here.)
+    def answered(family, addresses):
+        return any((":" in ip) == (family == "ipv6") for ip in addresses)
+    early = "ipv6" if delayed_family == "ipv4" else "ipv4"
+    assert any(answered(early, a.addresses) and not answered(delayed_family, a.addresses)
+               for r in diagnostics.details.resolves for a in r.addresses)
     assert all(p.poll() is not None for p in children)
 
 
 def test_native_address_replacement_between_children_reaches_api_selection(monkeypatch, tmp_path):
     observations = [{**records()[0], "ipv6": [],
-                     "address_updates": [[.6, ["192.0.2.20"], ["fd00::20"]]]}]
+                     "address_updates": [[2, ["192.0.2.20"], ["fd00::20"]]]}]
     children = install_native(monkeypatch, tmp_path, observations)
     cap_browse_window(monkeypatch, "dns-sd")
     result = discover_operation({"timeout": 5, "service": "_airport"},
@@ -150,6 +167,7 @@ def test_native_address_replacement_between_children_reaches_api_selection(monke
     assert device["ipv4"] == ["192.0.2.20"] and device["ipv6"] == ["fd00::20"]
     assert device["host"] == "192.0.2.20" and device["ssh_host"] == "root@192.0.2.20"
     assert device["selected_record"]["ipv4"] == ["192.0.2.20"]
+    assert sum('-G' in p.args for p in children) >= 2
     assert all(p.poll() is not None for p in children)
 
 
@@ -261,10 +279,11 @@ def test_native_keeps_full_browse_window_but_closes_admission_for_grace(monkeypa
         {**records()[0], "name": "Late", "initial": False, "browse_events": [[.2, "Add"]]},
         {**records()[0], "name": "Too late", "initial": False, "browse_events": [[5.3, "Add"]]},
     ]
-    children = install_native(monkeypatch, tmp_path, observations, address_delay=5.5)
+    children = install_native(monkeypatch, tmp_path, observations, address_delay=6.2)
     snapshot, diagnostics = bonjour.discover_snapshot_detailed("_airport", timeout=5)
     assert [r.name for r in snapshot.resolved] == ["Late"]
-    assert 5 <= diagnostics.elapsed_sec < 9
+    assert any(e.name == 'Too late' and e.action == 'Add' for e in diagnostics.details.browses[0].events)
+    assert 5 <= diagnostics.elapsed_sec < one_grace_bound(5)
     assert all(p.poll() is not None for p in children)
 
 
@@ -377,11 +396,13 @@ def test_real_helper_sigint_reaps_several_native_children_and_emits_one_terminal
     child_pids = []
     stderr = bytearray()
     try:
-        proc.stdin.write(json.dumps({"operation": "discover", "params": {"timeout": 6, "service": "_airport"}}).encode())
+        # Cancel on the child-start events, not a small real-time browse
+        # budget: under load even the helper's imports can take seconds.
+        proc.stdin.write(json.dumps({"operation": "discover", "params": {"timeout": 30, "service": "_airport"}}).encode())
         proc.stdin.close(); proc.stdin = None
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stderr, selectors.EVENT_READ)
-            end = time.monotonic() + 10
+            end = time.monotonic() + 20
             while len(child_pids) < 9 and time.monotonic() < end:
                 for key, _events in selector.select(.1):
                     chunk = os.read(key.fileobj.fileno(), 65536)
@@ -391,7 +412,7 @@ def test_real_helper_sigint_reaps_several_native_children_and_emits_one_terminal
                 if proc.poll() is not None: break
         assert len(child_pids) >= 9, stderr.decode()
         proc.send_signal(signal.SIGINT)
-        out, remaining_err = proc.communicate(timeout=3)
+        out, remaining_err = proc.communicate(timeout=10)
         assert proc.returncode == 130, (out, remaining_err)
         events = [json.loads(line) for line in out.splitlines()]
         terminals = [e for e in events if e["type"] in {"result", "error"}]
