@@ -90,7 +90,17 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
         fputs("    server smb encrypt = required\n    server min protocol = SMB3_00\n    server max protocol "
               "= SMB3\n",
               file);
-    else if (!config->any_protocol)
+    /* Samba's own minimum is SMB 2.0.2 since 4.11, so any protocol must name
+     * NT1 to offer SMB1, as Apple's firmware does. Many SMB1-only clients
+     * (Windows XP's default, old scanners and media players) log in only with
+     * NTLMv1, which Samba refuses by default. SMB1 Unix extensions stay off:
+     * they would let a Linux client make POSIX links and change owners and
+     * modes past fruit and the native link handling. */
+    else if (config->any_protocol)
+        fputs("    server min protocol = NT1\n    ntlm auth = ntlmv1-permitted\n"
+              "    smb1 unix extensions = no\n",
+              file);
+    else
         fputs("    min protocol = SMB2\n    max protocol = SMB3\n", file);
     if (config->disable_security)
         fputs("    server signing = disabled\n    server smb encrypt = off\n", file);

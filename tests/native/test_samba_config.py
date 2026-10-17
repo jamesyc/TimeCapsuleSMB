@@ -104,9 +104,25 @@ def test_tested_aio_and_debug_preferences(renderer):
 
 
 @pytest.mark.parametrize("options,expected,absent", [
-    ({"ANY_PROTOCOL": 1}, {}, ["min protocol", "max protocol", "server min protocol"]),
-    ({"REQUIRE_SMB_ENCRYPTION": 1}, {"server smb encrypt": "required", "server min protocol": "SMB3_00"}, ["min protocol"]),
-    ({"FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": 1}, {"server signing": "disabled", "server smb encrypt": "off", "min protocol": "SMB2"}, []),
+    ({}, {"min protocol": "SMB2", "max protocol": "SMB3"}, ["server min protocol", "ntlm auth", "smb1 unix extensions"]),
+    # Samba's own default minimum is SMB 2.0.2, so SMB1 must be named, and its
+    # older clients often log in only with NTLMv1. SMB1 Unix extensions would
+    # bypass fruit and the native link handling.
+    ({"ANY_PROTOCOL": 1},
+     {"server min protocol": "NT1", "ntlm auth": "ntlmv1-permitted", "smb1 unix extensions": "no"},
+     ["min protocol", "max protocol"]),
+    ({"ANY_PROTOCOL": 1, "FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": 1},
+     {"server min protocol": "NT1", "ntlm auth": "ntlmv1-permitted", "smb1 unix extensions": "no",
+      "server signing": "disabled"}, ["min protocol"]),
+    ({"REQUIRE_SMB_ENCRYPTION": 1}, {"server smb encrypt": "required", "server min protocol": "SMB3_00"},
+     ["min protocol", "ntlm auth", "smb1 unix extensions"]),
+    # Configure refuses this pair, but a hand-edited Flash config can hold it:
+    # required encryption wins and SMB1 stays off.
+    ({"REQUIRE_SMB_ENCRYPTION": 1, "ANY_PROTOCOL": 1},
+     {"server smb encrypt": "required", "server min protocol": "SMB3_00", "server max protocol": "SMB3"},
+     ["min protocol", "ntlm auth", "smb1 unix extensions"]),
+    ({"FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": 1}, {"server signing": "disabled", "server smb encrypt": "off", "min protocol": "SMB2"},
+     ["server min protocol", "ntlm auth", "smb1 unix extensions"]),
 ])
 def test_protocol_preferences(renderer, options, expected, absent):
     global_ = render(renderer, options)["global"]

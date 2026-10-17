@@ -1098,7 +1098,7 @@ Default: on. Adds the bounded `aio_fork` VFS module, enables asynchronous I/O fo
 
 ### Allow Any SMB Protocol
 
-Default: off. Omits the generated SMB2-to-SMB3 minimum/maximum protocol lines and leaves protocol selection to Samba's built-in defaults. It is a compatibility escape hatch, not a promise that every historical SMB dialect is available, and it cannot be combined with **Require SMB Encryption**.
+Default: off. Replaces the generated SMB2-to-SMB3 protocol lines with `server min protocol = NT1`, `ntlm auth = ntlmv1-permitted` and `smb1 unix extensions = no`, so SMB1 clients can connect as they could to Apple's firmware, including those that log in only with NTLMv1 (Windows XP's default, many old scanners and media players). Samba's own minimum since 4.11 is SMB 2.0.2, so SMB1 has to be named. SMB1 Unix extensions stay off, so a Linux SMB1 client cannot create POSIX links or change owners and modes around fruit and the native link handling. SMB1 and NTLMv1 are insecure; leave this off unless an old client needs it. It cannot be combined with **Require SMB Encryption**.
 
 ### Require SMB Encryption
 
