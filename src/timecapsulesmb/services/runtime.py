@@ -115,12 +115,13 @@ def require_acpd_ready(
     """Refuse, before anything changes, a device whose ACPd cannot take the work.
 
     Every reboot and every flash command goes through Apple's ACPd: the
-    password must be the one ACP takes, ACPd must answer this computer and the
-    device's own acp, the last restart requested must have happened, and no
+    password must be the one ACP takes, ACPd must answer the device's own acp
+    and the network, the last restart requested must have happened, and no
     stuck fork of ACPd may be waiting to hang the next reboot. `reading` is
     this command's earlier network read of the device at this address
-    (confirm_device_address); an unanswered one is not read again, as the
-    second read would only repeat the same retry.
+    (confirm_device_address); an unanswered one is not read again from here,
+    as the second read would only repeat the same retry, but ACPd's listener
+    is read through SSH (acpd.acpd_problems).
     """
     if reading is None:
         reading = read_admin_password(connection)
@@ -128,7 +129,7 @@ def require_acpd_ready(
     if reading.password_matches is False:
         raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
     report_airport_identity(callbacks, reading)
-    problems = acpd.acpd_problems(connection)
+    problems = acpd.acpd_problems(connection, network_reading=reading)
     if problems:
         details = {key: value for problem in problems for key, value in problem.details.items()}
         callbacks.debug(acpd_problems=[problem.code for problem in problems], **details)
@@ -138,7 +139,8 @@ def require_acpd_ready(
             code="acpd_broken",
         )
     if reading.password_matches is None and reading.error:
-        # The device's own ACP works, so the path from here is what is blocked.
+        # ACPd answered its own acp and, through SSH, the network: the path
+        # from here is what is blocked.
         host = endpoint_host(connection.host)
         client_networks = client_networks_if_off_network(host)
         if client_networks is not None:

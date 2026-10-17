@@ -219,7 +219,8 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
-    # The device's own ACP answers, but not this Mac: the path is blocked.
+    # ACPd answers the device's own acp and, through SSH, the network, but
+    # not this Mac: the path is blocked (services.runtime.require_acpd_ready).
     "acp_unreachable": RecoveryInfo(
         "AirPort ACP not reachable",
         "This Mac cannot reach AirPort ACP (port 5009) on the device, although the device's own ACP works.",

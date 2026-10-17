@@ -256,17 +256,26 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def _open_connection(host: str, *, timeout: float) -> socket.socket:
+def _open_connection(host: str, *, timeout: float, port: int = ACP_PORT) -> socket.socket:
     try:
-        sock = socket.create_connection((host, ACP_PORT), timeout=timeout)
+        sock = socket.create_connection((host, port), timeout=timeout)
         sock.settimeout(timeout)
         return sock
     except OSError as exc:
-        raise ACPConnectionError(f"Could not connect to ACP on {host}:{ACP_PORT}: {exc}") from exc
+        raise ACPConnectionError(f"Could not connect to ACP on {host}:{port}: {exc}") from exc
 
 
-def _send_message(host: str, password: str, command: int, payload: bytes, *, flags: int = 0, timeout: float) -> socket.socket:
-    sock = _open_connection(host, timeout=timeout)
+def _send_message(
+    host: str,
+    password: str,
+    command: int,
+    payload: bytes,
+    *,
+    flags: int = 0,
+    timeout: float,
+    port: int = ACP_PORT,
+) -> socket.socket:
+    sock = _open_connection(host, timeout=timeout, port=port)
     try:
         sock.sendall(_compose_message(command, password, payload, flags=flags))
         return sock
@@ -359,6 +368,7 @@ def get_properties(
     names: tuple[str, ...],
     *,
     timeout: float = 25.0,
+    port: int = ACP_PORT,
 ) -> dict[str, bytes | ACPPropertyError]:
     """Read several properties in one request.
 
@@ -369,9 +379,11 @@ def get_properties(
     A streamed reply is read only until every name has answered: the end
     marker after them was seen on both firmware families, but older ACPd
     replies (TimeCapsule6,106) were only ever read up to the asked name.
+
+    `port` differs only for an SSH forward to the device's ACP.
     """
     payload = b"".join(_compose_property_element(name, None) for name in names)
-    sock = _send_message(host, password, COMMAND_GETPROP, payload, flags=4, timeout=timeout)
+    sock = _send_message(host, password, COMMAND_GETPROP, payload, flags=4, timeout=timeout, port=port)
     try:
         header = _read_reply_header(sock, expected_command=COMMAND_GETPROP)
         # A reply streams its elements unless the header gives a body size.

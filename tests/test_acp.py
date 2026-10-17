@@ -234,6 +234,19 @@ class ACPTests(unittest.TestCase):
         self.assertEqual(values, {"syUT": struct.pack(">I", 0x88AA), "waMA": bytes.fromhex("020000000001")})
         self.assertEqual(uptime, 0x88AA)
 
+    def test_get_properties_reads_a_forwarded_port_and_names_it_when_it_fails(self) -> None:
+        # A forward to the device's ACP listens on a free local port.
+        response = acp._compose_header(command=acp.COMMAND_GETPROP) + acp._compose_property_element("syUT", 0x10)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=FakeSocket(response)) as create:
+            values = acp.get_properties("127.0.0.1", "pw", ("syUT",), timeout=15, port=61234)
+        create.assert_called_once_with(("127.0.0.1", 61234), timeout=15)
+        self.assertEqual(values, {"syUT": struct.pack(">I", 0x10)})
+
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", side_effect=ConnectionRefusedError("refused")):
+            with self.assertRaises(acp.ACPConnectionError) as raised:
+                acp.get_properties("127.0.0.1", "pw", ("syUT",), port=61234)
+        self.assertIn("127.0.0.1:61234", str(raised.exception))
+
     def test_get_properties_reports_a_rejected_password(self) -> None:
         response = acp._compose_header(command=acp.COMMAND_GETPROP, error_code=-0x10)
         with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=FakeSocket(response)):

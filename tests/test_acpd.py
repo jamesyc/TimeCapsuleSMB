@@ -7,10 +7,13 @@ import subprocess
 import tempfile
 import time
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
 from timecapsulesmb.device import acpd
+from timecapsulesmb.device.probe import AirportAcpReading
+from timecapsulesmb.integrations import acp
 from tests.device_ps import FakePs, process, ps_row
 from timecapsulesmb.device.acpd import acpd_stuck_children
 from timecapsulesmb.device.processes import parse_ps_rows
@@ -22,8 +25,16 @@ REAL_ACPD_ANSWERS = acpd.acpd_answers
 REAL_READ_PROCESSES = acpd.read_processes
 REAL_MARK_RESTART = acpd.mark_restart
 REAL_RESTART_NEVER_HAPPENED = acpd.restart_never_happened
+REAL_ACPD_ANSWERS_NETWORK = acpd.acpd_answers_network
+REAL_NETWORK_SILENT_DETAILS = acpd.network_silent_details
 
 CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+# This computer's network ACP read: answered, rejected, unanswered, or not
+# made for want of a password.
+READ_ANSWERED = AirportAcpReading(password_matches=True)
+READ_REJECTED = AirportAcpReading(password_matches=False)
+READ_UNANSWERED = AirportAcpReading(password_matches=None, error="Could not connect to ACP on 10.0.0.2:5009: timed out")
+READ_NO_PASSWORD = AirportAcpReading(password_matches=None)
 
 # A v3.4.0 TimeCapsule8,119 the morning its deploy reboot left ACPd torn down:
 # ACPd's fork 352 had slept since boot.
@@ -262,16 +273,115 @@ class ReadProcessesTests(unittest.TestCase):
             self.assertEqual(REAL_READ_PROCESSES(CONNECTION), "")
 
 
+class AcpdAnswersNetworkTests(unittest.TestCase):
+    """ACPd's TCP listener, read through an SSH forward to the device's own
+    127.0.0.1:5009, so the network between here and the device plays no part."""
+
+    def read(self, outcome):
+        get = mock.Mock(side_effect=outcome) if isinstance(outcome, BaseException) else mock.Mock(return_value=outcome)
+        with mock.patch("timecapsulesmb.device.acpd.find_free_local_port", return_value=61234), \
+                mock.patch("timecapsulesmb.device.acpd.ssh_local_forward", return_value=nullcontext()) as forward, \
+                mock.patch("timecapsulesmb.device.acpd.acp.get_properties", get):
+            answered = REAL_ACPD_ANSWERS_NETWORK(CONNECTION)
+        return answered, forward, get
+
+    def test_a_listener_that_answers_syut_answers(self) -> None:
+        answered, forward, get = self.read({"syUT": b"\x00\x01\x3b\x2f"})
+        self.assertTrue(answered)
+        forward.assert_called_once_with(CONNECTION, local_port=61234, remote_host="127.0.0.1", remote_port=acp.ACP_PORT)
+        # The local read's deadline: a busy ACPd answers within it.
+        get.assert_called_once_with("127.0.0.1", "pw", ("syUT",), timeout=acpd.ACPD_READ_DEADLINE_SECONDS, port=61234)
+
+    def test_a_rejected_password_or_a_malformed_reply_is_an_answer(self) -> None:
+        for reply in (
+            acp.ACPAuthError("ACP command failed with error_code -0x10"),
+            acp.ACPProtocolError("ACP response body checksum mismatch: got 0x1, expected 0x2"),
+        ):
+            with self.subTest(reply=type(reply).__name__):
+                answered, _forward, _get = self.read(reply)
+                self.assertTrue(answered)
+
+    def test_a_read_the_listener_leaves_unanswered_is_silence(self) -> None:
+        for failure in (
+            acp.ACPConnectionError("ACP receive failed: timed out"),
+            # A port nothing listens on, through the forward (NetBSD 6 and 4).
+            acp.ACPConnectionError("ACP receive failed: [Errno 54] Connection reset by peer"),
+            acp.ACPConnectionError("ACP connection closed while reading 128 bytes"),
+        ):
+            with self.subTest(failure=str(failure)):
+                answered, _forward, _get = self.read(failure)
+                self.assertFalse(answered)
+
+    def test_a_forward_that_fails_is_raised_not_blamed_on_acpd(self) -> None:
+        failure = SshError("Timed out waiting for ssh tunnel to become ready")
+        with mock.patch("timecapsulesmb.device.acpd.find_free_local_port", return_value=61234), \
+                mock.patch("timecapsulesmb.device.acpd.ssh_local_forward", side_effect=failure), \
+                mock.patch("timecapsulesmb.device.acpd.acp.get_properties") as get:
+            with self.assertRaises(SshError) as raised:
+                REAL_ACPD_ANSWERS_NETWORK(CONNECTION)
+        self.assertIs(raised.exception, failure)
+        get.assert_not_called()
+
+
+class NetworkSilentDetailsTests(unittest.TestCase):
+    """What tells a full file table, which also leaves this computer's
+    connection queued unanswered, from ACPd's own silence."""
+
+    LIMITS = "kern.sbmax = 262144\nkern.maxfiles = 1024\nkern.maxproc = 84\n"
+
+    def test_the_limits_and_the_last_table_full_messages_are_kept(self) -> None:
+        messages = "\n".join(f"file: table is full - increase kern.maxfiles or MAXFILES ({n})" for n in range(7))
+        with mock.patch("timecapsulesmb.device.acpd.read_kern_limits_conn", return_value=self.LIMITS) as limits, \
+                mock.patch("timecapsulesmb.device.acpd.run_ssh", return_value=completed(messages + "\n")) as run:
+            details = REAL_NETWORK_SILENT_DETAILS(CONNECTION)
+        limits.assert_called_once_with(CONNECTION)
+        # /sbin is not on the device's SSH PATH.
+        self.assertTrue(run.call_args.args[1].startswith("/sbin/dmesg | "))
+        self.assertEqual(details["remote_kern_limits"], self.LIMITS.strip())
+        self.assertEqual(
+            details["remote_kernel_table_full"],
+            [f"file: table is full - increase kern.maxfiles or MAXFILES ({n})" for n in range(2, 7)],
+        )
+
+    def test_a_kernel_that_never_filled_a_table_has_none(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.read_kern_limits_conn", return_value=self.LIMITS), \
+                mock.patch("timecapsulesmb.device.acpd.run_ssh", return_value=completed("")):
+            details = REAL_NETWORK_SILENT_DETAILS(CONNECTION)
+        self.assertEqual(details["remote_kernel_table_full"], [])
+
+    def test_an_ssh_failure_leaves_no_evidence_instead_of_hiding_the_silence(self) -> None:
+        for failing in ("read_kern_limits_conn", "run_ssh"):
+            with self.subTest(read=failing):
+                reads = {
+                    "read_kern_limits_conn": mock.Mock(return_value=self.LIMITS),
+                    "run_ssh": mock.Mock(return_value=completed("")),
+                    failing: mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish")),
+                }
+                with mock.patch.multiple("timecapsulesmb.device.acpd", **reads):
+                    self.assertEqual(REAL_NETWORK_SILENT_DETAILS(CONNECTION), {})
+
+
 class AcpdProblemsTests(unittest.TestCase):
     """The one list of ACPd problems that require_acpd_ready and doctor share."""
 
-    def problems(self, *, never_happened: bool = False, answers: bool = True, listing: str = HEALTHY_NETBSD6, ps_output: str | None = None):
+    def problems(
+        self,
+        *,
+        never_happened: bool = False,
+        answers: bool = True,
+        listing: str = HEALTHY_NETBSD6,
+        ps_output: str | None = None,
+        network_reading: AirportAcpReading | None = None,
+        network_answers: bool = True,
+    ):
         with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened) as marker, \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as syut, \
-                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as ps:
-            problems = acpd.acpd_problems(CONNECTION, ps_output)
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as ps, \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=network_answers) as network:
+            problems = acpd.acpd_problems(CONNECTION, ps_output, network_reading=network_reading)
         marker.assert_called_once_with(CONNECTION)
         self.syut = syut
+        self.network = network
         return problems, ps
 
     def test_a_healthy_acpd_has_none(self) -> None:
@@ -312,11 +422,67 @@ class AcpdProblemsTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_an_ssh_failure_is_raised_not_blamed_on_acpd(self) -> None:
-        for patched in ("restart_never_happened", "acpd_answers"):
-            with self.subTest(read=patched):
-                with mock.patch(f"timecapsulesmb.device.acpd.{patched}", side_effect=SshError("Connection reset")):
+        for failing in ("restart_never_happened", "acpd_answers", "acpd_answers_network"):
+            with self.subTest(read=failing):
+                reads = {
+                    "restart_never_happened": mock.Mock(return_value=False),
+                    "acpd_answers": mock.Mock(return_value=True),
+                    failing: mock.Mock(side_effect=SshError("Connection reset")),
+                }
+                with mock.patch.multiple("timecapsulesmb.device.acpd", **reads):
                     with self.assertRaises(SshError):
-                        acpd.acpd_problems(CONNECTION)
+                        acpd.acpd_problems(CONNECTION, HEALTHY_NETBSD6, network_reading=READ_UNANSWERED)
+
+    def test_a_listener_silent_through_ssh_after_an_unanswered_network_read(self) -> None:
+        # The device's own acp answered, this computer's read did not, and
+        # SSH to the same address worked.
+        evidence = {"remote_kern_limits": "kern.maxfiles = 1024", "remote_kernel_table_full": []}
+        with mock.patch("timecapsulesmb.device.acpd.network_silent_details", return_value=evidence) as details:
+            problems, _ps = self.problems(network_reading=READ_UNANSWERED, network_answers=False)
+        self.assertEqual([problem.code for problem in problems], ["network_silent"])
+        self.assertIn("stopped answering the network", problems[0].what)
+        self.assertIn("while this lasts", problems[0].note)
+        self.assertEqual(problems[0].details, evidence)
+        self.network.assert_called_once_with(CONNECTION)
+        details.assert_called_once_with(CONNECTION)
+
+    def test_a_listener_that_answers_is_not_asked_for_evidence(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.network_silent_details") as details:
+            problems, _ps = self.problems(network_reading=READ_UNANSWERED)
+        self.assertEqual(problems, [])
+        details.assert_not_called()
+
+    def test_a_listener_that_answers_through_ssh_is_no_problem(self) -> None:
+        # ACPd is fine; the path from this computer is what is blocked.
+        problems, _ps = self.problems(network_reading=READ_UNANSWERED)
+        self.assertEqual(problems, [])
+        self.network.assert_called_once_with(CONNECTION)
+
+    def test_the_listener_is_read_only_after_an_unanswered_network_read(self) -> None:
+        for name, reading in (
+            ("no read", None),
+            ("answered", READ_ANSWERED),
+            ("password rejected", READ_REJECTED),
+            ("no password to read with", READ_NO_PASSWORD),
+        ):
+            with self.subTest(reading=name):
+                problems, _ps = self.problems(network_reading=reading, network_answers=False)
+                self.assertEqual(problems, [])
+                self.network.assert_not_called()
+
+    def test_an_acpd_already_silent_to_its_own_acp_is_not_read_through_ssh(self) -> None:
+        problems, _ps = self.problems(answers=False, network_reading=READ_UNANSWERED, network_answers=False)
+        self.assertEqual([problem.code for problem in problems], ["syut_silent"])
+        self.network.assert_not_called()
+
+    def test_a_restart_that_never_happened_is_not_read_through_ssh(self) -> None:
+        problems, _ps = self.problems(never_happened=True, network_reading=READ_UNANSWERED, network_answers=False)
+        self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
+        self.network.assert_not_called()
+
+    def test_a_silent_listener_follows_a_stuck_fork(self) -> None:
+        problems, _ps = self.problems(listing=STUCK_BEFORE_REBOOT, network_reading=READ_UNANSWERED, network_answers=False)
+        self.assertEqual([problem.code for problem in problems], ["stuck_child", "network_silent"])
 
 
 if __name__ == "__main__":

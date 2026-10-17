@@ -89,6 +89,7 @@ from timecapsulesmb.device.probe import (
     FILE_LOCKS_RAM_TDBS,
     FOREIGN_WCIFSND_RUNNING,
     NATIVE_NBNS_OFF_DETAIL,
+    AirportAcpReading,
     DeviceInterfaceIpv4,
     DeviceIpv4Entry,
     DeviceIpv4SubnetsProbeResult,
@@ -2794,6 +2795,7 @@ class CheckTests(unittest.TestCase):
         disk_file_locks: object = "",
         kern_limits: object = "",
         process_table: tuple[str, str] = ("", ""),
+        device_reading=None,
     ):
         debug_fields: dict[str, object] = {}
         snapshot_mock = mock.Mock(side_effect=snapshot) if isinstance(snapshot, Exception) else mock.Mock(return_value=snapshot)
@@ -2818,6 +2820,7 @@ class CheckTests(unittest.TestCase):
                 smb_file_ops=[],
                 smbd_probe=mock.Mock(ready=True, detail="managed smbd is ready"),
                 mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
+                device_reading=device_reading,
                 debug_fields=debug_fields,
                 extra_patches={
                     "timecapsulesmb.checks.doctor_steps.read_process_snapshot_conn": snapshot_mock,
@@ -3161,6 +3164,8 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(failures[0].domain, "device")
         self.assertEqual(failures[0].details["acpd_stuck_children"], [352])
         self.assertEqual(run.debug_fields["acpd_problems"], ["stuck_child"])
+        # A problem's details reach telemetry, not only the check's details.
+        self.assertEqual(run.debug_fields["acpd_stuck_children"], [352])
         self.assertTrue(run.fatal)
 
     def test_run_doctor_checks_fails_a_restart_that_never_happened_while_the_device_starts(self) -> None:
@@ -3195,6 +3200,51 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: the AirPort service on this device is stuck"))
         self.assertEqual(failures[0].details["acpd_problem"], "syut_silent")
         self.assertEqual(run.debug_fields["acpd_problems"], ["syut_silent"])
+
+    UNANSWERED_ACP_READ = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
+
+    def test_run_doctor_checks_fails_an_apple_acpd_that_answers_its_own_acp_but_not_the_network(self) -> None:
+        evidence = {"remote_kern_limits": "kern.maxfiles = 4096", "remote_kernel_table_full": []}
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=False) as network, \
+                mock.patch("timecapsulesmb.device.acpd.network_silent_details", return_value=evidence):
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, device_reading=self.UNANSWERED_ACP_READ)
+
+        network.assert_called_once()
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual([result.details["acpd_problem"] for result in failures], ["network_silent"])
+        self.assertTrue(failures[0].message.startswith("Apple ACPd is broken: the AirPort service stopped answering the network"))
+        self.assertIn("then check again", failures[0].message)
+        self.assertEqual(failures[0].domain, "device")
+        self.assertEqual(run.debug_fields["acpd_problems"], ["network_silent"])
+        # The evidence reaches telemetry, not only the check's details.
+        self.assertEqual(failures[0].details["remote_kernel_table_full"], [])
+        self.assertEqual(run.debug_fields["remote_kernel_table_full"], [])
+        self.assertTrue(run.fatal)
+
+    def test_run_doctor_checks_passes_an_apple_acpd_that_answers_the_network_through_ssh(self) -> None:
+        # Only the path from this computer is blocked: not ACPd's problem.
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=True) as network:
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, device_reading=self.UNANSWERED_ACP_READ)
+
+        network.assert_called_once()
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertEqual(run.debug_fields["acpd_problems"], [])
+
+    def test_run_doctor_checks_reads_apple_acpd_through_ssh_only_after_an_unanswered_read(self) -> None:
+        for reading in (None, AirportAcpReading(password_matches=True)):
+            with self.subTest(reading=reading):
+                with mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=False) as network:
+                    run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, device_reading=reading)
+                network.assert_not_called()
+                self.assertEqual(self.apple_acpd_failures(run), [])
+
+    def test_run_doctor_checks_skips_apple_acpd_when_the_forward_fails(self) -> None:
+        # An SSH failure is the device's or the network's, not ACPd's.
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", side_effect=SshError("tunnel failed")):
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW, device_reading=self.UNANSWERED_ACP_READ)
+
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertNotIn("acpd_problems", run.debug_fields)
 
     def test_run_doctor_checks_passes_a_healthy_apple_acpd(self) -> None:
         with mock.patch("timecapsulesmb.device.acpd.read_processes") as processes:

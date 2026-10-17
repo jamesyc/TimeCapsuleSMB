@@ -104,7 +104,7 @@ def run_doctor_checks(
     # on the network between this computer and the device.
     _doctor_report_device_not_checked(remote, sink)
     processes = _doctor_check_stuck_processes(target, remote, sink)
-    _doctor_check_apple_acpd(target, remote, processes, sink)
+    _doctor_check_apple_acpd(target, remote, processes, sink, inputs.device_reading)
 
     if _doctor_check_running_migration(target, remote, sink).stop:
         return sink.results, sink.fatal()

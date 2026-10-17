@@ -66,12 +66,26 @@ def block_real_acp_connections(monkeypatch: pytest.MonkeyPatch):
     real_create_connection = socket.create_connection
     open_connection = acp._open_connection
 
-    def guarded(host: str, *, timeout: float):
+    def guarded(host: str, *, timeout: float, port: int = acp.ACP_PORT):
         if acp.socket.create_connection is real_create_connection:
             raise AssertionError(f"tests must not open a real ACP connection to {host}")
-        return open_connection(host, timeout=timeout)
+        return open_connection(host, timeout=timeout, port=port)
 
     monkeypatch.setattr(acp, "_open_connection", guarded)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def block_real_acpd_network_reads(monkeypatch: pytest.MonkeyPatch):
+    # A network ACP read that goes unanswered makes the ACPd checks read the
+    # listener again through a real SSH forward. A test that gets there patches
+    # timecapsulesmb.device.acpd.acpd_answers_network with the answer it needs.
+    from timecapsulesmb.device import acpd
+
+    def unpatched(connection):
+        raise AssertionError(f"tests must not open a real SSH forward to {connection.host}'s ACP")
+
+    monkeypatch.setattr(acpd, "acpd_answers_network", unpatched)
     yield
 
 
@@ -93,14 +107,15 @@ def apple_acpd_healthy(monkeypatch: pytest.MonkeyPatch):
     # Reboots, flash and doctor ask the device over SSH whether Apple's ACPd
     # answers syUT, has no stuck fork and ran the last restart requested, and
     # a reboot marks the restart on the device first (timecapsulesmb.device.acpd).
-    # Tests answer "healthy" and "marked"; a test that needs another answer
-    # patches that function.
+    # Tests answer "healthy" and "marked", and a silent listener's evidence
+    # read finds nothing; a test that needs another answer patches that function.
     from timecapsulesmb.device import acpd
 
     monkeypatch.setattr(acpd, "acpd_answers", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(acpd, "read_processes", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(acpd, "restart_never_happened", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(acpd, "mark_restart", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(acpd, "network_silent_details", lambda *_args, **_kwargs: {})
     yield
 
 

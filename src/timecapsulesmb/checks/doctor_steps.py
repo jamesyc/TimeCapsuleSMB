@@ -2311,21 +2311,29 @@ APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
 
 
 def _doctor_check_apple_acpd(
-    target: DoctorTarget, remote: RemoteAccess, processes: ProcessSnapshotState, sink: DoctorSink,
+    target: DoctorTarget,
+    remote: RemoteAccess,
+    processes: ProcessSnapshotState,
+    sink: DoctorSink,
+    network_reading: AirportAcpReading | None,
 ) -> None:
     """Apple's ACPd: a restart it took but never ran, a stuck fork of it that
-    hangs the next restart, and a syUT read it does not answer
-    (DETAIL.md, "Apple ACPd can hang during its own restart"). None clears by
-    waiting. Read from the stuck-process step's listing; a device whose ps did
-    not answer is asked nothing more."""
+    hangs the next restart, a syUT read it does not answer
+    (DETAIL.md, "Apple ACPd can hang during its own restart"), and a network
+    read it left unanswered that it does not answer through SSH either. None
+    clears in the time a check takes. Read from the stuck-process step's
+    listing; a device whose ps did not answer is asked nothing more.
+    `network_reading` is this computer's network ACP read at this address."""
     if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
         return
     try:
-        problems = acpd.acpd_problems(target.connection, processes.snapshot)
+        problems = acpd.acpd_problems(target.connection, processes.snapshot, network_reading=network_reading)
     except TransportError:
         return
     if sink.debug_fields is not None:
         sink.debug_fields["acpd_problems"] = [problem.code for problem in problems]
+        for problem in problems:
+            sink.debug_fields.update(problem.details)
     for problem in problems:
         sink.add(
             CheckResult(
