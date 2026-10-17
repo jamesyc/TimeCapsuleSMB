@@ -14,7 +14,7 @@ diff --git a/source3/smbd/close.c b/source3/smbd/close.c
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 --- a/source3/smbd/smb2_create.c
 +++ b/source3/smbd/smb2_create.c
-@@ -1118,6 +1118,21 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1119,6 +1119,21 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  		 */
  		SMB_ASSERT(state->op == NULL);
  
@@ -36,7 +36,7 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  		if (state->lease_ptr != NULL) {
  			lease_key = &state->lease_ptr->lease_key;
  		}
-@@ -1215,6 +1230,8 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -1216,6 +1231,8 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  			return tevent_req_post(req, state->ev);
  		}
  

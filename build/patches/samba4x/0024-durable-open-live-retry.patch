@@ -25,7 +25,15 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
 --- a/source3/smbd/smb2_create.c
 +++ b/source3/smbd/smb2_create.c
-@@ -1129,6 +1129,32 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+@@ -701,6 +701,7 @@ struct smbd_smb2_create_state {
+ 	bool update_open;
+ 	bool durable_requested;
+ 	uint32_t durable_timeout_msec;
++	uint32_t durable_v2_granted_msec;
+ 	bool do_durable_reconnect;
+ 	uint64_t persistent_id;
+ 	bool persistent_requested;
+@@ -1129,6 +1130,32 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
  					       lease_key,
  					       now,
  					       &state->op);
@@ -58,41 +66,32 @@ diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
  		if (tevent_req_nterror(req, status)) {
  			DBG_NOTICE("smb2srv_open_recreate failed: %s\n",
  				   nt_errstr(status));
-@@ -1429,7 +1455,6 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
- 	uint32_t tcon_caps = smb2req->tcon->capabilities;
- 	const uint8_t *p = state->dh2q->data.data;
- 	NTTIME now = timeval_to_nttime(&smb2req->request_time);
--	uint32_t durable_v2_timeout = 0;
- 	uint32_t durable_v2_flags = 0;
- 	DATA_BLOB create_guid_blob;
- 	const uint8_t *hdr = NULL;
-@@ -1446,7 +1471,6 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
- 		return;
+@@ -1488,6 +1515,16 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
+ 		 */
+ 		state->durable_timeout_msec = (60*1000);
  	}
- 
--	durable_v2_timeout = IVAL(p, 0);
- 	durable_v2_flags = IVAL(p, 4);
- 	create_guid_blob = data_blob_const(p + 16, 16);
- 
-@@ -1479,15 +1503,9 @@ static void smbd_smb2_cc_before_exec_dhc2q(struct tevent_req *req)
- 	 * durable handle v2 request processed below
- 	 */
- 	state->durable_requested = true;
--	state->durable_timeout_msec = MIN(durable_v2_timeout, 300*1000);
--	if (state->durable_timeout_msec == 0) {
--		/*
--		 * Set the timeout to 1 min as default.
--		 *
--		 * This matches Windows 2012.
--		 */
--		state->durable_timeout_msec = (60*1000);
--	}
-+	/* Slow HFS teardown releases handles one by one. Keep the earlier
-+	 * ones alive while the client waits for later durable reopens. */
++	/*
++	 * Grant that timeout: macOS refuses Time Machine's reconnect
++	 * timeout setting with E2BIG unless the reply carries exactly the
++	 * value it asked for, and never uses the grant to decide a
++	 * reconnect. Keep the handle 300 s whatever was granted: slow HFS
++	 * teardown releases handles one by one, and the earlier ones must
++	 * outlive the client's wait for later durable reopens.
++	 */
++	state->durable_v2_granted_msec = state->durable_timeout_msec;
 +	state->durable_timeout_msec = 300 * 1000;
  
  	if ((durable_v2_flags & SMB2_DHANDLE_FLAG_PERSISTENT) &&
  	    (server_caps & SMB2_CAP_PERSISTENT_HANDLES) &&
+@@ -1989,7 +2026,7 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+ 			durable_v2_response_flags = SMB2_DHANDLE_FLAG_PERSISTENT;
+ 		}
+ 
+-		SIVAL(p, 0, state->op->global->durable_timeout_msec);
++		SIVAL(p, 0, state->durable_v2_granted_msec);
+ 		SIVAL(p, 4, durable_v2_response_flags);
+ 
+ 		status = smb2_create_blob_add(state->out_context_blobs,
 diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
 --- a/source3/smbd/smbXsrv_open.c
 +++ b/source3/smbd/smbXsrv_open.c

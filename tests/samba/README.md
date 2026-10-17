@@ -338,8 +338,13 @@ limit), which must then take the open over. `stopped+previous` names the old
 session from a new one while the old smbd is stopped for 70 s: 0074 must answer
 the session setup within macOS's 60 s (it waits 50 s for the old session), and
 the reconnect must wait until the old smbd is resumed, then take the open over.
-Durable-v2 grants must be 300 s for zero, short and over-limit client timeout
-requests. `short-write` sends a WRITE 4 KiB short with the next
+A durable-v2 request is granted the timeout it asks for, at most 300 s, and
+60 s when it asks for none, since macOS's Time Machine setting fails on any
+other answer; every handle still lives 300 s. `timemachine` asks for the
+timeouts Time Machine has macOS set (30, 60, 120 and 180 s) as macOS does and
+requires each back unchanged. `expiry` checks that a handle granted 30 s still
+reconnects 60 s after server teardown.
+`short-write` sends a WRITE 4 KiB short with the next
 request inside it, as macOS did in issue 221: 0072 must write nothing, log
 `tc_desync:` and keep the connection open answering nothing, and the handle
 must reconnect after a reset. `smb-in-data` writes data holding SMB2 headers
@@ -352,13 +357,16 @@ cases set a file's last-write time through a handle opened for data (as
 Windows `CopyFile` does) and through one opened only for attributes (as macOS
 does), then read it back; NetBSD 4's `futimens` replacement (0002) once failed
 the data case with NOT_SUPPORTED. `--case NAME`
-(repeatable) runs only the named cases. `expiry` resets a connection holding
-a durable open and waits out its 300 s (about 5.5 minutes). It first stops the
-scavenger and requires a new connection to be served meanwhile. The scavenger
-is the smbd parent's only child serving no client (no TCP socket with both
-ends in `fstat`; every child holds the parent's listeners), counted once the
-reset connection's smbd has exited (up to 120 s). Then the scavenger must
-expire the open, so the reconnect is refused and another client's exclusive open gets the
+(repeatable) runs only the named cases. `expiry` resets two connections, each
+holding a durable open granted 30 s, and waits out the 300 s (about 5.5
+minutes). It first stops the scavenger and requires a new connection to be
+served meanwhile. The scavenger is the smbd parent's only child serving no
+client (no TCP socket with both ends in `fstat`; every child holds the
+parent's listeners), counted once the reset connections' smbds have exited
+(up to 120 s). One open must still reconnect 60 s after that teardown, and at
+least 10 s after the scavenger is resumed, so that a scavenger that wrongly
+expires it at its 30 s grant has already run. Then the
+scavenger must expire the other, so the reconnect is refused and another client's exclusive open gets the
 file within 15 s (a stale lease's break would take
 35 s; the margin covers a data disk that spun down during the wait). The
 macOS case stops the smbd serving a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
@@ -374,6 +382,8 @@ case-sensitive versus case-insensitive parent matching, UTF-8 names, and the
 real directory-message decoder and receiver. A delayed notification must leave
 a replacement file at the reused old path alone; failed destination stats also
 leave the open untouched.
+Expiry deadlines start after server teardown; a simulated server retaining
+handles for only 30 seconds must fail even when teardown takes 100 seconds.
 
 ### Directory operations: the *at emulation (patch 0002) and directory opens (0063)
 

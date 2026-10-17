@@ -305,8 +305,12 @@
 # WRITEs (0072). FILE_NOT_AVAILABLE is only the internal "still busy" signal:
 # once the 90 seconds run out the client gets OBJECT_NAME_NOT_FOUND, as
 # upstream and MS-SMB2 3.3.5.9.12 give for an open still attached to a session
-# (macOS revokes the file on any reconnect error). Grant durable-v2 handles
-# 300 seconds so early releases survive while later opens finish closing.
+# (macOS revokes the file on any reconnect error). Keep durable-v2 handles
+# 300 seconds so early releases survive while later opens finish closing, but
+# grant the timeout the client asked for, as upstream does (at most 300
+# seconds, 60 for none): macOS fails Time Machine's reconnect timeout setting
+# unless the grant matches its request, and never uses the grant to decide a
+# reconnect.
 0024-durable-open-live-retry.patch|defer live durable-open reconnects for up to 90 seconds
 # Workaround for a macOS bug (issue 221): after the server's TCP window has
 # stayed shut for about 5 seconds, macOS can send an SMB2 WRITE whose data is

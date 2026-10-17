@@ -50,13 +50,22 @@ lands. The smb-in-data case writes data holding SMB2 headers that must not
 match (a far message ID, a wrong structure size, a response) and must be
 written as sent.
 
-The expiry case resets a connection holding a durable open and waits out its
-300 s. The smbd parent forks a scavenger for the expiry (0008 runs notifyd and
+Every durable-v2 grant must carry the timeout the client asked for, up to
+300 s (60 s for none): macOS fails Time Machine's reconnect timeout setting
+otherwise. 0024 still keeps each handle 300 s. The expiry case resets two
+connections, each holding a durable open granted 30 s, and waits out the 300 s.
+The smbd parent forks a scavenger for the expiry (0008 runs notifyd and
 cleanupd in the parent but not the scavenger): with the scavenger stopped, a
 new connection must still be served, since the expiry's lock waits must never
-hold up the parent. Then the scavenger must expire the open: the reconnect is
-refused, and another client's exclusive open gets the file at once, with no
-stale share mode or lease left behind.
+hold up the parent. One open must still reconnect after twice its 30 s. Then
+the scavenger must expire the other: the reconnect is refused, and another
+client's exclusive open gets the file at once, with no stale share mode or
+lease left behind.
+
+The timemachine case asks for the reconnect timeouts Time Machine has macOS
+set (30, 60, 120 and 180 s) the way macOS does, and requires each to be granted
+exactly as asked: macOS refuses any other answer, and Time Machine then cannot
+use the disk.
 
 The settime cases set a file's last-write time with SET_INFO and read it back
 through a new handle. settime:data sets it on a handle opened for reading and
@@ -74,6 +83,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import os
 import shlex
 import socket
@@ -107,10 +117,19 @@ DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 SETTIME_MODES = ("data", "attributes")
 RENAME_MODES = ("same", "unicode", "case", "other-client", "other-client-case")
 CASES = (DROP_MODES + ("stopped+previous",) + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
-         + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("expiry",)
+         + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("timemachine", "expiry")
          + tuple(f"rename:{mode}" for mode in RENAME_MODES))
-# 0024 grants every durable-v2 open 300 s; the scavenger's timer fires then.
+# 0024 keeps every durable-v2 open 300 s, whatever timeout it granted; the
+# scavenger's timer fires then.
 DURABLE_TIMEOUT_SECONDS = 300
+# Time Machine first asks macOS for a 30 s reconnect timeout.
+REQUESTED_TIMEOUT_MSEC = 30_000
+# The reconnect timeouts Time Machine asks macOS to set, in the order it tries
+# them; after the last one fails it gives up on the destination.
+TIME_MACHINE_TIMEOUTS_SECONDS = (30, 60, 120, 180)
+# Time a scavenger resumed from SIGSTOP gets to run the expiries it missed
+# before expiry checks that a handle is still there.
+SCAVENGER_CATCH_UP_SECONDS = 10
 # A reset connection's smbd exits within this, even when closing its files
 # waits a minute for a slow disk.
 OLD_SMBD_EXIT_SECONDS = 120
@@ -170,8 +189,12 @@ class DurableClient:
             contexts.append(context)
         return contexts
 
-    def open_durable(self, tree, path: str, timeout_msec: int = 30_000):
-        """Create path with a durable v2 request; return (open, granted)."""
+    def open_durable(self, tree, path: str, timeout_msec: int = REQUESTED_TIMEOUT_MSEC,
+                     expected_msec: int = REQUESTED_TIMEOUT_MSEC):
+        """Create path with a durable v2 request for timeout_msec; return (open,
+        granted), where granted means the answer carries expected_msec. macOS
+        fails Time Machine's reconnect timeout setting unless the answer is
+        exactly what it asked for."""
         from smbprotocol.create_contexts import CreateContextName, SMB2CreateDurableHandleRequestV2
         from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
                                       ImpersonationLevel, Open, ShareAccess)
@@ -188,7 +211,7 @@ class DurableClient:
             create_contexts=self._contexts((CreateContextName.SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2, request)),
             oplock_level=0xFF)
         granted = any(type(c).__name__ == "SMB2CreateDurableHandleResponseV2"
-                      and c["timeout"].get_value() == 300_000 for c in response or [])
+                      and c["timeout"].get_value() == expected_msec for c in response or [])
         return handle, granted
 
     def reconnect(self, tree, path: str, file_id: bytes):
@@ -271,10 +294,12 @@ def drop_case(r: Results, device: Device, mode: str) -> None:
         sess1.connect()
         tree1 = TreeConnect(sess1, rf"\\{device.host}\{device.share}")
         tree1.connect()
-    # Exercise default, short and over-limit client requests; all get 300 s.
-    timeout_msec = {"fin": 0, "half-open+previous": 600_000}.get(mode, 30_000)
-    handle, granted = client.open_durable(tree1, path, timeout_msec)
-    r.check(f"{mode}: 300 s durable handle granted", lambda: granted)
+    # Default, short and over-limit requests and the timeout each is granted,
+    # as upstream grants them; every handle lives 300 s whatever it was granted.
+    timeout_msec, expected_msec = {"fin": (0, 60_000), "half-open+previous": (600_000, 300_000)}.get(
+        mode, (REQUESTED_TIMEOUT_MSEC, REQUESTED_TIMEOUT_MSEC))
+    handle, granted = client.open_durable(tree1, path, timeout_msec, expected_msec)
+    r.check(f"{mode}: durable handle granted the expected timeout", lambda: granted)
     handle.write(payload, 0)
     if mode == "rst+ipc-tdis":
         _ipc_connect_disconnect(device, sess1)
@@ -345,7 +370,7 @@ def stopped_previous_case(r: Results, device: Device) -> None:
     second: dict[str, object] = {}
     try:
         handle, granted = client.open_durable(tree1, path)
-        r.check(f"{mode}: 300 s durable handle granted", lambda: granted)
+        r.check(f"{mode}: durable handle granted the requested timeout", lambda: granted)
         handle.write(payload, 0)
         r.check(f"{mode}: the connection has its own smbd", lambda: len(old) == 1)
         if len(old) != 1 or not granted:
@@ -380,6 +405,45 @@ def stopped_previous_case(r: Results, device: Device) -> None:
         for conn in (second.get("conn"), conn1):
             with contextlib.suppress(Exception):
                 conn.disconnect()
+
+
+def time_machine_case(r: Results, device: Device) -> None:
+    """Answer Time Machine's reconnect timeout exactly as macOS needs.
+
+    Before Time Machine uses an SMB destination it asks macOS's SMB client to
+    set the mount's durable handle timeout (smbfsTimeMachineFSCTL with
+    kWriteSettings, in smbfs_vnops.c of Apple's SMBClient). The client opens a
+    scratch file with a durable-v2 request for that many seconds and compares
+    the timeout in the answer with what it asked for. Any other answer, longer
+    ones included, fails the setting with E2BIG, and Time Machine moves on to
+    the next value. Once 30, 60, 120 and 180 s have all failed it reports
+    "Failed to configure network volume options ... error: 7 Argument list too
+    long", and the disk cannot be used for backups at all. SMBClient makes
+    this check on Sonoma and on macOS 26 alike.
+
+    The client never decides a reconnect by the answer, so 0024 answers what
+    was asked and still keeps every handle 300 s (the expiry case checks
+    that). A fixed answer, such as 300 s for every request, fails all four of
+    Time Machine's attempts.
+    """
+    client = DurableClient(device)
+    conn, _, tree = client.connect()
+    path = f"{TEST_DIR}\\time-machine.bin"
+
+    def granted_as_asked(seconds: int) -> bool:
+        # One file for every attempt, closed before the next: a lease key
+        # serves one file, and macOS closes its scratch file too.
+        handle, granted = client.open_durable(tree, path, seconds * 1000, seconds * 1000)
+        handle.close()
+        return granted
+
+    try:
+        for seconds in TIME_MACHINE_TIMEOUTS_SECONDS:
+            r.check(f"timemachine: a {seconds} s reconnect timeout is granted as asked",
+                    functools.partial(granted_as_asked, seconds))
+    finally:
+        with contextlib.suppress(Exception):
+            conn.disconnect()
 
 
 def rename_case(r: Results, device: Device, mode: str = "same") -> None:
@@ -448,22 +512,30 @@ def expiry_case(r: Results, device: Device) -> None:
     from smbprotocol.open import (CreateDisposition, CreateOptions, FilePipePrinterAccessMask,
                                   ImpersonationLevel, Open)
 
-    client = DurableClient(device)
-    path = f"{TEST_DIR}\\expiry.bin"
+    # A second client, since one lease key serves one file: its handle must
+    # outlive the 30 s it was granted.
+    client, keeper = DurableClient(device), DurableClient(device)
+    path, kept_path = f"{TEST_DIR}\\expiry.bin", f"{TEST_DIR}\\expiry-kept.bin"
     payload = b"durable payload expiry\n"
     before = set(_smbd_children(device))
     conn1, _, tree1 = client.connect()
+    kept_conn, _, kept_tree = keeper.connect()
     old = sorted(set(_smbd_children(device)) - before)
     handle, granted = client.open_durable(tree1, path)
-    r.check("expiry: 300 s durable handle granted", lambda: granted)
+    kept, kept_granted = keeper.open_durable(kept_tree, kept_path)
+    r.check("expiry: durable handle granted the requested timeout", lambda: granted)
+    r.check("expiry: kept durable handle granted the requested timeout", lambda: kept_granted)
     handle.write(payload, 0)
+    kept.write(payload, 0)
     _reset(conn1)
-    reset_at = time.monotonic()
+    _reset(kept_conn)
     # The old smbd marks the open disconnected, asks the parent to expire it
     # and exits; the parent hands the expiry to its scavenger, a child with no
     # client connection. Stopping the scavenger must not stop new connections.
     scavengers = _scavengers(device, old)
     r.check("expiry: the scavenger runs as its own process", lambda: len(scavengers) == 1)
+    disconnected_at = time.monotonic()
+    resumed_at = disconnected_at
     if len(scavengers) == 1:
         device.sh(f"kill -STOP {scavengers[0]}")
         try:
@@ -483,7 +555,27 @@ def expiry_case(r: Results, device: Device) -> None:
             r.check("expiry: a new connection is served while the scavenger is stopped", served)
         finally:
             device.sh(f"kill -CONT {scavengers[0]}")
-    wait = DURABLE_TIMEOUT_SECONDS + 20 - (time.monotonic() - reset_at)
+            resumed_at = time.monotonic()
+    # Retention begins when smbd disconnects each open, not at the TCP reset.
+    # Once both old processes have exited every handle has disconnected.
+    # Reconnect only once the resumed scavenger has had time to run what it
+    # missed: a handle wrongly expired at its grant must not reconnect first.
+    outlive_at = max(disconnected_at + 2 * REQUESTED_TIMEOUT_MSEC / 1000,
+                     resumed_at + SCAVENGER_CATCH_UP_SECONDS)
+    time.sleep(max(outlive_at - time.monotonic(), 0))
+    kept_conn, _, kept_tree = keeper.connect()
+    try:
+        def outlived() -> bool:
+            again = keeper.reconnect(kept_tree, kept_path, kept.file_id)
+            data = again.read(0, len(payload))
+            again.close()
+            return data == payload
+
+        r.check("expiry: the kept handle reconnects after twice its granted timeout", outlived)
+    finally:
+        with contextlib.suppress(Exception):
+            kept_conn.disconnect()
+    wait = DURABLE_TIMEOUT_SECONDS + 20 - (time.monotonic() - disconnected_at)
     print(f"expiry: waiting {wait:.0f} s for the handle to expire", flush=True)
     time.sleep(max(wait, 0))
     conn2, _, tree2 = client.connect()
@@ -577,7 +669,7 @@ def write_case(r: Results, device: Device, mode: str) -> None:
     conn1, sess1, tree1 = client.connect()
     try:
         handle, granted = client.open_durable(tree1, path)
-        r.check(f"{mode}: 300 s durable handle granted", lambda: granted)
+        r.check(f"{mode}: durable handle granted the requested timeout", lambda: granted)
         if mode == "smb-in-data":
             # SMB2 headers inside ordinary data that 0072 must not take for the
             # next request: a far message ID, a wrong structure size, a response.
@@ -878,6 +970,8 @@ def main() -> int:
         for mode in SETTIME_MODES:
             if f"settime:{mode}" in wanted:
                 settime_case(results, device, mode)
+        if "timemachine" in wanted:
+            time_machine_case(results, device)
         for mode in RENAME_MODES:
             if f"rename:{mode}" in wanted:
                 rename_case(results, device, mode)
