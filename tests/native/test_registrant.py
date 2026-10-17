@@ -17,6 +17,7 @@ from tests.native.build import compile_service
 from tests.native.cases import compile_case, native_case_source, run_case
 from tests.native.integration.fake_dnssd_daemon import FakeDnssdDaemon
 from tests.native.test_plan import MODE, NAT_ADDRS, NAT_LINKS, facts_text
+from tests.timing import hang_guard
 
 UUID = "12345678-1234-1234-1234-123456789012"
 NAT_OK = facts_text(acp={**MODE["nat"], "laIP": "10.0.1.1", "waIP": "192.168.1.10", "usbF": "0x458",
@@ -34,8 +35,9 @@ NAT_NO_WAMA = NAT_OK.replace("key=waMA status=ok value=e8:8d:28:58:f1:5c", "key=
 # a window worked out from the timing that would make it happen.
 TC_PLAN_POLL_MS = 300
 REG_BACKOFF_MAX_MS = 1000
-REG_PENDING_TIMEOUT_MS = 1000
-REG_IPC_ALARM_SECONDS = 2
+REG_PENDING_TIMEOUT_MS = 2000
+# Long enough for an acknowledgement that outlasts a whole pending deadline.
+REG_IPC_ALARM_SECONDS = 4
 # Three plan polls: a facts change has been read and acted on by then.
 QUIET = 3 * TC_PLAN_POLL_MS / 1000
 
@@ -48,6 +50,7 @@ def rig():
         f'-DMDNS_UDS_SERVERPATH="{sock}"', f"-DTC_PLAN_POLL_MS={TC_PLAN_POLL_MS}", "-DREG_BACKOFF_MIN_MS=200",
         f"-DREG_BACKOFF_MAX_MS={REG_BACKOFF_MAX_MS}", f"-DREG_PENDING_TIMEOUT_MS={REG_PENDING_TIMEOUT_MS}",
         f"-DREG_IPC_ALARM_SECONDS={REG_IPC_ALARM_SECONDS}", "-D_DNS_SD_LIBDISPATCH=0"])
+    subprocess.run([str(binary), 'discovery', '--help'], capture_output=True, check=True, timeout=10)
     yield root, sock, binary
 
 
@@ -100,6 +103,16 @@ def run_discovery(binary, *args):
 def run_case_result(name, *args):
     binary = compile_case(native_case_source(name))
     return subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=10)
+
+
+def test_callback_deadline_origin_and_backoff_rounds(tmp_path):
+    source = Path(__file__).parent / 'unit/test_registrant_timing.c'
+    binary = compile_service(tmp_path / 'registrant-timing', exclude=('registrant.c', 'entry.c'),
+                             extra_sources=(source,), flags=('-I', str(Path(__file__).resolve().parents[2] / 'build/native'),
+                                 '-DREG_BACKOFF_MIN_MS=200', f'-DREG_BACKOFF_MAX_MS={REG_BACKOFF_MAX_MS}',
+                                 f'-DREG_PENDING_TIMEOUT_MS={REG_PENDING_TIMEOUT_MS}'))
+    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
 
 
 def test_registrant_keeps_shared_txt_state_below_device_budget():
@@ -519,9 +532,10 @@ def test_retry_backoff_counts_failed_rounds_not_registrations(rig, daemon):
 
     single = intervals(NAT_DENIED)
     several = intervals(NAT_AFP)
-    assert 0.1 <= single[0] < 0.7 and 0.2 <= single[1] < 0.8
-    assert 0.1 <= several[0] < 0.7 and 0.2 <= several[1] < 0.8
-    assert abs(single[1] - several[1]) < 0.25
+    # Exact intervals and equality across registration counts are checked by
+    # the virtual-clock driver. Scheduling may only lengthen these intervals.
+    assert single[0] >= 0.19 and single[1] >= 0.39
+    assert several[0] >= 0.19 and several[1] >= 0.39
 
 
 def test_daemon_absent_is_degraded_and_recovers_when_it_returns(rig, daemon):
@@ -552,14 +566,11 @@ def test_daemon_that_never_acknowledges_is_fenced_by_the_alarm(rig, daemon):
     from, and the daemon sees the socket close."""
     root, _, binary = rig
     daemon.script("AirPort Time Capsule", "stall")
-    started = time.monotonic()
     adv = Advertiser(binary, root, NAT_DENIED)
     try:
         assert daemon.wait_for(lambda t: len(registered(t)) >= 1) is not None
-        adv.proc.wait(timeout=6)
-        elapsed = time.monotonic() - started
+        adv.proc.wait(timeout=hang_guard(REG_IPC_ALARM_SECONDS * 1000))
         assert adv.proc.returncode == 14, adv.stop()
-        assert elapsed < 5
         assert daemon.wait_for(lambda t: any(e["op"] == "close" for e in t)) is not None
     finally:
         log = adv.stop()
@@ -574,7 +585,7 @@ def test_sigterm_during_a_stalled_call_still_exits_within_the_alarm(rig, daemon)
         assert daemon.wait_for(lambda t: len(registered(t)) >= 1) is not None
         time.sleep(0.3)
         adv.proc.send_signal(signal.SIGTERM)
-        adv.proc.wait(timeout=6)
+        adv.proc.wait(timeout=REG_IPC_ALARM_SECONDS + 5)
         assert adv.proc.returncode == 14
     finally:
         adv.stop()
@@ -582,7 +593,8 @@ def test_sigterm_during_a_stalled_call_still_exits_within_the_alarm(rig, daemon)
 
 def test_slow_but_answering_daemon_is_not_fenced(rig, daemon):
     root, _, binary = rig
-    daemon.script("AirPort Time Capsule", "slow")
+    # Half the alarm: slow enough that a too-short alarm would fence it.
+    daemon.script("AirPort Time Capsule", "slow", ack_delay=REG_IPC_ALARM_SECONDS / 2)
     adv = Advertiser(binary, root, NAT_DENIED)
     try:
         assert daemon.wait_for(lambda t: len(registered(t)) >= 1) is not None
@@ -602,7 +614,7 @@ def test_acknowledged_registration_without_callback_times_out_and_retries(rig, d
         transcript = daemon.wait_for(
             lambda events: len(registered(events)) >= 2 and
             any(event["op"] == "close" for event in events),
-            timeout=6,
+            timeout=hang_guard(REG_PENDING_TIMEOUT_MS, REG_BACKOFF_MAX_MS),
         )
         assert transcript is not None, adv.stop()
         assert adv.proc.poll() is None
@@ -613,14 +625,20 @@ def test_acknowledged_registration_without_callback_times_out_and_retries(rig, d
 
 def test_slow_ack_gets_full_pending_callback_deadline(rig, daemon):
     root, _, binary = rig
-    daemon.script("AirPort Time Capsule", "slow-delay")
+    # The acknowledgement outlasts a whole pending deadline, inside the IPC
+    # alarm: a deadline counted from the request has expired when it lands.
+    ack_delay = REG_PENDING_TIMEOUT_MS / 1000 + 0.5
+    daemon.script("AirPort Time Capsule", "slow-delay", ack_delay=ack_delay)
     adv = Advertiser(binary, root, NAT_DENIED)
     try:
         assert daemon.wait_for(lambda events: len(registered(events)) == 1) is not None
-        assert daemon.wait_for(lambda _events: daemon.held_reply_count() == 1, timeout=3) is not None
-        # Answer inside the pending deadline, then outlive it.
-        time.sleep(0.6 * REG_PENDING_TIMEOUT_MS / 1000)
+        assert daemon.wait_for(lambda _events: daemon.held_reply_count() == 1,
+                                 timeout=hang_guard(ack_delay * 1000)) is not None
+        # Long enough for that expired deadline to close the registration;
+        # 1.5 s inside the one counted from the acknowledgement.
+        time.sleep(0.5)
         daemon.release("AirPort Time Capsule")
+        # Then outlive the deadline from the acknowledgement too.
         time.sleep(1.2 * REG_PENDING_TIMEOUT_MS / 1000)
         assert len(registered(daemon.transcript)) == 1
         assert not any(event["op"] == "close" for event in daemon.transcript)

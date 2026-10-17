@@ -20,11 +20,12 @@ name\\0, regtype\\0, domain\\0.
 The fake records every request and connection close in a transcript and
 supports scripted responses per instance name: ``accept`` (default),
 ``conflict`` (error -65548 in the reply), ``delay`` (accept, but hold the
-reply until ``release``), ``slow-delay`` (delay the acknowledgement, then hold
-the reply), ``drop`` (close the connection without a reply),
-``stall`` (read the request but never send the 4-byte acknowledgement --
-the synchronous stub blocks inside DNSServiceRegister), ``slow`` (send the
-acknowledgement after one second, then the reply).
+reply until ``release``), ``slow-delay`` (send the acknowledgement after the
+script's ``ack_delay`` seconds, then hold the reply), ``drop`` (close the
+connection without a reply), ``stall`` (read the request but never send the
+4-byte acknowledgement -- the synchronous stub blocks inside
+DNSServiceRegister), ``slow`` (send the acknowledgement after ``ack_delay``
+seconds, then the reply).
 """
 from __future__ import annotations
 
@@ -64,6 +65,7 @@ class FakeDnssdDaemon:
         self.path = path
         self.transcript = []
         self.scripts = {}          # instance name -> accept|conflict|delay|drop
+        self.ack_delays = {}       # instance name -> seconds, for slow and slow-delay
         self.default_name = "AirPort Time Capsule"
         self.lock = threading.Lock()
         self.held = {}             # conn id -> (sock, reply bytes)
@@ -83,9 +85,10 @@ class FakeDnssdDaemon:
         self.accepting = True      # False = refuse new connections (daemon "gone")
 
     # ----------------------------------------------------------- control --
-    def script(self, name, behaviour):
+    def script(self, name, behaviour, ack_delay=0.0):
         with self.lock:
             self.scripts[name] = behaviour
+            self.ack_delays[name] = ack_delay
 
     def rename_default(self, name):
         """Apple updates all default-name registrations after a name conflict."""
@@ -143,8 +146,10 @@ class FakeDnssdDaemon:
             if predicate(snapshot):
                 return snapshot
             time.sleep(0.02)
+        # Outside the lock: a predicate may take it (held_reply_count does).
         with self.lock:
-            return list(self.transcript) if predicate(list(self.transcript)) else None
+            snapshot = list(self.transcript)
+        return snapshot if predicate(snapshot) else None
 
     def registrations(self, live_only=True):
         """(ifindex, regtype, name) of registrations whose connection is still open."""
@@ -239,6 +244,7 @@ class FakeDnssdDaemon:
             with self.lock:
                 reply_name = name or self.default_name
                 behaviour = self.scripts.get(reply_name, "accept")
+                ack_delay = self.ack_delays.get(reply_name, 0.0)
                 self.transcript.append({"op": "register", "conn": conn_id, "version": version, "flags": flags,
                                         "time": time.monotonic(),
                                         "context": (ctx0, ctx1),
@@ -250,10 +256,12 @@ class FakeDnssdDaemon:
                     return
                 if behaviour == "stall":
                     return                            # accepted, never acknowledged
-                if behaviour == "slow":
-                    time.sleep(1.0)
-                elif behaviour == "slow-delay":
-                    time.sleep(0.6)
+            # Never hide the request event behind a lock-held fake sleep.
+            if behaviour in {"slow", "slow-delay"}:
+                time.sleep(ack_delay)
+            with self.lock:
+                if conn_id not in self._conns:
+                    return
                 sock.sendall(struct.pack(">I", 0))   # request accepted
                 err = ERR_NAME_CONFLICT if behaviour == "conflict" else 0
                 body = struct.pack(">III", FLAG_ADD if not err else 0, ifindex, err)

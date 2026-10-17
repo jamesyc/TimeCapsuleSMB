@@ -16,6 +16,7 @@ import pytest
 from tests.native.build import ROOT, compile_modules, compile_service
 from tests.native.integration.fake_dnssd_daemon import FakeDnssdDaemon
 from tests.native.test_plan import MODE, NAT_ADDRS, NAT_LINKS, facts_text
+from tests.timing import hang_guard
 
 
 def wait_for(predicate, timeout=8):
@@ -84,13 +85,34 @@ WCIFSND_UNIT_MODULES = (
 # proves that none was scheduled.
 WCIFSND_RETRY_MS = 200
 PAST_FIRST_RETRY = 3 * 2 * WCIFSND_RETRY_MS / 1000
+# The cancel cases must act inside a first backoff: give them a 2 s one, and
+# prove none was scheduled after two of them.
+CANCEL_RETRY_MS = 1000
+CANCEL_PAST_FIRST_RETRY = 2 * 2 * CANCEL_RETRY_MS / 1000
 # The reply wait before any timed out, and after one did (device 30 s, 100 s).
-FIRST_REPLY_MS = 1500
-REPLY_MS = 3000
+# A fake's delayed answer (up to 0.6 s) stays far inside the first.
+FIRST_REPLY_MS = 3000
+REPLY_MS = 4000
+# Listener and ownership-check deadlines, and the stop grace before SIGKILL.
+START_MS = 3000
+INSPECT_MS = 3000
+STOP_MS = 500
+GRACE_MS = 500
+# Starting the Python fake child and its fake fstat on a loaded runner.
+CHILD_START_MS = 600
 
 
-@pytest.fixture(scope="module")
-def rig():
+def first_retry_ms(retry_ms, failures=1):
+    """The backoff before the retry after this many failures in a row."""
+    return 2 * retry_ms << (failures - 1)
+
+
+# A child that never answers its first add: the short reply wait, its stop,
+# the first backoff and the next child's start.
+FIRST_REPLACEMENT = (FIRST_REPLY_MS, STOP_MS, first_retry_ms(WCIFSND_RETRY_MS), CHILD_START_MS)
+
+
+def build_rig(retry_ms):
     root = Path(tempfile.mkdtemp(prefix="tcwcifsnd-"))
     port = free_port()
     fake = ROOT / "tests/native/integration/fake_wcifsnd.py"
@@ -108,18 +130,30 @@ def rig():
         f'-DMDNS_UDS_SERVERPATH="{sock}"', f'-DWCIFSND_PATH="{primary}"',
         f'-DWCIFSND_FALLBACK_PATH="{fallback}"',
         f'-DTC_FSTAT_PATH="{fake_fstat}"',
-        f"-DWCIFSND_PORT={port}", "-DWCIFSND_START_MS=3000", "-DWCIFSND_INSPECT_MS=3000",
-        "-DTC_CHILD_GRACE_MS=500", f"-DWCIFSND_FIRST_REPLY_MS={FIRST_REPLY_MS}",
+        f"-DWCIFSND_PORT={port}", f"-DWCIFSND_START_MS={START_MS}", f"-DWCIFSND_INSPECT_MS={INSPECT_MS}",
+        f"-DTC_CHILD_GRACE_MS={GRACE_MS}", f"-DWCIFSND_FIRST_REPLY_MS={FIRST_REPLY_MS}",
         f"-DWCIFSND_REPLY_MS={REPLY_MS}",
-        "-DWCIFSND_STOP_MS=500", "-DTC_PLAN_POLL_MS=200", "-DREG_BACKOFF_MIN_MS=100",
+        f"-DWCIFSND_STOP_MS={STOP_MS}", "-DTC_PLAN_POLL_MS=200", "-DREG_BACKOFF_MIN_MS=100",
         "-DREG_BACKOFF_MAX_MS=200", "-DREG_IPC_ALARM_SECONDS=1", "-D_DNS_SD_LIBDISPATCH=0",
-        f"-DWCIFSND_RETRY_MS={WCIFSND_RETRY_MS}"])
+        f"-DWCIFSND_RETRY_MS={retry_ms}"])
+    # The new binary's first-exec check belongs to setup, not a startup deadline.
+    subprocess.run([str(binary), 'discovery', '--help'], capture_output=True, check=True, timeout=10)
     return root, sock, binary, port
+
+
+@pytest.fixture(scope="module")
+def rig():
+    return build_rig(WCIFSND_RETRY_MS)
+
+
+@pytest.fixture(scope="module")
+def cancel_rig():
+    return build_rig(CANCEL_RETRY_MS)
 
 
 class Discovery:
     def __init__(self, rig, facts=NAT_OK, name="machine", diskless=False, mode="success",
-                 extra_env=None, pass_fds=(), shares=False, stdin=None, fstat_mode="owned"):
+                 extra_env=None, pass_fds=(), shares=False, stdin=None, fstat_mode="owned", debug=False):
         root, _, binary, port = rig
         stamp = time.monotonic_ns()
         self.facts = root / f"facts-{stamp}"
@@ -140,6 +174,9 @@ class Discovery:
             args += ["--netbios-name", name]
         if shares:
             args += ["--adisk-share", "Data", "dk2", "11111111-1111-1111-1111-111111111111", "0x82"]
+        if debug:
+            args.append('--debug-logging')
+        self.log = bytearray()
         self.proc = subprocess.Popen(args, env=env, pass_fds=pass_fds,
                                      stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -147,6 +184,25 @@ class Discovery:
         temporary = self.facts.with_suffix(".tmp")
         temporary.write_text(facts)
         os.replace(temporary, self.facts)
+
+    def read_log(self):
+        fd = self.proc.stderr.fileno()
+        os.set_blocking(fd, False)
+        try:
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                self.log.extend(chunk)
+        except BlockingIOError:
+            pass
+        finally:
+            os.set_blocking(fd, True)
+        return self.log.decode()
+
+    def wait_incomplete_passes(self, count):
+        # wcifsnd_apply_plan precedes this existing registrant debug event.
+        assert wait_for(lambda: self.read_log().count('registrant: plan incomplete') >= count, timeout=10)
 
     def stop(self, timeout=3):
         if self.proc.poll() is None:
@@ -158,13 +214,16 @@ class Discovery:
             out, err = self.proc.communicate(timeout=timeout)
         # pytest shows captured stderr only for a failed test; this log
         # names which deadline or check replaced a child.
-        sys.stderr.write(err or "")
+        err = self.log.decode() + (err or "")
+        sys.stderr.write(err)
         return out, err
 
 
 @pytest.fixture
-def dnssd(rig):
-    fake = FakeDnssdDaemon(str(rig[1]))
+def dnssd(request):
+    # The daemon of whichever rig the test runs.
+    sock = request.getfixturevalue("cancel_rig" if "cancel_rig" in request.fixturenames else "rig")[1]
+    fake = FakeDnssdDaemon(str(sock))
     yield fake
     fake.close()
 
@@ -362,7 +421,7 @@ def test_cold_invalid_plan_recovers_when_facts_become_valid(rig, dnssd):
 
 def test_normal_launch_requires_netbios_name(rig):
     result = subprocess.run([str(rig[2]), "discovery", "--facts-file", str(rig[0] / "missing")],
-                            capture_output=True, text=True, timeout=2)
+                            capture_output=True, text=True, timeout=10)
     assert result.returncode == 3
 
 
@@ -377,7 +436,10 @@ def test_failed_child_retries_without_withdrawing_bonjour(rig, dnssd, mode, requ
         tried = wait_for(lambda: first_added_child(discovery) if requests else
                          next(iter(children(discovery)), None), timeout=20)
         assert tried
-        assert wait_for(lambda: children(discovery)[-1] != tried, timeout=20)
+        # Without a listener the start deadline replaces the reply wait.
+        assert wait_for(lambda: children(discovery)[-1] != tried,
+                        timeout=hang_guard(*FIRST_REPLACEMENT) if requests else
+                        hang_guard(START_MS, STOP_MS, first_retry_ms(WCIFSND_RETRY_MS), CHILD_START_MS))
         assert_reaped(tried, discovery.proc.pid)
         # Apple keeps accepted adds even after client exit. Every uncertain
         # request is sent once, then the native child is discarded before retry.
@@ -426,14 +488,14 @@ def test_defended_forever_times_out_then_replaces_child_without_resend(rig, dnss
     discovery = Discovery(rig, mode="defended-forever", shares=True)
     try:
         connections = bonjour_connections(dnssd)
-        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=20)
+        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=hang_guard(CHILD_START_MS, *FIRST_REPLACEMENT))
         assert_reaped(children(discovery)[0], discovery.proc.pid)
         # One add per child generation, however many rcode 3 replies arrive.
         assert set(adds_per_child(discovery).values()) == {1}
         assert_bonjour_unchanged(discovery, dnssd, connections)
     finally:
         log = discovery.stop()[1]
-    assert ("registration of MACHINE<00> timed out after 1500 ms (last reply rcode 3); "
+    assert (f"registration of MACHINE<00> timed out after {FIRST_REPLY_MS} ms (last reply rcode 3); "
             "replacing native child") in log
     assert "wcifsnd: registered" not in log
 
@@ -446,7 +508,7 @@ def test_unanswered_first_add_is_replaced_after_the_short_wait_then_registers(ri
         connections = bonjour_connections(dnssd)
         first = wait_for(lambda: first_added_child(discovery), timeout=10)
         assert first
-        assert wait_for(lambda: "STOP" in generation(discovery, first), timeout=10)
+        assert wait_for(lambda: "STOP" in generation(discovery, first), timeout=hang_guard(FIRST_REPLY_MS, STOP_MS))
         discovery.mode.write_text("success")
         assert wait_for(lambda: "HUP" in event_lines(discovery.events), timeout=15)
         assert_reaped(first, discovery.proc.pid)
@@ -465,7 +527,10 @@ def test_reply_wait_lengthens_after_a_timeout_for_slow_name_servers(rig, dnssd):
     # child forever: after one timeout each add gets the full wait.
     discovery = Discovery(rig, mode="drop")
     try:
-        assert wait_for(lambda: len(set(pid for pid, _ in add_events(discovery))) >= 3, timeout=25)
+        # The short wait, then the long one, each followed by its backoff.
+        assert wait_for(lambda: len(set(pid for pid, _ in add_events(discovery))) >= 3,
+                        timeout=hang_guard(CHILD_START_MS, *FIRST_REPLACEMENT, REPLY_MS, STOP_MS,
+                                      first_retry_ms(WCIFSND_RETRY_MS, 2), CHILD_START_MS))
     finally:
         log = discovery.stop()[1]
     timeouts = [line.split("timed out after ")[1].split(" ms")[0]
@@ -480,9 +545,10 @@ def test_unanswered_second_record_uses_the_short_wait_then_the_long_one(rig, dns
     try:
         first = wait_for(lambda: first_added_child(discovery), timeout=10)
         assert first
-        assert wait_for(lambda: len(set(pid for pid, _ in add_events(discovery))) >= 2, timeout=15)
+        assert wait_for(lambda: len(set(pid for pid, _ in add_events(discovery))) >= 2,
+                        timeout=hang_guard(*FIRST_REPLACEMENT))
         second = [pid for pid in adds_per_child(discovery) if pid != first][0]
-        assert wait_for(lambda: "STOP" in generation(discovery, second), timeout=15)
+        assert wait_for(lambda: "STOP" in generation(discovery, second), timeout=hang_guard(REPLY_MS, STOP_MS))
         discovery.mode.write_text("success")
         assert wait_for(lambda: "HUP" in event_lines(discovery.events), timeout=20)
     finally:
@@ -609,7 +675,9 @@ def test_stalled_inspection_times_out_then_recovers_without_an_add(rig, dnssd):
         helper = int(next(line.split()[1] for line in event_lines(discovery.events) if line.startswith("HANG ")))
         assert not adds(discovery)
         discovery.fstat_mode.write_text("owned")
-        assert wait_for(lambda: len(adds(discovery)) == 3, timeout=15)
+        # The fake fstat ignores SIGTERM, so its stop takes the whole grace.
+        assert wait_for(lambda: len(adds(discovery)) == 3,
+                        timeout=hang_guard(INSPECT_MS, GRACE_MS, first_retry_ms(WCIFSND_RETRY_MS), CHILD_START_MS))
         assert wait_for(lambda: not process_exists(helper), timeout=2)
         assert_bonjour_unchanged(discovery, dnssd, connections)
     finally:
@@ -726,8 +794,11 @@ def test_term_ignoring_child_is_killed_and_reaped_within_bound(rig, dnssd):
             except ProcessLookupError:
                 return True
 
-        assert wait_for(child_is_gone, timeout=2)
-        assert time.monotonic() - started < 2
+        assert wait_for(child_is_gone, timeout=10)
+        # A plan poll, WCIFSND_STOP_MS and the kill take about 0.8 s; waiting
+        # for a reply timeout instead would take FIRST_REPLY_MS.
+        assert time.monotonic() - started < FIRST_REPLY_MS / 1000 - .5
+        assert_reaped(child, discovery.proc.pid)
         assert discovery.proc.poll() is None
     finally:
         discovery.stop()
@@ -737,7 +808,9 @@ def test_failed_term_ignoring_child_is_reaped_before_retry(rig, dnssd):
     discovery = Discovery(rig, mode='drop', shares=True, extra_env={'TC_FAKE_WCIFSND_IGNORE_TERM': '1'})
     try:
         connections = bonjour_connections(dnssd)
-        assert wait_for(lambda: len(children(discovery)) == 2, timeout=15)
+        # The TERM-ignoring child also takes the whole grace to stop.
+        assert wait_for(lambda: len(children(discovery)) == 2,
+                        timeout=hang_guard(CHILD_START_MS, *FIRST_REPLACEMENT, GRACE_MS))
         assert_reaped(children(discovery)[0], discovery.proc.pid)
         assert_bonjour_unchanged(discovery, dnssd, connections)
         discovery.mode.write_text('success')
@@ -748,15 +821,16 @@ def test_failed_term_ignoring_child_is_reaped_before_retry(rig, dnssd):
 
 
 def test_active_generation_retains_child_without_hup_on_incomplete_facts(rig, dnssd):
-    discovery = Discovery(rig)
+    discovery = Discovery(rig, debug=True)
     try:
         assert wait_for(lambda: len(adds(discovery)) == 3)
         child = first_added_child(discovery)
         incomplete = NAT_OK.replace("key=raNA status=ok value=1", "key=raNA status=abort value=")
         discovery.replace(incomplete)
-        time.sleep(0.5)  # consume a collection already scheduled from the prior valid snapshot
+        discovery.wait_incomplete_passes(1)
         hups = event_lines(discovery.events).count("HUP")
-        time.sleep(0.5)
+        passes = discovery.read_log().count('registrant: plan incomplete')
+        discovery.wait_incomplete_passes(passes + 2)
         lines = event_lines(discovery.events)
         assert children(discovery)[-1] == child
         assert lines.count("HUP") == hups
@@ -858,21 +932,21 @@ def test_repeated_child_death_preserves_bonjour_and_processes_callbacks(rig, dns
 
 @pytest.mark.parametrize('phase', ['registering', 'backoff'])
 @pytest.mark.parametrize('action', ['ipv4-loss', 'term', 'parent-eof'])
-def test_recovery_can_be_cancelled_without_respawning(rig, dnssd, phase, action):
+def test_recovery_can_be_cancelled_without_respawning(cancel_rig, dnssd, phase, action):
     parent_read, parent_write = os.pipe()
     # Parent EOF is tested with a real lifetime pipe on stdin, exactly as the
     # manager launches this role.
-    discovery = Discovery(rig, mode='drop', shares=True, stdin=parent_read if action == 'parent-eof' else None)
+    discovery = Discovery(cancel_rig, mode='drop', shares=True, stdin=parent_read if action == 'parent-eof' else None)
     try:
         bonjour_connections(dnssd)
         assert wait_for(lambda: len(adds(discovery)) == 1)
         tried = first_added_child(discovery)
         if phase == 'backoff':
-            assert wait_for(lambda: 'STOP' in generation(discovery, tried))
+            assert wait_for(lambda: 'STOP' in generation(discovery, tried), timeout=hang_guard(FIRST_REPLY_MS, STOP_MS))
         if action == 'ipv4-loss':
             discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
             assert wait_for(lambda: 'STOP' in generation(discovery, tried))
-            time.sleep(PAST_FIRST_RETRY)  # No new child.
+            time.sleep(CANCEL_PAST_FIRST_RETRY)  # No new child.
             # Losing IPv4 can also change Bonjour’s eligible interfaces.
             # Recovery must stop without terminating the discovery controller.
             assert discovery.proc.poll() is None
@@ -894,12 +968,12 @@ def test_recovery_can_be_cancelled_without_respawning(rig, dnssd, phase, action)
 
 
 def test_retry_waits_for_valid_facts_without_dropping_bonjour(rig, dnssd):
-    discovery = Discovery(rig, shares=True)
+    discovery = Discovery(rig, shares=True, debug=True)
     try:
         connections = bonjour_connections(dnssd)
         assert wait_for(lambda: len(adds(discovery)) == 3)
         discovery.replace(NAT_OK.replace('key=raNA status=ok value=1', 'key=raNA status=abort value='))
-        time.sleep(.6)  # Consume the new incomplete snapshot before faulting.
+        discovery.wait_incomplete_passes(1)
         old = first_added_child(discovery)
         os.kill(old, signal.SIGKILL)
         time.sleep(PAST_FIRST_RETRY)  # The retry deadline expires, but startup is not eligible.
