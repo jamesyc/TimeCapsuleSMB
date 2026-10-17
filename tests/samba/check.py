@@ -117,8 +117,10 @@ def plan(tier: str, lanes: list[str], envs: dict[str, str], out: Path, build: bo
     phases.append(Phase("mac", [s for s in mac if s.name not in skip]))
     if build and "build" not in skip:
         binaries = out / "binaries"
+        # The VM password is NetBSD 6's (AGENTS.md). vm_build's default, the
+        # checkout's own .env.backup6, does not exist in a worktree.
         phases.append(Phase("build", [Step("vm_build", None, py(
-            "tests.samba.vm_build", "--out", str(binaries), "--lanes", "6,4le,4be",
+            "tests.samba.vm_build", "--out", str(binaries), "--lanes", "6,4le,4be", "--vm-env", envs["6"],
             *(["--install"] if tier == "full" else [])))], parallel=False, locks=[]))
         # vm_build holds the VM rows itself.
     # A reboot of NetBSD 6 drops NetBSD 4's network, so a full run holds both.

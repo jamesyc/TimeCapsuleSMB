@@ -50,6 +50,12 @@ class PlanTest(unittest.TestCase):
                           "durable_device", "links_device", "smbtorture"])
         self.assertNotIn("--quick", phases[3].per_device["6"][2].argv)
 
+    def test_the_build_takes_the_vm_password_from_netbsd6_s_env(self) -> None:
+        # Also when only NetBSD 4 is tested: the VM password is NetBSD 6's.
+        for tier, lanes in (("full", ["6", "4le"]), ("full", ["4le"]), ("quick", ["4le"])):
+            build = plan(tier, lanes, ENVS, OUT, True, None, set())[1].steps[0].argv
+            self.assertEqual(build[build.index("--vm-env") + 1], "/env6", (tier, lanes))
+
     def test_a_full_run_on_netbsd6_alone_holds_netbsd4_too(self) -> None:
         phases = plan("full", ["6"], ENVS, OUT, False, Path("/bins"), set())
         self.assertEqual(phases[-1].locks, ["NetBSD 6", "NetBSD 4"])
