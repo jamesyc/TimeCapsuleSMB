@@ -213,6 +213,9 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
     if (err == kDNSServiceErr_NoError) {
         entry->ref = ref;
         entry->polled = 0;
+        entry->reannounce_at_ms = 0;
+        entry->reannounces = 0;
+        entry->txt_ttl = REG_TXT_TTL;
         entry->status = REG_PENDING;
         entry->pending_until_ms = completed_ms + REG_PENDING_TIMEOUT_MS;
         if (reg->daemon_unreachable) {
@@ -361,9 +364,50 @@ void registrant_prepare(struct registrant *reg, fd_set *reads, int *maxfd, long 
             (*deadline_ms < 0 || entry->pending_until_ms < *deadline_ms)) {
             *deadline_ms = entry->pending_until_ms;
         }
+        /* The same test as registrant_dispatch's: a deadline it would not act
+         * on would leave the loop waking at once. */
+        if (entry->status == REG_REGISTERED && entry->reannounce_at_ms > 0 &&
+            (*deadline_ms < 0 || entry->reannounce_at_ms < *deadline_ms)) {
+            *deadline_ms = entry->reannounce_at_ms;
+        }
     }
     if (reg->retry_at_ms > 0 && (*deadline_ms < 0 || reg->retry_at_ms < *deadline_ms)) {
         *deadline_ms = reg->retry_at_ms;
+    }
+}
+
+/* Apple's mDNSResponder announces a registration 8 times, 1 to 64 s apart,
+ * then sends nothing unasked, and a Mac keeps the TXT for its 4500 s TTL. A
+ * Mac re-checks its cached records when it wakes and drops those of a link
+ * it loses, but one that stayed awake and connected and still heard none of
+ * those announcements keeps the TXT it had before: Apple's own after an
+ * install, which advertises AFP and makes macOS 26.x/27 hide the Time
+ * Capsule, or ours from before the AFP setting changed. Apple never
+ * announces again because its TXT never changes across restarts; ours does.
+ * An update with the same TXT and TTL announces nothing (mDNS_Update), so each
+ * one moves the TTL away from the one mDNSResponder holds, one second down
+ * from Apple's default or back to it, and sends 8 more announcements with the
+ * cache-flush bit. The TTL held is the last one mDNSResponder accepted: after
+ * a rejected first update the second still changes it. A failed update is
+ * logged and not retried; the TXT may keep the 4499 s TTL until the service
+ * registers again, which is harmless. */
+static void reannounce(struct registrant *reg, struct reg_entry *entry, long long now_ms) {
+    uint32_t ttl = entry->txt_ttl == REG_TXT_TTL ? REG_TXT_TTL - 1 : REG_TXT_TTL;
+    char detail[48];
+    DNSServiceErrorType err;
+
+    ipc_begin();
+    err = DNSServiceUpdateRecord(entry->ref, NULL, 0, (uint16_t)reg->adisk_txt_len, reg->adisk_txt, ttl);
+    ipc_end();
+    entry->reannounces++;
+    entry->reannounce_at_ms = entry->reannounces == 1 ? now_ms + (REG_REANNOUNCE_SECOND_MS - REG_REANNOUNCE_FIRST_MS) : 0;
+    if (err == kDNSServiceErr_NoError) {
+        entry->txt_ttl = ttl;
+        (void)snprintf(detail, sizeof(detail), "ttl=%lu", (unsigned long)ttl);
+        log_entry(reg, "re-announce", entry, detail);
+    } else {
+        (void)snprintf(detail, sizeof(detail), "ttl=%lu error=%d", (unsigned long)ttl, (int)err);
+        log_entry(reg, "re-announce failed", entry, detail);
     }
 }
 
@@ -416,6 +460,16 @@ void registrant_dispatch(struct registrant *reg, const fd_set *reads, long long 
             schedule_retry(reg, now_ms);
         } else if (entry->status == REG_REGISTERED) {
             reg->backoff_ms = REG_BACKOFF_MIN_MS;
+            if (entry->desired.service == REG_ADISK && entry->reannounces == 0 && entry->reannounce_at_ms == 0) {
+                entry->reannounce_at_ms = now_ms + REG_REANNOUNCE_FIRST_MS;
+            }
+        }
+    }
+    for (i = 0; i < REG_MAX_ENTRIES; i++) {
+        struct reg_entry *entry = &reg->entries[i];
+        if (entry->in_use && entry->ref != NULL && entry->status == REG_REGISTERED &&
+            entry->reannounce_at_ms > 0 && now_ms >= entry->reannounce_at_ms) {
+            reannounce(reg, entry, now_ms);
         }
     }
     if (failures > 0 && failures == live && !reg->daemon_unreachable) {

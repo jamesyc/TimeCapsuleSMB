@@ -8,6 +8,13 @@ Speaks the `dns_sd` Unix-socket IPC the vendored Apple stub uses
     reg_service_request (op 5) payload: flags u32, interfaceIndex u32,
         name\\0, regtype\\0, domain\\0, host\\0, port u16 (network order),
         txtLen u16, txt bytes
+    update_record_request (op 11) payload: return-socket path\\0 (empty with
+        a socketpair), flags u32, rdlen u16, rdata, ttl u32. The stub writes
+        all but the last payload byte, then sends that byte with a socket of
+        its own (SCM_RIGHTS) and reads the 4-byte error code from that
+        socket, not from the connection. Like mDNSResponder's mDNS_Update,
+        an accepted update announces only when it changes the TXT record's
+        rdata or TTL; the transcript says whether each one would have.
     cancel_request (op 63): sent by DNSServiceRefDeallocate on subordinate
         connections; a primary connection simply closes its socket.
 
@@ -37,6 +44,9 @@ import threading
 import time
 
 REG_SERVICE_REQUEST = 5
+UPDATE_RECORD_REQUEST = 11
+# kStandardTTL: what DNSServiceRegister gives a service's TXT record.
+TXT_TTL = 4500
 CANCEL_REQUEST = 63
 REG_SERVICE_REPLY_OP = 65
 FLAG_ADD = 0x2
@@ -67,6 +77,9 @@ class FakeDnssdDaemon:
         self.scripts = {}          # instance name -> accept|conflict|delay|drop
         self.ack_delays = {}       # instance name -> seconds, for slow and slow-delay
         self.default_name = "AirPort Time Capsule"
+        self.update_errors = []    # answers to the next update requests, in order, then 0; "stall" never answers
+        self.stalled_update_replies = []
+        self.txt_records = {}      # conn id -> (rdata, ttl) of its registration's TXT record
         self.lock = threading.Lock()
         self.held = {}             # conn id -> (sock, reply bytes)
         self._selector = selectors.DefaultSelector()
@@ -161,6 +174,8 @@ class FakeDnssdDaemon:
     def close(self):
         self._stop.set()
         self._thread.join(timeout=5)
+        for reply in self.stalled_update_replies:
+            reply.close()
         self._listener.close()
         try:
             os.unlink(self.path)
@@ -219,6 +234,32 @@ class FakeDnssdDaemon:
         if record:
             self.transcript.append({"op": "close", "conn": conn_id})
 
+    def _update(self, conn_id, sock, datalen, reg_index):
+        payload = self._recv_exact(sock, datalen - 1)
+        last, fds, _flags, _address = socket.recv_fds(sock, 1, 1)
+        if payload is None or not last or not fds:
+            with self.lock:
+                self._close(conn_id, sock, record=True)
+            return
+        payload += last
+        _path, pos = _cstr(payload, 0)
+        flags, rdlen = struct.unpack_from(">IH", payload, pos)
+        rdata = payload[pos + 6:pos + 6 + rdlen]
+        ttl = struct.unpack_from(">I", payload, pos + 6 + rdlen)[0]
+        with self.lock:
+            error = self.update_errors.pop(0) if self.update_errors else 0
+            held = self.txt_records.get(conn_id)
+            if error == 0:
+                self.txt_records[conn_id] = (rdata, ttl)
+            self.transcript.append({"op": "update", "conn": conn_id, "time": time.monotonic(), "flags": flags,
+                                    "reg_index": reg_index, "txt": parse_txt(rdata), "ttl": ttl,
+                                    "announces": error == 0 and held != (rdata, ttl)})
+        with socket.socket(fileno=fds[0]) as reply:
+            if error != "stall":
+                reply.sendall(struct.pack(">i", error))
+            else:
+                self.stalled_update_replies.append(reply.dup())
+
     def _read(self, conn_id, sock):
         header = self._recv_exact(sock, HEADER.size)
         if header is None:
@@ -226,6 +267,9 @@ class FakeDnssdDaemon:
                 self._close(conn_id, sock, record=True)
             return
         version, datalen, ipc_flags, op, ctx0, ctx1, reg_index = HEADER.unpack(header)
+        if op == UPDATE_RECORD_REQUEST:
+            self._update(conn_id, sock, datalen, reg_index)
+            return
         payload = self._recv_exact(sock, datalen) if datalen else b""
         if payload is None:
             with self.lock:
@@ -251,6 +295,7 @@ class FakeDnssdDaemon:
                                         "no_auto_rename": bool(flags & FLAG_NO_AUTO_RENAME), "ifindex": ifindex,
                                         "name": name, "regtype": regtype, "domain": domain, "host": host,
                                         "port": port, "txt": parse_txt(txt), "behaviour": behaviour})
+                self.txt_records[conn_id] = (txt, TXT_TTL)
                 if behaviour == "drop":
                     self._close(conn_id, sock, record=False)
                     return

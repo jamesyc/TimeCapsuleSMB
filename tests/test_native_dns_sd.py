@@ -327,3 +327,100 @@ def test_withdrawal_removes_only_its_address_and_error_is_not_absence():
     assert native._parse_dns_sd_address_output(removed, initial) == ["192.0.2.11", "fd00::10"]
     error = "10:20:08 Add 2 14 example.local. 0.0.0.0 0 Error code -65537\n"
     assert native._parse_dns_sd_address_output(error, initial) == initial
+
+
+ADISK = BonjourServiceInstance("_adisk._tcp.local.", "Home.Base", "Home\\.Base._adisk._tcp.local.", 17)
+NAME = "Home\\.Base._adisk._tcp.local."
+STALE = b"\x0fdk2=adVF=0x1093"
+
+
+def _answers(*copies):
+    lines = ["DATE: ---Fri 16 Oct 2026---", " 2:25:18.447  ...STARTING...",
+             "Timestamp     A/R  Flags         IF  Name                          Type   Class  Rdata"]
+    for interface, rdata in copies:
+        lines.append(f" 2:25:18.448  Add  40000002 {interface:>7}  {NAME} TXT    IN     {len(rdata)} bytes: "
+                     + " ".join(f"{byte:02X}" for byte in rdata))
+    # A removal is not a cached copy.
+    lines.append(f" 2:25:18.449  Rmv  00000000      17  {NAME} TXT    IN     4 bytes: 03 61 3D 32")
+    return ("\n".join(lines) + "\n", "", None, True, "")
+
+
+def test_recheck_cached_txt_rechecks_each_cached_copy_on_its_interface():
+    reconfirm = mock.Mock(side_effect=[0, -65541])
+    with mock.patch.object(native, "_reconfirm_record", return_value=reconfirm), \
+         mock.patch.object(native, "_run_dns_sd_command", return_value=_answers((17, STALE), (-1, b"\x03a=1"))) as run:
+        # A copy mDNSResponder refuses to re-check is not counted as re-checked.
+        assert native.recheck_cached_txt(ADISK) == (2, 1)
+    # A dot inside the instance name stays part of its label; one read, no waiting.
+    run.assert_called_once_with(["dns-sd", "-m", "-Q", NAME, "TXT", "IN"], timeout_sec=1.0, owner=mock.ANY)
+    assert reconfirm.call_args_list == [
+        mock.call(0x800, 17, NAME.encode(), 16, 1, len(STALE), STALE),
+        mock.call(0x800, 0xFFFFFFFF, NAME.encode(), 16, 1, 4, b"\x03a=1"),
+    ]
+
+
+def test_recheck_cached_txt_finds_nothing_to_recheck_without_a_cached_copy():
+    reconfirm = mock.Mock(return_value=0)
+    with mock.patch.object(native, "_reconfirm_record", return_value=reconfirm), \
+         mock.patch.object(native, "_run_dns_sd_command", return_value=("", "", None, True, "")):
+        assert native.recheck_cached_txt(ADISK) == (0, 0)
+    reconfirm.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [
+    {"return_value": _answers((17, STALE))[:4] + ("Bonjour query error -65555",)},
+    {"side_effect": native.BonjourPermissionDenied("Bonjour query error -65570")},
+])
+def test_recheck_cached_txt_raises_a_dns_sd_failure_instead_of_reporting_nothing_cached(failure):
+    reconfirm = mock.Mock(return_value=0)
+    with mock.patch.object(native, "_reconfirm_record", return_value=reconfirm), \
+         mock.patch.object(native, "_run_dns_sd_command", **failure), pytest.raises((RuntimeError, PermissionError)):
+        native.recheck_cached_txt(ADISK)
+    reconfirm.assert_not_called()
+
+
+@pytest.mark.real_adisk_recheck
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_recheck_cached_txt_is_unsupported_off_macos(platform):
+    # Linux dns-sd may sit on Avahi's compatibility library, which has no reconfirm.
+    with mock.patch.object(native.sys, "platform", platform), mock.patch.object(native.ctypes, "CDLL") as cdll, \
+         mock.patch.object(native, "_run_dns_sd_command") as run:
+        assert native.recheck_cached_txt(ADISK) is None
+    cdll.assert_not_called()
+    run.assert_not_called()
+    # zeroconf keeps no shared cache, so there is nothing to re-check either.
+    assert zeroconf_backend.recheck_cached_txt(ADISK) is None
+
+
+@pytest.mark.real_adisk_recheck
+@pytest.mark.skipif(sys.platform != "darwin", reason="libSystem's dns_sd is macOS only")
+# dns-sd escapes the ASCII space and prints the others raw, which Python would
+# take for whitespace or a line break.
+@pytest.mark.parametrize("separator", [" ", "\u00a0", "\u2028", "\u3000"])
+def test_recheck_cached_txt_hands_mdnsresponders_exact_bytes_to_libsystem(separator):
+    import ctypes
+    import subprocess
+    import time
+    import uuid
+
+    # libSystem has the call, typed as dns_sd.h declares it. It is not called:
+    # the test only reads this Mac's cache.
+    real = native._reconfirm_record()
+    assert real is not None and real.restype is ctypes.c_int32 and len(real.argtypes) == 7
+    name = f"tcsmb{separator}test.{uuid.uuid4().hex[:8]}"
+    # Local only, so nothing is announced on the network.
+    registration = subprocess.Popen(["dns-sd", "-lo", "-R", name, "_tcsmbtest._tcp", "local", "9", "a=1", "b=x y"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        reconfirm = mock.Mock(return_value=-65541)
+        instance = BonjourServiceInstance("_tcsmbtest._tcp.local.", name, "")
+        deadline = time.monotonic() + 5
+        with mock.patch.object(native, "_reconfirm_record", return_value=reconfirm):
+            while not reconfirm.called and time.monotonic() < deadline:
+                native.recheck_cached_txt(instance)
+        # The name dns-sd was asked for, which mDNSResponder parses the same way.
+        fullname = name.replace(".", "\\.").encode() + b"._tcsmbtest._tcp.local."
+        reconfirm.assert_called_once_with(0x800, 0xFFFFFFFF, fullname, 16, 1, 10, b"\x03a=1\x05b=x y")
+    finally:
+        registration.terminate()
+        registration.wait()

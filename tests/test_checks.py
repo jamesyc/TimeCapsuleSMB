@@ -23,6 +23,7 @@ if str(SRC_ROOT) not in sys.path:
 import subprocess
 
 from timecapsulesmb.checks.bonjour import (
+    DOCTOR_SERVICE_TYPES,
     build_expected_smb_instance,
     build_bonjour_expected_identity,
     check_bonjour_host_ip,
@@ -2103,7 +2104,11 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", return_value=(snapshot, diagnostics)) as discover_mock:
             result, error, result_diagnostics = discover_smb_services_detailed(timeout=3.5, include_related=True)
 
-        discover_mock.assert_called_once_with(None, timeout=3.5, target_ip=None, family=None, interfaces=None)
+        # Every related service but _afpovertcp, whose only extra finds are cached
+        # copies of an AFP service the device no longer advertises.
+        discover_mock.assert_called_once_with(None, timeout=3.5, target_ip=None, family=None, interfaces=None,
+                                              service_types=["_airport._tcp.local.", "_smb._tcp.local.",
+                                                             "_adisk._tcp.local.", "_device-info._tcp.local."])
         self.assertIs(result, snapshot)
         self.assertIsNone(error)
         self.assertIs(result_diagnostics, diagnostics)
@@ -2129,7 +2134,8 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", return_value=(snapshot, diagnostics)) as discover_mock:
             result, error, result_diagnostics = discover_smb_services_detailed(timeout=3.5, include_related=True, target_ip="10.0.1.77")
 
-        discover_mock.assert_called_once_with(None, timeout=3.5, target_ip="10.0.1.77", family=None, interfaces=None)
+        discover_mock.assert_called_once_with(None, timeout=3.5, target_ip="10.0.1.77", family=None, interfaces=None,
+                                              service_types=DOCTOR_SERVICE_TYPES)
         self.assertIs(result, snapshot)
         self.assertIsNone(error)
         self.assertIs(result_diagnostics, diagnostics)

@@ -55,6 +55,18 @@ def block_real_keep_awake(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
 
 
 @pytest.fixture(autouse=True)
+def block_real_adisk_recheck(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    # A verified start makes this Mac re-check its cached Bonjour record for the
+    # device over SSH and through libSystem. Tests skip that unless marked
+    # real_adisk_recheck; recheck_cached_adisk's own tests pass it fakes.
+    if request.node.get_closest_marker("real_adisk_recheck") is None:
+        monkeypatch.setattr("timecapsulesmb.services.runtime_verification.recheck_cached_adisk",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("timecapsulesmb.discovery.native_dns_sd._reconfirm_record", lambda: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def block_real_acp_connections(monkeypatch: pytest.MonkeyPatch):
     # Every reboot now talks to the device's AirPort ACP over the network.
     # Tests use tests.reboot_support.FakeAcpDevice, or patch the socket the ACP

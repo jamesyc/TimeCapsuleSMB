@@ -9,11 +9,14 @@ from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_MISSING_ERROR,
     ManagedRuntimeProbeResult,
+    RuntimeNamingIdentityProbeResult,
     limit_remote_log_tail,
     probe_managed_runtime_conn,
+    probe_remote_runtime_naming_identity_conn,
     read_runtime_log_tails_conn,
     runtime_payload_missing,
 )
+from timecapsulesmb.discovery.bonjour import BonjourQuery, BonjourServiceInstance
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -60,6 +63,7 @@ def verify_managed_runtime_ready(
     for line in render_managed_runtime_verification(verification, heading=heading):
         callbacks.message(line)
     if verification.ready:
+        recheck_cached_adisk(connection, callbacks, stage=stage)
         return verification
 
     detail = verification.detail.strip()
@@ -73,6 +77,53 @@ def verify_managed_runtime_ready(
     if detail:
         failure_message = f"{failure_message.rstrip()} {detail}"
     raise DeviceError(failure_message)
+
+
+def recheck_cached_adisk(
+    connection: SshConnection,
+    callbacks: OperationCallbacks,
+    *,
+    stage: str,
+    read_identity: Callable[[SshConnection], RuntimeNamingIdentityProbeResult] = probe_remote_runtime_naming_identity_conn,
+    query: Callable[[], BonjourQuery] = BonjourQuery,
+) -> None:
+    """Have this computer re-check its cached copy of the device's _adisk record.
+
+    A Mac that missed the device's announcements after this start keeps the
+    TXT it had before for up to 75 minutes: Apple's own, which advertises AFP,
+    after an install, or ours from before the AFP setting changed. Time Machine
+    on macOS 26.x/27 hides a Time Capsule that advertises AFP. mDNSResponder
+    drops a copy the device no longer confirms a few seconds later.
+
+    The name is the one Apple derives from the device name. After a name
+    conflict mDNSResponder registers the service as "Name (2)" instead, and a
+    cached copy under that name is not re-checked here; discoveryd announces
+    the renamed registration again later (registrant.c, reannounce()).
+
+    Best effort: it never fails the operation. The measurement rides on the
+    operation's event, successful ones included, and says what happened:
+    rechecked, refused (mDNSResponder would not re-check the copies it has),
+    nothing_cached, unsupported (no system cache this computer can re-check),
+    unnamed (a device name over 63 bytes, which Apple replaces with a name of
+    its own), name_unreadable (acp printed no device name) or error."""
+    started = time.monotonic()
+    fields: dict[str, object] = {"stage": stage}
+    try:
+        identity = read_identity(connection)
+        name = identity.mdns_instance_name
+        counts = query().recheck_cached_txt(BonjourServiceInstance("_adisk._tcp.local.", name, "")) if name else None
+        if not name:
+            # acp prints a failed read on stderr and exits 0, which leaves the
+            # name empty, the same as an unset one.
+            fields["result"] = "unnamed" if identity.system_name else "name_unreadable"
+        elif counts is None:
+            fields["result"] = "unsupported"
+        else:
+            result = "rechecked" if counts[1] else "refused" if counts[0] else "nothing_cached"
+            fields.update(result=result, copies=counts[0], rechecked=counts[1])
+    except Exception as exc:
+        fields.update(result="error", error=system_exit_message(exc)[:200])
+    callbacks.measurement("adisk_cache_recheck", **fields, duration_sec=round(time.monotonic() - started, 3))
 
 
 def _runtime_verification_measurement(

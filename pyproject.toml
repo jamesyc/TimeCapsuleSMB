@@ -97,6 +97,7 @@ pythonpath = [".", "src"]
 addopts = "-ra"
 markers = [
   "real_keep_awake: may start a real caffeinate child instead of the no-op that tests get by default",
+  "real_adisk_recheck: may re-check this Mac's cached Bonjour records instead of the no-op that tests get by default",
 ]
 
 [tool.ruff]

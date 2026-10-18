@@ -26,6 +26,19 @@ enum reg_status { REG_PENDING, REG_REGISTERED, REG_CONFLICT, REG_DEGRADED };
 #ifndef REG_PENDING_TIMEOUT_MS
 #define REG_PENDING_TIMEOUT_MS 10000
 #endif
+/* The _adisk TXT is announced again this long after it registers (see
+ * reannounce() in registrant.c). */
+#ifndef REG_REANNOUNCE_FIRST_MS
+#define REG_REANNOUNCE_FIRST_MS (5LL * 60 * 1000)
+#endif
+#ifndef REG_REANNOUNCE_SECOND_MS
+#define REG_REANNOUNCE_SECOND_MS (20LL * 60 * 1000)
+#endif
+#if REG_REANNOUNCE_SECOND_MS <= REG_REANNOUNCE_FIRST_MS
+#error "REG_REANNOUNCE_SECOND_MS must come after REG_REANNOUNCE_FIRST_MS"
+#endif
+/* mDNSResponder's kStandardTTL: what DNSServiceRegister gives a TXT record. */
+#define REG_TXT_TTL 4500u
 
 struct reg_desired {
     unsigned ifindex;
@@ -40,6 +53,9 @@ struct reg_entry {
     enum reg_status status;
     long long pending_until_ms;    /* initial callback deadline, 0 otherwise */
     int polled;                    /* ref's socket is in the current select() set */
+    long long reannounce_at_ms;    /* next _adisk TXT re-announcement, 0 = none due */
+    int reannounces;               /* re-announcements attempted for this ref */
+    uint32_t txt_ttl;              /* TTL mDNSResponder last accepted for the TXT */
 };
 
 struct registrant {

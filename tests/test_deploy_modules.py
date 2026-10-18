@@ -90,6 +90,7 @@ from timecapsulesmb.device.processes import (
     render_process_present_by_ucomm,
 )
 from timecapsulesmb.device.probe import (
+    RuntimeNamingIdentityProbeResult,
     DISCOVERY_UNREADABLE,
     DISKD_UNREADABLE,
     DISK_PAYLOAD_MISSING_ERROR,
@@ -147,6 +148,7 @@ from timecapsulesmb.services.deploy import (
     upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.runtime_verification import (
+    recheck_cached_adisk,
     verify_managed_runtime_ready,
 )
 from timecapsulesmb.transport.errors import SshUploadTimeout
@@ -3161,6 +3163,89 @@ describe_managed_smbd_status "" ""
         self.assertTrue(result.ready)
         missing.assert_not_called()
         self.assertFalse(runtime_payload_missing(result))
+
+    def test_verify_managed_runtime_ready_rechecks_this_macs_adisk_copy_only_after_a_ready_runtime(self) -> None:
+        connection = SshConnection("host", "pw", "")
+        for ready in (True, False):
+            with self.subTest(ready=ready):
+                verification = ManagedRuntimeProbeResult(
+                    ready=ready, detail="ready" if ready else "smbd missing",
+                    smbd=readiness_result(ready, "smbd", ()), mdns=readiness_result(ready, "mdns", ()),
+                )
+                callbacks = OperationCallbacks()
+                with mock.patch("timecapsulesmb.services.runtime_verification.recheck_cached_adisk") as recheck:
+                    try:
+                        verify_managed_runtime_ready(
+                            connection, callbacks=callbacks, stage="verify_runtime_reboot", timeout_seconds=240,
+                            heading="Runtime verification:", failure_message="not ready",
+                            probe_runtime=mock.Mock(return_value=verification), read_runtime_logs=mock.Mock(return_value={}),
+                        )
+                    except DeviceError:
+                        self.assertFalse(ready)
+                if ready:
+                    recheck.assert_called_once_with(connection, callbacks, stage="verify_runtime_reboot")
+                else:
+                    recheck.assert_not_called()
+
+    def _recheck(self, *, system_name="Home", name="Home", answer=None, read_error=None, recheck_error=None):
+        identity = RuntimeNamingIdentityProbeResult(system_name, "home", name, "home", "HOME", "ok")
+        read_identity = mock.Mock(return_value=identity, side_effect=read_error)
+        query = mock.Mock()
+        query.return_value.recheck_cached_txt.return_value = answer
+        query.return_value.recheck_cached_txt.side_effect = recheck_error
+        measurements: list[tuple[str, dict[str, object]]] = []
+        debug: dict[str, object] = {}
+        callbacks = OperationCallbacks(record_execution_measurement=lambda kind, **f: measurements.append((kind, f)),
+                                       add_debug_fields=lambda **f: debug.update(f))
+        recheck_cached_adisk(SshConnection("host", "pw", ""), callbacks, stage="verify_runtime_activation",
+                             read_identity=read_identity, query=query)
+        (kind, fields), = measurements
+        self.assertEqual(kind, "adisk_cache_recheck")
+        self.assertEqual(fields["stage"], "verify_runtime_activation")
+        self.assertIsInstance(fields["duration_sec"], float)
+        # Everything rides on the measurement, which successful operations send too.
+        self.assertEqual(debug, {})
+        return fields, query
+
+    def test_recheck_cached_adisk_asks_this_mac_to_recheck_the_devices_record(self) -> None:
+        for answer, expected in (
+            ((2, 2), {"result": "rechecked", "copies": 2, "rechecked": 2}),
+            ((1, 0), {"result": "refused", "copies": 1, "rechecked": 0}),
+            ((0, 0), {"result": "nothing_cached", "copies": 0, "rechecked": 0}),
+            # No system cache this computer can re-check (Linux, or no libSystem call).
+            (None, {"result": "unsupported"}),
+        ):
+            with self.subTest(answer=answer):
+                fields, query = self._recheck(answer=answer)
+                (instance,), _ = query.return_value.recheck_cached_txt.call_args
+                self.assertEqual((instance.service_type, instance.name), ("_adisk._tcp.local.", "Home"))
+                self.assertEqual({key: fields.get(key) for key in ("result", "copies", "rechecked")},
+                                 {"copies": None, "rechecked": None, **expected})
+
+    def test_recheck_cached_adisk_skips_a_name_apple_replaces_with_its_own(self) -> None:
+        # A device name over 63 bytes gives no instance name to look up.
+        fields, query = self._recheck(system_name="N" * 64, name=None)
+        self.assertEqual(fields["result"], "unnamed")
+        query.assert_not_called()
+
+    def test_recheck_cached_adisk_tells_an_unread_device_name_from_a_replaced_one(self) -> None:
+        # acp exits 0 when it cannot read syNm, so the probe sees no name at all.
+        for system_name in (None, ""):
+            with self.subTest(system_name=system_name):
+                fields, query = self._recheck(system_name=system_name, name=None)
+                self.assertEqual(fields["result"], "name_unreadable")
+                query.assert_not_called()
+
+    def test_recheck_cached_adisk_records_a_failure_and_never_fails_the_operation(self) -> None:
+        for read_error, recheck_error, message in (
+            (RuntimeError("could not read runtime naming identity: rc=255"), None, "rc=255"),
+            (None, RuntimeError("Bonjour query error -65555"), "-65555"),
+            (None, PermissionError("Bonjour query error -65570"), "-65570"),
+        ):
+            with self.subTest(message=message):
+                fields, _query = self._recheck(read_error=read_error, recheck_error=recheck_error)
+                self.assertEqual(fields["result"], "error")
+                self.assertIn(message, fields["error"])
 
     def test_verify_managed_runtime_ready_raises_the_payload_code_only_for_a_missing_payload(self) -> None:
         def verify(verification: ManagedRuntimeProbeResult) -> None:

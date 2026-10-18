@@ -105,14 +105,49 @@ def run_case_result(name, *args):
     return subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=10)
 
 
-def test_callback_deadline_origin_and_backoff_rounds(tmp_path):
+@pytest.fixture(scope="module")
+def registrant_timing(tmp_path_factory):
+    """The real registrant on a virtual clock (unit/test_registrant_timing.c),
+    with the production re-announcement schedule."""
     source = Path(__file__).parent / 'unit/test_registrant_timing.c'
-    binary = compile_service(tmp_path / 'registrant-timing', exclude=('registrant.c', 'entry.c'),
-                             extra_sources=(source,), flags=('-I', str(Path(__file__).resolve().parents[2] / 'build/native'),
-                                 '-DREG_BACKOFF_MIN_MS=200', f'-DREG_BACKOFF_MAX_MS={REG_BACKOFF_MAX_MS}',
-                                 f'-DREG_PENDING_TIMEOUT_MS={REG_PENDING_TIMEOUT_MS}'))
-    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+    return compile_service(tmp_path_factory.mktemp('registrant-timing') / 'registrant-timing',
+                           exclude=('registrant.c', 'entry.c'), extra_sources=(source,),
+                           flags=('-I', str(Path(__file__).resolve().parents[2] / 'build/native'),
+                                  '-DREG_BACKOFF_MIN_MS=200', f'-DREG_BACKOFF_MAX_MS={REG_BACKOFF_MAX_MS}',
+                                  f'-DREG_PENDING_TIMEOUT_MS={REG_PENDING_TIMEOUT_MS}'))
+
+
+def run_timing(binary, scenario):
+    result = subprocess.run([str(binary), scenario], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_callback_deadline_origin_and_backoff_rounds(registrant_timing):
+    run_timing(registrant_timing, "callbacks")
+
+
+def test_adisk_txt_is_announced_again_5_and_20_minutes_after_it_registers(registrant_timing):
+    # TTL 4499 then 4500, counted from the callback; a late wake keeps the gap;
+    # nothing for _smb and nothing after the second.
+    run_timing(registrant_timing, "reannounce-schedule")
+
+
+def test_a_registration_that_keeps_conflicting_is_never_announced_again(registrant_timing):
+    run_timing(registrant_timing, "reannounce-conflicts")
+
+
+def test_each_new_adisk_registration_starts_the_reannouncements_over(registrant_timing):
+    # After a lost daemon connection, a plan that drops and re-adds _adisk,
+    # and a changed TXT; the replaced registration's due ones never go out.
+    run_timing(registrant_timing, "reannounce-restart")
+
+
+def test_a_rejected_first_reannouncement_still_lets_the_second_announce(registrant_timing):
+    run_timing(registrant_timing, "reannounce-rejected")
+
+
+def test_the_wait_never_ends_for_a_reannouncement_that_would_not_be_sent(registrant_timing):
+    run_timing(registrant_timing, "reannounce-deadline")
 
 
 def test_registrant_keeps_shared_txt_state_below_device_budget():
@@ -749,3 +784,98 @@ def test_print_link_plan_and_bad_share_arguments(rig):
     # Removed options are usage errors: the service binary carries no version of its own.
     for removed in (["--version"], ["--instance", "x"]):
         assert subprocess.run([str(binary), "discovery", *removed], capture_output=True, text=True, timeout=10).returncode == 3
+
+
+# The re-announcement schedule, shortened from 5 and 20 minutes so the
+# daemon IPC can be checked; registrant_timing pins the real schedule.
+REANNOUNCE_FIRST_MS = 600
+REANNOUNCE_SECOND_MS = 1400
+
+
+@pytest.fixture(scope="module")
+def reannounce_rig():
+    root = Path(tempfile.mkdtemp(prefix="tcdnssd"))
+    sock = root / "mDNSResponder"
+    binary = compile_service(root / "service", flags=[
+        f'-DMDNS_UDS_SERVERPATH="{sock}"', f"-DTC_PLAN_POLL_MS={TC_PLAN_POLL_MS}", "-DREG_BACKOFF_MIN_MS=200",
+        f"-DREG_BACKOFF_MAX_MS={REG_BACKOFF_MAX_MS}", f"-DREG_PENDING_TIMEOUT_MS={REG_PENDING_TIMEOUT_MS}",
+        f"-DREG_IPC_ALARM_SECONDS={REG_IPC_ALARM_SECONDS}", "-D_DNS_SD_LIBDISPATCH=0",
+        f"-DREG_REANNOUNCE_FIRST_MS={REANNOUNCE_FIRST_MS}", f"-DREG_REANNOUNCE_SECOND_MS={REANNOUNCE_SECOND_MS}"])
+    yield root, sock, binary
+
+
+@pytest.fixture
+def reannounce_daemon(reannounce_rig):
+    _root, sock, _binary = reannounce_rig
+    fake = FakeDnssdDaemon(str(sock))
+    yield fake
+    fake.close()
+
+
+def updates(transcript, conns=None):
+    return [e for e in transcript if e["op"] == "update" and (conns is None or e["conn"] in conns)]
+
+
+def adisk_registrations(transcript):
+    return [e for e in registered(transcript) if e["regtype"].startswith("_adisk")]
+
+
+def test_reannouncements_send_the_registered_txt_to_the_registrations_own_txt_record(reannounce_rig,
+                                                                                      reannounce_daemon):
+    root, _, binary = reannounce_rig
+    daemon = reannounce_daemon
+    adv = Advertiser(binary, root, NAT_OK, *adisk_args())
+    try:
+        transcript = daemon.wait_for(lambda t: len(updates(t)) >= 2 * len(adisk_registrations(t)) > 0,
+                                     timeout=REANNOUNCE_SECOND_MS / 1000 + 5)
+        assert transcript is not None, adv.stop()
+    finally:
+        log = adv.stop()
+    adisks = adisk_registrations(transcript)
+    assert adisks
+    for adisk in adisks:
+        # On the registration's own connection, to its TXT record (no
+        # RecordRef: index 0xFFFFFFFF), with the bytes it registered; the TTL
+        # steps one second down and back to Apple's default, so each announces.
+        assert [(u["ttl"], u["txt"], u["reg_index"], u["announces"])
+                for u in updates(transcript, {adisk["conn"]})] == [
+            (4499, adisk["txt"], 0xFFFFFFFF, True), (4500, adisk["txt"], 0xFFFFFFFF, True)]
+    assert log.count("registrant: re-announce if=") == 2 * len(adisks)
+    assert "ttl=4499" in log and "ttl=4500" in log
+
+
+def test_a_rejected_reannouncement_is_logged_and_the_next_one_still_announces(reannounce_rig, reannounce_daemon):
+    root, _, binary = reannounce_rig
+    daemon = reannounce_daemon
+    daemon.update_errors = [-65539]  # kDNSServiceErr_NoMemory, for the first update only
+    adv = Advertiser(binary, root, NAT_OK, *adisk_args())
+    try:
+        transcript = daemon.wait_for(lambda t: len(updates(t)) >= 2 * len(adisk_registrations(t)) > 0,
+                                     timeout=REANNOUNCE_SECOND_MS / 1000 + 5)
+        assert transcript is not None, adv.stop()
+        assert adv.proc.poll() is None
+    finally:
+        log = adv.stop()
+    assert "re-announce failed" in log and "error=-65539" in log
+    # The rejected registration's TXT still has the default TTL, so its second
+    # update steps it down; the other link's goes down and back.
+    rejected = updates(transcript)[0]["conn"]
+    for adisk in adisk_registrations(transcript):
+        expected = [(4499, False), (4499, True)] if adisk["conn"] == rejected else [(4499, True), (4500, True)]
+        assert [(u["ttl"], u["announces"]) for u in updates(transcript, {adisk["conn"]})] == expected
+    # The registrations themselves are untouched.
+    assert not any(e["op"] == "close" for e in transcript)
+
+
+def test_an_unanswered_reannouncement_ends_in_the_ipc_stall_exit(reannounce_rig, reannounce_daemon):
+    root, _, binary = reannounce_rig
+    daemon = reannounce_daemon
+    daemon.update_errors = ["stall"]
+    adv = Advertiser(binary, root, NAT_OK, *adisk_args())
+    try:
+        assert daemon.wait_for(lambda t: updates(t), timeout=REANNOUNCE_FIRST_MS / 1000 + 5) is not None, adv.stop()
+        adv.proc.wait(timeout=REG_IPC_ALARM_SECONDS + 5)
+        assert adv.proc.returncode == 14
+    finally:
+        log = adv.stop()
+    assert "did not answer; exiting for relaunch" in log

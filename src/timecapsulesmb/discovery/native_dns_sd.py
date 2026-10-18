@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import ctypes
 import ipaddress
 import re
 import shlex
 import subprocess
 import selectors
 import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import time
 from dataclasses import dataclass, field, replace
 
@@ -31,6 +33,44 @@ from timecapsulesmb.discovery.interfaces import interface_index_for_target
 # dns-sd's printtimestamp() writes "%2d:%02d:%02d.%03d  ": hours before 10
 # start with a space, and two spaces separate the stamp from the callback.
 _DNS_SD_TIMESTAMP = r" ?\d{1,2}:\d\d:\d\d(?:\.\d+)?"
+
+# dns-sd frames its output with LF and ASCII spaces and tabs. Names in it are
+# raw UTF-8 and may hold any other whitespace or line separator (NBSP,
+# U+2028, U+3000), so output is split on "\n" only and every pattern is
+# ASCII: Python's \s, \S, \d, str.split() and str.splitlines() would split
+# a name or misread its digits.
+_ASCII = re.ASCII
+# A browse (-B), address (-G) or record (-Q) callback row: timestamp, Add or
+# Rmv, flags, an optional one-letter validation column some dns-sd versions
+# print, then the interface. `rest` holds the operation's own columns.
+_CALLBACK_ROW = re.compile(
+    rf"{_DNS_SD_TIMESTAMP}[ \t]+(Add|Rmv)[ \t]+([0-9A-Fa-f]+)[ \t]+(?:[A-Za-z?+-][ \t]+)?(-?\d+)[ \t]+(.*)",
+    _ASCII | re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class _CallbackRow:
+    action: str
+    flags: str
+    interface_index: int
+    rest: str
+
+
+def _dns_sd_lines(stdout: str) -> list[str]:
+    return [line.removesuffix("\r") for line in stdout.split("\n")]
+
+
+def _parse_callback_row(line: str) -> _CallbackRow | None:
+    match = _CALLBACK_ROW.fullmatch(line)
+    if match is None:
+        return None
+    action, flags, interface_index, rest = match.groups()
+    return _CallbackRow(action.capitalize(), flags, int(interface_index), rest)
+
+
+def _ascii_fields(text: str) -> list[str]:
+    return [field for field in re.split(r"[ \t]+", text) if field]
 
 
 @dataclass
@@ -113,24 +153,22 @@ def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[Na
     events: list[NativeDnsSdServiceEvent] = []
     unparsed: list[str] = []
     # dns-sd prints LF records; Unicode line separators belong to service labels.
-    for line in stdout.split("\n"):
-        line = line.removesuffix("\r")
-        stripped = line.strip()
+    for line in _dns_sd_lines(stdout):
+        stripped = line.strip(" \t")
         if (
             # Apple timestamps every callback; preamble lines ("Using interface N"
             # with -i, "Browsing for", "DATE:", the column header) never are. dns-sd
             # prints labels raw, so text after a newline inside a label is dropped
             # here too: counting it would need per-stream state for a hostile name.
-            not re.match(rf"{_DNS_SD_TIMESTAMP}[ \t]", line)
-            or re.fullmatch(rf"{_DNS_SD_TIMESTAMP}[ \t]+\.\.\.STARTING\.\.\.", stripped)
+            not re.match(rf"{_DNS_SD_TIMESTAMP}[ \t]", line, _ASCII)
+            or re.fullmatch(rf"{_DNS_SD_TIMESTAMP}[ \t]+\.\.\.STARTING\.\.\.", stripped, _ASCII)
         ):
             continue
-        prefix = re.match(rf"^{_DNS_SD_TIMESTAMP}[ \t]+(Add|Rmv)[ \t]+([0-9A-Fa-f]+)[ \t]+(-?\d+)[ \t]+", line)
-        if prefix is None:
+        row = _parse_callback_row(line)
+        if row is None:
             unparsed.append(line)
             continue
-        action, flags, iface = prefix.groups()
-        remainder = line[prefix.end():].encode("utf-8")
+        remainder = row.rest.encode("utf-8")
         fields = []
         # Apple's %-20s fields pad UTF-8 bytes. Consume only that padding and
         # the single separator, so even a leading space/tab remains in the label.
@@ -151,9 +189,9 @@ def _parse_dns_sd_browse_output(service_type: str, stdout: str) -> tuple[list[Na
         events.append(
             NativeDnsSdServiceEvent(
                 service_type=observed_service_type.rstrip(".") or service_type,
-                action=action,
-                interface_index=int(iface),
-                flags=flags,
+                action=row.action,
+                interface_index=row.interface_index,
+                flags=row.flags,
                 domain=domain,
                 # Browse replies print the raw instance label, not an escaped DNS fullname.
                 name=remainder.decode("utf-8"),
@@ -264,7 +302,8 @@ def _command_error(stdout: str, stderr: str, exit_code: int | None, stopped: boo
     callback = rf"(?:{timestamp}\s+)?Error code\s+(-\d+)\s*"
     startup = r"DNSService[A-Za-z]+(?:\(\))?\s+(?:failed|returned)\s+(-\d+)(?:\s+\(Service Not Running\))?\s*"
     resolve = rf"{timestamp}\s+.+\._[^.\s]+\._(?:tcp|udp)\.\S+\.\s+error code\s+(-\d+)(?:\s+Flags:\s+[0-9A-F]+)?\s*"
-    addresses = rf"{timestamp}\s+(?:Add|Rmv)\s+[0-9A-F]+\s+(?:[A-Za-z?+-]\s+)?\d+\s+\S+\s+\S+\s+\d+\s+Error code\s+(-\d+)\s*"
+    # An address callback's own columns: hostname, address, TTL, then the error.
+    address_error = r"\S+\s+\S+\s+\d+\s+Error code\s+(-\d+)\s*"
     codes: list[int] = []
     for output, is_stderr in ((stdout, False), (stderr, True)):
         # A Unicode separator inside a browse label cannot turn the label's
@@ -274,14 +313,17 @@ def _command_error(stdout: str, stderr: str, exit_code: int | None, stopped: boo
             # A live stream may end in half a callback; classification waits for its newline.
             if exit_code is None and index == len(lines) - 1 and not raw_line.endswith("\r"):
                 continue
-            line = raw_line.strip() if is_stderr else raw_line.rstrip("\r\n")
-            match = re.fullmatch(callback, line, re.I)
-            if match is None:
-                # Match actual callback positions. A browse name, successful target,
-                # lookup header or TXT string is data, even if it contains an error code.
-                pattern = startup if is_stderr else resolve if operation == "-L" else addresses if operation == "-G" else None
-                if pattern is not None:
-                    match = re.fullmatch(pattern, line, re.I)
+            line = raw_line.strip(" \t\r") if is_stderr else raw_line.rstrip("\r\n")
+            match = re.fullmatch(callback, line, re.I | _ASCII)
+            # Match actual callback positions. A browse name, successful target,
+            # lookup header or TXT string is data, even if it contains an error code.
+            if match is None and is_stderr:
+                match = re.fullmatch(startup, line, re.I | _ASCII)
+            elif match is None and operation == "-L":
+                match = re.fullmatch(resolve, line, re.I | _ASCII)
+            elif match is None and operation == "-G":
+                row = _parse_callback_row(line)
+                match = re.fullmatch(address_error, row.rest, re.I | _ASCII) if row is not None else None
             if match is not None:
                 codes.append(int(match.group(1)))
     if -65570 in codes:
@@ -341,23 +383,23 @@ def _parse_reached_line(line: str) -> tuple[str, str, int, int | None] | None:
     # dns-sd escapes ASCII spaces and controls in a fullname (\032), so every
     # ASCII space after the timestamp is framing. A fullname may still start
     # with an unescaped NBSP or contain other Unicode whitespace.
-    fullname = re.sub(rf"^{_DNS_SD_TIMESTAMP}[ \t]+", "", left, count=1)
+    fullname = re.sub(rf"^{_DNS_SD_TIMESTAMP}[ \t]+", "", left, count=1, flags=_ASCII)
 
-    host_port = right.split(" (", 1)[0].strip()
+    host_port = right.split(" (", 1)[0].strip(" \t\r")
     if ":" not in host_port:
         return None
     host, port_text = host_port.rsplit(":", 1)
-    try:
-        port = int(port_text)
-    except ValueError:
+    # int() would also take non-ASCII digits.
+    if not re.fullmatch(r"\d+", port_text, _ASCII):
         return None
+    port = int(port_text)
 
     interface_index = None
-    interface_match = re.search(r"\(interface\s+(\d+)\)", right)
+    interface_match = re.search(r"\(interface\s+(\d+)\)", right, _ASCII)
     if interface_match:
         interface_index = int(interface_match.group(1))
 
-    return _decode_dns_sd_text(fullname), _decode_dns_sd_text(host.strip().rstrip(".")), port, interface_index
+    return _decode_dns_sd_text(fullname), _decode_dns_sd_text(host.strip(" \t").rstrip(".")), port, interface_index
 
 
 def _decode_dns_sd_text(value: str) -> str:
@@ -392,13 +434,13 @@ def _decode_dns_sd_txt_field(value: str) -> str:
 def _parse_dns_sd_txt_output(stdout: str) -> dict[str, str]:
     properties: dict[str, str] = {}
     reached_service = False
-    for line in stdout.split("\n"):
+    for line in _dns_sd_lines(stdout):
         # A trailing escaped space is part of the TXT value, not line padding.
-        stripped = line.lstrip()
+        stripped = line.lstrip(" \t")
         if _parse_reached_line(stripped) is not None:
             reached_service = True
             continue
-        if not reached_service or not stripped.strip():
+        if not reached_service or not stripped.strip(" \t"):
             continue
         # dns-sd prints each TXT string as key=value after the SRV target line
         # and backslash-escapes whitespace inside values.
@@ -420,8 +462,8 @@ def _parse_dns_sd_lookup_output(
     stdout: str,
 ) -> tuple[str, str, int, int | None, dict[str, str]]:
     properties = _parse_dns_sd_txt_output(stdout)
-    for line in stdout.split("\n"):
-        parsed = _parse_reached_line(line.removesuffix("\r"))
+    for line in _dns_sd_lines(stdout):
+        parsed = _parse_reached_line(line)
         if parsed is not None:
             return (*parsed, properties)
     return f"{name}.{_dns_sd_service_type_domain(service_type)}", "", 0, None, properties
@@ -448,27 +490,23 @@ def _parse_dns_sd_address_observations(
     """Only include families with callbacks; silence is not a negative answer."""
     observed: dict[int, list[str]] = {}
     replaced: set[int] = set()
-    for line in stdout.splitlines():
-        fields = line.split()
-        if len(fields) < 7 or fields[1].lower() not in {"add", "rmv"}:
+    for row in map(_parse_callback_row, _dns_sd_lines(stdout)):
+        # Hostname, address, TTL, then any error. dns-sd escapes ASCII spaces
+        # in the hostname, so ASCII fields frame it.
+        fields = _ascii_fields(row.rest) if row is not None else []
+        if row is None or len(fields) < 3 or row.interface_index < 0:
             continue
-        # Some dns-sd versions print a validation-status column before the interface.
-        offset = 0 if fields[3].isdigit() else 1
-        if len(fields) < 7 + offset:
-            continue
-        index_text, address = fields[3 + offset], fields[5 + offset]
-        if not index_text.isdigit():
-            continue
+        address, tail = fields[1], fields[3:]
         try:
             version = ipaddress.ip_address(address.split("%", 1)[0]).version
         except ValueError:
             continue  # <error> has no address family; it cannot invalidate either one.
-        if fields[7 + offset:]:
-            if fields[7 + offset:] in (["No", "Such", "Record"], ["Error", "code", "-65554"]):
+        if tail:
+            if tail in (["No", "Such", "Record"], ["Error", "code", "-65554"]):
                 observed[version] = []
                 replaced.add(version)
             continue
-        index = int(index_text)
+        index = row.interface_index
         if index and is_link_local_ipv6(address) and "%" not in address:
             address = scoped_ip_literal(address, scope_id=index) or address
         values: list[str] = []
@@ -476,7 +514,7 @@ def _parse_dns_sd_address_observations(
         if not values:
             continue
         address = values[0]
-        if fields[1].lower() == "add":
+        if row.action == "Add":
             if version not in replaced:
                 observed[version] = []
                 replaced.add(version)
@@ -699,3 +737,73 @@ def resolve_service_instance_detailed(instance: BonjourServiceInstance, timeout_
     errors = {"query": result.error} if result.error and result.error != "Bonjour service target has not resolved" else {}
     return record, BonjourQueryDiagnostics("dns-sd", [instance.service_type], timeout_ms / 1000,
         round(time.monotonic() - start, 3), 0, int(record is not None), details=result, errors=errors)
+
+
+# DNSServiceReconfirmRecord comes from libSystem, the client of the
+# mDNSResponder that dns-sd talks to. It is a plain call, with no callback
+# memory for the hardened runtime to refuse.
+_LIBSYSTEM = "/usr/lib/libSystem.B.dylib"
+# dns_sd.h documents this flag as removing the copy at once. On macOS 26.6 it
+# made no difference: the copy went 2.6-6.3 s later with or without it.
+_FLAGS_FORCE = 0x800
+_RRTYPE_TXT = 16
+_RRCLASS_IN = 1
+# A dns-sd -Q answer's own columns: the name, then type, class and the record
+# bytes in hex. Only the fixed columns at the end are read.
+_TXT_ANSWER = re.compile(r".+?[ \t]+TXT[ \t]+IN[ \t]+\d+ bytes:((?: [0-9A-Fa-f]{2})+)[ \t]*", _ASCII)
+
+
+def _reconfirm_record() -> Callable[..., int] | None:
+    # Linux dns-sd installs may sit on Avahi's compatibility library, which has
+    # no reconfirm; its cache is left alone.
+    if sys.platform != "darwin":
+        return None
+    try:
+        reconfirm = ctypes.CDLL(_LIBSYSTEM).DNSServiceReconfirmRecord
+    except (OSError, AttributeError):
+        return None
+    reconfirm.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint16,
+                          ctypes.c_uint16, ctypes.c_uint16, ctypes.c_char_p]
+    reconfirm.restype = ctypes.c_int32
+    return reconfirm
+
+
+def recheck_cached_txt(instance: BonjourServiceInstance, *,
+                       cancel: threading.Event | None = None) -> tuple[int, int] | None:
+    """Ask mDNSResponder to re-check this computer's cached TXT for `instance`.
+
+    mDNSResponder keeps a TXT answer for its TTL (4500 s for an AirPort). A copy
+    whose replacement announcement this computer missed, such as the device's
+    own record from before TimeCapsuleSMB was installed, lasts that long.
+    Asked to reconfirm it, mDNSResponder queries the network and drops the copy
+    a few seconds later (2.6-6.3 s on macOS 26.6) unless an answer refreshes it,
+    so the next lookup gets the device's current record. Does not wait for
+    that.
+
+    Returns (copies cached, copies it agreed to re-check), or None where this
+    system cannot re-check: not macOS, or libSystem without the call. Raises
+    when dns-sd reports an error, so a failure never reads as nothing cached."""
+    reconfirm = _reconfirm_record()
+    if reconfirm is None:
+        return None
+    service_type = _normalize_dns_sd_service_type(instance.service_type)
+    domain = instance.service_type[len(service_type):].strip(".") or "local"
+    label = instance.name.replace("\\", "\\\\").replace(".", "\\.")
+    # The record's name is this one query string: DNSServiceReconfirmRecord
+    # parses it as DNSServiceQueryRecord did, so the printed name is never read.
+    fullname = f"{label}.{service_type}.{domain}."
+    # -m ends after the first batch, which a cached copy answers at once.
+    stdout, _stderr, _code, _stopped, error = _run_dns_sd_command(
+        ["dns-sd", "-m", "-Q", fullname, "TXT", "IN"], timeout_sec=1.0,
+        owner=_ProcessOwner(cancel or threading.Event()),
+    )
+    if error:
+        raise RuntimeError(error)
+    answers = [(row.interface_index, bytes.fromhex(match.group(1)))
+               for row in map(_parse_callback_row, _dns_sd_lines(stdout))
+               if row is not None and row.action == "Add" and (match := _TXT_ANSWER.fullmatch(row.rest))]
+    rechecked = 0
+    for interface_index, rdata in answers:
+        rechecked += reconfirm(_FLAGS_FORCE, interface_index & 0xFFFFFFFF, fullname.encode(), _RRTYPE_TXT,
+                               _RRCLASS_IN, len(rdata), rdata) == 0
+    return len(answers), rechecked

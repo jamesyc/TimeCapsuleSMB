@@ -704,3 +704,9 @@ def resolve_service_instance_detailed(instance: BonjourServiceInstance, timeout_
              round(time.monotonic() - start, 3), 0, len(snapshot.resolved),
              errors={a.family: a.error for a in attempts if a.error}, attempts=attempts)
     return (snapshot.resolved[0] if snapshot.resolved else None), detail
+
+
+def recheck_cached_txt(instance: BonjourServiceInstance, *,
+                       cancel: threading.Event | None = None) -> tuple[int, int] | None:
+    """Each query opens its own Zeroconf, so there is no shared cache to re-check."""
+    return None

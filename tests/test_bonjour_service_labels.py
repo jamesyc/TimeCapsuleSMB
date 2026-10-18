@@ -156,6 +156,37 @@ def test_lookup_decodes_full_label_without_unicode_line_splitting(name):
     assert props == {"label": "unchanged"}
 
 
+def _address_row(hostname, address="192.0.2.10", tail="120"):
+    return f"{APPLE_STAMP}Add  40000002  14  {native_fullname(hostname, 'local.')}  {address}  {tail}\n"
+
+
+@pytest.mark.parametrize("name", LABELS)
+def test_address_rows_read_the_address_whatever_the_hostname_holds(name):
+    # dns-sd escapes ASCII spaces in the hostname and prints other whitespace raw.
+    assert native._parse_dns_sd_address_output(_address_row(name) + _address_row(name, "fd00::10")) == [
+        "192.0.2.10", "fd00::10"]
+
+
+@pytest.mark.parametrize("name", LABELS)
+def test_address_error_rows_are_errors_whatever_the_hostname_holds(name):
+    stdout = _address_row(name, "<error>", "0  Error code -65570")
+    assert native._command_error(stdout, "", 0, False, operation="-G") == "Bonjour query error -65570"
+
+
+@pytest.mark.parametrize("name", LABELS)
+def test_recheck_reads_each_cached_copy_whatever_the_name_holds(name):
+    printed = native_fullname(name, "_adisk._tcp.local.")
+    stdout = "".join(f"{APPLE_STAMP}Add  40000002  {index:>7}  {printed} TXT    IN     4 bytes: 03 61 3D 31\n"
+                     for index in (14, -1))
+    reconfirm = mock.Mock(return_value=0)
+    with mock.patch.object(native, "_reconfirm_record", return_value=reconfirm), \
+         mock.patch.object(native, "_run_dns_sd_command", return_value=(stdout, "", None, True, "")) as run:
+        assert native.recheck_cached_txt(BonjourServiceInstance("_adisk._tcp.local.", name, "")) == (2, 2)
+    # Each copy is reconfirmed under the name dns-sd was asked for.
+    queried = run.call_args.args[0][3].encode()
+    assert [c.args[1:3] for c in reconfirm.call_args_list] == [(14, queried), (0xFFFFFFFF, queried)]
+
+
 @pytest.mark.parametrize("name", [" AirPort Time\u00a0Capsule ", "\tCapsule\t", "-L", "$(echo x); &"])
 def test_parser_to_resolver_uses_exact_label_and_one_argument(name):
     event = native._parse_dns_sd_browse_output("_smb._tcp", browse_row(name))[0][0]

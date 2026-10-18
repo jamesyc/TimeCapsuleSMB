@@ -97,6 +97,11 @@ class BonjourQuery:
         return self._provider.resolve_service_instance_detailed(instance, timeout_ms,
             target_ip=target_ip, family=family, interfaces=interfaces, cancel=self.cancel)
 
+    def recheck_cached_txt(self, instance: BonjourServiceInstance) -> tuple[int, int] | None:
+        """Have this computer re-check its cached TXT for `instance`: (copies cached, copies re-checked),
+        or None where the provider has no system cache it can re-check."""
+        return self._provider.recheck_cached_txt(instance, cancel=self.cancel)
+
 
 def discover_snapshot_detailed(
     service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,

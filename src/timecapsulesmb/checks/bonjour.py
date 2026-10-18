@@ -19,6 +19,7 @@ from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     FINAL_PENDING_RESOLVE_TIMEOUT_MS,
     PRINTER_SERVICE_TYPES,
+    SERVICE_TYPES,
     SMB_SERVICE,
     discover_snapshot_detailed,
     resolve_service_instance,
@@ -89,6 +90,12 @@ def build_bonjour_expected_identity(
     )
 
 
+# Doctor reads AFP from _adisk's adVF flags. An _afpovertcp browse adds nothing
+# _smb does not check (Apple names and hosts both together) and, after AFP
+# advertising stops, only finds this computer's cached copy of it.
+DOCTOR_SERVICE_TYPES = [service_type for service_type in SERVICE_TYPES if not service_type.startswith("_afpovertcp.")]
+
+
 def discover_smb_services_detailed(
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
     *,
@@ -108,6 +115,7 @@ def discover_smb_services_detailed(
             family=family,
             interfaces=interfaces,
             **({"deadline": deadline} if deadline is not None else {}),
+            **({"service_types": DOCTOR_SERVICE_TYPES} if include_related else {}),
         )
         return snapshot, None, diagnostics
     except Exception as e:
