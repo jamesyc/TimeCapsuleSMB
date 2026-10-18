@@ -3074,7 +3074,7 @@ def read_process_snapshot_conn(connection: SshConnection) -> str:
     return proc.stdout or ""
 
 
-# The kernel limits the manager raises before every smbd start
+# The kernel limits the manager sets before every smbd start
 # (build/native/samba/runtime.h).
 KERN_LIMITS_COMMAND = "/sbin/sysctl kern.sbmax kern.maxfiles kern.maxproc"
 

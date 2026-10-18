@@ -123,7 +123,7 @@ The manager also recovers buffer-cache stalls (NetBSD kern/60584, unfixed in
 Apple's NetBSD 4 and 6 kernels; `service/bufstall.c`). `getnewbuf()` can sleep
 forever when `buf_lotsfree()` refuses a fresh buffer and every cached one is
 busy. The sleepers cannot be killed, and each new connection or job adds one
-until `fork()` reaches `kern.maxproc` (84 on both kernels) and the device stops
+until `fork()` reaches `kern.maxproc` and the device stops
 answering SSH and SMB. Nothing on the recovery path forks or starts a process:
 on each loop pass, at most once a second, the manager reads every process's
 wait message with `sysctl(KERN_PROC2)` into a static buffer. When a process

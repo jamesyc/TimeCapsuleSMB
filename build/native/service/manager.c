@@ -1484,11 +1484,11 @@ static void reconcile_roles(struct manager *m, long long now) {
          * opens and aio_fork helpers count against the system's file and
          * process tables (kern.maxfiles, kern.maxproc). */
         unsigned wanted[TC_KERN_LIMITS] = {TC_SMBD_SBMAX(m->applied_settings.config.netbsd4), TC_MAXFILES,
-                                           TC_MAXPROC};
+                                           TC_MAXPROC(m->applied_settings.config.netbsd4)};
         enum tc_kern_limit limit;
         for (limit = 0; limit < TC_KERN_LIMITS; limit++)
-            if (tc_samba_raise_kern(limit, wanted[limit]))
-                timestamped_fprintf(stderr, "manager: could not raise kern.%s to %u: %s\n",
+            if (tc_samba_set_kern(limit, wanted[limit]))
+                timestamped_fprintf(stderr, "manager: could not set kern.%s to %u: %s\n",
                                     tc_kern_limit_names[limit], wanted[limit], strerror(errno));
         if (!start_role(&m->smb, argv, log, now, 1, volume, unbounded)) {
             /* It reads the published files as it starts. */

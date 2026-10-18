@@ -130,7 +130,10 @@ while True:
 
 
 @pytest.fixture(scope='module')
-def manager_tools(tmp_path_factory):
+def manager_tools(tmp_path_factory,request):
+    # A test can pass extra compiler flags, such as -D__ARMEB__ for the
+    # big-endian NetBSD 4 build, by parametrizing this fixture indirectly.
+    extra_flags=getattr(request,'param',())
     root=tmp_path_factory.mktemp('manager-native')
     def executable(name,code):
         # Every worker's fake tools are the same file (tests/executables.py).
@@ -204,6 +207,7 @@ if not (root/'no-listener').exists():
         f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_FSTAT_PATH="{root}/fstat"',
         f'-DTC_BUFWAKE_DIR="{root}/wake"',
         *(f'-D{name}={value}' for name,value in TIMINGS.items()),
+        *extra_flags,
     ])
     return root,binary
 
@@ -320,9 +324,13 @@ def test_supervision_direct_smb_child_and_applied_discovery(manager):
             with pytest.raises(ProcessLookupError):os.kill(item['pid'],0)
 
 
-# Apple's kern. limits, and what the manager raises them to on NetBSD 6.
+# Apple's kern. limits, and what the manager sets them to on NetBSD 6 and on
+# little- and big-endian NetBSD 4. maxproc keeps user address spaces within the
+# 90 the ARM pmap allocates at boot, after each build's kernel threads.
 APPLE_KERN={'sbmax':262144,'maxfiles':1024,'maxproc':84}
-SMBD_KERN={'sbmax':2048*1024//8*9,'maxfiles':4096,'maxproc':128}
+SMBD_KERN={'sbmax':2048*1024//8*9,'maxfiles':4096,'maxproc':90}
+SMBD_KERN_NETBSD4={'sbmax':512*1024//8*9,'maxfiles':4096,'maxproc':103}
+SMBD_KERN_NETBSD4_BE={'sbmax':512*1024//8*9,'maxfiles':4096,'maxproc':99}
 
 
 def kern(root,**values):
@@ -332,42 +340,67 @@ def kern(root,**values):
 def smbd_starts(rows):return [e for e in rows if e['role']=='smbd' and e['kind']=='start']
 
 
-def test_kern_limits_are_raised_before_every_smbd_start(manager):
+def check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,rcvbuf):
     root,start,events,wait,_,_=manager
+    if netbsd4:monkeypatch.setenv('TC_TEST_NETBSD4','1')
     kern(root,**APPLE_KERN)
     start()
     smb=smbd_starts(wait(started('smbd')))[0]
-    assert {name:smb[name] for name in SMBD_KERN}=={name:str(value) for name,value in SMBD_KERN.items()}
+    assert {name:smb[name] for name in wanted}=={name:str(value) for name,value in wanted.items()}
     conf=(root/'ram/etc/smb.conf').read_text()
-    assert 'socket options = TCP_NODELAY SO_RCVBUF=2097152' in conf
+    assert f'socket options = TCP_NODELAY SO_RCVBUF={rcvbuf}' in conf
     # Something set them back while smbd ran: the restarted smbd gets them again.
     kern(root,**APPLE_KERN)
     os.kill(smb['pid'],signal.SIGKILL)
     again=smbd_starts(wait(lambda rows:len(smbd_starts(rows))==2))[1]
-    assert {name:again[name] for name in SMBD_KERN}=={name:str(value) for name,value in SMBD_KERN.items()}
+    assert {name:again[name] for name in wanted}=={name:str(value) for name,value in wanted.items()}
 
 
-def test_larger_kern_limits_are_left_alone(manager):
+@pytest.mark.parametrize('netbsd4,wanted,rcvbuf',[(False,SMBD_KERN,2097152),(True,SMBD_KERN_NETBSD4,524288)],
+                         ids=['netbsd6','netbsd4-le'])
+def test_kern_limits_are_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,rcvbuf):
+    check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,rcvbuf)
+
+
+# The big-endian NetBSD 4 build: the same manager compiled as the armeb
+# compiler compiles it, with __ARMEB__ defined.
+@pytest.mark.parametrize('manager_tools',[('-D__ARMEB__',)],indirect=True,ids=['netbsd4-be'])
+def test_big_endian_netbsd4_build_sets_its_own_maxproc(manager,monkeypatch):
+    check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,True,SMBD_KERN_NETBSD4_BE,524288)
+
+
+def test_larger_kern_limits_are_left_alone_but_maxproc_is_capped(manager):
     root,start,events,wait,_,_=manager
-    kern(root,sbmax=8388608,maxfiles=16384,maxproc=512)
+    # 128 is what an older release set; a larger maxproc can panic the kernel.
+    kern(root,sbmax=8388608,maxfiles=16384,maxproc=128)
     start()
     smb=smbd_starts(wait(started('smbd')))[0]
-    assert (smb['sbmax'],smb['maxfiles'],smb['maxproc'])==('8388608','16384','512')
+    assert (smb['sbmax'],smb['maxfiles'],smb['maxproc'])==('8388608','16384','90')
     assert 'kern.' not in runtime_log(root)
 
 
 @pytest.mark.parametrize('name',['sbmax','maxfiles','maxproc'])
 @pytest.mark.parametrize('readonly,error',[(True,'Permission denied'),(False,'No such file or directory')])
-def test_smbd_starts_when_a_kern_limit_cannot_be_raised(manager,name,readonly,error):
+def test_smbd_starts_when_a_kern_limit_cannot_be_set(manager,name,readonly,error):
     root,start,events,wait,_,_=manager
     kern(root,**APPLE_KERN)
     if readonly:(root/'kern'/name).chmod(0o444)
     else:(root/'kern'/name).unlink()
     start()
     smb=smbd_starts(wait(started('smbd')))[0]
-    wait_log(root,f'manager: could not raise kern.{name} to {SMBD_KERN[name]}: {error}')
-    # The other limits are still raised.
+    wait_log(root,f'manager: could not set kern.{name} to {SMBD_KERN[name]}: {error}')
+    # The other limits are still set.
     assert all(smb[other]==str(value) for other,value in SMBD_KERN.items() if other!=name)
+
+
+def test_smbd_starts_when_a_too_high_maxproc_cannot_be_lowered(manager):
+    root,start,events,wait,_,_=manager
+    kern(root,**{**APPLE_KERN,'maxproc':128})
+    (root/'kern'/'maxproc').chmod(0o444)
+    start()
+    smb=smbd_starts(wait(started('smbd')))[0]
+    wait_log(root,'manager: could not set kern.maxproc to 90: Permission denied')
+    assert smb['maxproc']=='128' and smb['maxfiles']=='4096'
 
 
 def runtime_log(root):
@@ -2336,7 +2369,7 @@ def test_refused_raise_is_logged_once_and_wakes_nothing(manager):
     kernel(root,(4242,'getnewbuf'),readonly=True)
     until(root,lambda:f'could not set vm.bufmem_lowater to {RAISED_LOWATER}' in stderr(root))
     time.sleep(1)
-    assert stderr(root).count('could not set')==1 and wakes(root)==[]
+    assert stderr(root).count('could not set vm.bufmem_lowater')==1 and wakes(root)==[]
     kernel(root,readonly=True)
     wait(report_matches(events,'failed'))
 
@@ -2355,7 +2388,7 @@ def test_refused_restore_is_retried_until_it_works(manager):
     start();wait(started('smbd'))
     until(root,lambda:f'could not set vm.bufmem_lowater to {APPLE_LOWATER}' in stderr(root))
     time.sleep(1.5)
-    assert stderr(root).count('could not set')==1 and lowater_writes(root)==[]
+    assert stderr(root).count('could not set vm.bufmem_lowater')==1 and lowater_writes(root)==[]
     kernel(root,lowater=RAISED_LOWATER)
     until(root,lambda:lowater_writes(root)==[APPLE_LOWATER])
 

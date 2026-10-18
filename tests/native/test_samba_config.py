@@ -35,18 +35,20 @@ def render(renderer, options=None, *, inventory=None, args=()):
     return parsed
 
 
-def test_default_config_preserves_the_working_shell_settings(renderer):
-    conf = render(renderer)
+@pytest.mark.parametrize("args", [(), ("netbsd4",)])
+def test_default_config_preserves_the_working_shell_settings(renderer, args):
+    conf = render(renderer, args=args)
     global_ = conf["global"]
     assert "interfaces" not in global_
     assert "bind interfaces only" not in global_
     assert global_["fruit:model"] == "TimeCapsule6,116"
     assert global_["lock directory"] == "/mnt/Locks"
-    assert global_["cache directory"] == "/mnt/Memory/samba4/var"
+    assert global_["cache directory"] == ("/Volumes/dk2/.samba4/cache" if args else "/mnt/Memory/samba4/var")
     assert global_["log file"] == "/Volumes/dk2/.samba4/logs/log.smbd"
     assert global_["max log size"] == "128" and "log level" not in global_
     assert global_["min protocol"] == "SMB2" and global_["max protocol"] == "SMB3"
     assert global_["deadtime"] == "720" and global_["smb3 directory leases"] == "no"
+    assert global_.getint("max smbd processes") == 12
     assert global_["aio read size"] == global_["aio write size"] == "1"
     assert global_["passdb backend"].endswith("/private/smbpasswd")
     assert global_["username map"].endswith("/private/username.map")

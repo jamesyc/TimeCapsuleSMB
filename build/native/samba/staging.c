@@ -108,11 +108,13 @@ static int kern_set(enum tc_kern_limit limit, int value) {
 }
 #endif
 
-int tc_samba_raise_kern(enum tc_kern_limit limit, unsigned wanted) {
+int tc_samba_set_kern(enum tc_kern_limit limit, unsigned wanted) {
     int current;
     if (kern_get(limit, &current))
         return -1;
-    return current >= (int)wanted ? 0 : kern_set(limit, (int)wanted);
+    if (current == (int)wanted || (current > (int)wanted && limit != TC_KERN_MAXPROC))
+        return 0;
+    return kern_set(limit, (int)wanted);
 }
 
 int tc_samba_settings_read(struct tc_samba_settings *settings, const char *hostname) {

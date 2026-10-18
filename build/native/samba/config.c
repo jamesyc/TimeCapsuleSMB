@@ -41,6 +41,11 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
         return -1;
     config->netbsd4 =
         uname(&system) == 0 && !strncmp(system.sysname, "NetBSD", 6) && system.release[0] == '4';
+#ifdef TC_NATIVE_TEST
+    /* TC_TEST_NETBSD4 makes the host stand in for a NetBSD 4 device. */
+    if (getenv("TC_TEST_NETBSD4"))
+        config->netbsd4 = 1;
+#endif
     config->telemetry = boolean(&items[0], 1);
     config->rsync = boolean(&items[1], 0);
     config->internal_root = boolean(&items[2], 0);
@@ -122,8 +127,11 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
         fputs("    aio read size = 1\n    aio write size = 1\n", file);
     else
         fputs("    aio read size = 0\n    aio write size = 0\n", file);
+    /* Eight active backup clients need connection slots for replacements while
+     * their old smbds drain during durable reconnect. This counts connection
+     * children, not Macs or aio_fork helpers. */
     fprintf(file,
-            "    deadtime = 720\n    max open files = 512\n    max smbd processes = 8\n"
+            "    deadtime = 720\n    max open files = 512\n    max smbd processes = 12\n"
             "    smb3 directory leases = no\n    reset on zero vc = yes\n    fruit:aapl = yes\n"
             "    fruit:model = %s\n    fruit:nfs_aces = no\n"
             "    fruit:veto_appledouble = yes\n    fruit:wipe_intentionally_left_blank_rfork = yes\n"

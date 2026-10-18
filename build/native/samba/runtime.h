@@ -38,13 +38,27 @@
  * until it is used. */
 #define TC_MAXFILES 4096u
 /* Processes for the whole system (kern.maxproc). Apple's kernels allow 84
- * (NetBSD's 20 + 16 * maxusers with maxusers 4), about 50 of them in use at
- * idle on NetBSD 4. Each client connection adds its smbd and up to two
- * aio_fork helpers per share it uses, about 40 for eight Macs on both shares;
- * a full table fails every fork on the device, Apple's daemons' included. 128
- * covers that with room for logins and jobs, and still stops a runaway well
- * before this swapless 256 MiB device runs out of memory. */
-#define TC_MAXPROC 128u
+ * (NetBSD's 20 + 16 * maxusers with maxusers 4). Each client connection adds
+ * its smbd and up to two aio_fork helpers per share it uses, and a full table
+ * fails every fork on the device, Apple's daemons' included. The table cannot
+ * grow much past 84: the ARM pmap shares each L1 page table among 15 address
+ * spaces and allocates ceil(maxproc / 15) of them once, at boot, so these
+ * kernels hold 90 user address spaces whatever kern.maxproc says later, and
+ * the fork() that needs a 91st takes a NULL L1 and panics. fork() refuses at
+ * kern.maxproc, root included, so the limit is safe at 90 plus the processes
+ * that never take an address space. Every NetBSD 6 process but proc0 has its
+ * own: 90. NetBSD 4's kernel threads are processes on the kernel's pmap, and
+ * each NetBSD 4 build runs on Time Capsules and on AirPort Extremes, which
+ * lack the Time Capsule's fan thread and so set the build's limit. Counting
+ * only the processes that exist from boot (the physical-I/O worker starts on
+ * first use), the little-endian Extremes run 13: 103. The big-endian ones
+ * run 9 (proc0, four core kernel threads, three USB, one flash): 99. */
+#if defined(__ARMEB__)
+#define TC_NETBSD4_MAXPROC 99u
+#else
+#define TC_NETBSD4_MAXPROC 103u
+#endif
+#define TC_MAXPROC(netbsd4) ((netbsd4) ? TC_NETBSD4_MAXPROC : 90u)
 
 struct tc_runtime_config {
     int netbsd4, telemetry, rsync, internal_root, browse_compatibility;

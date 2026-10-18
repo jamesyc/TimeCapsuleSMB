@@ -19,7 +19,7 @@
  * STAT and FLAG are the kernel's values; WMESG is "-" for none. A "live" row
  * is dropped once PID no longer exists, as the kernel drops an exited one. */
 
-/* Room for every process: the manager raises kern.maxproc to 128. */
+/* Room for every process: the manager sets kern.maxproc to at most 103. */
 #define TC_PROCESS_MAX 128
 #define TC_PROC_WMESG 9 /* kernel wait messages are 8 bytes, not NUL-terminated */
 #define TC_PROC_COMM 17
