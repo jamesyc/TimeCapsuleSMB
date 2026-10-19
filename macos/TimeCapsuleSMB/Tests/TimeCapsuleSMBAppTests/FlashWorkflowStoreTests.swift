@@ -557,6 +557,31 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(presentation.message, "Flash patch write validated; manual power cycle required.")
     }
 
+    func testFlashFailureShowsInAnErrorBoxNotInTheStatusLine() async throws {
+        let failure = "refusing to patch primary because the secondary (backup) firmware bank is not a valid backup"
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "error", operation: "flash", code: "validation_failed", message: failure)
+            ])
+        ])
+        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        store.refresh(profile: profile)
+        store.backupAndInspect(password: "pw", profile: profile)
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+        store.planFlash(mode: .patch, profile: profile)
+        try await waitUntilStoreState { store.error != nil && !store.isBusy }
+
+        let error = try XCTUnwrap(store.error)
+        XCTAssertNotEqual(FlashPresentation(store: store).message, error.message)
+        XCTAssertEqual(error.diagnosticMessage, failure)
+        // The flash section's own buttons rerun each step: its box has no Retry.
+        XCTAssertFalse(RecoveryActionMapper.actions(for: error, canRetry: false).contains { $0.kind == .retry })
+    }
+
     private func storeAfterValidatedWrite(
         mode: FlashPlanMode,
         writePayload: JSONValue? = nil

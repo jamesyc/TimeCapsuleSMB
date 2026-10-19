@@ -108,7 +108,7 @@ enum OperationTimelineBuilder {
                     operation: event.operation,
                     title: stageTitle(for: event.operation, stage: event.stage),
                     detail: latestProgressDetail(forStageAt: index, in: events)
-                        ?? stageDetail(for: event.operation, stage: event.stage, fallback: event.description),
+                        ?? stageDetail(for: event.operation, stage: event.stage),
                     state: state,
                     risk: event.risk,
                     cancellable: event.cancellable,
@@ -132,7 +132,8 @@ enum OperationTimelineBuilder {
                     title: event.code == "confirmation_required"
                         ? L10n.string("timeline.error.needs_confirmation")
                         : L10n.string("timeline.error.needs_attention"),
-                    detail: event.message,
+                    // The error box beside the timeline shows what failed.
+                    detail: nil,
                     state: event.code == "confirmation_required" ? .warning : .failed,
                     risk: event.risk,
                     cancellable: event.cancellable
@@ -147,7 +148,6 @@ enum OperationTimelineBuilder {
     /// stage events has arrived.
     static func currentStageItem(
         _ stage: OperationStageState,
-        fallback: String? = nil,
         state: OperationTimelineItem.State = .running
     ) -> OperationTimelineItem {
         let long = state == .running && isLongDeviceStep(operation: stage.operation, stage: stage.stage)
@@ -155,7 +155,7 @@ enum OperationTimelineBuilder {
             id: "current:\(stage.operation):\(stage.stage)",
             operation: stage.operation,
             title: stageTitle(for: stage.operation, stage: stage.stage),
-            detail: stage.progressDetail ?? stageDetail(for: stage.operation, stage: stage.stage, fallback: fallback),
+            detail: stage.progressDetail ?? stageDetail(for: stage.operation, stage: stage.stage),
             state: state,
             risk: stage.risk,
             cancellable: stage.cancellable,
@@ -279,6 +279,9 @@ enum OperationTimelineBuilder {
         if let title = localizedStageTitle(for: operation, stage: stage) {
             return title
         }
+        if operation == "flash", let key = flashStageTitleKeys[stage] {
+            return L10n.string(key)
+        }
         switch (operation, stage) {
         case ("discover", "bonjour_discovery"):
             return L10n.string("timeline.stage.finding_devices")
@@ -337,6 +340,37 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.repairing_disk")
         case ("validate-install", "validate_install"):
             return L10n.string("timeline.stage.validating_app_bundle")
+        // Stages other operations share with Install / Update read the same.
+        case (_, "load_config"), ("configure", "load_existing_config"):
+            return L10n.string("timeline.deploy.title.load_config")
+        case (_, "resolve_connection"), ("activate", "resolve_managed_target"):
+            return L10n.string("timeline.deploy.title.resolve_managed_target")
+        case ("uninstall", "read_mast"):
+            return L10n.string("timeline.deploy.title.read_mast")
+        case ("flash", "check_compatibility"):
+            return L10n.string("timeline.deploy.title.check_compatibility")
+        case ("activate", "verify_runtime_activation"):
+            return L10n.string("timeline.deploy.title.verify_runtime_activation")
+        case ("configure", "local_network_preflight"):
+            return L10n.string("timeline.stage.checking_local_network")
+        case ("fsck", "list_fsck_volumes"):
+            return L10n.string("timeline.stage.finding_volumes")
+        case ("fsck", "mount_hfs_volumes"), ("uninstall", "mount_mast_volumes"):
+            return L10n.string("timeline.stage.mounting_volumes")
+        case ("uninstall", "verify_post_uninstall"):
+            return L10n.string("timeline.stage.verifying_uninstall")
+        case ("set-ssh", "confirm_disable_ssh"):
+            return L10n.string("timeline.stage.confirming_ssh_disable")
+        case ("set-ssh", "disable_ssh"):
+            return L10n.string("timeline.stage.disabling_ssh")
+        case (_, "resolve_paths"):
+            return L10n.string("timeline.stage.finding_app_files")
+        case ("capabilities", "summarize_capabilities"):
+            return L10n.string("timeline.stage.checking_app_components")
+        case ("version-check", "check_version"):
+            return L10n.string("timeline.stage.checking_for_updates")
+        case ("set-telemetry", "write_bootstrap"):
+            return L10n.string("timeline.stage.saving_setting")
         default:
             return stage
                 .split(separator: "_")
@@ -345,14 +379,25 @@ enum OperationTimelineBuilder {
         }
     }
 
-    static func stageDetail(for operation: String, stage: String?, fallback: String?) -> String? {
-        guard let stage else {
-            return fallback
-        }
-        if let detail = localizedStageDetail(for: operation, stage: stage) {
-            return detail
-        }
-        return fallback
+    private static let flashStageTitleKeys: [String: String] = [
+        "read_flash": "timeline.flash.read_flash",
+        "analyze_flash": "timeline.flash.analyze_flash",
+        "inspect_backup": "timeline.flash.inspect_backup",
+        "save_raw_backup": "timeline.flash.save_raw_backup",
+        "save_backup": "timeline.flash.save_backup",
+        "plan_flash": "timeline.flash.plan_flash",
+        "confirm_write": "timeline.flash.confirm_write",
+        "pre_write_validation": "timeline.flash.pre_write_validation",
+        "write_primary_bank": "timeline.flash.write_primary_bank",
+        "write_active_bank": "timeline.flash.write_active_bank",
+        "write_secondary_bank": "timeline.flash.write_secondary_bank",
+        "post_write_validation": "timeline.flash.post_write_validation"
+    ]
+
+    /// The step's translated detail; nil when it has none (the helper's
+    /// English description stays in the raw log).
+    static func stageDetail(for operation: String, stage: String?) -> String? {
+        stage.flatMap { localizedStageDetail(for: operation, stage: $0) }
     }
 
     private static func stageLocalization(for operation: String, stage: String) -> OperationStageLocalization? {

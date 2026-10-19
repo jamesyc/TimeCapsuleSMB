@@ -75,7 +75,8 @@ struct FlashPresentation: Equatable {
     @MainActor
     init(store: FlashWorkflowStore) {
         self.title = L10n.string("flash.title")
-        self.message = store.error?.message ?? store.writeResult?.localizedSummary ?? store.plan?.localizedSummary ?? store.backup?.localizedSummary ?? store.eligibilityMessage
+        // An error shows in its own box below, not in this line.
+        self.message = store.writeResult?.localizedSummary ?? store.plan?.localizedSummary ?? store.backup?.localizedSummary ?? store.eligibilityMessage
         self.stateTitle = store.state.title
         self.primaryActions = [.backupAndInspect, .planPatch, .planRestore, .writePatch, .writeRestore]
         self.secondaryActions = [.checkApple, .downloadApple]

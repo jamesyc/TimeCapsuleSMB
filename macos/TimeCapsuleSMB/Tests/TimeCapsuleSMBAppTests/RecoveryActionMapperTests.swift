@@ -159,15 +159,18 @@ final class RecoveryActionMapperTests: XCTestCase {
         L10n.apply(language: .english)
         let english = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(english.title, "AirPort password rejected")
-        XCTAssertEqual(english.errorMessage, "The AirPort admin password did not work.")
-        XCTAssertEqual(english.detail, "ACP or SSH authentication failed while configuring the device.")
+        XCTAssertEqual(english.message, "ACP or SSH authentication failed while configuring the device.")
+        XCTAssertEqual(english.details, "The AirPort admin password did not work.")
+        XCTAssertEqual(error.message, "The AirPort admin password did not work.")
         XCTAssertEqual(english.steps.first, "Re-enter the AirPort admin password.")
 
         L10n.apply(language: .simplifiedChinese)
         let chinese = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(chinese.title, "AirPort 密码被拒绝")
-        XCTAssertEqual(chinese.errorMessage, "AirPort 管理员密码无效。")
-        XCTAssertEqual(chinese.detail, "配置设备时 ACP 或 SSH 身份验证失败。")
+        XCTAssertEqual(chinese.message, "配置设备时 ACP 或 SSH 身份验证失败。")
+        // The helper's own text stays English: it is for diagnostics.
+        XCTAssertEqual(chinese.details, "The AirPort admin password did not work.")
+        XCTAssertEqual(error.message, "AirPort 管理员密码无效。")
         XCTAssertEqual(chinese.steps, ["重新输入 AirPort 管理员密码。", "确认所选设备是目标苹果设备。"])
     }
 
@@ -267,7 +270,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             let english = RecoveryGuidancePresentation(error: error)
             XCTAssertEqual(english.title, "Local Network access blocked", operation)
             XCTAssertEqual(
-                english.errorMessage,
+                error.message,
                 "macOS refused the connection to the device. TimeCapsuleSMB may not have Local Network access, or a VPN, firewall or security app may be blocking local network traffic.",
                 operation
             )
@@ -282,7 +285,8 @@ final class RecoveryActionMapperTests: XCTestCase {
             L10n.apply(language: .simplifiedChinese)
             let chinese = RecoveryGuidancePresentation(error: error)
             XCTAssertEqual(chinese.title, "本地网络访问被阻止", operation)
-            XCTAssertTrue(chinese.errorMessage.hasPrefix("macOS 拒绝了到设备的连接。"), chinese.errorMessage)
+            XCTAssertTrue(error.message.hasPrefix("macOS 拒绝了到设备的连接。"), error.message)
+            XCTAssertEqual(chinese.details, error.diagnosticMessage, operation)
         }
     }
 
@@ -343,7 +347,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         L10n.apply(language: .english)
         XCTAssertEqual(RecoveryActionMapper.actions(for: error).map(\.kind), [.retry, .copyDiagnostics])
         let guidance = RecoveryGuidancePresentation(error: error)
-        XCTAssertEqual(guidance.errorMessage, "The device isn't answering on SSH or AirPort ACP.")
+        XCTAssertEqual(error.message, "The device isn't answering on SSH or AirPort ACP.")
         XCTAssertFalse(guidance.steps.contains { $0.contains("AirPort Express") || $0.contains("Forget") })
     }
 
@@ -390,7 +394,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         let english = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(english.title, "AirPort not reachable at this address")
         XCTAssertEqual(
-            english.detail,
+            english.message,
             "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. Backups or AirPort Utility may still work even when ACP is blocked."
         )
         XCTAssertEqual(english.steps[0], "Disable VPN or security software that routes local network traffic, then try again.")
@@ -427,8 +431,8 @@ final class RecoveryActionMapperTests: XCTestCase {
         let english = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(english.title, "Reboot did not finish")
         XCTAssertEqual(
-            english.detail,
-            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again in time. It may still be booting, or it may have come back with a different IP address."
+            english.message,
+            "The installation files were copied and the restart was requested, but the device did not answer over SSH again in time. It may still be starting up, or it may have come back at a different IP address."
         )
         XCTAssertEqual(english.steps.count, 4)
         XCTAssertEqual(english.steps[1], "Make sure you are connected to the same network or Wi-Fi as the device.")
@@ -472,7 +476,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         let english = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(english.title, "Device is responding very slowly")
         XCTAssertEqual(
-            english.detail,
+            english.message,
             "The AirPort Extreme 6th generation is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry."
         )
         XCTAssertEqual(english.steps, [
@@ -484,7 +488,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         L10n.apply(language: .simplifiedChinese)
         let chinese = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(chinese.title, "设备响应非常慢")
-        XCTAssertEqual(chinese.detail, "AirPort Extreme 6th generation 响应非常慢。请重启设备。然后等待 SSH 恢复，再重试。")
+        XCTAssertEqual(chinese.message, "AirPort Extreme 6th generation 响应非常慢。请重启设备。然后等待 SSH 恢复，再重试。")
         XCTAssertEqual(chinese.steps, [
             "重启设备。",
             "等待 SSH 恢复。",
@@ -514,7 +518,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         L10n.apply(language: .simplifiedChinese)
         let chinese = RecoveryGuidancePresentation(error: error)
 
-        XCTAssertEqual(chinese.detail, fallbackMessage)
+        XCTAssertEqual(chinese.message, fallbackMessage)
     }
 
     func testRecoveryGuidancePresentationSuppressesDuplicateMessage() throws {
@@ -532,8 +536,109 @@ final class RecoveryActionMapperTests: XCTestCase {
 
         let presentation = RecoveryGuidancePresentation(error: error)
 
-        XCTAssertNil(presentation.detail)
+        XCTAssertEqual(presentation.title, "No HFS volumes found")
+        XCTAssertNil(presentation.message)
+        XCTAssertNil(presentation.details)
         XCTAssertTrue(presentation.steps.isEmpty)
+    }
+
+    func testRetryIsOfferedOnlyWhereTheScreenCanRerunTheOperation() throws {
+        let error = BackendErrorViewModel(
+            operation: "flash",
+            code: "validation_failed",
+            message: "refusing to patch primary",
+            recovery: try recoveryValue(title: "Request validation failed", actions: []).decode(BackendRecoveryPayload.self)
+        )
+
+        XCTAssertTrue(RecoveryActionMapper.actions(for: error).contains { $0.kind == .retry })
+        XCTAssertFalse(RecoveryActionMapper.actions(for: error, canRetry: false).contains { $0.kind == .retry })
+        XCTAssertTrue(RecoveryActionMapper.actions(for: error, canRetry: false).contains { $0.kind == .copyDiagnostics })
+    }
+
+    func testErrorBoxShowsGuidanceInTheAppLanguageAndTheHelpersEnglishBelow() throws {
+        let raw = "Copying the SMB payload timed out. The disk may be failing or unable to spin up."
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "payload_upload_timeout",
+            message: raw,
+            recovery: try recoveryValue(
+                title: "Copying the installation files timed out",
+                actions: ["Run “Disk Repair”.", "Connect by Ethernet.", "Replace the disk."],
+                message: "The disk may be failing.",
+                localizationKey: "deploy.payload_upload_timeout"
+            ).decode(BackendRecoveryPayload.self)
+        )
+
+        L10n.apply(language: .german)
+        let german = RecoveryGuidancePresentation(error: error)
+
+        XCTAssertEqual(german.title, "Das Kopieren der Installationsdateien hat das Zeitlimit überschritten")
+        XCTAssertTrue(german.message?.hasPrefix("Die Festplatte fällt möglicherweise aus") == true, german.message ?? "")
+        XCTAssertEqual(german.steps.first, "Führen Sie die „Festplattenreparatur“ aus.")
+        XCTAssertEqual(german.steps.count, 3)
+        // The helper's text is diagnostics: English, whatever the app language.
+        XCTAssertEqual(german.details, raw)
+        let lines = [german.title, german.message ?? ""] + german.steps
+        XCTAssertEqual(Set(lines).count, lines.count)
+    }
+
+    func testErrorBoxLeavesOutTheHelpersTextWhenTheGuidanceAlreadySaysIt() throws {
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "payload_upload_timeout",
+            message: "Copying the installation files timed out.",
+            recovery: try recoveryValue(
+                title: "Copying the installation files timed out",
+                actions: [],
+                message: "The disk may be failing.",
+                localizationKey: "deploy.payload_upload_timeout"
+            ).decode(BackendRecoveryPayload.self)
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertNil(RecoveryGuidancePresentation(error: error).details)
+
+        // Another language cannot repeat the English words, so the text shows.
+        L10n.apply(language: .german)
+        XCTAssertEqual(RecoveryGuidancePresentation(error: error).details, "Copying the installation files timed out.")
+    }
+
+    func testErrorWithoutGuidanceShowsItsOwnTextOnce() {
+        let error = BackendErrorViewModel(operation: "deploy", code: "remote_error", message: "Disk did not mount.")
+
+        let presentation = RecoveryGuidancePresentation(error: error)
+
+        XCTAssertEqual(presentation.title, "Disk did not mount.")
+        XCTAssertNil(presentation.message)
+        XCTAssertNil(presentation.details)
+    }
+
+    func testOneLineErrorUsesTheTranslatedTitleWhenNoErrorLineExists() throws {
+        let raw = "Native HFS metadata migration (copy) failed.\nphase=copy elapsed_seconds=83.371"
+        let recovery = try recoveryValue(
+            title: "The metadata migration failed",
+            actions: [],
+            localizationKey: "deploy.xattr_migration_failed"
+        ).decode(BackendRecoveryPayload.self)
+        let withGuidance = BackendErrorViewModel(
+            operation: "deploy", code: "xattr_migration_failed", message: raw, recovery: recovery
+        )
+        let withoutGuidance = BackendErrorViewModel(operation: "deploy", code: "xattr_migration_failed", message: raw)
+
+        L10n.apply(language: .german)
+        XCTAssertEqual(withGuidance.message, "Die Metadaten-Migration ist fehlgeschlagen")
+        XCTAssertEqual(withGuidance.diagnosticMessage, raw)
+        // Nothing translated describes it: the helper's text is all there is.
+        XCTAssertEqual(withoutGuidance.message, raw)
+
+        // A code's own error line still wins over the title.
+        let unreachable = BackendErrorViewModel(
+            operation: "deploy",
+            code: "device_unreachable",
+            message: "The device is not answering at 10.0.0.2.",
+            recovery: recovery
+        )
+        XCTAssertEqual(unreachable.message, L10n.string("backend.error.device_unreachable"))
     }
 
     func testDeployGuidanceUsesStructuredRecoveryInsteadOfGenericTip() throws {

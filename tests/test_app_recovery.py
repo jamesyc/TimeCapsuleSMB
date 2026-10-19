@@ -146,8 +146,8 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertEqual(recovery["retryable"], True)
         self.assertEqual(recovery["suggested_operation"], "doctor")
         self.assertEqual(recovery["action_ids"], ["run_checkup"])
-        self.assertIn("payload was uploaded", recovery["message"])
-        self.assertIn("did not accept SSH again in time", recovery["message"])
+        self.assertIn("installation files were copied", recovery["message"])
+        self.assertIn("did not answer over SSH again in time", recovery["message"])
         self.assertEqual(
             recovery["actions"],
             [

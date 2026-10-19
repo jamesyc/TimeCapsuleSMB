@@ -1194,8 +1194,14 @@ final class DashboardPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.stateTitle, "Install / Update Failed")
-        XCTAssertEqual(presentation.statusMessage, "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.")
+        // The header only states the failure; the error box below names it,
+        // with the saved English text as its details line.
+        XCTAssertEqual(presentation.statusMessage, L10n.string("install.state.deploy_failed"))
         XCTAssertEqual(presentation.error?.recovery?.title, "No HFS volumes found")
+        XCTAssertEqual(
+            presentation.error?.diagnosticMessage,
+            "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart."
+        )
         XCTAssertNil(presentation.failureGuidance)
         XCTAssertEqual(presentation.timeline?.items.first?.title, "Find Payload Volume")
         XCTAssertEqual(presentation.timeline?.items.first?.state, .failed)

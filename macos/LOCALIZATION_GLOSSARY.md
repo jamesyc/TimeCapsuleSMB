@@ -351,8 +351,11 @@ Rules that apply to one language. The vocabulary tables above cover single terms
 
 ## Error lines and recovery guidance
 
-A failed operation shows the error line `backend.error.<operation>.<code>` (or `backend.error.<code>`) and the helper's recovery guidance as `backend.recovery.<key>.title`, `.message` and `.action.N`. The key is the entry's place in `src/timecapsulesmb/app/recovery.py`: `<code>`, `<operation>.<code>` or `<operation>.<code>.<stage>`. The English catalog repeats the helper's English word for word, and every catalog has every entry with one `.action.N` per helper step; `tests/test_error_catalog.py` checks all of this.
+An error box shows the helper's recovery guidance in the app's language, `backend.recovery.<key>.title`, `.message` and `.action.N`, then the helper's own error text in English, smaller, for diagnostics; that line is left out when the guidance already says what it says. The key is the entry's place in `src/timecapsulesmb/app/recovery.py`: `<code>`, `<operation>.<code>` or `<operation>.<code>.<stage>`. The one-line error elsewhere in the app (install status, device list, flash screen, Settings) is `backend.error.<operation>.<code>` (or `backend.error.<code>`), else the recovery title. The English catalog repeats the helper's English word for word, and every catalog has every entry with one `.action.N` per helper step; `tests/test_error_catalog.py` checks all of this.
 
+- Guidance is always translated: the title, the message, the steps and the buttons. Diagnostics stay English: the helper's error text, the Checkup tab, the operation log and Copy Diagnostics.
+- The title says what happened. The message explains it in plain words without restating the title. The steps are actions.
+- Every error code the helper can raise has its own entry; the generic `remote_error` and `operation_failed` entries are only for failures the helper cannot name. Guidance avoids the helper's internal words ("helper", "operation log", "payload", MaSt).
 - Each distinct cause gets its own error code and line. Do not write one line that covers several causes ("could not write") when the helper can tell them apart.
 - Error lines and recovery text name the app's own operations, not CLI words: "deploy" is **Install / Update Samba**, "run doctor" is **Checkup**, "configure" is adding a device, and the Diagnostics screen is **Diagnostics**. Literal CLI commands such as `tcapsule activate` stay.
 - Recovery messages carry no `%` placeholders except the slow-device message's `%@` (the device name).

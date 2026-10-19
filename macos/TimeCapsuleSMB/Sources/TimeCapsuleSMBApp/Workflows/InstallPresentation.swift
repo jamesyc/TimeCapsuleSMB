@@ -99,7 +99,6 @@ struct InstallTimelinePresentation: Equatable {
             items = [
                 OperationTimelineBuilder.currentStageItem(
                     currentStage,
-                    fallback: currentStage.description,
                     state: fallbackState
                 )
             ]
@@ -197,8 +196,7 @@ struct InstallProgressPresentation: Equatable, BlockingProgressPresenting {
         if let currentStage {
             self.detail = currentStage.progressDetail ?? OperationTimelineBuilder.stageDetail(
                 for: currentStage.operation,
-                stage: currentStage.stage,
-                fallback: currentStage.description ?? currentStage.stage
+                stage: currentStage.stage
             )
         } else {
             self.detail = nil
@@ -270,7 +268,10 @@ struct InstallWorkflowPresentation: Equatable {
             self.actions = []
             self.notices = []
         case .deployFailed:
-            self.statusMessage = effectiveError?.message ?? L10n.string("install.state.deploy_failed")
+            // The error box below names the failure; the header only states it.
+            self.statusMessage = restoredFailure?.status == .interrupted
+                ? L10n.string("install.state.deploy_interrupted")
+                : L10n.string("install.state.deploy_failed")
             self.actions = Self.deployActions()
             self.notices = []
         }

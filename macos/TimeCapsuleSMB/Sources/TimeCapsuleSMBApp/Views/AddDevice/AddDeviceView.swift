@@ -68,7 +68,7 @@ struct AddDeviceView: View {
         guard let stage = store.currentStage else {
             return L10n.string("add_device.discover.placeholder")
         }
-        return OperationTimelineBuilder.stageDetail(for: stage.operation, stage: stage.stage, fallback: nil)
+        return OperationTimelineBuilder.stageDetail(for: stage.operation, stage: stage.stage)
             ?? OperationTimelineBuilder.stageTitle(for: stage.operation, stage: stage.stage)
     }
 

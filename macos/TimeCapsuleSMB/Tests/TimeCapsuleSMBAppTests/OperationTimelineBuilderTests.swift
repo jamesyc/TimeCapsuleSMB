@@ -59,7 +59,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         // The row keeps the last position it reached.
         XCTAssertEqual(timeline[0].detail, "Files checked: 8,000")
         XCTAssertEqual(timeline[1].detail, "Files checked: 120")
-        XCTAssertEqual(timeline[2].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "replace_software", fallback: nil))
+        XCTAssertEqual(timeline[2].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "replace_software"))
     }
 
     func testStageWithoutProgressKeepsItsDetail() {
@@ -69,7 +69,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         ]
         let timeline = OperationTimelineBuilder.timeline(from: events)
         XCTAssertEqual(timeline.count, 1)
-        XCTAssertEqual(timeline[0].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "migrate_xattrs_copy", fallback: nil))
+        XCTAssertEqual(timeline[0].detail, OperationTimelineBuilder.stageDetail(for: "deploy", stage: "migrate_xattrs_copy"))
     }
 
     func testStageBecomesSucceededWhenLaterStageForSameOperationAppears() {
@@ -115,6 +115,59 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.state), [.failed, .failed])
     }
 
+    func testErrorStepLeavesTheFailureToTheErrorBox() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
+            BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: "No deployable HFS disk was found.")
+        ])
+
+        XCTAssertNil(timeline.last?.detail)
+    }
+
+    func testStageWithoutATranslatedDetailShowsNoHelperText() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .german)
+
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "fsck", stage: "mount_hfs_volumes", description: "Mount HFS volumes before fsck.")
+        ])
+
+        XCTAssertEqual(timeline.first?.title, "Volumes werden eingebunden")
+        XCTAssertNil(timeline.first?.detail)
+    }
+
+    func testEveryStageTheHelperReportsHasATranslatedTitle() throws {
+        // The helper's stage list, read from its source: each stage the app
+        // can show must have a title in the app's language, never its code name.
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repo.appendingPathComponent("src/timecapsulesmb/app/stage_policy.py"),
+            encoding: .utf8
+        )
+        let pattern = try NSRegularExpression(pattern: #"\("([a-z-]+)", "([a-z_]+)"\): StagePolicy"#)
+        let matches = pattern.matches(in: source, range: NSRange(source.startIndex..., in: source))
+        XCTAssertGreaterThan(matches.count, 100)
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        // English titles can read like the code name ("Upload Payload"), so
+        // the check runs in languages where they cannot.
+        for language in [AppLanguage.german, .simplifiedChinese] {
+            L10n.apply(language: language)
+            for match in matches {
+                let operation = String(source[Range(match.range(at: 1), in: source)!])
+                let stage = String(source[Range(match.range(at: 2), in: source)!])
+                let codeName = stage.split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                    .joined(separator: " ")
+                let title = OperationTimelineBuilder.stageTitle(for: operation, stage: stage)
+                XCTAssertNotEqual(title, codeName, "\(language) \(operation).\(stage)")
+                XCTAssertFalse(title.hasPrefix("timeline."), "\(language) \(operation).\(stage)")
+            }
+        }
+    }
+
     func testErrorMarksCurrentStageFailed() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
@@ -134,7 +187,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             description: "Backend text"
         )
 
-        let item = OperationTimelineBuilder.currentStageItem(stage, fallback: stage.description)
+        let item = OperationTimelineBuilder.currentStageItem(stage)
 
         XCTAssertEqual(item, OperationTimelineItem(
             id: "current:activate:probe_runtime",
@@ -147,12 +200,11 @@ final class OperationTimelineBuilderTests: XCTestCase {
         ))
     }
 
-    func testCurrentStageItemFallsBackOnlyWhenTheStageHasNoLocalizedDetail() {
+    func testCurrentStageItemNeverShowsTheHelpersEnglishDescription() {
         let stage = OperationStageState(operation: "deploy", stage: "unlisted_stage", description: "Backend text")
 
-        XCTAssertNil(OperationTimelineBuilder.currentStageItem(stage).detail)
-        let item = OperationTimelineBuilder.currentStageItem(stage, fallback: stage.description, state: .failed)
-        XCTAssertEqual(item.detail, "Backend text")
+        let item = OperationTimelineBuilder.currentStageItem(stage, state: .failed)
+        XCTAssertNil(item.detail)
         XCTAssertEqual(item.state, .failed)
         XCTAssertEqual(item.title, "Unlisted Stage")
     }
@@ -235,16 +287,14 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(
             OperationTimelineBuilder.stageDetail(
                 for: "deploy",
-                stage: "wait_for_reboot_up",
-                fallback: "raw backend detail"
+                stage: "wait_for_reboot_up"
             ),
             "Device went down; waiting for it to come back up."
         )
         XCTAssertEqual(
             OperationTimelineBuilder.stageDetail(
                 for: "deploy",
-                stage: "verify_runtime_reboot",
-                fallback: "raw backend detail"
+                stage: "verify_runtime_reboot"
             ),
             "Device is back online. Waiting for managed runtime to finish starting."
         )
@@ -257,12 +307,12 @@ final class OperationTimelineBuilderTests: XCTestCase {
             XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: operation, stage: "wait_for_reboot_down"), "Wait for Device Restart", operation)
             XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: operation, stage: "wait_for_reboot_up"), "Device is offline", operation)
             XCTAssertEqual(
-                OperationTimelineBuilder.stageDetail(for: operation, stage: "reboot", fallback: "raw backend detail"),
+                OperationTimelineBuilder.stageDetail(for: operation, stage: "reboot"),
                 "Sending the reboot request through AirPort ACP.",
                 operation
             )
             XCTAssertEqual(
-                OperationTimelineBuilder.stageDetail(for: operation, stage: "wait_for_reboot_down", fallback: "raw backend detail"),
+                OperationTimelineBuilder.stageDetail(for: operation, stage: "wait_for_reboot_down"),
                 "Waiting for the device to restart.",
                 operation
             )
@@ -293,7 +343,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "fsck", stage: "post_reboot_activation"), "Start SMB After Reboot")
         XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "fsck", stage: "verify_runtime_activation"), "Verify SMB Startup")
         XCTAssertEqual(
-            OperationTimelineBuilder.stageDetail(for: "fsck", stage: "post_reboot_activation", fallback: "raw backend detail"),
+            OperationTimelineBuilder.stageDetail(for: "fsck", stage: "post_reboot_activation"),
             "Starting SMB after SSH returns."
         )
         // The other rebooting operations leave file sharing as the reboot left it.
@@ -343,7 +393,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
         for stage in deployStages {
             let title = OperationTimelineBuilder.stageTitle(for: "deploy", stage: stage)
-            let detail = OperationTimelineBuilder.stageDetail(for: "deploy", stage: stage, fallback: nil)
+            let detail = OperationTimelineBuilder.stageDetail(for: "deploy", stage: stage)
             XCTAssertFalse(title.hasPrefix("timeline."), "\(stage) title should be localized")
             XCTAssertFalse(title.contains("_"), "\(stage) title should not fall back to title-cased stage id")
             XCTAssertNotNil(detail, "\(stage) should have a localized detail")
@@ -358,7 +408,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
         for stage in activateStages {
             let title = OperationTimelineBuilder.stageTitle(for: "activate", stage: stage)
-            let detail = OperationTimelineBuilder.stageDetail(for: "activate", stage: stage, fallback: nil)
+            let detail = OperationTimelineBuilder.stageDetail(for: "activate", stage: stage)
             XCTAssertFalse(title.hasPrefix("timeline."), "\(stage) title should be localized")
             XCTAssertFalse(title.contains("_"), "\(stage) title should not fall back to title-cased stage id")
             XCTAssertNotNil(detail, "\(stage) should have a localized detail")
@@ -429,19 +479,19 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "deploy", stage: "replace_software"), "Удалить старое ПО")
         L10n.apply(language: .portuguese)
         XCTAssertEqual(
-            OperationTimelineBuilder.stageDetail(for: "deploy", stage: "install_runtime_config", fallback: "raw config text"),
+            OperationTimelineBuilder.stageDetail(for: "deploy", stage: "install_runtime_config"),
             "Gravando a configuração dos serviços (tcapsulesmb.conf) em /mnt/Flash."
         )
     }
 
     func testRemovedDiscoveryUploadStageIsNotMapped() {
         XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "deploy", stage: "upload_discovery"), "Upload Discovery")
-        XCTAssertNil(OperationTimelineBuilder.stageDetail(for: "deploy", stage: "upload_discovery", fallback: nil))
+        XCTAssertNil(OperationTimelineBuilder.stageDetail(for: "deploy", stage: "upload_discovery"))
     }
 
     func testRemovedNetBSD4DeployActivationStageIsNotMapped() {
         XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: "deploy", stage: "netbsd4_activation"), "Netbsd4 Activation")
-        XCTAssertNil(OperationTimelineBuilder.stageDetail(for: "deploy", stage: "netbsd4_activation", fallback: nil))
+        XCTAssertNil(OperationTimelineBuilder.stageDetail(for: "deploy", stage: "netbsd4_activation"))
     }
 }
 

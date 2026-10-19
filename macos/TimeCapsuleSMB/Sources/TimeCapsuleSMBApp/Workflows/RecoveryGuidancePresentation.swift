@@ -1,43 +1,50 @@
 import Foundation
 
+/// An error box: guidance in the app's language, then the helper's own text,
+/// which stays English so every report reads the same.
 struct RecoveryGuidancePresentation: Equatable {
     let title: String
-    let errorMessage: String
-    let detail: String?
+    let message: String?
     let steps: [String]
+    let details: String?
 
     init(error: BackendErrorViewModel) {
         let localizedRecovery = BackendRecoveryLocalization.localized(error.recovery)
-        self.title = localizedRecovery?.title ?? error.code
-        self.errorMessage = error.message
-        self.detail = Self.uniqueDetail(localizedRecovery?.message, title: title, errorMessage: error.message)
-        self.steps = localizedRecovery?.actions ?? []
+        let title = localizedRecovery?.title ?? error.message
+        let message = localizedRecovery?.message.flatMap { message in
+            message.isEmpty || message.lowercased() == title.lowercased() ? nil : message
+        }
+        let steps = localizedRecovery?.actions ?? []
+        self.title = title
+        self.message = message
+        self.steps = steps
+        self.details = Self.details(error.diagnosticMessage, shown: [title, message ?? ""] + steps)
     }
 
-    private static func uniqueDetail(_ detail: String?, title: String, errorMessage: String) -> String? {
-        guard let detail else {
+    /// The helper's text, unless the box already says it: an English box often
+    /// repeats it in other words, and nothing is lost by leaving it out then.
+    private static func details(_ text: String?, shown: [String]) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
             return nil
         }
-        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return nil
-        }
-        let normalized = trimmed.normalizedRecoveryPresentationText
-        guard normalized != title.normalizedRecoveryPresentationText,
-              normalized != errorMessage.normalizedRecoveryPresentationText else {
-            return nil
-        }
-        return trimmed
+        let textWords = words(text)
+        let shownWords = words(shown.joined(separator: " "))
+        let repeated = textWords.filter(shownWords.contains).count
+        return Double(repeated) >= 0.8 * Double(textWords.count) ? nil : text
+    }
+
+    private static func words(_ text: String) -> Set<String> {
+        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
     }
 }
 
-private struct LocalizedBackendRecovery: Equatable {
+struct LocalizedBackendRecovery: Equatable {
     let title: String
     let message: String?
     let actions: [String]
 }
 
-private enum BackendRecoveryLocalization {
+enum BackendRecoveryLocalization {
     static func localized(_ recovery: BackendRecoveryPayload?) -> LocalizedBackendRecovery? {
         guard let recovery else {
             return nil
@@ -80,11 +87,5 @@ private enum BackendRecoveryLocalization {
             return nil
         }
         return String(format: template, locale: L10n.currentLanguage.locale, deviceName)
-    }
-}
-
-private extension String {
-    var normalizedRecoveryPresentationText: String {
-        trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

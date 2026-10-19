@@ -1341,7 +1341,7 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["operation"], "api")
         self.assertEqual(error["code"], "invalid_request")
-        self.assertEqual(error["recovery"]["title"], "Invalid request")
+        self.assertEqual(error["recovery"]["localization_key"], "invalid_request")
         self.assertTrue(error["recovery"]["retryable"])
 
     def test_unknown_and_retired_operations_emit_error_without_result(self) -> None:
@@ -1354,7 +1354,7 @@ class AppApiTests(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "unknown_operation")
-                self.assertEqual(error["recovery"]["title"], "Unknown operation")
+                self.assertEqual(error["recovery"]["localization_key"], "unknown_operation")
 
     def run_with_api_telemetry(self, request: dict[str, object], handlers: dict[str, object]) -> tuple[int, CollectingSink]:
         collector = CollectingSink()
@@ -1381,7 +1381,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["message"], "unknown parameters for fsck: no_wiat, volumee")
         self.assertIn("no_wait", error["debug"]["accepted_params"])
         self.assertIn("config", error["debug"]["accepted_params"])
-        self.assertEqual(error["recovery"]["title"], "Unknown parameter")
+        self.assertEqual(error["recovery"]["localization_key"], "unknown_param")
         self.assertFalse(error["recovery"]["retryable"])
         self.assertIn("If “Helper path” is set in “Settings”, clear it.", error["recovery"]["actions"])
         # A started and a finished event, like any other failed operation.
@@ -1675,8 +1675,11 @@ class AppApiTests(unittest.TestCase):
                 self.assertEqual(error["message"], str(failure))
                 recovery = error["recovery"]
                 self.assertEqual(recovery["localization_key"], "ssh_client_failed")
-                self.assertEqual(recovery["title"], "Local SSH client failed")
-                self.assertEqual(recovery["actions"], [])
+                self.assertEqual(recovery["title"], "SSH on this Mac failed")
+                # A fault on this Mac: no step points at the device or a network filter.
+                steps = " ".join(recovery["actions"])
+                self.assertNotIn("unplug", steps.lower())
+                self.assertNotIn("VPN", steps)
                 self.assertNotIn("reboot", recovery["message"].lower())
                 self.assertNotIn("VPN", recovery["message"])
                 finished = self._telemetry_client.emit.call_args_list[-1].kwargs
@@ -2118,7 +2121,7 @@ class AppApiTests(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "validation_failed")
-                self.assertEqual(error["recovery"]["title"], "Deployment validation failed")
+                self.assertEqual(error["recovery"]["title"], "The install could not start")
                 self.assertIn("always enabled", error["message"])
                 load_config.assert_not_called()
 
@@ -4199,7 +4202,7 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(config_path.exists())
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "ssh_compatibility_failed")
-        self.assertEqual(error["recovery"]["title"], "SSH compatibility failed")
+        self.assertEqual(error["recovery"]["title"], "SSH connection could not be set up")
         self.assertNotEqual(error["recovery"]["title"], "AirPort password rejected")
         self.assertNotIn("replace_password", error["recovery"]["action_ids"])
         self.assertIn("no matching MAC found", error["message"])
@@ -4241,8 +4244,11 @@ class AppApiTests(unittest.TestCase):
                     self.assertEqual((error["code"], error["message"]), ("ssh_client_failed", str(failure)))
                     recovery = error["recovery"]
                     self.assertEqual(recovery["localization_key"], "ssh_client_failed")
-                    self.assertEqual(recovery["title"], "Local SSH client failed")
-                    self.assertEqual(recovery["actions"], [])
+                    self.assertEqual(recovery["title"], "SSH on this Mac failed")
+                    # A fault on this Mac: no step points at the device or a network filter.
+                    steps = " ".join(recovery["actions"])
+                    self.assertNotIn("unplug", steps.lower())
+                    self.assertNotIn("VPN", steps)
                     self.assertEqual(recovery["action_ids"], [])
                     self.assertIsNone(recovery["suggested_operation"])
                     finished = self._telemetry_client.emit.call_args_list[-1].kwargs
@@ -5268,7 +5274,7 @@ class AppApiTests(unittest.TestCase):
                     self.assertEqual(rc, 1)
                     error = self.assert_single_terminal_event(collector, "error")
                     self.assertEqual(error["code"], "validation_failed")
-                    self.assertEqual(error["recovery"]["title"], "Deployment validation failed")
+                    self.assertEqual(error["recovery"]["title"], "The install could not start")
                     self.assertIn("requires a reboot", error["message"])
                     config.assert_not_called()
 
@@ -6065,7 +6071,7 @@ MaSt = (
         )
         cases = (
             (VolumeMountResult(True, "use_volume_rcs=0 mounted=yes"), False,
-             "deploy_disk_not_writable", "No writable payload volume"),
+             "deploy_disk_not_writable", "No writable volume for the installation files"),
             (VolumeMountResult(False, "use_volume_rcs=1,1 mounted=yes"), None,
              "deploy_disk_not_confirmed", "Disk not kept mounted"),
             (VolumeMountResult(False, "use_volume_rcs=1,1 mounted=no"), None,

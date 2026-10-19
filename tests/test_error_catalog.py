@@ -1,18 +1,21 @@
-"""The app shows errors from its own catalogs: the error line from
-backend.error.<operation>.<code> (else backend.error.<code>), and the
-recovery guidance from backend.recovery.<localization_key>.title, .message and
-.action.N, falling back to the helper's English for anything missing. These
-tests keep every catalog complete and the English catalog in the helper's words.
+"""The app shows errors from its own catalogs: an error box's guidance from
+backend.recovery.<localization_key>.title, .message and .action.N (the
+helper's English error text below it is diagnostics), and one-line errors from
+backend.error.<operation>.<code> (else backend.error.<code>, else the recovery
+title). These tests keep every catalog complete, the English catalog in the
+helper's words, and every error the helper raises with guidance of its own.
 """
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import unittest
 from unittest import mock
 
 from tests.test_summaries import LANGUAGES, catalog, placeholder_types
 from timecapsulesmb.app import recovery
+from timecapsulesmb.app.ops import OPERATION_SPECS
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS, DeployedVersionProbeResult
 from timecapsulesmb.device.storage import (
@@ -112,6 +115,39 @@ class RecoveryCatalogTests(unittest.TestCase):
             if key.startswith("backend.recovery."):
                 with self.subTest(key=key):
                     self.assertIn(RECOVERY_PART.sub("", key.removeprefix("backend.recovery.")), keys)
+
+
+# Raised only where no app reads it: the CLI's configure.
+CODES_THE_APP_NEVER_SHOWS = frozenset({"ssh_unreachable"})
+GENERIC_RECOVERY_KEYS = frozenset({"operation_failed", "remote_error"})
+
+
+def raised_error_codes() -> set[str]:
+    """Every literal error code in the helper's source, with each branch of
+    `code="a" if ... else "b"`."""
+    source = pathlib.Path(recovery.__file__).resolve().parents[1]
+    codes: set[str] = set()
+    for path in source.rglob("*.py"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            for match in re.finditer(r"(?<![A-Za-z_])code=(.*)", line):
+                codes.update(re.findall(r'"([a-z][a-z0-9_]+)"', match.group(1)))
+    return codes
+
+
+class RecoveryCoverageTests(unittest.TestCase):
+    def test_every_error_the_helper_raises_has_guidance_of_its_own(self) -> None:
+        # The generic entries say only that something failed; a code the
+        # helper chose for a known cause must say what to do about it.
+        operations = [spec.name for spec in OPERATION_SPECS]
+        codes = raised_error_codes() - CODES_THE_APP_NEVER_SHOWS - GENERIC_RECOVERY_KEYS
+        self.assertGreater(len(codes), 30)  # the scan found the raise sites
+        for code in sorted(codes):
+            with self.subTest(code=code):
+                keys = {recovery.recovery_for(operation, code)["localization_key"] for operation in operations}
+                self.assertFalse(keys <= GENERIC_RECOVERY_KEYS, keys)
+
+    def test_the_app_never_shown_list_names_only_raised_codes(self) -> None:
+        self.assertLessEqual(CODES_THE_APP_NEVER_SHOWS, raised_error_codes())
 
 
 class ErrorCodeCatalogTests(unittest.TestCase):

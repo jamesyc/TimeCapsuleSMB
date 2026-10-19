@@ -124,8 +124,19 @@ struct BackendErrorViewModel: Equatable {
     let recovery: BackendRecoveryPayload?
     let diagnosticText: String?
 
+    /// One line in the app's language: the helper's text reaches it only
+    /// when nothing translated describes the error.
     var message: String {
-        localError?.message ?? BackendErrorLocalization.message(operation: operation, code: code) ?? rawMessage ?? ""
+        localError?.message
+            ?? BackendErrorLocalization.message(operation: operation, code: code)
+            ?? BackendRecoveryLocalization.localized(recovery)?.title
+            ?? rawMessage
+            ?? ""
+    }
+
+    /// The helper's own text, English for diagnostics; nil for the app's own errors.
+    var diagnosticMessage: String? {
+        rawMessage
     }
 
     init(event: BackendEvent) {
@@ -163,7 +174,7 @@ struct BackendErrorViewModel: Equatable {
     init(operation: String, deployState: DeviceDeployStateSnapshot) {
         self.operation = operation
         self.code = deployState.errorCode ?? "operation_failed"
-        self.rawMessage = deployState.localizedSummary
+        self.rawMessage = deployState.errorMessage ?? deployState.localizedSummary
         self.localError = nil
         self.recovery = deployState.recovery.map(BackendRecoveryPayload.init)
         self.diagnosticText = deployState.diagnosticText
@@ -323,11 +334,21 @@ extension BackendEvent {
         if type == "log", let message {
             return BackendSummary.backend(key: messageKey, arguments: messageArgs, text: message).localized
         }
-        if type == "error",
-           let code,
-           let localizedMessage = BackendErrorLocalization.message(operation: operation, code: code) {
-            return L10n.format("event.summary.error", operation, localizedMessage)
-        }
+        // An error row keeps the helper's English: the operation log is a
+        // diagnostic, like Copy Diagnostics.
         return summary
+    }
+
+    /// The activity strip's line for a failed operation: its title and what
+    /// failed, in the app's language. Nil for any other event.
+    var localizedErrorLine: String? {
+        guard type == "error", message != nil else {
+            return nil
+        }
+        return L10n.format(
+            "event.summary.error",
+            OperationTimelineBuilder.operationTitle(operation),
+            BackendErrorViewModel(event: self).message
+        )
     }
 }

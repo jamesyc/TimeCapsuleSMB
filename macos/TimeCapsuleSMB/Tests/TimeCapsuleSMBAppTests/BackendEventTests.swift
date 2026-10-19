@@ -102,6 +102,36 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.localizedSummary, "诊断检查通过。")
     }
 
+    func testFailedOperationReadsInTheAppLanguageInTheActivityStrip() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let event = BackendEvent(
+            type: "error",
+            operation: "deploy",
+            code: "remote_error",
+            message: "No AirPort ACP service responded at 10.0.1.1:5009.",
+            recovery: recoveryValue(title: "The device reported an error", actions: [], localizationKey: "remote_error")
+        )
+
+        L10n.apply(language: .german)
+
+        // The operation's title and the translated failure, never the raw code
+        // or the helper's English; those stay in the operation log.
+        XCTAssertEqual(event.localizedErrorLine, "Installieren / Aktualisieren: Das Gerät hat einen Fehler gemeldet")
+        XCTAssertEqual(event.localizedSummary, "deploy: No AirPort ACP service responded at 10.0.1.1:5009.")
+    }
+
+    func testOnlyErrorEventsHaveAnActivityStripErrorLine() {
+        let stage = BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload")
+        let result = BackendEvent(type: "result", operation: "deploy", ok: false, payload: .object([:]))
+        // An error event without a message has nothing to say what failed.
+        let bare = BackendEvent(type: "error", operation: "deploy", code: "remote_error")
+
+        XCTAssertNil(stage.localizedErrorLine)
+        XCTAssertNil(result.localizedErrorLine)
+        XCTAssertNil(bare.localizedErrorLine)
+    }
+
     func testUnkeyedResultSummaryIsShownAsSent() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
@@ -156,16 +186,18 @@ final class BackendEventTests: XCTestCase {
         XCTAssertNotEqual(event.localizedPayloadSummaryText, "Doctor found one or more fatal problems.")
     }
 
-    func testBackendEventLocalizesKnownErrorSummaries() {
+    func testKnownErrorsAreTranslatedForTheActivityStripButNotTheOperationLog() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         let event = BackendEvent(type: "error", operation: "doctor", code: "auth_failed", message: "Password rejected.")
 
         L10n.apply(language: .english)
-        XCTAssertEqual(event.localizedSummary, "doctor: The device rejected the supplied password or SSH credentials.")
+        XCTAssertEqual(event.localizedErrorLine, "Checkup: The device rejected the supplied password or SSH credentials.")
+        XCTAssertEqual(event.localizedSummary, "doctor: Password rejected.")
 
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertEqual(event.localizedSummary, "doctor：设备拒绝了提供的密码或 SSH 凭据。")
+        XCTAssertEqual(event.localizedErrorLine, "检查：设备拒绝了提供的密码或 SSH 凭据。")
+        XCTAssertEqual(event.localizedSummary, "doctor：Password rejected.")
     }
 
     func testKeyedLogMessagesAreLocalizedAndOthersShownAsSent() {

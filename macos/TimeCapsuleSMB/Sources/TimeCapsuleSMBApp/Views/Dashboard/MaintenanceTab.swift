@@ -37,7 +37,11 @@ struct MaintenanceTab: View {
                         },
                         chooseFirmwareTemplate: {
                             chooseFirmwareTemplate(store: session.flashStore)
-                        }
+                        },
+                        handleRecovery: { action, error in
+                            handleRecovery(action: action, error: error)
+                        },
+                        diagnosticsText: diagnosticsText
                     )
                 }
 

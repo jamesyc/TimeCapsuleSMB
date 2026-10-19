@@ -186,7 +186,8 @@ enum DeviceDashboardSnapshotMapper {
         let current = profile?.lastDeployState?.operationID == operation.id.uuidString
             ? profile?.lastDeployState : nil
         let errorCode = error?.code
-        let errorMessage = error?.message ?? L10n.string("install.state.deploy_failed")
+        // The helper's English text; the dashboard translates it when shown.
+        let errorMessage = error?.diagnosticMessage ?? error?.message ?? L10n.string("install.state.deploy_failed")
         let recovery = error?.recovery.map(DeviceRecoverySnapshot.init)
         return (
             deployState: DeviceDeployStateSnapshot(

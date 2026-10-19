@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct DeviceListOverviewView: View {
@@ -107,10 +108,16 @@ struct DeviceListOverviewView: View {
                 .foregroundStyle(.secondary)
         case .failed:
             VStack(alignment: .leading, spacing: 6) {
-                Text(deviceDiscovery.error?.message ?? L10n.string("overview.discovery.failed"))
-                    .foregroundStyle(.red)
-                if deviceDiscovery.error?.code == "local_network_permission_denied", let url = LocalNetworkRecovery.settingsURL {
-                    Link(L10n.string("recovery.action.open_system_settings"), destination: url)
+                if let error = deviceDiscovery.error {
+                    // Refresh below reruns discovery, whatever the error; the box has no Retry.
+                    ErrorRecoveryView(error: error, canRetry: false) { action in
+                        if action.kind == .openSystemSettings, let url = LocalNetworkRecovery.settingsURL {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                } else {
+                    Text(L10n.string("overview.discovery.failed"))
+                        .foregroundStyle(.red)
                 }
                 Button(L10n.string("overview.discovery.refresh")) {
                     deviceDiscovery.refresh()

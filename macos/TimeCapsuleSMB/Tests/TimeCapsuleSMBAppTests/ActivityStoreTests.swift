@@ -38,6 +38,33 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.latestMessage, "Samba installation or update completed.")
     }
 
+    func testFailedOperationShowsTheTranslatedFailureInTheActivityStrip() async throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .german)
+
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload"),
+                BackendEvent(
+                    type: "error",
+                    operation: "deploy",
+                    code: "remote_error",
+                    message: "No AirPort ACP service responded at 10.0.1.1:5009.",
+                    recovery: recoveryValue(title: "The device reported an error", actions: [], localizationKey: "remote_error")
+                )
+            ])
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+        let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
+
+        _ = coordinator.run(operation: "deploy", context: context, activeDeviceID: "device-one")
+
+        try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
+        XCTAssertEqual(activity.snapshot.latestMessage, "Installieren / Aktualisieren: Das Gerät hat einen Fehler gemeldet")
+    }
+
     func testAppLanguageChangeRefreshesCachedActivityPresentation() async throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

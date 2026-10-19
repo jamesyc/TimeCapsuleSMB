@@ -16,8 +16,10 @@ struct ErrorBlock: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(presentation.title)
                 .font(.body.weight(.medium))
-            Text(presentation.errorMessage)
-                .font(.caption)
+            if let message = presentation.message {
+                Text(message)
+                    .font(.caption)
+            }
         }
         .foregroundStyle(.red)
     }
@@ -28,16 +30,21 @@ struct ErrorRecoveryView: View {
     let guidance: String?
     let onAction: (RecoveryAction) -> Void
     let diagnosticsText: (() -> String)?
+    /// False where nothing reruns the failed operation from this box: the
+    /// screen's own buttons do that, and a Retry here would do nothing.
+    let canRetry: Bool
 
     init(
         error: BackendErrorViewModel,
         guidance: String? = nil,
         diagnosticsText: (() -> String)? = nil,
+        canRetry: Bool = true,
         onAction: @escaping (RecoveryAction) -> Void
     ) {
         self.error = error
         self.guidance = guidance
         self.diagnosticsText = diagnosticsText
+        self.canRetry = canRetry
         self.onAction = onAction
     }
 
@@ -49,11 +56,6 @@ struct ErrorRecoveryView: View {
                 Text(guidance)
                     .font(.caption)
                     .foregroundStyle(.red)
-            }
-            if let detail = presentation.detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             if !presentation.steps.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
@@ -67,7 +69,13 @@ struct ErrorRecoveryView: View {
                     }
                 }
             }
-            let actions = RecoveryActionMapper.actions(for: error)
+            if let details = presentation.details {
+                Text(details)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            let actions = RecoveryActionMapper.actions(for: error, canRetry: canRetry)
             if !actions.isEmpty {
                 HStack {
                     ForEach(actions) { action in
@@ -95,7 +103,7 @@ struct ErrorRecoveryView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(
-            diagnosticsText?() ?? "\(error.operation) \(error.code): \(error.message)",
+            diagnosticsText?() ?? "\(error.operation) \(error.code): \(error.diagnosticMessage ?? error.message)",
             forType: .string
         )
     }

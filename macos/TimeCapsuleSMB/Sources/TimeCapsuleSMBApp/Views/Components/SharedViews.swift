@@ -47,10 +47,11 @@ struct StageLine: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(stage.stage)
-                .font(.system(.caption, design: .monospaced))
-            if let description = stage.description {
-                Text(description)
+            Text(OperationTimelineBuilder.stageTitle(for: stage.operation, stage: stage.stage))
+                .font(.caption)
+            if let detail = stage.progressDetail
+                ?? OperationTimelineBuilder.stageDetail(for: stage.operation, stage: stage.stage) {
+                Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

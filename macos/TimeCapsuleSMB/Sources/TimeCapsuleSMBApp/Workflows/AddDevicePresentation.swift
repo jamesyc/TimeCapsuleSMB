@@ -19,7 +19,7 @@ struct AddDeviceProgressPresentation: Equatable, BlockingProgressPresenting {
             self.title = L10n.string("add_device.progress.configuring.title")
             self.message = L10n.string("add_device.progress.configuring.message")
             self.detail = currentStage.map {
-                OperationTimelineBuilder.stageDetail(for: $0.operation, stage: $0.stage, fallback: nil)
+                OperationTimelineBuilder.stageDetail(for: $0.operation, stage: $0.stage)
                     ?? OperationTimelineBuilder.stageTitle(for: $0.operation, stage: $0.stage)
             }
         case .savingProfile:

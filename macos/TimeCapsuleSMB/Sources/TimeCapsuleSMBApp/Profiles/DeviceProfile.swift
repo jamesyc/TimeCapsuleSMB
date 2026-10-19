@@ -283,6 +283,25 @@ enum DeviceDeployStateStatus: String, Codable, Equatable, CaseIterable {
     }
 }
 
+/// A saved install failure as one line in the app's language. The snapshot
+/// keeps the helper's English text; the line is translated when shown, so it
+/// follows a later change of app language.
+private func savedFailureLine(
+    _ code: String?,
+    _ message: String,
+    _ recovery: DeviceRecoverySnapshot?,
+    fallbackKey: String
+) -> String {
+    let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    let line = BackendErrorViewModel(
+        operation: "deploy",
+        code: code ?? "operation_failed",
+        message: trimmed,
+        recovery: recovery.map(BackendRecoveryPayload.init)
+    ).message
+    return line.isEmpty ? L10n.string(fallbackKey) : line
+}
+
 struct DeviceDeployStateSnapshot: Codable, Equatable {
     var operationID: String?
     var startedAt: Date
@@ -308,11 +327,9 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
             return BackendSummary.saved(summaryRef, text: summary)?.localized
                 ?? L10n.string("deploy.result.default_message")
         case .failed:
-            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? L10n.string("install.state.deploy_failed") : trimmed
+            return savedFailureLine(errorCode, errorMessage ?? summary, recovery, fallbackKey: "install.state.deploy_failed")
         case .interrupted:
-            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? L10n.string("install.state.deploy_interrupted") : trimmed
+            return savedFailureLine(errorCode, errorMessage ?? summary, recovery, fallbackKey: "install.state.deploy_interrupted")
         case .deploying:
             return L10n.string("install.state.deploying")
         case .awaitingConfirmation:
@@ -390,11 +407,9 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
             return BackendSummary.saved(summaryRef, text: summary)?.localized
                 ?? L10n.string("deploy.result.default_message")
         case .installFailed:
-            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? L10n.string("install.state.deploy_failed") : trimmed
+            return savedFailureLine(errorCode, errorMessage ?? summary, recovery, fallbackKey: "install.state.deploy_failed")
         case .installInterrupted:
-            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? L10n.string("install.state.deploy_interrupted") : trimmed
+            return savedFailureLine(errorCode, errorMessage ?? summary, recovery, fallbackKey: "install.state.deploy_interrupted")
         case .activationNeeded:
             return L10n.string("dashboard.health.runtime.activation_needed")
         case .unhealthy:

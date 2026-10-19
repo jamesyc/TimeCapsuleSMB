@@ -60,7 +60,7 @@ struct AppReadinessBannerView: View {
 
     private var currentStageText: String? {
         store.currentStage.map {
-            OperationTimelineBuilder.stageDetail(for: $0.operation, stage: $0.stage, fallback: nil)
+            OperationTimelineBuilder.stageDetail(for: $0.operation, stage: $0.stage)
                 ?? OperationTimelineBuilder.stageTitle(for: $0.operation, stage: $0.stage)
         }
     }
@@ -228,7 +228,8 @@ struct EventList: View {
     var body: some View {
         List(events) { event in
             VStack(alignment: .leading, spacing: 4) {
-                Text(event.localizedSummary)
+                // Diagnostics stay in the helper's English.
+                Text(event.logLine)
                     .font(.body)
                 if let payload = event.payload, event.type == "result" {
                     Text(payload.displayText)

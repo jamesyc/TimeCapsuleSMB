@@ -36,27 +36,32 @@ class RecoveryInfo:
         return payload
 
 
+# The app and its helper from different releases send requests the other does not know.
+_MISMATCH_TITLE = "TimeCapsuleSMB components do not match"
+_MISMATCH_MESSAGE = "Parts of this TimeCapsuleSMB installation are from different versions."
+_MISMATCH_STEPS = (
+    "Update or reinstall TimeCapsuleSMB.",
+    "If “Helper path” is set in “Settings”, clear it.",
+)
+
 _DEFAULTS: dict[str, RecoveryInfo] = {
     "invalid_request": RecoveryInfo(
-        "Invalid request",
-        "The helper request was malformed or had invalid parameter types.",
-        ("Check the request JSON shape.", "Send params as a JSON object."),
+        _MISMATCH_TITLE,
+        _MISMATCH_MESSAGE,
+        _MISMATCH_STEPS,
         retryable=True,
     ),
     "unknown_param": RecoveryInfo(
-        "Unknown parameter",
-        "The helper does not accept a parameter this request sent, so the app and helper are out of step.",
-        (
-            "Update or reinstall TimeCapsuleSMB so the app and helper use the same API contract.",
-            "If “Helper path” is set in “Settings”, clear it.",
-        ),
+        _MISMATCH_TITLE,
+        _MISMATCH_MESSAGE,
+        _MISMATCH_STEPS,
         # Resending the same request fails the same way.
         retryable=False,
     ),
     "unknown_operation": RecoveryInfo(
-        "Unknown operation",
-        "The helper does not recognize the requested operation.",
-        ("Use one of the helper operations exposed by this app version.",),
+        _MISMATCH_TITLE,
+        _MISMATCH_MESSAGE,
+        _MISMATCH_STEPS,
         retryable=False,
     ),
     "validation_failed": RecoveryInfo(
@@ -132,9 +137,13 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=False,
     ),
     "ssh_compatibility_failed": RecoveryInfo(
-        "SSH compatibility failed",
-        "The local SSH client could not negotiate algorithms with the AirPort SSH server.",
-        ("Update TimeCapsuleSMB and retry.", "Check debug details for the SSH algorithm error."),
+        "SSH connection could not be set up",
+        "This Mac's SSH program and the device could not agree on how to secure the connection.",
+        (
+            "Update TimeCapsuleSMB, then try again.",
+            "If it keeps failing, click “Copy Diagnostics” and report it at "
+            "https://github.com/jamesyc/TimeCapsuleSMB/issues.",
+        ),
         retryable=True,
         suggested_operation="configure",
     ),
@@ -159,9 +168,13 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
     ),
     "ssh_client_failed": RecoveryInfo(
-        "Local SSH client failed",
-        "The SSH client on this computer could not complete the operation. Check the local SSH error in the operation log, then retry.",
-        (),
+        "SSH on this Mac failed",
+        "The SSH program on this Mac could not finish.",
+        (
+            "Try again.",
+            "If it keeps failing, click “Copy Diagnostics” and report it at "
+            "https://github.com/jamesyc/TimeCapsuleSMB/issues.",
+        ),
         retryable=True,
     ),
     "ssh_transport_failed": RecoveryInfo(
@@ -327,54 +340,160 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     "cancelled": RecoveryInfo(
         "Operation cancelled",
-        "The helper was interrupted before the operation completed.",
-        ("Retry the operation when ready.",),
+        "It stopped before it finished.",
+        ("Try again when you are ready.",),
         retryable=True,
     ),
+    # The device's own error shows below the guidance, so this stays general.
     "remote_error": RecoveryInfo(
-        "Remote operation failed",
-        "The helper could not complete the requested remote device operation.",
-        ("Check the operation log.", "Run “Checkup” after the device is reachable."),
+        "The device reported an error",
+        "A step on the device did not finish as expected.",
+        (
+            "Make sure the device is turned on and on the same network as this Mac, then try again.",
+            "If it keeps failing, run “Checkup”.",
+        ),
         retryable=True,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
     "operation_failed": RecoveryInfo(
-        "Operation failed",
-        "The helper hit an unexpected failure while running the operation.",
-        ("Check debug details.", "Retry after fixing the reported cause."),
+        "Something went wrong",
+        "TimeCapsuleSMB ran into a problem it did not expect.",
+        (
+            "Try again.",
+            "If it keeps failing, click “Copy Diagnostics” and report it at "
+            "https://github.com/jamesyc/TimeCapsuleSMB/issues.",
+        ),
         retryable=True,
+    ),
+    "disk_write_test_unresponsive": RecoveryInfo(
+        "The disk did not respond",
+        "The disk did not answer a test write. It may be failing or unable to spin up.",
+        ("Run “Disk Repair”.", "If this keeps happening, the disk may need replacing."),
+        retryable=True,
+        action_ids=("disk_repair",),
     ),
 }
 
 
+_STUCK_DEVICE_STEPS = (
+    "Unplug the device, wait 10 seconds and plug it back in.",
+    "Wait 2 minutes for the device to start up, then run “Install / Update Samba” again.",
+)
+_MIGRATION_DISK_MESSAGE = (
+    "During the install, Samba metadata from the earlier version moves into the files' extended attributes. "
+    "What was already moved is kept. A slow or failing disk often causes this."
+)
+_MIGRATION_DISK_STEPS = ("Run “Disk Repair”.", "Then run “Install / Update Samba” again.")
+_MIGRATION_RERUN_MESSAGE = (
+    "What was already moved into the files' extended attributes is kept; the rest moves when the install runs again."
+)
 _UNREADABLE_FOLDER_TITLE = "A folder on the disk cannot be read"
 _UNREADABLE_FOLDER_MESSAGE = (
-    "The device could not list the contents of a folder the Samba metadata migration must read; the operation "
-    "log names the folder. Samba was stopped for the install and is not running now."
+    "The device could not list the contents of a folder the Samba metadata migration must read. "
+    "Samba was stopped for the install and is not running now."
 )
 _UNREADABLE_FOLDER_REPAIR = "Run “Disk Repair” on the disk, then run “Install / Update Samba” again."
 
 _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
+    ("deploy", "payload_upload_timeout"): RecoveryInfo(
+        "Copying the installation files timed out",
+        "The disk may be failing or slow to spin up, or the connection to the device may be too slow, "
+        "such as a weak Wi-Fi link.",
+        (
+            "Run “Disk Repair”.",
+            "Connect this Mac or the device by Ethernet, then run “Install / Update Samba” again.",
+            "If this keeps happening, the disk may need replacing.",
+        ),
+        retryable=True,
+        action_ids=("disk_repair",),
+    ),
+    ("deploy", "manager_stop_timeout"): RecoveryInfo(
+        "A service on the device is stuck",
+        "It did not stop for the install. A failing disk often causes this.",
+        _STUCK_DEVICE_STEPS,
+        retryable=True,
+    ),
+    ("deploy", "previous_migration_stalled"): RecoveryInfo(
+        "An earlier metadata migration is stuck",
+        "A Samba metadata migration left running by an earlier install stopped making progress. "
+        "A failing disk often causes this.",
+        _STUCK_DEVICE_STEPS,
+        retryable=True,
+    ),
+    ("deploy", "insufficient_flash_space"): RecoveryInfo(
+        "Not enough room in the device's flash storage",
+        "The device's built-in flash storage has no room for the TimeCapsuleSMB startup files, "
+        "even after removing the old ones.",
+        (
+            "Click “Copy Diagnostics” and report it at https://github.com/jamesyc/TimeCapsuleSMB/issues.",
+        ),
+        retryable=False,
+    ),
+    ("deploy", "flash_capacity_probe_failed"): RecoveryInfo(
+        "Could not check the device's flash storage",
+        "The device did not report how much room its built-in flash storage has, so the install stopped.",
+        ("Run “Install / Update Samba” again.",),
+        retryable=True,
+    ),
+    ("deploy", "xattr_migration_timeout"): RecoveryInfo(
+        "The metadata migration took too long",
+        _MIGRATION_DISK_MESSAGE,
+        _MIGRATION_DISK_STEPS,
+        retryable=True,
+        action_ids=("disk_repair",),
+    ),
+    ("deploy", "xattr_migration_stalled"): RecoveryInfo(
+        "The metadata migration made no progress",
+        _MIGRATION_DISK_MESSAGE,
+        _MIGRATION_DISK_STEPS,
+        retryable=True,
+        action_ids=("disk_repair",),
+    ),
+    ("deploy", "xattr_migration_crashed"): RecoveryInfo(
+        "The metadata migration crashed",
+        _MIGRATION_RERUN_MESSAGE,
+        ("Run “Install / Update Samba” again.",),
+        retryable=True,
+    ),
+    ("deploy", "xattr_migration_stopped"): RecoveryInfo(
+        "The metadata migration was stopped",
+        _MIGRATION_RERUN_MESSAGE,
+        ("Run “Install / Update Samba” again.",),
+        retryable=True,
+    ),
+    ("deploy", "xattr_migration_connection_lost"): RecoveryInfo(
+        "Connection lost during the metadata migration",
+        "The migration may still be running on the device. Running the install again waits for it to finish.",
+        ("Run “Install / Update Samba” again.",),
+        retryable=True,
+    ),
+    ("deploy", "xattr_migration_failed"): RecoveryInfo(
+        "The metadata migration failed",
+        "Samba metadata from the earlier version could not all be moved into the files' extended attributes. "
+        "What was already moved is kept.",
+        (
+            *_MIGRATION_DISK_STEPS,
+            "If it still fails, click “Copy Diagnostics” and report it at "
+            "https://github.com/jamesyc/TimeCapsuleSMB/issues.",
+        ),
+        retryable=True,
+        action_ids=("disk_repair",),
+    ),
     ("deploy", "reboot_not_finished"): RecoveryInfo(
         "Reboot did not finish",
-        (
-            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH "
-            "again in time. It may still be booting, or it may have come back with a "
-            "different IP address."
-        ),
+        "The installation files were copied and the restart was requested, but the device did not "
+        "answer over SSH again in time. It may still be starting up, or it may have come back "
+        "at a different IP address.",
         (
             "Wait a few more minutes.",
             "Make sure you are connected to the same network or Wi-Fi as the device.",
-            (
-                "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not get far "
-                "enough to activate Samba after the reboot."
-            ),
-            (
-                "If your device resets itself, see "
-                "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
-            ),
-            "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
+            "On NetBSD 4 devices, run “Activate” once SSH is reachable; the install did not "
+            "get far enough to activate Samba after the reboot.",
+            "If your device resets itself, see "
+            "https://github.com/jamesyc/TimeCapsuleSMB/issues/177.",
+            "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back "
+            "in.",
         ),
         retryable=True,
         suggested_operation="doctor",
@@ -398,9 +517,14 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=False,
     ),
     ("configure", "ssh_compatibility_failed"): RecoveryInfo(
-        "SSH compatibility failed",
-        "The AirPort SSH server only offered legacy algorithms that the local SSH client did not negotiate.",
-        ("Update TimeCapsuleSMB and retry.", "Check debug details for the SSH algorithm offer."),
+        "SSH connection could not be set up",
+        "The device offers only older SSH security methods, and this Mac's SSH program did not "
+        "accept them.",
+        (
+            "Update TimeCapsuleSMB, then try again.",
+            "If it keeps failing, click “Copy Diagnostics” and report it at "
+            "https://github.com/jamesyc/TimeCapsuleSMB/issues.",
+        ),
         retryable=True,
         suggested_operation="configure",
     ),
@@ -411,9 +535,13 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
     ),
     ("deploy", "validation_failed"): RecoveryInfo(
-        "Deployment validation failed",
-        "The bundled payload artifacts or deployment inputs are invalid.",
-        ("Open “Diagnostics”.", "Fix missing artifacts or invalid fields before retrying."),
+        "The install could not start",
+        "Some of the app's installation files are missing, or a setting is not valid.",
+        (
+            "Open “Diagnostics”.",
+            "Reinstall TimeCapsuleSMB if files are missing, or correct the setting, then try "
+            "again.",
+        ),
         retryable=True,
         suggested_operation="validate-install",
         action_ids=("open_diagnostics",),
@@ -429,7 +557,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("deploy", "deploy_no_disk_detected"): RecoveryInfo(
         "No internal disk detected",
-        "The device did not report any internal disk through MaSt.",
+        "The device did not report any internal disk.",
         (
             "Check that the disk is connected and seated.",
             "Power-cycle the device and retry after the disk spins up.",
@@ -440,7 +568,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("deploy", "deploy_no_usb_disk_detected"): RecoveryInfo(
         "No USB disk detected",
-        "An AirPort Extreme has no internal disk, and the device reported no USB disk through MaSt.",
+        "An AirPort Extreme has no internal disk, and the device reported no USB disk.",
         (
             "Connect a USB disk formatted for Mac (HFS+).",
             "If a disk is connected, check its power and cable, then retry.",
@@ -461,16 +589,24 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="deploy",
     ),
     ("deploy", "deploy_disk_not_writable"): RecoveryInfo(
-        "No writable payload volume",
-        "MaSt found HFS volumes, but none accepted the managed payload directory.",
-        ("Wake or remount the disk.", "Check available free space.", "Run “Install / Update Samba” again."),
+        "No writable volume for the installation files",
+        "The device found HFS volumes, but none accepted the TimeCapsuleSMB installation folder.",
+        (
+            "Wake or remount the disk.",
+            "Check available free space.",
+            "Run “Install / Update Samba” again.",
+        ),
         retryable=True,
         suggested_operation="deploy",
     ),
     ("deploy", "deploy_disk_not_mounted"): RecoveryInfo(
         "HFS disk not mounted",
-        "MaSt found HFS volumes, but none was mounted, and the device did not mount one when asked.",
-        ("Wait a minute, then run “Install / Update Samba” again.", "Restart the device if the disk still does not mount."),
+        "The device found HFS volumes, but none was mounted, and the device did not mount one "
+        "when asked.",
+        (
+            "Wait a minute, then run “Install / Update Samba” again.",
+            "Restart the device if the disk still does not mount.",
+        ),
         retryable=True,
         suggested_operation="deploy",
     ),
@@ -584,8 +720,11 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     ("fsck", "validation_failed"): RecoveryInfo(
         "Volume selection failed",
-        "The helper could not choose a mounted HFS volume for fsck.",
-        ("Select a specific HFS volume.", "Refresh mounted volumes and retry."),
+        "“Disk Repair” could not choose a mounted HFS volume.",
+        (
+            "Select a specific HFS volume.",
+            "Refresh the volume list, then try again.",
+        ),
         retryable=True,
         action_ids=("disk_repair",),
     ),
@@ -630,37 +769,54 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
     ),
     ("configure", "remote_error", "acp_enable_ssh"): RecoveryInfo(
         "ACP SSH enablement failed",
-        "The helper could not enable SSH through AirPort ACP.",
-        ("Verify the AirPort admin password.", "Power-cycle the device if AirPort Utility also cannot manage it."),
+        "Turning on SSH through AirPort ACP did not work.",
+        (
+            "Verify the AirPort admin password.",
+            "Power-cycle the device if AirPort Utility also cannot manage it.",
+        ),
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
     ("deploy", "remote_error", "read_mast"): RecoveryInfo(
         "No HFS volumes found",
-        "The device did not report a deployable HFS disk through MaSt.",
-        ("Wake the disk by opening it in Finder.", "Check the disk is installed and formatted HFS.", "Run “Install / Update Samba” again."),
+        "The device did not report an HFS disk that TimeCapsuleSMB can install to.",
+        (
+            "Wake the disk by opening it in Finder.",
+            "Check the disk is installed and formatted HFS.",
+            "Run “Install / Update Samba” again.",
+        ),
         retryable=True,
         suggested_operation="deploy",
     ),
     ("deploy", "remote_error", "select_payload_home"): RecoveryInfo(
-        "No writable payload volume",
-        "MaSt found HFS volumes, but none accepted the managed payload directory.",
-        ("Wake or remount the disk.", "Check available free space.", "Run “Install / Update Samba” again."),
+        "No writable volume for the installation files",
+        "The device found HFS volumes, but none accepted the TimeCapsuleSMB installation folder.",
+        (
+            "Wake or remount the disk.",
+            "Check available free space.",
+            "Run “Install / Update Samba” again.",
+        ),
         retryable=True,
         suggested_operation="deploy",
     ),
     ("deploy", "remote_error", "verify_payload_upload"): RecoveryInfo(
-        "Payload verification failed",
-        "The uploaded managed payload could not be verified on the HFS disk.",
-        ("Wake the disk and retry.", "Check the operation log for the failing path."),
+        "The installation files could not be checked",
+        "The copied installation files could not be checked on the HFS disk.",
+        (
+            "Wake the disk, then try again.",
+            "If it keeps failing, run “Disk Repair”.",
+        ),
         retryable=True,
         suggested_operation="deploy",
     ),
     ("deploy", "remote_error", "verify_payload_upload_after_sync"): RecoveryInfo(
-        "Payload verification failed after sync",
-        "The managed payload was not stable after flushing disk writes.",
-        ("Run “Install / Update Samba” again.", "Check the disk for write or corruption issues."),
+        "The installation files changed after saving",
+        "The copied installation files did not match after the writes were saved to the disk.",
+        (
+            "Run “Install / Update Samba” again.",
+            "If it keeps failing, run “Disk Repair”.",
+        ),
         retryable=True,
         suggested_operation="deploy",
     ),
@@ -723,8 +879,11 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
     ),
     ("fsck", "validation_failed", "select_fsck_volume"): RecoveryInfo(
         "Volume selection failed",
-        "The helper could not choose exactly one HFS volume for fsck.",
-        ("Select the target volume explicitly.", "Refresh mounted volumes and retry."),
+        "“Disk Repair” could not choose exactly one HFS volume.",
+        (
+            "Select the volume to repair.",
+            "Refresh the volume list, then try again.",
+        ),
         retryable=True,
         suggested_operation="fsck",
         action_ids=("disk_repair",),

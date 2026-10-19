@@ -91,7 +91,7 @@ struct DiagnosticsExportBuilder {
                 append("Download URL", value: payload.downloadURL, to: &lines)
             }
             if let error = context.updateError {
-                append("Error", value: "\(error.operation) \(error.code): \(error.message)", to: &lines)
+                append("Error", value: "\(error.operation) \(error.code): \(error.diagnosticMessage ?? error.message)", to: &lines)
             }
         }
 

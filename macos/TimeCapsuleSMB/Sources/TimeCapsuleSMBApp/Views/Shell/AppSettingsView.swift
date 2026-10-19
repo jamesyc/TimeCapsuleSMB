@@ -91,6 +91,13 @@ struct AppSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(updateStatusColor)
                     }
+                    if let error = appUpdateStore.error {
+                        ErrorRecoveryView(error: error) { action in
+                            if action.kind == .retry {
+                                appUpdateStore.checkNow(settings: appSettingsStore.settings)
+                            }
+                        }
+                    }
                 }
 
                 SettingsFormSection(title: L10n.string("app_settings.section.privacy"), contentWidth: contentWidth) {
@@ -168,9 +175,6 @@ struct AppSettingsView: View {
     private var updateStatusText: String {
         if let payload = appUpdateStore.payload {
             return payload.localizedSummary
-        }
-        if let error = appUpdateStore.error {
-            return error.message
         }
         return appUpdateStore.state.title
     }
