@@ -5,18 +5,21 @@ from enum import Enum
 import math
 from pathlib import Path
 
+from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 
-class AppOperationError(RuntimeError):
+
+class AppOperationError(CodedError):
+    code: ErrorCode
+
     def __init__(
         self,
         message: str,
         *,
-        code: str = "operation_failed",
+        code: ErrorCode | str = ErrorCode.OPERATION_FAILED,
         debug: object | None = None,
         recovery: object | None = None,
     ) -> None:
-        super().__init__(message)
-        self.code = code
+        super().__init__(message, code=code)
         self.debug = debug
         self.recovery = recovery
 
@@ -59,7 +62,7 @@ def bool_param(params: dict[str, object], name: str, default: bool = False) -> b
             return True
         if normalized in {"0", "false", "no", "n"}:
             return False
-    raise AppOperationError(f"{name} must be a boolean", code="validation_failed")
+    raise AppOperationError(f"{name} must be a boolean", code=ErrorCode.VALIDATION_FAILED)
 
 
 def optional_bool_param(params: dict[str, object], name: str) -> bool | None:
@@ -71,18 +74,18 @@ def optional_bool_param(params: dict[str, object], name: str) -> bool | None:
 def int_param(params: dict[str, object], name: str, default: int) -> int:
     value = params.get(name, default)
     if isinstance(value, bool):
-        raise AppOperationError(f"{name} must be an integer", code="validation_failed")
+        raise AppOperationError(f"{name} must be an integer", code=ErrorCode.VALIDATION_FAILED)
     if isinstance(value, float):
         if not math.isfinite(value) or not value.is_integer():
-            raise AppOperationError(f"{name} must be an integer", code="validation_failed")
+            raise AppOperationError(f"{name} must be an integer", code=ErrorCode.VALIDATION_FAILED)
         parsed = int(value)
     else:
         try:
             parsed = int(value)
         except (TypeError, ValueError) as exc:
-            raise AppOperationError(f"{name} must be an integer", code="validation_failed") from exc
+            raise AppOperationError(f"{name} must be an integer", code=ErrorCode.VALIDATION_FAILED) from exc
     if parsed < 0:
-        raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
+        raise AppOperationError(f"{name} must be 0 or greater", code=ErrorCode.VALIDATION_FAILED)
     return parsed
 
 
@@ -94,20 +97,20 @@ def string_param(params: dict[str, object], name: str, default: str = "") -> str
 def require_string_param(params: dict[str, object], name: str) -> str:
     value = string_param(params, name).strip()
     if not value:
-        raise AppOperationError(f"missing required parameter: {name}", code="validation_failed")
+        raise AppOperationError(f"missing required parameter: {name}", code=ErrorCode.VALIDATION_FAILED)
     return value
 
 
 def required_path_param(params: dict[str, object], name: str) -> Path:
     value = params.get(name)
     if value is None:
-        raise AppOperationError(f"missing required parameter: {name}", code="validation_failed")
+        raise AppOperationError(f"missing required parameter: {name}", code=ErrorCode.VALIDATION_FAILED)
     if isinstance(value, Path):
         path_text = str(value).strip()
     elif isinstance(value, str):
         path_text = value.strip()
     else:
-        raise AppOperationError(f"{name} must be a path string", code="validation_failed")
+        raise AppOperationError(f"{name} must be a path string", code=ErrorCode.VALIDATION_FAILED)
     if not path_text:
-        raise AppOperationError(f"missing required parameter: {name}", code="validation_failed")
+        raise AppOperationError(f"missing required parameter: {name}", code=ErrorCode.VALIDATION_FAILED)
     return Path(path_text)

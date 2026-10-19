@@ -605,7 +605,7 @@ class ConfigureServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None), \
                     mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
-                    mock.patch("timecapsulesmb.services.configure.reboot_device", side_effect=RebootFlowError("stop", "reboot_failed")):
+                    mock.patch("timecapsulesmb.services.configure.reboot_device", side_effect=RebootFlowError("stop", code="remote_error")):
                 with self.assertRaises(ConfigureFlowError):
                     run_configure_flow(
                         self.configure_request(Path(tmp) / ".env", mock.Mock(return_value=self.make_ssh_closed_probe_state())),
@@ -843,7 +843,7 @@ class ConfigureServiceTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"):
                 with mock.patch(
                     "timecapsulesmb.services.configure.reboot_device",
-                    side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, "reboot_not_finished"),
+                    side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="reboot_not_finished"),
                 ):
                     with mock.patch("timecapsulesmb.services.configure.probe_connection_state") as probe:
                         result = enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
@@ -862,7 +862,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"):
                     with mock.patch(
                         "timecapsulesmb.services.configure.reboot_device",
-                        side_effect=RebootFlowError("Reboot was requested but the device did not restart.", "reboot_not_started"),
+                        side_effect=RebootFlowError("Reboot was requested but the device did not restart.", code="reboot_not_started"),
                     ):
                         with self.assertRaises(ConfigureFlowError) as raised:
                             run_configure_flow(self.configure_request(env_path, mock.Mock(return_value=self.make_ssh_closed_probe_state())))
@@ -878,7 +878,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.services.acp_ssh.set_dbug"):
                     with mock.patch(
                         "timecapsulesmb.services.configure.reboot_device",
-                        side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, "reboot_not_finished"),
+                        side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="reboot_not_finished"),
                     ):
                         with self.assertRaises(ConfigureFlowError) as raised:
                             run_configure_flow(self.configure_request(env_path, mock.Mock(return_value=self.make_ssh_closed_probe_state())))

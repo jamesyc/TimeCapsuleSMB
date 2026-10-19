@@ -1156,7 +1156,7 @@ class AppApiTests(unittest.TestCase):
                 },
             )
             collector = CollectingSink()
-            failure = RebootFlowError("the device did not restart", "reboot_not_started")
+            failure = RebootFlowError("the device did not restart", code="reboot_not_started")
             with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
                 with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()):
                     with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
@@ -1590,7 +1590,6 @@ class AppApiTests(unittest.TestCase):
             ("unexpected-error", RuntimeError("boom"), "operation_failed"),
             # A device error keeps the cause it names, and only that.
             ("uncoded-device-error", DeviceError("device said no"), "operation_failed"),
-            ("empty-code-device-error", StorageDeviceError("device said no", code=""), "operation_failed"),
             ("coded-device-error", StorageDeviceError("Apple ACPd is broken", code="acpd_broken"), "acpd_broken"),
         )
         for operation, exception, code in cases:
@@ -3918,7 +3917,7 @@ class AppApiTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
                 with mock.patch(
                     "timecapsulesmb.app.ops.set_ssh.enable_set_ssh",
-                    side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, "reboot_not_finished"),
+                    side_effect=RebootFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="reboot_not_finished"),
                 ):
                     rc = service.run_api_request(
                         {
@@ -5767,7 +5766,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.services.deploy.reboot_device", side_effect=RebootFlowError("ACP reboot request failed: refused", "remote_error")) as reboot:
+                                                    with mock.patch("timecapsulesmb.services.deploy.reboot_device", side_effect=RebootFlowError("ACP reboot request failed: refused", code="remote_error")) as reboot:
                                                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn") as verify_runtime:
                                                             rc = service.run_api_request(
                                                                 {
@@ -5846,7 +5845,7 @@ class AppApiTests(unittest.TestCase):
 
     def test_deploy_reboot_up_timeout_uses_app_recovery_guidance(self) -> None:
         errors = self.run_deploy_with_reboot_failure(
-            RebootFlowError("Timed out waiting for SSH after reboot.", "reboot_not_finished"),
+            RebootFlowError("Timed out waiting for SSH after reboot.", code="reboot_not_finished"),
         )
         self.assertEqual(errors[0]["code"], "reboot_not_finished")
         self.assertEqual(errors[0]["message"], "Timed out waiting for SSH after reboot.")
@@ -5857,7 +5856,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_whose_acpd_stopped_says_the_update_is_installed(self) -> None:
         from timecapsulesmb.services.deploy import DEPLOY_ACPD_STOPPED_MESSAGE
 
-        errors = self.run_deploy_with_reboot_failure(RebootFlowError(DEPLOY_ACPD_STOPPED_MESSAGE, "acpd_broken"))
+        errors = self.run_deploy_with_reboot_failure(RebootFlowError(DEPLOY_ACPD_STOPPED_MESSAGE, code="acpd_broken"))
 
         self.assertEqual(errors[0]["code"], "acpd_broken")
         recovery = errors[0]["recovery"]

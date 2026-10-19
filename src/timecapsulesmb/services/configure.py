@@ -17,6 +17,7 @@ from timecapsulesmb.core.config import (
     write_env_file,
     vfs_aio_fork_enabled_in,
 )
+from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device.compat import (
@@ -53,16 +54,17 @@ SSH_ONLY_PASSWORD_DEBUG = "SSH accepted the password, but it is not the device's
 CHECK_DEVICE_MODEL_STAGE = "check_device_model"
 
 
-class ConfigureFlowError(Exception):
+class ConfigureFlowError(CodedError):
+    code: ErrorCode
+
     def __init__(
         self,
         message: str,
         *,
-        code: str = "configure_failed",
+        code: ErrorCode | str,
         debug: str | None = None,
     ) -> None:
-        super().__init__(message)
-        self.code = code
+        super().__init__(message, code=code)
         self.debug = debug
 
 
@@ -200,7 +202,7 @@ def enable_ssh_and_reprobe(
             reboot_device(host, connection.password, wait=True, callbacks=callbacks, up_timeout_message=SSH_ENABLE_TIMEOUT_MESSAGE),
         )
     except RebootFlowError as exc:
-        if exc.code != "reboot_not_finished":
+        if exc.code != ErrorCode.REBOOT_NOT_FINISHED:
             raise
         callbacks.update(ssh_final_reachable=False)
         return connection, None
@@ -253,7 +255,7 @@ def run_configure_flow(
         )
         raise ConfigureFlowError(
             unsupported_syap_message(request.selected_record_airport_syap or ""),
-            code="unsupported_device",
+            code=ErrorCode.UNSUPPORTED_DEVICE,
         )
 
     values = build_configure_env_values(
@@ -297,7 +299,7 @@ def run_configure_flow(
 
     if not probe.ssh_port_reachable:
         if not request.enable_ssh:
-            raise ConfigureFlowError("SSH is not reachable and enable_ssh is false.", code="ssh_unreachable")
+            raise ConfigureFlowError("SSH is not reachable and enable_ssh is false.", code=ErrorCode.SSH_UNREACHABLE)
         if hooks.before_enable_ssh is not None:
             hooks.before_enable_ssh(connection, probed_state)
         try:
@@ -311,22 +313,22 @@ def run_configure_flow(
         except ACPAuthError as exc:
             raise ConfigureFlowError(
                 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
-                code="auth_failed",
+                code=ErrorCode.AUTH_FAILED,
                 debug=str(exc),
             ) from exc
         except AirportIdentityMismatchError as exc:
-            raise ConfigureFlowError(str(exc), code="device_identity_mismatch") from exc
+            raise ConfigureFlowError(str(exc), code=ErrorCode.DEVICE_IDENTITY_MISMATCH) from exc
         except RebootFlowError as exc:
             raise ConfigureFlowError(str(exc), code=exc.code) from exc
         if probed_state is None:
-            raise ConfigureFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code="ssh_enable_timeout")
+            raise ConfigureFlowError(SSH_ENABLE_TIMEOUT_MESSAGE, code=ErrorCode.SSH_ENABLE_TIMEOUT)
         # The device answered at a new address: that is the one to save.
         values["TC_HOST"] = connection.host
         if hooks.after_probe is not None:
             hooks.after_probe(connection, probed_state)
         probe = probed_state.probe_result
         if not probe.ssh_port_reachable:
-            raise ConfigureFlowError("SSH did not become reachable after enabling via ACP.", code="ssh_unreachable")
+            raise ConfigureFlowError("SSH did not become reachable after enabling via ACP.", code=ErrorCode.SSH_UNREACHABLE)
 
     # SSH accepts a password whose first 8 characters are right; every later
     # reboot goes through ACP, which wants all of it, so both must accept it.
@@ -350,7 +352,7 @@ def run_configure_flow(
         if hooks.save_without_authentication is None or not hooks.save_without_authentication(probed_state):
             raise ConfigureFlowError(
                 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
-                code="auth_failed",
+                code=ErrorCode.AUTH_FAILED,
                 debug=password_error,
             )
     elif probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
@@ -379,12 +381,12 @@ def run_configure_flow(
         )
     else:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
-        raise ConfigureFlowError(probe.error or "SSH did not become reachable.", code="ssh_unreachable")
+        raise ConfigureFlowError(probe.error or "SSH did not become reachable.", code=ErrorCode.SSH_UNREACHABLE)
 
     compatibility = probed_state.compatibility
     if compatibility is not None and not compatibility.supported:
         callbacks.debug(configure_failure_reason="unsupported_device")
-        raise ConfigureFlowError(render_compatibility_message(compatibility), code="unsupported_device")
+        raise ConfigureFlowError(render_compatibility_message(compatibility), code=ErrorCode.UNSUPPORTED_DEVICE)
 
     identity = observed_device_identity(
         compatibility,
@@ -394,7 +396,7 @@ def run_configure_flow(
     expected_mac = request.expected_airport_mac or (
         request.selected_record.airport_mac if request.selected_record is not None else None)
     if expected_mac and airport_mac and expected_mac != airport_mac:
-        raise ConfigureFlowError("The device identity could not be confirmed. Refresh discovery and reconnect the saved device.", code="device_identity_mismatch")
+        raise ConfigureFlowError("The device identity could not be confirmed. Refresh discovery and reconnect the saved device.", code=ErrorCode.DEVICE_IDENTITY_MISMATCH)
     if identity.syap is not None:
         values["TC_AIRPORT_SYAP"] = identity.syap
     # Empty when the device could not say: a MAC kept from an earlier device

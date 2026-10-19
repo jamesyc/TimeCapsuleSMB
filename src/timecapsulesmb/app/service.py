@@ -4,6 +4,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 
 from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 from timecapsulesmb.services.context import DEVICE_UPDATE_FIELDS
 from timecapsulesmb.app.events import ClientDisconnected, EventSink
 from timecapsulesmb.app.ops import KEEP_AWAKE_OPERATIONS, OPERATION_PARAMS, OPERATIONS, TELEMETRY_OPERATIONS, unknown_params
@@ -15,7 +16,6 @@ from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.keep_awake import keep_system_awake
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.summaries import Summary
-from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.app import AppOperationError, OperationResult, config_path
 from timecapsulesmb.services.runtime import load_optional_env_config
@@ -27,7 +27,7 @@ from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_params,
 )
-from timecapsulesmb.transport.errors import is_ssh_timeout_error, SshClientError, SshLocalNetworkFilteredError, TransportError
+from timecapsulesmb.transport.errors import is_ssh_timeout_error, transport_error_code, TransportError
 
 
 # The result of an operation that exits cleanly without emitting its own.
@@ -42,7 +42,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             "api",
             str(exc),
             code=exc.code,
-            recovery=recovery_for("api", "invalid_request"),
+            recovery=recovery_for("api", ErrorCode.INVALID_REQUEST),
         )
         return 1
 
@@ -56,9 +56,9 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         sink.error(
             operation,
             f"unknown operation: {operation}",
-            code="unknown_operation",
+            code=ErrorCode.UNKNOWN_OPERATION,
             debug={"known_operations": sorted(OPERATIONS)},
-            recovery=recovery_for(operation, "unknown_operation"),
+            recovery=recovery_for(operation, ErrorCode.UNKNOWN_OPERATION),
         )
         return 1
     telemetry_session = _api_telemetry_session(operation, params)
@@ -72,9 +72,9 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         sink.error(
             operation,
             message,
-            code="unknown_param",
+            code=ErrorCode.UNKNOWN_PARAM,
             debug={"accepted_params": sorted(OPERATION_PARAMS[operation])},
-            recovery=recovery_for(operation, "unknown_param"),
+            recovery=recovery_for(operation, ErrorCode.UNKNOWN_PARAM),
         )
         # Only the names: a misspelled key may still carry a secret value.
         _finish_api_telemetry(
@@ -83,7 +83,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             result="failure",
             error=message,
             details={"unknown_params": unknown},
-            error_code="unknown_param",
+            error_code=ErrorCode.UNKNOWN_PARAM,
         )
         return 1
     try:
@@ -126,26 +126,21 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         sink.error(
             operation,
             str(exc),
-            code="config_error",
+            code=ErrorCode.CONFIG_ERROR,
             debug=context.failure_debug(exc),
-            recovery=recovery_for(operation, "config_error", stage=context.current_stage),
+            recovery=recovery_for(operation, ErrorCode.CONFIG_ERROR, stage=context.current_stage),
         )
         _finish_api_telemetry(
             telemetry_session,
             context,
             result="failure",
             error=context.diagnostic_error(str(exc)) or str(exc),
-            error_code="config_error",
+            error_code=ErrorCode.CONFIG_ERROR,
         )
         return 1
     except TransportError as exc:
         device_name = context.known_airport_display_name()
-        # A connection this Mac dropped gets its own guidance, not the stage's
-        # remote_error advice, which is about the device.
-        if isinstance(exc, SshClientError):
-            code = "ssh_client_failed"
-        else:
-            code = "local_network_filtered" if isinstance(exc, SshLocalNetworkFilteredError) else "remote_error"
+        code = transport_error_code(exc)
         recovery = (
             ssh_timeout_slow_device_recovery(device_name=device_name)
             if is_ssh_timeout_error(exc)
@@ -179,7 +174,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
                 for key, value in (("stopped_before_stage", exc.stage), ("disconnected_during_stage", exc.during))
                 if value
             } or None,
-            error_code="client_disconnected",
+            error_code=ErrorCode.CLIENT_DISCONNECTED,
         )
         return 130
     except KeyboardInterrupt:
@@ -187,15 +182,15 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         sink.error(
             operation,
             message,
-            code="cancelled",
-            recovery=recovery_for(operation, "cancelled", stage=context.current_stage),
+            code=ErrorCode.CANCELLED,
+            recovery=recovery_for(operation, ErrorCode.CANCELLED, stage=context.current_stage),
         )
         _finish_api_telemetry(
             telemetry_session,
             context,
             result="cancelled",
             error=context.diagnostic_error("Cancelled by user") or "Cancelled by user",
-            error_code="cancelled",
+            error_code=ErrorCode.CANCELLED,
         )
         return 130
     except SystemExit as exc:
@@ -214,24 +209,23 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         sink.error(
             operation,
             error,
-            code="operation_failed",
+            code=ErrorCode.OPERATION_FAILED,
             debug=context.failure_debug(exc),
-            recovery=recovery_for(operation, "operation_failed", stage=context.current_stage),
+            recovery=recovery_for(operation, ErrorCode.OPERATION_FAILED, stage=context.current_stage),
         )
         _finish_api_telemetry(
             telemetry_session,
             context,
             result="failure",
             error=context.diagnostic_error(error) or error,
-            error_code="operation_failed",
+            error_code=ErrorCode.OPERATION_FAILED,
         )
         return 1
     except Exception as exc:
-        # A device error that names its cause (such as acpd_broken from a disk
-        # read) keeps that code wherever an operation let it through.
-        device_code = getattr(exc, "code", None) if isinstance(exc, DeviceError) else None
-        code = device_code if isinstance(device_code, str) and device_code else "operation_failed"
-        message = str(exc) if code != "operation_failed" else f"{type(exc).__name__}: {exc}"
+        # An error that names its cause (such as acpd_broken from a disk read)
+        # keeps that code wherever an operation let it through.
+        code = (exc.code if isinstance(exc, CodedError) else None) or ErrorCode.OPERATION_FAILED
+        message = str(exc) if code != ErrorCode.OPERATION_FAILED else f"{type(exc).__name__}: {exc}"
         sink.error(
             operation,
             message,

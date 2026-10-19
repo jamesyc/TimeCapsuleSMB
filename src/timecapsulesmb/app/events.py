@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.redaction import redact_sensitive_fields
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.stage_policy import stage_policy
@@ -173,7 +174,7 @@ class EventSink:
         operation: str,
         message: str,
         *,
-        code: str = "operation_failed",
+        code: ErrorCode = ErrorCode.OPERATION_FAILED,
         details: object | None = None,
         debug: object | None = None,
         recovery: object | None = None,

@@ -7,6 +7,7 @@ import time
 
 from timecapsulesmb.checks.network import closed_ssh_port_error
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility
@@ -33,13 +34,13 @@ PasswordProvider = Callable[[str], str]
 # The error code for each way an SSH probe can stop short of a login session.
 # Configure uses the same codes. An unsupported model is never one of these:
 # that needs a successful login, and its callers raise `unsupported_device`.
-PROBE_STATUS_ERROR_CODES: dict[SshAccessStatus, str] = {
-    SshAccessStatus.AUTH_REJECTED: "auth_failed",
-    SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED: "ssh_compatibility_failed",
-    SshAccessStatus.CLIENT_FAILED: "ssh_client_failed",
-    SshAccessStatus.TRANSPORT_FAILED: "ssh_transport_failed",
-    SshAccessStatus.LOCAL_NETWORK_FILTERED: "local_network_filtered",
-    SshAccessStatus.DEVICE_PROBE_FAILED: "device_probe_failed",
+PROBE_STATUS_ERROR_CODES: dict[SshAccessStatus, ErrorCode] = {
+    SshAccessStatus.AUTH_REJECTED: ErrorCode.AUTH_FAILED,
+    SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED: ErrorCode.SSH_COMPATIBILITY_FAILED,
+    SshAccessStatus.CLIENT_FAILED: ErrorCode.SSH_CLIENT_FAILED,
+    SshAccessStatus.TRANSPORT_FAILED: ErrorCode.SSH_TRANSPORT_FAILED,
+    SshAccessStatus.LOCAL_NETWORK_FILTERED: ErrorCode.LOCAL_NETWORK_FILTERED,
+    SshAccessStatus.DEVICE_PROBE_FAILED: ErrorCode.DEVICE_PROBE_FAILED,
 }
 # How long a probe of an already set up device keeps trying a closed SSH port.
 # The probe tries port 22 once, for 2 s; in v3.1.2 telemetry several deploys
@@ -51,9 +52,7 @@ CLOSED_SSH_RECHECK_INTERVAL_SECONDS = 1.0
 class DeviceAccessError(DeviceError):
     """The SSH probe did not reach a login session; `code` says why."""
 
-    def __init__(self, message: str, *, code: str) -> None:
-        super().__init__(message)
-        self.code = code
+    code: ErrorCode
 
 
 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
@@ -127,7 +126,7 @@ def require_acpd_ready(
         reading = read_admin_password(connection)
     callbacks.debug(**password_check_fields(reading))
     if reading.password_matches is False:
-        raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code="auth_failed")
+        raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code=ErrorCode.AUTH_FAILED)
     report_airport_identity(callbacks, reading)
     problems = acpd.acpd_problems(connection, network_reading=reading)
     if problems:
@@ -136,7 +135,7 @@ def require_acpd_ready(
         # Apple's firmware, not ours (DETAIL.md, "Apple ACPd can hang during its own restart").
         raise DeviceAccessError(
             acpd.acpd_broken_message(problems[0].what, note=f"{problems[0].note}Nothing was changed. "),
-            code="acpd_broken",
+            code=ErrorCode.ACPD_BROKEN,
         )
     if reading.password_matches is None and reading.error:
         # ACPd answered its own acp and, through SSH, the network: the path
@@ -144,8 +143,8 @@ def require_acpd_ready(
         host = endpoint_host(connection.host)
         client_networks = client_networks_if_off_network(host)
         if client_networks is not None:
-            raise DeviceAccessError(device_off_network_message(host, client_networks), code="device_off_network")
-        raise DeviceAccessError(ACP_UNREACHABLE_MESSAGE.format(host=host), code="acp_unreachable")
+            raise DeviceAccessError(device_off_network_message(host, client_networks), code=ErrorCode.DEVICE_OFF_NETWORK)
+        raise DeviceAccessError(ACP_UNREACHABLE_MESSAGE.format(host=host), code=ErrorCode.ACP_UNREACHABLE)
 
 
 def learn_airport_identity(host: str, password: str, callbacks: OperationCallbacks) -> None:
@@ -195,7 +194,7 @@ def confirm_device_address(
     if trigger == "identity_mismatch":
         raise DeviceAccessError(
             f"A different AirPort answers at {endpoint_host(host)}, and this device was not found on the network.",
-            code="device_identity_mismatch",
+            code=ErrorCode.DEVICE_IDENTITY_MISMATCH,
         )
     return host, reading
 
@@ -236,7 +235,7 @@ def probe_failure_error(probe_result: ProbeResult, host: str) -> DeviceAccessErr
         return DeviceAccessError(message, code=code)
     return DeviceAccessError(
         probe_result.error or "Failed to probe device compatibility.",
-        code=PROBE_STATUS_ERROR_CODES.get(probe_result.ssh_status, "remote_error"),
+        code=PROBE_STATUS_ERROR_CODES.get(probe_result.ssh_status, ErrorCode.REMOTE_ERROR),
     )
 
 

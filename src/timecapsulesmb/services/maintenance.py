@@ -7,6 +7,7 @@ import shlex
 import time
 
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
 from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_actions, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
@@ -44,12 +45,10 @@ FSCK_NOT_UNMOUNTED_MESSAGE = (
     "File sharing stays off until the device restarts; restart it, then retry fsck."
 )
 FSCK_ALREADY_RUNNING_LINE = "tcapsule-fsck: fsck_hfs already running"
-FSCK_ALREADY_RUNNING_CODE = "fsck_already_running"
 FSCK_ALREADY_RUNNING_MESSAGE = (
     "fsck did not run: fsck_hfs from an earlier disk repair is still running on the device. "
     "Keep the Time Capsule plugged in, wait for it to finish, then run \"Disk Repair\" again."
 )
-FSCK_SESSION_DROPPED_CODE = "fsck_session_dropped"
 FSCK_SESSION_DROPPED_MESSAGE = (
     "The connection to the device ended while fsck_hfs was running. The repair keeps running "
     "on the device: keep the Time Capsule plugged in and do not restart it. Run Disk Repair "
@@ -312,18 +311,18 @@ def fsck_failure_code(status: int | None, output: str = "", *, started: bool = F
     if status is not None:
         return None
     if any(line.strip() == FSCK_ALREADY_RUNNING_LINE for line in output.splitlines()):
-        return FSCK_ALREADY_RUNNING_CODE
+        return ErrorCode.FSCK_ALREADY_RUNNING
     if started:
-        return FSCK_SESSION_DROPPED_CODE
+        return ErrorCode.FSCK_SESSION_DROPPED
     return None
 
 
 def fsck_failure_message(status: int | None, output: str = "", *, started: bool = False) -> str | None:
     if status is None:
         code = fsck_failure_code(status, output, started=started)
-        if code == FSCK_ALREADY_RUNNING_CODE:
+        if code == ErrorCode.FSCK_ALREADY_RUNNING:
             return FSCK_ALREADY_RUNNING_MESSAGE
-        if code == FSCK_SESSION_DROPPED_CODE:
+        if code == ErrorCode.FSCK_SESSION_DROPPED:
             return FSCK_SESSION_DROPPED_MESSAGE
         if any(line.strip() == FSCK_NOT_UNMOUNTED_LINE for line in output.splitlines()):
             return FSCK_NOT_UNMOUNTED_MESSAGE
@@ -418,7 +417,7 @@ def run_fsck(
             raise
         # A failed reboot must not hide a failed repair. The reboot error
         # stays first so its known message prefixes still match.
-        raise RebootFlowError(f"{exc}\n{failure}", exc.code) from exc
+        raise RebootFlowError(f"{exc}\n{failure}", code=exc.code) from exc
     runtime_restart_error = None
     runtime_restart_code = None
     if rebooting and wait and netbsd4_autostart is not None:

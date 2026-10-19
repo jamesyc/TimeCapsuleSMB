@@ -10,8 +10,8 @@ from contextlib import redirect_stderr
 from unittest import mock
 
 from timecapsulesmb.cli.runtime import confirm_despite_failing_disk
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import (
-    DISK_FAILING_CODE,
     KERNEL_DISK_MESSAGES_COMMAND,
     DiskFailingError,
     disk_errors_explain,
@@ -166,7 +166,7 @@ class RuntimeFailureTests(unittest.TestCase):
                 error = runtime_failure_error(runtime(problem=problem), "NetBSD4 activation failed.",
                                               disk_errors=self.ERRORS)
                 self.assertIsInstance(error, DiskFailingError)
-                self.assertEqual((error.code, str(error)), (DISK_FAILING_CODE, disk_failing_message(self.ERRORS)))
+                self.assertEqual((error.code, str(error)), (ErrorCode.DISK_FAILING, disk_failing_message(self.ERRORS)))
 
     def test_without_them_the_error_is_what_it_was(self) -> None:
         for errors in (None, ()):

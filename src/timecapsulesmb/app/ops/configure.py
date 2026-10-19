@@ -11,6 +11,7 @@ from timecapsulesmb.core.config import (
     parse_env_file,
     vfs_aio_fork_enabled_in,
 )
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
@@ -110,13 +111,13 @@ def update_config_settings_operation(
     if not env_path.is_file():
         raise AppOperationError(
             f"Missing device configuration file: {env_path}",
-            code="config_error",
+            code=ErrorCode.CONFIG_ERROR,
         )
     existing = parse_env_file(env_path)
     if not existing.get("TC_HOST", "").strip():
         raise AppOperationError(
             f"Missing required setting in {env_path}: TC_HOST",
-            code="config_error",
+            code=ErrorCode.CONFIG_ERROR,
         )
     try:
         values = build_managed_config_env_values(
@@ -137,7 +138,7 @@ def update_config_settings_operation(
             ata_standby=params.get("ata_standby") if "ata_standby" in params else None,
         )
     except ValueError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
 
     context.stage("write_env")
     write_configure_env_file(
@@ -166,7 +167,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         context.stage("local_network_preflight")
         raise AppOperationError(
             "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.",
-            code="local_network_permission_denied",
+            code=ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED,
         )
 
     context.stage("load_existing_config")
@@ -191,7 +192,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             ssh_opts=ssh_opts,
         )
     except ValueError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     host = target.host
     password = require_string_param(params, "password")
     context.add_debug_fields(configure_target_source=target.source)
@@ -222,7 +223,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
         )
     except ValueError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
 
     def confirm_enable_ssh(acp_host: str) -> None:
         # Name the address ACP answered at: the device may have moved.
@@ -299,35 +300,35 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             ),
         )
     except ConfigureFlowError as exc:
-        if exc.code == "auth_failed":
+        if exc.code == ErrorCode.AUTH_FAILED:
             raise AppOperationError(
                 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
-                code="auth_failed",
+                code=ErrorCode.AUTH_FAILED,
                 debug=exc.debug,
             ) from exc
-        if exc.code == "ssh_compatibility_failed":
-            raise AppOperationError(str(exc), code="ssh_compatibility_failed") from exc
-        if exc.code == "ssh_enable_timeout":
-            raise AppOperationError(str(exc), code="ssh_enable_timeout") from exc
-        if exc.code in ("device_identity_mismatch", "local_network_filtered", "ssh_client_failed"):
+        if exc.code == ErrorCode.SSH_COMPATIBILITY_FAILED:
+            raise AppOperationError(str(exc), code=ErrorCode.SSH_COMPATIBILITY_FAILED) from exc
+        if exc.code == ErrorCode.SSH_ENABLE_TIMEOUT:
+            raise AppOperationError(str(exc), code=ErrorCode.SSH_ENABLE_TIMEOUT) from exc
+        if exc.code in (ErrorCode.DEVICE_IDENTITY_MISMATCH, ErrorCode.LOCAL_NETWORK_FILTERED, ErrorCode.SSH_CLIENT_FAILED):
             raise AppOperationError(str(exc), code=exc.code) from exc
-        if exc.code == "unsupported_device":
-            raise AppOperationError(str(exc), code="unsupported_device") from exc
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        if exc.code == ErrorCode.UNSUPPORTED_DEVICE:
+            raise AppOperationError(str(exc), code=ErrorCode.UNSUPPORTED_DEVICE) from exc
+        raise AppOperationError(str(exc), code=ErrorCode.REMOTE_ERROR) from exc
     except ValueError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     except ACPDeviceOffNetworkError as exc:
-        raise AppOperationError(str(exc), code="device_off_network") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.DEVICE_OFF_NETWORK) from exc
     except ACPConnectionError as exc:
         if context.current_stage == "acp_port_probe":
             # The telemetry dashboard groups these failures by this prefix.
             raise AppOperationError(
                 f"No AirPort ACP service responded at this address: {exc}",
-                code="acp_no_route" if isinstance(exc, ACPNoRouteError) else "remote_error",
+                code=ErrorCode.ACP_NO_ROUTE if isinstance(exc, ACPNoRouteError) else ErrorCode.REMOTE_ERROR,
             ) from exc
-        raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
+        raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
     except ACPError as exc:
-        raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
+        raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
 
     context.connection = result.connection
     context.apply_probe_state(result.probe_state)

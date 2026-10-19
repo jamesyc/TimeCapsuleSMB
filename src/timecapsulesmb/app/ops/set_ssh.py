@@ -4,6 +4,7 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import set_ssh_payload
 from timecapsulesmb.app.ops.common import load_request_config, require_request_acpd_ready
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError, ACPNoRouteError
@@ -33,7 +34,7 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
         return OperationResult(True, set_ssh_payload(result))
 
     if action not in {"enable", "disable"}:
-        raise AppOperationError(f"Unsupported set-ssh action: {action}", code="validation_failed")
+        raise AppOperationError(f"Unsupported set-ssh action: {action}", code=ErrorCode.VALIDATION_FAILED)
 
     connection = resolve_env_connection(config)
     acp_host = endpoint_host(connection.host)
@@ -60,25 +61,25 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
         except ACPAuthError as exc:
             raise AppOperationError(
                 "The AirPort admin password did not work.",
-                code="auth_failed",
+                code=ErrorCode.AUTH_FAILED,
                 debug=str(exc),
             ) from exc
         except ACPDeviceOffNetworkError as exc:
-            raise AppOperationError(str(exc), code="device_off_network") from exc
+            raise AppOperationError(str(exc), code=ErrorCode.DEVICE_OFF_NETWORK) from exc
         except ACPNoRouteError as exc:
-            raise AppOperationError(str(exc), code="acp_no_route") from exc
+            raise AppOperationError(str(exc), code=ErrorCode.ACP_NO_ROUTE) from exc
         except ACPConnectionError as exc:
             if context.current_stage == "acp_port_probe":
                 # Neither SSH nor ACP answers at the saved address: the app then
                 # looks for the device elsewhere.
-                raise AppOperationError(str(exc), code="device_unreachable") from exc
-            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
+                raise AppOperationError(str(exc), code=ErrorCode.DEVICE_UNREACHABLE) from exc
+            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
         except RebootFlowError as exc:
             # SSH not opening in time keeps its own guidance: enabling it can be slow.
-            code = "ssh_enable_timeout" if exc.code == "reboot_not_finished" else exc.code
+            code = ErrorCode.SSH_ENABLE_TIMEOUT if exc.code == ErrorCode.REBOOT_NOT_FINISHED else exc.code
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=code) from exc
         except Exception as exc:
-            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
+            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
     else:
         if initial.ssh_port_reachable:
             # Disabling SSH ends in an ACP reboot: check ACPd and the password first.
@@ -95,7 +96,7 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
         except RebootFlowError as exc:
             raise AppOperationError(f"Failed to disable SSH: {exc}", code=exc.code) from exc
         except Exception as exc:
-            raise AppOperationError(f"Failed to disable SSH: {exc}", code="remote_error") from exc
+            raise AppOperationError(f"Failed to disable SSH: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
 
     context.update_fields(
         set_ssh_action=result.action,

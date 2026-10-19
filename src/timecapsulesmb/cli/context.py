@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import probe_remote_airport_identity_conn
@@ -186,9 +187,9 @@ class CommandContext:
 
     def _device_error_hint(self, code: object) -> str | None:
         """What to run next after the device did not answer or had SSH off."""
-        if code == "ssh_disabled":
+        if code == ErrorCode.SSH_DISABLED:
             return "Turn SSH on with `tcapsule set-ssh --enable`."
-        if code != "device_unreachable":
+        if code != ErrorCode.DEVICE_UNREACHABLE:
             return None
         hint = "Run `tcapsule doctor` to see which AirPorts answer on this network."
         if self.config is not None and not self.config.get("TC_AIRPORT_MAC"):

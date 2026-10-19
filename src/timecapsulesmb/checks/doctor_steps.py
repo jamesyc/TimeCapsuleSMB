@@ -55,6 +55,7 @@ from timecapsulesmb.checks.network import (
     network_display,
     reportable_network,
 )
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import RouteSelection, select_route_to_address
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
@@ -92,7 +93,6 @@ from timecapsulesmb.core.net import (
 )
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.disk_errors import (
-    DISK_FAILING_CODE,
     disk_errors_explain,
     disk_errors_in,
     disk_failing_message,
@@ -2546,11 +2546,11 @@ def _doctor_check_disk_payload(manager: ManagerStartupAgeProbeResult | None, sin
 
 
 def _doctor_disk_failing_reported(sink: DoctorSink) -> bool:
-    return any(result.details.get("code") == DISK_FAILING_CODE for result in sink.results)
+    return any(result.details.get("code") == ErrorCode.DISK_FAILING for result in sink.results)
 
 
 def _doctor_report_disk_errors(errors: tuple[str, ...], sink: DoctorSink) -> None:
-    sink.add(CheckResult("FAIL", disk_failing_message(errors), details={"code": DISK_FAILING_CODE}))
+    sink.add(CheckResult("FAIL", disk_failing_message(errors), details={"code": ErrorCode.DISK_FAILING}))
     if sink.debug_fields is not None:
         sink.debug_fields["disk_error_lines"] = list(errors[-5:])
 

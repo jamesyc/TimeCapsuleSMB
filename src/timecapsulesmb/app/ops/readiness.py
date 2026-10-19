@@ -10,6 +10,7 @@ from timecapsulesmb.app.contracts import (
     telemetry_preference_payload,
     version_check_payload,
 )
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.paths import artifact_manifest_resource, resolve_app_paths
 from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE
 from timecapsulesmb.install_validation import (
@@ -62,7 +63,7 @@ def validate_install_operation(params: dict[str, object], context: AppOperationC
 
 def set_telemetry_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     if "enabled" not in params:
-        raise AppOperationError("missing required parameter: enabled", code="validation_failed")
+        raise AppOperationError("missing required parameter: enabled", code=ErrorCode.VALIDATION_FAILED)
     enabled = bool_param(params, "enabled")
     context.stage("resolve_paths")
     app_paths = resolve_app_paths(config_path=config_path(params))
@@ -82,7 +83,7 @@ def version_check_operation(params: dict[str, object], context: AppOperationCont
     url = string_param(params, "url", VERSION_CHECK_URL).strip() or VERSION_CHECK_URL
     parsed_url = urlparse(url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise AppOperationError("url must be an HTTP/HTTPS URL", code="validation_failed")
+        raise AppOperationError("url must be an HTTP/HTTPS URL", code=ErrorCode.VALIDATION_FAILED)
     context.stage("resolve_paths")
     app_paths = resolve_app_paths(config_path=config_path(params))
     context.stage("check_version")

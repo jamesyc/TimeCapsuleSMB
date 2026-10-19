@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.services.app import AppOperationError, config_path
 from timecapsulesmb.services.credentials import overlay_request_airport_mac, overlay_request_credentials
 from timecapsulesmb.services.runtime import (
@@ -29,7 +30,7 @@ def load_request_config(params: dict[str, object], context: AppOperationContext)
         context.config = config
         context.diagnostics.follow_saved_device(context.to_operation_callbacks())
     except ValueError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     except DeviceAccessError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc
     # follow_saved_device only swaps the config for one at the device's new address.

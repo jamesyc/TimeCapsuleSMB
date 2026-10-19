@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.services.app import AppOperationError
 
 
@@ -17,13 +18,13 @@ def parse_api_request(request: Mapping[str, object]) -> ApiRequest:
     request_id = request.get("request_id")
     operation = str(request.get("operation") or "")
     if not operation:
-        raise AppOperationError("missing required field: operation", code="invalid_request")
+        raise AppOperationError("missing required field: operation", code=ErrorCode.INVALID_REQUEST)
 
     raw_params = request.get("params", {})
     if raw_params is None:
         raw_params = {}
     if not isinstance(raw_params, dict):
-        raise AppOperationError("params must be a JSON object", code="invalid_request")
+        raise AppOperationError("params must be a JSON object", code=ErrorCode.INVALID_REQUEST)
 
     return ApiRequest(
         operation=operation,

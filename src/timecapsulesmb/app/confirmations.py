@@ -5,6 +5,7 @@ import hashlib
 import json
 from typing import Mapping
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import disk_failing_warning
 from timecapsulesmb.services.app import AppOperationError, jsonable
 
@@ -48,7 +49,7 @@ class ConfirmationRequest:
 
 class AppConfirmationRequired(AppOperationError):
     def __init__(self, confirmation: ConfirmationRequest) -> None:
-        super().__init__(confirmation.message, code="confirmation_required")
+        super().__init__(confirmation.message, code=ErrorCode.CONFIRMATION_REQUIRED)
         self.confirmation = confirmation
 
 

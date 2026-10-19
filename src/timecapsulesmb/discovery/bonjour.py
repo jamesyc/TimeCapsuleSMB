@@ -5,6 +5,7 @@ import math
 import threading
 from collections.abc import Sequence
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.discovery.models import (
     SERVICE_TYPES,
     PRINTER_SERVICE_TYPES,
@@ -40,7 +41,7 @@ MIN_DISCOVERY_TIMEOUT_SEC = 5.0
 
 
 class DiscoveryTimeoutError(ValueError):
-    code = "discovery_timeout_too_short"
+    code = ErrorCode.DISCOVERY_TIMEOUT_TOO_SHORT
 
 
 def validate_discovery_timeout(value: object) -> float:

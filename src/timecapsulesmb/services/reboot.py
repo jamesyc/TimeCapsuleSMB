@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 
+from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device import acpd
 from timecapsulesmb.discovery.models import normalize_airport_mac
@@ -70,12 +71,10 @@ ACPD_STOPPED_MESSAGE = acpd.acpd_broken_message(
 )
 
 
-class RebootFlowError(RuntimeError):
+class RebootFlowError(CodedError):
     """A reboot that failed or could not be proven; `code` is the app's error code."""
 
-    def __init__(self, message: str, code: str) -> None:
-        super().__init__(message)
-        self.code = code
+    code: ErrorCode
 
 
 def reboot_device(
@@ -113,8 +112,8 @@ def reboot_device(
         return None
     u0, airport_mac, error = _read_uptime(host, password)
     if u0 is None:
-        code = "auth_failed" if isinstance(error, acp.ACPAuthError) else "device_unreachable"
-        raise RebootFlowError(f"Could not read the device's uptime through AirPort ACP before rebooting: {error}", code)
+        code = ErrorCode.AUTH_FAILED if isinstance(error, acp.ACPAuthError) else ErrorCode.DEVICE_UNREACHABLE
+        raise RebootFlowError(f"Could not read the device's uptime through AirPort ACP before rebooting: {error}", code=code)
     started = time.monotonic()
     restart_marker = _mark(ssh)
     time.sleep(1)
@@ -225,8 +224,8 @@ def _request(host: str, password: str, callbacks: OperationCallbacks, *, raise_e
     if error is None:
         callbacks.message("ACP reboot requested.")
     elif raise_errors:
-        code = "auth_failed" if isinstance(error, acp.ACPAuthError) else "remote_error"
-        raise RebootFlowError(f"ACP reboot request failed: {error}", code) from error
+        code = ErrorCode.AUTH_FAILED if isinstance(error, acp.ACPAuthError) else ErrorCode.REMOTE_ERROR
+        raise RebootFlowError(f"ACP reboot request failed: {error}", code=code) from error
     else:
         callbacks.message("ACP reboot request failed; checking whether the device is restarting anyway...")
 
@@ -273,7 +272,7 @@ def _wait(
             fields.update(_network_context(host))
         callbacks.measurement("reboot_cycle", result=result, **fields)
         if code is not None:
-            raise RebootFlowError(message, code)
+            raise RebootFlowError(message, code=code)
 
     def is_new_boot(uptime: int | None, read_started: float) -> bool:
         return uptime is not None and uptime + UPTIME_SLACK_SECONDS < u0 + (read_started - started)
@@ -305,7 +304,7 @@ def _wait(
         if uptime is not None:
             down_since = None
             if now - started >= start_timeout_seconds:
-                finish("did_not_go_down", "reboot_not_started", no_down_message)
+                finish("did_not_go_down", ErrorCode.REBOOT_NOT_STARTED, no_down_message)
             continue
         if down_since is None:
             down_since = now
@@ -337,7 +336,7 @@ def _wait(
             fields["hang_check_last"] = check
             fields["acpd_marked_checks_max"] = max(int(fields.get("acpd_marked_checks_max", 0)), marked_checks)
             if marked_checks >= HANG_CHECK_MARKED_CHECKS:
-                finish("acpd_stopped_without_reboot", "acpd_broken", stopped_message)
+                finish("acpd_stopped_without_reboot", ErrorCode.ACPD_BROKEN, stopped_message)
         if airport_mac and now - down_since >= FOLLOW_AFTER_DOWN_SECONDS and now >= next_follow:
             next_follow = now + FOLLOW_INTERVAL_SECONDS
             # One read per candidate: a device still booting fails every read,
@@ -361,7 +360,7 @@ def _wait(
                     break
         if now - down_since >= up_timeout_seconds:
             message = up_timeout_message if rejected is None else f"{up_timeout_message} {rejected.rejected_note}"
-            finish("did_not_come_back_up", "reboot_not_finished", message)
+            finish("did_not_come_back_up", ErrorCode.REBOOT_NOT_FINISHED, message)
 
     fields["reset_seen_after_sec"] = round(now - started, 3)
     if asked_ssh:
@@ -376,7 +375,7 @@ def _wait(
         deadline = now + REBOOT_SSH_TIMEOUT_SECONDS
         while not tcp_open(host, SSH_PORT):
             if time.monotonic() >= deadline:
-                finish("ssh_not_open", "reboot_not_finished", up_timeout_message)
+                finish("ssh_not_open", ErrorCode.REBOOT_NOT_FINISHED, up_timeout_message)
             time.sleep(REBOOT_POLL_SECONDS)
     else:
         # The device's uptime now is the reading plus the time since it.
@@ -387,7 +386,7 @@ def _wait(
             if attempt:
                 time.sleep(REBOOT_POLL_SECONDS)
             if tcp_open(host, SSH_PORT):
-                finish("ssh_still_open", "ssh_still_enabled", SSH_STILL_OPEN_MESSAGE)
+                finish("ssh_still_open", ErrorCode.SSH_STILL_ENABLED, SSH_STILL_OPEN_MESSAGE)
     fields["ssh_ready_after_sec"] = round(time.monotonic() - started, 3)
     callbacks.update(device_came_back_after_reboot=True)
     callbacks.message("Device is back online.")

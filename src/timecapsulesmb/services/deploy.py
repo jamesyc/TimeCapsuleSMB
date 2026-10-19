@@ -18,6 +18,7 @@ from timecapsulesmb.core.config import (
     shell_quote,
     vfs_aio_fork_enabled_in,
 )
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
@@ -516,9 +517,7 @@ class DeployArtifactValidationError(ValueError):
 
 
 class DeployDeviceError(DeviceError):
-    def __init__(self, message: str, *, code: str) -> None:
-        super().__init__(message)
-        self.code = code
+    code: ErrorCode
 
 
 FLASH_CAPACITY_MARGIN_BYTES = 16 * 1024
@@ -541,7 +540,7 @@ def _probe_flash_capacity(
     except (IndexError, ValueError) as exc:
         raise DeployDeviceError(
             "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
-            code="flash_capacity_probe_failed",
+            code=ErrorCode.FLASH_CAPACITY_PROBE_FAILED,
         ) from exc
     return available, required
 
@@ -663,18 +662,18 @@ def mast_no_volume_error(mast_discovery: MaStDiscoveryResult, *, no_internal_dis
     except Exception:
         disks = ()
     if disks:
-        return DeployDeviceError(no_hfs_partition_message(), code="deploy_no_hfs_partition")
+        return DeployDeviceError(no_hfs_partition_message(), code=ErrorCode.DEPLOY_NO_HFS_PARTITION)
     if no_internal_disk:
         return DeployDeviceError(
             no_usb_disk_message(attempts=MAST_DISCOVERY_ATTEMPTS, delay_seconds=MAST_DISCOVERY_DELAY_SECONDS),
-            code="deploy_no_usb_disk_detected",
+            code=ErrorCode.DEPLOY_NO_USB_DISK_DETECTED,
         )
     return DeployDeviceError(
         no_mast_volumes_message(
             attempts=MAST_DISCOVERY_ATTEMPTS,
             delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
         ),
-        code="deploy_no_disk_detected",
+        code=ErrorCode.DEPLOY_NO_DISK_DETECTED,
     )
 
 
@@ -719,7 +718,7 @@ def _report_interrupted_install(connection: SshConnection) -> Iterator[None]:
     except Exception as exc:
         if is_ssh_timeout_error(exc) or ssh_master_alive(connection):
             raise
-        raise DeployDeviceError(INSTALL_INTERRUPTED_MESSAGE, code="install_interrupted") from exc
+        raise DeployDeviceError(INSTALL_INTERRUPTED_MESSAGE, code=ErrorCode.INSTALL_INTERRUPTED) from exc
 
 
 def _manager_stop_timed_out(exc: BaseException) -> bool:
@@ -873,15 +872,15 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
     if compatibility is None:
         raise probe_failure_error(probe_state.probe_result, target.connection.host)
     if not compatibility.supported and not allow_unsupported:
-        raise DeployDeviceError(render_compatibility_message(compatibility), code="unsupported_device")
+        raise DeployDeviceError(render_compatibility_message(compatibility), code=ErrorCode.UNSUPPORTED_DEVICE)
     if not compatibility.payload_family:
         compatibility_message = render_compatibility_message(compatibility)
         if compatibility_message:
             raise DeployDeviceError(
                 f"{compatibility_message}\nNo deployable payload is available for this detected device.",
-                code="unsupported_device",
+                code=ErrorCode.UNSUPPORTED_DEVICE,
             )
-        raise DeployDeviceError("No deployable payload is available for this detected device.", code="unsupported_device")
+        raise DeployDeviceError("No deployable payload is available for this detected device.", code=ErrorCode.UNSUPPORTED_DEVICE)
     return compatibility
 
 
@@ -892,7 +891,7 @@ def prepare_deploy_payload_context(
     rc_local_autostart: bool,
 ) -> DeployPayloadContext:
     if not compatibility.payload_family:
-        raise DeployDeviceError("No deployable payload is available for this detected device.", code="unsupported_device")
+        raise DeployDeviceError("No deployable payload is available for this detected device.", code=ErrorCode.UNSUPPORTED_DEVICE)
     payload_family = compatibility.payload_family
     is_netbsd4 = is_netbsd4_payload_family(payload_family)
     return DeployPayloadContext(
@@ -953,11 +952,11 @@ def select_deploy_payload_home(
         volume_count = len(mast_discovery.volumes)
         # One code per cause: the app shows its own text for each code.
         if any(check.mounted for check in selection.checks):
-            message, code = no_writable_mast_volumes_message(volume_count), "deploy_disk_not_writable"
+            message, code = no_writable_mast_volumes_message(volume_count), ErrorCode.DEPLOY_DISK_NOT_WRITABLE
         elif any(check.mount.present for check in selection.checks):
-            message, code = unconfirmed_mast_volumes_message(volume_count), "deploy_disk_not_confirmed"
+            message, code = unconfirmed_mast_volumes_message(volume_count), ErrorCode.DEPLOY_DISK_NOT_CONFIRMED
         else:
-            message, code = no_mounted_mast_volumes_message(volume_count), "deploy_disk_not_mounted"
+            message, code = no_mounted_mast_volumes_message(volume_count), ErrorCode.DEPLOY_DISK_NOT_MOUNTED
         raise DeployDeviceError(message, code=code)
     return selection.payload_home
 
@@ -1119,7 +1118,7 @@ def wait_for_previous_migration(
             callbacks.measurement("previous_migration_wait", waited_sec=round(monotonic() - started, 1),
                                   phase=phase, outcome="stalled")
             callbacks.debug(previous_migration_pids=[migration.pid for migration in activity.migrations])
-            raise DeployDeviceError(PREVIOUS_MIGRATION_STALLED_MESSAGE, code="previous_migration_stalled")
+            raise DeployDeviceError(PREVIOUS_MIGRATION_STALLED_MESSAGE, code=ErrorCode.PREVIOUS_MIGRATION_STALLED)
         sleep(PREVIOUS_MIGRATION_POLL_SECONDS)
         try:
             activity = probe(connection)
@@ -1230,24 +1229,24 @@ def upload_and_verify_deployment_payload(
         if stalled:
             raise DeployDeviceError(
                 f"{XATTR_MIGRATION_STALLED_MESSAGE}\n{diagnostic}\n{exc}",
-                code="xattr_migration_stalled",
+                code=ErrorCode.XATTR_MIGRATION_STALLED,
             ) from exc
         if timed_out:
             raise DeployDeviceError(
                 f"{XATTR_MIGRATION_TIMEOUT_MESSAGE}\n{diagnostic}\n{exc}",
-                code="xattr_migration_timeout",
+                code=ErrorCode.XATTR_MIGRATION_TIMEOUT,
             ) from exc
         if isinstance(exc, MigrationExitError) and exc.connection_lost:
             raise DeployDeviceError(
                 f"{XATTR_MIGRATION_CONNECTION_LOST_MESSAGE}\n{diagnostic}\n{exc}",
-                code="xattr_migration_connection_lost",
+                code=ErrorCode.XATTR_MIGRATION_CONNECTION_LOST,
             ) from exc
         if exit_signal is not None:
             crashed = exit_signal in CRASH_SIGNALS
             message = XATTR_MIGRATION_CRASHED_MESSAGE if crashed else XATTR_MIGRATION_STOPPED_MESSAGE
             raise DeployDeviceError(
                 f"{message.format(signal=exit_signal)}\n{diagnostic}\n{exc}",
-                code="xattr_migration_crashed" if crashed else "xattr_migration_stopped",
+                code=ErrorCode.XATTR_MIGRATION_CRASHED if crashed else ErrorCode.XATTR_MIGRATION_STOPPED,
             ) from exc
         folder = unreadable_folder(connection, log) if isinstance(exc, MigrationExitError) and log else None
         if folder:
@@ -1260,11 +1259,11 @@ def upload_and_verify_deployment_payload(
             ))
             raise DeployDeviceError(
                 f"{message}\n{diagnostic}\n{exc}",
-                code="xattr_migration_unreadable_folder" if uninstall else "xattr_migration_unreadable_folder_repair_only",
+                code=ErrorCode.XATTR_MIGRATION_UNREADABLE_FOLDER if uninstall else ErrorCode.XATTR_MIGRATION_UNREADABLE_FOLDER_REPAIR_ONLY,
             ) from exc
         raise DeployDeviceError(
             f"Native HFS metadata migration ({phase}) failed.\n{diagnostic}\n{exc}",
-            code="xattr_migration_failed",
+            code=ErrorCode.XATTR_MIGRATION_FAILED,
         ) from exc
 
     def run_xattr_migration_phase(phase: str) -> None:
@@ -1358,7 +1357,7 @@ def upload_and_verify_deployment_payload(
             run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
         except Exception as exc:
             if _manager_stop_timed_out(exc):
-                raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code="manager_stop_timeout") from exc
+                raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code=ErrorCode.MANAGER_STOP_TIMEOUT) from exc
             raise
         # Disabling rc.local is a Flash write; make it durable before any
         # metadata conversion or removal of the historical runtime.
@@ -1427,7 +1426,7 @@ def upload_and_verify_deployment_payload(
                     **_upload_timeout_fields(exc),
                 )
                 if _payload_upload_timed_out(exc, migration_transfer, plan):
-                    raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc
+                    raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code=ErrorCode.PAYLOAD_UPLOAD_TIMEOUT) from exc
                 raise
             record_uploaded(migration_transfer)
             def remove_migration_helper() -> None:
@@ -1490,7 +1489,7 @@ def upload_and_verify_deployment_payload(
         except Exception as exc:
             raise DeployDeviceError(
                 "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
-                code="flash_capacity_probe_failed",
+                code=ErrorCode.FLASH_CAPACITY_PROBE_FAILED,
             ) from exc
         callbacks.debug(
             flash_available_bytes=available_flash_bytes,
@@ -1501,7 +1500,7 @@ def upload_and_verify_deployment_payload(
                 "Not enough free space on /mnt/Flash after cleanup "
                 f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
                 "Installation is incomplete; free space and rerun deploy.",
-                code="insufficient_flash_space",
+                code=ErrorCode.INSUFFICIENT_FLASH_SPACE,
             )
 
         if initial_upload_stage is not None:
@@ -1533,7 +1532,7 @@ def upload_and_verify_deployment_payload(
                     **_upload_timeout_fields(exc),
                 )
             if _payload_upload_timed_out(exc, active_upload, plan):
-                raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc
+                raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code=ErrorCode.PAYLOAD_UPLOAD_TIMEOUT) from exc
             raise
         finally:
             callbacks.measurement(

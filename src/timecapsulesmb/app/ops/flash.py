@@ -12,6 +12,7 @@ from timecapsulesmb.app.ops.common import (
 )
 from timecapsulesmb.app.ops.deploy import device_operation_error
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.flash import FlashAnalysisError
 from timecapsulesmb.flash_workflow import FlashPlan, SecondaryBankInvalidError, SecondaryBankReadMismatchError
@@ -49,7 +50,7 @@ PLAN_OPERATIONS = {"patch", "restore", "check_apple", "download_only"}
 def flash_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     action = string_param(params, "action", "backup").strip() or "backup"
     if action not in FLASH_ACTIONS:
-        raise AppOperationError(f"Unsupported flash action: {action}", code="validation_failed")
+        raise AppOperationError(f"Unsupported flash action: {action}", code=ErrorCode.VALIDATION_FAILED)
     context.update_fields(flash_action=action)
     if action == "backup":
         return _backup_operation(params, context)
@@ -73,14 +74,14 @@ def _firmware_version_param(params: dict[str, object]) -> str | None:
 def _plan_operation_param(params: dict[str, object]) -> str:
     plan_operation = string_param(params, "mode", "patch").strip() or "patch"
     if plan_operation not in PLAN_OPERATIONS:
-        raise AppOperationError(f"Unsupported flash plan mode: {plan_operation}", code="validation_failed")
+        raise AppOperationError(f"Unsupported flash plan mode: {plan_operation}", code=ErrorCode.VALIDATION_FAILED)
     return plan_operation
 
 
 def _write_operation_param(params: dict[str, object]) -> str:
     plan_operation = _plan_operation_param(params)
     if plan_operation not in WRITE_OPERATIONS:
-        raise AppOperationError(f"Flash mode {plan_operation} does not write firmware", code="validation_failed")
+        raise AppOperationError(f"Flash mode {plan_operation} does not write firmware", code=ErrorCode.VALIDATION_FAILED)
     return plan_operation
 
 
@@ -90,7 +91,7 @@ def _write_reboot_policy(params: dict[str, object], plan_operation: str) -> tupl
     if plan_operation == "patch" and reboot_after_write:
         raise AppOperationError(
             "Flash patch cannot request reboot; power cycle manually after the validated write",
-            code="validation_failed",
+            code=ErrorCode.VALIDATION_FAILED,
         )
     wait_after_reboot = bool_param(params, "wait_after_reboot", True) if reboot_after_write else False
     return reboot_after_write, wait_after_reboot
@@ -113,7 +114,7 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> Fl
             log=context.log,
         )
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code="unsupported_device") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.UNSUPPORTED_DEVICE) from exc
     # Every flash read and write goes through ACPd, and a restore ends in an
     # ACP reboot: refuse a stuck ACPd before the first read.
     require_request_acpd_ready(context, target.connection)
@@ -133,9 +134,9 @@ def _backup_operation(params: dict[str, object], context: AppOperationContext) -
             stage=context.stage,
         )
     except FlashAnalysisError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     except TransportError as exc:
-        raise AppOperationError(f"SSH flash read failed: {exc}", code="remote_error") from exc
+        raise AppOperationError(f"SSH flash read failed: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
     return OperationResult(True, flash_backup_payload(bundle.manifest))
 
 
@@ -163,11 +164,11 @@ def _plan_operation(params: dict[str, object], context: AppOperationContext) -> 
             firmware_version=firmware_version,
         )
     except SecondaryBankInvalidError as exc:
-        raise AppOperationError(str(exc), code="secondary_bank_invalid") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_INVALID) from exc
     except SecondaryBankReadMismatchError as exc:
-        raise AppOperationError(str(exc), code="secondary_bank_read_mismatch") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_READ_MISMATCH) from exc
     except FlashAnalysisError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     return OperationResult(True, flash_plan_payload(bundle.manifest))
 
 
@@ -235,13 +236,13 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
             firmware_version=firmware_version,
         )
     except SecondaryBankInvalidError as exc:
-        raise AppOperationError(str(exc), code="secondary_bank_invalid") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_INVALID) from exc
     except SecondaryBankReadMismatchError as exc:
-        raise AppOperationError(str(exc), code="secondary_bank_read_mismatch") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_READ_MISMATCH) from exc
     except FlashAnalysisError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     if plan is None:
-        raise AppOperationError("Flash write has no plan", code="validation_failed")
+        raise AppOperationError("Flash write has no plan", code=ErrorCode.VALIDATION_FAILED)
     if plan.already_satisfied:
         record_write_outcome(
             bundle=bundle,
@@ -321,9 +322,9 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
         )
         context.stage("post_write_validation")
     except FlashAnalysisError as exc:
-        raise AppOperationError(str(exc), code="operation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.OPERATION_FAILED) from exc
     except TransportError as exc:
-        raise AppOperationError(f"SSH post-write validation failed: {exc}", code="remote_error") from exc
+        raise AppOperationError(f"SSH post-write validation failed: {exc}", code=ErrorCode.REMOTE_ERROR) from exc
     try:
         finish_validated_write(
             target=target,

@@ -3,12 +3,11 @@ backend.recovery.<localization_key>.title, .message and .action.N (the
 helper's English error text below it is diagnostics), and one-line errors from
 backend.error.<operation>.<code> (else backend.error.<code>, else the recovery
 title). These tests keep every catalog complete, the English catalog in the
-helper's words, and every error the helper raises with guidance of its own.
+helper's words, and every ErrorCode with guidance of its own.
 """
 from __future__ import annotations
 
 import json
-import pathlib
 import re
 import unittest
 from unittest import mock
@@ -16,6 +15,7 @@ from unittest import mock
 from tests.test_summaries import LANGUAGES, catalog, placeholder_types
 from timecapsulesmb.app import recovery
 from timecapsulesmb.app.ops import OPERATION_SPECS
+from timecapsulesmb.core.error_codes import GENERIC_CODES, ErrorCode
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS, DeployedVersionProbeResult
 from timecapsulesmb.device.storage import (
@@ -32,7 +32,6 @@ from timecapsulesmb.services.activation import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import DeployDeviceError, select_deploy_payload_home
-from timecapsulesmb.services.maintenance import FSCK_ALREADY_RUNNING_CODE, FSCK_SESSION_DROPPED_CODE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 
 RECOVERY_PART = re.compile(r"\.(title|message|action\.\d+)$")
@@ -117,37 +116,39 @@ class RecoveryCatalogTests(unittest.TestCase):
                     self.assertIn(RECOVERY_PART.sub("", key.removeprefix("backend.recovery.")), keys)
 
 
-# Raised only where no app reads it: the CLI's configure.
-CODES_THE_APP_NEVER_SHOWS = frozenset({"ssh_unreachable"})
-GENERIC_RECOVERY_KEYS = frozenset({"operation_failed", "remote_error"})
-
-
-def raised_error_codes() -> set[str]:
-    """Every literal error code in the helper's source, with each branch of
-    `code="a" if ... else "b"`."""
-    source = pathlib.Path(recovery.__file__).resolve().parents[1]
-    codes: set[str] = set()
-    for path in source.rglob("*.py"):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            for match in re.finditer(r"(?<![A-Za-z_])code=(.*)", line):
-                codes.update(re.findall(r'"([a-z][a-z0-9_]+)"', match.group(1)))
-    return codes
+# configure turns ssh_unreachable into another code before the app sees it, and
+# only telemetry records a client that disconnected.
+CODES_THE_APP_NEVER_SHOWS = frozenset({ErrorCode.SSH_UNREACHABLE, ErrorCode.CLIENT_DISCONNECTED})
 
 
 class RecoveryCoverageTests(unittest.TestCase):
-    def test_every_error_the_helper_raises_has_guidance_of_its_own(self) -> None:
+    def test_every_error_code_has_guidance_of_its_own(self) -> None:
         # The generic entries say only that something failed; a code the
         # helper chose for a known cause must say what to do about it.
         operations = [spec.name for spec in OPERATION_SPECS]
-        codes = raised_error_codes() - CODES_THE_APP_NEVER_SHOWS - GENERIC_RECOVERY_KEYS
-        self.assertGreater(len(codes), 30)  # the scan found the raise sites
-        for code in sorted(codes):
+        generic_keys = {code.value for code in GENERIC_CODES}
+        for code in ErrorCode:
+            if code in GENERIC_CODES or code in CODES_THE_APP_NEVER_SHOWS:
+                continue
             with self.subTest(code=code):
                 keys = {recovery.recovery_for(operation, code)["localization_key"] for operation in operations}
-                self.assertFalse(keys <= GENERIC_RECOVERY_KEYS, keys)
+                self.assertFalse(keys <= generic_keys, keys)
 
-    def test_the_app_never_shown_list_names_only_raised_codes(self) -> None:
-        self.assertLessEqual(CODES_THE_APP_NEVER_SHOWS, raised_error_codes())
+    def test_codes_the_app_never_shows_have_no_guidance(self) -> None:
+        # Guidance for one of them would be text no user can reach.
+        for code in CODES_THE_APP_NEVER_SHOWS:
+            with self.subTest(code=code):
+                self.assertEqual(recovery.recovery_for("configure", code)["localization_key"], ErrorCode.OPERATION_FAILED)
+
+    def test_every_recovery_entry_is_keyed_by_an_error_code(self) -> None:
+        codes = (
+            list(recovery._DEFAULTS)
+            + [code for _, code in recovery._OPERATION_CODE_RECOVERY]
+            + [code for _, code, _ in recovery._STAGE_RECOVERY]
+        )
+        for code in codes:
+            with self.subTest(code=code):
+                self.assertIsInstance(code, ErrorCode)
 
 
 class ErrorCodeCatalogTests(unittest.TestCase):
@@ -250,7 +251,7 @@ class ErrorCodeCatalogTests(unittest.TestCase):
     def test_each_disk_repair_without_a_result_has_its_own_app_text(self) -> None:
         # An earlier repair still running and a session lost mid-repair need
         # different advice from "fsck did not run".
-        for code in (FSCK_ALREADY_RUNNING_CODE, FSCK_SESSION_DROPPED_CODE):
+        for code in (ErrorCode.FSCK_ALREADY_RUNNING, ErrorCode.FSCK_SESSION_DROPPED):
             with self.subTest(code=code):
                 self.assertEqual(recovery.recovery_for("fsck", code)["localization_key"], f"fsck.{code}")
                 for language in LANGUAGES:

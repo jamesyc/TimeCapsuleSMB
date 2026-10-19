@@ -19,6 +19,7 @@ from timecapsulesmb.core.config import (
     parse_bool,
     parse_env_file,
 )
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
@@ -556,17 +557,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.no_enable_ssh:
                 raise configure_service.ConfigureFlowError(
                     "SSH is not reachable and --no-enable-ssh was provided.",
-                    code="ssh_unreachable",
+                    code=ErrorCode.SSH_UNREACHABLE,
                 )
             if no_input_enabled(args) and not args.enable_ssh:
                 raise configure_service.ConfigureFlowError(
                     "SSH is not reachable. In non-interactive mode, use --enable-ssh --yes to enable SSH via ACP.",
-                    code="ssh_unreachable",
+                    code=ErrorCode.SSH_UNREACHABLE,
                 )
             if no_input_enabled(args) and not args.yes:
                 raise configure_service.ConfigureFlowError(
                     "configure --enable-ssh in non-interactive mode requires --yes.",
-                    code="ssh_unreachable",
+                    code=ErrorCode.SSH_UNREACHABLE,
                 )
 
         def save_without_authentication(probed_state: ProbedDeviceState) -> bool:
@@ -647,7 +648,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     print(str(exc))
                 return fail_configure(message)
             except configure_service.ConfigureFlowError as exc:
-                if exc.code == "auth_failed":
+                if exc.code == ErrorCode.AUTH_FAILED:
                     if no_input_enabled(args):
                         return fail_configure(
                             str(exc),
@@ -661,9 +662,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     command_context.set_stage("prompt_host_password")
                     prompt_host_and_password(existing, values, discovered_host, ssh_opts)
                     continue
-                if exc.code == "unsupported_device":
+                if exc.code == ErrorCode.UNSUPPORTED_DEVICE:
                     raise SystemExit(str(exc))
-                if exc.code == "ssh_enable_timeout":
+                if exc.code == ErrorCode.SSH_ENABLE_TIMEOUT:
                     return fail_configure(
                         "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again."
                     )

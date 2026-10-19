@@ -782,7 +782,7 @@ class UninstallTests(unittest.TestCase):
 
     def test_failed_reboot_skips_verification(self) -> None:
         plan, _recorder, _mount = self.prepare()
-        error = RebootFlowError(UNINSTALL_REBOOT_NO_DOWN_MESSAGE, "reboot_not_started")
+        error = RebootFlowError(UNINSTALL_REBOOT_NO_DOWN_MESSAGE, code="reboot_not_started")
         result, _recorder, _reboot, verify = self.reboot(plan, reboot_error=error)
 
         self.assertIs(result, error)

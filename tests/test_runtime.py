@@ -595,7 +595,7 @@ class RequireSupportedPayloadTests(unittest.TestCase):
         with self.assertRaises(DeviceError) as raised:
             require_supported_payload(self.target(None), allow_unsupported=False)
 
-        self.assertFalse(hasattr(raised.exception, "code"))
+        self.assertIsNone(raised.exception.code)
 
 
 class RequireAcpdReadyPasswordTests(unittest.TestCase):

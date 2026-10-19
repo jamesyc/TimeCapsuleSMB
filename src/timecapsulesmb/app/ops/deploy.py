@@ -11,6 +11,7 @@ from timecapsulesmb.core.config import (
     parse_bool,
     vfs_aio_fork_enabled_in,
 )
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.app.ops.common import (
@@ -67,9 +68,8 @@ def optional_unsigned_int_override_param(params: dict[str, object], name: str) -
     return int_param(params, name, 0)
 
 
-def _device_error_code(exc: DeviceError) -> str:
-    code = getattr(exc, "code", "")
-    return code if isinstance(code, str) and code else "remote_error"
+def _device_error_code(exc: DeviceError) -> ErrorCode:
+    return exc.code or ErrorCode.REMOTE_ERROR
 
 
 def device_operation_error(
@@ -153,13 +153,13 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     if "nbns_enabled" in params:
         raise AppOperationError(
             "nbns_enabled has been removed; Apple's native NBNS service is always enabled.",
-            code="validation_failed",
+            code=ErrorCode.VALIDATION_FAILED,
         )
     dry_run = bool_param(params, "dry_run")
     if bool_param(params, "no_reboot"):
         raise AppOperationError(
             "Deployment now requires a reboot. Remove no_reboot and retry; no device changes were made.",
-            code="validation_failed",
+            code=ErrorCode.VALIDATION_FAILED,
         )
     no_wait = bool_param(params, "no_wait")
     rsync_enabled = bool_param(params, "rsync_enabled")
@@ -233,7 +233,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
         )
     except ValueError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     fruit_metadata_netatalk = bool_param(
         params,
         "fruit_metadata_netatalk",
@@ -255,7 +255,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             device_reading=context.reading_at(connection),
         )
     except DeployArtifactValidationError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     except DeviceError as exc:
         raise device_operation_error(context, exc) from exc
     payload_context = preflight.payload_context
@@ -372,7 +372,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             on_verified=log_payload_verification,
         )
     except ValueError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     except DeviceError as exc:
         raise device_operation_error(context, exc) from exc
 

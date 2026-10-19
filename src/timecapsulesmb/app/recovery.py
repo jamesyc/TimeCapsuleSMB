@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.transport.errors import LOCAL_NETWORK_FILTERED_MESSAGE, SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 
@@ -45,39 +46,39 @@ _MISMATCH_STEPS = (
 )
 
 _DEFAULTS: dict[str, RecoveryInfo] = {
-    "invalid_request": RecoveryInfo(
+    ErrorCode.INVALID_REQUEST: RecoveryInfo(
         _MISMATCH_TITLE,
         _MISMATCH_MESSAGE,
         _MISMATCH_STEPS,
         retryable=True,
     ),
-    "unknown_param": RecoveryInfo(
+    ErrorCode.UNKNOWN_PARAM: RecoveryInfo(
         _MISMATCH_TITLE,
         _MISMATCH_MESSAGE,
         _MISMATCH_STEPS,
         # Resending the same request fails the same way.
         retryable=False,
     ),
-    "unknown_operation": RecoveryInfo(
+    ErrorCode.UNKNOWN_OPERATION: RecoveryInfo(
         _MISMATCH_TITLE,
         _MISMATCH_MESSAGE,
         _MISMATCH_STEPS,
         retryable=False,
     ),
-    "validation_failed": RecoveryInfo(
+    ErrorCode.VALIDATION_FAILED: RecoveryInfo(
         "Request validation failed",
         "One or more operation parameters were missing or invalid.",
         ("Review the highlighted fields.", "Retry with valid values."),
         retryable=True,
     ),
-    "device_identity_mismatch": RecoveryInfo(
+    ErrorCode.DEVICE_IDENTITY_MISMATCH: RecoveryInfo(
         "Device identity could not be confirmed",
         "The device identity could not be confirmed. Refresh discovery and reconnect the saved device.",
         ("Refresh discovery and reconnect the saved device.",),
         retryable=True,
         suggested_operation="configure",
     ),
-    "config_error": RecoveryInfo(
+    ErrorCode.CONFIG_ERROR: RecoveryInfo(
         "Configuration error",
         "The current .env configuration could not be read or used.",
         ("Open the configuration step.", "Verify host, password, and SSH options."),
@@ -85,7 +86,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
-    "local_network_permission_denied": RecoveryInfo(
+    ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED: RecoveryInfo(
         "Local Network access blocked",
         "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.",
         (
@@ -103,7 +104,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         action_ids=("open_system_settings", "retry"),
     ),
     # The helper's own message names the address and this Mac's networks.
-    "device_off_network": RecoveryInfo(
+    ErrorCode.DEVICE_OFF_NETWORK: RecoveryInfo(
         "Device not on this Mac's network",
         "The device's address isn't on this Mac's network. Check the address, or connect this Mac "
         "to the device's network by Wi-Fi or one of its LAN ports, then try again.",
@@ -111,13 +112,13 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
     ),
     # No step: the filtering app may be a VPN the user cannot turn off.
-    "local_network_filtered": RecoveryInfo(
+    ErrorCode.LOCAL_NETWORK_FILTERED: RecoveryInfo(
         "Connection blocked on this Mac",
         LOCAL_NETWORK_FILTERED_MESSAGE,
         (),
         retryable=True,
     ),
-    "auth_failed": RecoveryInfo(
+    ErrorCode.AUTH_FAILED: RecoveryInfo(
         "Authentication failed",
         "The device rejected the supplied password or SSH credentials.",
         ("Re-enter the AirPort admin password.", "Verify that SSH is enabled on the device."),
@@ -127,7 +128,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # Shared by causes that are not an unsupported model, such as flash or Activate
     # on NetBSD 6, so it must not tell the user to forget a working device.
-    "unsupported_device": RecoveryInfo(
+    ErrorCode.UNSUPPORTED_DEVICE: RecoveryInfo(
         "Unsupported device",
         "This operation is not supported on the detected AirPort model or OS.",
         (
@@ -136,7 +137,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=False,
     ),
-    "ssh_compatibility_failed": RecoveryInfo(
+    ErrorCode.SSH_COMPATIBILITY_FAILED: RecoveryInfo(
         "SSH connection could not be set up",
         "This Mac's SSH program and the device could not agree on how to secure the connection.",
         (
@@ -150,7 +151,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # The SSH probe's other outcomes (services.runtime.probe_failure_error).
     # None of them says anything about the model, so none may suggest it is
     # unsupported or that the device should be forgotten.
-    "ssh_disabled": RecoveryInfo(
+    ErrorCode.SSH_DISABLED: RecoveryInfo(
         "SSH is turned off",
         "The device answers AirPort ACP, but its SSH port is closed. SSH turns off after a reset, "
         "or when it is disabled in “SSH Access”.",
@@ -158,7 +159,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         action_ids=("open_ssh_access",),
     ),
-    "device_unreachable": RecoveryInfo(
+    ErrorCode.DEVICE_UNREACHABLE: RecoveryInfo(
         "Device not reachable",
         "Neither SSH nor AirPort ACP answered at the device's saved address.",
         (
@@ -167,7 +168,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
-    "ssh_client_failed": RecoveryInfo(
+    ErrorCode.SSH_CLIENT_FAILED: RecoveryInfo(
         "SSH on this Mac failed",
         "The SSH program on this Mac could not finish.",
         (
@@ -177,14 +178,14 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
-    "ssh_transport_failed": RecoveryInfo(
+    ErrorCode.SSH_TRANSPORT_FAILED: RecoveryInfo(
         "SSH connection dropped",
         "The device accepted the SSH connection, then closed it before login. "
         "This can happen while the device is starting up or busy.",
         ("Wait a minute, then try again.", "If this keeps happening, restart the device."),
         retryable=True,
     ),
-    "device_probe_failed": RecoveryInfo(
+    ErrorCode.DEVICE_PROBE_FAILED: RecoveryInfo(
         "Device check failed",
         "TimeCapsuleSMB logged in over SSH but could not read the device's system information.",
         ("Try again.", "Run “Checkup” for details."),
@@ -194,21 +195,21 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # Configure and set-ssh: ACP took the request but SSH did not open within
     # services.reboot.REBOOT_UP_TIMEOUT_SECONDS.
-    "ssh_enable_timeout": RecoveryInfo(
+    ErrorCode.SSH_ENABLE_TIMEOUT: RecoveryInfo(
         "SSH has not opened yet",
         "Turning on SSH restarts the device. Some devices take longer to restart than TimeCapsuleSMB waits.",
         ("Wait a few minutes, then try again.", "If SSH still does not open, restart the device, then try again."),
         retryable=True,
     ),
     # services.reboot.reboot_device: every reboot that does not finish.
-    "reboot_not_started": RecoveryInfo(
+    ErrorCode.REBOOT_NOT_STARTED: RecoveryInfo(
         "Reboot did not start",
         "The reboot request was sent, but the device did not restart.",
         ("Power-cycle the device.", "Try again once the device is reachable."),
         retryable=True,
         suggested_operation="doctor",
     ),
-    "reboot_not_finished": RecoveryInfo(
+    ErrorCode.REBOOT_NOT_FINISHED: RecoveryInfo(
         "Reboot did not finish",
         (
             "The device went offline or restarted, but did not come back in time. It may still be "
@@ -226,7 +227,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # Apple's firmware, not ours: a stuck ACPd refused before anything changed,
     # tore itself down without restarting the device, or stopped answering
     # syUT (services.runtime.require_acpd_ready, services.reboot).
-    "acpd_broken": RecoveryInfo(
+    ErrorCode.ACPD_BROKEN: RecoveryInfo(
         "Apple ACPd is broken",
         "Apple's AirPort service (ACPd) on the device is stuck. This is a bug in Apple's firmware, not TimeCapsuleSMB.",
         (
@@ -239,7 +240,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # ACPd answers the device's own acp and, through SSH, the network, but
     # not this Mac: the path is blocked (services.runtime.require_acpd_ready).
-    "acp_unreachable": RecoveryInfo(
+    ErrorCode.ACP_UNREACHABLE: RecoveryInfo(
         "AirPort ACP not reachable",
         "This Mac cannot reach AirPort ACP (port 5009) on the device, although the device's own ACP works.",
         (
@@ -250,7 +251,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # fsck: the reboot finished, but the installed runtime did not start again
     # (services.activation.start_netbsd4_runtime_after_reboot).
-    "runtime_not_restarted": RecoveryInfo(
+    ErrorCode.RUNTIME_NOT_RESTARTED: RecoveryInfo(
         "File sharing did not restart",
         "The device restarted, but the installed TimeCapsuleSMB services did not start.",
         ("Run “Activate”.", "Run “Checkup” for details."),
@@ -260,7 +261,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # Activation or a deploy's check found no payload on any disk
     # (device.errors.DiskPayloadMissingError).
-    "payload_missing_from_disk": RecoveryInfo(
+    ErrorCode.PAYLOAD_MISSING_FROM_DISK: RecoveryInfo(
         "Samba files are missing",
         "The TimeCapsuleSMB files are missing from every disk on the device, as after an Erase in AirPort Utility.",
         ("Run “Install / Update Samba”.",),
@@ -269,7 +270,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # A payload binary on the disk did not match its deployed checksum
     # (device.errors.DiskPayloadDamagedError).
-    "payload_damaged_on_disk": RecoveryInfo(
+    ErrorCode.PAYLOAD_DAMAGED_ON_DISK: RecoveryInfo(
         "Samba files are damaged",
         "The TimeCapsuleSMB files on the device's disk are damaged and no longer match what was installed.",
         ("Run “Install / Update Samba”.", "If the files are damaged again after reinstalling, the disk may be failing."),
@@ -278,7 +279,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # The payload has no rsync or rsyncd.conf; Samba serves without it
     # (device.errors.RsyncMissingError).
-    "rsync_missing_from_disk": RecoveryInfo(
+    ErrorCode.RSYNC_MISSING_FROM_DISK: RecoveryInfo(
         "rsync files are missing",
         "The rsync files are missing from the disk, so rsync is off. File sharing and Time Machine keep working.",
         ("Run “Install / Update Samba”.",),
@@ -287,7 +288,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     # rsync on the disk did not match its deployed checksum; Samba serves
     # without it (device.errors.RsyncDamagedError).
-    "rsync_damaged_on_disk": RecoveryInfo(
+    ErrorCode.RSYNC_DAMAGED_ON_DISK: RecoveryInfo(
         "rsync file is damaged",
         "The rsync file on the disk is damaged and no longer matches what was installed, so rsync is off. "
         "File sharing and Time Machine keep working.",
@@ -298,7 +299,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # File sharing serves, but rsync did not start, with no verdict saying why
     # (device.errors.RsyncNotRunningError): a port in use, a configuration
     # rsync refuses, a crash. Checkup says which; a reinstall fixes only some.
-    "rsync_not_running": RecoveryInfo(
+    ErrorCode.RSYNC_NOT_RUNNING: RecoveryInfo(
         "rsync is not running",
         "File sharing and Time Machine are running, but rsync did not start.",
         ("Run “Checkup” for details.", "Run “Install / Update Samba”."),
@@ -309,7 +310,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # This boot's kernel log says the disk failed transfers it could not
     # recover from, and file sharing is off (device.disk_errors). Nothing on
     # the device fixes that: the data comes first, then a new disk.
-    "disk_failing": RecoveryInfo(
+    ErrorCode.DISK_FAILING: RecoveryInfo(
         "The disk is failing",
         (
             "The device's disk reported errors it could not recover from, so it is probably failing. File sharing "
@@ -325,27 +326,27 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=False,
     ),
-    "ssh_still_enabled": RecoveryInfo(
+    ErrorCode.SSH_STILL_ENABLED: RecoveryInfo(
         "SSH is still enabled",
         "The device restarted, but SSH was still enabled afterwards.",
         ("Disable SSH again in “SSH Access”.", "If SSH stays enabled, restart the device, then try again."),
         retryable=True,
         action_ids=("open_ssh_access",),
     ),
-    "confirmation_required": RecoveryInfo(
+    ErrorCode.CONFIRMATION_REQUIRED: RecoveryInfo(
         "Confirmation required",
         "This operation changes the device and needs explicit confirmation.",
         ("Review the plan.", "Confirm the operation in the app before retrying."),
         retryable=True,
     ),
-    "cancelled": RecoveryInfo(
+    ErrorCode.CANCELLED: RecoveryInfo(
         "Operation cancelled",
         "It stopped before it finished.",
         ("Try again when you are ready.",),
         retryable=True,
     ),
     # The device's own error shows below the guidance, so this stays general.
-    "remote_error": RecoveryInfo(
+    ErrorCode.REMOTE_ERROR: RecoveryInfo(
         "The device reported an error",
         "A step on the device did not finish as expected.",
         (
@@ -356,7 +357,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
-    "operation_failed": RecoveryInfo(
+    ErrorCode.OPERATION_FAILED: RecoveryInfo(
         "Something went wrong",
         "TimeCapsuleSMB ran into a problem it did not expect.",
         (
@@ -366,7 +367,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ),
         retryable=True,
     ),
-    "disk_write_test_unresponsive": RecoveryInfo(
+    ErrorCode.DISK_WRITE_TEST_UNRESPONSIVE: RecoveryInfo(
         "The disk did not respond",
         "The disk did not answer a test write. It may be failing or unable to spin up.",
         ("Run “Disk Repair”.", "If this keeps happening, the disk may need replacing."),
@@ -396,7 +397,7 @@ _UNREADABLE_FOLDER_MESSAGE = (
 _UNREADABLE_FOLDER_REPAIR = "Run “Disk Repair” on the disk, then run “Install / Update Samba” again."
 
 _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
-    ("deploy", "payload_upload_timeout"): RecoveryInfo(
+    ("deploy", ErrorCode.PAYLOAD_UPLOAD_TIMEOUT): RecoveryInfo(
         "Copying the installation files timed out",
         "The disk may be failing or slow to spin up, or the connection to the device may be too slow, "
         "such as a weak Wi-Fi link.",
@@ -408,20 +409,20 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    ("deploy", "manager_stop_timeout"): RecoveryInfo(
+    ("deploy", ErrorCode.MANAGER_STOP_TIMEOUT): RecoveryInfo(
         "A service on the device is stuck",
         "It did not stop for the install. A failing disk often causes this.",
         _STUCK_DEVICE_STEPS,
         retryable=True,
     ),
-    ("deploy", "previous_migration_stalled"): RecoveryInfo(
+    ("deploy", ErrorCode.PREVIOUS_MIGRATION_STALLED): RecoveryInfo(
         "An earlier metadata migration is stuck",
         "A Samba metadata migration left running by an earlier install stopped making progress. "
         "A failing disk often causes this.",
         _STUCK_DEVICE_STEPS,
         retryable=True,
     ),
-    ("deploy", "insufficient_flash_space"): RecoveryInfo(
+    ("deploy", ErrorCode.INSUFFICIENT_FLASH_SPACE): RecoveryInfo(
         "Not enough room in the device's flash storage",
         "The device's built-in flash storage has no room for the TimeCapsuleSMB startup files, "
         "even after removing the old ones.",
@@ -430,45 +431,45 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=False,
     ),
-    ("deploy", "flash_capacity_probe_failed"): RecoveryInfo(
+    ("deploy", ErrorCode.FLASH_CAPACITY_PROBE_FAILED): RecoveryInfo(
         "Could not check the device's flash storage",
         "The device did not report how much room its built-in flash storage has, so the install stopped.",
         ("Run “Install / Update Samba” again.",),
         retryable=True,
     ),
-    ("deploy", "xattr_migration_timeout"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_TIMEOUT): RecoveryInfo(
         "The metadata migration took too long",
         _MIGRATION_DISK_MESSAGE,
         _MIGRATION_DISK_STEPS,
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    ("deploy", "xattr_migration_stalled"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_STALLED): RecoveryInfo(
         "The metadata migration made no progress",
         _MIGRATION_DISK_MESSAGE,
         _MIGRATION_DISK_STEPS,
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    ("deploy", "xattr_migration_crashed"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_CRASHED): RecoveryInfo(
         "The metadata migration crashed",
         _MIGRATION_RERUN_MESSAGE,
         ("Run “Install / Update Samba” again.",),
         retryable=True,
     ),
-    ("deploy", "xattr_migration_stopped"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_STOPPED): RecoveryInfo(
         "The metadata migration was stopped",
         _MIGRATION_RERUN_MESSAGE,
         ("Run “Install / Update Samba” again.",),
         retryable=True,
     ),
-    ("deploy", "xattr_migration_connection_lost"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_CONNECTION_LOST): RecoveryInfo(
         "Connection lost during the metadata migration",
         "The migration may still be running on the device. Running the install again waits for it to finish.",
         ("Run “Install / Update Samba” again.",),
         retryable=True,
     ),
-    ("deploy", "xattr_migration_failed"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_FAILED): RecoveryInfo(
         "The metadata migration failed",
         "Samba metadata from the earlier version could not all be moved into the files' extended attributes. "
         "What was already moved is kept.",
@@ -480,7 +481,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    ("deploy", "reboot_not_finished"): RecoveryInfo(
+    ("deploy", ErrorCode.REBOOT_NOT_FINISHED): RecoveryInfo(
         "Reboot did not finish",
         "The installation files were copied and the restart was requested, but the device did not "
         "answer over SSH again in time. It may still be starting up, or it may have come back "
@@ -499,7 +500,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
-    ("configure", "auth_failed"): RecoveryInfo(
+    ("configure", ErrorCode.AUTH_FAILED): RecoveryInfo(
         "AirPort password rejected",
         "ACP or SSH authentication failed while configuring the device.",
         ("Re-enter the AirPort admin password.", "Confirm the selected device is the intended Apple device."),
@@ -507,7 +508,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
-    ("configure", "unsupported_device"): RecoveryInfo(
+    ("configure", ErrorCode.UNSUPPORTED_DEVICE): RecoveryInfo(
         "Unsupported device",
         "This AirPort model cannot run TimeCapsuleSMB.",
         (
@@ -516,7 +517,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=False,
     ),
-    ("configure", "ssh_compatibility_failed"): RecoveryInfo(
+    ("configure", ErrorCode.SSH_COMPATIBILITY_FAILED): RecoveryInfo(
         "SSH connection could not be set up",
         "The device offers only older SSH security methods, and this Mac's SSH program did not "
         "accept them.",
@@ -528,13 +529,13 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
     ),
-    ("deploy", "confirmation_required"): RecoveryInfo(
+    ("deploy", ErrorCode.CONFIRMATION_REQUIRED): RecoveryInfo(
         "Install confirmation required",
         "“Install / Update Samba” needs confirmation before uploading the installation files, rebooting, or activating NetBSD4.",
         ("Review the install plan.", "Confirm the install and any required reboot or activation prompt."),
         retryable=True,
     ),
-    ("deploy", "validation_failed"): RecoveryInfo(
+    ("deploy", ErrorCode.VALIDATION_FAILED): RecoveryInfo(
         "The install could not start",
         "Some of the app's installation files are missing, or a setting is not valid.",
         (
@@ -546,7 +547,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="validate-install",
         action_ids=("open_diagnostics",),
     ),
-    ("deploy", "unsupported_device"): RecoveryInfo(
+    ("deploy", ErrorCode.UNSUPPORTED_DEVICE): RecoveryInfo(
         "Unsupported device",
         "This AirPort model cannot run TimeCapsuleSMB.",
         (
@@ -555,7 +556,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=False,
     ),
-    ("deploy", "deploy_no_disk_detected"): RecoveryInfo(
+    ("deploy", ErrorCode.DEPLOY_NO_DISK_DETECTED): RecoveryInfo(
         "No internal disk detected",
         "The device did not report any internal disk.",
         (
@@ -566,7 +567,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "deploy_no_usb_disk_detected"): RecoveryInfo(
+    ("deploy", ErrorCode.DEPLOY_NO_USB_DISK_DETECTED): RecoveryInfo(
         "No USB disk detected",
         "An AirPort Extreme has no internal disk, and the device reported no USB disk.",
         (
@@ -576,7 +577,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "deploy_no_hfs_partition"): RecoveryInfo(
+    ("deploy", ErrorCode.DEPLOY_NO_HFS_PARTITION): RecoveryInfo(
         "No valid HFS partition",
         "A disk was found, but it does not expose a valid HFS partition that TimeCapsuleSMB can install to.",
         (
@@ -588,7 +589,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "deploy_disk_not_writable"): RecoveryInfo(
+    ("deploy", ErrorCode.DEPLOY_DISK_NOT_WRITABLE): RecoveryInfo(
         "No writable volume for the installation files",
         "The device found HFS volumes, but none accepted the TimeCapsuleSMB installation folder.",
         (
@@ -599,7 +600,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "deploy_disk_not_mounted"): RecoveryInfo(
+    ("deploy", ErrorCode.DEPLOY_DISK_NOT_MOUNTED): RecoveryInfo(
         "HFS disk not mounted",
         "The device found HFS volumes, but none was mounted, and the device did not mount one "
         "when asked.",
@@ -612,7 +613,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     # Deploy offers this only when uninstall deletes every legacy database
     # (services.deploy), so the second step cannot fail the same way.
-    ("deploy", "xattr_migration_unreadable_folder"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_UNREADABLE_FOLDER): RecoveryInfo(
         _UNREADABLE_FOLDER_TITLE,
         _UNREADABLE_FOLDER_MESSAGE,
         (
@@ -629,7 +630,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     # on a disk this deploy could not mount was never seen, so the next deploy
     # could walk the same folder: Uninstall is not offered. Copy Diagnostics is
     # on every recovery card.
-    ("deploy", "xattr_migration_unreadable_folder_repair_only"): RecoveryInfo(
+    ("deploy", ErrorCode.XATTR_MIGRATION_UNREADABLE_FOLDER_REPAIR_ONLY): RecoveryInfo(
         _UNREADABLE_FOLDER_TITLE,
         _UNREADABLE_FOLDER_MESSAGE,
         (
@@ -641,7 +642,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=False,
         action_ids=("disk_repair",),
     ),
-    ("deploy", "deploy_disk_not_confirmed"): RecoveryInfo(
+    ("deploy", ErrorCode.DEPLOY_DISK_NOT_CONFIRMED): RecoveryInfo(
         "Disk not kept mounted",
         "An HFS volume is mounted, but the device would not keep it mounted for TimeCapsuleSMB, "
         "so it could be unmounted during the install.",
@@ -651,13 +652,13 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     # services.deploy raises it only when the connection to the device was lost
     # while the old runtime was stopped and the install unfinished.
-    ("deploy", "install_interrupted"): RecoveryInfo(
+    ("deploy", ErrorCode.INSTALL_INTERRUPTED): RecoveryInfo(
         "Install interrupted",
         "The install was interrupted. Run “Install / Update Samba” again to complete the install.",
         (),
         retryable=True,
     ),
-    ("flash", "secondary_bank_invalid"): RecoveryInfo(
+    ("flash", ErrorCode.SECONDARY_BANK_INVALID): RecoveryInfo(
         "Backup firmware bank is damaged",
         "The secondary (backup) firmware bank is not a valid copy, so patching the primary bank is refused: "
         "an interrupted write would leave nothing to start from.",
@@ -667,7 +668,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=False,
     ),
-    ("flash", "secondary_bank_read_mismatch"): RecoveryInfo(
+    ("flash", ErrorCode.SECONDARY_BANK_READ_MISMATCH): RecoveryInfo(
         "Backup firmware bank read inconsistently",
         "This backup's read of the secondary (backup) firmware bank does not agree with the device's own check "
         "of it. The bank may still be a good copy, so it is not rewritten and patching is refused.",
@@ -677,48 +678,48 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ),
         retryable=False,
     ),
-    ("activate", "runtime_not_installed"): RecoveryInfo(
+    ("activate", ErrorCode.RUNTIME_NOT_INSTALLED): RecoveryInfo(
         "TimeCapsuleSMB not installed",
         "The device has no TimeCapsuleSMB installation to start.",
         ("Run “Install / Update Samba”.",),
         retryable=False,
         suggested_operation="deploy",
     ),
-    ("activate", "runtime_outdated"): RecoveryInfo(
+    ("activate", ErrorCode.RUNTIME_OUTDATED): RecoveryInfo(
         "Installation is out of date",
         "The installed TimeCapsuleSMB is too old for this app to start or check.",
         ("Run “Install / Update Samba”.",),
         retryable=False,
         suggested_operation="deploy",
     ),
-    ("activate", "client_outdated"): RecoveryInfo(
+    ("activate", ErrorCode.CLIENT_OUTDATED): RecoveryInfo(
         "App is out of date",
         "The installed TimeCapsuleSMB is from a newer major version, which this app cannot start or check.",
         ("Update TimeCapsuleSMB, then start it again.",),
         retryable=False,
     ),
-    ("activate", "confirmation_required"): RecoveryInfo(
+    ("activate", ErrorCode.CONFIRMATION_REQUIRED): RecoveryInfo(
         "Activation confirmation required",
         "NetBSD4 activation starts the deployed runtime and must be confirmed.",
         ("Review the NetBSD4 activation guidance.", "Confirm activation before retrying."),
         retryable=True,
         action_ids=("start_smb",),
     ),
-    ("uninstall", "confirmation_required"): RecoveryInfo(
+    ("uninstall", ErrorCode.CONFIRMATION_REQUIRED): RecoveryInfo(
         "Uninstall confirmation required",
         "Uninstall removes managed files and may reboot the device.",
         ("Review the uninstall plan.", "Confirm uninstall and reboot before retrying."),
         retryable=True,
         action_ids=("uninstall",),
     ),
-    ("fsck", "confirmation_required"): RecoveryInfo(
+    ("fsck", ErrorCode.CONFIRMATION_REQUIRED): RecoveryInfo(
         "Disk repair confirmation required",
         "Disk repair runs fsck, stops file sharing, unmounts the selected HFS disk, and may reboot the device.",
         ("Review the selected volume.", "Confirm disk repair before retrying."),
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    ("fsck", "validation_failed"): RecoveryInfo(
+    ("fsck", ErrorCode.VALIDATION_FAILED): RecoveryInfo(
         "Volume selection failed",
         "“Disk Repair” could not choose a mounted HFS volume.",
         (
@@ -730,7 +731,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ),
     # A repair whose session dropped keeps running on the device
     # (services.maintenance): a second one must wait for it.
-    ("fsck", "fsck_already_running"): RecoveryInfo(
+    ("fsck", ErrorCode.FSCK_ALREADY_RUNNING): RecoveryInfo(
         "Disk repair already running",
         "fsck_hfs from an earlier disk repair is still running on the device. Restarting or unplugging the device now would interrupt it.",
         (
@@ -740,7 +741,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         action_ids=("disk_repair",),
     ),
-    ("fsck", "fsck_session_dropped"): RecoveryInfo(
+    ("fsck", ErrorCode.FSCK_SESSION_DROPPED): RecoveryInfo(
         "Connection lost during disk repair",
         "The connection to the device ended while fsck_hfs was repairing the disk. The repair keeps running on the device, and file sharing stays off until the device restarts.",
         (
@@ -754,7 +755,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
 
 
 _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
-    ("configure", "remote_error", "acp_port_probe"): RecoveryInfo(
+    ("configure", ErrorCode.REMOTE_ERROR, "acp_port_probe"): RecoveryInfo(
         "AirPort not reachable at this address",
         "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. "
         "Backups or AirPort Utility may still work even when ACP is blocked.",
@@ -767,7 +768,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
     ),
-    ("configure", "remote_error", "acp_enable_ssh"): RecoveryInfo(
+    ("configure", ErrorCode.REMOTE_ERROR, "acp_enable_ssh"): RecoveryInfo(
         "ACP SSH enablement failed",
         "Turning on SSH through AirPort ACP did not work.",
         (
@@ -778,7 +779,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
-    ("deploy", "remote_error", "read_mast"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "read_mast"): RecoveryInfo(
         "No HFS volumes found",
         "The device did not report an HFS disk that TimeCapsuleSMB can install to.",
         (
@@ -789,7 +790,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "remote_error", "select_payload_home"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "select_payload_home"): RecoveryInfo(
         "No writable volume for the installation files",
         "The device found HFS volumes, but none accepted the TimeCapsuleSMB installation folder.",
         (
@@ -800,7 +801,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "remote_error", "verify_payload_upload"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "verify_payload_upload"): RecoveryInfo(
         "The installation files could not be checked",
         "The copied installation files could not be checked on the HFS disk.",
         (
@@ -810,7 +811,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "remote_error", "verify_payload_upload_after_sync"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "verify_payload_upload_after_sync"): RecoveryInfo(
         "The installation files changed after saving",
         "The copied installation files did not match after the writes were saved to the disk.",
         (
@@ -820,7 +821,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
-    ("deploy", "remote_error", "verify_runtime_reboot"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "verify_runtime_reboot"): RecoveryInfo(
         "Runtime not ready",
         "The device rebooted, but the managed Samba runtime did not become healthy.",
         ("Run “Checkup” for details.", "Check boot logs from the CLI if the checkup still fails."),
@@ -828,7 +829,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
-    ("deploy", "remote_error", "activate_runtime"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "activate_runtime"): RecoveryInfo(
         "Runtime activation failed",
         "The deployed Samba runtime could not be started without rebooting.",
         ("Run “Install / Update Samba” again.", "Run “Checkup” for detailed service checks."),
@@ -836,7 +837,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="deploy",
         action_ids=("run_checkup",),
     ),
-    ("deploy", "remote_error", "post_reboot_activation"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "post_reboot_activation"): RecoveryInfo(
         "Post-reboot activation failed",
         "The device rebooted, but the deployed Samba runtime could not be started after SSH returned.",
         ("Run “Install / Update Samba” again.", "Run “Checkup” for detailed service checks."),
@@ -844,7 +845,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="deploy",
         action_ids=("run_checkup",),
     ),
-    ("deploy", "remote_error", "verify_runtime_activation"): RecoveryInfo(
+    ("deploy", ErrorCode.REMOTE_ERROR, "verify_runtime_activation"): RecoveryInfo(
         "Activated runtime not ready",
         "The deployed Samba runtime was started but did not become healthy.",
         ("Run “Install / Update Samba” again.", "Run “Checkup” for detailed service checks."),
@@ -854,7 +855,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
     ),
     # ACPd tore itself down at the deploy's reboot request: unlike the
     # refusal before the upload, the update is on the device already.
-    ("deploy", "acpd_broken", "wait_for_reboot_up"): RecoveryInfo(
+    ("deploy", ErrorCode.ACPD_BROKEN, "wait_for_reboot_up"): RecoveryInfo(
         "Apple ACPd is broken",
         (
             "The update is installed, but Apple's AirPort service (ACPd) stopped without restarting the device. "
@@ -869,7 +870,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
-    ("uninstall", "remote_error", "verify_post_uninstall"): RecoveryInfo(
+    ("uninstall", ErrorCode.REMOTE_ERROR, "verify_post_uninstall"): RecoveryInfo(
         "Post-uninstall verification failed",
         "Managed TimeCapsuleSMB files were still present after reboot.",
         ("Run “Uninstall” again.", "Run “Checkup” if the device is reachable."),
@@ -877,7 +878,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         suggested_operation="uninstall",
         action_ids=("uninstall",),
     ),
-    ("fsck", "validation_failed", "select_fsck_volume"): RecoveryInfo(
+    ("fsck", ErrorCode.VALIDATION_FAILED, "select_fsck_volume"): RecoveryInfo(
         "Volume selection failed",
         "“Disk Repair” could not choose exactly one HFS volume.",
         (
@@ -900,12 +901,12 @@ _OPERATION_CODE_RECOVERY = {
     (operation, code): replace(info, localization_key=f"{operation}.{code}")
     for (operation, code), info in _OPERATION_CODE_RECOVERY.items()
 }
-_OPERATION_CODE_RECOVERY[("discover", "discovery_timeout_too_short")] = replace(
-    _DEFAULTS["validation_failed"], localization_key="discover.discovery_timeout_too_short",
+_OPERATION_CODE_RECOVERY[("discover", ErrorCode.DISCOVERY_TIMEOUT_TOO_SHORT)] = replace(
+    _DEFAULTS[ErrorCode.VALIDATION_FAILED], localization_key="discover.discovery_timeout_too_short",
 )
-_OPERATION_CODE_RECOVERY[("discover", "local_network_permission_denied")] = replace(
-    _DEFAULTS["local_network_permission_denied"],
-    actions=_DEFAULTS["local_network_permission_denied"].actions[:2] + ("Enable access, then retry discovery.",),
+_OPERATION_CODE_RECOVERY[("discover", ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED)] = replace(
+    _DEFAULTS[ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED],
+    actions=_DEFAULTS[ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED].actions[:2] + ("Enable access, then retry discovery.",),
     suggested_operation="discover", localization_key="discover.local_network_permission_denied",
 )
 _STAGE_RECOVERY = {
@@ -931,19 +932,19 @@ _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(
 
 def recovery_for(
     operation: str,
-    code: str,
+    code: ErrorCode,
     *,
     stage: str | None = None,
 ) -> dict[str, object]:
-    if code == "acp_no_route":
+    if code == ErrorCode.ACP_NO_ROUTE:
         # Every ACP attempt refused at once with no route is, on this Mac, Local
         # Network access (the app's error line for acp_no_route names VPNs too).
-        code = "local_network_permission_denied"
+        code = ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED
     if stage:
         policy = _STAGE_RECOVERY.get((operation, code, stage))
         if policy is not None:
             return policy.to_jsonable()
-    policy = _OPERATION_CODE_RECOVERY.get((operation, code)) or _DEFAULTS.get(code) or _DEFAULTS["operation_failed"]
+    policy = _OPERATION_CODE_RECOVERY.get((operation, code)) or _DEFAULTS.get(code) or _DEFAULTS[ErrorCode.OPERATION_FAILED]
     return policy.to_jsonable()
 
 

@@ -18,6 +18,7 @@ from timecapsulesmb.app.ops.common import (
     resolve_request_target,
 )
 from timecapsulesmb.app.ops.deploy import device_operation_error
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.messages import netbsd4_activation_summary
 from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
@@ -36,7 +37,7 @@ from timecapsulesmb.services.app import (
     string_param,
 )
 from timecapsulesmb.services.reboot import RebootFlowError
-from timecapsulesmb.services.activation import RUNTIME_NOT_RESTARTED_CODE, activate_runtime, installed_netbsd4_autostart
+from timecapsulesmb.services.activation import activate_runtime, installed_netbsd4_autostart
 from timecapsulesmb.services.maintenance import (
     FSCK_DID_NOT_RUN_MESSAGE,
     format_fsck_plan,
@@ -98,7 +99,7 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
     if not is_netbsd4_payload_family(compatibility.payload_family):
         raise AppOperationError(
             "activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
-            code="unsupported_device",
+            code=ErrorCode.UNSUPPORTED_DEVICE,
         )
     try:
         decision = activate_runtime(target.connection, plan.actions, callbacks=context.to_operation_callbacks())
@@ -175,7 +176,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.REMOTE_ERROR) from exc
     return OperationResult(True, uninstall_result_payload(
         rebooted=verified,
         verified=verified,
@@ -201,7 +202,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     if dry_run and list_volumes:
-        raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code="validation_failed")
+        raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code=ErrorCode.VALIDATION_FAILED)
     rebooting = not (no_reboot or dry_run or list_volumes)
     connection = None
     if rebooting:
@@ -271,7 +272,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             string_param(params, "volume") or None,
         )
     except RuntimeError as exc:
-        raise AppOperationError(str(exc), code="validation_failed") from exc
+        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
     context.update_fields(fsck_device=target.device, fsck_mountpoint=target.mountpoint)
     if dry_run:
         context.log(format_fsck_plan(target, reboot=not no_reboot, wait=not no_wait))
@@ -302,11 +303,11 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code=exc.code) from exc
     if outcome.status is None:
-        raise AppOperationError(outcome.failure or FSCK_DID_NOT_RUN_MESSAGE, code=outcome.failure_code or "remote_error")
+        raise AppOperationError(outcome.failure or FSCK_DID_NOT_RUN_MESSAGE, code=outcome.failure_code or ErrorCode.REMOTE_ERROR)
     if outcome.runtime_restart_error is not None:
         raise AppOperationError(
             outcome.failure or outcome.runtime_restart_error,
-            code=outcome.runtime_restart_code or RUNTIME_NOT_RESTARTED_CODE,
+            code=outcome.runtime_restart_code or ErrorCode.RUNTIME_NOT_RESTARTED,
         )
     if outcome.failure is not None:
         context.set_error(outcome.failure)

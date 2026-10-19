@@ -12,6 +12,7 @@ from typing import Optional, TextIO
 from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.recovery import recovery_for
 from timecapsulesmb.app.service import run_api_request
+from timecapsulesmb.core.error_codes import ErrorCode
 
 
 MAX_REQUEST_CHARS = 1024 * 1024
@@ -59,8 +60,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         sink.error(
             "api",
             f"request exceeds maximum size of {MAX_REQUEST_CHARS} characters",
-            code="invalid_request",
-            recovery=recovery_for("api", "invalid_request"),
+            code=ErrorCode.INVALID_REQUEST,
+            recovery=recovery_for("api", ErrorCode.INVALID_REQUEST),
         )
         if args.pretty_error:
             print("request too large", file=sys.stderr)
@@ -72,9 +73,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         sink.error(
             "api",
             message,
-            code="invalid_request",
+            code=ErrorCode.INVALID_REQUEST,
             debug={"pos": exc.pos},
-            recovery=recovery_for("api", "invalid_request"),
+            recovery=recovery_for("api", ErrorCode.INVALID_REQUEST),
         )
         if args.pretty_error:
             print("invalid JSON request", file=sys.stderr)
@@ -83,8 +84,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         sink.error(
             "api",
             "request must be a JSON object",
-            code="invalid_request",
-            recovery=recovery_for("api", "invalid_request"),
+            code=ErrorCode.INVALID_REQUEST,
+            recovery=recovery_for("api", ErrorCode.INVALID_REQUEST),
         )
         return 1
     return run_api_request(request, sink)

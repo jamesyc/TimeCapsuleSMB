@@ -9,6 +9,7 @@ import shlex
 import time
 import uuid
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.integrations.acp import DEVICE_ACP_PATH
@@ -38,9 +39,7 @@ DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE = (
 
 
 class StorageDeviceError(DeviceError):
-    def __init__(self, message: str, *, code: str) -> None:
-        super().__init__(message)
-        self.code = code
+    code: ErrorCode
 
 
 @dataclass(frozen=True)
@@ -405,7 +404,7 @@ def raise_if_acpd_silent(connection: SshConnection, *, after: SshCommandTimeout 
             raise
         raise after from exc
     if not answers:
-        raise StorageDeviceError(ACPD_DISKS_UNREADABLE_MESSAGE, code="acpd_broken")
+        raise StorageDeviceError(ACPD_DISKS_UNREADABLE_MESSAGE, code=ErrorCode.ACPD_BROKEN)
 
 
 def read_mast_volumes_with_output_conn(connection: SshConnection, *, check_acpd: bool = True) -> MaStReadResult:
@@ -679,7 +678,7 @@ def volume_root_is_writable_conn(connection: SshConnection, volume_root: str) ->
     except SshCommandTimeout as exc:
         raise StorageDeviceError(
             DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE,
-            code="disk_write_test_unresponsive",
+            code=ErrorCode.DISK_WRITE_TEST_UNRESPONSIVE,
         ) from exc
     return proc.returncode == 0
 

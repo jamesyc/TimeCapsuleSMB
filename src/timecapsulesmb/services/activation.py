@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
 from timecapsulesmb.device.disk_errors import read_disk_errors_conn
@@ -55,9 +56,7 @@ OLDEST_ACTIVATABLE_VERSION_CODE = 30300
 class ActivationInstallError(DeviceError):
     """The device does not hold an install this version can start and verify."""
 
-    def __init__(self, message: str, *, code: str) -> None:
-        super().__init__(message)
-        self.code = code
+    code: ErrorCode
 
 
 def require_compatible_install(connection: SshConnection, callbacks: OperationCallbacks) -> None:
@@ -73,7 +72,7 @@ def require_compatible_install(connection: SshConnection, callbacks: OperationCa
         callbacks.debug(deployed_config_present=False)
         raise ActivationInstallError(
             f"TimeCapsuleSMB is not installed on this device. {INSTALL_UPDATE_HINT}",
-            code="runtime_not_installed",
+            code=ErrorCode.RUNTIME_NOT_INSTALLED,
         )
     version = read_deployed_version_conn(connection)
     callbacks.debug(
@@ -85,19 +84,19 @@ def require_compatible_install(connection: SshConnection, callbacks: OperationCa
         raise ActivationInstallError(
             "The installed TimeCapsuleSMB has no version information, so it is older than "
             f"{OLDEST_ACTIVATABLE_RELEASE_TAG}, the oldest release {RELEASE_TAG} can start. {INSTALL_UPDATE_HINT}",
-            code="runtime_outdated",
+            code=ErrorCode.RUNTIME_OUTDATED,
         )
     if release_major(version.cli_version_code) > release_major(CLI_VERSION_CODE):
         raise ActivationInstallError(
             f"The installed TimeCapsuleSMB {version.release_tag} is from a newer major version than this "
             f"version, {RELEASE_TAG}. Update TimeCapsuleSMB, then start it again.",
-            code="client_outdated",
+            code=ErrorCode.CLIENT_OUTDATED,
         )
     if version.cli_version_code < OLDEST_ACTIVATABLE_VERSION_CODE:
         raise ActivationInstallError(
             f"The installed TimeCapsuleSMB {version.release_tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}, "
             f"the oldest release {RELEASE_TAG} can start. {INSTALL_UPDATE_HINT}",
-            code="runtime_outdated",
+            code=ErrorCode.RUNTIME_OUTDATED,
         )
 
 
@@ -193,8 +192,6 @@ def start_netbsd4_runtime_after_reboot(
     )
 
 
-# The app error code for an fsck reboot after which file sharing did not start again.
-RUNTIME_NOT_RESTARTED_CODE = "runtime_not_restarted"
 RUNTIME_RESTART_FAILURE_MESSAGE = (
     "File sharing did not restart after the reboot. Run Activate in the macOS app, or "
     "tcapsule activate from the command line."
@@ -232,7 +229,7 @@ def installed_netbsd4_autostart(
         require_compatible_install(connection, callbacks)
     except ActivationInstallError as exc:
         callbacks.update(runtime_start_after_reboot=exc.code)
-        if exc.code != "runtime_not_installed":
+        if exc.code != ErrorCode.RUNTIME_NOT_INSTALLED:
             # An install that cannot be started stays off after the reboot; say why.
             callbacks.message(str(exc))
         return None

@@ -20,13 +20,13 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
 from timecapsulesmb.device.probe import DISK_EVIDENCE_COMMANDS, DiskPayloadProblem, read_remote_command_conn
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 
 
-DISK_FAILING_CODE = "disk_failing"
 KERNEL_DISK_MESSAGES_COMMAND = DISK_EVIDENCE_COMMANDS["remote_kernel_disk_messages"]
 
 _KERNEL_BANNER = re.compile(r"^NetBSD \d")
@@ -102,7 +102,7 @@ def disk_failing_warning(errors: tuple[str, ...], operation: str) -> str:
 class DiskFailingError(DeviceError):
     """Samba is off, and this boot's disk errors say why."""
 
-    code = DISK_FAILING_CODE
+    code = ErrorCode.DISK_FAILING
     samba_off = True
 
     def __init__(self, errors: tuple[str, ...]) -> None:
