@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "La lecture de la banque de firmware secondaire (de secours) dans cette sauvegarde ne concorde pas avec la vérification faite par l’appareil lui-même. La banque peut encore être une copie valide : elle n’est donc pas réécrite et le correctif est refusé.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Choisissez « Sauvegarder et inspecter ».";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Si les lectures restent discordantes, laissez le firmware tel quel : la mémoire flash de cet appareil est peut-être défaillante.";
+"backend.recovery.flash.flash_patch_refused.title" = "Application du correctif refusée";
+"backend.recovery.flash.flash_patch_refused.message" = "Les banques de firmware ne sont pas dans un état permettant d’appliquer le correctif sans risque : le firmware n’a donc pas été modifié.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Choisissez « Sauvegarder et inspecter à nouveau » et vérifiez l’état de chaque banque.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Si une banque est endommagée, laissez le firmware tel quel.";
 "backend.recovery.activate.runtime_outdated.title" = "Installation obsolète";
 "backend.recovery.activate.runtime_outdated.message" = "Le TimeCapsuleSMB installé est trop ancien pour que cette app puisse le démarrer ou le vérifier.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Lancez « Installer / mettre à jour Samba ».";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs, lancé par une réparation de disque précédente, est toujours en cours sur l’appareil. Redémarrer ou débrancher l’appareil maintenant l’interromprait.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Laissez la Time Capsule branchée et patientez ; sur un grand disque, la réparation peut prendre une heure ou plus.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Relancez ensuite « Réparation de disque ». Elle redémarre l’appareil une fois terminée.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Le disque n’a pas pu être démonté";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "La réparation n’a pas démarré, car le démontage du disque n’a pas pu être confirmé. Le partage de fichiers reste désactivé jusqu’au redémarrage de l’appareil.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Redémarrez l’appareil.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Relancez ensuite « Réparation de disque ».";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Connexion perdue pendant la réparation du disque";
 "backend.recovery.fsck.fsck_session_dropped.message" = "La connexion à l’appareil a été interrompue pendant que fsck_hfs réparait le disque. La réparation continue sur l’appareil, et le partage de fichiers reste désactivé jusqu’au redémarrage de l’appareil.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Laissez la Time Capsule branchée et ne la redémarrez pas ; sur un grand disque, la réparation peut prendre une heure ou plus.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Reconnecter l’appareil enregistré « %@ »";
 "backend.error.device_identity_mismatch" = "L’identité de l’appareil n’a pas pu être confirmée. Actualisez la recherche et reconnectez l’appareil enregistré.";
 "backend.recovery.device_identity_mismatch.title" = "L’identité de l’appareil n’a pas pu être confirmée";
-"backend.recovery.device_identity_mismatch.message" = "L’identité de l’appareil n’a pas pu être confirmée. Actualisez la recherche et reconnectez l’appareil enregistré.";
+"backend.recovery.device_identity_mismatch.message" = "L’appareil à cette adresse ne s’est pas identifié comme l’appareil enregistré.";
 "backend.recovery.device_identity_mismatch.action.1" = "Actualisez la recherche et reconnectez l’appareil enregistré.";
 
 "discovery.identity_owned" = "Cet appareil est déjà enregistré sous le nom « %@ ». Vérifiez les appareils enregistrés et utilisez « Oublier » pour supprimer les doublons.";

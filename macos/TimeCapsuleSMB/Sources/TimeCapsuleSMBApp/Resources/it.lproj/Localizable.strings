@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "La lettura del banco firmware secondario (di riserva) in questo backup non concorda con il controllo del dispositivo stesso. Il banco potrebbe essere ancora una copia valida, quindi non viene riscritto e la patch viene rifiutata.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Scegli “Esegui il backup e ispeziona”.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Se le letture continuano a non concordare, lascia il firmware com’è: la memoria flash di questo dispositivo potrebbe essere guasta.";
+"backend.recovery.flash.flash_patch_refused.title" = "Patch rifiutata";
+"backend.recovery.flash.flash_patch_refused.message" = "I banchi firmware non sono in uno stato in cui applicare la patch sia sicuro, quindi il firmware non è stato modificato.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Scegli “Esegui il backup e ispeziona di nuovo” e controlla lo stato di ogni banco.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Se un banco è danneggiato, lascia il firmware com’è.";
 "backend.recovery.activate.runtime_outdated.title" = "Installazione non aggiornata";
 "backend.recovery.activate.runtime_outdated.message" = "Il TimeCapsuleSMB installato è troppo vecchio perché questa app possa avviarlo o controllarlo.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Esegui “Installa/aggiorna Samba”.";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs di una riparazione del disco precedente è ancora in esecuzione sul dispositivo. Riavviare o scollegare ora il dispositivo la interromperebbe.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Lascia il dispositivo Time Capsule collegato alla corrente e attendi; su un disco grande la riparazione può richiedere un’ora o più.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Poi esegui di nuovo “Riparazione disco”. Al termine, la riparazione riavvia il dispositivo.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Impossibile smontare il disco";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "La riparazione non è stata avviata perché non è stato possibile confermare che il disco fosse smontato. La condivisione dei file resta disattivata finché il dispositivo non si riavvia.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Riavvia il dispositivo.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Poi esegui di nuovo “Riparazione disco”.";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Connessione persa durante la riparazione del disco";
 "backend.recovery.fsck.fsck_session_dropped.message" = "La connessione al dispositivo si è interrotta mentre fsck_hfs riparava il disco. La riparazione continua sul dispositivo e la condivisione dei file resta disattivata fino al riavvio del dispositivo.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Lascia il dispositivo Time Capsule collegato alla corrente e non riavviarlo; su un disco grande la riparazione può richiedere un’ora o più.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Riconnetti il dispositivo salvato “%@”";
 "backend.error.device_identity_mismatch" = "Non è stato possibile confermare l’identità del dispositivo. Aggiorna la ricerca e riconnetti il dispositivo salvato.";
 "backend.recovery.device_identity_mismatch.title" = "Impossibile confermare l’identità del dispositivo";
-"backend.recovery.device_identity_mismatch.message" = "Non è stato possibile confermare l’identità del dispositivo. Aggiorna la ricerca e riconnetti il dispositivo salvato.";
+"backend.recovery.device_identity_mismatch.message" = "Il dispositivo a questo indirizzo non si è identificato come il dispositivo salvato.";
 "backend.recovery.device_identity_mismatch.action.1" = "Aggiorna la ricerca e riconnetti il dispositivo salvato.";
 
 "discovery.identity_owned" = "Questo dispositivo è già salvato come “%@”. Controlla i dispositivi salvati e usa “Dimentica” per rimuovere le voci duplicate.";

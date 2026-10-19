@@ -95,6 +95,7 @@ from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.disk_errors import (
     disk_errors_explain,
     disk_errors_in,
+    DISK_FAILING_WAY_OUT,
     disk_failing_message,
     read_disk_errors_conn,
 )
@@ -2348,7 +2349,7 @@ def _doctor_check_apple_acpd(
         sink.add(
             CheckResult(
                 "FAIL",
-                acpd.acpd_broken_message(problem.what, note=problem.note, then=", then check again").removesuffix("."),
+                f"{acpd.acpd_broken_message(problem.what, note=problem.note)} {acpd.ACPD_FIX}, then check again",
                 {"code": APPLE_ACPD_BROKEN_CODE, "acpd_problem": problem.code, **problem.details},
             )
         )
@@ -2550,7 +2551,9 @@ def _doctor_disk_failing_reported(sink: DoctorSink) -> bool:
 
 
 def _doctor_report_disk_errors(errors: tuple[str, ...], sink: DoctorSink) -> None:
-    sink.add(CheckResult("FAIL", disk_failing_message(errors), details={"code": ErrorCode.DISK_FAILING}))
+    sink.add(CheckResult(
+        "FAIL", f"{disk_failing_message(errors)} {DISK_FAILING_WAY_OUT}", details={"code": ErrorCode.DISK_FAILING},
+    ))
     if sink.debug_fields is not None:
         sink.debug_fields["disk_error_lines"] = list(errors[-5:])
 

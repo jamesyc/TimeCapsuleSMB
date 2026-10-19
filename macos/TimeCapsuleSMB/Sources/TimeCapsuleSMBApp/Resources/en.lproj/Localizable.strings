@@ -874,6 +874,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "This backup's read of the secondary (backup) firmware bank does not agree with the device's own check of it. The bank may still be a good copy, so it is not rewritten and patching is refused.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Choose “Back Up and Inspect”.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "If the reads keep disagreeing, leave the firmware as it is: this device's flash may be failing.";
+"backend.recovery.flash.flash_patch_refused.title" = "Patching was refused";
+"backend.recovery.flash.flash_patch_refused.message" = "The firmware banks are not in a state where patching is safe, so the firmware was not changed.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Choose “Back Up and Inspect Again” and review each bank's status.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "If a bank is damaged, leave the firmware as it is.";
 "backend.recovery.activate.runtime_outdated.title" = "Installation is out of date";
 "backend.recovery.activate.runtime_outdated.message" = "The installed TimeCapsuleSMB is too old for this app to start or check.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Run “Install / Update Samba”.";
@@ -900,6 +904,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs from an earlier disk repair is still running on the device. Restarting or unplugging the device now would interrupt it.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Keep the Time Capsule plugged in and wait; on a large disk the repair can take an hour or more.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Then run “Disk Repair” again. It restarts the device when it finishes.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "The disk could not be unmounted";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "The repair did not start because the disk could not be confirmed unmounted. File sharing stays off until the device restarts.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Restart the device.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Then run “Disk Repair” again.";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Connection lost during disk repair";
 "backend.recovery.fsck.fsck_session_dropped.message" = "The connection to the device ended while fsck_hfs was repairing the disk. The repair keeps running on the device, and file sharing stays off until the device restarts.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Keep the Time Capsule plugged in and do not restart it; on a large disk the repair can take an hour or more.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Reconnect saved device “%@”";
 "backend.error.device_identity_mismatch" = "The device identity could not be confirmed. Refresh discovery and reconnect the saved device.";
 "backend.recovery.device_identity_mismatch.title" = "Device identity could not be confirmed";
-"backend.recovery.device_identity_mismatch.message" = "The device identity could not be confirmed. Refresh discovery and reconnect the saved device.";
+"backend.recovery.device_identity_mismatch.message" = "The device at this address did not identify itself as the saved device.";
 "backend.recovery.device_identity_mismatch.action.1" = "Refresh discovery and reconnect the saved device.";
 
 "discovery.identity_owned" = "This device is already saved as “%@”. Review the saved devices and use “Forget” to remove any duplicate entry.";

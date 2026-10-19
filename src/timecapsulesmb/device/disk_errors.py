@@ -66,7 +66,8 @@ def disk_errors_explain(
     return not any(problem.error_type is DiskPayloadMissingError for problem in problems)
 
 
-_WAY_OUT = (
+# Checkup's result says the way out; an error's next steps come from its code.
+DISK_FAILING_WAY_OUT = (
     "Copy off the files you need (if file sharing is off, take the disk out and connect it to a Mac with a "
     "SATA-to-USB adapter), replace the disk, then erase the new disk in AirPort Utility and run "
     '"Install / Update Samba" in the macOS app, or tcapsule deploy from the command line.'
@@ -74,12 +75,11 @@ _WAY_OUT = (
 
 
 def disk_failing_message(errors: tuple[str, ...]) -> str:
-    """Why Samba is off, and the way out."""
+    """Why Samba is off."""
     return (
         f"The device's disk reported errors it could not recover from ({errors[-1]}), so it is probably failing. "
         "File sharing and Time Machine will not work reliably on it, and reinstalling will not fix the disk. "
-        "AirPort Utility may still show the disk as OK: its own check does not catch these errors. "
-        f"{_WAY_OUT}"
+        "AirPort Utility may still show the disk as OK: its own check does not catch these errors."
     )
 
 

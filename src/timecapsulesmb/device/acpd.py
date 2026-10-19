@@ -71,12 +71,14 @@ class AcpdProblem:
     details: dict[str, object] = field(default_factory=dict)
 
 
-def acpd_broken_message(what: str, *, note: str = "", then: str = ", then try again") -> str:
-    """Every caller's words for a broken ACPd: what failed, then the one fix."""
-    return (
-        f"Apple ACPd is broken: {what}, a bug in Apple's firmware. {note}"
-        f"Unplug the device, wait 10 seconds, plug it back in and wait 2 minutes{then}."
-    )
+# The one fix for a broken ACPd. An error leaves it to the code's next steps
+# (app.recovery); Checkup's result says it.
+ACPD_FIX = "Unplug the device, wait 10 seconds, plug it back in and wait 2 minutes"
+
+
+def acpd_broken_message(what: str, *, note: str = "") -> str:
+    """Every caller's words for a broken ACPd: what failed, and why it matters."""
+    return f"Apple ACPd is broken: {what}, a bug in Apple's firmware. {note}".rstrip()
 
 
 def acpd_answers(connection: SshConnection) -> bool:

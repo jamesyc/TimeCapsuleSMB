@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "此备份中读取的第二（备用）固件区与设备自身的检查结果不一致。该固件区可能仍是有效的副本，因此不会重新写入，并拒绝打补丁。";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "选择“备份并检查”。";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "如果读取结果仍不一致，请保持固件不变：此设备的闪存可能出现故障。";
+"backend.recovery.flash.flash_patch_refused.title" = "已拒绝打补丁";
+"backend.recovery.flash.flash_patch_refused.message" = "固件区当前的状态不适合安全地打补丁，因此固件未作更改。";
+"backend.recovery.flash.flash_patch_refused.action.1" = "选择“再次备份并检查”，并查看每个固件区的状态。";
+"backend.recovery.flash.flash_patch_refused.action.2" = "如果某个固件区已损坏，请保持固件不变。";
 "backend.recovery.activate.runtime_outdated.title" = "已安装的版本过旧";
 "backend.recovery.activate.runtime_outdated.message" = "已安装的 TimeCapsuleSMB 版本过旧，此应用无法启动或检查它。";
 "backend.recovery.activate.runtime_outdated.action.1" = "运行“安装 / 更新 Samba”。";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "之前磁盘修复的 fsck_hfs 仍在设备上运行。现在重启设备或断开电源会中断它。";
 "backend.recovery.fsck.fsck_already_running.action.1" = "请保持 Time Capsule 接通电源并等待；大容量磁盘的修复可能需要一小时或更长时间。";
 "backend.recovery.fsck.fsck_already_running.action.2" = "然后再次运行“磁盘修复”。完成后它会重启设备。";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "无法卸载磁盘";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "无法确认磁盘已卸载，因此修复没有开始。在设备重启之前，文件共享会保持关闭。";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "请重启设备。";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "然后再次运行“磁盘修复”。";
 "backend.recovery.fsck.fsck_session_dropped.title" = "磁盘修复期间连接中断";
 "backend.recovery.fsck.fsck_session_dropped.message" = "fsck_hfs 修复磁盘时与设备的连接已中断。修复仍在设备上继续，文件共享在设备重启前保持关闭。";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "请保持 Time Capsule 接通电源，不要重启它；大容量磁盘的修复可能需要一小时或更长时间。";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "重新连接已保存的设备“%@”";
 "backend.error.device_identity_mismatch" = "无法确认设备身份。请刷新搜索并重新连接已保存的设备。";
 "backend.recovery.device_identity_mismatch.title" = "无法确认设备身份";
-"backend.recovery.device_identity_mismatch.message" = "无法确认设备身份。请刷新搜索并重新连接已保存的设备。";
+"backend.recovery.device_identity_mismatch.message" = "此地址上的设备未表明自己是已保存的设备。";
 "backend.recovery.device_identity_mismatch.action.1" = "请刷新搜索并重新连接已保存的设备。";
 
 "discovery.identity_owned" = "此设备已保存为“%@”。请检查已保存的设备，并使用“忘记”移除重复条目。";

@@ -2231,9 +2231,10 @@ class DiskPayloadProblem:
 
     @property
     def error(self) -> str:
-        """The sentences an operation's error ends with."""
+        """The sentence an operation's error ends with; its code's next steps
+        say to reinstall."""
         cause = self.cause if self.samba_off else f"file sharing and Time Machine are running, but {self.cause}"
-        return f"{cause[:1].upper()}{cause[1:]}. {_PAYLOAD_REINSTALL[:1].upper()}{_PAYLOAD_REINSTALL[1:]}."
+        return f"{cause[:1].upper()}{cause[1:]}."
 
     def error_after(self, failure: str) -> str:
         """An operation's error: its own failure line when Samba is off for
@@ -2246,6 +2247,7 @@ class DiskPayloadProblem:
         return self.token.replace("=", "_")
 
 
+# Checkup's results say what to do; an error's next steps come from its code.
 _PAYLOAD_REINSTALL = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
 DISK_PAYLOAD_MISSING = DiskPayloadProblem(
     "payload=missing", "disk_payload",

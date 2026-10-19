@@ -7,6 +7,7 @@ import struct
 from typing import Mapping
 import zlib
 
+from timecapsulesmb.core.error_codes import CodedError
 from timecapsulesmb.core.errors import require_python_module
 
 
@@ -54,7 +55,7 @@ ZOPFLI_BOOTSTRAP_MESSAGE = (
 )
 
 
-class FlashAnalysisError(RuntimeError):
+class FlashAnalysisError(CodedError):
     """Raised when a firmware bank cannot be safely classified."""
 
 
@@ -813,6 +814,12 @@ def inspection_to_jsonable(
 
 
 def active_selection_error_message(analysis: FlashAnalysis, *, write: bool) -> str:
+    """Why no bank was chosen, as a sentence: an error's message starts it."""
+    text = _active_selection_error_text(analysis, write=write)
+    return text[:1].upper() + text[1:]
+
+
+def _active_selection_error_text(analysis: FlashAnalysis, *, write: bool) -> str:
     prefix = "refusing to write because " if write else ""
     selection = analysis.active_selection
     if selection.status == "no_candidates":

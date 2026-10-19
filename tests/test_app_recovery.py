@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from timecapsulesmb.app.recovery import recovery_for
+from timecapsulesmb.app import recovery
+from timecapsulesmb.app.recovery import cli_steps, recovery_for
+from timecapsulesmb.core.error_codes import ErrorCode
 
 
 class AppRecoveryTests(unittest.TestCase):
@@ -164,6 +166,96 @@ class AppRecoveryTests(unittest.TestCase):
                 "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
             ],
         )
+
+
+
+class CliStepsTests(unittest.TestCase):
+    """The CLI prints the app's next steps, with each control named by its command."""
+
+    def entries(self) -> list[tuple[str, ErrorCode, str | None, recovery.RecoveryInfo]]:
+        return (
+            # doctor has no entries of its own, so each code reads its default.
+            [("doctor", code, None, info) for code, info in recovery._DEFAULTS.items()]
+            + [(operation, code, None, info) for (operation, code), info in recovery._OPERATION_CODE_RECOVERY.items()]
+            + [(operation, code, stage, info) for (operation, code, stage), info in recovery._STAGE_RECOVERY.items()]
+        )
+
+    def test_app_controls_become_commands(self) -> None:
+        self.assertEqual(
+            cli_steps("deploy", ErrorCode.PAYLOAD_UPLOAD_TIMEOUT),
+            (
+                "Run `tcapsule fsck`.",
+                "Connect this computer or the device by Ethernet, then run `tcapsule deploy` again.",
+                "If this keeps happening, the disk may need replacing.",
+            ),
+        )
+        self.assertEqual(
+            cli_steps("deploy", ErrorCode.OPERATION_FAILED)[1],
+            "If it keeps failing, report it, with this command's output, at https://github.com/jamesyc/TimeCapsuleSMB/issues.",
+        )
+
+    def test_a_step_about_a_control_only_the_app_has_is_left_out(self) -> None:
+        app_steps = recovery_for("deploy", ErrorCode.INVALID_REQUEST)["actions"]
+        self.assertIn("If “Helper path” is set in “Settings”, clear it.", app_steps)
+        self.assertEqual(cli_steps("deploy", ErrorCode.INVALID_REQUEST), ("Update or reinstall TimeCapsuleSMB.",))
+
+    def test_an_entry_s_own_cli_steps_replace_the_app_s(self) -> None:
+        self.assertEqual(cli_steps("set-ssh", ErrorCode.SSH_DISABLED), ("Run `tcapsule set-ssh --enable`, then try again.",))
+        # The terminal app needs Local Network access, not TimeCapsuleSMB.
+        self.assertIn("Turn on the app this command runs in", " ".join(cli_steps("discover", ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED)))
+
+    def test_the_stage_and_operation_choose_the_steps_as_in_the_app(self) -> None:
+        self.assertEqual(cli_steps("deploy", ErrorCode.REMOTE_ERROR, stage="verify_payload_upload")[0], "Wake the disk, then try again.")
+        self.assertEqual(cli_steps("deploy", ErrorCode.REMOTE_ERROR)[1], "If it keeps failing, run `tcapsule doctor`.")
+
+    def test_the_app_never_receives_the_cli_steps(self) -> None:
+        self.assertNotIn("cli_extra", recovery_for("set-ssh", ErrorCode.DEVICE_UNREACHABLE))
+
+    def test_every_entry_gives_the_cli_steps_in_its_own_words(self) -> None:
+        for operation, code, stage, info in self.entries():
+            with self.subTest(operation=operation, code=code, stage=stage):
+                steps = cli_steps(operation, code, stage=stage)
+                for step in steps:
+                    # No app control is left unnamed for the CLI.
+                    self.assertNotIn("“", step)
+                    self.assertNotIn("this Mac", step)
+                # Guidance the app gives is never lost on the CLI.
+                self.assertEqual(bool(steps), bool(info.actions) or bool(info.cli_extra), (info.actions, steps))
+
+    def test_every_cli_phrase_matches_a_step_the_app_shows(self) -> None:
+        # A phrase that matches nothing means an app step was reworded and the
+        # CLI now prints the app's words, or leaves the step out.
+        steps = " ".join(step for *_rest, info in self.entries() for step in info.actions)
+        for app_words, _cli_words in recovery._CLI_WORDS:
+            with self.subTest(app_words=app_words):
+                self.assertIn(app_words, steps)
+
+    def test_every_app_only_step_is_one_the_app_shows(self) -> None:
+        steps = {step for *_rest, info in self.entries() for step in info.actions}
+        for step in recovery._APP_ONLY_STEPS:
+            with self.subTest(step=step):
+                self.assertIn(step, steps)
+
+    def test_no_cli_step_speaks_of_the_app_s_screens(self) -> None:
+        # Words for what only the app has: a CLI user cannot follow them.
+        app_words = ("Forget", "highlighted", "in the app", "the saved device", "from the CLI", "configuration step",
+                     "volume list", "Select ")
+        for operation, code, stage, _info in self.entries():
+            for step in cli_steps(operation, code, stage=stage):
+                with self.subTest(operation=operation, code=code, stage=stage, step=step):
+                    self.assertFalse([word for word in app_words if word in step])
+
+    def test_an_entry_adds_its_cli_only_steps_after_the_app_s(self) -> None:
+        self.assertEqual(
+            cli_steps("deploy", ErrorCode.DEVICE_UNREACHABLE),
+            (
+                "Make sure the device is turned on and connected to the same network or Wi-Fi as this computer.",
+                "If the device is restarting, wait a few minutes, then try again.",
+                "Run `tcapsule doctor` to see which AirPorts answer on this network.",
+            ),
+        )
+        # An app step with no words of its own for the CLI never reaches it.
+        self.assertEqual(cli_steps("deploy", ErrorCode.INSTALL_INTERRUPTED), ("Run `tcapsule deploy` again to complete the install.",))
 
 
 if __name__ == "__main__":

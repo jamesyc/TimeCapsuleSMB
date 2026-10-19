@@ -508,7 +508,7 @@ class CliDoctorTests(CliTestCase):
         with tempfile.NamedTemporaryFile() as env_file:
             env_path = Path(env_file.name)
             with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config(values, path=env_path)):
-                with mock.patch("timecapsulesmb.cli.doctor.CommandContext", return_value=command_context):
+                with mock.patch("timecapsulesmb.cli.doctor.CommandContext", side_effect=command_context.opened_as):
                     with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([], False)) as checks_mock:
                         with redirect_stdout(output):
                             rc = doctor.main([])

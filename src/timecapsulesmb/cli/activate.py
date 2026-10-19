@@ -102,7 +102,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             decision = activate_runtime(connection, plan.actions, callbacks=command_context.to_operation_callbacks())
         except DeviceError as exc:
-            print(str(exc))
+            print(command_context.with_next_steps(str(exc), exc))
             command_context.fail_with_error(str(exc))
             return 1
         if not decision.run_actions:

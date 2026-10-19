@@ -6,6 +6,7 @@ import struct
 import zlib
 
 from timecapsulesmb.apple_firmware import normalize_syap
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.flash import (
     BankAnalysis,
     FlashAnalysisError,
@@ -68,9 +69,13 @@ SECONDARY_BANK_UNVERIFIED_MESSAGE = (
 class SecondaryBankInvalidError(FlashAnalysisError):
     """Patching was refused only because the secondary bank is not a valid backup."""
 
+    code = ErrorCode.SECONDARY_BANK_INVALID
+
 
 class SecondaryBankReadMismatchError(FlashAnalysisError):
     """This backup's read of the secondary bank and ACPd's own read disagree about its footer."""
+
+    code = ErrorCode.SECONDARY_BANK_READ_MISMATCH
 
 
 @dataclass(frozen=True)
@@ -155,23 +160,9 @@ RESTORE_PRIMARY_AMBIGUOUS_WARNING = (
 )
 
 
-def _patch_preflight_lines(reason: str, inspection: FlashInspection) -> list[str]:
-    return [
-        reason,
-        bank_inspection_status_line(inspection.primary),
-        bank_inspection_status_line(inspection.secondary),
-        # The app shows this text too, and it has no force option.
-        "From the command line, `tcapsule flash --patch --force` patches the primary bank anyway "
-        "after you review the backup status.",
-    ]
-
-
-def _restore_preflight_lines(reason: str, inspection: FlashInspection) -> list[str]:
-    return [
-        reason,
-        bank_inspection_status_line(inspection.primary),
-        bank_inspection_status_line(inspection.secondary),
-    ]
+def _bank_status(inspection: FlashInspection) -> str:
+    """Each bank's inspection: the facts behind a refusal."""
+    return "\n".join((bank_inspection_status_line(inspection.primary), bank_inspection_status_line(inspection.secondary)))
 
 
 def _both_backup_banks_valid(inspection: FlashInspection) -> bool:
@@ -235,7 +226,7 @@ def _secondary_read_mismatch_reason(action: str, inspection: FlashInspection) ->
         return None
     return (
         f"refusing to {action} because the secondary (backup) firmware bank read differently in two reads: "
-        f"{detail}. Back up and inspect again."
+        f"{detail}."
     )
 
 
@@ -251,42 +242,33 @@ def _force_warnings(inspection: FlashInspection) -> tuple[str, ...]:
 def require_primary_patch_ready(inspection: FlashInspection, *, force: bool = False) -> BankAnalysis:
     primary = inspection.primary
     if primary.analysis is None:
-        lines = [
+        raise FlashAnalysisError(
             "refusing to patch primary because the primary firmware bank could not be analyzed",
-            bank_inspection_status_line(inspection.primary),
-            bank_inspection_status_line(inspection.secondary),
-        ]
-        raise FlashAnalysisError("\n".join(lines))
+            detail=_bank_status(inspection),
+        )
 
     mismatch = _secondary_read_mismatch_reason("patch primary", inspection)
     if not force and mismatch is not None:
-        raise SecondaryBankReadMismatchError("\n".join(_patch_preflight_lines(mismatch, inspection)))
+        raise SecondaryBankReadMismatchError(mismatch, detail=_bank_status(inspection))
 
     if not force and _secondary_needs_refresh(inspection):
         raise SecondaryBankInvalidError(
-            "\n".join([
-                "refusing to patch primary because the secondary (backup) firmware bank is not a valid backup",
-                bank_inspection_status_line(inspection.primary),
-                bank_inspection_status_line(inspection.secondary),
-                "Run restore (`tcapsule flash --restore`) to rewrite the secondary bank with Apple firmware, "
-                "then patch again.",
-            ])
+            "refusing to patch primary because the secondary (backup) firmware bank is not a valid backup",
+            detail=_bank_status(inspection),
         )
 
     if not force and not _both_backup_banks_valid(inspection):
         raise FlashAnalysisError(
-            "\n".join(_patch_preflight_lines(
-                "refusing to patch primary because both firmware banks must be valid backups",
-                inspection,
-            ))
+            "refusing to patch primary because both firmware banks must be valid backups",
+            code=ErrorCode.FLASH_PATCH_REFUSED,
+            detail=_bank_status(inspection),
         )
 
     if not force and not primary.active_candidate:
         raise FlashAnalysisError(
-            "\n".join(_patch_preflight_lines(
-                "refusing to patch primary because primary is not an active firmware candidate",
-                inspection,
-            ))
+            "refusing to patch primary because primary is not an active firmware candidate",
+            code=ErrorCode.FLASH_PATCH_REFUSED,
+            detail=_bank_status(inspection),
         )
 
     analysis = primary.analysis
@@ -305,10 +287,8 @@ def require_primary_patch_ready(inspection: FlashInspection, *, force: bool = Fa
 def require_restore_target_bank(inspection: FlashInspection) -> tuple[BankAnalysis, tuple[str, ...]]:
     if not _both_backup_banks_valid(inspection):
         raise FlashAnalysisError(
-            "\n".join(_restore_preflight_lines(
-                "refusing to restore because both firmware banks must be valid backups",
-                inspection,
-            ))
+            "refusing to restore because both firmware banks must be valid backups",
+            detail=_bank_status(inspection),
         )
 
     active = _selected_active_for_read_plan(inspection)
@@ -324,10 +304,8 @@ def require_restore_target_bank(inspection: FlashInspection) -> tuple[BankAnalys
     if analysis is not None:
         raise FlashAnalysisError(active_selection_error_message(analysis, write=True))
     raise FlashAnalysisError(
-        "\n".join(_restore_preflight_lines(
-            "refusing to restore because firmware bank inspection failed",
-            inspection,
-        ))
+        "refusing to restore because firmware bank inspection failed",
+        detail=_bank_status(inspection),
     )
 
 
@@ -459,7 +437,7 @@ def plan_restore_apple(
 ) -> FlashPlan:
     mismatch = _secondary_read_mismatch_reason("rewrite the secondary bank", inspection)
     if mismatch is not None:
-        raise SecondaryBankReadMismatchError("\n".join(_restore_preflight_lines(mismatch, inspection)))
+        raise SecondaryBankReadMismatchError(mismatch, detail=_bank_status(inspection))
     if _secondary_needs_refresh(inspection):
         return plan_refresh_secondary(
             inspection,
@@ -516,18 +494,18 @@ def plan_refresh_secondary(
     """
     normalized_syap = normalize_syap(syap)
     if normalized_syap not in SECONDARY_REFRESH_SYAPS:
-        raise FlashAnalysisError("\n".join(_restore_preflight_lines(
+        raise FlashAnalysisError(
             "refusing to restore because the secondary firmware bank is invalid "
             f"and rewriting it is not supported on syAP {normalized_syap} yet",
-            inspection,
-        )))
+            detail=_bank_status(inspection),
+        )
     for bank in (inspection.primary, inspection.secondary):
         if bank.size != FIRMWARE_BANK_SIZE:
-            raise FlashAnalysisError("\n".join(_restore_preflight_lines(
+            raise FlashAnalysisError(
                 f"refusing to restore the secondary bank: the {bank.name} bank read {bank.size} bytes, "
                 f"expected {FIRMWARE_BANK_SIZE}",
-                inspection,
-            )))
+                detail=_bank_status(inspection),
+            )
     payload = build_download_payload_for_syap(
         syap=syap,
         firmware_template=firmware_template,

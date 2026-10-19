@@ -67,7 +67,7 @@ REBOOT_NO_DOWN_MESSAGE = "Reboot was requested but the device did not restart."
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 SSH_STILL_OPEN_MESSAGE = "SSH reopened after reboot. Disable did not persist."
 ACPD_STOPPED_MESSAGE = acpd.acpd_broken_message(
-    "the AirPort service on this device stopped but did not restart the device", then="",
+    "the AirPort service on this device stopped but did not restart the device",
 )
 
 

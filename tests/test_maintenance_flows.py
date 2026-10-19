@@ -8,6 +8,7 @@ from unittest import mock
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
+from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS, DeployedVersionProbeResult
 from timecapsulesmb.services.activation import (
@@ -857,7 +858,9 @@ class ActivateRuntimeTests(unittest.TestCase):
 
         self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="runtime_not_installed")
         self.assertIn("not installed", str(result))
-        self.assertIn("Install / Update Samba", str(result))
+        # The code's next step installs it; the message says only what is wrong.
+        self.assertIn("Run `tcapsule deploy`.", cli_steps("activate", result.code))
+        self.assertNotIn("tcapsule", str(result))
         self.assertEqual(recorder.debug, {"deployed_config_present": False})
 
     def test_install_without_version_information_is_refused_as_outdated(self) -> None:
@@ -877,7 +880,7 @@ class ActivateRuntimeTests(unittest.TestCase):
 
                 self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="runtime_outdated")
                 self.assertIn(f"{tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", str(result))
-                self.assertIn("Install / Update Samba", str(result))
+                self.assertIn("Run `tcapsule deploy`.", cli_steps("activate", result.code))
 
     def test_other_releases_of_this_major_version_are_started_and_verified(self) -> None:
         # Activation needs the same major version, not the same release: an
@@ -906,7 +909,7 @@ class ActivateRuntimeTests(unittest.TestCase):
 
         self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="client_outdated")
         self.assertIn("v9.0.0 is from a newer major version", str(result))
-        self.assertIn("Update TimeCapsuleSMB", str(result))
+        self.assertIn("Update TimeCapsuleSMB, then start it again.", cli_steps("activate", result.code))
 
     def test_oldest_startable_release_is_in_this_major_version(self) -> None:
         # A new major version must set its own floor; the gate compares majors

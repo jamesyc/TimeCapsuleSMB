@@ -10,6 +10,7 @@ from unittest import mock
 from tests.reboot_support import FakeAcpDevice
 from timecapsulesmb.device.migration_jobs import MigrationActivity
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.cli.context import error_with_next_steps
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
@@ -71,13 +72,23 @@ def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> Readin
     return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
 
 
+# What the CLI prints after a rejected password: the auth_failed next steps.
+AUTH_FAILED_CLI_STEPS = (
+    "\n\nNext steps:\n"
+    "  1. Run `tcapsule configure` again and enter the AirPort admin password.\n"
+    "  2. Verify that SSH is enabled on the device."
+)
+
+
 class FakeCommandContext:
     def __init__(
         self,
         *,
         connection: SshConnection | None = None,
         compatibility: DeviceCompatibility | None = None,
+        command_name: str = "test",
     ) -> None:
+        self.command_name = command_name
         self.result = "failure"
         self.finish_fields: dict[str, object] = {}
         self.error_lines: list[str] = []
@@ -99,6 +110,11 @@ class FakeCommandContext:
             supported=True,
             reason_code="supported_netbsd6",
         )
+
+    def opened_as(self, _telemetry: object, command_name: str, *_args: object, **_kwargs: object) -> "FakeCommandContext":
+        """A stand-in for CommandContext(...): the command's name chooses its next steps."""
+        self.command_name = command_name
+        return self
 
     def __enter__(self) -> "FakeCommandContext":
         return self
@@ -127,6 +143,11 @@ class FakeCommandContext:
     def fail_with_error(self, message: str) -> None:
         self.result = "failure"
         self.set_error(message)
+
+    def with_next_steps(self, message: str, exc: BaseException) -> str:
+        return error_with_next_steps(
+            message, exc, command=self.command_name, stage=self.stages[-1] if self.stages else None, config=self.config,
+        )
 
     def update_fields(self, **fields: object) -> None:
         for key, value in fields.items():

@@ -71,7 +71,7 @@ from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import ACP_UNREACHABLE_ADVICE, SSH_ENABLE_TIMEOUT_MESSAGE
+from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.activation import OLDEST_ACTIVATABLE_RELEASE_TAG
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import (
@@ -94,7 +94,7 @@ from timecapsulesmb.transport.errors import (
     TransportError,
     ssh_timeout_slow_device_message,
 )
-from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -4335,7 +4335,9 @@ class AppApiTests(unittest.TestCase):
             "Disable VPN or security software that routes local network traffic, then try again.",
         )
         self.assertIn("No AirPort ACP service responded", error["message"])
-        self.assertIn("Check the device IP address or hostname", error["message"])
+        # What to check is the stage's guidance, not the helper's message.
+        self.assertIn("Check that the IP address is the Time Capsule or AirPort address.", error["recovery"]["actions"])
+        self.assertNotIn("Check", error["message"])
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("acp_port_probe_attempts=3", telemetry_error)
         self.assertIn("acp_port_probe_last_error=Connection refused", telemetry_error)
@@ -4386,9 +4388,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "device_off_network")
         self.assertEqual(
             error["message"],
-            "Could not connect to ACP on 10.0.1.1:5009. 10.0.1.1 is not on this Mac's network (192.168.1.0/24). "
-            "Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, "
-            "then try again.",
+            "Could not connect to ACP on 10.0.1.1:5009. 10.0.1.1 is not on this Mac's network (192.168.1.0/24).",
         )
         self.assertEqual(error["recovery"]["localization_key"], "device_off_network")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
@@ -4483,7 +4483,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "acp_no_route")
         self.assertEqual(
             error["message"],
-            f"No AirPort ACP service responded at this address: Could not connect to ACP on 10.0.0.99:5009. {ACP_UNREACHABLE_ADVICE}",
+            "No AirPort ACP service responded at this address: Could not connect to ACP on 10.0.0.99:5009.",
         )
         self.assertEqual(error["recovery"]["localization_key"], "local_network_permission_denied")
         self.assertEqual(error["recovery"]["action_ids"], ["open_system_settings", "retry"])
@@ -5129,7 +5129,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "auth_failed")
-        self.assertEqual(error["message"], AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(error["message"], AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE)
         compare.assert_called_once()
         remote_actions.assert_not_called()
 
@@ -6589,7 +6589,7 @@ MaSt = (
         self.assertEqual(verify_probe.call_args.kwargs, {"timeout_seconds": 200})
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "remote_error")
-        self.assertTrue(error["message"].startswith("NetBSD4 activation failed. runtime verification timed out after 200s"))
+        self.assertTrue(error["message"].startswith("NetBSD4 activation failed.\nruntime verification timed out after 200s"))
         self.assertEqual(error["debug"]["stage"], "verify_runtime_activation")
         self.assertEqual(
             error["debug"]["remote_manager_log_tail"],
@@ -6786,7 +6786,7 @@ MaSt = (
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "auth_failed")
-        self.assertEqual(error["message"], AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(error["message"], AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE)
         compare.assert_called_once()
         uninstall.assert_not_called()
 
@@ -6922,7 +6922,7 @@ MaSt = (
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "auth_failed")
-        self.assertEqual(error["message"], AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(error["message"], AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE)
         mount.assert_not_called()
 
     def test_fsck_refuses_a_broken_apple_acpd_before_asking(self) -> None:
@@ -7402,7 +7402,9 @@ MaSt = (
                 self.assertNotIn("request", reboot.calls)
                 self.assertNotIn("read", reboot.calls)
                 error = self.assert_single_terminal_event(collector, "error")
-                self.assertEqual(error["code"], "remote_error")
+                # Its own code: the guidance is to restart, then repair again.
+                self.assertEqual(error["code"], "fsck_volume_not_unmounted")
+                self.assertEqual(error["recovery"]["localization_key"], "fsck.fsck_volume_not_unmounted")
                 self.assertEqual(error["message"], FSCK_NOT_UNMOUNTED_MESSAGE)
 
     def test_helper_reads_request_and_writes_ndjson(self) -> None:

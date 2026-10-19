@@ -16,10 +16,11 @@ class AppOperationError(CodedError):
         message: str,
         *,
         code: ErrorCode | str = ErrorCode.OPERATION_FAILED,
+        detail: str | None = None,
         debug: object | None = None,
         recovery: object | None = None,
     ) -> None:
-        super().__init__(message, code=code)
+        super().__init__(message, code=code, detail=detail)
         self.debug = debug
         self.recovery = recovery
 

@@ -43,11 +43,6 @@ class ACPNoRouteError(ACPConnectionError):
 
 # Advice for an ACP port that does not answer at an address on this
 # computer's network.
-ACP_UNREACHABLE_ADVICE = (
-    "Check the device IP address or hostname, and turn off any VPN or firewall that filters local network traffic."
-)
-
-
 class AirportIdentityMismatchError(ACPError):
     """Another AirPort answers at the address, and the expected one was not
     found anywhere else."""
@@ -63,11 +58,7 @@ def device_off_network_message(
     # The message reaches telemetry as the operation's error, so this
     # computer's public networks are shown only by family and prefix length.
     networks = ", ".join(reportable_network(network, hide_hosts=True) for network in client_networks)
-    return (
-        f"{address} is not on {computer}'s network ({networks}). "
-        f"Check the address, or connect {computer} to the device's network by Wi-Fi or one of its LAN ports, "
-        "then try again."
-    )
+    return f"{address} is not on {computer}'s network ({networks})."
 
 
 def client_networks_if_off_network(host: str) -> list[IpNetwork] | None:
@@ -171,13 +162,13 @@ def _probe_acp_port(
         acp_port_probe_error_kinds=[entry["kind"] for entry in errors],
     )
     _record_port_probe_context(host, record, callbacks)
-    failure = f"Could not connect to ACP on {host}:{ACP_PORT}. "
+    failure = f"Could not connect to ACP on {host}:{ACP_PORT}."
     client_networks = client_networks_if_off_network(host)
     if client_networks:
-        raise ACPDeviceOffNetworkError(failure + device_off_network_message(host, client_networks))
+        raise ACPDeviceOffNetworkError(f"{failure} {device_off_network_message(host, client_networks)}")
     if all(entry["kind"] == "no_route" for entry in errors):
-        raise ACPNoRouteError(failure + ACP_UNREACHABLE_ADVICE)
-    raise ACPConnectionError(failure + ACP_UNREACHABLE_ADVICE)
+        raise ACPNoRouteError(failure)
+    raise ACPConnectionError(failure)
 
 
 def _follow(

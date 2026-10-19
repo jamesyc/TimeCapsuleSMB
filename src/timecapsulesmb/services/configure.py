@@ -62,9 +62,10 @@ class ConfigureFlowError(CodedError):
         message: str,
         *,
         code: ErrorCode | str,
+        detail: str | None = None,
         debug: str | None = None,
     ) -> None:
-        super().__init__(message, code=code)
+        super().__init__(message, code=code, detail=detail)
         self.debug = debug
 
 
@@ -396,7 +397,7 @@ def run_configure_flow(
     expected_mac = request.expected_airport_mac or (
         request.selected_record.airport_mac if request.selected_record is not None else None)
     if expected_mac and airport_mac and expected_mac != airport_mac:
-        raise ConfigureFlowError("The device identity could not be confirmed. Refresh discovery and reconnect the saved device.", code=ErrorCode.DEVICE_IDENTITY_MISMATCH)
+        raise ConfigureFlowError("The device identity could not be confirmed.", code=ErrorCode.DEVICE_IDENTITY_MISMATCH)
     if identity.syap is not None:
         values["TC_AIRPORT_SYAP"] = identity.syap
     # Empty when the device could not say: a MAC kept from an earlier device

@@ -414,7 +414,7 @@ def _plan_flash(
             live_login=inputs.live_login,
             include_login_mismatch=_patch_login_is_unexpected(operation, backup),
         )
-        print(message)
+        print(command_context.with_next_steps(message, exc))
         command_context.fail()
         return None
     assert plan is not None
@@ -573,7 +573,7 @@ def _finish_write(
             callbacks=command_context.to_operation_callbacks(),
         )
     except RebootFlowError as exc:
-        print(str(exc))
+        print(command_context.with_next_steps(str(exc), exc))
         command_context.fail_with_error(str(exc))
         # With a wait, the device may be stuck mid-reboot.
         if wait:

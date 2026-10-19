@@ -30,8 +30,8 @@ from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
 UNINSTALL_REBOOT_NO_DOWN_MESSAGE = (
-    "Reboot was requested but the device did not restart.\n"
-    "The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall."
+    "Reboot was requested but the device did not restart. "
+    "The uninstall removed managed TimeCapsuleSMB files before the reboot."
 )
 UNINSTALL_FILES_REMAIN_MESSAGE = "Managed TimeCapsuleSMB files are still present after reboot."
 FSCK_STATUS_PREFIX = "tcapsule-fsck: fsck_hfs exit status "
@@ -42,17 +42,14 @@ FSCK_DID_NOT_RUN_MESSAGE = (
 FSCK_NOT_UNMOUNTED_LINE = "tcapsule-fsck: volume not unmounted"
 FSCK_NOT_UNMOUNTED_MESSAGE = (
     "fsck did not run: the volume could not be confirmed unmounted. "
-    "File sharing stays off until the device restarts; restart it, then retry fsck."
+    "File sharing stays off until the device restarts."
 )
 FSCK_ALREADY_RUNNING_LINE = "tcapsule-fsck: fsck_hfs already running"
 FSCK_ALREADY_RUNNING_MESSAGE = (
-    "fsck did not run: fsck_hfs from an earlier disk repair is still running on the device. "
-    "Keep the Time Capsule plugged in, wait for it to finish, then run \"Disk Repair\" again."
+    "fsck did not run: fsck_hfs from an earlier disk repair is still running on the device."
 )
 FSCK_SESSION_DROPPED_MESSAGE = (
-    "The connection to the device ended while fsck_hfs was running. The repair keeps running "
-    "on the device: keep the Time Capsule plugged in and do not restart it. Run Disk Repair "
-    "again later; it will not start while the earlier repair runs, and it restarts the device when done."
+    "The connection to the device ended while fsck_hfs was running. The repair keeps running on the device."
 )
 FSCK_STARTED_LINE_PREFIX = "--- fsck_hfs "
 FSCK_DURATION_WARNING = (
@@ -303,7 +300,7 @@ def fsck_exit_status(output: str) -> int | None:
     return None
 
 
-def fsck_failure_code(status: int | None, output: str = "", *, started: bool = False) -> str | None:
+def fsck_failure_code(status: int | None, output: str = "", *, started: bool = False) -> ErrorCode | None:
     """The error code of a run without a status line, when it has its own.
 
     `started` says fsck_hfs started: its result was lost, not never made.
@@ -314,6 +311,8 @@ def fsck_failure_code(status: int | None, output: str = "", *, started: bool = F
         return ErrorCode.FSCK_ALREADY_RUNNING
     if started:
         return ErrorCode.FSCK_SESSION_DROPPED
+    if any(line.strip() == FSCK_NOT_UNMOUNTED_LINE for line in output.splitlines()):
+        return ErrorCode.FSCK_VOLUME_NOT_UNMOUNTED
     return None
 
 
@@ -324,7 +323,7 @@ def fsck_failure_message(status: int | None, output: str = "", *, started: bool 
             return FSCK_ALREADY_RUNNING_MESSAGE
         if code == ErrorCode.FSCK_SESSION_DROPPED:
             return FSCK_SESSION_DROPPED_MESSAGE
-        if any(line.strip() == FSCK_NOT_UNMOUNTED_LINE for line in output.splitlines()):
+        if code == ErrorCode.FSCK_VOLUME_NOT_UNMOUNTED:
             return FSCK_NOT_UNMOUNTED_MESSAGE
         return FSCK_DID_NOT_RUN_MESSAGE
     if status != 0:

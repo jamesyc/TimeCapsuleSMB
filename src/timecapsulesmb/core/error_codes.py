@@ -8,6 +8,7 @@ app as one it has no guidance for.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import Enum
 
 
@@ -77,6 +78,7 @@ class ErrorCode(str, Enum):
     DISK_WRITE_TEST_UNRESPONSIVE = "disk_write_test_unresponsive"
     FSCK_ALREADY_RUNNING = "fsck_already_running"
     FSCK_SESSION_DROPPED = "fsck_session_dropped"
+    FSCK_VOLUME_NOT_UNMOUNTED = "fsck_volume_not_unmounted"
 
     # Installing.
     DEPLOY_NO_DISK_DETECTED = "deploy_no_disk_detected"
@@ -103,6 +105,7 @@ class ErrorCode(str, Enum):
     # Flash firmware.
     SECONDARY_BANK_INVALID = "secondary_bank_invalid"
     SECONDARY_BANK_READ_MISMATCH = "secondary_bank_read_mismatch"
+    FLASH_PATCH_REFUSED = "flash_patch_refused"
 
 
 # Codes that only say something failed, so their guidance cannot be specific.
@@ -112,14 +115,55 @@ GENERIC_CODES = frozenset({ErrorCode.OPERATION_FAILED, ErrorCode.REMOTE_ERROR})
 class CodedError(Exception):
     """An error that names its cause with an ErrorCode.
 
+    `message` says what happened and why, and never what to do: the app and the
+    CLI each take the next steps for the code from app/recovery.py, in their own
+    words. `detail` holds the facts of this failure (an address, a file, an exit
+    status), or None. The error reads as both, each on its line, wherever its
+    text is shown whole: the CLI, the app's English details, telemetry.
+
     A subclass may set `code` for every instance; None means the error names no
     cause, and whoever reports it chooses the generic code that fits.
     """
 
     code: ErrorCode | None = None
 
-    def __init__(self, message: str, *, code: ErrorCode | str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: ErrorCode | str | None = None,
+        detail: str | None = None,
+    ) -> None:
         super().__init__(message)
+        self.message = message
+        self.detail = detail
         if code is not None:
             # A code passed on from another error arrives as its string.
             self.code = ErrorCode(code)
+
+    def __str__(self) -> str:
+        return f"{self.message}\n{self.detail}" if self.detail else self.message
+
+
+def exception_chain(exc: BaseException | None) -> Iterator[BaseException]:
+    """The error, then each error it was raised from or while handling, as
+    Python's traceback walks them: `raise ... from None` ends the chain."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        yield exc
+        seen.add(id(exc))
+        if exc.__cause__ is not None:
+            exc = exc.__cause__
+        elif exc.__suppress_context__:
+            exc = None
+        else:
+            exc = exc.__context__
+
+
+def coded_error_in(exc: BaseException | None) -> CodedError | None:
+    """The error itself or the first in its chain of causes that names a code,
+    as when a command turned it into a SystemExit."""
+    return next(
+        (error for error in exception_chain(exc) if isinstance(error, CodedError) and error.code is not None),
+        None,
+    )

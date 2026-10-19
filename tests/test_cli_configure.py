@@ -239,7 +239,7 @@ class CliConfigureTests(CliTestCase):
                 mocks.telemetry_factory = stack.enter_context(mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_config"))
             if command_context is not None:
                 mocks.command_context_factory = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=command_context)
+                    mock.patch("timecapsulesmb.cli.configure.CommandContext", side_effect=command_context.opened_as)
                 )
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
                 setattr(mocks, f"extra_{index}", stack.enter_context(mock.patch(target, replacement)))
@@ -2807,10 +2807,28 @@ class CliConfigureTests(CliTestCase):
         self.assertEqual(result.rc, 1)
         result.mocks.write_env_file.assert_not_called()
         self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", result.text)
-        self.assertIn("Could not connect to ACP on 10.0.0.2:5009", result.text)
+        self.assertIn("Could not connect to ACP on 10.0.0.2:5009\n\nNext steps:\n  1. ", result.text)
+        # Printed once: under the red label, followed by the code's next steps.
+        self.assertEqual(result.text.count("Could not connect to ACP on 10.0.0.2:5009"), 1)
         error = self.configure_finished_error()
         self.assertIn("Failed to enable SSH via ACP: Could not connect to ACP on 10.0.0.2:5009", error)
         self.assertIn("stage=ssh_probe", error)
+
+    def test_a_configure_failure_prints_its_code_s_next_steps(self) -> None:
+        from timecapsulesmb.services.configure import ConfigureFlowError
+
+        failure = ConfigureFlowError("The device identity could not be confirmed.", code="device_identity_mismatch")
+        with mock.patch("timecapsulesmb.services.configure.run_configure_flow", side_effect=failure):
+            result = self.run_configure_cli(prompt_side_effect=self.configure_prompt_defaults())
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn(
+            "The device identity could not be confirmed.\n\nNext steps:\n"
+            "  1. Run `tcapsule configure` to find the device again.",
+            result.text,
+        )
+        # Telemetry keeps the message alone.
+        self.assertNotIn("Next steps", self.configure_finished_error())
 
     def test_configure_hard_fails_when_ssh_does_not_open_after_acp(self) -> None:
         self._configure_acp_probe_mock.side_effect = [None]

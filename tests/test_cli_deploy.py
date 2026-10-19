@@ -15,7 +15,7 @@ from timecapsulesmb.services.deploy import (
     DEPLOY_ACPD_STOPPED_MESSAGE,
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
 )
-from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.compat import DeviceCompatibility, classify_device_compatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
@@ -106,7 +106,7 @@ class CliDeployTests(CliTestCase):
                 mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(config_values))
             )
             if command_context is not None:
-                mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context))
+                mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.CommandContext", side_effect=command_context.opened_as))
             mocks.validate_artifacts = stack.enter_context(mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=artifacts))
             mocks.wait_for_mast_volumes_conn = stack.enter_context(
                 mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=mast_discovery)
@@ -715,7 +715,11 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "MaSt found 1 deployable HFS volume(s), but deploy could not write to any of them.",
+            "MaSt found 1 deployable HFS volume(s), but deploy could not write to any of them.\n\n"
+            "Next steps:\n"
+            "  1. Wake or remount the disk.\n"
+            "  2. Check available free space.\n"
+            "  3. Run `tcapsule deploy` again.",
         )
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
@@ -744,7 +748,10 @@ class CliDeployTests(CliTestCase):
         self.assertEqual(
             str(result.exception),
             "MaSt found 1 deployable HFS volume(s), but none of them was mounted and the device did not "
-            "mount one when asked. Wait a minute and retry, or restart the device.",
+            "mount one when asked.\n\n"
+            "Next steps:\n"
+            "  1. Wait a minute, then run `tcapsule deploy` again.\n"
+            "  2. Restart the device if the disk still does not mount.",
         )
         result.mocks.run_remote_actions.assert_not_called()
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
@@ -768,7 +775,10 @@ class CliDeployTests(CliTestCase):
         self.assertEqual(
             str(result.exception),
             "MaSt found 1 deployable HFS volume(s). A volume is mounted, but the device would not keep it mounted "
-            "for TimeCapsuleSMB, so it could be unmounted during deploy. Wait a minute and retry, or restart the device.",
+            "for TimeCapsuleSMB, so it could be unmounted during deploy.\n\n"
+            "Next steps:\n"
+            "  1. Wait a minute, then run `tcapsule deploy` again.\n"
+            "  2. Restart the device if this keeps happening.",
         )
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
@@ -789,7 +799,11 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "No internal disk was detected after 10 MaSt queries spaced 3 seconds apart.",
+            "No internal disk was detected after 10 MaSt queries spaced 3 seconds apart.\n\n"
+            "Next steps:\n"
+            "  1. Check that the disk is connected and seated.\n"
+            "  2. Power-cycle the device and retry after the disk spins up.\n"
+            "  3. Some devices cannot fully detect some disks larger than 2TB.",
         )
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
@@ -833,9 +847,12 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "A disk was found, but no valid HFS partition was detected. "
-            "Retry again, or erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
-            "Note: some devices cannot detect some partitions larger than 2 TB.",
+            "A disk was found, but no valid HFS partition was detected.\n\n"
+            "Next steps:\n"
+            "  1. Run `tcapsule deploy` again.\n"
+            "  2. Erase the disk with AirPort Utility using Erase Disk.\n"
+            "  3. Run `tcapsule deploy` again after the Time Capsule formats the disk.\n"
+            "  4. Some devices cannot detect some partitions larger than 2 TB.",
         )
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
@@ -907,7 +924,13 @@ class CliDeployTests(CliTestCase):
             raises=SystemExit,
         )
 
-        self.assertEqual(str(result.exception), "managed payload verification failed at /Volumes/dk2/.samba4: missing smbd")
+        self.assertEqual(
+            str(result.exception),
+            "managed payload verification failed at /Volumes/dk2/.samba4: missing smbd\n\n"
+            "Next steps:\n"
+            "  1. Wake the disk, then try again.\n"
+            "  2. If it keeps failing, run `tcapsule fsck`.",
+        )
         self.assertNotIn("request", result.mocks.device.calls)
         result.mocks.verify_payload_home_conn.assert_called_once()
         result.mocks.flush_remote_filesystem_writes.assert_called_once()
@@ -929,7 +952,10 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "managed payload verification failed at /Volumes/dk2/.samba4: missing payload directory",
+            "managed payload verification failed at /Volumes/dk2/.samba4: missing payload directory\n\n"
+            "Next steps:\n"
+            "  1. Run `tcapsule deploy` again.\n"
+            "  2. If it keeps failing, run `tcapsule fsck`.",
         )
         self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
         self.assertNotIn("request", result.mocks.device.calls)
@@ -1010,7 +1036,7 @@ class CliDeployTests(CliTestCase):
                 raises=SystemExit,
             )
 
-        self.assertIn(AIRPORT_PASSWORD_MISMATCH_MESSAGE, str(result.exception.code))
+        self.assertIn(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, str(result.exception.code))
         compare.assert_called_once()
         input_mock.assert_not_called()
         self.assertNotIn("request", result.mocks.device.calls)

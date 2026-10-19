@@ -25,7 +25,6 @@ from timecapsulesmb.checks.network import LocalInterfaceNetwork
 from timecapsulesmb.services.acp_ssh import (
     SSH_ENABLE_TIMEOUT_MESSAGE,
     ACPDeviceOffNetworkError,
-    ACP_UNREACHABLE_ADVICE,
     ACPNoRouteError,
     AirportIdentityMismatchError,
     enable_ssh_with_port_preflight,
@@ -460,7 +459,7 @@ class ConfigureServiceTests(unittest.TestCase):
 
                 self.assertIsInstance(error, ACPNoRouteError)
                 self.assertEqual(
-                    str(error), f"Could not connect to ACP on 10.0.0.2:5009. {ACP_UNREACHABLE_ADVICE}",
+                    str(error), "Could not connect to ACP on 10.0.0.2:5009.",
                 )
 
     def test_port_probe_failures_that_are_not_all_no_route_stay_generic(self) -> None:
@@ -478,7 +477,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 error = self.probe_failure(errors)
                 self.assertIs(type(error), ACPConnectionError)
                 self.assertEqual(
-                    str(error), f"Could not connect to ACP on 10.0.0.2:5009. {ACP_UNREACHABLE_ADVICE}",
+                    str(error), "Could not connect to ACP on 10.0.0.2:5009.",
                 )
 
     def test_port_probe_no_route_to_another_network_says_the_device_is_off_this_computers_network(self) -> None:

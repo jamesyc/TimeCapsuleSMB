@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "Чтение вторичного (резервного) банка прошивки в этой резервной копии не совпадает с проверкой самим устройством. Банк может оказаться действительной копией, поэтому он не перезаписывается, а установка патча отклонена.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Выберите «Создать резервную копию и проверить».";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Если результаты чтения по-прежнему расходятся, оставьте прошивку как есть: флеш-память этого устройства может выходить из строя.";
+"backend.recovery.flash.flash_patch_refused.title" = "Установка патча отклонена";
+"backend.recovery.flash.flash_patch_refused.message" = "Банки прошивки находятся в состоянии, в котором устанавливать патч небезопасно, поэтому прошивка не изменена.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Выберите «Снова создать резервную копию и проверить» и проверьте состояние каждого банка.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Если банк поврежден, оставьте прошивку как есть.";
 "backend.recovery.activate.runtime_outdated.title" = "Установленная версия устарела";
 "backend.recovery.activate.runtime_outdated.message" = "Установленный TimeCapsuleSMB слишком старый, и это приложение не может его запустить или проверить.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Запустите «Установить/обновить Samba».";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs предыдущего исправления диска все еще выполняется на устройстве. Перезагрузка или отключение устройства сейчас прервет его.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Не отключайте Time Capsule от питания и подождите; на большом диске исправление может занять час или больше.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Затем снова запустите «Исправление диска». После завершения оно перезагрузит устройство.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Не удалось размонтировать диск";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "Исправление не началось, потому что не удалось подтвердить, что диск размонтирован. Общий доступ к файлам останется выключенным до перезагрузки устройства.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Перезагрузите устройство.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Затем снова запустите «Исправление диска».";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Соединение потеряно во время исправления диска";
 "backend.recovery.fsck.fsck_session_dropped.message" = "Соединение с устройством прервалось, пока fsck_hfs исправлял диск. Исправление продолжается на устройстве, а общий доступ к файлам остается выключенным до перезагрузки устройства.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Не отключайте Time Capsule от питания и не перезагружайте его; на большом диске исправление может занять час или больше.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Повторно подключить сохраненное устройство «%@»";
 "backend.error.device_identity_mismatch" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохраненное устройство.";
 "backend.recovery.device_identity_mismatch.title" = "Не удалось подтвердить идентичность устройства";
-"backend.recovery.device_identity_mismatch.message" = "Не удалось подтвердить идентичность устройства. Обновите поиск и повторно подключите сохраненное устройство.";
+"backend.recovery.device_identity_mismatch.message" = "Устройство по этому адресу не подтвердило, что оно является сохраненным устройством.";
 "backend.recovery.device_identity_mismatch.action.1" = "Обновите поиск и повторно подключите сохраненное устройство.";
 
 "discovery.identity_owned" = "Это устройство уже сохранено как «%@». Проверьте сохраненные устройства и удалите дубликаты с помощью команды «Забыть».";

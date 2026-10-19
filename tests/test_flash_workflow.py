@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.flash import (
     ActiveSelectionInfo,
     BankAnalysis,
@@ -151,13 +152,16 @@ class FlashWorkflowTests(unittest.TestCase):
     def test_require_primary_patch_ready_rejects_bad_backup_bank(self) -> None:
         # Only the secondary is bad, in both its reads: restore can rewrite
         # it, so say so. (The inspections built here carry no footer slot.)
-        with self.assertRaisesRegex(SecondaryBankInvalidError, "Run restore"):
+        with self.assertRaises(SecondaryBankInvalidError) as invalid:
             require_primary_patch_ready(inspect_full_banks())
+        self.assertEqual(invalid.exception.code, ErrorCode.SECONDARY_BANK_INVALID)
         # A bad primary is not something restore's secondary rewrite fixes.
         with self.assertRaises(FlashAnalysisError) as raised:
             require_primary_patch_ready(make_inspection(primary_backup_valid=False))
         self.assertNotIsInstance(raised.exception, SecondaryBankInvalidError)
         self.assertIn("both firmware banks must be valid backups", str(raised.exception))
+        # The CLI alone can patch anyway; its next steps say how.
+        self.assertEqual(raised.exception.code, ErrorCode.FLASH_PATCH_REFUSED)
 
     def test_require_primary_patch_ready_force_skips_selection_checks(self) -> None:
         primary = make_bank("primary", patch=make_patch(make_bank("primary")))

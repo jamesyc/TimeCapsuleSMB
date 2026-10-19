@@ -7,10 +7,11 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
+from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
-from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.core.error_codes import ErrorCode, coded_error_in, exception_chain
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import probe_remote_airport_identity_conn
@@ -26,10 +27,12 @@ from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_args,
 )
+from timecapsulesmb.integrations.acp import ACPError
 from timecapsulesmb.transport.errors import (
     format_ssh_timeout_slow_device_error,
     is_ssh_timeout_error,
     ssh_timeout_slow_device_message,
+    transport_error_code,
     TransportError,
 )
 
@@ -44,6 +47,49 @@ if TYPE_CHECKING:
 
 OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS = 0.1
 CLI_PROGRESS_SECONDS = 30
+
+
+def cli_error_code(exc: BaseException) -> ErrorCode | None:
+    """The code the app's helper reports for the same failure (app.service):
+    the error's own, else remote_error for a device or connection failure
+    that names none. None for any other error, which has no next steps."""
+    coded = coded_error_in(exc)
+    if coded is not None:
+        return coded.code
+    for error in exception_chain(exc):
+        if is_ssh_timeout_error(error):
+            # Its message already says the device is slow and what to do.
+            return None
+        if isinstance(error, TransportError):
+            return transport_error_code(error)
+        if isinstance(error, (DeviceError, ACPError)):
+            return ErrorCode.REMOTE_ERROR
+    return None
+
+
+def error_with_next_steps(
+    message: str,
+    exc: BaseException,
+    *,
+    command: str,
+    stage: str | None = None,
+    config: AppConfig | None = None,
+) -> str:
+    """The message, then the next steps for the code of the error behind it
+    (app.recovery.cli_steps), as the app shows them for the same failure."""
+    code = cli_error_code(exc)
+    if code is None:
+        return message
+    steps = list(cli_steps(command, code, stage=stage))
+    if code == ErrorCode.DEVICE_UNREACHABLE and config is not None and not config.get("TC_AIRPORT_MAC"):
+        steps.append(
+            "This configuration has no AirPort MAC: run `tcapsule configure` once, so commands "
+            "find the device when its address changes."
+        )
+    if not steps:
+        return message
+    numbered = "\n".join(f"  {index}. {step}" for index, step in enumerate(steps, 1))
+    return f"{message}\n\nNext steps:\n{numbered}"
 
 
 class CommandContext:
@@ -168,14 +214,21 @@ class CommandContext:
             if telemetry_message and not self.error_lines:
                 self.set_error(telemetry_message)
             self.finish(result=self.result, **self.finish_fields)
-            hint = self._device_error_hint(getattr(exc, "code", None))
-            raise SystemExit(f"{display_message}\n{hint}" if hint else display_message) from exc
+            raise SystemExit(self.with_next_steps(display_message, exc)) from exc
         elif exc_type is SystemExit:
             message = system_exit_message(exc)
             if message and message not in {"0", "None"}:
                 self.result = "failure"
                 if not self.error_lines:
                     self.set_error(message)
+                # A command that turned a coded error into its exit message
+                # still prints that error's next steps. A numeric exit prints
+                # nothing of its own, so it gets none.
+                exit_code = getattr(exc, "code", None)
+                with_steps = message if not isinstance(exit_code, str) else self.with_next_steps(message, exc)
+                if with_steps != message:
+                    self.finish(result=self.result, **self.finish_fields)
+                    raise SystemExit(with_steps) from exc
         elif exc_type is not None:
             self.result = "failure"
             if not self.error_lines:
@@ -185,19 +238,9 @@ class CommandContext:
         self.finish(result=self.result, **self.finish_fields)
         return False
 
-    def _device_error_hint(self, code: object) -> str | None:
-        """What to run next after the device did not answer or had SSH off."""
-        if code == ErrorCode.SSH_DISABLED:
-            return "Turn SSH on with `tcapsule set-ssh --enable`."
-        if code != ErrorCode.DEVICE_UNREACHABLE:
-            return None
-        hint = "Run `tcapsule doctor` to see which AirPorts answer on this network."
-        if self.config is not None and not self.config.get("TC_AIRPORT_MAC"):
-            hint += (
-                " This configuration has no AirPort MAC: run `tcapsule configure` once, so commands "
-                "find the device when its address changes."
-            )
-        return hint
+    def with_next_steps(self, message: str, exc: BaseException) -> str:
+        """The message, then the next steps for the code of the error behind it."""
+        return error_with_next_steps(message, exc, command=self.command_name, stage=self.debug_stage, config=self.config)
 
     def succeed(self) -> None:
         self.result = "success"

@@ -39,9 +39,6 @@ class ActivationDecision:
     runtime: ManagedRuntimeProbeResult | None = None
 
 
-INSTALL_UPDATE_HINT = (
-    'Run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line.'
-)
 # Activation starts the installed runtime and checks it with this version's
 # readiness probes. They hold for every release of this major version from
 # v3.3.0 on, older or newer than this one: they require Apple's mDNSResponder
@@ -71,7 +68,7 @@ def require_compatible_install(connection: SshConnection, callbacks: OperationCa
     if not flash_runtime_config_present_conn(connection):
         callbacks.debug(deployed_config_present=False)
         raise ActivationInstallError(
-            f"TimeCapsuleSMB is not installed on this device. {INSTALL_UPDATE_HINT}",
+            "TimeCapsuleSMB is not installed on this device.",
             code=ErrorCode.RUNTIME_NOT_INSTALLED,
         )
     version = read_deployed_version_conn(connection)
@@ -83,19 +80,19 @@ def require_compatible_install(connection: SshConnection, callbacks: OperationCa
     if version.release_tag is None or version.cli_version_code is None:
         raise ActivationInstallError(
             "The installed TimeCapsuleSMB has no version information, so it is older than "
-            f"{OLDEST_ACTIVATABLE_RELEASE_TAG}, the oldest release {RELEASE_TAG} can start. {INSTALL_UPDATE_HINT}",
+            f"{OLDEST_ACTIVATABLE_RELEASE_TAG}, the oldest release {RELEASE_TAG} can start.",
             code=ErrorCode.RUNTIME_OUTDATED,
         )
     if release_major(version.cli_version_code) > release_major(CLI_VERSION_CODE):
         raise ActivationInstallError(
             f"The installed TimeCapsuleSMB {version.release_tag} is from a newer major version than this "
-            f"version, {RELEASE_TAG}. Update TimeCapsuleSMB, then start it again.",
+            f"version, {RELEASE_TAG}.",
             code=ErrorCode.CLIENT_OUTDATED,
         )
     if version.cli_version_code < OLDEST_ACTIVATABLE_VERSION_CODE:
         raise ActivationInstallError(
             f"The installed TimeCapsuleSMB {version.release_tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}, "
-            f"the oldest release {RELEASE_TAG} can start. {INSTALL_UPDATE_HINT}",
+            f"the oldest release {RELEASE_TAG} can start.",
             code=ErrorCode.RUNTIME_OUTDATED,
         )
 
@@ -192,10 +189,7 @@ def start_netbsd4_runtime_after_reboot(
     )
 
 
-RUNTIME_RESTART_FAILURE_MESSAGE = (
-    "File sharing did not restart after the reboot. Run Activate in the macOS app, or "
-    "tcapsule activate from the command line."
-)
+RUNTIME_RESTART_FAILURE_MESSAGE = "File sharing did not restart after the reboot."
 RESTART_AFTER_REBOOT_MESSAGES = Netbsd4StartMessages(
     activation_message="Starting the installed runtime after reboot.",
     autostart_message="NetBSD4 firmware autostart is enabled; waiting for managed runtime.",

@@ -15,7 +15,7 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.flash import FlashAnalysisError
-from timecapsulesmb.flash_workflow import FlashPlan, SecondaryBankInvalidError, SecondaryBankReadMismatchError
+from timecapsulesmb.flash_workflow import FlashPlan
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -163,12 +163,8 @@ def _plan_operation(params: dict[str, object], context: AppOperationContext) -> 
             firmware_template=firmware_template,
             firmware_version=firmware_version,
         )
-    except SecondaryBankInvalidError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_INVALID) from exc
-    except SecondaryBankReadMismatchError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_READ_MISMATCH) from exc
     except FlashAnalysisError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
+        raise AppOperationError(str(exc), code=exc.code or ErrorCode.VALIDATION_FAILED) from exc
     return OperationResult(True, flash_plan_payload(bundle.manifest))
 
 
@@ -235,12 +231,8 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
             firmware_template=firmware_template,
             firmware_version=firmware_version,
         )
-    except SecondaryBankInvalidError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_INVALID) from exc
-    except SecondaryBankReadMismatchError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.SECONDARY_BANK_READ_MISMATCH) from exc
     except FlashAnalysisError as exc:
-        raise AppOperationError(str(exc), code=ErrorCode.VALIDATION_FAILED) from exc
+        raise AppOperationError(str(exc), code=exc.code or ErrorCode.VALIDATION_FAILED) from exc
     if plan is None:
         raise AppOperationError("Flash write has no plan", code=ErrorCode.VALIDATION_FAILED)
     if plan.already_satisfied:

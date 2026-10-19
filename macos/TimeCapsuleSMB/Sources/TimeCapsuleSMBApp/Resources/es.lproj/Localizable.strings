@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "La lectura del banco de firmware secundario (de respaldo) en esta copia de seguridad no coincide con la comprobación del propio dispositivo. El banco puede seguir siendo una copia válida, por lo que no se vuelve a escribir y se rechaza el parche.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Elija «Crear copia de seguridad e inspeccionar».";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Si las lecturas siguen sin coincidir, deje el firmware como está: la memoria flash de este dispositivo podría estar fallando.";
+"backend.recovery.flash.flash_patch_refused.title" = "Se rechazó aplicar el parche";
+"backend.recovery.flash.flash_patch_refused.message" = "Los bancos de firmware no están en un estado en el que sea seguro aplicar el parche, por lo que el firmware no se modificó.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Elija «Crear copia de seguridad e inspeccionar de nuevo» y revise el estado de cada banco.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Si un banco está dañado, deje el firmware como está.";
 "backend.recovery.activate.runtime_outdated.title" = "La instalación está desactualizada";
 "backend.recovery.activate.runtime_outdated.message" = "El TimeCapsuleSMB instalado es demasiado antiguo para que esta app pueda iniciarlo o comprobarlo.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Ejecute «Instalar / actualizar Samba».";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs de una reparación de disco anterior todavía se está ejecutando en el dispositivo. Reiniciar o desenchufar el dispositivo ahora la interrumpiría.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Mantenga enchufado el dispositivo Time Capsule y espere; en un disco grande, la reparación puede tardar una hora o más.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Después, vuelva a ejecutar «Reparación de disco». La reparación reinicia el dispositivo cuando termina.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "No se pudo desmontar el disco";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "La reparación no empezó porque no se pudo confirmar que el disco estuviera desmontado. El uso compartido de archivos sigue desactivado hasta que el dispositivo se reinicie.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Reinicie el dispositivo.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Después, vuelva a ejecutar «Reparación de disco».";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Conexión perdida durante la reparación del disco";
 "backend.recovery.fsck.fsck_session_dropped.message" = "La conexión con el dispositivo se cortó mientras fsck_hfs reparaba el disco. La reparación continúa en el dispositivo y el uso compartido de archivos sigue desactivado hasta que el dispositivo se reinicie.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Mantenga enchufado el dispositivo Time Capsule y no lo reinicie; en un disco grande, la reparación puede tardar una hora o más.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Volver a conectar el dispositivo guardado «%@»";
 "backend.error.device_identity_mismatch" = "No se pudo confirmar la identidad del dispositivo. Actualice la búsqueda y vuelva a conectar el dispositivo guardado.";
 "backend.recovery.device_identity_mismatch.title" = "No se pudo confirmar la identidad del dispositivo";
-"backend.recovery.device_identity_mismatch.message" = "No se pudo confirmar la identidad del dispositivo. Actualice la búsqueda y vuelva a conectar el dispositivo guardado.";
+"backend.recovery.device_identity_mismatch.message" = "El dispositivo de esta dirección no se identificó como el dispositivo guardado.";
 "backend.recovery.device_identity_mismatch.action.1" = "Actualice la búsqueda y vuelva a conectar el dispositivo guardado.";
 
 "discovery.identity_owned" = "Este dispositivo ya está guardado como «%@». Revise los dispositivos guardados y use «Olvidar» para eliminar las entradas duplicadas.";

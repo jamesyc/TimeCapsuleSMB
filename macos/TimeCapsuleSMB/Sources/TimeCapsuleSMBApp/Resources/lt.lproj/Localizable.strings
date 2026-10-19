@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "Antrinio (atsarginio) programinės įrangos banko nuskaitymas šioje atsarginėje kopijoje nesutampa su paties įrenginio patikra. Bankas vis dar gali būti tinkama kopija, todėl jis neperrašomas, o pataisymas atmetamas.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Pasirinkite „Sukurti atsarginę kopiją ir patikrinti“.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Jei nuskaitymai ir toliau nesutampa, palikite programinę įrangą tokią, kokia yra: šio įrenginio flash atmintis gali gesti.";
+"backend.recovery.flash.flash_patch_refused.title" = "Pataisymas atmestas";
+"backend.recovery.flash.flash_patch_refused.message" = "Programinės įrangos bankai nėra tokios būsenos, kad pataisymą būtų saugu taikyti, todėl programinė įranga nepakeista.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Pasirinkite „Sukurti atsarginę kopiją ir patikrinti dar kartą“ ir peržiūrėkite kiekvieno banko būseną.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Jei bankas pažeistas, palikite programinę įrangą tokią, kokia yra.";
 "backend.recovery.activate.runtime_outdated.title" = "Įdiegta versija pasenusi";
 "backend.recovery.activate.runtime_outdated.message" = "Įdiegta TimeCapsuleSMB versija per sena, kad ši programa galėtų ją paleisti ar patikrinti.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Paleiskite „Įdiegti / atnaujinti Samba“.";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "Ankstesnio disko taisymo fsck_hfs vis dar vykdomas įrenginyje. Paleidus įrenginį iš naujo ar atjungus nuo maitinimo dabar, jis būtų nutrauktas.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Neatjunkite Time Capsule nuo maitinimo ir palaukite; dideliame diske taisymas gali užtrukti valandą ar ilgiau.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Tada vėl paleiskite operaciją „Disko taisymas“. Baigusi ji paleis įrenginį iš naujo.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Nepavyko atjungti disko";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "Taisymas nepradėtas, nes nepavyko patvirtinti, kad diskas atjungtas. Failų bendrinimas liks išjungtas, kol įrenginys bus paleistas iš naujo.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Paleiskite įrenginį iš naujo.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Tada vėl paleiskite operaciją „Disko taisymas“.";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Ryšys nutrūko taisant diską";
 "backend.recovery.fsck.fsck_session_dropped.message" = "Ryšys su įrenginiu nutrūko, kol fsck_hfs taisė diską. Taisymas tęsiamas įrenginyje, o failų bendrinimas lieka išjungtas, kol įrenginys bus paleistas iš naujo.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Neatjunkite Time Capsule nuo maitinimo ir nepaleiskite jo iš naujo; dideliame diske taisymas gali užtrukti valandą ar ilgiau.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Iš naujo prijungti išsaugotą įrenginį „%@“";
 "backend.error.device_identity_mismatch" = "Nepavyko patvirtinti įrenginio tapatybės. Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
 "backend.recovery.device_identity_mismatch.title" = "Nepavyko patvirtinti įrenginio tapatybės";
-"backend.recovery.device_identity_mismatch.message" = "Nepavyko patvirtinti įrenginio tapatybės. Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
+"backend.recovery.device_identity_mismatch.message" = "Šiuo adresu esantis įrenginys neatpažintas kaip išsaugotas įrenginys.";
 "backend.recovery.device_identity_mismatch.action.1" = "Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
 
 "discovery.identity_owned" = "Šis įrenginys jau išsaugotas kaip „%@“. Peržiūrėkite išsaugotus įrenginius ir pašalinkite pasikartojančius įrašus naudodami „Pamiršti“.";

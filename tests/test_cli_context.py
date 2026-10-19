@@ -153,7 +153,7 @@ class CommandContextHelperTests(unittest.TestCase):
             ("device_unreachable", ""): ("Run `tcapsule doctor`", "has no AirPort MAC"),
             ("device_unreachable", "02:00:00:00:00:0a"): ("Run `tcapsule doctor`", None),
             ("ssh_disabled", ""): ("tcapsule set-ssh --enable", None),
-            ("auth_failed", ""): (None, None),
+            ("auth_failed", ""): ("Run `tcapsule configure` again and enter the AirPort admin password.", None),
         }
         for (code, mac), (expected, extra) in cases.items():
             with self.subTest(code=code, mac=mac):
@@ -172,6 +172,88 @@ class CommandContextHelperTests(unittest.TestCase):
                 error = context.telemetry.emit.call_args.kwargs["error"]
                 self.assertTrue(error.startswith("The device is not answering at 10.0.0.2."))
                 self.assertNotIn("tcapsule", error)
+
+    def exit_text(self, error: BaseException, *, command: str = "deploy", stage: str | None = None) -> str:
+        context = CommandContext(mock.Mock(), command, f"{command}_started", f"{command}_finished")
+        if stage:
+            context.set_stage(stage)
+        with self.assertRaises(SystemExit) as raised:
+            with context:
+                raise error
+        return str(raised.exception.code)
+
+    def test_next_steps_follow_the_message_numbered_after_a_blank_line(self) -> None:
+        from timecapsulesmb.services.runtime import DeviceAccessError
+
+        text = self.exit_text(DeviceAccessError("SSH is turned off on 10.0.0.2.", code="ssh_disabled"), command="doctor")
+        self.assertEqual(
+            text,
+            "SSH is turned off on 10.0.0.2.\n\nNext steps:\n  1. Run `tcapsule set-ssh --enable`, then try again.",
+        )
+
+    def test_an_error_a_command_turned_into_its_exit_still_gets_its_steps(self) -> None:
+        from timecapsulesmb.services.runtime import DeviceAccessError
+
+        def exit_from_coded_error() -> None:
+            try:
+                raise DeviceAccessError("The AirPort admin password did not work.", code="auth_failed")
+            except DeviceAccessError as exc:
+                raise SystemExit(str(exc)) from exc
+
+        context = CommandContext(mock.Mock(), "fsck", "fsck_started", "fsck_finished")
+        with self.assertRaises(SystemExit) as raised:
+            with context:
+                exit_from_coded_error()
+        self.assertTrue(str(raised.exception.code).startswith("The AirPort admin password did not work.\n\nNext steps:\n"))
+        self.assertIn("Run `tcapsule configure`", str(raised.exception.code))
+        # Telemetry keeps the error without the steps.
+        self.assertEqual(context.telemetry.emit.call_args.kwargs["error"].splitlines()[0],
+                         "The AirPort admin password did not work.")
+
+    def test_a_connection_failure_without_a_code_gets_its_stage_s_steps_as_in_the_app(self) -> None:
+        from timecapsulesmb.transport.errors import SshError
+
+        text = self.exit_text(SshError("Connection reset."), stage="verify_payload_upload")
+        self.assertEqual(text.split("\n\nNext steps:\n")[1].splitlines()[0], "  1. Wake the disk, then try again.")
+
+    def test_an_ssh_timeout_keeps_its_own_advice_and_gets_no_steps(self) -> None:
+        from timecapsulesmb.transport.errors import SshCommandTimeout
+
+        text = self.exit_text(SshCommandTimeout("ssh command timed out after 30s"))
+        self.assertNotIn("Next steps:", text)
+
+    def test_an_exit_raised_from_none_gets_no_steps_of_the_error_it_hid(self) -> None:
+        from timecapsulesmb.services.runtime import DeviceAccessError
+
+        def cancel_while_handling() -> None:
+            try:
+                raise DeviceAccessError("The device is not answering.", code="device_unreachable")
+            except DeviceAccessError:
+                raise SystemExit("Deployment cancelled.") from None
+
+        context = CommandContext(mock.Mock(), "deploy", "deploy_started", "deploy_finished")
+        with self.assertRaises(SystemExit) as raised:
+            with context:
+                cancel_while_handling()
+        self.assertEqual(str(raised.exception.code), "Deployment cancelled.")
+
+    def test_a_numeric_exit_while_handling_a_coded_error_prints_no_steps(self) -> None:
+        from timecapsulesmb.services.runtime import DeviceAccessError
+
+        def exit_with_status() -> None:
+            try:
+                raise DeviceAccessError("The device is not answering.", code="device_unreachable")
+            except DeviceAccessError:
+                raise SystemExit(1)
+
+        context = CommandContext(mock.Mock(), "deploy", "deploy_started", "deploy_finished")
+        with self.assertRaises(SystemExit) as raised:
+            with context:
+                exit_with_status()
+        self.assertEqual(raised.exception.code, 1)
+
+    def test_an_exit_with_no_device_error_behind_it_prints_no_steps(self) -> None:
+        self.assertEqual(self.exit_text(SystemExit("Deployment needs --yes.")), "Deployment needs --yes.")
 
     def test_configure_saves_the_new_address_so_it_prints_no_hint(self) -> None:
         context = CommandContext(mock.Mock(), "configure", "configure_started", "configure_finished")

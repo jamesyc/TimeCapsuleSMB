@@ -56,7 +56,7 @@ from timecapsulesmb.discovery.bonjour import (
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.integrations.acp import ACPError
-from timecapsulesmb.cli.util import color_cyan, color_red
+from timecapsulesmb.cli.util import color_red, color_cyan
 
 REQUIRED_PYTHON_MODULES = ("zeroconf",)
 
@@ -428,7 +428,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             *,
             code: str | None = None,
             debug: str | None = None,
+            exc: BaseException | None = None,
+            shown: str | None = None,
         ) -> int:
+            """Ends configure with the message (or the `shown` text, when the CLI
+            prints it another way), and the next steps for `exc`'s code."""
             if args.json:
                 payload = {
                     "ok": False,
@@ -440,7 +444,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     payload["code"] = code
                 print_json(payload)
             else:
-                print(message)
+                text = message if shown is None else shown
+                print(command_context.with_next_steps(text, exc) if exc is not None else text)
             if code is not None:
                 command_context.add_debug_fields(configure_error_code=code)
             if debug:
@@ -642,11 +647,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 continue
             except ACPError as exc:
                 label = "Failed to enable SSH via ACP"
-                message = f"{label}: {exc}"
                 if not args.json:
                     print(color_red(f"{label}:"))
-                    print(str(exc))
-                return fail_configure(message)
+                return fail_configure(f"{label}: {exc}", exc=exc, shown=str(exc))
             except configure_service.ConfigureFlowError as exc:
                 if exc.code == ErrorCode.AUTH_FAILED:
                     if no_input_enabled(args):
@@ -654,6 +657,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             str(exc),
                             code=exc.code,
                             debug=exc.debug,
+                            exc=exc,
                         )
                     print(f"\n{exc}")
                     if exc.debug:
@@ -668,7 +672,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     return fail_configure(
                         "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again."
                     )
-                return fail_configure(str(exc))
+                return fail_configure(str(exc), exc=exc)
             values.clear()
             values.update(result.values)
             command_context.connection = result.connection

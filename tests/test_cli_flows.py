@@ -82,7 +82,7 @@ class CliFlowTests(unittest.TestCase):
                 with self.assertRaises(DeviceError) as raised:
                     self.verify_runtime(command_context)
 
-        self.assertEqual(str(raised.exception), "runtime failed managed runtime is not ready")
+        self.assertEqual(str(raised.exception), "runtime failed\nmanaged runtime is not ready")
         self.assertEqual(command_context.stages, ["verify_runtime"])
         self.assertEqual(command_context.debug_fields["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(command_context.debug_fields["remote_discovery_log_tail"], "mdns log")
@@ -97,7 +97,7 @@ class CliFlowTests(unittest.TestCase):
                 with self.assertRaises(DeviceError) as raised:
                     self.verify_runtime(command_context)
 
-        self.assertEqual(str(raised.exception), "runtime failed managed runtime is not ready")
+        self.assertEqual(str(raised.exception), "runtime failed\nmanaged runtime is not ready")
         self.assertEqual(command_context.debug_fields["remote_runtime_log_tail_error"], "tail failed")
 
     def test_verify_managed_runtime_ready_includes_runtime_timeout_detail(self) -> None:
@@ -119,7 +119,7 @@ class CliFlowTests(unittest.TestCase):
 
         self.assertEqual(
             str(raised.exception),
-            "NetBSD4 activation failed. runtime verification timed out after 200s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+            "NetBSD4 activation failed.\nruntime verification timed out after 200s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
         )
         self.assertIn("failed: runtime verification timed out after 200s", output.getvalue())
 

@@ -7,11 +7,11 @@ from contextlib import redirect_stdout
 from unittest import mock
 import timecapsulesmb.cli.main as cli_main_module
 from timecapsulesmb.cli import set_ssh
-from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 
-from tests.cli_support import CliTestCase
+from tests.cli_support import AUTH_FAILED_CLI_STEPS, CliTestCase
 from tests.reboot_support import acp_password_answer, acp_reading
 
 
@@ -294,7 +294,7 @@ class CliSetSshTests(CliTestCase):
                     with self.assertRaises(SystemExit) as raised:
                         self.run_disable(argv)
 
-                self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+                self.assertEqual(str(raised.exception.code), AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE + AUTH_FAILED_CLI_STEPS)
                 compare.assert_called_once()
                 self.assertNotIn("request", self.device.calls)
                 finished = self.telemetry_payload("set_ssh_finished")

@@ -29,7 +29,6 @@ from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.acp_ssh import (
     ACPDeviceOffNetworkError,
     ACP_PORT,
-    ACP_UNREACHABLE_ADVICE,
     enable_ssh_with_port_preflight,
 )
 
@@ -533,8 +532,7 @@ class AcpPortPreflightTests(unittest.TestCase):
         self.assertIsInstance(error, ACPDeviceOffNetworkError)
         self.assertEqual(
             str(error),
-            f"Could not connect to ACP on 10.0.1.1:{ACP_PORT}. 10.0.1.1 is not on this Mac's network (192.168.1.0/24). "
-            "Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again.",
+            f"Could not connect to ACP on 10.0.1.1:{ACP_PORT}. 10.0.1.1 is not on this Mac's network (192.168.1.0/24).",
         )
 
     def test_this_macs_public_network_reaches_the_message_only_by_family_and_length(self) -> None:
@@ -546,7 +544,6 @@ class AcpPortPreflightTests(unittest.TestCase):
     def test_linux_and_other_platforms_say_this_computer(self) -> None:
         error = self.failure("10.0.1.1", (lan("enp3s0", "192.168.1.170", "192.168.1.0/24"),), platform="linux")
         self.assertIn("10.0.1.1 is not on this computer's network (192.168.1.0/24)", str(error))
-        self.assertIn("connect this computer to the device's network", str(error))
         self.assertNotIn("Mac", str(error))
 
     def test_a_hostname_resolving_off_this_macs_network_says_so(self) -> None:
@@ -555,7 +552,8 @@ class AcpPortPreflightTests(unittest.TestCase):
         self.assertIsInstance(error, ACPDeviceOffNetworkError)
         self.assertIn("Time-Capsule.local is not on this Mac's network", str(error))
 
-    def test_other_failures_keep_the_general_advice(self) -> None:
+    def test_other_failures_say_only_that_acp_did_not_answer(self) -> None:
+        # The stage's next steps (app.recovery) give the general advice.
         cases = {
             "address on this Mac's network": ("192.168.1.218", (lan("en0", "192.168.1.170", "192.168.1.0/24"),)),
             "only a VPN to compare with": ("10.0.1.1", ()),
@@ -565,9 +563,9 @@ class AcpPortPreflightTests(unittest.TestCase):
             with self.subTest(case=name):
                 error = self.failure(host, local)
                 self.assertNotIsInstance(error, ACPDeviceOffNetworkError)
-                self.assertTrue(str(error).endswith(ACP_UNREACHABLE_ADVICE), str(error))
+                self.assertRegex(str(error), r"^Could not connect to ACP on .+:5009\.$")
 
-    def test_a_failing_network_check_keeps_the_general_advice(self) -> None:
+    def test_a_failing_network_check_does_not_claim_the_device_is_off_network(self) -> None:
         with mock.patch("timecapsulesmb.services.acp_ssh.host_networks", side_effect=OSError("boom")):
             error = self.failure("10.0.1.1", (lan("en0", "192.168.1.170", "192.168.1.0/24"),))
         self.assertNotIsInstance(error, ACPDeviceOffNetworkError)

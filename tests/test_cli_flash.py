@@ -55,7 +55,7 @@ class CliFlashTests(CliTestCase):
         if config is None:
             config = self.make_app_config(self.make_valid_env())
         with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+            with mock.patch("timecapsulesmb.cli.flash.CommandContext", side_effect=command_context.opened_as):
                 yield
 
     def make_supported_netbsd4_stable_compatibility(self) -> DeviceCompatibility:
@@ -462,12 +462,12 @@ class CliFlashTests(CliTestCase):
         flash_mock.assert_not_called()
         self.assertEqual(manifest["active_selection"]["status"], "no_candidates")
         self.assertEqual(manifest["active_selection"]["candidates"], [])
-        self.assertIn("refusing to patch primary because primary is not an active firmware candidate", output.getvalue())
+        self.assertIn("Refusing to patch primary because primary is not an active firmware candidate", output.getvalue())
         self.assertIn("primary: backup=valid; active=not_candidate", output.getvalue())
         self.assertIn("secondary: backup=valid; active=not_candidate", output.getvalue())
         self.assertIn("`tcapsule flash --patch --force` patches the primary bank anyway", output.getvalue())
         self.assertEqual(manifest["flash_plan_error"]["stage"], "plan_flash")
-        self.assertIn("refusing to patch primary", manifest["flash_plan_error"]["message"])
+        self.assertIn("Refusing to patch primary", manifest["flash_plan_error"]["message"])
         self.assertNotIn("flash_plan", manifest)
         self.assertEqual(manifest["operation"], "patch")
 
@@ -493,7 +493,7 @@ class CliFlashTests(CliTestCase):
         flash_mock.assert_not_called()
         self.assertEqual(manifest["active_selection"]["status"], "selected")
         self.assertEqual(manifest["active_selection"]["candidates"], ["secondary"])
-        self.assertIn("refusing to patch primary because primary is not an active firmware candidate", output.getvalue())
+        self.assertIn("Refusing to patch primary because primary is not an active firmware candidate", output.getvalue())
         self.assertIn("primary: backup=valid; active=not_candidate", output.getvalue())
         self.assertIn("secondary: backup=valid; active=candidate", output.getvalue())
 
@@ -707,7 +707,7 @@ class CliFlashTests(CliTestCase):
             with ExitStack() as stack:
                 stack.enter_context(zopfli_available())
                 stack.enter_context(mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())))
-                stack.enter_context(mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context))
+                stack.enter_context(mock.patch("timecapsulesmb.cli.flash.CommandContext", side_effect=command_context.opened_as))
                 stack.enter_context(mock.patch(
                     "timecapsulesmb.services.flash.read_flash_inputs",
                     return_value=flash_inputs(primary, secondary),
@@ -1709,10 +1709,10 @@ class CliFlashTests(CliTestCase):
 
         self.assertEqual(rc, 1)
         self.assertEqual(reboot_mock.calls, [])
-        self.assertIn("read-back firmware bank prefix SHA-256 mismatch", output.getvalue())
+        self.assertIn("Read-back firmware bank prefix SHA-256 mismatch", output.getvalue())
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
         self.assertIn("flash_error_stage=post_write_validation", command_context.finish.call_args.kwargs["error"])
-        self.assertIn("read-back firmware bank prefix SHA-256 mismatch", command_context.finish.call_args.kwargs["error"])
+        self.assertIn("Read-back firmware bank prefix SHA-256 mismatch", command_context.finish.call_args.kwargs["error"])
         self.assertNotIn("flash_error_stage", command_context.finish.call_args.kwargs)
         self.assertNotIn("flash_error", command_context.finish.call_args.kwargs)
 
@@ -1771,10 +1771,10 @@ class CliFlashTests(CliTestCase):
         flash_mock.assert_called_once()
         acp_mock.assert_not_called()
         self.assertEqual(reboot_mock.calls, [])
-        self.assertIn("read-back firmware bank SHA-256 mismatch", output.getvalue())
+        self.assertIn("Read-back firmware bank SHA-256 mismatch", output.getvalue())
         self.assertEqual(manifest["write_outcome"]["status"], "failed")
         self.assertTrue(manifest["write_outcome"]["write_may_have_modified_device"])
-        self.assertIn("read-back firmware bank SHA-256 mismatch", manifest["write_outcome"]["message"])
+        self.assertIn("Read-back firmware bank SHA-256 mismatch", manifest["write_outcome"]["message"])
 
     def test_flash_write_readback_ssh_error_is_reported_without_traceback(self) -> None:
         output = io.StringIO()

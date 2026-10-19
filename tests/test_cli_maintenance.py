@@ -18,7 +18,7 @@ from timecapsulesmb.cli.runtime import DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE, N
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services import maintenance as maintenance_service
 from timecapsulesmb.services import reboot as reboot_service
-from timecapsulesmb.services.runtime import AIRPORT_PASSWORD_MISMATCH_MESSAGE
+from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.device.probe import ProbeResult, SshAccessStatus
 from timecapsulesmb.device.storage import MaStVolume
@@ -31,7 +31,7 @@ from timecapsulesmb.deploy.commands import (
 )
 from timecapsulesmb.deploy.verify import VerificationResult
 
-from tests.cli_support import CliTestCase, FakeCommandContext
+from tests.cli_support import AUTH_FAILED_CLI_STEPS, CliTestCase, FakeCommandContext
 from tests.reboot_support import FakeInstalledRuntime, acp_password_answer
 
 
@@ -161,7 +161,7 @@ class CliMaintenanceTests(CliTestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("builtins.input", return_value="n"):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
+                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", side_effect=command_context.opened_as):
                             with redirect_stdout(output):
                                 rc = activate.main([])
         self.assertEqual(rc, 0)
@@ -181,7 +181,7 @@ class CliMaintenanceTests(CliTestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("builtins.input", side_effect=EOFError):
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
+                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", side_effect=command_context.opened_as):
                             with redirect_stdout(output):
                                 with self.assertRaises(NonInteractivePromptError) as raised:
                                     activate.main([])
@@ -201,7 +201,7 @@ class CliMaintenanceTests(CliTestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("builtins.input", side_effect=AssertionError("activate --no-input must not prompt")) as input_mock:
                     with mock.patch("timecapsulesmb.services.activation.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
+                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", side_effect=command_context.opened_as):
                             with redirect_stdout(output):
                                 rc = activate.main(["--no-input"])
 
@@ -269,7 +269,8 @@ class CliMaintenanceTests(CliTestCase):
 
         self.assertEqual(rc, 1)
         self.assertIn("TimeCapsuleSMB is not installed on this device.", output.getvalue())
-        self.assertIn("Install / Update Samba", output.getvalue())
+        # The next step for runtime_not_installed, in the CLI's words.
+        self.assertIn("Next steps:\n  1. Run `tcapsule deploy`.", output.getvalue())
         self.assertNotIn("Activating NetBSD4 payload", output.getvalue())
         runtime_probe.assert_not_called()
         actions_mock.assert_not_called()
@@ -457,7 +458,7 @@ class CliMaintenanceTests(CliTestCase):
             with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 uninstall.main(["--yes"])
 
-        self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(str(raised.exception.code), AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE + AUTH_FAILED_CLI_STEPS)
         compare.assert_called_once()
         flow.mounted_mast_volumes_conn.assert_not_called()
         remove.assert_not_called()
@@ -659,7 +660,13 @@ class CliMaintenanceTests(CliTestCase):
         verify_mock.assert_not_called()
         text = output.getvalue()
         self.assertIn("Reboot was requested but the device did not restart.", text)
-        self.assertIn("The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall.", text)
+        self.assertIn(
+            "The uninstall removed managed TimeCapsuleSMB files before the reboot.\n\n"
+            "Next steps:\n"
+            "  1. Power-cycle the device.\n"
+            "  2. Try again once the device is reachable.",
+            text,
+        )
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["reboot_was_attempted"], True)
@@ -948,7 +955,7 @@ class CliMaintenanceTests(CliTestCase):
             with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 fsck.main(["--yes"])
 
-        self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(str(raised.exception.code), AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE + AUTH_FAILED_CLI_STEPS)
         self.assertEqual(compare.call_args.args[1], "pw-secretzz")
         flow.mounted_mast_volumes_conn.assert_not_called()
         run_ssh.assert_not_called()
@@ -971,7 +978,7 @@ class CliMaintenanceTests(CliTestCase):
             with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 fsck.main(["--yes"])
 
-        self.assertEqual(str(raised.exception.code), AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(str(raised.exception.code), AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE + AUTH_FAILED_CLI_STEPS)
         self.assertEqual(compare.call_count, 1)
 
     def test_fsck_without_reboot_does_not_compare_the_password(self) -> None:
@@ -1299,7 +1306,7 @@ class CliMaintenanceTests(CliTestCase):
             with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
                 fsck.main(["--yes"])
 
-        self.assertEqual(str(raised.exception), "SSH authentication failed.")
+        self.assertEqual(str(raised.exception), "SSH authentication failed." + AUTH_FAILED_CLI_STEPS)
         run_ssh.assert_not_called()
         self.assertNotIn("request", self.device.calls)
         self.assertEqual(self.telemetry_payload("fsck_finished")["result"], "failure")

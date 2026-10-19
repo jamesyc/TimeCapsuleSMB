@@ -15,6 +15,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.cli.runtime import (
     DEVICE_PASSWORD_NONINTERACTIVE_MESSAGE,
     TERMINAL_INPUT_ATTEMPTS,
@@ -614,7 +615,7 @@ class RequireAcpdReadyPasswordTests(unittest.TestCase):
         debug, error = self.check(False)
         self.assertIsInstance(error, service_runtime.DeviceAccessError)
         self.assertEqual(error.code, "auth_failed")
-        self.assertEqual(str(error), service_runtime.AIRPORT_PASSWORD_MISMATCH_MESSAGE)
+        self.assertEqual(str(error), service_runtime.AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE)
         self.assertEqual(debug, [{"sypw_check": "mismatch"}])
 
     def test_a_match_or_an_unknown_answer_lets_the_command_go_on(self) -> None:
@@ -711,7 +712,8 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         self.assertEqual(error.code, "acpd_broken")
         self.assertIn("did not restart", str(error))
         self.assertIn("Nothing was changed", str(error))
-        self.assertIn("Unplug the device", str(error))
+        # acpd_broken's next steps say to unplug it.
+        self.assertIn("Unplug the device, wait 10 seconds and plug it back in.", cli_steps("deploy", error.code))
         self.assertEqual(debug["acpd_problems"], ["restart_never_happened"])
 
     def test_the_first_problem_is_named_and_every_one_is_reported(self) -> None:
@@ -761,7 +763,8 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         self.assertEqual(error.code, "acpd_broken")
         self.assertTrue(str(error).startswith("Apple ACPd is broken: the AirPort service stopped answering the network"))
         self.assertIn("Nothing was changed", str(error))
-        self.assertIn("Unplug the device", str(error))
+        # acpd_broken's next steps say to unplug it.
+        self.assertIn("Unplug the device, wait 10 seconds and plug it back in.", cli_steps("deploy", error.code))
         self.assertNotIn("VPN", str(error))
         self.assertEqual(debug["acpd_problems"], ["network_silent"])
         self.assertEqual(debug["acp_read_error"], "Could not connect to ACP on 10.0.0.2:5009: timed out")

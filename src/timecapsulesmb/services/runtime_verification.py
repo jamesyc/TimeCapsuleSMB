@@ -83,9 +83,6 @@ def verify_managed_runtime_ready(
     raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors)
 
 
-CHECKUP_SENTENCE = 'Run "Checkup" in the macOS app, or tcapsule doctor from the command line, for details.'
-
-
 def runtime_failure_error(
     verification: ManagedRuntimeProbeResult, failure_message: str, *, disk_errors: tuple[str, ...] | None = None,
 ) -> DeviceError:
@@ -101,11 +98,10 @@ def runtime_failure_error(
     if verification.samba_ready:
         # No verdict says why: Checkup's rsync check does.
         return RsyncNotRunningError(
-            f"File sharing and Time Machine are running, but rsync is not: {verification.detail.strip()}. "
-            f"{CHECKUP_SENTENCE}"
+            "File sharing and Time Machine are running, but rsync is not.",
+            detail=verification.detail.strip() or None,
         )
-    detail = verification.detail.strip()
-    return DeviceError(f"{failure_message.rstrip()} {detail}" if detail else failure_message)
+    return DeviceError(failure_message.rstrip(), detail=verification.detail.strip() or None)
 
 
 def recheck_cached_adisk(

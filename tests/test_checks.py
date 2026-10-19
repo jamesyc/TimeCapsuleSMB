@@ -84,7 +84,7 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
-from timecapsulesmb.device.disk_errors import disk_failing_message
+from timecapsulesmb.device.disk_errors import DISK_FAILING_WAY_OUT, disk_failing_message
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_PROBLEMS,
     FILE_LOCKS_DISK_TDBS,
@@ -3424,7 +3424,8 @@ class CheckTests(unittest.TestCase):
 
         self.assertEqual(self.fail_codes(run), ["disk_failing"])
         [failure] = [result for result in run.results if result.status == "FAIL"]
-        self.assertEqual(failure.message, disk_failing_message(self.DISK_ERRORS))
+        # Checkup's line also says the way out, which an error leaves to its next steps.
+        self.assertEqual(failure.message, f"{disk_failing_message(self.DISK_ERRORS)} {DISK_FAILING_WAY_OUT}")
         self.assertEqual(failure.domain, "device")
         self.assertEqual(debug_fields["disk_error_lines"], list(self.DISK_ERRORS))
 

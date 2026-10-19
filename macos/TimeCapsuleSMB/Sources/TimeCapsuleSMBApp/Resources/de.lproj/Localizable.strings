@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "Das Lesen der sekundären Firmware-Bank (Backup) in dieser Sicherung stimmt nicht mit der Prüfung durch das Gerät selbst überein. Die Bank kann trotzdem eine gültige Kopie sein, daher wird sie nicht neu geschrieben und das Patchen wird verweigert.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Wählen Sie „Sichern und prüfen“.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Wenn die Lesevorgänge weiterhin abweichen, lassen Sie die Firmware unverändert: Der Flash-Speicher dieses Geräts könnte defekt sein.";
+"backend.recovery.flash.flash_patch_refused.title" = "Patchen wurde verweigert";
+"backend.recovery.flash.flash_patch_refused.message" = "Die Firmware-Bänke sind nicht in einem Zustand, in dem das Patchen sicher ist, daher wurde die Firmware nicht geändert.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Wählen Sie „Sichern und erneut prüfen“ und prüfen Sie den Status jeder Bank.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Wenn eine Bank beschädigt ist, lassen Sie die Firmware unverändert.";
 "backend.recovery.activate.runtime_outdated.title" = "Installation ist veraltet";
 "backend.recovery.activate.runtime_outdated.message" = "Das installierte TimeCapsuleSMB ist zu alt, um von dieser App gestartet oder überprüft zu werden.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Führen Sie „Samba installieren / aktualisieren“ aus.";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs aus einer früheren Festplattenreparatur läuft noch auf dem Gerät. Ein Neustart oder das Trennen vom Strom würde sie jetzt unterbrechen.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Trennen Sie die Time Capsule nicht vom Strom und warten Sie; auf einer großen Festplatte kann die Reparatur eine Stunde oder länger dauern.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Führen Sie dann die „Festplattenreparatur“ erneut aus. Sie startet das Gerät neu, wenn sie abgeschlossen ist.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Die Festplatte konnte nicht ausgehängt werden";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "Die Reparatur wurde nicht gestartet, weil nicht bestätigt werden konnte, dass die Festplatte ausgehängt ist. Die Dateifreigabe bleibt aus, bis das Gerät neu startet.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Starten Sie das Gerät neu.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Führen Sie dann die „Festplattenreparatur“ erneut aus.";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Verbindung während der Festplattenreparatur verloren";
 "backend.recovery.fsck.fsck_session_dropped.message" = "Die Verbindung zum Gerät wurde getrennt, während fsck_hfs die Festplatte reparierte. Die Reparatur läuft auf dem Gerät weiter, und die Dateifreigabe bleibt bis zum Neustart des Geräts aus.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Trennen Sie die Time Capsule nicht vom Strom und starten Sie sie nicht neu; auf einer großen Festplatte kann die Reparatur eine Stunde oder länger dauern.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Gespeichertes Gerät „%@“ erneut verbinden";
 "backend.error.device_identity_mismatch" = "Die Geräteidentität konnte nicht bestätigt werden. Aktualisieren Sie die Suche und verbinden Sie das gespeicherte Gerät erneut.";
 "backend.recovery.device_identity_mismatch.title" = "Geräteidentität konnte nicht bestätigt werden";
-"backend.recovery.device_identity_mismatch.message" = "Die Geräteidentität konnte nicht bestätigt werden. Aktualisieren Sie die Suche und verbinden Sie das gespeicherte Gerät erneut.";
+"backend.recovery.device_identity_mismatch.message" = "Das Gerät unter dieser Adresse hat sich nicht als das gespeicherte Gerät ausgewiesen.";
 "backend.recovery.device_identity_mismatch.action.1" = "Aktualisieren Sie die Suche und verbinden Sie das gespeicherte Gerät erneut.";
 
 "discovery.identity_owned" = "Dieses Gerät ist bereits als „%@“ gespeichert. Die gespeicherten Geräte überprüfen und doppelte Einträge mit „Vergessen“ entfernen.";

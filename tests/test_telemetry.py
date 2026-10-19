@@ -654,7 +654,14 @@ class TelemetryTests(unittest.TestCase):
                                 "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
                             }):
                                 raise SshError("Connecting to the device failed, SSH error: timeout")
-        self.assertEqual(str(raised.exception), "Connecting to the device failed, SSH error: timeout")
+        # A failure without a code of its own gets remote_error's steps, as in the app.
+        self.assertEqual(
+            str(raised.exception),
+            "Connecting to the device failed, SSH error: timeout"
+            "\n\nNext steps:\n"
+            "  1. Make sure the device is turned on and on the same network as this computer, then try again.\n"
+            "  2. If it keeps failing, run `tcapsule doctor`.",
+        )
         finished_payload = send_mock.call_args.args[0]
         self.assertEqual(finished_payload["result"], "failure")
         self.assertIn("Connecting to the device failed, SSH error: timeout", finished_payload["error"])
@@ -704,7 +711,13 @@ class TelemetryTests(unittest.TestCase):
                                 "TC_NET_IFACE": "bridge0",
                             }):
                                 raise DeviceError("could not determine IPv4 for interface bridge0")
-        self.assertEqual(str(raised.exception), "could not determine IPv4 for interface bridge0")
+        self.assertEqual(
+            str(raised.exception),
+            "could not determine IPv4 for interface bridge0"
+            "\n\nNext steps:\n"
+            "  1. Make sure the device is turned on and on the same network as this computer, then try again.\n"
+            "  2. If it keeps failing, run `tcapsule doctor`.",
+        )
         self.assertIsInstance(raised.exception.__cause__, DeviceError)
         finished_payload = send_mock.call_args.args[0]
         self.assertEqual(finished_payload["result"], "failure")

@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import timecapsulesmb.device.probe as probe
+from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.processes import UNREADABLE_COMMAND, parse_ps_rows
@@ -434,8 +435,8 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNone(verdicts.rsync)
 
     def test_payload_problems_name_their_cause_and_the_reinstall(self) -> None:
-        # The check line and the operation error say the same thing, each in
-        # its own form, and carry the error code the app localizes.
+        # Checkup's line names the cause and the reinstall; an operation's error
+        # names the cause, and its code's next steps the reinstall.
         reinstall = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
         for problem, cause, code in (
             (probe.DISK_PAYLOAD_MISSING, "the Samba files are missing from every disk, as after an Erase in AirPort Utility",
@@ -449,8 +450,9 @@ class ProbeTests(unittest.TestCase):
                 self.assertEqual(problem.message, f"{cause}; {reinstall}")
                 # An operation's error says Samba runs when the verdict leaves it on.
                 said = cause if problem.samba_off else f"file sharing and Time Machine are running, but {cause}"
-                self.assertEqual(problem.error, f"{said[0].upper()}{said[1:]}. {reinstall[0].upper()}{reinstall[1:]}.")
+                self.assertEqual(problem.error, f"{said[0].upper()}{said[1:]}.")
                 self.assertEqual(problem.code, code)
+                self.assertIn("Run `tcapsule deploy`.", cli_steps("activate", problem.code))
                 self.assertEqual(problem.error_type("x").code, code)
 
     def test_probe_manager_startup_age_conn_counts_the_second_the_manager_started_in(self) -> None:

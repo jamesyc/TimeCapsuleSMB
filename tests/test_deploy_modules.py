@@ -19,6 +19,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from tests.test_xattr_migration import fake_inventory
+from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED, netbsd4_activation_summary
 from timecapsulesmb.core.summaries import Summary
@@ -1210,7 +1211,7 @@ class DeployModuleTests(unittest.TestCase):
             # Only ssh reports 255, after its login: the connection dropped.
             (255, None, "xattr_migration_connection_lost",
              "The connection to the device was lost during the Samba metadata migration. The migration may still "
-             "be running on the device. Rerun deploy: it waits for a running migration to finish first."),
+             "be running on the device; the next deploy waits for a running migration to finish first."),
         )
         for status, signal_number, code, first_line in cases:
             with self.subTest(status=status):
@@ -1301,14 +1302,15 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertTrue(message.startswith(
                     'The device could not read the folder "Data/Mac.incomplete/bands", '
                     "so the Samba metadata migration failed."))
-                self.assertIn('Run "Disk Repair" in the macOS app (or tcapsule fsck)', message)
-                self.assertIn('"Install / Update Samba" (or tcapsule deploy) again. If it still fails, run "Uninstall" '
-                              "(tcapsule uninstall)", message)
-                # What a migration already moved stays on the files.
-                self.assertIn("metadata from an earlier version that is not migrated yet", message)
-                self.assertNotIn("report it", message)
-                self.assertIn("exit status 4", message)
-                self.assertIn("your files stay on the disk", message)
+                self.assertIn("exit status 4", caught.detail)
+                # The code's next steps: Disk Repair, then Uninstall, which keeps
+                # the files and drops only metadata not migrated yet.
+                steps = cli_steps("deploy", caught.code)
+                self.assertEqual(steps[0], "Run `tcapsule fsck` on the disk, then run `tcapsule deploy` again.")
+                self.assertIn("run `tcapsule uninstall`, then `tcapsule deploy`", steps[1])
+                self.assertIn("metadata from an earlier version that is not migrated yet", steps[1])
+                self.assertIn("your files stay on the disk", steps[1])
+                self.assertNotIn("report it", " ".join(steps))
                 self._assert_names_folder(summaries)
                 # The log read is the failed phase's own.
                 unreadable.assert_called_once_with(mock.ANY, f"{payload_dir}/logs/xattr-migration-{phase}.log")
@@ -1329,14 +1331,15 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual(caught.code, "xattr_migration_unreadable_folder_repair_only")
                 message = str(caught)
                 self.assertTrue(message.startswith('The device could not read the folder "Data/Mac.incomplete/bands", '))
-                self.assertIn('Run "Disk Repair" in the macOS app (or tcapsule fsck)', message)
+                self.assertIn("exit status 4", caught.detail)
+                steps = cli_steps("deploy", caught.code)
+                self.assertEqual(steps[0], "Run `tcapsule fsck` on the disk, then run `tcapsule deploy` again.")
                 # Uninstall would leave the database, and the next deploy would fail the same way.
-                self.assertNotIn("Uninstall", message)
+                self.assertNotIn("uninstall", " ".join(steps))
                 # The next step past a folder Disk Repair cannot fix is a report.
-                self.assertIn("the disk may be failing: report it at https://github.com/jamesyc/TimeCapsuleSMB/issues",
-                              message)
-                self.assertIn("Reports there are public, so remove any names", message)
-                self.assertIn("exit status 4", message)
+                self.assertIn("the disk may be failing. Report it, with this command's output, at "
+                              "https://github.com/jamesyc/TimeCapsuleSMB/issues", steps[1])
+                self.assertIn("Reports there are public, so remove any names", steps[1])
                 self._assert_names_folder(summaries)
 
     def test_a_walk_that_failed_on_no_folder_keeps_the_generic_failure(self) -> None:
@@ -1695,8 +1698,10 @@ class DeployModuleTests(unittest.TestCase):
 
                 self.assertEqual(raised.exception.code, "payload_upload_timeout")
                 self.assertIn("Copying the SMB payload timed out.", str(raised.exception))
-                self.assertIn("connect this computer or the device by Ethernet", str(raised.exception))
-                self.assertIn("the disk may need replacing", str(raised.exception))
+                # The code's next steps say what to do about a slow disk or link.
+                steps = cli_steps("deploy", raised.exception.code)
+                self.assertIn("Connect this computer or the device by Ethernet, then run `tcapsule deploy` again.", steps)
+                self.assertIn("If this keeps happening, the disk may need replacing.", steps)
                 self.assertIs(raised.exception.__cause__, error)
                 [upload] = [fields for kind, fields in measurements if kind == "upload" and fields["result"] == "failure"]
                 self.assertEqual(upload["error_type"], type(error).__name__)
@@ -3446,10 +3451,9 @@ describe_managed_smbd_status "" ""
             verify(self._runtime_not_ready(samba_ready=True))
         self.assertEqual(raised.exception.code, "rsync_not_running")
         self.assertFalse(raised.exception.samba_off)
-        self.assertEqual(str(raised.exception),
-                         "File sharing and Time Machine are running, but rsync is not: managed rsync process is not "
-                         'running. Run "Checkup" in the macOS app, or tcapsule doctor from the command line, for '
-                         "details.")
+        self.assertEqual(raised.exception.message, "File sharing and Time Machine are running, but rsync is not.")
+        self.assertEqual(raised.exception.detail, "managed rsync process is not running")
+        self.assertEqual(cli_steps("deploy", raised.exception.code)[0], "Run `tcapsule doctor` for details.")
 
     def test_probe_managed_runtime_waits_for_rsync_as_long_as_for_samba(self) -> None:
         # No verdict says why rsync is off (a configuration without a path

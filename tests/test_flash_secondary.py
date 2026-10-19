@@ -31,6 +31,7 @@ from tests.flash_fixtures import (
     plan_full_restore,
     with_flipped_byte,
 )
+from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.cli import flash as cli_flash
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.flash import (
@@ -204,14 +205,16 @@ class SecondaryRestoreTargetTests(unittest.TestCase):
                 restore_text = str(restore_refusal.exception)
                 self.assertIn("refusing to rewrite the secondary bank because", restore_text)
                 self.assertIn(detail, restore_text)
-                self.assertIn("Back up and inspect again.", restore_text)
                 self.assertNotIn("--force", restore_text)
                 with self.assertRaises(SecondaryBankReadMismatchError) as patch_refusal:
                     require_primary_patch_ready(inspection)
                 patch_text = str(patch_refusal.exception)
                 self.assertIn("refusing to patch primary because", patch_text)
                 self.assertIn(detail, patch_text)
-                self.assertIn("`tcapsule flash --patch --force`", patch_text)
+                # The code's next steps read the banks again; patching can still be forced.
+                steps = cli_steps("flash", patch_refusal.exception.code)
+                self.assertEqual(steps[0], "Run `tcapsule flash --read-only` to back up and inspect the banks again.")
+                self.assertIn("`tcapsule flash --patch --force`", steps[-1])
 
     def test_a_secondary_both_reads_find_intact_keeps_the_existing_refusals(self) -> None:
         # Its footer checks out in both reads, but it holds nothing we
@@ -294,8 +297,10 @@ class SecondaryRestoreTargetTests(unittest.TestCase):
             require_primary_patch_ready(inspect_full_banks())
 
         self.assertIn("secondary (backup) firmware bank is not a valid backup", str(raised.exception))
-        self.assertIn("tcapsule flash --restore", str(raised.exception))
-        self.assertNotIn("--force", str(raised.exception))
+        # The code's next steps: restore the secondary, then patch; never force.
+        steps = cli_steps("flash", raised.exception.code)
+        self.assertEqual(steps[0], "Run `tcapsule flash --restore` to rewrite the backup bank with Apple firmware.")
+        self.assertNotIn("--force", " ".join(steps))
 
     def test_patch_refusal_for_a_bad_primary_is_unchanged(self) -> None:
         with self.assertRaises(FlashAnalysisError) as raised:
@@ -506,7 +511,7 @@ class SecondaryRestoreCliTests(CliTestCase):
         with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
             for patch in (
                 mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())),
-                mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context),
+                mock.patch("timecapsulesmb.cli.flash.CommandContext", side_effect=command_context.opened_as),
                 mock.patch("timecapsulesmb.services.flash.read_flash_inputs", return_value=inputs),
                 mock.patch("timecapsulesmb.flash_workflow.build_download_payload_for_syap",
                            return_value=newest_firmware_payload()),
@@ -602,7 +607,7 @@ class SecondaryRestoreCliTests(CliTestCase):
 
         self.assertEqual(rc, 1)
         self.assertEqual(flash.commands, [])
-        self.assertIn("Run restore (`tcapsule flash --restore`)", text)
+        self.assertIn("Next steps:\n  1. Run `tcapsule flash --restore` to rewrite the backup bank with Apple firmware.", text)
         self.assertIn("flash_error_stage=plan_flash", command_context.finish.call_args.kwargs["error"])
 
     def test_restore_leaves_a_secondary_only_acpd_reads_as_valid(self) -> None:
@@ -613,7 +618,7 @@ class SecondaryRestoreCliTests(CliTestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(flash.commands, [])
         self.assertIn("but ACPd's own read does", text)
-        self.assertIn("Back up and inspect again.", text)
+        self.assertIn("Next steps:\n  1. Run `tcapsule flash --read-only` to back up and inspect the banks again.", text)
 
 
 if __name__ == "__main__":

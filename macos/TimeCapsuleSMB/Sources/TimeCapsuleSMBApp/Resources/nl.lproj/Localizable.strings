@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "Het lezen van de secundaire firmwarebank (reserve) in deze back-up komt niet overeen met de controle door het apparaat zelf. De bank kan nog steeds een geldige kopie zijn, dus deze wordt niet opnieuw geschreven en patchen wordt geweigerd.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Kies ‘Back-up maken en inspecteren’.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Als de leesresultaten blijven verschillen, laat de firmware dan zoals hij is: het flashgeheugen van dit apparaat kan defect zijn.";
+"backend.recovery.flash.flash_patch_refused.title" = "Patchen geweigerd";
+"backend.recovery.flash.flash_patch_refused.message" = "De firmwarebanken zijn niet in een staat waarin patchen veilig is, dus de firmware is niet gewijzigd.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Kies ‘Back-up maken en opnieuw inspecteren’ en bekijk de status van elke bank.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Als een bank beschadigd is, laat de firmware dan zoals hij is.";
 "backend.recovery.activate.runtime_outdated.title" = "Installatie is verouderd";
 "backend.recovery.activate.runtime_outdated.message" = "De geïnstalleerde TimeCapsuleSMB is te oud om door deze app te worden gestart of gecontroleerd.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "fsck_hfs van een eerdere schijfreparatie is nog bezig op het apparaat. Als u het apparaat nu opnieuw opstart of loskoppelt, wordt deze onderbroken.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Laat de Time Capsule aangesloten op het stopcontact en wacht; op een grote schijf kan de reparatie een uur of langer duren.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Voer daarna ‘Schijfreparatie’ opnieuw uit. Die start het apparaat opnieuw op wanneer deze klaar is.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "De schijf kon niet worden ontkoppeld";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "De reparatie is niet gestart, omdat niet kon worden bevestigd dat de schijf ontkoppeld is. Bestandsdeling blijft uit tot het apparaat opnieuw opstart.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Herstart het apparaat.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Voer daarna ‘Schijfreparatie’ opnieuw uit.";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Verbinding verbroken tijdens schijfreparatie";
 "backend.recovery.fsck.fsck_session_dropped.message" = "De verbinding met het apparaat is verbroken terwijl fsck_hfs de schijf repareerde. De reparatie gaat op het apparaat door en bestandsdeling blijft uit tot het apparaat opnieuw opstart.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Laat de Time Capsule aangesloten op het stopcontact en start deze niet opnieuw op; op een grote schijf kan de reparatie een uur of langer duren.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Opgeslagen apparaat ‘%@’ opnieuw verbinden";
 "backend.error.device_identity_mismatch" = "De apparaatidentiteit kon niet worden bevestigd. Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
 "backend.recovery.device_identity_mismatch.title" = "Apparaatidentiteit kon niet worden bevestigd";
-"backend.recovery.device_identity_mismatch.message" = "De apparaatidentiteit kon niet worden bevestigd. Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
+"backend.recovery.device_identity_mismatch.message" = "Het apparaat op dit adres heeft zich niet als het opgeslagen apparaat geïdentificeerd.";
 "backend.recovery.device_identity_mismatch.action.1" = "Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
 
 "discovery.identity_owned" = "Dit apparaat is al opgeslagen als ‘%@’. Controleer de opgeslagen apparaten en verwijder dubbele vermeldingen met ‘Vergeten’.";

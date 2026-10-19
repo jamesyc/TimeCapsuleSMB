@@ -218,7 +218,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     netbsd4_autostart=netbsd4_autostart,
                 )
         except RebootFlowError as exc:
-            print(str(exc))
+            print(command_context.with_next_steps(str(exc), exc))
             command_context.fail_with_error(str(exc))
             return 1
         if outcome.failure is not None:

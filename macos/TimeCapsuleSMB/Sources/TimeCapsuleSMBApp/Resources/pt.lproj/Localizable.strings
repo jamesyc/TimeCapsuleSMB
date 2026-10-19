@@ -876,6 +876,10 @@
 "backend.recovery.flash.secondary_bank_read_mismatch.message" = "A leitura do banco de firmware secundário (de reserva) neste backup não coincide com a verificação do próprio dispositivo. O banco ainda pode ser uma cópia válida, por isso não é regravado e o patch é recusado.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.1" = "Escolha “Fazer backup e inspecionar”.";
 "backend.recovery.flash.secondary_bank_read_mismatch.action.2" = "Se as leituras continuarem divergindo, deixe o firmware como está: a memória flash deste dispositivo pode estar falhando.";
+"backend.recovery.flash.flash_patch_refused.title" = "A aplicação do patch foi recusada";
+"backend.recovery.flash.flash_patch_refused.message" = "Os bancos de firmware não estão em um estado em que aplicar o patch seja seguro, por isso o firmware não foi alterado.";
+"backend.recovery.flash.flash_patch_refused.action.1" = "Escolha “Fazer backup e inspecionar novamente” e revise o estado de cada banco.";
+"backend.recovery.flash.flash_patch_refused.action.2" = "Se um banco estiver danificado, deixe o firmware como está.";
 "backend.recovery.activate.runtime_outdated.title" = "A instalação está desatualizada";
 "backend.recovery.activate.runtime_outdated.message" = "O TimeCapsuleSMB instalado é antigo demais para que este app possa iniciá-lo ou verificá-lo.";
 "backend.recovery.activate.runtime_outdated.action.1" = "Execute “Instalar/atualizar Samba”.";
@@ -902,6 +906,10 @@
 "backend.recovery.fsck.fsck_already_running.message" = "O fsck_hfs de um reparo de disco anterior ainda está em execução no dispositivo. Reiniciar ou desligar o dispositivo agora o interromperia.";
 "backend.recovery.fsck.fsck_already_running.action.1" = "Mantenha o Time Capsule ligado na tomada e aguarde; em um disco grande, o reparo pode levar uma hora ou mais.";
 "backend.recovery.fsck.fsck_already_running.action.2" = "Depois, execute “Reparo de disco” novamente. Ele reinicia o dispositivo ao terminar.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.title" = "Não foi possível desmontar o disco";
+"backend.recovery.fsck.fsck_volume_not_unmounted.message" = "O reparo não começou porque não foi possível confirmar que o disco estava desmontado. O compartilhamento de arquivos fica desativado até o dispositivo reiniciar.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.1" = "Reinicie o dispositivo.";
+"backend.recovery.fsck.fsck_volume_not_unmounted.action.2" = "Depois, execute “Reparo de disco” novamente.";
 "backend.recovery.fsck.fsck_session_dropped.title" = "Conexão perdida durante o reparo de disco";
 "backend.recovery.fsck.fsck_session_dropped.message" = "A conexão com o dispositivo foi encerrada enquanto o fsck_hfs reparava o disco. O reparo continua no dispositivo, e o compartilhamento de arquivos fica desativado até o dispositivo reiniciar.";
 "backend.recovery.fsck.fsck_session_dropped.action.1" = "Mantenha o Time Capsule ligado na tomada e não o reinicie; em um disco grande, o reparo pode levar uma hora ou mais.";
@@ -1279,7 +1287,7 @@
 "discovery.reconnect_existing" = "Reconectar o dispositivo salvo “%@”";
 "backend.error.device_identity_mismatch" = "Não foi possível confirmar a identidade do dispositivo. Atualize a busca e reconecte o dispositivo salvo.";
 "backend.recovery.device_identity_mismatch.title" = "Não foi possível confirmar a identidade do dispositivo";
-"backend.recovery.device_identity_mismatch.message" = "Não foi possível confirmar a identidade do dispositivo. Atualize a busca e reconecte o dispositivo salvo.";
+"backend.recovery.device_identity_mismatch.message" = "O dispositivo neste endereço não se identificou como o dispositivo salvo.";
 "backend.recovery.device_identity_mismatch.action.1" = "Atualize a busca e reconecte o dispositivo salvo.";
 
 "discovery.identity_owned" = "Este dispositivo já está salvo como “%@”. Revise os dispositivos salvos e use “Esquecer” para remover entradas duplicadas.";

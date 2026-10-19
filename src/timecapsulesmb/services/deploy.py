@@ -125,96 +125,60 @@ from timecapsulesmb.transport.errors import SshError, SshUploadTimeout, Transpor
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
-    "Timed out waiting for SSH after reboot.\n\n"
-    "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again "
-    "in time. It may still be booting, or it may have come back with a different IP address.\n\n"
-    "Next steps:\n"
-    "  1. Wait a few more minutes.\n"
-    "  2. If the device is reachable at a new IP, update TC_HOST or rerun configure.\n"
-    "  3. Make sure you are connected to the same network/wifi as the device.\n"
-    "  4. If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.\n"
-    "  5. On NetBSD 4 devices, run `tcapsule activate` once SSH is reachable; "
-    "deploy did not get far enough to activate Samba after reboot.\n"
-    "  6. If your device resets itself, see "
-    "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
+    "Timed out waiting for SSH after reboot. The payload was uploaded and the reboot request succeeded, "
+    "but the device did not accept SSH again in time. It may still be booting, or it may have come back "
+    "with a different IP address."
 )
-DEPLOY_ACPD_STOPPED_MESSAGE = (
-    f"{ACPD_STOPPED_MESSAGE} The update is installed and starts when the device starts up again; "
-    "then run `tcapsule doctor`."
-)
+DEPLOY_ACPD_STOPPED_MESSAGE = f"{ACPD_STOPPED_MESSAGE} The update is installed and starts when the device starts up again."
 # A NetBSD 4 device without the firmware startup hook starts nothing at boot.
 DEPLOY_ACPD_STOPPED_ACTIVATE_MESSAGE = (
-    f"{ACPD_STOPPED_MESSAGE} The update is installed; once the device has started up again, run `tcapsule activate`."
+    f"{ACPD_STOPPED_MESSAGE} The update is installed, but this device does not start it by itself when it starts up."
 )
 DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
-    "Reboot was requested but the device did not restart.\n"
-    "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
+    "Reboot was requested but the device did not restart. "
+    "The deploy stopped the managed runtime before the reboot, so file sharing is off until the device restarts."
 )
 DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     BINARY_SERVICE_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_BOOT_SOURCE,
 })
-# The CLI prints it and the app shows it as the error line; the app's recovery
-# message is its own catalog copy (backend.recovery.deploy.install_interrupted).
-INSTALL_INTERRUPTED_MESSAGE = (
-    'The install was interrupted. Run "Install / Update Samba" (tcapsule deploy) again to complete the install.'
-)
-MANAGER_STOP_TIMEOUT_MESSAGE = (
-    "A service on the device is stuck, often due to a failing disk. "
-    "Unplug the device, plug it back in, and try again."
-)
+INSTALL_INTERRUPTED_MESSAGE = "The install was interrupted."
+MANAGER_STOP_TIMEOUT_MESSAGE = "A service on the device is stuck and did not stop for the install, often due to a failing disk."
 PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
     "Copying the SMB payload timed out. The disk may be failing or unable to spin up, or the network "
-    "connection to the device may be too slow, such as a weak Wi-Fi link. Run `tcapsule fsck`, or connect "
-    "this computer or the device by Ethernet, then try again. If this keeps happening, the disk may need replacing."
+    "connection to the device may be too slow, such as a weak Wi-Fi link."
 )
 XATTR_MIGRATION_TIMEOUT_MESSAGE = (
     "Timed out migrating Samba metadata into native HFS attributes. "
-    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
+    "Verified exports may already be committed; unexported metadata is retained."
 )
 XATTR_MIGRATION_STALLED_MESSAGE = (
     "Samba metadata migration stopped after making no progress. "
-    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
+    "Verified exports may already be committed; unexported metadata is retained."
 )
 # No cause is offered for a stopped migrator: a signal 9 can be the kernel out
 # of memory, uninstall stopping it, or someone killing it by hand.
 XATTR_MIGRATION_STOPPED_MESSAGE = (
     "The device stopped the Samba metadata migration (signal {signal}). "
-    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy."
+    "Verified exports may already be committed; unexported metadata is retained."
 )
 XATTR_MIGRATION_CRASHED_MESSAGE = (
     "The Samba metadata migration crashed on the device (signal {signal}). "
-    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy."
+    "Verified exports may already be committed; unexported metadata is retained."
 )
 # The migrator outlives a dropped ssh session, but the drop may also be the
 # device restarting, so it may or may not still be running.
 XATTR_MIGRATION_CONNECTION_LOST_MESSAGE = (
     "The connection to the device was lost during the Samba metadata migration. The migration may still be "
-    "running on the device. Rerun deploy: it waits for a running migration to finish first."
+    "running on the device; the next deploy waits for a running migration to finish first."
 )
-# The device could not list a folder the migration must walk.
+# The device could not list a folder the migration must walk. Whether
+# Uninstall is a way out (uninstall_removes_sources) chooses the code, and so
+# the next steps.
 XATTR_MIGRATION_UNREADABLE_FOLDER_MESSAGE = (
     "The device could not read the folder \"{folder}\", so the Samba metadata migration failed. "
-    "Samba was stopped for the install and is not running now. "
-    "Run \"Disk Repair\" in the macOS app (or tcapsule fsck), then \"Install / Update Samba\" (or tcapsule deploy) "
-    "again."
-)
-# Uninstall is the way out when Disk Repair cannot fix the folder, offered only
-# when uninstall is known to delete every legacy database
-# (uninstall_removes_sources): otherwise the next deploy could find one and
-# fail the same way. What was
-# already migrated stays on the files; only what was not is lost.
-XATTR_MIGRATION_UNREADABLE_FOLDER_UNINSTALL = (
-    "If it still fails, run \"Uninstall\" (tcapsule uninstall), then \"Install / Update Samba\". Uninstall also deletes "
-    "any Samba metadata from an earlier version that is not migrated yet, such as Finder tags; your files stay on "
-    "the disk."
-)
-# Without Uninstall, nothing the app offers gets past a folder Disk Repair
-# cannot fix.
-XATTR_MIGRATION_UNREADABLE_FOLDER_REPORT = (
-    "If it still fails, the disk may be failing: report it at https://github.com/jamesyc/TimeCapsuleSMB/issues "
-    "with this output. Reports there are public, so remove any names you do not want to share."
+    "Samba was stopped for the install and is not running now."
 )
 
 
@@ -225,7 +189,7 @@ def unreadable_folder_summary(folder: str) -> Summary:
 
 PREVIOUS_MIGRATION_STALLED_MESSAGE = (
     "A metadata migration left on the device by an earlier installation stopped making progress, "
-    "often due to a failing disk. Unplug the device, plug it back in, and try again."
+    "often due to a failing disk."
 )
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
 # A service process the stop script waited for without reading its command
@@ -521,6 +485,7 @@ class DeployDeviceError(DeviceError):
 
 
 FLASH_CAPACITY_MARGIN_BYTES = 16 * 1024
+FLASH_CAPACITY_UNREADABLE_MESSAGE = "Could not read free flash space after cleanup. Installation is incomplete."
 
 
 def _probe_flash_capacity(
@@ -538,10 +503,7 @@ def _probe_flash_capacity(
         fields = [line.split() for line in result.stdout.splitlines() if line.split()]
         available = int(fields[-1][3]) * 1024
     except (IndexError, ValueError) as exc:
-        raise DeployDeviceError(
-            "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
-            code=ErrorCode.FLASH_CAPACITY_PROBE_FAILED,
-        ) from exc
+        raise DeployDeviceError(FLASH_CAPACITY_UNREADABLE_MESSAGE, code=ErrorCode.FLASH_CAPACITY_PROBE_FAILED) from exc
     return available, required
 
 
@@ -590,7 +552,7 @@ def no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
 def no_usb_disk_message(*, attempts: int, delay_seconds: int) -> str:
     return (
         f"No USB disk was detected after {attempts} MaSt queries spaced {delay_seconds} seconds apart. "
-        "An AirPort Extreme has no internal disk: connect a USB disk formatted for Mac (HFS+), then retry."
+        "An AirPort Extreme has no internal disk, so it needs a USB disk formatted for Mac (HFS+)."
     )
 
 
@@ -610,11 +572,7 @@ def device_has_no_internal_disk(compatibility: DeviceCompatibility | None) -> bo
 
 
 def no_hfs_partition_message() -> str:
-    return (
-        "A disk was found, but no valid HFS partition was detected. "
-        "Retry again, or erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
-        "Note: some devices cannot detect some partitions larger than 2 TB."
-    )
+    return "A disk was found, but no valid HFS partition was detected."
 
 
 def no_writable_mast_volumes_message(volume_count: int) -> str:
@@ -624,15 +582,14 @@ def no_writable_mast_volumes_message(volume_count: int) -> str:
 def no_mounted_mast_volumes_message(volume_count: int) -> str:
     return (
         f"MaSt found {volume_count} deployable HFS volume(s), but none of them was mounted "
-        "and the device did not mount one when asked. Wait a minute and retry, or restart the device."
+        "and the device did not mount one when asked."
     )
 
 
 def unconfirmed_mast_volumes_message(volume_count: int) -> str:
     return (
         f"MaSt found {volume_count} deployable HFS volume(s). A volume is mounted, but the device would not "
-        "keep it mounted for TimeCapsuleSMB, so it could be unmounted during deploy. Wait a minute and retry, "
-        "or restart the device."
+        "keep it mounted for TimeCapsuleSMB, so it could be unmounted during deploy."
     )
 
 
@@ -1226,44 +1183,39 @@ def upload_and_verify_deployment_payload(
                 callbacks.message(line)
         callbacks.debug(**{f"xattr_migration_{phase}_failure": diagnostic,
                            f"xattr_migration_{phase}_error": str(exc)})
+        detail = f"{diagnostic}\n{exc}"
         if stalled:
             raise DeployDeviceError(
-                f"{XATTR_MIGRATION_STALLED_MESSAGE}\n{diagnostic}\n{exc}",
-                code=ErrorCode.XATTR_MIGRATION_STALLED,
+                XATTR_MIGRATION_STALLED_MESSAGE, code=ErrorCode.XATTR_MIGRATION_STALLED, detail=detail,
             ) from exc
         if timed_out:
             raise DeployDeviceError(
-                f"{XATTR_MIGRATION_TIMEOUT_MESSAGE}\n{diagnostic}\n{exc}",
-                code=ErrorCode.XATTR_MIGRATION_TIMEOUT,
+                XATTR_MIGRATION_TIMEOUT_MESSAGE, code=ErrorCode.XATTR_MIGRATION_TIMEOUT, detail=detail,
             ) from exc
         if isinstance(exc, MigrationExitError) and exc.connection_lost:
             raise DeployDeviceError(
-                f"{XATTR_MIGRATION_CONNECTION_LOST_MESSAGE}\n{diagnostic}\n{exc}",
-                code=ErrorCode.XATTR_MIGRATION_CONNECTION_LOST,
+                XATTR_MIGRATION_CONNECTION_LOST_MESSAGE, code=ErrorCode.XATTR_MIGRATION_CONNECTION_LOST, detail=detail,
             ) from exc
         if exit_signal is not None:
             crashed = exit_signal in CRASH_SIGNALS
             message = XATTR_MIGRATION_CRASHED_MESSAGE if crashed else XATTR_MIGRATION_STOPPED_MESSAGE
             raise DeployDeviceError(
-                f"{message.format(signal=exit_signal)}\n{diagnostic}\n{exc}",
+                message.format(signal=exit_signal),
                 code=ErrorCode.XATTR_MIGRATION_CRASHED if crashed else ErrorCode.XATTR_MIGRATION_STOPPED,
+                detail=detail,
             ) from exc
         folder = unreadable_folder(connection, log) if isinstance(exc, MigrationExitError) and log else None
         if folder:
             shown = share_path(folder)
             callbacks.message(unreadable_folder_summary(shown))
             uninstall = uninstall_removes_sources(inventory)
-            message = " ".join((
-                XATTR_MIGRATION_UNREADABLE_FOLDER_MESSAGE.format(folder=shown),
-                XATTR_MIGRATION_UNREADABLE_FOLDER_UNINSTALL if uninstall else XATTR_MIGRATION_UNREADABLE_FOLDER_REPORT,
-            ))
             raise DeployDeviceError(
-                f"{message}\n{diagnostic}\n{exc}",
+                XATTR_MIGRATION_UNREADABLE_FOLDER_MESSAGE.format(folder=shown),
                 code=ErrorCode.XATTR_MIGRATION_UNREADABLE_FOLDER if uninstall else ErrorCode.XATTR_MIGRATION_UNREADABLE_FOLDER_REPAIR_ONLY,
+                detail=detail,
             ) from exc
         raise DeployDeviceError(
-            f"Native HFS metadata migration ({phase}) failed.\n{diagnostic}\n{exc}",
-            code=ErrorCode.XATTR_MIGRATION_FAILED,
+            f"Native HFS metadata migration ({phase}) failed.", code=ErrorCode.XATTR_MIGRATION_FAILED, detail=detail,
         ) from exc
 
     def run_xattr_migration_phase(phase: str) -> None:
@@ -1487,20 +1439,16 @@ def upload_and_verify_deployment_payload(
         except DeployDeviceError:
             raise
         except Exception as exc:
-            raise DeployDeviceError(
-                "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
-                code=ErrorCode.FLASH_CAPACITY_PROBE_FAILED,
-            ) from exc
+            raise DeployDeviceError(FLASH_CAPACITY_UNREADABLE_MESSAGE, code=ErrorCode.FLASH_CAPACITY_PROBE_FAILED) from exc
         callbacks.debug(
             flash_available_bytes=available_flash_bytes,
             flash_required_bytes=required_flash_bytes,
         )
         if available_flash_bytes < required_flash_bytes:
             raise DeployDeviceError(
-                "Not enough free space on /mnt/Flash after cleanup "
-                f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
-                "Installation is incomplete; free space and rerun deploy.",
+                "Not enough free space on /mnt/Flash after cleanup. Installation is incomplete.",
                 code=ErrorCode.INSUFFICIENT_FLASH_SPACE,
+                detail=f"Available {available_flash_bytes} bytes, need {required_flash_bytes} bytes.",
             )
 
         if initial_upload_stage is not None:

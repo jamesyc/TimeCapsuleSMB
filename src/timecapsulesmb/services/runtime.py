@@ -56,18 +56,11 @@ class DeviceAccessError(DeviceError):
 
 
 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
-# Commands other than configure say where to enter it again.
-AIRPORT_PASSWORD_MISMATCH_MESSAGE = (
-    f"{AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE} Re-enter it in the macOS app, "
-    "or run tcapsule configure from the command line."
-)
 
 
 ACP_UNREACHABLE_MESSAGE = (
     "This computer cannot reach AirPort ACP (port 5009) on {host}, although the device's own ACP works. "
-    "This command needs ACP from this computer, so nothing was changed. Connect this computer to the "
-    "device's network by Wi-Fi or one of its LAN ports, and turn off any VPN or firewall that filters "
-    "local traffic, then try again."
+    "This command needs ACP from this computer, so nothing was changed."
 )
 
 
@@ -126,7 +119,7 @@ def require_acpd_ready(
         reading = read_admin_password(connection)
     callbacks.debug(**password_check_fields(reading))
     if reading.password_matches is False:
-        raise DeviceAccessError(AIRPORT_PASSWORD_MISMATCH_MESSAGE, code=ErrorCode.AUTH_FAILED)
+        raise DeviceAccessError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code=ErrorCode.AUTH_FAILED)
     report_airport_identity(callbacks, reading)
     problems = acpd.acpd_problems(connection, network_reading=reading)
     if problems:
@@ -134,7 +127,7 @@ def require_acpd_ready(
         callbacks.debug(acpd_problems=[problem.code for problem in problems], **details)
         # Apple's firmware, not ours (DETAIL.md, "Apple ACPd can hang during its own restart").
         raise DeviceAccessError(
-            acpd.acpd_broken_message(problems[0].what, note=f"{problems[0].note}Nothing was changed. "),
+            acpd.acpd_broken_message(problems[0].what, note=f"{problems[0].note}Nothing was changed."),
             code=ErrorCode.ACPD_BROKEN,
         )
     if reading.password_matches is None and reading.error:
