@@ -293,6 +293,25 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
+    # This boot's kernel log says the disk failed transfers it could not
+    # recover from, and file sharing is off (device.disk_errors). Nothing on
+    # the device fixes that: the data comes first, then a new disk.
+    "disk_failing": RecoveryInfo(
+        "The disk is failing",
+        (
+            "The device's disk reported errors it could not recover from, so it is probably failing. File sharing "
+            "and Time Machine will not work reliably on it, and reinstalling will not fix the disk. AirPort Utility "
+            "may still show the disk as OK: its own check does not catch these errors."
+        ),
+        (
+            "Copy off the files you need. If file sharing is off, take the disk out and connect it to a Mac "
+            "with a SATA-to-USB adapter.",
+            "Replace the disk.",
+            "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, "
+            "full backup on it.",
+        ),
+        retryable=False,
+    ),
     "ssh_still_enabled": RecoveryInfo(
         "SSH is still enabled",
         "The device restarted, but SSH was still enabled afterwards.",

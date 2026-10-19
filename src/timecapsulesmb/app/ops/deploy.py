@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
-from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
+from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_confirmation_fields, require_confirmation
 from timecapsulesmb.core.config import (
     DEFAULTS,
     airport_family_display_name_from_identity,
@@ -17,6 +17,7 @@ from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_target,
 )
+from timecapsulesmb.device.disk_errors import read_disk_errors_conn
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import load_install_identity
 from timecapsulesmb.services.app import (
@@ -272,6 +273,10 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             no_wait=no_wait,
             device_name=device_name,
         )
+        disk_errors = read_disk_errors_conn(connection)
+        if disk_errors:
+            context.update_fields(disk_failing_warned=True)
+            presentation = replace(presentation, **disk_failing_confirmation_fields(operation, disk_errors))
         presentation_values = {
             "device_name": device_name,
             "netbsd4": is_netbsd4,
@@ -279,6 +284,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             "no_wait": no_wait,
             "startup_mode": startup_mode,
             "rsync_enabled": rsync_enabled,
+            **({"disk_failing": True} if disk_errors else {}),
         }
         require_confirmation(
             params,
@@ -297,6 +303,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                     "requires_reboot": preflight.requires_reboot,
                     "no_wait": no_wait,
                     "startup_mode": startup_mode,
+                    **({"disk_failing": True} if disk_errors else {}),
                 },
                 presentation_id=presentation.presentation_id,
                 presentation_values=presentation_values,

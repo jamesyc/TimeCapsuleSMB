@@ -10,6 +10,7 @@ from timecapsulesmb.cli.runtime import (
     add_no_input_argument,
     add_no_wait_argument,
     confirm,
+    confirm_despite_failing_disk,
     no_input_enabled,
     print_json,
 )
@@ -72,6 +73,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             require_acpd_ready(connection, command_context.to_operation_callbacks(),
                                reading=command_context.reading_at(connection))
 
+        if not args.dry_run:
+            proceed = confirm_despite_failing_disk(
+                connection, "uninstall", yes=args.yes, command="uninstall", update_fields=command_context.update_fields,
+            )
+            if proceed is False:
+                print("Uninstall cancelled.")
+                command_context.cancel_with_error("Cancelled by user at the failing-disk warning.")
+                return 0
         plan = prepare_uninstall(
             connection,
             dry_run=args.dry_run,

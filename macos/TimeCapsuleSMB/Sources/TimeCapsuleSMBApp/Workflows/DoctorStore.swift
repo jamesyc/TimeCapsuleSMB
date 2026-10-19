@@ -56,6 +56,7 @@ struct DoctorSummary: Equatable {
     static let rsyncMissingFromDiskResultCode = "rsync_missing_from_disk"
     static let rsyncDamagedOnDiskResultCode = "rsync_damaged_on_disk"
     static let diskNotMountingResultCode = "disk_not_mounting"
+    static let diskFailingResultCode = "disk_failing"
     /// The installed files are missing from every disk, as after an Erase in
     /// AirPort Utility, or the disk's copy of Samba is damaged; or rsync's
     /// files are missing or damaged, which leaves Samba serving. Those that
@@ -88,6 +89,9 @@ struct DoctorSummary: Equatable {
     /// A disk will not mount and no other holds the Samba files, as when
     /// diskd hangs on a disk that stopped answering.
     let diskNotMounting: Bool
+    /// The disk reported errors it could not recover from: it outranks the
+    /// payload problems, whose fix (Install) it would undo.
+    let diskFailing: Bool
     let checks: [DoctorCheckPayload]
     let sections: [DoctorCheckDomain: DoctorSection]
     /// nil only for a payload without one, which the bundled helper never sends.
@@ -109,6 +113,7 @@ struct DoctorSummary: Equatable {
         self.runtimeNotStarted = Self.containsResultCode(Self.runtimeNotStartedResultCode, in: payload)
         self.payloadProblemCode = Self.payloadProblems.first { Self.containsResultCode($0.code, in: payload) }?.code
         self.diskNotMounting = Self.containsResultCode(Self.diskNotMountingResultCode, in: payload)
+        self.diskFailing = Self.containsResultCode(Self.diskFailingResultCode, in: payload)
         self.checks = payload.results
         self.sections = Dictionary(
             (payload.sections ?? [:]).map { (DoctorCheckDomainPolicy.domain(for: $0.key), $0.value) },

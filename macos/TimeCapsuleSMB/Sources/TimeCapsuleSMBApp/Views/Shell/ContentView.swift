@@ -187,8 +187,15 @@ public struct ContentView: View {
             Button(confirmation.actionTitle, role: .destructive) {
                 operationCoordinator.confirm(confirmation)
             }
-            Button(L10n.string("action.cancel"), role: .cancel) {
-                operationCoordinator.cancel(confirmation)
+            if confirmation.prefersCancel {
+                Button(L10n.string("action.cancel"), role: .cancel) {
+                    operationCoordinator.cancel(confirmation)
+                }
+                .keyboardShortcut(.defaultAction)
+            } else {
+                Button(L10n.string("action.cancel"), role: .cancel) {
+                    operationCoordinator.cancel(confirmation)
+                }
             }
         } message: { confirmation in
             Text(confirmation.message)

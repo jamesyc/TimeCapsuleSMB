@@ -247,6 +247,9 @@ extension DoctorCheckPayload {
             return L10n.string("doctor.check.metadata_migration_in_progress")
         case "disk_not_mounting":
             return L10n.string("doctor.check.disk_not_mounting")
+        // The helper's line quotes the kernel's; the catalog's says what it means.
+        case "disk_failing":
+            return L10n.string("doctor.check.disk_failing")
         case "client_on_unshared_network":
             return L10n.string("doctor.check.client_on_unshared_network")
         // The helper's text names ports and the connect error; the dashboard

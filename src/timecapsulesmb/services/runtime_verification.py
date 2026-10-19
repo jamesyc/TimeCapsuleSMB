@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
+from timecapsulesmb.device.disk_errors import DiskFailingError, disk_errors_explain, read_disk_errors_conn
 from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
@@ -30,12 +31,15 @@ def verify_managed_runtime_ready(
     failure_message: str,
     probe_runtime: Callable[..., ManagedRuntimeProbeResult] | None = None,
     read_runtime_logs: Callable[[SshConnection], dict[str, object]] | None = None,
+    read_disk_errors: Callable[[SshConnection], tuple[str, ...] | None] | None = None,
 ) -> ManagedRuntimeProbeResult:
     callbacks = callbacks or OperationCallbacks()
     if probe_runtime is None:
         probe_runtime = probe_managed_runtime_conn
     if read_runtime_logs is None:
         read_runtime_logs = read_runtime_log_tails_conn
+    if read_disk_errors is None:
+        read_disk_errors = read_disk_errors_conn
     callbacks.stage(stage)
     started = time.monotonic()
     try:
@@ -73,17 +77,25 @@ def verify_managed_runtime_ready(
     except Exception as exc:
         callbacks.debug(remote_runtime_log_tail_error=system_exit_message(exc))
 
-    raise runtime_failure_error(verification, failure_message)
+    disk_errors = read_disk_errors(connection)
+    if disk_errors:
+        callbacks.debug(disk_error_lines=list(disk_errors[-5:]))
+    raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors)
 
 
 CHECKUP_SENTENCE = 'Run "Checkup" in the macOS app, or tcapsule doctor from the command line, for details.'
 
 
-def runtime_failure_error(verification: ManagedRuntimeProbeResult, failure_message: str) -> DeviceError:
-    """The error for a runtime that is not ready: the manager's verdict, or
-    rsync's alone while file sharing serves (whose error must not say file
+def runtime_failure_error(
+    verification: ManagedRuntimeProbeResult, failure_message: str, *, disk_errors: tuple[str, ...] | None = None,
+) -> DeviceError:
+    """The error for a runtime that is not ready: this boot's disk errors
+    when they explain it (disk_errors_explain), else the manager's verdict,
+    or rsync's alone while file sharing serves (whose error must not say file
     sharing failed), or failure_message with the probe's detail."""
     problem = runtime_payload_problem(verification)
+    if disk_errors_explain(disk_errors, (problem,) if problem else (), samba_ready=verification.samba_ready):
+        return DiskFailingError(disk_errors)
     if problem is not None:
         return problem.error_type(problem.error_after(failure_message))
     if verification.samba_ready:

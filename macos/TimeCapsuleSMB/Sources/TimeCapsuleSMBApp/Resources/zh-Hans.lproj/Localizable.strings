@@ -146,12 +146,18 @@
 "confirm.deploy.reboot_no_wait.action" = "安装 / 更新 Samba 并请求重启";
 "confirm.deploy.reboot_no_wait.message" = "在此 %@ 上安装或更新 Samba，请求重启后立即返回？";
 "confirm.deploy.reboot_no_wait.title" = "安装 / 更新 Samba 并请求重启？";
+"confirm.deploy.disk_failing.action" = "仍然安装";
+"confirm.deploy.disk_failing.message" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障。安装无法解决这个问题，AirPort 实用工具可能仍显示磁盘正常。请先复制出你需要的文件。仍然安装？";
+"confirm.deploy.disk_failing.title" = "磁盘出现故障";
 "confirm.fsck.no_reboot.action" = "运行 fsck";
 "confirm.fsck.no_reboot.message" = "在选定的 HFS 卷上运行 fsck？大容量磁盘可能需要一小时或更长时间。完成前请保持 Time Capsule 接通电源。";
 "confirm.fsck.no_reboot.title" = "运行“磁盘修复”？";
 "confirm.fsck.reboot.action" = "运行 fsck";
 "confirm.fsck.reboot.message" = "在选定的 HFS 卷上运行 fsck 并重启设备？大容量磁盘可能需要一小时或更长时间。完成前请保持 Time Capsule 接通电源。";
 "confirm.fsck.reboot.title" = "运行“磁盘修复”并重启设备？";
+"confirm.fsck.disk_failing.action" = "仍然修复";
+"confirm.fsck.disk_failing.message" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障。磁盘修复无法修好出现故障的磁盘，还会加重它的负担。请先复制出你需要的文件。仍然修复？";
+"confirm.fsck.disk_failing.title" = "磁盘出现故障";
 "confirm.flash.patch_write.action" = "写入固件";
 "confirm.flash.patch_write.message" = "修改 %@ 主固件区的启动钩子？成功写入后需要手动断电重启。";
 "confirm.flash.patch_write.title" = "修改固件启动钩子？";
@@ -167,6 +173,9 @@
 "confirm.uninstall.reboot.action" = "卸载";
 "confirm.uninstall.reboot.message" = "从设备中移除由 TimeCapsuleSMB 管理的文件并重启？";
 "confirm.uninstall.reboot.title" = "卸载并重启？";
+"confirm.uninstall.disk_failing.action" = "仍然卸载";
+"confirm.uninstall.disk_failing.message" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障。卸载无法解决这个问题，AirPort 实用工具可能仍显示磁盘正常。请先复制出你需要的文件。仍然卸载？";
+"confirm.uninstall.disk_failing.title" = "磁盘出现故障";
 "dashboard.action.install_update_smb" = "安装 / 更新 Samba";
 "dashboard.action.refresh_status" = "刷新状态";
 "dashboard.action.settings" = "设置";
@@ -291,6 +300,7 @@
 "doctor.check.rsync_damaged_on_disk" = "磁盘上的 rsync 文件已损坏，与安装时的内容不再一致，因此 rsync 已关闭。文件共享和时间机器仍可正常使用。请运行“安装 / 更新 Samba”以重新安装。";
 "doctor.check.metadata_migration_in_progress" = "设备上仍在运行元数据迁移。“安装 / 更新 Samba”会等待其完成后再安装。";
 "doctor.check.disk_not_mounting" = "设备上的一个磁盘无法挂载，因此文件共享和时间机器无法使用。请重启设备；如果设备没有恢复，请拔掉电源 10 秒钟。如果磁盘仍无法挂载，请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";
+"doctor.check.disk_failing" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障，文件共享已停止。重新安装无法修复磁盘，AirPort 实用工具可能仍显示磁盘正常。请复制出你需要的文件，更换磁盘，然后在 AirPort 实用工具中抹掉新磁盘，并运行“安装 / 更新 Samba”。";
 "doctor.check.client_on_unshared_network" = "此 Mac 所在的网络中，设备不共享其磁盘，例如设备的互联网（WAN）一侧或访客网络。请通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的主网络，然后再次运行“检查”。";
 "doctor.check.mac_smb3_disabled" = "%@ 关闭了 SMB 3（protocol_vers_map），而时间机器需要 SMB 3。请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ 为服务器 [%2$@] 关闭了 SMB 3。如果它就是此设备，请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
@@ -662,6 +672,8 @@
 "backend.error.rsync_missing_from_disk" = "磁盘上缺少 rsync 文件，因此 rsync 已关闭。文件共享和时间机器仍可正常使用。请运行“安装 / 更新 Samba”以重新安装。";
 "backend.error.rsync_damaged_on_disk" = "磁盘上的 rsync 文件已损坏，与安装时的内容不再一致，因此 rsync 已关闭。文件共享和时间机器仍可正常使用。请运行“安装 / 更新 Samba”以重新安装。";
 "backend.error.rsync_not_running" = "文件共享和时间机器正在运行，但 rsync 未启动。运行“检查”以查看详情。";
+"backend.error.disk_failing" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障，文件共享已停止。重新安装无法修复磁盘。";
+"backend.error.deploy.disk_failing" = "安装已完成，但随后设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障，文件共享已停止。再次安装无法修复磁盘。";
 "backend.error.fsck.runtime_not_restarted" = "磁盘修复已完成，但设备重启后文件共享没有恢复。";
 "backend.error.fsck.fsck_already_running" = "设备上仍在运行之前的磁盘修复。请保持 Time Capsule 接通电源，等待它完成，然后再次运行“磁盘修复”。";
 "backend.error.fsck.fsck_session_dropped" = "磁盘修复运行期间连接已中断。修复仍在设备上继续：请保持 Time Capsule 接通电源，不要重启它。";
@@ -908,6 +920,11 @@
 "backend.recovery.rsync_not_running.message" = "文件共享和时间机器正在运行，但 rsync 未启动。";
 "backend.recovery.rsync_not_running.action.1" = "运行“检查”以查看详情。";
 "backend.recovery.rsync_not_running.action.2" = "运行“安装 / 更新 Samba”。";
+"backend.recovery.disk_failing.title" = "磁盘出现故障";
+"backend.recovery.disk_failing.message" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障。文件共享和时间机器在该磁盘上无法可靠工作，重新安装也无法修复磁盘。AirPort 实用工具可能仍显示磁盘正常：它自身的检查无法发现这些错误。";
+"backend.recovery.disk_failing.action.1" = "请复制出你需要的文件。如果文件共享已停止，请取出磁盘，并用 SATA 转 USB 转接器将其连接到 Mac。";
+"backend.recovery.disk_failing.action.2" = "请更换磁盘。";
+"backend.recovery.disk_failing.action.3" = "请在 AirPort 实用工具中抹掉新磁盘，然后运行“安装 / 更新 Samba”。时间机器会在新磁盘上开始新的完整备份。";
 "backend.recovery.runtime_not_restarted.title" = "文件共享没有恢复";
 "backend.recovery.runtime_not_restarted.message" = "设备已重启，但已安装的 TimeCapsuleSMB 服务没有启动。";
 "backend.recovery.runtime_not_restarted.action.1" = "运行“启动 SMB”。";

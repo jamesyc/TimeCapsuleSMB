@@ -10,7 +10,7 @@ from timecapsulesmb.app.contracts import (
     uninstall_plan_payload,
     uninstall_result_payload,
 )
-from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
+from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_confirmation_fields, require_confirmation
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     require_request_acpd_ready,
@@ -26,6 +26,7 @@ from timecapsulesmb.deploy.planner import (
     build_runtime_activation_plan,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
+from timecapsulesmb.device.disk_errors import read_disk_errors_conn
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.services.app import (
     AppOperationError,
@@ -123,23 +124,27 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     if not dry_run and not no_reboot:
         require_request_acpd_ready(context, connection)
     if not dry_run:
-        presentation_id = "uninstall.no_reboot" if no_reboot else "uninstall.reboot"
+        disk_errors = read_disk_errors_conn(connection)
+        presentation = {
+            "title": "Confirm uninstall",
+            "message": "Remove managed TimeCapsuleSMB files from the device" + (" and reboot it?" if not no_reboot else "?"),
+            "action_title": "Uninstall",
+            "presentation_id": "uninstall.no_reboot" if no_reboot else "uninstall.reboot",
+        }
+        if disk_errors:
+            context.update_fields(disk_failing_warned=True)
+            presentation.update(disk_failing_confirmation_fields(operation, disk_errors))
         presentation_values = {
             "requires_reboot": not no_reboot,
             "no_reboot": no_reboot,
             "no_wait": no_wait,
+            **({"disk_failing": True} if disk_errors else {}),
         }
         require_confirmation(
             params,
             build_confirmation(
                 operation=operation,
                 params=params,
-                title="Confirm uninstall",
-                message=(
-                    "Remove managed TimeCapsuleSMB files from the device"
-                    + (" and reboot it?" if not no_reboot else "?")
-                ),
-                action_title="Uninstall",
                 risk="destructive" if not no_reboot else "remote_write",
                 summary="Uninstall managed payload" + (" with reboot" if not no_reboot else " without reboot"),
                 context={
@@ -147,9 +152,10 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
+                    **({"disk_failing": True} if disk_errors else {}),
                 },
-                presentation_id=presentation_id,
                 presentation_values=presentation_values,
+                **presentation,
             ),
         )
     plan = prepare_uninstall(
@@ -204,19 +210,25 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         connection = _fsck_connection(params, context, rebooting=True)
         require_request_acpd_ready(context, connection)
     if not dry_run and not list_volumes:
-        presentation_id = "fsck.no_reboot" if no_reboot else "fsck.reboot"
         volume = string_param(params, "volume")
+        # The preflight reads the device before the confirmation.
+        if connection is None:
+            connection = _fsck_connection(params, context, rebooting=rebooting)
+        disk_errors = read_disk_errors_conn(connection)
+        presentation = {
+            "title": "Confirm fsck",
+            "message": "Run fsck on the selected HFS volume" + (" and reboot the device?" if not no_reboot else "?"),
+            "action_title": "Run fsck",
+            "presentation_id": "fsck.no_reboot" if no_reboot else "fsck.reboot",
+        }
+        if disk_errors:
+            context.update_fields(disk_failing_warned=True)
+            presentation.update(disk_failing_confirmation_fields(operation, disk_errors))
         require_confirmation(
             params,
             build_confirmation(
                 operation=operation,
                 params=params,
-                title="Confirm fsck",
-                message=(
-                    "Run fsck on the selected HFS volume"
-                    + (" and reboot the device?" if not no_reboot else "?")
-                ),
-                action_title="Run fsck",
                 risk="destructive" if not no_reboot else "remote_write",
                 summary="Filesystem check and repair",
                 context={
@@ -224,14 +236,16 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
+                    **({"disk_failing": True} if disk_errors else {}),
                 },
-                presentation_id=presentation_id,
                 presentation_values={
                     "volume": volume,
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
+                    **({"disk_failing": True} if disk_errors else {}),
                 },
+                **presentation,
             ),
         )
     if connection is None:

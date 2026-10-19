@@ -34,6 +34,8 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_managed_mdns,
     _doctor_check_managed_rsync,
     _doctor_check_device_hostname,
+    _doctor_check_disk_errors_after_failure,
+    _doctor_check_disk_errors_under_verdict,
     _doctor_check_disk_mounting,
     _doctor_check_disk_payload,
     _doctor_refresh_payload_problems,
@@ -118,7 +120,8 @@ def run_doctor_checks(
         return sink.results, sink.fatal()
 
     manager = _doctor_probe_startup_age(target, remote, sink)
-    if _doctor_check_disk_payload(manager, sink).stop:
+    if (_doctor_check_disk_errors_under_verdict(target, remote, manager, sink).stop
+            or _doctor_check_disk_payload(manager, sink).stop):
         # The manager's log shows what removed the payload, such as an Erase.
         _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
         return sink.results, sink.fatal()
@@ -130,7 +133,8 @@ def run_doctor_checks(
     verdicts = ManagerVerdicts(manager.payload_problems if manager is not None else ())
     readiness = _doctor_wait_for_startup(target, remote, sink, startup_age, verdicts)
     manager = _doctor_refresh_payload_problems(target, remote, manager, verdicts)
-    if _doctor_check_disk_payload(manager, sink).stop:
+    if (_doctor_check_disk_errors_under_verdict(target, remote, manager, sink).stop
+            or _doctor_check_disk_payload(manager, sink).stop):
         _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
         return sink.results, sink.fatal()
 
@@ -177,5 +181,6 @@ def run_doctor_checks(
                 inputs, target, remote, smb_config, naming, bonjour_result, direct_smb, processes, device_smb, sink,
             )
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
+    _doctor_check_disk_errors_after_failure(target, remote, manager, sink, samba_serving=smbd_serving is True)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
     return sink.results, sink.fatal()

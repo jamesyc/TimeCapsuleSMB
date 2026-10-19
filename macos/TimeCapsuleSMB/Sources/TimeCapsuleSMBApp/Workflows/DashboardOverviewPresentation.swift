@@ -497,6 +497,11 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: .runCheckup
             )
         case .installFailed, .installInterrupted:
+            // Installing again would not help a failing disk: the Checkup
+            // says what does.
+            if runtimeState.errorCode == DoctorSummary.diskFailingResultCode {
+                return diskFailingRow(action: .runCheckup)
+            }
             // A deploy that ended on a damaged rsync: name it, with Install.
             if let problem = DoctorSummary.payloadProblem(code: runtimeState.errorCode) {
                 return payloadProblemRow(problem)
@@ -516,6 +521,8 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 status: .warning,
                 action: .startSMB
             )
+        case .unhealthy where runtimeState.errorCode == DoctorSummary.diskFailingResultCode:
+            return diskFailingRow(action: .viewCheckup)
         case .unhealthy where runtimeState.errorCode == DoctorSummary.diskNotMountingResultCode:
             return DashboardHealthRow(
                 id: "runtime-disk-not-mounting",
@@ -537,6 +544,17 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: .viewCheckup
             )
         }
+    }
+
+    /// The disk reported errors it could not recover from: never Install.
+    private static func diskFailingRow(action: DashboardSecondaryAction) -> DashboardHealthRow {
+        DashboardHealthRow(
+            id: "runtime-disk-failing",
+            title: DashboardHealthDomain.runtime.title,
+            detail: L10n.string("doctor.check.disk_failing"),
+            status: .failed,
+            action: action
+        )
     }
 
     /// Only a reinstall fixes it. A damaged rsync fails the Checkup like

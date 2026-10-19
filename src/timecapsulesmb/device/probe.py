@@ -3099,7 +3099,9 @@ DISK_EVIDENCE_COMMANDS = {
     "remote_kernel_disk_messages": "/sbin/dmesg | sed -n"
     + "".join(
         f" -e '/{pattern}/p'"
-        for pattern in ("wd[0-9]", "sd[0-9]", "atabus", "ahcisata", "umass", "HFS", "rror", "imeout", "reset")
+        # The kernel banner marks each boot: NetBSD 6 keeps an earlier boot's
+        # lines across a soft restart (device.disk_errors).
+        for pattern in ("^NetBSD [0-9]", "wd[0-9]", "sd[0-9]", "atabus", "ahcisata", "umass", "HFS", "rror", "imeout", "reset")
     ),
     "remote_diskd_threads": "case $(uname -r) in 4.*) echo '(not listed on NetBSD 4)' ;; "
     "*) /bin/ps -axs -o pid,lid,stat,wchan,sl,ucomm | sed -n -e 1p -e '/diskd/p' -e '/fsck_hfs/p' -e '/newfs_hfs/p' ;; esac",

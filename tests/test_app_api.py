@@ -45,6 +45,7 @@ from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import compatibility_from_probe_result
+from timecapsulesmb.device.disk_errors import disk_failing_warning
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_PROBLEMS,
     AirportAcpReading,
@@ -6637,6 +6638,80 @@ MaSt = (
         resolve_connection.assert_called_once()
         uninstall.assert_not_called()
 
+    DISK_ERRORS = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
+
+    def run_uninstall_with_disk_errors(self, errors, params: dict[str, object]):
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.app.ops.maintenance.read_disk_errors_conn", return_value=errors):
+                    with mock.patch("timecapsulesmb.app.ops.maintenance.prepare_uninstall") as prepare:
+                        with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
+                            rc = service.run_api_request({"operation": "uninstall", "params": params}, collector.sink)
+        return collector, rc, prepare, uninstall
+
+    def test_uninstall_on_a_failing_disk_asks_with_its_warning_first(self) -> None:
+        # Uninstall cannot fix the disk: the confirmation says so instead of
+        # the usual one, and nothing is removed until it is answered.
+        collector, rc, prepare, uninstall = self.run_uninstall_with_disk_errors(self.DISK_ERRORS, {"no_reboot": True})
+
+        self.assertEqual(rc, 1)
+        details = self.assert_confirmation(collector, "uninstall.disk_failing", {"disk_failing": True})
+        self.assertEqual(details["title"], "The Disk Is Failing")
+        self.assertEqual(details["action_title"], "Uninstall Anyway")
+        self.assertEqual(details["message"], f"{disk_failing_warning(self.DISK_ERRORS, 'uninstall')} Uninstall anyway?")
+        prepare.assert_not_called()
+        uninstall.assert_not_called()
+
+    def test_uninstall_anyway_goes_on_and_a_healthy_disk_keeps_the_usual_question(self) -> None:
+        first, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors(self.DISK_ERRORS, {"no_reboot": True})
+        warned_id = first.events_of_type("error")[0]["details"]["confirmation_id"]
+        healthy, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors((), {"no_reboot": True})
+        details = self.assert_confirmation(healthy, "uninstall.no_reboot")
+        # A confirmation of the usual question does not confirm the warning.
+        self.assertNotEqual(details["confirmation_id"], warned_id)
+        self.assertNotIn("disk_failing", details["presentation_values"])
+
+        _collector, _rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            self.DISK_ERRORS, {"no_reboot": True, "confirmation_id": warned_id},
+        )
+        prepare.assert_called_once()
+
+    def test_deploy_and_disk_repair_on_a_failing_disk_ask_with_its_warning(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
+        }
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        deploy = CollectingSink()
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
+                            with mock.patch("timecapsulesmb.app.ops.deploy.read_disk_errors_conn", return_value=self.DISK_ERRORS):
+                                with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
+                                    service.run_api_request({"operation": "deploy", "params": {"dry_run": False}}, deploy.sink)
+        details = self.assert_confirmation(deploy, "deploy.disk_failing", {"disk_failing": True})
+        self.assertEqual(details["action_title"], "Install Anyway")
+        remote_actions.assert_not_called()
+
+        repair = CollectingSink()
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.app.ops.maintenance.read_disk_errors_conn", return_value=self.DISK_ERRORS):
+                    with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
+                        service.run_api_request({"operation": "fsck", "params": {"no_reboot": True}}, repair.sink)
+        details = self.assert_confirmation(repair, "fsck.disk_failing", {"disk_failing": True})
+        self.assertIn("A disk repair cannot fix a failing disk", details["message"])
+        run_fsck.assert_not_called()
+
     def test_uninstall_requires_reboot_confirmation_before_remote_connection(self) -> None:
         collector = CollectingSink()
 
@@ -6911,17 +6986,23 @@ MaSt = (
         backup.assert_not_called()
 
     def test_fsck_without_reboot_requires_question_form_confirmation(self) -> None:
+        # The device is read before the question (its kernel log, for a
+        # failing disk's warning), but nothing runs on it until confirmed.
         collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
-        with mock.patch("timecapsulesmb.app.ops.common.load_env_config") as load_config:
-            rc = service.run_api_request(
-                {"operation": "fsck", "params": {"no_reboot": True}},
-                collector.sink,
-            )
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection") as resolve_connection:
+                with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
+                    rc = service.run_api_request(
+                        {"operation": "fsck", "params": {"no_reboot": True}},
+                        collector.sink,
+                    )
 
         self.assertEqual(rc, 1)
         self.assert_confirmation(collector, "fsck.no_reboot", {"requires_reboot": False, "no_reboot": True})
-        load_config.assert_not_called()
+        resolve_connection.assert_called_once()
+        run_fsck.assert_not_called()
 
     def test_fsck_rejects_non_integer_mount_wait_before_remote_connection(self) -> None:
         for value in (12.5, True):

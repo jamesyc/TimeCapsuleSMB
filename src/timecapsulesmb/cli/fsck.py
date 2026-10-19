@@ -12,6 +12,7 @@ from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
     confirm,
+    confirm_despite_failing_disk,
     no_input_enabled,
     read_terminal_line,
 )
@@ -169,7 +170,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Mounted HFS volume: {target.device} on {target.mountpoint}")
         print(FSCK_DURATION_WARNING)
 
-        if not args.yes:
+        # A failing disk's warning asks instead of the usual question.
+        proceed = confirm_despite_failing_disk(
+            connection, "repair", yes=args.yes, command="fsck", update_fields=command_context.update_fields,
+        )
+        if proceed is False:
+            print("fsck cancelled.")
+            command_context.cancel_with_error("Cancelled by user at the failing-disk warning.")
+            return 0
+        if proceed is None and not args.yes:
             command_context.set_stage("confirm_fsck")
             device_name = command_context.optional_airport_display_name(timeout_seconds=0.1)
             if args.no_reboot:

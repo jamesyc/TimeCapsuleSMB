@@ -91,6 +91,13 @@ from timecapsulesmb.core.net import (
     same_scoped_ip,
 )
 from timecapsulesmb.device.compat import render_compatibility_message
+from timecapsulesmb.device.disk_errors import (
+    DISK_FAILING_CODE,
+    disk_errors_explain,
+    disk_errors_in,
+    disk_failing_message,
+    read_disk_errors_conn,
+)
 from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
@@ -2536,6 +2543,52 @@ def _doctor_check_disk_payload(manager: ManagerStartupAgeProbeResult | None, sin
         return StepDecision()
     sink.add(CheckResult("FAIL", problem.message, details={"code": problem.code}))
     return StepDecision(stop=True)
+
+
+def _doctor_disk_failing_reported(sink: DoctorSink) -> bool:
+    return any(result.details.get("code") == DISK_FAILING_CODE for result in sink.results)
+
+
+def _doctor_report_disk_errors(errors: tuple[str, ...], sink: DoctorSink) -> None:
+    sink.add(CheckResult("FAIL", disk_failing_message(errors), details={"code": DISK_FAILING_CODE}))
+    if sink.debug_fields is not None:
+        sink.debug_fields["disk_error_lines"] = list(errors[-5:])
+
+
+def _doctor_check_disk_errors_under_verdict(
+    target: DoctorTarget, remote: RemoteAccess, manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink,
+) -> StepDecision:
+    """The manager keeps Samba off (a payload verdict, or a disk that will not
+    mount): this boot's disk errors, when they explain it, are the cause and
+    come first. They replace a payload verdict, whose fix (a reinstall) the
+    disk would undo; a disk that will not mount still says to restart."""
+    if manager is None or not remote.remote_checks_enabled or _doctor_disk_failing_reported(sink):
+        return StepDecision()
+    problems = tuple(problem for problem in manager.payload_problems if problem.samba_off)
+    if not problems and manager.unmounted_since is None:
+        return StepDecision()
+    errors = read_disk_errors_conn(target.connection)
+    if not disk_errors_explain(errors, problems):
+        return StepDecision()
+    _doctor_report_disk_errors(errors, sink)
+    return StepDecision(stop=bool(problems))
+
+
+def _doctor_check_disk_errors_after_failure(
+    target: DoctorTarget, remote: RemoteAccess, manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink,
+    *, samba_serving: bool,
+) -> None:
+    """A run that failed without a manager verdict, as when diskd keeps
+    exiting before anything is staged: this boot's disk errors say why Samba
+    is off. A run that failed for another reason while Samba serves (this
+    Mac's network, its smbclient) is not blamed on them. The kernel lines a
+    disk-failure probe already read are reused."""
+    if samba_serving or not sink.fatal() or not remote.remote_checks_enabled or _doctor_disk_failing_reported(sink):
+        return
+    read = (sink.debug_fields or {}).get("remote_kernel_disk_messages")
+    errors = disk_errors_in(read) if isinstance(read, str) else read_disk_errors_conn(target.connection)
+    if disk_errors_explain(errors, manager.payload_problems if manager is not None else ()):
+        _doctor_report_disk_errors(errors, sink)
 
 
 def _doctor_check_disk_mounting(manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink) -> StepDecision:

@@ -9,6 +9,9 @@ struct PendingConfirmation: Identifiable {
     let params: [String: JSONValue]
     let requestID: String
     let context: DeviceRuntimeContext?
+    /// The operation cannot help (a failing disk's warning): Cancel is the
+    /// default button.
+    let prefersCancel: Bool
 
     init?(
         confirmationEvent event: BackendEvent,
@@ -26,6 +29,7 @@ struct PendingConfirmation: Identifiable {
         }
 
         let presentation = ConfirmationPresentation(details: details)
+        self.prefersCancel = Self.detailString(details, "presentation_id")?.hasSuffix(".disk_failing") == true
         self.title = presentation?.title
             ?? Self.detailString(details, "title")
             ?? L10n.string("confirm.backend.title")

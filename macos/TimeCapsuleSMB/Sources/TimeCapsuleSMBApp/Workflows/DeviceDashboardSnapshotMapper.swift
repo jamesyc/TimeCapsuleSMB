@@ -72,8 +72,8 @@ enum DeviceDashboardSnapshotMapper {
             )
         case .fail:
             // Installed files gone from every disk, or Samba's damaged: only
-            // Install brings Samba back.
-            if summary.runtimeNotInstalled || summary.payloadProblem?.stopsSamba == true {
+            // Install brings Samba back, unless the disk itself is failing.
+            if !summary.diskFailing && (summary.runtimeNotInstalled || summary.payloadProblem?.stopsSamba == true) {
                 return DeviceRuntimeStateSnapshot(
                     state: .notInstalled,
                     source: .doctor,
@@ -100,7 +100,8 @@ enum DeviceDashboardSnapshotMapper {
                 // and so does a damaged rsync when nothing else failed: with
                 // other failures (Samba's own) the generic row sends the user
                 // to the Checkup, which lists them all.
-                errorCode: summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode
+                errorCode: summary.diskFailing ? DoctorSummary.diskFailingResultCode
+                    : summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode
                     : device.failCount == 1 ? summary.payloadProblemCode ?? "doctor_failed" : "doctor_failed",
                 errorMessage: nil,
                 recovery: nil

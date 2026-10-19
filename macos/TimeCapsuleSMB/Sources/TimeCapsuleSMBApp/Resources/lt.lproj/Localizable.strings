@@ -146,12 +146,18 @@
 "confirm.deploy.reboot_no_wait.action" = "Diegti ir prašyti paleisti iš naujo";
 "confirm.deploy.reboot_no_wait.message" = "Įdiegti TimeCapsuleSMB į šį %@, prašyti paleisti iš naujo ir grįžti iš karto?";
 "confirm.deploy.reboot_no_wait.title" = "Diegti ir prašyti paleisti iš naujo?";
+"confirm.deploy.disk_failing.action" = "Vis tiek diegti";
+"confirm.deploy.disk_failing.message" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda. Diegimas to neištaisys, o AirPort Utility diską vis dar gali rodyti kaip tvarkingą. Pirmiausia nukopijuokite reikalingus failus. Vis tiek diegti?";
+"confirm.deploy.disk_failing.title" = "Diskas genda";
 "confirm.fsck.no_reboot.action" = "Paleisti fsck";
 "confirm.fsck.no_reboot.message" = "Paleisti fsck pasirinktame HFS tome? Dideliame diske tai gali užtrukti valandą ar ilgiau. Neatjunkite Time Capsule nuo maitinimo, kol darbas baigsis.";
 "confirm.fsck.no_reboot.title" = "Paleisti disko taisymą?";
 "confirm.fsck.reboot.action" = "Paleisti fsck";
 "confirm.fsck.reboot.message" = "Paleisti fsck pasirinktame HFS tome ir paleisti įrenginį iš naujo? Dideliame diske tai gali užtrukti valandą ar ilgiau. Neatjunkite Time Capsule nuo maitinimo, kol darbas baigsis.";
 "confirm.fsck.reboot.title" = "Paleisti disko taisymą ir paleisti iš naujo?";
+"confirm.fsck.disk_failing.action" = "Vis tiek taisyti";
+"confirm.fsck.disk_failing.message" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda. Disko taisymas negali sutaisyti gendančio disko ir jį stipriai apkrauna. Pirmiausia nukopijuokite reikalingus failus. Vis tiek taisyti?";
+"confirm.fsck.disk_failing.title" = "Diskas genda";
 "confirm.flash.patch_write.action" = "Įrašyti programinę įrangą";
 "confirm.flash.patch_write.message" = "Pataisyti pirminio programinės įrangos banko įkrovos įskiepį %@? Sėkmingai įrašius reikalingas rankinis maitinimo ciklas.";
 "confirm.flash.patch_write.title" = "Pataisyti programinės įrangos įkrovos įskiepį?";
@@ -167,6 +173,9 @@
 "confirm.uninstall.reboot.action" = "Pašalinti";
 "confirm.uninstall.reboot.message" = "Pašalinti valdomus TimeCapsuleSMB failus iš įrenginio ir paleisti jį iš naujo?";
 "confirm.uninstall.reboot.title" = "Pašalinti ir paleisti iš naujo?";
+"confirm.uninstall.disk_failing.action" = "Vis tiek pašalinti";
+"confirm.uninstall.disk_failing.message" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda. Pašalinimas to neištaisys, o AirPort Utility diską vis dar gali rodyti kaip tvarkingą. Pirmiausia nukopijuokite reikalingus failus. Vis tiek pašalinti?";
+"confirm.uninstall.disk_failing.title" = "Diskas genda";
 "dashboard.action.install_update_smb" = "Įdiegti / atnaujinti Samba";
 "dashboard.action.refresh_status" = "Atnaujinti būseną";
 "dashboard.action.settings" = "Nustatymai";
@@ -291,6 +300,7 @@
 "doctor.check.rsync_damaged_on_disk" = "rsync failas diske sugadintas ir nebesutampa su tuo, kas buvo įdiegta, todėl rsync išjungtas. Failų bendrinimas ir Time Machine toliau veikia. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "doctor.check.metadata_migration_in_progress" = "Įrenginyje vis dar vyksta metaduomenų perkėlimas. Paleidus „Įdiegti / atnaujinti Samba“, diegimas palauks, kol jis baigsis.";
 "doctor.check.disk_not_mounting" = "Nepavyksta prijungti įrenginio disko, todėl failų bendrinimas ir Time Machine neveikia. Paleiskite įrenginį iš naujo; jei jis neatsiranda, 10 sekundžių atjunkite jį nuo maitinimo. Jei diskas vis tiek neprijungiamas, paleiskite operaciją „Disko taisymas“; jei tai kartojasi, diską gali reikėti pakeisti.";
+"doctor.check.disk_failing" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda, o failų bendrinimas sustabdytas. Įdiegimas iš naujo disko nesutaisys, o AirPort Utility jį vis dar gali rodyti kaip tvarkingą. Nukopijuokite reikalingus failus, pakeiskite diską, tada AirPort Utility ištrinkite naująjį diską ir paleiskite „Įdiegti / atnaujinti Samba“.";
 "doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir dar kartą paleiskite operaciją „Patikrinimas“.";
 "doctor.check.mac_smb3_disabled" = "%@ išjungia SMB 3 (protocol_vers_map), o Time Machine reikia SMB 3. Ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ išjungia SMB 3 serveriui [%2$@]. Jei tai šis įrenginys, ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
@@ -662,6 +672,8 @@
 "backend.error.rsync_missing_from_disk" = "rsync failų diske nėra, todėl rsync išjungtas. Failų bendrinimas ir Time Machine toliau veikia. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "backend.error.rsync_damaged_on_disk" = "rsync failas diske sugadintas ir nebesutampa su tuo, kas buvo įdiegta, todėl rsync išjungtas. Failų bendrinimas ir Time Machine toliau veikia. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
 "backend.error.rsync_not_running" = "Failų bendrinimas ir Time Machine veikia, bet rsync nepasileido. Paleiskite operaciją „Patikrinimas“, kad pamatytumėte išsamią informaciją.";
+"backend.error.disk_failing" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda, o failų bendrinimas sustabdytas. Įdiegimas iš naujo disko nesutaisys.";
+"backend.error.deploy.disk_failing" = "Diegimas baigtas, bet po to įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda, o failų bendrinimas sustabdytas. Pakartotinis diegimas disko nesutaisys.";
 "backend.error.fsck.runtime_not_restarted" = "Disko taisymas baigtas, bet paleidus įrenginį iš naujo failų bendrinimas vėl neįsijungė.";
 "backend.error.fsck.fsck_already_running" = "Įrenginyje vis dar vykdomas ankstesnis disko taisymas. Neatjunkite Time Capsule nuo maitinimo, palaukite, kol jis baigsis, tada vėl paleiskite operaciją „Disko taisymas“.";
 "backend.error.fsck.fsck_session_dropped" = "Ryšys nutrūko vykdant disko taisymą. Taisymas tęsiamas įrenginyje: neatjunkite Time Capsule nuo maitinimo ir nepaleiskite jo iš naujo.";
@@ -908,6 +920,11 @@
 "backend.recovery.rsync_not_running.message" = "Failų bendrinimas ir Time Machine veikia, bet rsync nepasileido.";
 "backend.recovery.rsync_not_running.action.1" = "Paleiskite operaciją „Patikrinimas“, kad pamatytumėte išsamią informaciją.";
 "backend.recovery.rsync_not_running.action.2" = "Paleiskite „Įdiegti / atnaujinti Samba“.";
+"backend.recovery.disk_failing.title" = "Diskas genda";
+"backend.recovery.disk_failing.message" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda. Failų bendrinimas ir Time Machine jame neveiks patikimai, o įdiegimas iš naujo disko nesutaisys. AirPort Utility diską vis dar gali rodyti kaip tvarkingą: jo paties patikra šių klaidų nepastebi.";
+"backend.recovery.disk_failing.action.1" = "Nukopijuokite reikalingus failus. Jei failų bendrinimas sustabdytas, išimkite diską ir prijunkite jį prie Mac per SATA–USB adapterį.";
+"backend.recovery.disk_failing.action.2" = "Pakeiskite diską.";
+"backend.recovery.disk_failing.action.3" = "AirPort Utility ištrinkite naująjį diską, tada paleiskite „Įdiegti / atnaujinti Samba“. Time Machine jame pradės naują visą atsarginę kopiją.";
 "backend.recovery.runtime_not_restarted.title" = "Failų bendrinimas vėl neįsijungė";
 "backend.recovery.runtime_not_restarted.message" = "Įrenginys paleistas iš naujo, bet įdiegtos TimeCapsuleSMB paslaugos nepasileido.";
 "backend.recovery.runtime_not_restarted.action.1" = "Paleiskite „Aktyvuoti“.";

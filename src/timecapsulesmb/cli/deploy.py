@@ -9,6 +9,7 @@ from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
     confirm,
+    confirm_despite_failing_disk,
     no_input_enabled,
     print_json,
 )
@@ -243,6 +244,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         startup_mode = preflight.startup_mode
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload.", flush=True)
+        if not args.dry_run:
+            proceed = confirm_despite_failing_disk(
+                connection, "install", yes=args.yes, command="deploy", update_fields=command_context.update_fields,
+            )
+            if proceed is False:
+                print("Deployment cancelled.", flush=True)
+                command_context.cancel_with_error("Cancelled by user at the failing-disk warning.")
+                return 0
         if not args.dry_run and not args.json:
             print("Finding payload volume...", flush=True)
         try:

@@ -955,6 +955,27 @@ class CliDeployTests(CliTestCase):
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
 
+    def test_deploy_on_a_failing_disk_warns_and_stops_unless_told_to_go_on(self) -> None:
+        # Asked before the payload volume is chosen; no is the default.
+        errors = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
+        prompts: list[str] = []
+        with mock.patch("timecapsulesmb.cli.runtime.read_disk_errors_conn", return_value=errors):
+            result = self.run_deploy_cli(
+                [],
+                artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
+                patch_actions=True,
+                patch_upload=True,
+                input_side_effect=lambda prompt="": prompts.append(prompt) or "",
+            )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(prompts, ["Install anyway? [y/N]: "])
+        self.assertIn("Deployment cancelled.", result.text)
+        result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+        self.assertNotIn("request", result.mocks.device.calls)
+        self.assertTrue(self.telemetry_payload("deploy_finished")["disk_failing_warned"])
+
     def test_deploy_without_input_at_the_reboot_prompt_stops_before_mutation(self) -> None:
         result = self.run_deploy_cli(
             [],

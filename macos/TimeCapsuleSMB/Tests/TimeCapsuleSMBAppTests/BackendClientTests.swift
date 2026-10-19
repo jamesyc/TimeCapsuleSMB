@@ -160,6 +160,30 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(client.pendingConfirmation?.params["dry_run"], .bool(false))
     }
 
+    func testAFailingDiskWarningIsLocalizedAndMakesCancelTheDefault() throws {
+        // The helper's English quotes a kernel line; the app shows its own
+        // text, and Cancel answers Return because going on cannot help.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .german)
+        for (presentationID, prefersCancel) in [("deploy.disk_failing", true), ("uninstall.disk_failing", true),
+                                                ("fsck.disk_failing", true), ("uninstall.no_reboot", false)] {
+            let event = BackendEvent(
+                type: "error", operation: "deploy", code: "confirmation_required", message: "English",
+                details: .object([
+                    "title": .string("English title"), "message": .string("English message?"),
+                    "action_title": .string("English action"), "confirmation_id": .string("confirm-1"),
+                    "presentation_id": .string(presentationID), "presentation_values": .object([:]),
+                ])
+            )
+            let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+            XCTAssertEqual(confirmation.prefersCancel, prefersCancel, presentationID)
+            XCTAssertEqual(confirmation.message, L10n.string("confirm.\(presentationID).message"))
+            XCTAssertEqual(confirmation.actionTitle, L10n.string("confirm.\(presentationID).action"))
+            XCTAssertNotEqual(confirmation.title, "English title")
+        }
+    }
+
     func testLegacyEventsWithoutRequestIDStillUpdatePolicyAndConfirmation() async throws {
         let runner = OperationKeyedStoreTestRunner(responses: [
             .init("deploy"): [.init(events: [BackendEvent(type: "stage", operation: "deploy", stage: "start")],

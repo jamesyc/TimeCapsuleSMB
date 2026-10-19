@@ -5,6 +5,7 @@ from typing import Literal
 
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
+from timecapsulesmb.device.disk_errors import read_disk_errors_conn
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
@@ -293,7 +294,9 @@ def activate_runtime(
     if runtime is not None and not runtime.ready and runtime_payload_problem(runtime) is not None:
         # The running manager already found Samba's or rsync's files missing
         # or damaged: starting it again cannot help, only a reinstall.
-        raise runtime_failure_error(runtime, "NetBSD4 activation failed.")
+        raise runtime_failure_error(
+            runtime, "NetBSD4 activation failed.", disk_errors=read_disk_errors_conn(connection),
+        )
     callbacks.message(decision.detail)
     if decision.verify_runtime and not decision.run_actions:
         verify_managed_runtime_ready(

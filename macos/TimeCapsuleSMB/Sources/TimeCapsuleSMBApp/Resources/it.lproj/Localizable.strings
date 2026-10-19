@@ -146,12 +146,18 @@
 "confirm.deploy.reboot_no_wait.action" = "Installa/aggiorna Samba e richiedi il riavvio";
 "confirm.deploy.reboot_no_wait.message" = "Installare o aggiornare Samba su questo %@, richiedere il riavvio e restituire subito il controllo?";
 "confirm.deploy.reboot_no_wait.title" = "Installare / aggiornare Samba e richiedere il riavvio?";
+"confirm.deploy.disk_failing.action" = "Installa comunque";
+"confirm.deploy.disk_failing.message" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto. L’installazione non risolve il problema, e Utility AirPort potrebbe ancora mostrare il disco come funzionante. Prima copia i file che ti servono. Installare comunque?";
+"confirm.deploy.disk_failing.title" = "Il disco è guasto";
 "confirm.fsck.no_reboot.action" = "Esegui fsck";
 "confirm.fsck.no_reboot.message" = "Eseguire fsck sul volume HFS selezionato? Su un disco grande può richiedere un’ora o più. Lascia il dispositivo Time Capsule collegato alla corrente finché non termina.";
 "confirm.fsck.no_reboot.title" = "Eseguire la riparazione del disco?";
 "confirm.fsck.reboot.action" = "Esegui fsck";
 "confirm.fsck.reboot.message" = "Eseguire fsck sul volume HFS selezionato e riavviare il dispositivo? Su un disco grande può richiedere un’ora o più. Lascia il dispositivo Time Capsule collegato alla corrente finché non termina.";
 "confirm.fsck.reboot.title" = "Eseguire la riparazione del disco e riavviare?";
+"confirm.fsck.disk_failing.action" = "Ripara comunque";
+"confirm.fsck.disk_failing.message" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto. Una riparazione del disco non può sistemare un disco guasto e lo sottopone a un forte carico. Prima copia i file che ti servono. Riparare comunque?";
+"confirm.fsck.disk_failing.title" = "Il disco è guasto";
 "confirm.flash.patch_write.action" = "Scrivi firmware";
 "confirm.flash.patch_write.message" = "Modificare l’hook di avvio del banco firmware primario su %@? Dopo la scrittura è necessario scollegare e ricollegare manualmente l’alimentazione.";
 "confirm.flash.patch_write.title" = "Modificare l’hook di avvio del firmware?";
@@ -167,6 +173,9 @@
 "confirm.uninstall.reboot.action" = "Disinstalla";
 "confirm.uninstall.reboot.message" = "Rimuovere dal dispositivo i file gestiti da TimeCapsuleSMB e riavviarlo?";
 "confirm.uninstall.reboot.title" = "Disinstallare e riavviare?";
+"confirm.uninstall.disk_failing.action" = "Disinstalla comunque";
+"confirm.uninstall.disk_failing.message" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto. La disinstallazione non risolve il problema, e Utility AirPort potrebbe ancora mostrare il disco come funzionante. Prima copia i file che ti servono. Disinstallare comunque?";
+"confirm.uninstall.disk_failing.title" = "Il disco è guasto";
 "dashboard.action.install_update_smb" = "Installa/aggiorna Samba";
 "dashboard.action.refresh_status" = "Aggiorna stato";
 "dashboard.action.settings" = "Impostazioni";
@@ -291,6 +300,7 @@
 "doctor.check.rsync_damaged_on_disk" = "Il file rsync sul disco è danneggiato e non corrisponde più a quanto installato, quindi rsync è disattivato. La condivisione dei file e Time Machine continuano a funzionare. Esegui “Installa/aggiorna Samba” per reinstallare.";
 "doctor.check.metadata_migration_in_progress" = "Sul dispositivo è ancora in corso una migrazione dei metadati. “Installa/aggiorna Samba” attende che termini prima di installare.";
 "doctor.check.disk_not_mounting" = "Non è possibile montare un disco del dispositivo, quindi la condivisione dei file e Time Machine non funzionano. Riavvia il dispositivo; se non ricompare, scollegalo dall’alimentazione per 10 secondi. Se il disco continua a non essere montato, esegui “Riparazione disco”; se il problema persiste, potrebbe essere necessario sostituirlo.";
+"doctor.check.disk_failing" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto e la condivisione dei file è ferma. Reinstallare non ripara il disco, e Utility AirPort potrebbe ancora mostrarlo come funzionante. Copia i file che ti servono, sostituisci il disco, poi cancella il nuovo disco in Utility AirPort ed esegui “Installa/aggiorna Samba”.";
 "doctor.check.client_on_unshared_network" = "Questo Mac è su una rete in cui il dispositivo non condivide i suoi dischi, come il lato Internet (WAN) o la rete ospiti del dispositivo. Collega questo Mac alla rete principale del dispositivo tramite Wi-Fi o una delle sue porte LAN, poi esegui di nuovo “Controllo”.";
 "doctor.check.mac_smb3_disabled" = "%@ disattiva SMB 3 (protocol_vers_map), ma Time Machine ne ha bisogno. Elimina quella riga, poi rimuovi il disco nelle impostazioni di Time Machine e aggiungilo di nuovo.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ disattiva SMB 3 per il server [%2$@]. Se è questo dispositivo, elimina quella riga, poi rimuovi il disco nelle impostazioni di Time Machine e aggiungilo di nuovo.";
@@ -662,6 +672,8 @@
 "backend.error.rsync_missing_from_disk" = "I file di rsync mancano dal disco, quindi rsync è disattivato. La condivisione dei file e Time Machine continuano a funzionare. Esegui “Installa/aggiorna Samba” per reinstallare.";
 "backend.error.rsync_damaged_on_disk" = "Il file rsync sul disco è danneggiato e non corrisponde più a quanto installato, quindi rsync è disattivato. La condivisione dei file e Time Machine continuano a funzionare. Esegui “Installa/aggiorna Samba” per reinstallare.";
 "backend.error.rsync_not_running" = "La condivisione file e Time Machine sono attivi, ma rsync non si è avviato. Esegui “Controllo” per i dettagli.";
+"backend.error.disk_failing" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto e la condivisione dei file è ferma. Reinstallare non ripara il disco.";
+"backend.error.deploy.disk_failing" = "L’installazione è terminata, ma poi il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto e la condivisione dei file è ferma. Installare di nuovo non ripara il disco.";
 "backend.error.fsck.runtime_not_restarted" = "La riparazione del disco è terminata, ma la condivisione dei file non è ripartita dopo il riavvio del dispositivo.";
 "backend.error.fsck.fsck_already_running" = "Una riparazione del disco precedente è ancora in corso sul dispositivo. Lascia il dispositivo Time Capsule collegato alla corrente, attendi che termini, poi esegui di nuovo “Riparazione disco”.";
 "backend.error.fsck.fsck_session_dropped" = "La connessione si è interrotta durante la riparazione del disco. La riparazione continua sul dispositivo: lascia il dispositivo Time Capsule collegato alla corrente e non riavviarlo.";
@@ -908,6 +920,11 @@
 "backend.recovery.rsync_not_running.message" = "La condivisione file e Time Machine sono attivi, ma rsync non si è avviato.";
 "backend.recovery.rsync_not_running.action.1" = "Esegui “Controllo” per i dettagli.";
 "backend.recovery.rsync_not_running.action.2" = "Esegui “Installa/aggiorna Samba”.";
+"backend.recovery.disk_failing.title" = "Il disco è guasto";
+"backend.recovery.disk_failing.message" = "Il disco del dispositivo ha segnalato errori che non è riuscito a correggere, quindi è probabilmente guasto. La condivisione dei file e Time Machine non funzioneranno in modo affidabile su questo disco, e reinstallare non ripara il disco. Utility AirPort potrebbe ancora mostrare il disco come funzionante: il suo controllo non rileva questi errori.";
+"backend.recovery.disk_failing.action.1" = "Copia i file che ti servono. Se la condivisione dei file è ferma, estrai il disco e collegalo a un Mac con un adattatore da SATA a USB.";
+"backend.recovery.disk_failing.action.2" = "Sostituisci il disco.";
+"backend.recovery.disk_failing.action.3" = "Cancella il nuovo disco in Utility AirPort, poi esegui “Installa/aggiorna Samba”. Time Machine avvia su di esso un nuovo backup completo.";
 "backend.recovery.runtime_not_restarted.title" = "La condivisione dei file non è ripartita";
 "backend.recovery.runtime_not_restarted.message" = "Il dispositivo si è riavviato, ma i servizi TimeCapsuleSMB installati non si sono avviati.";
 "backend.recovery.runtime_not_restarted.action.1" = "Esegui “Attiva”.";

@@ -500,6 +500,19 @@ class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
                     self.assertNotIn("did not restart", outcome.failure)
                     self.assertNotIn("Activate", outcome.failure)
 
+    def test_runtime_kept_off_by_a_failing_disk_keeps_its_code(self) -> None:
+        # The repair finished; the disk's own errors say why file sharing did
+        # not come back, rather than "run Activate".
+        from timecapsulesmb.device.disk_errors import disk_failing_message
+
+        errors = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
+        outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(disk_errors=errors))
+
+        self.assertEqual(outcome.status, 0)
+        self.assertEqual(outcome.runtime_restart_code, "disk_failing")
+        self.assertEqual(outcome.failure, f"Disk repair completed. {disk_failing_message(errors)}")
+        self.assertFalse(recorder.fields["runtime_restarted"])
+
     def test_runtime_that_serves_without_rsync_restarted_file_sharing(self) -> None:
         outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(rsync_not_running=True))
 

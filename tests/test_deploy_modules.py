@@ -1763,6 +1763,7 @@ class DeployModuleTests(unittest.TestCase):
                         heading="Runtime verification:",
                         failure_message="not ready",
                         probe_runtime=mock.Mock(return_value=verification),
+                        read_runtime_logs=mock.Mock(return_value={}),
                     )
                 fields = next(fields for kind, fields in measurements if kind == "runtime_verification")
                 self.assertEqual(fields["final_blocker_step"], step.id)

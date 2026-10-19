@@ -132,6 +132,16 @@ def apple_acpd_healthy(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def device_disks_healthy(monkeypatch: pytest.MonkeyPatch):
+    # Install, uninstall and disk repair read the device's kernel log for disk
+    # errors before they ask, and a runtime that does not start reads it to
+    # say why (timecapsulesmb.device.disk_errors). Tests answer "no errors";
+    # a test that needs some patches read_disk_errors_conn where it is used.
+    monkeypatch.setattr("timecapsulesmb.device.disk_errors.read_remote_command_conn", lambda *_args, **_kwargs: "")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def block_real_network_connections(monkeypatch: pytest.MonkeyPatch):
     # Tests use made-up device addresses such as 10.0.0.2 and capsule.local.
     # A real TCP connect to one, a UDP datagram to it (an NBNS query), or a

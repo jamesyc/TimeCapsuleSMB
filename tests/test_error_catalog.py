@@ -183,6 +183,25 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                             self.assertTrue(app_error_text(strings, operation, code))
                             self.assertEqual(len(set(texts)), len(texts))
 
+    def test_a_failing_disk_has_one_card_and_a_line_of_its_own_after_an_install(self) -> None:
+        # Raised by a deploy, Activate and the restart after a disk repair. The
+        # card's way out is the same; after a deploy the line says the install
+        # finished, so "install again" is not the fix.
+        for operation in ("activate", "deploy", "fsck"):
+            with self.subTest(operation=operation):
+                payload = recovery.recovery_for(operation, "disk_failing")
+                self.assertEqual(payload["localization_key"], "disk_failing")
+                self.assertIsNone(payload["suggested_operation"])
+                self.assertEqual(payload["action_ids"], [])
+        for language in LANGUAGES:
+            with self.subTest(language=language):
+                strings = catalog(language)
+                generic = app_error_text(strings, "activate", "disk_failing")
+                after_install = app_error_text(strings, "deploy", "disk_failing")
+                self.assertTrue(generic and after_install)
+                self.assertNotEqual(generic, after_install)
+                self.assertEqual(app_error_text(strings, "fsck", "disk_failing"), generic)
+
     def test_file_sharing_that_did_not_restart_after_fsck_has_its_own_text(self) -> None:
         # The error line says what did succeed: the disk repair.
         for language in LANGUAGES:

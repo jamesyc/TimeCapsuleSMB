@@ -836,6 +836,40 @@ class CliMaintenanceTests(CliTestCase):
         self.assertIn(maintenance_service.FSCK_DURATION_WARNING, at_prompt)
         self.assertIn("Continue?", at_prompt)
 
+    def test_fsck_on_a_failing_disk_asks_with_its_warning_instead(self) -> None:
+        errors = ("wd0c: error reading fsbn 4 of 4-11 (wd0 bn 4; cn 0 tn 0 sn 4)",)
+        prompts: list[str] = []
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(self.make_valid_env())))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.runtime.read_disk_errors_conn", return_value=errors))
+            stack.enter_context(mock.patch("builtins.input", side_effect=lambda prompt="": prompts.append(prompt) or "n"))
+            run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
+            with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as warning:
+                rc = fsck.main(["--no-reboot"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(prompts, ["Run fsck anyway? [y/N]: "])
+        self.assertIn("A disk repair cannot fix a failing disk", warning.getvalue())
+        self.assertIn("fsck cancelled.", output.getvalue())
+        run_ssh.assert_not_called()
+
+    def test_uninstall_on_a_failing_disk_asks_before_removing_anything(self) -> None:
+        errors = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o foo"}
+        for answer, removed in (("", False), ("y", True)):
+            with self.subTest(answer=answer):
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+                    self._patch_mast_volume_flow(stack, "uninstall")
+                    stack.enter_context(mock.patch("timecapsulesmb.cli.runtime.read_disk_errors_conn", return_value=errors))
+                    stack.enter_context(mock.patch("builtins.input", return_value=answer))
+                    remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        rc = uninstall.main(["--no-reboot"])
+                self.assertEqual(rc, 0)
+                self.assertEqual(remove.called, removed)
+
     def test_fsck_validates_only_host(self) -> None:
         output = io.StringIO()
         values = {

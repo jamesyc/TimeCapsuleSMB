@@ -363,6 +363,16 @@ Wait a little, then run:
 
 Erasing the disk in AirPort Utility also removes TimeCapsuleSMB's files from it. Checkup and `activate` then report that the Samba files are missing. Run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`, to put them back.
 
+### The Disk Is Failing
+
+Install / Update Samba, Uninstall, Disk Repair and Checkup read the device's kernel log for disk errors the disk could not recover from. When they find some, the disk is probably failing: reinstalling will not fix it, and file sharing and Time Machine will not work reliably on it. AirPort Utility may still show the disk as OK, because its own check does not catch these errors.
+
+1. Copy off the files you need. If file sharing still works, copy them over the network now. Otherwise take the disk out of the device and connect it to a Mac with a SATA-to-USB adapter; macOS reads the disk as it is.
+2. Replace the disk.
+3. Erase the new disk in AirPort Utility, then run “Install / Update Samba” in the app, or `.venv/bin/tcapsule deploy`. Time Machine starts a new, full backup on it.
+
+Install, Uninstall and Disk Repair ask before they go on with a failing disk; `--yes` goes on after printing the warning.
+
 ### I Want The Full Technical Story
 
 Read:

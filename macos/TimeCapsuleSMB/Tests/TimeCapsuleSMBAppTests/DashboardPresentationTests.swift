@@ -245,6 +245,48 @@ final class DashboardPresentationTests: XCTestCase {
         }
     }
 
+    func testAFailingDiskOutranksThePayloadRowAndNeverOffersInstall() throws {
+        // The disk's errors and the damaged smbd they caused, in one Checkup:
+        // the dashboard names the disk, with its Checkup line, and sends the
+        // user to the Checkup, not to Install.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        let summary = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device",
+                            code: DoctorSummary.diskFailingResultCode),
+            testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device",
+                            code: DoctorSummary.payloadDamagedOnDiskResultCode),
+        ]).decode(DoctorPayload.self))
+        let detail = L10n.string("doctor.check.disk_failing")
+        XCTAssertNotEqual(detail, "doctor.check.disk_failing")
+        XCTAssertTrue(summary.diskFailing)
+        XCTAssertEqual(summary.checks.first?.localizedMessage, detail)
+        var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+        XCTAssertEqual(profile.runtimeState?.state, .unhealthy)
+        XCTAssertEqual(profile.runtimeState?.errorCode, DoctorSummary.diskFailingResultCode)
+        let checkupRow = try row(.runtime, in: DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile, passwordState: .available, displayStatus: .readyToInstall,
+            primaryAction: .installSMB, hostWarning: nil
+        )))
+        XCTAssertEqual(checkupRow.id, "runtime-disk-failing")
+        XCTAssertEqual(checkupRow.detail, detail)
+        XCTAssertEqual(checkupRow.status, .failed)
+        XCTAssertEqual(checkupRow.action, .viewCheckup)
+
+        // An install that ended on the disk's errors: no Checkup yet, so the
+        // row offers one rather than another install.
+        profile.runtimeState?.state = .installFailed
+        let installRow = try row(.runtime, in: DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile, passwordState: .available, displayStatus: .readyToInstall,
+            primaryAction: .installSMB, hostWarning: nil
+        )))
+        XCTAssertEqual(installRow.id, "runtime-disk-failing")
+        XCTAssertEqual(installRow.action, .runCheckup)
+    }
+
     func testADamagedRsyncNeverHidesAnotherFailure() throws {
         // rsync damaged and smbd down in the same Checkup: the dashboard does
         // not show the rsync row, whose text says file sharing works, but the

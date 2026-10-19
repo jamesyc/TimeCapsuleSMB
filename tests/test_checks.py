@@ -84,6 +84,7 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
+from timecapsulesmb.device.disk_errors import disk_failing_message
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_PROBLEMS,
     FILE_LOCKS_DISK_TDBS,
@@ -3390,6 +3391,110 @@ class CheckTests(unittest.TestCase):
                 rsync.assert_not_called()
                 self.assertTrue(debug_fields["manager_startup_age"][problem.debug_key])
                 self.assertEqual(debug_fields["remote_manager_log_tail"], logs[problem.token])
+
+    # This boot's disk errors (device.disk_errors).
+    DISK_ERRORS = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
+    SMBD_DOWN = mock.Mock(ready=False, detail="managed smbd parent process is not running",
+                          lines=("FAIL:managed smbd parent process is not running",))
+
+    def run_doctor_with_disk_errors(self, manager, errors, *, smbd=None, debug_fields=None, extra=None):
+        read = mock.Mock(return_value=errors)
+        patches = {"timecapsulesmb.checks.doctor_steps.read_disk_errors_conn": read, **(extra or {})}
+        if smbd is not None:
+            patches["timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn"] = mock.Mock(return_value=smbd)
+        # A Samba that stays down is retried on the doctor's clock, which these
+        # runs never wait out in real time.
+        with mock.patch("time.sleep"):
+            run, _ = self.run_doctor_with_manager(manager, debug_fields=debug_fields, extra_patches=patches)
+        return run, read
+
+    @staticmethod
+    def fail_codes(run) -> list[str]:
+        return [result.details.get("code") or result.message for result in run.results if result.status == "FAIL"]
+
+    def test_disk_errors_replace_a_payload_verdict_whose_fix_they_would_undo(self) -> None:
+        # The manager says smbd is damaged; the disk says why, and a reinstall
+        # would not help. One line, and doctor stops there as before.
+        damaged = next(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.token == "payload=damaged")
+        debug_fields: dict[str, object] = {}
+        run, _read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(12.0, "manager started 12s ago", payload_problems=(damaged,)),
+            self.DISK_ERRORS, debug_fields=debug_fields,
+        )
+
+        self.assertEqual(self.fail_codes(run), ["disk_failing"])
+        [failure] = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual(failure.message, disk_failing_message(self.DISK_ERRORS))
+        self.assertEqual(failure.domain, "device")
+        self.assertEqual(debug_fields["disk_error_lines"], list(self.DISK_ERRORS))
+
+    def test_disk_errors_come_before_a_disk_that_will_not_mount(self) -> None:
+        # Its fix (a restart) still applies, so both lines stay.
+        run, _read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(14400.0, "manager started 14400s ago", unmounted_since=1260),
+            self.DISK_ERRORS,
+        )
+
+        self.assertEqual(self.fail_codes(run), ["disk_failing", "disk_not_mounting"])
+
+    def test_an_erased_disk_is_not_blamed_on_errors_logged_before_the_erase(self) -> None:
+        missing = next(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.token == "payload=missing")
+        run, _read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(12.0, "manager started 12s ago", payload_problems=(missing,)),
+            self.DISK_ERRORS,
+        )
+
+        self.assertEqual(self.fail_codes(run), [missing.code])
+
+    def test_disk_errors_explain_a_failed_run_without_a_verdict(self) -> None:
+        # diskd keeps exiting, nothing is staged, and the title says nothing:
+        # the failed run reports the disk.
+        run, read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), self.DISK_ERRORS, smbd=self.SMBD_DOWN,
+        )
+
+        codes = self.fail_codes(run)
+        self.assertIn("managed smbd parent process is not running", codes)
+        self.assertEqual(codes.count("disk_failing"), 1)
+        read.assert_called_once()
+
+    def test_a_failed_run_reuses_the_kernel_lines_a_disk_probe_already_read(self) -> None:
+        run, read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), None, smbd=self.SMBD_DOWN,
+            debug_fields={"remote_kernel_disk_messages": "\n".join(("ahcisata0: port 1 reset failed",) + self.DISK_ERRORS)},
+        )
+
+        self.assertIn("disk_failing", self.fail_codes(run))
+        read.assert_not_called()
+
+    def test_a_run_that_failed_elsewhere_while_samba_serves_is_not_blamed_on_the_disk(self) -> None:
+        # Something else failed (here diskd's RPC names) while smbd serves:
+        # the disk's errors do not explain it, and "file sharing is off"
+        # would be false.
+        def diskd_fails(_target, _remote, sink):
+            sink.add(CheckResult("FAIL", "diskd RPC names are missing"))
+
+        smbd_up = mock.Mock(ready=True, detail="managed smbd ready", lines=("PASS:managed smbd parent process is running",))
+        run, read = self.run_doctor_with_disk_errors(
+            ManagerStartupAgeProbeResult(400.0, "manager started 400s ago"), self.DISK_ERRORS, smbd=smbd_up,
+            extra={"timecapsulesmb.checks.doctor._doctor_check_diskd_rpc": diskd_fails},
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertIn("diskd RPC names are missing", self.fail_codes(run))
+        self.assertNotIn("disk_failing", self.fail_codes(run))
+        read.assert_not_called()
+
+    def test_disk_errors_say_nothing_on_a_run_that_passed_or_could_not_read_them(self) -> None:
+        manager = ManagerStartupAgeProbeResult(400.0, "manager started 400s ago")
+        smbd_up = mock.Mock(ready=True, detail="managed smbd ready", lines=("PASS:managed smbd parent process is running",))
+        for errors, smbd in ((self.DISK_ERRORS, smbd_up), (None, self.SMBD_DOWN), ((), self.SMBD_DOWN)):
+            with self.subTest(errors=errors, failing=smbd is self.SMBD_DOWN):
+                run, read = self.run_doctor_with_disk_errors(manager, errors, smbd=smbd)
+                self.assertNotIn("disk_failing", self.fail_codes(run))
+                if smbd is smbd_up:
+                    self.assertFalse(run.fatal)
+                    read.assert_not_called()
 
     def test_doctor_goes_on_to_the_samba_checks_when_the_payload_is_present(self) -> None:
         run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))

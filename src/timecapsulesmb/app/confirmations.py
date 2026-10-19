@@ -5,6 +5,7 @@ import hashlib
 import json
 from typing import Mapping
 
+from timecapsulesmb.device.disk_errors import disk_failing_warning
 from timecapsulesmb.services.app import AppOperationError, jsonable
 
 
@@ -95,6 +96,25 @@ def build_confirmation(
         presentation_id=presentation_id,
         presentation_values=presentation_values or {},
     )
+
+
+# The preflight before an operation that cannot fix a failing disk: its
+# confirmation says so instead, and the app makes Cancel its default.
+_DISK_FAILING_KINDS = {"deploy": ("install", "Install Anyway", "Install anyway?"),
+                       "uninstall": ("uninstall", "Uninstall Anyway", "Uninstall anyway?"),
+                       "fsck": ("repair", "Repair Anyway", "Repair anyway?")}
+
+
+def disk_failing_confirmation_fields(operation: str, errors: tuple[str, ...]) -> dict[str, str]:
+    """build_confirmation's title, message, action_title and presentation_id
+    for this boot's disk errors (device.disk_errors)."""
+    kind, action_title, question = _DISK_FAILING_KINDS[operation]
+    return {
+        "title": "The Disk Is Failing",
+        "message": f"{disk_failing_warning(errors, kind)} {question}",
+        "action_title": action_title,
+        "presentation_id": f"{operation}.disk_failing",
+    }
 
 
 def supplied_confirmation_id(params: Mapping[str, object]) -> str:
