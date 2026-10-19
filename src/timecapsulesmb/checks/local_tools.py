@@ -22,12 +22,12 @@ def check_required_local_tools() -> list[CheckResult]:
                 except SshError as exc:
                     results.append(CheckResult("FAIL", str(exc)))
                     continue
-            results.append(CheckResult("PASS", f"found local tool {tool}"))
+            results.append(CheckResult("PASS", f"local tool {tool} is installed"))
         else:
             results.append(CheckResult("FAIL", f"missing local tool {tool}, please install {tool} on your computer"))
     # ssh gets the device password from this helper, installed with TimeCapsuleSMB.
     if os.access(SSH_ASKPASS_PATH, os.X_OK):
-        results.append(CheckResult("PASS", "found local tool ssh-askpass, the SSH password helper"))
+        results.append(CheckResult("PASS", "local tool ssh-askpass, the SSH password helper, is installed"))
     else:
         results.append(CheckResult(
             "FAIL",

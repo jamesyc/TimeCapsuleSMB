@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import ipaddress
 import os
 import shlex
@@ -76,6 +77,38 @@ def _smbclient_env() -> dict[str, str]:
         "LC_ALL": os.environ.get("LC_ALL", os.environ.get("LANG", "C")),
     }
     return {key: value for key, value in env.items() if value}
+
+
+# Looks up a reserved name in lmhosts only, so no packet leaves this computer,
+# yet smbclient sets up its connection machinery before the lookup fails.
+SMBCLIENT_SELF_TEST_ARGS = ("-N", "--option=name resolve order=lmhosts", "-L", "//tcapsule-selftest.invalid")
+SMBCLIENT_SELF_TEST_TIMEOUT_SECONDS = 10
+
+
+@functools.cache
+def broken_smbclient_output() -> str | None:
+    """What this computer's smbclient printed when it ran but did not work,
+    or None when it works, is missing, or did not finish in time.
+
+    A working smbclient reports an NT_STATUS for the failed lookup; one that
+    crashes or cannot start reports none. A timeout proves nothing, so it does
+    not count against the tool."""
+    if not command_exists("smbclient"):
+        return None
+    try:
+        proc = run_local_capture(
+            _smbclient_base_args() + list(SMBCLIENT_SELF_TEST_ARGS),
+            timeout=SMBCLIENT_SELF_TEST_TIMEOUT_SECONDS,
+            env=_smbclient_env(),
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except OSError as exc:
+        return str(exc)
+    output = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    if "NT_STATUS_" in output:
+        return None
+    return _smbclient_text_tail(output) or f"exited with rc={proc.returncode}"
 
 
 def _smbclient_text_tail(value: object) -> str | None:

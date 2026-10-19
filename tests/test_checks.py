@@ -380,6 +380,10 @@ class CheckTests(unittest.TestCase):
                 mocks.command_exists = stack.enter_context(
                     mock.patch("timecapsulesmb.checks.doctor_steps.command_exists", return_value=True)
                 )
+            if "timecapsulesmb.checks.doctor_steps.broken_smbclient_output" not in (extra_patches or {}):
+                stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.doctor_steps.broken_smbclient_output", return_value=None)
+                )
             if not real_device_smb:
                 mocks.device_smb = stack.enter_context(mock.patch(
                     "timecapsulesmb.checks.doctor_steps._add_tunneled_authenticated_smb_results",
@@ -2037,9 +2041,9 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(
             [r.message for r in results],
             [
-                "found local tool ssh",
+                "local tool ssh is installed",
                 "missing local tool smbclient, please install smbclient on your computer",
-                "found local tool ssh-askpass, the SSH password helper",
+                "local tool ssh-askpass, the SSH password helper, is installed",
             ],
         )
 
@@ -2441,9 +2445,9 @@ class CheckTests(unittest.TestCase):
             [(r.status, r.message) for r in results],
             [
                 ("FAIL", f"missing required configuration file: {REPO_ROOT / '.env'}; run the `configure` command before running `doctor`"),
-                ("PASS", "found local tool ssh"),
+                ("PASS", "local tool ssh is installed"),
                 ("FAIL", "missing local tool smbclient, please install smbclient on your computer"),
-                ("PASS", "found local tool ssh-askpass, the SSH password helper"),
+                ("PASS", "local tool ssh-askpass, the SSH password helper, is installed"),
             ],
         )
 
@@ -2455,7 +2459,7 @@ class CheckTests(unittest.TestCase):
 
         self.assertTrue(fatal)
         self.assertEqual([r.status for r in results], ["FAIL", "PASS", "PASS", "PASS"])
-        self.assertEqual(results[1].message, "found local tool ssh")
+        self.assertEqual(results[1].message, "local tool ssh is installed")
 
     def test_run_doctor_checks_invalid_env_reports_errors_then_tools(self) -> None:
         values = self.valid_doctor_values()
@@ -7095,6 +7099,95 @@ class CheckTests(unittest.TestCase):
         # The LAN listing would only report the missing tool a second time.
         listing.assert_not_called()
         self.assertNotIn("smb_listing_failed", sections["computer"]["fail_codes"])
+
+    def broken_smbclient_patches(self) -> dict[str, object]:
+        return {
+            "timecapsulesmb.checks.doctor_steps.broken_smbclient_output": mock.Mock(return_value="BACKTRACE"),
+            "timecapsulesmb.checks.doctor_steps.find_command": mock.Mock(return_value="/opt/local/bin/smbclient"),
+        }
+
+    def test_run_doctor_checks_blames_a_smbclient_here_that_does_not_work(self) -> None:
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        debug_fields: dict[str, object] = {}
+        run = self.device_smb_run(listing, debug_fields=debug_fields, extra_patches=self.broken_smbclient_patches())
+
+        # Nothing runs smbclient against the device, through the tunnel or over the LAN.
+        listing.assert_not_called()
+        run.mocks.ssh_local_forward.assert_not_called()
+        failure = next(result for result in run.results if "does not work" in result.message and result.status == "FAIL")
+        self.assertEqual(failure.domain, "computer")
+        self.assertEqual(
+            failure.message,
+            "smbclient at /opt/local/bin/smbclient does not work; doctor cannot run its SMB checks until it does",
+        )
+        warning = next(result for result in run.results if result.details.get("code") == "device_smb_not_checked")
+        self.assertEqual((warning.status, warning.domain), ("WARN", "device"))
+        self.assertIn("smbclient on this computer does not work", warning.message)
+        sections = doctor_report(run.results)["sections"]
+        self.assertEqual(sections["device"]["status"], "warn")
+        self.assertNotIn("smb_listing_failed", sections["computer"]["fail_codes"])
+        # The tool's own output goes to telemetry, not to the user.
+        self.assertEqual(debug_fields["local_smbclient_self_test"], "BACKTRACE")
+        self.assertNotIn("BACKTRACE", failure.message)
+
+    def test_run_doctor_checks_blames_a_broken_smbclient_here_without_ssh(self) -> None:
+        # With no SSH the device's check never runs; this computer's check still says why no SMB check ran.
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="FAIL", message="ssh refused"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing,
+                **self.broken_smbclient_patches(),
+            },
+        )
+
+        listing.assert_not_called()
+        self.assertEqual(
+            [result.domain for result in run.results if result.status == "FAIL" and "does not work" in result.message],
+            ["computer"],
+        )
+
+    def test_run_doctor_checks_blames_a_broken_smbclient_here_when_the_device_does_not_answer(self) -> None:
+        # The network checks never run against a dead address; this computer's check still says why.
+        query = mock.Mock()
+        query.return_value.browse.return_value = (BonjourDiscoverySnapshot([], []), None)
+        run = self.run_doctor_with_mocks(
+            ssh_login=self.UNREACHABLE,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.BonjourQuery": query, **self.broken_smbclient_patches()},
+        )
+
+        failures = [(r.domain, r.details.get("code")) for r in run.results if r.status == "FAIL"]
+        self.assertIn(("computer", "device_unreachable"), failures)
+        self.assertEqual(
+            [r.domain for r in run.results if r.status == "FAIL" and "does not work" in r.message], ["computer"],
+        )
+
+    def test_run_doctor_checks_reports_a_missing_smbclient_once_without_ssh(self) -> None:
+        # Without SSH only the LAN checks would use smbclient, and they could only report it missing again.
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        missing = CheckResult("FAIL", "missing local tool smbclient, please install smbclient on your computer")
+        run = self.run_doctor_with_mocks(
+            local_tools=[missing],
+            ssh_login=mock.Mock(status="FAIL", message="ssh refused"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing,
+                "timecapsulesmb.checks.doctor_steps.command_exists": mock.Mock(return_value=False),
+            },
+        )
+
+        listing.assert_not_called()
+        self.assertEqual([r for r in run.results if "local tool smbclient" in r.message], [missing])
+
+    def test_run_doctor_checks_does_not_test_smbclient_when_smb_checks_are_skipped(self) -> None:
+        # Skipping the SMB checks is how people get past a broken smbclient; it must not fail doctor.
+        listing = mock.Mock(return_value=self.smb_listing_result())
+        patches = self.broken_smbclient_patches()
+        run = self.device_smb_run(listing, skip_smb=True, extra_patches=patches)
+
+        patches["timecapsulesmb.checks.doctor_steps.broken_smbclient_output"].assert_not_called()
+        self.assertFalse([result for result in run.results if "does not work" in result.message])
 
     def test_run_doctor_checks_fails_the_device_when_its_ssh_tunnel_cannot_open(self) -> None:
         # Deploy needs SSH too, so the device is not green without it.

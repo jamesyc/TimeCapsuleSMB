@@ -70,6 +70,7 @@ from timecapsulesmb.checks.smb import (
     authenticated_smb_listing_attempts,
     authenticated_smb_listing_retryable,
     authenticated_smb_listing_with_attempts,
+    broken_smbclient_output,
     check_authenticated_smb_listing,
     check_authenticated_smb_file_ops_detailed,
 )
@@ -158,7 +159,7 @@ from timecapsulesmb.discovery.bonjour import (
 from timecapsulesmb.discovery.devices import device_candidates_from_records
 from timecapsulesmb.discovery.models import normalize_airport_mac
 
-from timecapsulesmb.transport.local import command_exists, find_free_local_port
+from timecapsulesmb.transport.local import command_exists, find_command, find_free_local_port
 from timecapsulesmb.transport.local import scoped_tcp_connect_errors
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, ssh_local_forward
@@ -3352,6 +3353,9 @@ def _doctor_check_device_smb(
     if not command_exists("smbclient"):
         sink.add(_device_smb_not_checked("smbclient is missing on this computer (see this computer's checks)"))
         return DEVICE_SMB_BLOCKED
+    if broken_smbclient_output() is not None:
+        sink.add(_device_smb_not_checked("smbclient on this computer does not work (see this computer's checks)"))
+        return DEVICE_SMB_BLOCKED
     if password_match is False:
         sink.add(_device_smb_not_checked(
             "the saved password is not the AirPort admin password, so Samba would reject it (see this computer's checks)"
@@ -3370,6 +3374,22 @@ def _doctor_check_device_smb(
     )
 
 
+def _doctor_check_local_smbclient(inputs: DoctorInputs, sink: DoctorSink) -> None:
+    """Every SMB check runs this computer's smbclient; one that does not work
+    is reported once here, and those checks are left out."""
+    if inputs.options.skip_smb:
+        return
+    broken_output = broken_smbclient_output()
+    if broken_output is None:
+        return
+    if sink.debug_fields is not None:
+        sink.debug_fields["local_smbclient_self_test"] = broken_output
+    sink.add(CheckResult(
+        "FAIL",
+        f"smbclient at {find_command('smbclient')} does not work; doctor cannot run its SMB checks until it does",
+    ))
+
+
 def _doctor_check_authenticated_smb(
     inputs: DoctorInputs,
     target: DoctorTarget,
@@ -3384,11 +3404,14 @@ def _doctor_check_authenticated_smb(
 ) -> None:
     # A stuck smbd is reported by the device's own SMB check. Whatever kept that
     # check from running (a saved password Samba rejects or that is known not
-    # to match, no smbclient here) would only fail again here.
+    # to match, no smbclient here) would only fail again here. This computer's
+    # checks already report a missing or broken smbclient, even without SSH.
     if inputs.options.skip_smb:
         sink.add(CheckResult("SKIP", SMB_CHECKS_SKIPPED_MESSAGE, {"code": DOCTOR_CODE_SMB_CHECKS_SKIPPED}))
         return
     if processes.smbd_stuck or device_smb == DEVICE_SMB_BLOCKED:
+        return
+    if not command_exists("smbclient") or broken_smbclient_output() is not None:
         return
 
     _add_authenticated_smb_results(
