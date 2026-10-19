@@ -513,6 +513,14 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="deploy",
     ),
+    # services.deploy raises it only when the connection to the device was lost
+    # while the old runtime was stopped and the install unfinished.
+    ("deploy", "install_interrupted"): RecoveryInfo(
+        "Install interrupted",
+        "The install was interrupted. Run “Install / Update Samba” again to complete the install.",
+        (),
+        retryable=True,
+    ),
     ("flash", "secondary_bank_invalid"): RecoveryInfo(
         "Backup firmware bank is damaged",
         "The secondary (backup) firmware bank is not a valid copy, so patching the primary bank is refused: "

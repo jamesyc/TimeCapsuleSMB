@@ -809,6 +809,8 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Er is een HFS-volume gekoppeld, maar het apparaat wilde het niet gekoppeld houden voor TimeCapsuleSMB, waardoor het tijdens het installeren ontkoppeld zou kunnen worden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Wacht een minuut en voer ‘Samba installeren / bijwerken’ daarna opnieuw uit.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Herstart het apparaat als dit blijft gebeuren.";
+"backend.recovery.deploy.install_interrupted.title" = "Installatie onderbroken";
+"backend.recovery.deploy.install_interrupted.message" = "De installatie is onderbroken. Voer ‘Samba installeren / bijwerken’ opnieuw uit om de installatie te voltooien.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Een map op de schijf kan niet worden gelezen";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Het apparaat kon de inhoud van een map die de Samba-metadatamigratie moet lezen niet ophalen; het logboek van de bewerking noemt de map. Samba is voor de installatie gestopt en is nu niet actief.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Voer ‘Schijfreparatie’ uit op de schijf en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";

@@ -809,6 +809,8 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Том HFS смонтирован, но устройство отказалось удерживать его смонтированным для TimeCapsuleSMB, поэтому во время установки он может быть размонтирован.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Подождите минуту, затем снова запустите «Установить/обновить Samba».";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Если это повторяется, перезагрузите устройство.";
+"backend.recovery.deploy.install_interrupted.title" = "Установка прервана";
+"backend.recovery.deploy.install_interrupted.message" = "Установка была прервана. Снова запустите «Установить/обновить Samba», чтобы завершить установку.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Не удается прочитать папку на диске";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Устройство не смогло получить содержимое папки, которую должен прочитать перенос метаданных Samba; папка указана в журнале операции. Samba остановлен на время установки и сейчас не работает.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Запустите «Исправление диска» для этого диска, затем снова запустите «Установить/обновить Samba».";

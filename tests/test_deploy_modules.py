@@ -7,6 +7,7 @@ import tempfile
 import os
 import plistlib
 import unittest
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -138,6 +139,7 @@ from timecapsulesmb.services.deploy import (
     DeployDeviceError,
     DeployPayloadContext,
     DeployRuntimeConfig,
+    INSTALL_INTERRUPTED_MESSAGE,
     PreparedDeployPlan,
     _oversized_summaries,
     _share_path,
@@ -1498,6 +1500,100 @@ class DeployModuleTests(unittest.TestCase):
 
         upload.assert_not_called()
         migrate.assert_not_called()
+
+    def _deploy_failing(self, *, master_alive: bool, error: BaseException | None = None, step: str | None = None,
+                        stage: str | None = None, migrate=None, wait_for_previous=None):
+        """Run a deploy whose remote actions, upload or flush (step) raise error
+        in the given stage, with the shared SSH connection up or gone at the
+        failure. Returns the exception raised, the master check and the stage
+        the deploy was in when it failed."""
+        connection = SshConnection("host", "pw", "-o foo")
+        alive = mock.Mock(return_value=master_alive)
+        stages: list[str] = []
+
+        def fails(name):
+            def call(*_args, **_kwargs):
+                if step == name and stages[-1] == stage:
+                    raise error
+            return call
+
+        with ExitStack() as patches, self.assertRaises(Exception) as caught:
+            patches.enter_context(mock.patch("timecapsulesmb.services.deploy.ssh_master_alive", alive))
+            patches.enter_context(
+                mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes", fails("flush")))
+            if wait_for_previous is not None:
+                patches.enter_context(
+                    mock.patch("timecapsulesmb.services.deploy.wait_for_previous_migration", wait_for_previous))
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}), connection, self._prepared_deploy_plan(), DeployRuntimeConfig(),
+                callbacks=OperationCallbacks(set_stage=stages.append),
+                run_remote_actions_func=fails("actions"),
+                upload_payload_func=fails("upload"),
+                migrate_xattrs_func=migrate or mock.Mock(return_value=XattrMigrationResult("migration=complete", ())),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+            )
+        return caught.exception, alive, stages[-1] if stages else None
+
+    def test_a_connection_lost_mid_install_says_to_run_the_install_again(self) -> None:
+        dropped = SshError("ssh command failed with rc=255")
+        lost_migration = MigrationExitError("exit status 255", 255)
+        # Every step from stopping the old runtime to flushing the boot hook,
+        # in the stage the deploy must be in when it fails.
+        points = (
+            {"step": "actions", "stage": "pre_upload_actions"},
+            {"step": "flush", "stage": "pre_upload_actions"},
+            {"step": "upload", "stage": "upload_xattr_migrator"},
+            {"migrate": mock.Mock(side_effect=lost_migration), "stage": "migrate_xattrs_copy"},
+            {"step": "actions", "stage": "replace_software"},
+            {"step": "upload", "stage": "upload_payload"},
+            {"step": "flush", "stage": "flush_payload_upload"},
+            {"step": "upload", "stage": "enable_boot"},
+            {"step": "flush", "stage": "flush_boot_hook"},
+        )
+        for point in points:
+            migration = "migrate" in point
+            for master_alive in (False, True):
+                with self.subTest(step=point.get("step", "migrate"), stage=point["stage"], master_alive=master_alive):
+                    error, alive, failed_in = self._deploy_failing(
+                        master_alive=master_alive, error=dropped, **point)
+                    self.assertEqual(failed_in, point["stage"])
+                    alive.assert_called_once()
+                    if master_alive:
+                        # Our own command killing its shell also makes ssh exit
+                        # 255, but the shared connection survives: the failure
+                        # keeps its own message.
+                        if migration:
+                            self.assertEqual(error.code, "xattr_migration_connection_lost")
+                        else:
+                            self.assertIs(error, dropped)
+                        continue
+                    self.assertIsInstance(error, DeployDeviceError)
+                    self.assertEqual(error.code, "install_interrupted")
+                    self.assertEqual(str(error), INSTALL_INTERRUPTED_MESSAGE)
+                    # The cause stays attached for diagnostics.
+                    if migration:
+                        self.assertEqual(error.__cause__.code, "xattr_migration_connection_lost")
+                    else:
+                        self.assertIs(error.__cause__, dropped)
+
+    def test_a_timeout_mid_install_keeps_its_own_message_with_the_connection_gone(self) -> None:
+        # A failing disk shows up as a timeout; it is not an interrupted install.
+        timeout = SshCommandTimeout("Timed out waiting for ssh")
+        error, alive, failed_in = self._deploy_failing(
+            master_alive=False, error=timeout, step="flush", stage="flush_payload_upload")
+        self.assertIs(error, timeout)
+        self.assertEqual(failed_in, "flush_payload_upload")
+        alive.assert_not_called()
+
+    def test_a_connection_lost_before_the_install_starts_keeps_its_own_message(self) -> None:
+        # Nothing on the device has changed before the old runtime stops.
+        dropped = SshError("ssh command failed with rc=255")
+        error, alive, failed_in = self._deploy_failing(
+            master_alive=False, wait_for_previous=mock.Mock(side_effect=dropped))
+        self.assertIs(error, dropped)
+        self.assertIsNone(failed_in)
+        alive.assert_not_called()
 
     def test_upload_and_verify_waits_for_a_previous_migration_before_inventory(self) -> None:
         prepared_plan = self._prepared_deploy_plan()

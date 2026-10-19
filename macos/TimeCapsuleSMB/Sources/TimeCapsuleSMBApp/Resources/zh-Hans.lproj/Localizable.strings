@@ -809,6 +809,8 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "HFS 卷已挂载，但设备拒绝为 TimeCapsuleSMB 保持其挂载状态，因此它可能会在安装 / 更新过程中被卸载。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "等待一分钟，然后重新运行“安装 / 更新 Samba”。";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "如果此问题反复出现，请重启设备。";
+"backend.recovery.deploy.install_interrupted.title" = "安装已中断";
+"backend.recovery.deploy.install_interrupted.message" = "安装已中断。请再次运行“安装 / 更新 Samba”以完成安装。";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "无法读取磁盘上的文件夹";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Samba 元数据迁移必须读取一个文件夹，但设备无法列出其内容；操作日志中列出了该文件夹。Samba 已为安装而停止，目前未运行。";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "对该磁盘运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";

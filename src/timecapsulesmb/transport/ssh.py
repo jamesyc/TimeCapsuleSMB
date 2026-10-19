@@ -134,6 +134,7 @@ SSH_CONTROL_PERSIST_SECONDS = 180
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 15
 SSH_SERVER_ALIVE_COUNT_MAX = 6
 SSH_CONTROL_EXIT_TIMEOUT_SECONDS = 5
+SSH_MASTER_CHECK_TIMEOUT_SECONDS = 5
 # A session over a master never authenticates itself, so its log has no
 # "Authenticated to" line; at DEBUG1 ssh logs this line for it instead.
 SSH_MUX_SESSION_MARKER = "mux_client_request_session: master session id:"
@@ -609,6 +610,32 @@ def close_ssh_masters(host: str | None = None) -> None:
             pass
     if directory is not None:
         shutil.rmtree(directory, ignore_errors=True)
+
+
+def ssh_master_alive(connection: SshConnection) -> bool:
+    """Whether the device's shared SSH connection is still up.
+
+    A session over the master never touches the network itself, so a lost
+    connection (this computer slept, the link dropped, the device went away)
+    always takes the master with it. A remote shell killed by a signal also
+    makes ssh exit 255, but leaves the master running. A check that cannot run
+    counts as alive. A command on another thread can open a new master once the
+    old one is gone; that also reads as alive. It assumes the connection's
+    commands run over a master: every shared command does (ControlMaster=auto),
+    and close_ssh_masters only runs before a reboot or at exit.
+    """
+    try:
+        proc = run_process(
+            ["ssh", "-F", "/dev/null", "-o", f"ControlPath={_control_path(connection)}", "-O", "check", "tcsmb-master"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=SSH_MASTER_CHECK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return proc.returncode == 0
 
 
 def _connection_ssh_args(

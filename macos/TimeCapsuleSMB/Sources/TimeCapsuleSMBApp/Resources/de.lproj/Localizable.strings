@@ -809,6 +809,8 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Ein HFS-Volume ist eingebunden, aber das Gerät hat es abgelehnt, es für TimeCapsuleSMB eingebunden zu halten; es könnte daher während der Installation / Aktualisierung ausgehängt werden.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Warten Sie eine Minute und führen Sie dann „Samba installieren / aktualisieren“ erneut aus.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Starten Sie das Gerät neu, wenn dies weiterhin passiert.";
+"backend.recovery.deploy.install_interrupted.title" = "Installation unterbrochen";
+"backend.recovery.deploy.install_interrupted.message" = "Die Installation wurde unterbrochen. Führen Sie „Samba installieren / aktualisieren“ erneut aus, um die Installation abzuschließen.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Ein Ordner auf der Festplatte kann nicht gelesen werden";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Das Gerät konnte den Inhalt eines Ordners nicht auflisten, den die Samba-Metadaten-Migration lesen muss; das Vorgangsprotokoll nennt den Ordner. Samba wurde für die Installation beendet und läuft gerade nicht.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Führen Sie die „Festplattenreparatur“ für die Festplatte und danach erneut „Samba installieren / aktualisieren“ aus.";

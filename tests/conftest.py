@@ -102,6 +102,15 @@ def block_real_acpd_network_reads(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def ssh_master_still_up(monkeypatch: pytest.MonkeyPatch):
+    # A deploy that fails mid-install asks whether its shared SSH connection
+    # survived; tests have no real one. They answer "up", so the failure keeps
+    # its own message; a test of a lost connection patches it to False.
+    monkeypatch.setattr("timecapsulesmb.services.deploy.ssh_master_alive", lambda _connection: True)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def device_password_matches(monkeypatch: pytest.MonkeyPatch):
     # Commands that reboot read the device over network ACP first, which checks
     # the admin password. Tests answer "match"; a test that needs another answer

@@ -809,6 +809,8 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "HFS tomas prijungtas, bet įrenginys nesutiko išlaikyti jo prijungto TimeCapsuleSMB reikmėms, todėl diegimo metu jis galėtų būti atjungtas.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Palaukite minutę, tada bandykite diegti dar kartą.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Jei tai kartojasi, paleiskite įrenginį iš naujo.";
+"backend.recovery.deploy.install_interrupted.title" = "Diegimas pertrauktas";
+"backend.recovery.deploy.install_interrupted.message" = "Diegimas buvo pertrauktas. Dar kartą paleiskite „Įdiegti / atnaujinti Samba“, kad užbaigtumėte diegimą.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "Nepavyksta perskaityti aplanko diske";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "Samba metaduomenų perkėlimas turi perskaityti aplanką, bet įrenginys negalėjo išvardyti jo turinio; aplankas nurodytas operacijos žurnale. Samba buvo sustabdyta diegimui ir dabar neveikia.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Paleiskite operaciją „Disko taisymas“ šiam diskui, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";

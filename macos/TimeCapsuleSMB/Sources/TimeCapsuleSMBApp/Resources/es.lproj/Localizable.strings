@@ -809,6 +809,8 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "Hay un volumen HFS montado, pero el dispositivo no aceptó mantenerlo montado para TimeCapsuleSMB, por lo que podría desmontarse durante la instalación.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Espere un minuto y vuelva a ejecutar «Instalar / actualizar Samba».";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Reinicie el dispositivo si esto sigue ocurriendo.";
+"backend.recovery.deploy.install_interrupted.title" = "Instalación interrumpida";
+"backend.recovery.deploy.install_interrupted.message" = "La instalación se interrumpió. Vuelva a ejecutar «Instalar / actualizar Samba» para completar la instalación.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "No se puede leer una carpeta del disco";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "El dispositivo no pudo listar el contenido de una carpeta que la migración de metadatos de Samba debe leer; el registro de la operación indica la carpeta. Samba se detuvo para la instalación y ahora no está en ejecución.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Ejecute «Reparación de disco» en el disco y después vuelva a ejecutar «Instalar / actualizar Samba».";

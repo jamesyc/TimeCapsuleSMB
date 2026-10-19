@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 import shlex
@@ -117,6 +117,7 @@ from timecapsulesmb.transport.ssh import (
     SshConnection,
     run_ssh,
     run_ssh_capture_bytes,
+    ssh_master_alive,
     upload_timeout_seconds,
 )
 from timecapsulesmb.transport.errors import SshError, SshUploadTimeout, TransportError, is_ssh_timeout_error
@@ -153,6 +154,11 @@ DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_BOOT_SOURCE,
 })
+# The CLI prints it and the app shows it as the error line; the app's recovery
+# message is its own catalog copy (backend.recovery.deploy.install_interrupted).
+INSTALL_INTERRUPTED_MESSAGE = (
+    'The install was interrupted. Run "Install / Update Samba" (tcapsule deploy) again to complete the install.'
+)
 MANAGER_STOP_TIMEOUT_MESSAGE = (
     "A service on the device is stuck, often due to a failing disk. "
     "Unplug the device, plug it back in, and try again."
@@ -696,6 +702,24 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
     if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
         return "upload_runtime_config"
     return "upload_payload"
+
+
+@contextmanager
+def _report_interrupted_install(connection: SshConnection) -> Iterator[None]:
+    """Name a lost connection as an interrupted install.
+
+    From the stop of the old runtime until the boot hook is flushed, the device
+    shares nothing until an install finishes. Timeouts keep their own message:
+    a failing disk shows up as one. A failure the device reported, or our own
+    command killing its shell, leaves the shared connection up and keeps its
+    own message too.
+    """
+    try:
+        yield
+    except Exception as exc:
+        if is_ssh_timeout_error(exc) or ssh_master_alive(connection):
+            raise
+        raise DeployDeviceError(INSTALL_INTERRUPTED_MESSAGE, code="install_interrupted") from exc
 
 
 def _manager_stop_timed_out(exc: BaseException) -> bool:
@@ -1329,6 +1353,7 @@ def upload_and_verify_deployment_payload(
             boot_assets,
         )
         callbacks.stage("pre_upload_actions")
+        boot_assets.enter_context(_report_interrupted_install(connection))
         try:
             run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
         except Exception as exc:

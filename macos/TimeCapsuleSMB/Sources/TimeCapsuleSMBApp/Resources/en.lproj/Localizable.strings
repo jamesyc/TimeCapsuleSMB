@@ -807,6 +807,8 @@
 "backend.recovery.deploy.deploy_disk_not_confirmed.message" = "An HFS volume is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be unmounted during the install.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.1" = "Wait a minute, then run “Install / Update Samba” again.";
 "backend.recovery.deploy.deploy_disk_not_confirmed.action.2" = "Restart the device if this keeps happening.";
+"backend.recovery.deploy.install_interrupted.title" = "Install interrupted";
+"backend.recovery.deploy.install_interrupted.message" = "The install was interrupted. Run “Install / Update Samba” again to complete the install.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.title" = "A folder on the disk cannot be read";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.message" = "The device could not list the contents of a folder the Samba metadata migration must read; the operation log names the folder. Samba was stopped for the install and is not running now.";
 "backend.recovery.deploy.xattr_migration_unreadable_folder.action.1" = "Run “Disk Repair” on the disk, then run “Install / Update Samba” again.";

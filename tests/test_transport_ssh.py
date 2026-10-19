@@ -1262,6 +1262,26 @@ class SharedConnectionTests(unittest.TestCase):
         for call in run.call_args_list:
             self.assertEqual(call.kwargs["timeout"], ssh_transport.SSH_CONTROL_EXIT_TIMEOUT_SECONDS)
 
+    def test_master_alive_asks_the_connections_own_master(self) -> None:
+        connection = ssh_transport.SshConnection("root@10.0.0.2", "pw", "")
+        path = self.make_master("root@10.0.0.2")
+        for outcome, alive in (
+            (subprocess.CompletedProcess(["ssh"], 0), True),
+            # ssh -O check exits 255 when no master answers on the socket.
+            (subprocess.CompletedProcess(["ssh"], 255), False),
+            # A check that cannot run must not claim a lost connection.
+            (subprocess.TimeoutExpired("ssh", 5), True),
+            (OSError("no ssh"), True),
+        ):
+            with self.subTest(outcome=outcome):
+                kwargs = {"side_effect": outcome} if isinstance(outcome, BaseException) else {"return_value": outcome}
+                with mock.patch("timecapsulesmb.transport.ssh.run_process", **kwargs) as run:
+                    self.assertIs(ssh_transport.ssh_master_alive(connection), alive)
+                command = run.call_args.args[0]
+                self.assertEqual(command[command.index("-o") + 1], f"ControlPath={path}")
+                self.assertEqual(command[-3:-1], ["-O", "check"])
+                self.assertEqual(run.call_args.kwargs["timeout"], ssh_transport.SSH_MASTER_CHECK_TIMEOUT_SECONDS)
+
 
 class MigrationInputTransportTests(unittest.TestCase):
     # The local ssh capability checks are cached for the process. Unpatched,
