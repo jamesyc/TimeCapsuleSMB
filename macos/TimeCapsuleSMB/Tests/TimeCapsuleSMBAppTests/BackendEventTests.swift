@@ -121,6 +121,26 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.localizedSummary, "deploy: No AirPort ACP service responded at 10.0.1.1:5009.")
     }
 
+    func testOperationLogLinesStayEnglishInEveryLanguage() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .german)
+
+        let events = [
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload"),
+            BackendEvent(type: "result", operation: "deploy", ok: false, payload: .object([:])),
+            BackendEvent(type: "result", operation: "deploy", ok: true, payload: testSummaryPayload("Deployment completed.", key: "deploy_completed")),
+            BackendEvent(type: "error", operation: "doctor", code: "auth_failed", message: "Password rejected."),
+        ]
+
+        XCTAssertEqual(events.map(\.logLine), [
+            "deploy: upload_payload",
+            "deploy: failed",
+            "Deployment completed.",
+            "doctor: Password rejected.",
+        ])
+    }
+
     func testOnlyErrorEventsHaveAnActivityStripErrorLine() {
         let stage = BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload")
         let result = BackendEvent(type: "result", operation: "deploy", ok: false, payload: .object([:]))
@@ -189,14 +209,20 @@ final class BackendEventTests: XCTestCase {
     func testKnownErrorsAreTranslatedForTheActivityStripButNotTheOperationLog() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
-        let event = BackendEvent(type: "error", operation: "doctor", code: "auth_failed", message: "Password rejected.")
+        let event = BackendEvent(
+            type: "error",
+            operation: "doctor",
+            code: "auth_failed",
+            message: "Password rejected.",
+            recovery: recoveryValue(title: "Authentication failed", actions: [], localizationKey: "auth_failed")
+        )
 
         L10n.apply(language: .english)
-        XCTAssertEqual(event.localizedErrorLine, "Checkup: The device rejected the supplied password or SSH credentials.")
+        XCTAssertEqual(event.localizedErrorLine, "Checkup: Authentication failed")
         XCTAssertEqual(event.localizedSummary, "doctor: Password rejected.")
 
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertEqual(event.localizedErrorLine, "检查：设备拒绝了提供的密码或 SSH 凭据。")
+        XCTAssertEqual(event.localizedErrorLine, "检查：身份验证失败")
         XCTAssertEqual(event.localizedSummary, "doctor：Password rejected.")
     }
 

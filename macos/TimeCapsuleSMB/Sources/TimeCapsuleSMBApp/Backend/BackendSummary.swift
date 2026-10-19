@@ -255,9 +255,9 @@ extension DoctorCheckPayload {
         // The helper's text names ports and the connect error; the dashboard
         // shows the moved-device or SSH banner beside this row.
         case "ssh_disabled":
-            return L10n.string("backend.error.ssh_disabled")
+            return L10n.string("doctor.check.ssh_disabled")
         case "device_unreachable":
-            return L10n.string("backend.error.device_unreachable")
+            return L10n.string("doctor.check.device_unreachable")
         case "mac_smb3_disabled":
             guard let path = details.stringValue(for: "path") else { return message }
             return L10n.format("doctor.check.mac_smb3_disabled", path)

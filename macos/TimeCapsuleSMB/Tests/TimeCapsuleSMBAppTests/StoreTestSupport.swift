@@ -547,6 +547,14 @@ func waitUntilStoreState(
     }
 }
 
+/// An error as the helper sends it: with the guidance its code has, under
+/// app/recovery.py's localization key for it.
+func helperError(operation: String, code: String, message: String, localizationKey: String? = nil) throws -> BackendErrorViewModel {
+    let recovery = try recoveryValue(title: code, actions: [], localizationKey: localizationKey ?? code)
+        .decode(BackendRecoveryPayload.self)
+    return BackendErrorViewModel(operation: operation, code: code, message: message, recovery: recovery)
+}
+
 func recoveryValue(
     title: String,
     actions: [String],

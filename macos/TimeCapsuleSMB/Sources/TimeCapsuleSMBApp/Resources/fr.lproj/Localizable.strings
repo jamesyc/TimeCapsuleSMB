@@ -304,6 +304,8 @@
 "doctor.check.client_on_unshared_network" = "Ce Mac est sur un réseau où l’appareil ne partage pas ses disques, comme son côté Internet (WAN) ou son réseau invité. Connectez ce Mac au réseau principal de l’appareil en Wi-Fi ou par l’un de ses ports LAN, puis relancez « Vérification ».";
 "doctor.check.mac_smb3_disabled" = "%@ désactive SMB 3 (protocol_vers_map), alors que Time Machine en a besoin. Supprimez cette ligne, puis retirez le disque dans les réglages Time Machine et ajoutez-le à nouveau.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ désactive SMB 3 pour le serveur [%2$@]. S’il s’agit de cet appareil, supprimez cette ligne, puis retirez le disque dans les réglages Time Machine et ajoutez-le à nouveau.";
+"doctor.check.ssh_disabled" = "SSH est désactivé sur cet appareil.";
+"doctor.check.device_unreachable" = "L’appareil ne répond ni par SSH ni par AirPort ACP.";
 "doctor.domain.this_mac" = "Ce Mac";
 "doctor.domain.device" = "Appareil";
 "event.summary.check" = "%@ %@";
@@ -637,46 +639,6 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Vérifiez que l’adresse IP est celle de la Time Capsule ou de l’AirPort.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Confirmez que vous êtes sur le même réseau que l’appareil.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Utilisez la découverte ou saisissez l’adresse IP LAN actuelle.";
-"backend.error.auth_failed" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
-"backend.error.configure.auth_failed" = "Le mot de passe administrateur AirPort n’a pas fonctionné.";
-"backend.error.deploy.deploy_no_disk_detected" = "Aucun disque interne n’a été détecté. Vérifiez que le disque est connecté et bien inséré. Remarque : certains appareils ne peuvent pas détecter complètement certains disques de plus de 2 To.";
-"backend.error.deploy.deploy_no_usb_disk_detected" = "Aucun disque USB n’a été détecté. L’AirPort Extreme n’a pas de disque interne : connectez un disque USB formaté pour Mac (HFS+), puis réessayez.";
-"backend.error.deploy.deploy_no_hfs_partition" = "Un disque a été trouvé, mais aucune partition HFS valide. Réessayez ou effacez le disque avec Utilitaire AirPort pour le formater pour Time Capsule. Certains appareils ne reconnaissent pas certaines partitions de plus de 2 To.";
-"backend.error.deploy.deploy_disk_not_writable" = "Un disque HFS valide a été trouvé, mais TimeCapsuleSMB n’a pas pu y écrire les fichiers d’installation. Sortez le disque de veille ou remontez-le, vérifiez l’espace libre, puis réessayez.";
-"backend.error.deploy.deploy_disk_not_mounted" = "Un disque HFS valide a été trouvé, mais il n’est pas monté, et l’appareil ne l’a pas monté quand on le lui a demandé. Patientez une minute, puis réessayez, ou redémarrez l’appareil.";
-"backend.error.deploy.deploy_disk_not_confirmed" = "Un disque HFS valide est monté, mais l’appareil a refusé de le garder monté pour TimeCapsuleSMB : il pourrait donc être démonté pendant l’installation. Patientez une minute, puis réessayez, ou redémarrez l’appareil.";
-"backend.error.deploy.xattr_migration_unreadable_folder" = "L’appareil n’a pas pu lire un dossier du disque ; la migration des métadonnées Samba a donc échoué. Le journal de l’opération indique le dossier ; lancez « Réparation de disque », puis relancez « Installer / mettre à jour Samba ».";
-"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "L’appareil n’a pas pu lire un dossier du disque ; la migration des métadonnées Samba a donc échoué. Le journal de l’opération indique le dossier ; lancez « Réparation de disque », puis relancez « Installer / mettre à jour Samba ».";
-"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB n’est pas installé sur cet appareil. Lancez d’abord « Installer / mettre à jour Samba ».";
-"backend.error.flash.secondary_bank_invalid" = "Le correctif a été refusé car la banque de firmware de secours (secondaire) est endommagée. Choisissez « Planifier la restauration » pour la réécrire avec le firmware Apple, puis choisissez « Sauvegarder et inspecter à nouveau » et appliquez le correctif.";
-"backend.error.flash.secondary_bank_read_mismatch" = "La banque de firmware de secours (secondaire) a été lue différemment dans cette sauvegarde et lors de la vérification par l’appareil lui-même : elle n’a donc pas été réécrite et le correctif a été refusé. Choisissez « Sauvegarder et inspecter ».";
-"backend.error.activate.runtime_outdated" = "Le TimeCapsuleSMB installé sur cet appareil est trop ancien pour que cette app puisse le démarrer. Lancez d’abord « Installer / mettre à jour Samba ».";
-"backend.error.activate.client_outdated" = "Le TimeCapsuleSMB installé sur cet appareil est issu d’une version majeure plus récente que celle de cette app. Mettez à jour TimeCapsuleSMB, puis réessayez.";
-"backend.error.ssh_enable_timeout" = "L’appareil a accepté le réglage, mais SSH n’est pas encore disponible. Patientez quelques minutes (ou redémarrez l’appareil), puis réessayez.";
-"backend.error.disk_write_test_unresponsive" = "Le disque n’a pas répondu au test. Il est peut-être défaillant ou incapable de se mettre en rotation. Lancez « Réparation de disque » ; si le problème persiste, il faudra peut-être le remplacer.";
-"backend.error.manager_stop_timeout" = "Un service de l’appareil est bloqué, souvent à cause d’un disque défaillant. Débranchez l’appareil, rebranchez-le, puis réessayez.";
-"backend.error.previous_migration_stalled" = "Une migration des métadonnées laissée sur l’appareil par une installation précédente ne progresse plus, souvent à cause d’un disque défaillant. Débranchez l’appareil, rebranchez-le, puis réessayez.";
-"backend.error.payload_upload_timeout" = "Le délai de copie des fichiers d’installation SMB a expiré. Le disque est peut-être défaillant ou incapable de se mettre en rotation, ou la connexion réseau à l’appareil est peut-être trop lente, par exemple une liaison Wi-Fi faible. Lancez « Réparation de disque », ou connectez ce Mac ou l’appareil en Ethernet, puis réessayez. Si le problème persiste, il faudra peut-être remplacer le disque.";
-"backend.error.ssh_disabled" = "SSH est désactivé sur cet appareil.";
-"backend.error.device_unreachable" = "L’appareil ne répond ni par SSH ni par AirPort ACP.";
-"backend.error.local_network_filtered" = "Ce Mac a interrompu la connexion avant qu’elle n’atteigne l’appareil. Un VPN, un coupe-feu ou un logiciel de sécurité filtre le trafic du réseau local.";
-"backend.error.acp_no_route" = "macOS a refusé la connexion à l’appareil. TimeCapsuleSMB n’a peut-être pas accès au réseau local, ou un VPN, un coupe-feu ou un logiciel de sécurité bloque peut-être le trafic du réseau local.";
-"backend.error.device_off_network" = "L’adresse de l’appareil n’est pas sur le réseau de ce Mac. Vérifiez l’adresse, ou connectez ce Mac au réseau de l’appareil en Wi-Fi ou par l’un de ses ports LAN, puis réessayez.";
-"backend.error.reboot_not_started" = "L’appareil n’a pas redémarré après la demande de redémarrage.";
-"backend.error.reboot_not_finished" = "L’appareil n’est pas revenu après son redémarrage.";
-"backend.error.acpd_broken" = "Apple ACPd est bloqué sur l’appareil.";
-"backend.error.acp_unreachable" = "Ce Mac ne peut pas accéder à AirPort ACP sur l’appareil.";
-"backend.error.ssh_still_enabled" = "SSH est toujours activé après le redémarrage ; la désactivation n’a pas pris effet.";
-"backend.error.payload_missing_from_disk" = "Les fichiers Samba sont absents de tous les disques de l’appareil, comme après « Effacer le disque » dans Utilitaire AirPort. Lancez « Installer / mettre à jour Samba » pour réinstaller.";
-"backend.error.payload_damaged_on_disk" = "Les fichiers Samba du disque de l’appareil sont endommagés et ne correspondent plus à ce qui a été installé. Lancez « Installer / mettre à jour Samba » pour réinstaller.";
-"backend.error.rsync_missing_from_disk" = "Les fichiers rsync sont absents du disque : rsync est arrêté. Le partage de fichiers et Time Machine continuent de fonctionner. Lancez « Installer / mettre à jour Samba » pour réinstaller.";
-"backend.error.rsync_damaged_on_disk" = "Le fichier rsync du disque est endommagé et ne correspond plus à ce qui a été installé : rsync est arrêté. Le partage de fichiers et Time Machine continuent de fonctionner. Lancez « Installer / mettre à jour Samba » pour réinstaller.";
-"backend.error.rsync_not_running" = "Le partage de fichiers et Time Machine fonctionnent, mais rsync n’a pas démarré. Lancez « Vérification » pour en savoir plus.";
-"backend.error.disk_failing" = "Le disque de l’appareil a signalé des erreurs qu’il n’a pas pu corriger : il est probablement défaillant et le partage de fichiers est arrêté. Une réinstallation ne réparera pas le disque.";
-"backend.error.deploy.disk_failing" = "L’installation est terminée, mais le disque de l’appareil a ensuite signalé des erreurs qu’il n’a pas pu corriger : il est probablement défaillant et le partage de fichiers est arrêté. Réinstaller ne réparera pas le disque.";
-"backend.error.fsck.runtime_not_restarted" = "La réparation du disque est terminée, mais le partage de fichiers n’a pas repris après le redémarrage de l’appareil.";
-"backend.error.fsck.fsck_already_running" = "Une réparation de disque précédente est toujours en cours sur l’appareil. Laissez la Time Capsule branchée, attendez qu’elle se termine, puis relancez « Réparation de disque ».";
-"backend.error.fsck.fsck_session_dropped" = "La connexion a été interrompue pendant la réparation du disque. La réparation continue sur l’appareil : laissez la Time Capsule branchée et ne la redémarrez pas.";
 "backend.recovery.auth_failed.title" = "Authentification échouée";
 "backend.recovery.auth_failed.message" = "L’appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.recovery.auth_failed.action.1" = "Saisissez à nouveau le mot de passe administrateur AirPort.";
@@ -1268,7 +1230,6 @@
 "settings.standby" = "Veille ATA";
 
 // Discovery validation and permission recovery.
-"backend.error.discovery_timeout_too_short" = "Le délai de découverte doit être d’au moins 5 secondes.";
 "discovery.permission_unknown" = "L’accès au réseau local n’a pas pu être confirmé. La découverte va continuer.";
 "backend.recovery.discover.discovery_timeout_too_short.title" = "Échec de la validation de la requête";
 "backend.recovery.discover.discovery_timeout_too_short.message" = "Un ou plusieurs paramètres de l’opération étaient manquants ou non valides.";
@@ -1279,13 +1240,11 @@
 "backend.recovery.discover.local_network_permission_denied.action.1" = "Ouvrez « Réglages Système » > « Confidentialité et sécurité » > « Réseau local ».";
 "backend.recovery.discover.local_network_permission_denied.action.2" = "Activez TimeCapsuleSMB dans « Réseau local ».";
 "backend.recovery.discover.local_network_permission_denied.action.3" = "Autorisez l’accès, puis relancez la découverte.";
-"backend.error.discover.local_network_permission_denied" = "macOS empêche TimeCapsuleSMB d’accéder aux appareils de votre réseau local.";
 
 // Appliance identity and explicit reconnect.
 "discovery.identity_unverified" = "L’identité de l’appareil n’a pas pu être confirmée. Actualisez la recherche et reconnectez l’appareil enregistré.";
 "discovery.identity_conflict" = "Plusieurs appareils enregistrés correspondent à cet appareil. Vérifiez les appareils enregistrés et utilisez « Oublier » pour supprimer les doublons.";
 "discovery.reconnect_existing" = "Reconnecter l’appareil enregistré « %@ »";
-"backend.error.device_identity_mismatch" = "L’identité de l’appareil n’a pas pu être confirmée. Actualisez la recherche et reconnectez l’appareil enregistré.";
 "backend.recovery.device_identity_mismatch.title" = "L’identité de l’appareil n’a pas pu être confirmée";
 "backend.recovery.device_identity_mismatch.message" = "L’appareil à cette adresse ne s’est pas identifié comme l’appareil enregistré.";
 "backend.recovery.device_identity_mismatch.action.1" = "Actualisez la recherche et reconnectez l’appareil enregistré.";
@@ -1295,7 +1254,6 @@
 
 "discovery.reconnect_selected" = "L’enregistrement reconnectera l’appareil sélectionné à « %@ » et conservera ses paramètres enregistrés.";
 
-"backend.error.ssh_client_failed" = "Le client SSH local n’a pas pu terminer l’opération.";
 "backend.recovery.ssh_client_failed.title" = "Échec de SSH sur ce Mac";
 "backend.recovery.ssh_client_failed.message" = "Le programme SSH de ce Mac n’a pas pu aller jusqu’au bout.";
 "backend.recovery.ssh_client_failed.action.1" = "Réessayez.";

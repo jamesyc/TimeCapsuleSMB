@@ -156,7 +156,7 @@ class LocalizationStyleTests(unittest.TestCase):
         # A literal command (`tcapsule deploy`, `activate`) stays.
         cli_word = re.compile(r"(?<![\w-])(?<!tcapsule )(deploy|doctor|configure)(?![\w-])", re.I)
         for key, text in catalog_texts("en"):
-            if not key.startswith(("backend.recovery.", "backend.error.")):
+            if not key.startswith("backend.recovery."):
                 continue
             with self.subTest(key=key):
                 self.assertIsNone(cli_word.search(re.sub(r"`[^`]*`", "", text)), text)

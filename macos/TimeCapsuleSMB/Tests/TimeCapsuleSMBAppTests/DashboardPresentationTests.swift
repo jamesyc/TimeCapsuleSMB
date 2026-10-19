@@ -483,16 +483,6 @@ final class DashboardPresentationTests: XCTestCase {
         })
     }
 
-    func testDeviceOffNetworkErrorUsesTheAppsTextForConfigureAndEnableSSH() {
-        let originalLanguage = L10n.currentLanguage
-        defer { L10n.apply(language: originalLanguage) }
-        L10n.apply(language: .english)
-
-        let expected = "The device's address isn't on this Mac's network. Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again."
-        XCTAssertEqual(BackendErrorLocalization.message(operation: "configure", code: "device_off_network"), expected)
-        XCTAssertEqual(BackendErrorLocalization.message(operation: "set-ssh", code: "device_off_network"), expected)
-    }
-
     func testInstallActionsUseDownloadBoxIconExceptReinstall() {
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.title, "Refresh Status")
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.systemImage, "arrow.clockwise")

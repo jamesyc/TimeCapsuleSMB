@@ -18,9 +18,9 @@ class RecoveryInfo:
     docs_anchor: str | None = None
     localization_key: str | None = None
     localization_values: dict[str, str] | None = None
-    # The CLI's steps where the app's do not carry over (cli_steps); never sent
-    # to the app.
-    cli_actions: tuple[str, ...] | None = None
+    # Steps only the CLI has, after the app's own (cli_steps); never sent to
+    # the app.
+    cli_extra: tuple[str, ...] = ()
 
     def to_jsonable(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -46,11 +46,6 @@ _MISMATCH_MESSAGE = "Parts of this TimeCapsuleSMB installation are from differen
 _MISMATCH_STEPS = (
     "Update or reinstall TimeCapsuleSMB.",
     "If “Helper path” is set in “Settings”, clear it.",
-)
-# macOS asks Local Network access of the app a command runs in.
-_CLI_LOCAL_NETWORK_STEPS = (
-    "Open System Settings > Privacy & Security > Local Network.",
-    "Turn on the app this command runs in, such as Terminal, then run the command again.",
 )
 
 _DEFAULTS: dict[str, RecoveryInfo] = {
@@ -110,7 +105,6 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         # card, and each retries its own operation.
         retryable=True,
         action_ids=("open_system_settings", "retry"),
-        cli_actions=_CLI_LOCAL_NETWORK_STEPS,
     ),
     # The helper's own message names the address and this Mac's networks.
     ErrorCode.DEVICE_OFF_NETWORK: RecoveryInfo(
@@ -119,7 +113,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         "to the device's network by Wi-Fi or one of its LAN ports, then try again.",
         (),
         retryable=True,
-        cli_actions=(
+        cli_extra=(
             "Check the address, or connect this computer to the device's network by Wi-Fi or one of its LAN ports, "
             "then try again.",
         ),
@@ -138,10 +132,6 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
-        cli_actions=(
-            "Run `tcapsule configure` and enter the AirPort admin password again.",
-            "Verify that SSH is enabled on the device.",
-        ),
     ),
     # Shared by causes that are not an unsupported model, such as flash or Activate
     # on NetBSD 6, so it must not tell the user to forget a working device.
@@ -175,7 +165,6 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Open “SSH Access” and choose “Enable SSH”, then try again.",),
         retryable=True,
         action_ids=("open_ssh_access",),
-        cli_actions=("Run `tcapsule set-ssh --enable`, then try again.",),
     ),
     ErrorCode.DEVICE_UNREACHABLE: RecoveryInfo(
         "Device not reachable",
@@ -185,11 +174,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
             "If the device is restarting, wait a few minutes, then try again.",
         ),
         retryable=True,
-        cli_actions=(
-            "Make sure the device is turned on and connected to the same network or Wi-Fi as this computer.",
-            "If the device is restarting, wait a few minutes, then try again.",
-            "Run `tcapsule doctor` to see which AirPorts answer on this network.",
-        ),
+        cli_extra=("Run `tcapsule doctor` to see which AirPorts answer on this network.",),
     ),
     ErrorCode.SSH_CLIENT_FAILED: RecoveryInfo(
         "SSH on this Mac failed",
@@ -355,10 +340,6 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Disable SSH again in “SSH Access”.", "If SSH stays enabled, restart the device, then try again."),
         retryable=True,
         action_ids=("open_ssh_access",),
-        cli_actions=(
-            "Run `tcapsule set-ssh --disable` again.",
-            "If SSH stays enabled, restart the device, then try again.",
-        ),
     ),
     ErrorCode.CONFIRMATION_REQUIRED: RecoveryInfo(
         "Confirmation required",
@@ -527,15 +508,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         suggested_operation="doctor",
         action_ids=("run_checkup",),
         # The app offers a device that answers at a new address to save it.
-        cli_actions=(
-            "Wait a few more minutes.",
-            "If the device answers at a new IP address, update TC_HOST or run `tcapsule configure` again.",
-            "Make sure you are connected to the same network or Wi-Fi as the device.",
-            "If the device still doesn't answer, unplug it, wait 10 seconds and plug it back in.",
-            "On NetBSD 4 devices, run `tcapsule activate` once SSH is reachable; the install did not "
-            "get far enough to activate Samba after the reboot.",
-            "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.",
-        ),
+        cli_extra=("If the device answers at a new IP address, update TC_HOST or run `tcapsule configure` again.",),
     ),
     ("configure", ErrorCode.AUTH_FAILED): RecoveryInfo(
         "AirPort password rejected",
@@ -694,7 +667,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "The install was interrupted. Run “Install / Update Samba” again to complete the install.",
         (),
         retryable=True,
-        cli_actions=("Run `tcapsule deploy` again to complete the install.",),
+        cli_extra=("Run `tcapsule deploy` again to complete the install.",),
     ),
     ("flash", ErrorCode.SECONDARY_BANK_INVALID): RecoveryInfo(
         "Backup firmware bank is damaged",
@@ -705,10 +678,6 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
             "Then choose “Back Up and Inspect Again”, and patch.",
         ),
         retryable=False,
-        cli_actions=(
-            "Run `tcapsule flash --restore` to rewrite the backup bank with Apple firmware.",
-            "Then run `tcapsule flash --patch` again.",
-        ),
     ),
     ("flash", ErrorCode.SECONDARY_BANK_READ_MISMATCH): RecoveryInfo(
         "Backup firmware bank read inconsistently",
@@ -719,9 +688,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
             "If the reads keep disagreeing, leave the firmware as it is: this device's flash may be failing.",
         ),
         retryable=False,
-        cli_actions=(
-            "Run `tcapsule flash --read-only` to back up and inspect the banks again.",
-            "If the reads keep disagreeing, leave the firmware as it is: this device's flash may be failing.",
+        cli_extra=(
             "When patching, `tcapsule flash --patch --force` patches the primary bank anyway, after you review "
             "the backup status.",
         ),
@@ -736,10 +703,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
             "If a bank is damaged, leave the firmware as it is.",
         ),
         retryable=False,
-        cli_actions=(
-            "Review each bank's status above.",
-            "`tcapsule flash --patch --force` patches the primary bank anyway, after you review that status.",
-        ),
+        cli_extra=("`tcapsule flash --patch --force` patches the primary bank anyway, after you review that status.",),
     ),
     ("activate", ErrorCode.RUNTIME_NOT_INSTALLED): RecoveryInfo(
         "TimeCapsuleSMB not installed",
@@ -1006,7 +970,7 @@ _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(
 def _entry(operation: str, code: ErrorCode, stage: str | None) -> RecoveryInfo:
     if code == ErrorCode.ACP_NO_ROUTE:
         # Every ACP attempt refused at once with no route is, on this Mac, Local
-        # Network access (the app's error line for acp_no_route names VPNs too).
+        # Network access.
         code = ErrorCode.LOCAL_NETWORK_PERMISSION_DENIED
     if stage:
         policy = _STAGE_RECOVERY.get((operation, code, stage))
@@ -1024,8 +988,36 @@ def recovery_for(
     return _entry(operation, code, stage).to_jsonable()
 
 
-# How the CLI names what a step tells the app's user to click.
+# How the CLI says what a step tells the app's user to do. Each phrase must
+# match some step (tests/test_app_recovery.py), so a reworded app step cannot
+# silently lose its CLI form.
 _CLI_WORDS = (
+    ("Open “System Settings” > “Privacy & Security” > “Local Network”.",
+     "Open System Settings > Privacy & Security > Local Network."),
+    # macOS asks Local Network access of the app a command runs in.
+    ("Enable TimeCapsuleSMB in “Local Network”.", "Turn on the app this command runs in, such as Terminal."),
+    ("Quit and reopen TimeCapsuleSMB, then try again.", "Then run the command again."),
+    ("If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, delete other copies of "
+     "TimeCapsuleSMB and restart the Mac.", "If it is already on, turn it off and on again."),
+    ("Open “SSH Access” and choose “Enable SSH”", "Run `tcapsule set-ssh --enable`"),
+    ("Disable SSH again in “SSH Access”.", "Run `tcapsule set-ssh --disable` again."),
+    ("Re-enter the AirPort admin password.", "Run `tcapsule configure` again and enter the AirPort admin password."),
+    ("Choose “Plan Restore” to rewrite", "Run `tcapsule flash --restore` to rewrite"),
+    ("Then choose “Back Up and Inspect Again”, and patch.", "Then run `tcapsule flash --patch` again."),
+    ("Choose “Back Up and Inspect Again” and review each bank's status.", "Review each bank's status above."),
+    ("Choose “Back Up and Inspect”.", "Run `tcapsule flash --read-only` to back up and inspect the banks again."),
+    ("Refresh discovery and reconnect the saved device.", "Run `tcapsule configure` to find the device again."),
+    ("Forget this device, then add your Time Capsule or AirPort Extreme.",
+     "Run `tcapsule configure` and choose your Time Capsule or AirPort Extreme."),
+    ("Add your Time Capsule or AirPort Extreme instead.",
+     "Run `tcapsule configure` again and choose your Time Capsule or AirPort Extreme."),
+    ("Check boot logs from the CLI if the checkup still fails.",
+     "If the checkup still fails, check the device's boot logs over SSH."),
+    ("Review the highlighted fields.", "Check the command's arguments."),
+    ("Open the configuration step.", "Run `tcapsule configure`."),
+    ("Confirm the operation in the app before retrying.", "Run the command again and confirm when it asks."),
+    ("Select a specific HFS volume.", "Name the volume with `tcapsule fsck --volume`."),
+    ("Select the volume to repair.", "Name the volume with `tcapsule fsck --volume`."),
     ("“Install / Update Samba”", "`tcapsule deploy`"),
     ("“Disk Repair”", "`tcapsule fsck`"),
     ("“Checkup”", "`tcapsule doctor`"),
@@ -1035,24 +1027,30 @@ _CLI_WORDS = (
     ("click “Copy Diagnostics” and report it at", "report it, with this command's output, at"),
     ("Click “Copy Diagnostics” and report it at", "Report it, with this command's output, at"),
     ("this Mac", "this computer"),
-    ("This Mac", "This computer"),
 )
 
 
+# App steps about a setting only the app has; the CLI leaves them out. Any
+# other step reaches the CLI, so one naming an app control the table above does
+# not cover fails tests/test_app_recovery.py instead of vanishing.
+_APP_ONLY_STEPS = frozenset({
+    "If “Helper path” is set in “Settings”, clear it.",
+    "Refresh the volume list, then try again.",
+})
+
+
 def cli_steps(operation: str, code: ErrorCode, *, stage: str | None = None) -> tuple[str, ...]:
-    """The next steps the CLI prints for an error: the entry's own CLI steps, or
-    the app's with each control named by its command. A step about a control
-    only the app has is left out."""
+    """The next steps the CLI prints for an error: the app's, in the CLI's
+    words, then the entry's CLI-only steps."""
     entry = _entry(operation, code, stage)
-    if entry.cli_actions is not None:
-        return entry.cli_actions
     steps = []
     for step in entry.actions:
+        if step in _APP_ONLY_STEPS:
+            continue
         for app_words, cli_words in _CLI_WORDS:
             step = step.replace(app_words, cli_words)
-        if "“" not in step:
-            steps.append(step)
-    return tuple(steps)
+        steps.append(step)
+    return (*steps, *entry.cli_extra)
 
 
 def ssh_timeout_slow_device_recovery(*, device_name: str | None = None) -> dict[str, object]:

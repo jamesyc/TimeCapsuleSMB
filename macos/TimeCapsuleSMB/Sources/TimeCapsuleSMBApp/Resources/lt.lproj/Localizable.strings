@@ -304,6 +304,8 @@
 "doctor.check.client_on_unshared_network" = "Šis Mac yra tinkle, kuriame įrenginys nebendrina savo diskų, pavyzdžiui, įrenginio interneto (WAN) pusėje arba svečių tinkle. Prijunkite šį Mac prie pagrindinio įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir dar kartą paleiskite operaciją „Patikrinimas“.";
 "doctor.check.mac_smb3_disabled" = "%@ išjungia SMB 3 (protocol_vers_map), o Time Machine reikia SMB 3. Ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ išjungia SMB 3 serveriui [%2$@]. Jei tai šis įrenginys, ištrinkite tą eilutę, tada Time Machine nustatymuose pašalinkite diską ir pridėkite jį iš naujo.";
+"doctor.check.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
+"doctor.check.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
 "doctor.domain.this_mac" = "Šis Mac";
 "doctor.domain.device" = "Įrenginys";
 "event.summary.check" = "%@ %@";
@@ -637,46 +639,6 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Patikrinkite, ar IP adresas yra Time Capsule arba AirPort adresas.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Patvirtinkite, kad esate tame pačiame tinkle kaip įrenginys.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Naudokite aptikimą arba įveskite dabartinį LAN IP adresą.";
-"backend.error.auth_failed" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
-"backend.error.configure.auth_failed" = "AirPort administratoriaus slaptažodis neveikė.";
-"backend.error.deploy.deploy_no_disk_detected" = "Vidinis diskas neaptiktas. Patikrinkite, ar diskas prijungtas ir tinkamai įstatytas. Pastaba: kai kurie įrenginiai negali visiškai aptikti kai kurių didesnių nei 2 TB diskų.";
-"backend.error.deploy.deploy_no_usb_disk_detected" = "USB diskas neaptiktas. AirPort Extreme neturi vidinio disko: prijunkite Mac kompiuteriui (HFS+) suformatuotą USB diską ir bandykite dar kartą.";
-"backend.error.deploy.deploy_no_hfs_partition" = "Diskas rastas, bet tinkamas HFS skaidinys neaptiktas. Bandykite dar kartą arba ištrinkite diską naudodami AirPort Utility (Erase Disk), kad jis būtų suformatuotas Time Capsule. Pastaba: kai kurie įrenginiai negali aptikti kai kurių didesnių nei 2 TB skaidinių.";
-"backend.error.deploy.deploy_disk_not_writable" = "Rastas tinkamas HFS diskas, bet TimeCapsuleSMB negalėjo į jį įrašyti diegimo failų. Pažadinkite arba iš naujo prijunkite diską, patikrinkite laisvą vietą ir bandykite dar kartą.";
-"backend.error.deploy.deploy_disk_not_mounted" = "Rastas tinkamas HFS diskas, bet jis neprijungtas, o įrenginys, paprašytas jį prijungti, to nepadarė. Palaukite minutę ir bandykite dar kartą arba paleiskite įrenginį iš naujo.";
-"backend.error.deploy.deploy_disk_not_confirmed" = "Tinkamas HFS diskas prijungtas, bet įrenginys nesutiko išlaikyti jo prijungto TimeCapsuleSMB reikmėms, todėl diegimo metu jis galėtų būti atjungtas. Palaukite minutę ir bandykite dar kartą arba paleiskite įrenginį iš naujo.";
-"backend.error.deploy.xattr_migration_unreadable_folder" = "Įrenginys negalėjo perskaityti aplanko diske, todėl Samba metaduomenų perkėlimas nepavyko. Aplankas nurodytas operacijos žurnale; paleiskite operaciją „Disko taisymas“, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "Įrenginys negalėjo perskaityti aplanko diske, todėl Samba metaduomenų perkėlimas nepavyko. Aplankas nurodytas operacijos žurnale; paleiskite operaciją „Disko taisymas“, tada vėl paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.error.activate.runtime_not_installed" = "Šiame įrenginyje TimeCapsuleSMB neįdiegta. Pirmiausia paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.error.flash.secondary_bank_invalid" = "Pataisymas atmestas, nes atsarginis (antrinis) programinės įrangos bankas sugadintas. Pasirinkite „Planuoti atkūrimą“, kad perrašytumėte jį Apple programine įranga, tada pasirinkite „Sukurti atsarginę kopiją ir patikrinti dar kartą“ ir taikykite pataisymą.";
-"backend.error.flash.secondary_bank_read_mismatch" = "Atsarginis (antrinis) programinės įrangos bankas šioje atsarginėje kopijoje nuskaitytas kitaip nei paties įrenginio patikroje, todėl jis neperrašytas, o pataisymas atmestas. Pasirinkite „Sukurti atsarginę kopiją ir patikrinti“.";
-"backend.error.activate.runtime_outdated" = "Šiame įrenginyje įdiegta TimeCapsuleSMB versija per sena, kad ši programa galėtų ją paleisti. Pirmiausia paleiskite „Įdiegti / atnaujinti Samba“.";
-"backend.error.activate.client_outdated" = "Šiame įrenginyje įdiegtos TimeCapsuleSMB pagrindinė versija yra naujesnė nei šios programos. Atnaujinkite TimeCapsuleSMB ir bandykite dar kartą.";
-"backend.error.ssh_enable_timeout" = "Įrenginys priėmė nustatymą, bet SSH dar nepasiekiama. Palaukite kelias minutes (arba paleiskite įrenginį iš naujo) ir bandykite dar kartą.";
-"backend.error.disk_write_test_unresponsive" = "Diskas neatsakė atliekant testą. Jis gali gesti arba negalėti įsisukti. Paleiskite operaciją „Disko taisymas“; jei tai kartojasi, diską gali reikėti pakeisti.";
-"backend.error.manager_stop_timeout" = "Įrenginio paslauga užstrigo, dažnai dėl gendančio disko. Atjunkite įrenginį nuo maitinimo, vėl prijunkite ir bandykite dar kartą.";
-"backend.error.previous_migration_stalled" = "Ankstesnio diegimo įrenginyje paliktas metaduomenų perkėlimas nebejuda į priekį, dažnai dėl gendančio disko. Atjunkite įrenginį nuo maitinimo, vėl prijunkite ir bandykite dar kartą.";
-"backend.error.payload_upload_timeout" = "Baigėsi SMB diegimo failų kopijavimo laikas. Diskas gali gesti arba negalėti įsisukti, arba tinklo ryšys su įrenginiu gali būti per lėtas, pavyzdžiui, dėl silpno Wi-Fi ryšio. Paleiskite operaciją „Disko taisymas“ arba prijunkite šį Mac ar įrenginį Ethernet kabeliu ir bandykite dar kartą. Jei tai kartojasi, diską gali reikėti pakeisti.";
-"backend.error.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
-"backend.error.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
-"backend.error.local_network_filtered" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
-"backend.error.acp_no_route" = "macOS atmetė ryšį su įrenginiu. Gali būti, kad TimeCapsuleSMB neturi vietinio tinklo prieigos arba VPN, užkarda ar saugos programa blokuoja vietinio tinklo srautą.";
-"backend.error.device_off_network" = "Įrenginio adresas nėra šio Mac tinkle. Patikrinkite adresą arba prijunkite šį Mac prie įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir bandykite dar kartą.";
-"backend.error.reboot_not_started" = "Įrenginys nebuvo paleistas iš naujo po paleidimo iš naujo užklausos.";
-"backend.error.reboot_not_finished" = "Įrenginys negrįžo po paleidimo iš naujo.";
-"backend.error.acpd_broken" = "Apple ACPd įrenginyje užstrigo.";
-"backend.error.acp_unreachable" = "Šis Mac negali pasiekti įrenginio AirPort ACP.";
-"backend.error.ssh_still_enabled" = "SSH po paleidimo iš naujo vis dar įjungta, todėl išjungimas neįsigaliojo.";
-"backend.error.payload_missing_from_disk" = "Visuose įrenginio diskuose trūksta Samba diegimo failų, pavyzdžiui, po disko ištrynimo su AirPort Utility (Erase Disk). Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
-"backend.error.payload_damaged_on_disk" = "Samba diegimo failai įrenginio diske sugadinti ir nebesutampa su tuo, kas buvo įdiegta. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
-"backend.error.rsync_missing_from_disk" = "rsync failų diske nėra, todėl rsync išjungtas. Failų bendrinimas ir Time Machine toliau veikia. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
-"backend.error.rsync_damaged_on_disk" = "rsync failas diske sugadintas ir nebesutampa su tuo, kas buvo įdiegta, todėl rsync išjungtas. Failų bendrinimas ir Time Machine toliau veikia. Paleiskite „Įdiegti / atnaujinti Samba“, kad įdiegtumėte iš naujo.";
-"backend.error.rsync_not_running" = "Failų bendrinimas ir Time Machine veikia, bet rsync nepasileido. Paleiskite operaciją „Patikrinimas“, kad pamatytumėte išsamią informaciją.";
-"backend.error.disk_failing" = "Įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda, o failų bendrinimas sustabdytas. Įdiegimas iš naujo disko nesutaisys.";
-"backend.error.deploy.disk_failing" = "Diegimas baigtas, bet po to įrenginio diskas pranešė apie klaidas, kurių nepavyko ištaisyti, todėl jis greičiausiai genda, o failų bendrinimas sustabdytas. Pakartotinis diegimas disko nesutaisys.";
-"backend.error.fsck.runtime_not_restarted" = "Disko taisymas baigtas, bet paleidus įrenginį iš naujo failų bendrinimas vėl neįsijungė.";
-"backend.error.fsck.fsck_already_running" = "Įrenginyje vis dar vykdomas ankstesnis disko taisymas. Neatjunkite Time Capsule nuo maitinimo, palaukite, kol jis baigsis, tada vėl paleiskite operaciją „Disko taisymas“.";
-"backend.error.fsck.fsck_session_dropped" = "Ryšys nutrūko vykdant disko taisymą. Taisymas tęsiamas įrenginyje: neatjunkite Time Capsule nuo maitinimo ir nepaleiskite jo iš naujo.";
 "backend.recovery.auth_failed.title" = "Autentifikacija nepavyko";
 "backend.recovery.auth_failed.message" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.recovery.auth_failed.action.1" = "Pakartotinai įveskite AirPort administratoriaus slaptažodį.";
@@ -1268,7 +1230,6 @@
 "settings.standby" = "ATA budėjimas";
 
 // Discovery validation and permission recovery.
-"backend.error.discovery_timeout_too_short" = "Paieškos skirtasis laikas turi būti bent 5 sekundės.";
 "discovery.permission_unknown" = "Nepavyko patvirtinti prieigos prie vietinio tinklo. Paieška bus tęsiama.";
 "backend.recovery.discover.discovery_timeout_too_short.title" = "Užklausos tikrinimas nepavyko";
 "backend.recovery.discover.discovery_timeout_too_short.message" = "Trūko vieno ar daugiau operacijos parametrų arba jie buvo netinkami.";
@@ -1279,13 +1240,11 @@
 "backend.recovery.discover.local_network_permission_denied.action.1" = "Atidarykite sistemos nustatymus ir eikite į Privacy & Security > Local Network.";
 "backend.recovery.discover.local_network_permission_denied.action.2" = "Skiltyje Local Network įjunkite TimeCapsuleSMB.";
 "backend.recovery.discover.local_network_permission_denied.action.3" = "Įjunkite prieigą ir bandykite ieškoti dar kartą.";
-"backend.error.discover.local_network_permission_denied" = "macOS neleidžia TimeCapsuleSMB pasiekti įrenginių jūsų vietiniame tinkle.";
 
 // Appliance identity and explicit reconnect.
 "discovery.identity_unverified" = "Nepavyko patvirtinti įrenginio tapatybės. Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
 "discovery.identity_conflict" = "Šį įrenginį atitinka keli išsaugoti įrenginiai. Peržiūrėkite išsaugotus įrenginius ir pašalinkite pasikartojančius įrašus naudodami „Pamiršti“.";
 "discovery.reconnect_existing" = "Iš naujo prijungti išsaugotą įrenginį „%@“";
-"backend.error.device_identity_mismatch" = "Nepavyko patvirtinti įrenginio tapatybės. Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
 "backend.recovery.device_identity_mismatch.title" = "Nepavyko patvirtinti įrenginio tapatybės";
 "backend.recovery.device_identity_mismatch.message" = "Šiuo adresu esantis įrenginys neatpažintas kaip išsaugotas įrenginys.";
 "backend.recovery.device_identity_mismatch.action.1" = "Atnaujinkite paiešką ir iš naujo prijunkite išsaugotą įrenginį.";
@@ -1295,7 +1254,6 @@
 
 "discovery.reconnect_selected" = "Išsaugojus pasirinktas įrenginys bus iš naujo susietas su „%@“, išlaikant išsaugotus nustatymus.";
 
-"backend.error.ssh_client_failed" = "Vietinis SSH klientas negalėjo užbaigti operacijos.";
 "backend.recovery.ssh_client_failed.title" = "Šiame Mac nepavyko SSH";
 "backend.recovery.ssh_client_failed.message" = "Šio Mac SSH programa negalėjo užbaigti darbo.";
 "backend.recovery.ssh_client_failed.action.1" = "Bandykite dar kartą.";

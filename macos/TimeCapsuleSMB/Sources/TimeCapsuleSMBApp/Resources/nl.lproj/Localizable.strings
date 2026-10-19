@@ -304,6 +304,8 @@
 "doctor.check.client_on_unshared_network" = "Deze Mac zit op een netwerk waarop het apparaat zijn schijven niet deelt, zoals de internetkant (WAN) of het gastnetwerk van het apparaat. Verbind deze Mac via Wi-Fi of een van de LAN-poorten van het apparaat met het hoofdnetwerk van het apparaat en voer ‘Controle’ opnieuw uit.";
 "doctor.check.mac_smb3_disabled" = "%@ schakelt SMB 3 uit (protocol_vers_map), terwijl Time Machine SMB 3 nodig heeft. Verwijder die regel, verwijder daarna de schijf in de Time Machine-instellingen en voeg hem opnieuw toe.";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ schakelt SMB 3 uit voor de server [%2$@]. Als dat dit apparaat is, verwijder dan die regel, verwijder daarna de schijf in de Time Machine-instellingen en voeg hem opnieuw toe.";
+"doctor.check.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
+"doctor.check.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
 "doctor.domain.this_mac" = "Deze Mac";
 "doctor.domain.device" = "Apparaat";
 "event.summary.check" = "%@ %@";
@@ -637,46 +639,6 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Controleer of het IP-adres het Time Capsule- of AirPort-adres is.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Bevestig dat u zich op hetzelfde netwerk als het apparaat bevindt.";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Zoek naar apparaten of voer het huidige LAN-IP-adres in.";
-"backend.error.auth_failed" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
-"backend.error.configure.auth_failed" = "Het AirPort-beheerderswachtwoord werkte niet.";
-"backend.error.deploy.deploy_no_disk_detected" = "Er is geen interne schijf gedetecteerd. Controleer of de schijf is aangesloten en goed vastzit. Opmerking: sommige apparaten kunnen sommige schijven groter dan 2 TB niet volledig detecteren.";
-"backend.error.deploy.deploy_no_usb_disk_detected" = "Er is geen USB-schijf gedetecteerd. AirPort Extreme heeft geen interne schijf: sluit een voor de Mac (HFS+) geformatteerde USB-schijf aan en probeer het opnieuw.";
-"backend.error.deploy.deploy_no_hfs_partition" = "Er is een schijf gevonden, maar geen geldige HFS-partitie. Probeer het opnieuw of wis de schijf met AirPort-configuratieprogramma om deze voor Time Capsule te formatteren. Sommige apparaten herkennen bepaalde partities groter dan 2 TB niet.";
-"backend.error.deploy.deploy_disk_not_writable" = "Er is een geldige HFS-schijf gevonden, maar TimeCapsuleSMB kon de installatiebestanden niet schrijven. Haal de schijf uit de slaapstand of koppel deze opnieuw, controleer de vrije ruimte en probeer het opnieuw.";
-"backend.error.deploy.deploy_disk_not_mounted" = "Er is een geldige HFS-schijf gevonden, maar deze is niet gekoppeld en het apparaat heeft deze op verzoek niet gekoppeld. Wacht een minuut en probeer het opnieuw, of herstart het apparaat.";
-"backend.error.deploy.deploy_disk_not_confirmed" = "Er is een geldige HFS-schijf gekoppeld, maar het apparaat wilde deze niet gekoppeld houden voor TimeCapsuleSMB, waardoor deze tijdens de installatie ontkoppeld zou kunnen worden. Wacht een minuut en probeer het opnieuw, of herstart het apparaat.";
-"backend.error.deploy.xattr_migration_unreadable_folder" = "Het apparaat kon een map op de schijf niet lezen, dus de Samba-metadatamigratie is mislukt. Het logboek van de bewerking noemt de map; voer ‘Schijfreparatie’ uit en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
-"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "Het apparaat kon een map op de schijf niet lezen, dus de Samba-metadatamigratie is mislukt. Het logboek van de bewerking noemt de map; voer ‘Schijfreparatie’ uit en voer daarna ‘Samba installeren / bijwerken’ opnieuw uit.";
-"backend.error.activate.runtime_not_installed" = "TimeCapsuleSMB is niet geïnstalleerd op dit apparaat. Voer eerst ‘Samba installeren / bijwerken’ uit.";
-"backend.error.flash.secondary_bank_invalid" = "Patchen is geweigerd omdat de reservefirmwarebank (secundair) beschadigd is. Kies ‘Herstel plannen’ om deze opnieuw te schrijven met Apple-firmware, kies daarna ‘Back-up maken en opnieuw inspecteren’ en patch.";
-"backend.error.flash.secondary_bank_read_mismatch" = "De reservefirmwarebank (secundair) werd in deze back-up anders gelezen dan bij de controle door het apparaat zelf, dus deze is niet opnieuw geschreven en patchen is geweigerd. Kies ‘Back-up maken en inspecteren’.";
-"backend.error.activate.runtime_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is te oud om door deze app te worden gestart. Voer eerst ‘Samba installeren / bijwerken’ uit.";
-"backend.error.activate.client_outdated" = "De TimeCapsuleSMB-installatie op dit apparaat is van een nieuwere hoofdversie dan deze app. Werk TimeCapsuleSMB bij en probeer het daarna opnieuw.";
-"backend.error.ssh_enable_timeout" = "Het apparaat heeft de instelling geaccepteerd, maar SSH is nog niet beschikbaar. Wacht een paar minuten (of start het apparaat opnieuw op) en probeer het opnieuw.";
-"backend.error.disk_write_test_unresponsive" = "De schijf reageerde niet tijdens de test. Deze is mogelijk defect of kan niet gaan draaien. Voer ‘Schijfreparatie’ uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
-"backend.error.manager_stop_timeout" = "Een service op het apparaat zit vast, vaak door een defecte schijf. Haal de stekker uit het apparaat, sluit het opnieuw aan en probeer het opnieuw.";
-"backend.error.previous_migration_stalled" = "Een metadatamigratie die een eerdere installatie op het apparaat heeft achtergelaten, komt niet meer vooruit, vaak door een defecte schijf. Haal de stekker uit het apparaat, sluit het opnieuw aan en probeer het opnieuw.";
-"backend.error.payload_upload_timeout" = "Het kopiëren van de SMB-installatiebestanden duurde te lang. De schijf is mogelijk defect of kan niet gaan draaien, of de netwerkverbinding met het apparaat is mogelijk te traag, zoals een zwakke Wi-Fi-verbinding. Voer ‘Schijfreparatie’ uit of verbind deze Mac of het apparaat via Ethernet en probeer het opnieuw. Bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
-"backend.error.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
-"backend.error.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
-"backend.error.local_network_filtered" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
-"backend.error.acp_no_route" = "macOS heeft de verbinding met het apparaat geweigerd. Mogelijk heeft TimeCapsuleSMB geen toegang tot het lokale netwerk, of blokkeert een VPN, firewall of beveiligingssoftware lokaal netwerkverkeer.";
-"backend.error.device_off_network" = "Het adres van het apparaat ligt niet in het netwerk van deze Mac. Controleer het adres, of verbind deze Mac via Wi-Fi of een van de LAN-poorten van het apparaat met het netwerk van het apparaat en probeer het opnieuw.";
-"backend.error.reboot_not_started" = "Het apparaat is na het herstartverzoek niet opnieuw opgestart.";
-"backend.error.reboot_not_finished" = "Het apparaat is na het opnieuw opstarten niet teruggekomen.";
-"backend.error.acpd_broken" = "Apple ACPd op het apparaat is vastgelopen.";
-"backend.error.acp_unreachable" = "Deze Mac kan AirPort ACP op het apparaat niet bereiken.";
-"backend.error.ssh_still_enabled" = "SSH is na het opnieuw opstarten nog steeds ingeschakeld; het uitschakelen is niet doorgevoerd.";
-"backend.error.payload_missing_from_disk" = "De Samba-bestanden ontbreken op alle schijven van het apparaat, zoals na ‘Wis schijf’ in AirPort-configuratieprogramma. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
-"backend.error.payload_damaged_on_disk" = "De Samba-bestanden op de schijf van het apparaat zijn beschadigd en komen niet meer overeen met wat er is geïnstalleerd. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
-"backend.error.rsync_missing_from_disk" = "De rsync-bestanden ontbreken op de schijf, dus rsync staat uit. Bestandsdeling en Time Machine blijven werken. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
-"backend.error.rsync_damaged_on_disk" = "Het rsync-bestand op de schijf is beschadigd en komt niet meer overeen met wat er is geïnstalleerd, dus rsync staat uit. Bestandsdeling en Time Machine blijven werken. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
-"backend.error.rsync_not_running" = "Bestandsdeling en Time Machine werken, maar rsync is niet gestart. Voer ‘Controle’ uit voor details.";
-"backend.error.disk_failing" = "De schijf van het apparaat meldde fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect en bestandsdeling staat uit. Opnieuw installeren repareert de schijf niet.";
-"backend.error.deploy.disk_failing" = "De installatie is voltooid, maar daarna meldde de schijf van het apparaat fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect en bestandsdeling staat uit. Nogmaals installeren repareert de schijf niet.";
-"backend.error.fsck.runtime_not_restarted" = "Schijfreparatie is voltooid, maar bestandsdeling is na het opnieuw opstarten van het apparaat niet opnieuw gestart.";
-"backend.error.fsck.fsck_already_running" = "Een eerdere schijfreparatie is nog bezig op het apparaat. Laat de Time Capsule aangesloten op het stopcontact, wacht tot deze klaar is en voer dan ‘Schijfreparatie’ opnieuw uit.";
-"backend.error.fsck.fsck_session_dropped" = "De verbinding is verbroken terwijl de schijfreparatie bezig was. De reparatie gaat op het apparaat door: laat de Time Capsule aangesloten op het stopcontact en start deze niet opnieuw op.";
 "backend.recovery.auth_failed.title" = "Authenticatie mislukt";
 "backend.recovery.auth_failed.message" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
 "backend.recovery.auth_failed.action.1" = "Voer het AirPort-beheerderswachtwoord opnieuw in.";
@@ -1268,7 +1230,6 @@
 "settings.standby" = "ATA-stand-by";
 
 // Discovery validation and permission recovery.
-"backend.error.discovery_timeout_too_short" = "De time-out voor apparaatdetectie moet minstens 5 seconden zijn.";
 "discovery.permission_unknown" = "Toegang tot het lokale netwerk kon niet worden bevestigd. Apparaatdetectie gaat door.";
 "backend.recovery.discover.discovery_timeout_too_short.title" = "Validatie van verzoek mislukt";
 "backend.recovery.discover.discovery_timeout_too_short.message" = "Een of meer parameters van de bewerking ontbraken of waren ongeldig.";
@@ -1279,13 +1240,11 @@
 "backend.recovery.discover.local_network_permission_denied.action.1" = "Open ‘Systeeminstellingen’ > ‘Privacy en beveiliging’ > ‘Lokaal netwerk’.";
 "backend.recovery.discover.local_network_permission_denied.action.2" = "Schakel TimeCapsuleSMB in onder ‘Lokaal netwerk’.";
 "backend.recovery.discover.local_network_permission_denied.action.3" = "Schakel toegang in en probeer apparaatdetectie opnieuw.";
-"backend.error.discover.local_network_permission_denied" = "macOS blokkeert de toegang van TimeCapsuleSMB tot apparaten in uw lokale netwerk.";
 
 // Appliance identity and explicit reconnect.
 "discovery.identity_unverified" = "De apparaatidentiteit kon niet worden bevestigd. Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
 "discovery.identity_conflict" = "Meerdere opgeslagen apparaten komen overeen met dit apparaat. Controleer de opgeslagen apparaten en verwijder dubbele vermeldingen met ‘Vergeten’.";
 "discovery.reconnect_existing" = "Opgeslagen apparaat ‘%@’ opnieuw verbinden";
-"backend.error.device_identity_mismatch" = "De apparaatidentiteit kon niet worden bevestigd. Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
 "backend.recovery.device_identity_mismatch.title" = "Apparaatidentiteit kon niet worden bevestigd";
 "backend.recovery.device_identity_mismatch.message" = "Het apparaat op dit adres heeft zich niet als het opgeslagen apparaat geïdentificeerd.";
 "backend.recovery.device_identity_mismatch.action.1" = "Vernieuw de zoekopdracht en verbind het opgeslagen apparaat opnieuw.";
@@ -1295,7 +1254,6 @@
 
 "discovery.reconnect_selected" = "Bij het opslaan wordt het geselecteerde apparaat opnieuw verbonden met ‘%@’ en blijven de opgeslagen instellingen behouden.";
 
-"backend.error.ssh_client_failed" = "De lokale SSH-client kon de bewerking niet voltooien.";
 "backend.recovery.ssh_client_failed.title" = "SSH op deze Mac is mislukt";
 "backend.recovery.ssh_client_failed.message" = "Het SSH-programma op deze Mac kon niet afronden.";
 "backend.recovery.ssh_client_failed.action.1" = "Probeer het opnieuw.";

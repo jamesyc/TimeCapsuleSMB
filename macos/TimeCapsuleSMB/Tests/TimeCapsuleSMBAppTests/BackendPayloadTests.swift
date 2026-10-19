@@ -277,13 +277,15 @@ final class BackendPayloadTests: XCTestCase {
             debug: .object([
                 "password": .string("super-secret"),
                 "remote_manager_log_tail": .string("first line\nsecond line")
-            ])
+            ]),
+            recovery: recoveryValue(title: "Copying the installation files timed out", actions: [], localizationKey: "deploy.payload_upload_timeout")
         )
 
         let error = BackendErrorViewModel(event: event)
         let diagnosticText = error.diagnosticText ?? ""
 
-        XCTAssertEqual(error.message, "Copying the SMB installation files timed out. The disk may be failing or unable to spin up, or the network connection to the device may be too slow, such as a weak Wi-Fi link. Run “Disk Repair”, or connect this Mac or the device by Ethernet, then try again. If this keeps happening, the disk may need replacing.")
+        XCTAssertEqual(error.message, "Copying the installation files timed out")
+        XCTAssertEqual(error.diagnosticMessage, "upload failed at /Volumes/Data")
         XCTAssertTrue(diagnosticText.contains("upload failed at /Volumes/Data"))
         XCTAssertTrue(diagnosticText.contains("password: <redacted>"))
         XCTAssertTrue(diagnosticText.contains("remote_manager_log_tail:"))

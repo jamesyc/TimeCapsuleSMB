@@ -1,13 +1,14 @@
 """The app shows errors from its own catalogs: an error box's guidance from
 backend.recovery.<localization_key>.title, .message and .action.N (the
-helper's English error text below it is diagnostics), and one-line errors from
-backend.error.<operation>.<code> (else backend.error.<code>, else the recovery
-title). These tests keep every catalog complete, the English catalog in the
-helper's words, and every ErrorCode with guidance of its own.
+helper's English error text below it is diagnostics), and one-line errors as
+that guidance's title. These tests keep every catalog complete, the English
+catalog in the helper's words, and every ErrorCode with guidance of its own.
 """
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
 import re
 import unittest
 from unittest import mock
@@ -35,7 +36,7 @@ from timecapsulesmb.services.deploy import DeployDeviceError, select_deploy_payl
 from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 
 RECOVERY_PART = re.compile(r"\.(title|message|action\.\d+)$")
-APP_ERROR_PREFIXES = ("backend.error.", "backend.recovery.")
+APP_ERROR_PREFIXES = ("backend.recovery.",)
 
 
 def text(raw: str) -> str:
@@ -48,9 +49,9 @@ def recovery_entries() -> list[recovery.RecoveryInfo]:
     return [info for table in tables for info in table.values()] + [recovery._SSH_TIMEOUT_SLOW_DEVICE_RECOVERY]
 
 
-def app_error_text(strings: dict[str, str], operation: str, code: str) -> str | None:
-    """BackendErrorLocalization.message: the operation's own text, else the code's."""
-    return strings.get(f"backend.error.{operation}.{code}") or strings.get(f"backend.error.{code}")
+def app_error_line(strings: dict[str, str], operation: str, code: str) -> str | None:
+    """BackendErrorViewModel.message: the title of the guidance the helper sends."""
+    return strings.get(f"backend.recovery.{recovery.recovery_for(operation, code)['localization_key']}.title")
 
 
 class RecoveryCatalogTests(unittest.TestCase):
@@ -89,6 +90,9 @@ class RecoveryCatalogTests(unittest.TestCase):
             (("configure", "auth_failed", None), "configure.auth_failed"),
             (("deploy", "auth_failed", None), "auth_failed"),
             (("deploy", "an_unknown_code", None), "operation_failed"),
+            # Adding a device and turning SSH on show the same off-network guidance.
+            (("configure", "device_off_network", None), "device_off_network"),
+            (("set-ssh", "device_off_network", None), "device_off_network"),
         )
         for (operation, code, stage), key in cases:
             with self.subTest(key=key):
@@ -140,6 +144,20 @@ class RecoveryCoverageTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertEqual(recovery.recovery_for("configure", code)["localization_key"], ErrorCode.OPERATION_FAILED)
 
+    def test_every_error_code_is_named_outside_the_enum_and_recovery_table(self) -> None:
+        # A code nothing else names is guidance no user can reach. The parse
+        # reads each ErrorCode.X the helper's code uses, in a raise, a map or
+        # a comparison: it catches a code nothing uses at all.
+        source = pathlib.Path(recovery.__file__).resolve().parents[1]
+        used: set[str] = set()
+        for path in source.rglob("*.py"):
+            if path.name in ("error_codes.py", "recovery.py"):
+                continue
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "ErrorCode":
+                    used.add(node.attr)
+        self.assertEqual({code.name for code in ErrorCode} - used, set())
+
     def test_every_recovery_entry_is_keyed_by_an_error_code(self) -> None:
         codes = (
             list(recovery._DEFAULTS)
@@ -177,7 +195,7 @@ class ErrorCodeCatalogTests(unittest.TestCase):
         self.assertEqual(codes, ["deploy_disk_not_writable", "deploy_disk_not_confirmed", "deploy_disk_not_mounted"])
         for language in LANGUAGES:
             strings = catalog(language)
-            texts = [app_error_text(strings, "deploy", code) for code in codes]
+            texts = [app_error_line(strings, "deploy", code) for code in codes]
             with self.subTest(language=language):
                 self.assertTrue(all(texts), texts)
                 self.assertEqual(len(set(texts)), len(texts), "two causes would show the same text")
@@ -199,7 +217,7 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, code)
                 for language in LANGUAGES:
                     with self.subTest(language=language):
-                        self.assertTrue(app_error_text(catalog(language), "activate", code))
+                        self.assertTrue(app_error_line(catalog(language), "activate", code))
 
     def test_every_payload_verdict_points_to_a_reinstall_everywhere(self) -> None:
         # Raised by activation, a deploy's runtime check and the restart
@@ -216,14 +234,13 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                     for language in LANGUAGES:
                         with self.subTest(language=language):
                             strings = catalog(language)
-                            texts = [app_error_text(strings, operation, other) for other in codes]
-                            self.assertTrue(app_error_text(strings, operation, code))
+                            texts = [app_error_line(strings, operation, other) for other in codes]
+                            self.assertTrue(app_error_line(strings, operation, code))
                             self.assertEqual(len(set(texts)), len(texts))
 
-    def test_a_failing_disk_has_one_card_and_a_line_of_its_own_after_an_install(self) -> None:
-        # Raised by a deploy, Activate and the restart after a disk repair. The
-        # card's way out is the same; after a deploy the line says the install
-        # finished, so "install again" is not the fix.
+    def test_a_failing_disk_has_one_card_and_line_wherever_it_is_found(self) -> None:
+        # Raised by a deploy, Activate and the restart after a disk repair: the
+        # way out is the same, and the line, a title, suggests no reinstall.
         for operation in ("activate", "deploy", "fsck"):
             with self.subTest(operation=operation):
                 payload = recovery.recovery_for(operation, "disk_failing")
@@ -233,20 +250,19 @@ class ErrorCodeCatalogTests(unittest.TestCase):
         for language in LANGUAGES:
             with self.subTest(language=language):
                 strings = catalog(language)
-                generic = app_error_text(strings, "activate", "disk_failing")
-                after_install = app_error_text(strings, "deploy", "disk_failing")
-                self.assertTrue(generic and after_install)
-                self.assertNotEqual(generic, after_install)
-                self.assertEqual(app_error_text(strings, "fsck", "disk_failing"), generic)
+                line = app_error_line(strings, "activate", "disk_failing")
+                self.assertTrue(line)
+                self.assertEqual(app_error_line(strings, "deploy", "disk_failing"), line)
+                self.assertEqual(app_error_line(strings, "fsck", "disk_failing"), line)
 
-    def test_file_sharing_that_did_not_restart_after_fsck_has_its_own_text(self) -> None:
-        # The error line says what did succeed: the disk repair.
+    def test_file_sharing_that_did_not_restart_after_fsck_has_its_own_line(self) -> None:
+        # The line says what failed: file sharing, not the disk repair.
         for language in LANGUAGES:
             with self.subTest(language=language):
                 strings = catalog(language)
-                self.assertTrue(strings.get("backend.error.fsck.runtime_not_restarted"))
-                # Only fsck restarts file sharing after its reboot.
-                self.assertIsNone(strings.get("backend.error.set-ssh.runtime_not_restarted"))
+                line = app_error_line(strings, "fsck", "runtime_not_restarted")
+                self.assertTrue(line)
+                self.assertNotEqual(line, app_error_line(strings, "fsck", "remote_error"))
 
     def test_each_disk_repair_without_a_result_has_its_own_app_text(self) -> None:
         # An earlier repair still running and a session lost mid-repair need
@@ -257,9 +273,9 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                 for language in LANGUAGES:
                     with self.subTest(language=language):
                         strings = catalog(language)
-                        line = app_error_text(strings, "fsck", code)
+                        line = app_error_line(strings, "fsck", code)
                         self.assertTrue(line)
-                        self.assertNotEqual(line, app_error_text(strings, "fsck", "remote_error"))
+                        self.assertNotEqual(line, app_error_line(strings, "fsck", "remote_error"))
 
     def test_current_release_is_accepted_without_an_error(self) -> None:
         version = DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok")

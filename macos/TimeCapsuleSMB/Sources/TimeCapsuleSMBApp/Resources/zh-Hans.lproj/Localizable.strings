@@ -304,6 +304,8 @@
 "doctor.check.client_on_unshared_network" = "此 Mac 所在的网络中，设备不共享其磁盘，例如设备的互联网（WAN）一侧或访客网络。请通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的主网络，然后再次运行“检查”。";
 "doctor.check.mac_smb3_disabled" = "%@ 关闭了 SMB 3（protocol_vers_map），而时间机器需要 SMB 3。请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
 "doctor.check.mac_smb3_disabled_for_server" = "%1$@ 为服务器 [%2$@] 关闭了 SMB 3。如果它就是此设备，请删除该行，然后在时间机器设置中移除该磁盘并重新添加。";
+"doctor.check.ssh_disabled" = "此设备上的 SSH 已禁用。";
+"doctor.check.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
 "doctor.domain.this_mac" = "此 Mac";
 "doctor.domain.device" = "设备";
 "event.summary.check" = "%@ %@";
@@ -637,46 +639,6 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.2" = "检查 IP 地址是否为 Time Capsule 或 AirPort 地址。";
 "backend.recovery.configure.remote_error.acp_port_probe.action.3" = "确认你连接在与设备相同的网络上。";
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "使用发现功能，或输入当前 LAN IP 地址。";
-"backend.error.auth_failed" = "设备拒绝了提供的密码或 SSH 凭据。";
-"backend.error.configure.auth_failed" = "AirPort 管理员密码无效。";
-"backend.error.deploy.deploy_no_disk_detected" = "未检测到内部磁盘。请检查磁盘是否已连接并正确安装。注意：某些设备无法完整检测部分大于 2 TB 的磁盘。";
-"backend.error.deploy.deploy_no_usb_disk_detected" = "未检测到 USB 磁盘。AirPort Extreme 没有内部磁盘：请连接一个为 Mac 格式化（HFS+）的 USB 磁盘，然后重试。";
-"backend.error.deploy.deploy_no_hfs_partition" = "已找到磁盘，但未检测到有效的 HFS 分区。请重试，或在 AirPort 实用工具中抹掉磁盘，将其格式化为适用于 Time Capsule 的格式。注意：某些设备无法检测部分大于 2 TB 的分区。";
-"backend.error.deploy.deploy_disk_not_writable" = "已找到有效的 HFS 磁盘，但 TimeCapsuleSMB 无法写入安装文件。请唤醒或重新挂载磁盘，检查可用空间，然后重试。";
-"backend.error.deploy.deploy_disk_not_mounted" = "已找到有效的 HFS 磁盘，但它尚未挂载，设备也未按请求将其挂载。请等待一分钟后重试，或重启设备。";
-"backend.error.deploy.deploy_disk_not_confirmed" = "有效的 HFS 磁盘已挂载，但设备拒绝为 TimeCapsuleSMB 保持其挂载状态，因此它可能会在安装过程中被卸载。请等待一分钟后重试，或重启设备。";
-"backend.error.deploy.xattr_migration_unreadable_folder" = "设备无法读取磁盘上的一个文件夹，因此 Samba 元数据迁移失败。操作日志中列出了该文件夹；请运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
-"backend.error.deploy.xattr_migration_unreadable_folder_repair_only" = "设备无法读取磁盘上的一个文件夹，因此 Samba 元数据迁移失败。操作日志中列出了该文件夹；请运行“磁盘修复”，然后重新运行“安装 / 更新 Samba”。";
-"backend.error.activate.runtime_not_installed" = "此设备上未安装 TimeCapsuleSMB。请先运行“安装 / 更新 Samba”。";
-"backend.error.flash.secondary_bank_invalid" = "已拒绝打补丁，因为备用（第二）固件区已损坏。请选择“规划恢复”用苹果固件重新写入它，然后选择“再次备份并检查”并打补丁。";
-"backend.error.flash.secondary_bank_read_mismatch" = "此备份读取的备用（第二）固件区与设备自身的检查结果不一致，因此未重新写入它，并已拒绝打补丁。请选择“备份并检查”。";
-"backend.error.activate.runtime_outdated" = "此设备上安装的 TimeCapsuleSMB 版本过旧，此应用无法启动它。请先运行“安装 / 更新 Samba”。";
-"backend.error.activate.client_outdated" = "此设备上安装的 TimeCapsuleSMB 属于比此应用更新的主版本。请更新 TimeCapsuleSMB，然后重试。";
-"backend.error.ssh_enable_timeout" = "设备已接受该设置，但 SSH 尚未启动。请等待几分钟（或重启设备），然后重试。";
-"backend.error.disk_write_test_unresponsive" = "磁盘在测试时没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";
-"backend.error.manager_stop_timeout" = "设备上的某项服务卡住了，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。";
-"backend.error.previous_migration_stalled" = "之前一次安装留在设备上的元数据迁移已停止进展，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。";
-"backend.error.payload_upload_timeout" = "复制 SMB 安装文件超时。磁盘可能出现故障或无法转动，也可能是与设备之间的网络连接太慢，例如 Wi-Fi 信号较弱。请运行“磁盘修复”，或通过以太网连接此 Mac 或设备，然后重试。如果问题持续发生，可能需要更换磁盘。";
-"backend.error.ssh_disabled" = "此设备上的 SSH 已禁用。";
-"backend.error.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
-"backend.error.local_network_filtered" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
-"backend.error.acp_no_route" = "macOS 拒绝了到设备的连接。TimeCapsuleSMB 可能没有本地网络访问权限，或者 VPN、防火墙或安全软件可能正在阻止本地网络流量。";
-"backend.error.device_off_network" = "设备的地址不在此 Mac 的网络中。请检查地址，或通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的网络，然后重试。";
-"backend.error.reboot_not_started" = "设备在收到重启请求后未重启。";
-"backend.error.reboot_not_finished" = "设备重启后未重新上线。";
-"backend.error.acpd_broken" = "设备上的苹果 ACPd 已卡住。";
-"backend.error.acp_unreachable" = "此 Mac 无法访问设备上的 AirPort ACP。";
-"backend.error.ssh_still_enabled" = "重启后 SSH 仍处于启用状态，因此禁用未生效。";
-"backend.error.payload_missing_from_disk" = "设备的所有磁盘上都缺少 Samba 文件，例如在 AirPort 实用工具中“抹掉磁盘”之后。请运行“安装 / 更新 Samba”以重新安装。";
-"backend.error.payload_damaged_on_disk" = "设备磁盘上的 Samba 文件已损坏，与安装时的内容不再一致。请运行“安装 / 更新 Samba”以重新安装。";
-"backend.error.rsync_missing_from_disk" = "磁盘上缺少 rsync 文件，因此 rsync 已关闭。文件共享和时间机器仍可正常使用。请运行“安装 / 更新 Samba”以重新安装。";
-"backend.error.rsync_damaged_on_disk" = "磁盘上的 rsync 文件已损坏，与安装时的内容不再一致，因此 rsync 已关闭。文件共享和时间机器仍可正常使用。请运行“安装 / 更新 Samba”以重新安装。";
-"backend.error.rsync_not_running" = "文件共享和时间机器正在运行，但 rsync 未启动。运行“检查”以查看详情。";
-"backend.error.disk_failing" = "设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障，文件共享已停止。重新安装无法修复磁盘。";
-"backend.error.deploy.disk_failing" = "安装已完成，但随后设备的磁盘报告了无法恢复的错误，因此磁盘很可能出现故障，文件共享已停止。再次安装无法修复磁盘。";
-"backend.error.fsck.runtime_not_restarted" = "磁盘修复已完成，但设备重启后文件共享没有恢复。";
-"backend.error.fsck.fsck_already_running" = "设备上仍在运行之前的磁盘修复。请保持 Time Capsule 接通电源，等待它完成，然后再次运行“磁盘修复”。";
-"backend.error.fsck.fsck_session_dropped" = "磁盘修复运行期间连接已中断。修复仍在设备上继续：请保持 Time Capsule 接通电源，不要重启它。";
 "backend.recovery.auth_failed.title" = "身份验证失败";
 "backend.recovery.auth_failed.message" = "设备拒绝了提供的密码或 SSH 凭据。";
 "backend.recovery.auth_failed.action.1" = "重新输入 AirPort 管理员密码。";
@@ -1268,7 +1230,6 @@
 "settings.standby" = "ATA 待机";
 
 // Discovery validation and permission recovery.
-"backend.error.discovery_timeout_too_short" = "发现超时必须至少为 5 秒。";
 "discovery.permission_unknown" = "无法确认本地网络访问权限。发现将继续。";
 "backend.recovery.discover.discovery_timeout_too_short.title" = "请求验证失败";
 "backend.recovery.discover.discovery_timeout_too_short.message" = "缺少一个或多个操作参数，或参数无效。";
@@ -1279,13 +1240,11 @@
 "backend.recovery.discover.local_network_permission_denied.action.1" = "打开“系统设置”>“隐私与安全”>“本地网络”。";
 "backend.recovery.discover.local_network_permission_denied.action.2" = "在“本地网络”中启用 TimeCapsuleSMB。";
 "backend.recovery.discover.local_network_permission_denied.action.3" = "启用访问权限，然后重新发现设备。";
-"backend.error.discover.local_network_permission_denied" = "macOS 正在阻止 TimeCapsuleSMB 访问本地网络上的设备。";
 
 // Appliance identity and explicit reconnect.
 "discovery.identity_unverified" = "无法确认设备身份。请刷新搜索并重新连接已保存的设备。";
 "discovery.identity_conflict" = "多个已保存的设备与此设备匹配。请检查已保存的设备，并使用“忘记”移除重复条目。";
 "discovery.reconnect_existing" = "重新连接已保存的设备“%@”";
-"backend.error.device_identity_mismatch" = "无法确认设备身份。请刷新搜索并重新连接已保存的设备。";
 "backend.recovery.device_identity_mismatch.title" = "无法确认设备身份";
 "backend.recovery.device_identity_mismatch.message" = "此地址上的设备未表明自己是已保存的设备。";
 "backend.recovery.device_identity_mismatch.action.1" = "请刷新搜索并重新连接已保存的设备。";
@@ -1295,7 +1254,6 @@
 
 "discovery.reconnect_selected" = "保存后，所选设备将重新连接到“%@”，并保留其已保存的设置。";
 
-"backend.error.ssh_client_failed" = "本机 SSH 客户端未能完成操作。";
 "backend.recovery.ssh_client_failed.title" = "此 Mac 上的 SSH 失败";
 "backend.recovery.ssh_client_failed.message" = "此 Mac 上的 SSH 程序未能完成。";
 "backend.recovery.ssh_client_failed.action.1" = "请重试。";

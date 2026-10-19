@@ -124,11 +124,11 @@ struct BackendErrorViewModel: Equatable {
     let recovery: BackendRecoveryPayload?
     let diagnosticText: String?
 
-    /// One line in the app's language: the helper's text reaches it only
-    /// when nothing translated describes the error.
+    /// One line in the app's language: its guidance's title, a short label
+    /// that says what happened. The helper sends guidance with every error, so
+    /// its own text reaches this line only for a failed result, which has none.
     var message: String {
         localError?.message
-            ?? BackendErrorLocalization.message(operation: operation, code: code)
             ?? BackendRecoveryLocalization.localized(recovery)?.title
             ?? rawMessage
             ?? ""
@@ -291,18 +291,6 @@ enum BackendDiagnosticText {
             prefixLength -= 1
         }
         return truncationMarker
-    }
-}
-
-enum BackendErrorLocalization {
-    static func message(operation: String, code: String) -> String? {
-        for key in ["backend.error.\(operation).\(code)", "backend.error.\(code)"] {
-            let value = L10n.string(key)
-            if value != key {
-                return value
-            }
-        }
-        return nil
     }
 }
 
