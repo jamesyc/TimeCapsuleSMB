@@ -578,8 +578,9 @@ final class FlashWorkflowStoreTests: XCTestCase {
         let error = try XCTUnwrap(store.error)
         XCTAssertNotEqual(FlashPresentation(store: store).message, error.message)
         XCTAssertEqual(error.diagnosticMessage, failure)
-        // The flash section's own buttons rerun each step: its box has no Retry.
-        XCTAssertFalse(RecoveryActionMapper.actions(for: error, canRetry: false).contains { $0.kind == .retry })
+        // The flash section's own buttons rerun each step, so the dashboard
+        // gives its box no retry (DashboardStoreTests).
+        XCTAssertEqual(error.operation, "flash")
     }
 
     private func storeAfterValidatedWrite(

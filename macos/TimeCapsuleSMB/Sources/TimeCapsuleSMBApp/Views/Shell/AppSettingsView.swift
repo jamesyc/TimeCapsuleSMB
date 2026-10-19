@@ -92,10 +92,9 @@ struct AppSettingsView: View {
                             .foregroundStyle(updateStatusColor)
                     }
                     if let error = appUpdateStore.error {
-                        ErrorRecoveryView(error: error) { action in
-                            if action.kind == .retry {
-                                appUpdateStore.checkNow(settings: appSettingsStore.settings)
-                            }
+                        // Retry is the one action this screen carries out.
+                        ErrorRecoveryView(error: error) { kind in
+                            kind == .retry ? { appUpdateStore.checkNow(settings: appSettingsStore.settings) } : nil
                         }
                     }
                 }

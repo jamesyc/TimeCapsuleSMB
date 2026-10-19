@@ -57,9 +57,10 @@ struct CheckupTab: View {
                     CheckupAdvancedOptionsView(store: store)
 
                     if let error = store.error {
-                        ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { action in
-                            handleRecovery(action: action, error: error)
-                        }
+                        ErrorRecoveryView(
+                            error: error,
+                            diagnosticsText: diagnosticsText
+                        ) { recoveryAction($0, error: error) }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,12 +73,8 @@ struct CheckupTab: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func handleRecovery(action: RecoveryAction, error: BackendErrorViewModel) {
-        if action.kind == .diagnostics {
-            showDiagnostics()
-            return
-        }
-        _ = session.handleRecoveryAction(action, error: error, profile: profile)
+    private func recoveryAction(_ kind: RecoveryActionKind, error: BackendErrorViewModel) -> (() -> Void)? {
+        kind == .diagnostics ? { showDiagnostics() } : session.recoveryAction(kind, error: error, profile: profile)
     }
 }
 

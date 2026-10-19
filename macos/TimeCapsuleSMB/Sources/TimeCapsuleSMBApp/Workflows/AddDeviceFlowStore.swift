@@ -313,19 +313,32 @@ final class AddDeviceFlowStore: ObservableObject {
         }
     }
 
-    func handleRecoveryAction(_ action: RecoveryAction) {
-        switch action.kind {
+    /// Reruns the step that failed: discovery, or adding the device.
+    func retry() {
+        if error?.operation == "discover" { runDiscover() } else { runConfigure() }
+    }
+
+    /// What Add Device does for a recovery action, or nil where it can do
+    /// nothing; its error box shows a button only for an action that does something.
+    func recoveryAction(_ kind: RecoveryActionKind) -> (() -> Void)? {
+        switch kind {
         case .retry:
-            if error?.operation == "discover" { runDiscover() } else { runConfigure() }
+            return { [weak self] in self?.retry() }
         case .openSystemSettings:
-            if let url = LocalNetworkRecovery.settingsURL {
-                urlOpener.open(url)
+            guard let url = LocalNetworkRecovery.settingsURL else {
+                return nil
             }
+            return { [weak self] in self?.urlOpener.open(url) }
         case .replacePassword:
-            state = .passwordEntry
-        default:
-            break
+            return { [weak self] in self?.state = .passwordEntry }
+        case .runCheckup, .installSMB, .startSMB, .uninstall, .diskRepair, .copyDiagnostics, .diagnostics,
+             .openSSHAccess, .generic:
+            return nil
         }
+    }
+
+    func handleRecoveryAction(_ action: RecoveryAction) {
+        recoveryAction(action.kind)?()
     }
 
     func applyAppSettings(_ settings: AppSettings) {

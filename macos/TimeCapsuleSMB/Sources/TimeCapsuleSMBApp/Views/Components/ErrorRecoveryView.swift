@@ -28,24 +28,22 @@ struct ErrorBlock: View {
 struct ErrorRecoveryView: View {
     let error: BackendErrorViewModel
     let guidance: String?
-    let onAction: (RecoveryAction) -> Void
     let diagnosticsText: (() -> String)?
-    /// False where nothing reruns the failed operation from this box: the
-    /// screen's own buttons do that, and a Retry here would do nothing.
-    let canRetry: Bool
+    /// What the screen does for each action, or nil for one it cannot carry
+    /// out. The box shows a button only for an action that does something, so
+    /// no button sits idle; it copies diagnostics itself.
+    let perform: (RecoveryActionKind) -> (() -> Void)?
 
     init(
         error: BackendErrorViewModel,
         guidance: String? = nil,
         diagnosticsText: (() -> String)? = nil,
-        canRetry: Bool = true,
-        onAction: @escaping (RecoveryAction) -> Void
+        perform: @escaping (RecoveryActionKind) -> (() -> Void)?
     ) {
         self.error = error
         self.guidance = guidance
         self.diagnosticsText = diagnosticsText
-        self.canRetry = canRetry
-        self.onAction = onAction
+        self.perform = perform
     }
 
     var body: some View {
@@ -75,7 +73,7 @@ struct ErrorRecoveryView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
-            let actions = RecoveryActionMapper.actions(for: error, canRetry: canRetry)
+            let actions = RecoveryActionMapper.actions(for: error) { perform($0) != nil }
             if !actions.isEmpty {
                 HStack {
                     ForEach(actions) { action in
@@ -83,7 +81,7 @@ struct ErrorRecoveryView: View {
                             if action.kind == .copyDiagnostics {
                                 copyDiagnostics()
                             } else {
-                                onAction(action)
+                                perform(action.kind)?()
                             }
                         } label: {
                             Label(action.title, systemImage: icon(for: action.kind))

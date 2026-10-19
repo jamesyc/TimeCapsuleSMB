@@ -110,10 +110,11 @@ struct DeviceListOverviewView: View {
             VStack(alignment: .leading, spacing: 6) {
                 if let error = deviceDiscovery.error {
                     // Refresh below reruns discovery, whatever the error; the box has no Retry.
-                    ErrorRecoveryView(error: error, canRetry: false) { action in
-                        if action.kind == .openSystemSettings, let url = LocalNetworkRecovery.settingsURL {
-                            NSWorkspace.shared.open(url)
+                    ErrorRecoveryView(error: error) { kind in
+                        guard kind == .openSystemSettings, let url = LocalNetworkRecovery.settingsURL else {
+                            return nil
                         }
+                        return { NSWorkspace.shared.open(url) }
                     }
                 } else {
                     Text(L10n.string("overview.discovery.failed"))

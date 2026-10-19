@@ -53,9 +53,7 @@ struct InstallTab: View {
                             error: error,
                             guidance: presentation.failureGuidance,
                             diagnosticsText: diagnosticsText
-                        ) { action in
-                            handleRecovery(action: action, error: error)
-                        }
+                        ) { recoveryAction($0, error: error) }
                     }
 
                     if let completion = presentation.completion {
@@ -79,12 +77,8 @@ struct InstallTab: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func handleRecovery(action: RecoveryAction, error: BackendErrorViewModel) {
-        if action.kind == .diagnostics {
-            showDiagnostics()
-            return
-        }
-        _ = session.handleRecoveryAction(action, error: error, profile: profile)
+    private func recoveryAction(_ kind: RecoveryActionKind, error: BackendErrorViewModel) -> (() -> Void)? {
+        kind == .diagnostics ? { showDiagnostics() } : session.recoveryAction(kind, error: error, profile: profile)
     }
 
     private func isDisabled(_ action: InstallUserAction, store: DeployWorkflowStore, isDeviceBusy: Bool) -> Bool {

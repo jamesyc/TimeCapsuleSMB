@@ -25,8 +25,17 @@ struct RecoveryAction: Equatable, Identifiable {
 }
 
 enum RecoveryActionMapper {
-    /// `canRetry` is false where the screen's own buttons rerun the operation.
-    static func actions(for error: BackendErrorViewModel, canRetry: Bool = true) -> [RecoveryAction] {
+    /// The buttons for an error: what its guidance offers that the screen can
+    /// do (`available`), then Copy Diagnostics. Retry also needs the helper to
+    /// say that rerunning can help.
+    static func actions(
+        for error: BackendErrorViewModel,
+        available: (RecoveryActionKind) -> Bool = { _ in true }
+    ) -> [RecoveryAction] {
+        allActions(for: error).filter { $0.kind == .copyDiagnostics || available($0.kind) }
+    }
+
+    private static func allActions(for error: BackendErrorViewModel) -> [RecoveryAction] {
         var actions: [RecoveryAction] = []
         if error.code == "auth_failed" {
             actions.append(action(for: .replacePassword))
@@ -48,7 +57,7 @@ enum RecoveryActionMapper {
             }
         }
 
-        if canRetry, error.recovery?.retryable == true || error.code == "operation_failed" {
+        if error.recovery?.retryable == true || error.code == "operation_failed" {
             actions.append(action(for: .retry))
         }
         actions.append(action(for: .copyDiagnostics))

@@ -5,7 +5,7 @@ struct FlashBootHookSection: View {
     @ObservedObject var store: FlashWorkflowStore
     let performAction: (FlashUserAction) -> Void
     let chooseFirmwareTemplate: () -> Void
-    let handleRecovery: (RecoveryAction, BackendErrorViewModel) -> Void
+    let recoveryAction: (RecoveryActionKind, BackendErrorViewModel) -> (() -> Void)?
     let diagnosticsText: () -> String
 
     var body: some View {
@@ -91,9 +91,7 @@ struct FlashBootHookSection: View {
 
             if let error = store.error {
                 // Each flash step has its own button above, so the box offers no Retry.
-                ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText, canRetry: false) { action in
-                    handleRecovery(action, error)
-                }
+                ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { recoveryAction($0, error) }
             }
         }
         .onAppear {

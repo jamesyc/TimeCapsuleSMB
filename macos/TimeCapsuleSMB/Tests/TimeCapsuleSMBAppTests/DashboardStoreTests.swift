@@ -1169,6 +1169,39 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.selectedTab, .checkup)
     }
 
+    func testRetryIsOfferedOnlyForOperationsTheDashboardCanRunAgain() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.storeTestProfile(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let session = DashboardStore(appStore: fixture.appStore).session(for: profile)
+        func retry(_ operation: String) -> (() -> Void)? {
+            session.retryAction(
+                for: BackendErrorViewModel(operation: operation, code: "remote_error", message: "failed"),
+                profile: profile
+            )
+        }
+
+        for operation in ["doctor", "deploy"] {
+            XCTAssertNotNil(retry(operation), operation)
+        }
+        // The maintenance steps confirm before they run, from the button beside
+        // their box; a profile save and the flash steps have their own buttons.
+        // A Retry would only show the screen already open, so none is offered.
+        for operation in ["activate", "uninstall", "fsck", "update-config-settings", "flash", "set-ssh", "reachability"] {
+            XCTAssertNil(retry(operation), operation)
+            XCTAssertFalse(session.handleRecoveryAction(
+                RecoveryAction(title: "Retry", kind: .retry),
+                error: BackendErrorViewModel(operation: operation, code: "remote_error", message: "failed"),
+                profile: profile
+            ), operation)
+        }
+        XCTAssertTrue(fixture.runner.calls.isEmpty)
+    }
+
     func testNonActionableRecoveryKindsReturnFalse() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.storeTestProfile(

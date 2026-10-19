@@ -13,9 +13,7 @@ struct SettingsTab: View {
             DeviceProfileEditorView(
                 profile: profile,
                 store: session.profileEditorStore,
-                handleRecovery: { action, error in
-                    session.handleRecoveryAction(action, error: error, profile: profile)
-                },
+                recoveryAction: { kind, error in session.recoveryAction(kind, error: error, profile: profile) },
                 diagnosticsText: {
                     DiagnosticsExportBuilder().build(context: appStore.diagnosticsExportContext(includeBackendEvents: true))
                 }
@@ -37,7 +35,7 @@ struct SettingsTab: View {
 private struct DeviceProfileEditorView: View {
     let profile: DeviceProfile
     @ObservedObject var store: DeviceProfileEditorStore
-    let handleRecovery: (RecoveryAction, BackendErrorViewModel) -> Void
+    let recoveryAction: (RecoveryActionKind, BackendErrorViewModel) -> (() -> Void)?
     let diagnosticsText: () -> String
 
     var body: some View {
@@ -116,10 +114,8 @@ private struct DeviceProfileEditorView: View {
                 StageLine(stage: stage)
             }
             if let error = store.error {
-                // Save runs it again; this box has no Retry of its own.
-                ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText, canRetry: false) { action in
-                    handleRecovery(action, error)
-                }
+                // Save runs it again, so the box has no Retry.
+                ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { recoveryAction($0, error) }
             }
         }
         .onAppear {

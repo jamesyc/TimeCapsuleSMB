@@ -154,9 +154,7 @@ struct AddDeviceView: View {
                 Text(warning).foregroundStyle(.orange)
             }
             if let error = store.error {
-                ErrorRecoveryView(error: error) { action in
-                    store.handleRecoveryAction(action)
-                }
+                ErrorRecoveryView(error: error) { store.recoveryAction($0) }
             }
         }
     }

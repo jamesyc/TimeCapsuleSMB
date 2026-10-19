@@ -326,44 +326,49 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         return password
     }
 
+    /// What the dashboard does for a recovery action, or nil where it can do
+    /// nothing; an error box shows a button only for an action that does
+    /// something. A tab adds Diagnostics.
+    func recoveryAction(_ kind: RecoveryActionKind, error: BackendErrorViewModel, profile: DeviceProfile) -> (() -> Void)? {
+        switch kind {
+        case .retry:
+            return retryAction(for: error, profile: profile)
+        case .runCheckup:
+            return { [weak self] in self?.runCheckup(profile: profile) }
+        case .installSMB:
+            return { [weak self] in self?.runInstall(profile: profile) }
+        case .startSMB:
+            return { [weak self] in self?.showMaintenance(.activate) }
+        case .uninstall:
+            return { [weak self] in self?.showMaintenance(.uninstall) }
+        case .diskRepair:
+            return { [weak self] in self?.showMaintenance(.fsck) }
+        case .replacePassword:
+            return { [weak self] in self?.showPasswordReplacement() }
+        case .openSystemSettings:
+            guard let url = LocalNetworkRecovery.settingsURL else {
+                return nil
+            }
+            return { [weak self] in self?.urlOpener.open(url) }
+        case .openSSHAccess:
+            return { [weak self] in self?.openSSHAccess(profile: profile) }
+        case .diagnostics, .copyDiagnostics, .generic:
+            return nil
+        }
+    }
+
     @discardableResult
     func handleRecoveryAction(_ action: RecoveryAction, error: BackendErrorViewModel, profile: DeviceProfile) -> Bool {
-        switch action.kind {
-        case .retry:
-            return retry(error: error, profile: profile)
-        case .runCheckup:
-            runCheckup(profile: profile)
-            return true
-        case .installSMB:
-            runInstall(profile: profile)
-            return true
-        case .startSMB:
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .activate
-            return true
-        case .uninstall:
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .uninstall
-            return true
-        case .diskRepair:
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .fsck
-            return true
-        case .replacePassword:
-            showPasswordReplacement()
-            return true
-        case .openSystemSettings:
-            if let url = LocalNetworkRecovery.settingsURL {
-                urlOpener.open(url)
-                return true
-            }
-            return false
-        case .openSSHAccess:
-            openSSHAccess(profile: profile)
-            return true
-        case .diagnostics, .copyDiagnostics, .generic:
+        guard let perform = recoveryAction(action.kind, error: error, profile: profile) else {
             return false
         }
+        perform()
+        return true
+    }
+
+    private func showMaintenance(_ workflow: MaintenanceWorkflow) {
+        selectedTab = .maintenance
+        maintenanceStore.selectedWorkflow = workflow
     }
 
     private func showPasswordReplacement() {
@@ -538,28 +543,18 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         appStore.sshAccessStore.refresh(profile: profile)
     }
 
-    private func retry(error: BackendErrorViewModel, profile: DeviceProfile) -> Bool {
+    /// What reruns the failed operation, or nil for one the dashboard cannot
+    /// run again from its error box. Activate, Uninstall and Disk Repair ask
+    /// for confirmation first, and their error box sits beside the button that
+    /// does that; a profile save and the flash steps have buttons of their own.
+    func retryAction(for error: BackendErrorViewModel, profile: DeviceProfile) -> (() -> Void)? {
         switch error.operation {
         case "doctor":
-            runCheckup(profile: profile)
-            return true
+            return { [weak self] in self?.runCheckup(profile: profile) }
         case "deploy":
-            runInstall(profile: profile)
-            return true
-        case "activate":
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .activate
-            return true
-        case "uninstall":
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .uninstall
-            return true
-        case "fsck":
-            selectedTab = .maintenance
-            maintenanceStore.selectedWorkflow = .fsck
-            return true
+            return { [weak self] in self?.runInstall(profile: profile) }
         default:
-            return false
+            return nil
         }
     }
 
