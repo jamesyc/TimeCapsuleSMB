@@ -125,6 +125,14 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
     if (config->netbsd4)
         fprintf(file, " SO_SNDBUF=%u", TC_SMBD_SNDBUF_FIXED_NETBSD4);
     fprintf(file, " SO_RCVBUF=%u\n", TC_SMBD_RCVBUF(config->netbsd4));
+    /* NetBSD 6's nettle has ARMv6 assembly for AES but only C for GHASH, so
+     * AES-CMAC and AES-CCM outperform Samba's preferred GMAC and GCM there.
+     * Clients that offer only GMAC or GCM can still use those modes. NetBSD 4
+     * builds nettle without assembly and keeps Samba's algorithm order. */
+    if (!config->netbsd4)
+        fputs("    server smb3 signing algorithms = AES-128-CMAC AES-128-GMAC HMAC-SHA256\n"
+              "    server smb3 encryption algorithms = AES-128-CCM AES-128-GCM AES-256-CCM AES-256-GCM\n",
+              file);
     /* aio_fork's helper buffers cover Samba's default 8 MiB SMB2 reads and
      * writes (patch 0031), so the SMB2 sizes stay at their defaults. */
     if (config->aio_fork)
