@@ -1274,6 +1274,25 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         try await waitUntilStoreState { fixture.store.state == .discoveryReady }
     }
 
+    func testAddDeviceErrorBoxShowsOnlyActionsTheFlowCarriesOut() async throws {
+        let fixture = try await makeStore(responses: [])
+        let recovery = try recoveryValue(
+            title: "The device reported an error",
+            actions: [],
+            actionIDs: ["open_system_settings", "replace_password"],
+            localizationKey: "remote_error"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(operation: "configure", code: "remote_error", message: "failed", recovery: recovery)
+
+        // The helper suggests Checkup (recoveryValue's default), which Add Device cannot run.
+        let shown = RecoveryActionMapper.actions(for: error) { fixture.store.recoveryAction($0) != nil }.map(\.kind)
+
+        XCTAssertFalse(shown.contains(.runCheckup))
+        XCTAssertEqual(shown, [.openSystemSettings, .replacePassword, .retry, .copyDiagnostics])
+        fixture.store.recoveryAction(.replacePassword)?()
+        XCTAssertEqual(fixture.store.state, .passwordEntry)
+    }
+
     private func makeStore(
         responses: [StoreTestRunner.Response],
         localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil,

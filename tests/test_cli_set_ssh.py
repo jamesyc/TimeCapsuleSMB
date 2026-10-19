@@ -191,10 +191,17 @@ class CliSetSshTests(CliTestCase):
         enable_mock.assert_not_called()
         rendered = output.getvalue()
         self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", rendered)
-        self.assertIn("Could not connect to ACP on 10.0.0.99:5009", rendered)
+        self.assertIn("Could not connect to ACP.", rendered)
+        self.assertIn("\nNo answer from 10.0.0.99:5009.", rendered)
+        # The address is off this computer's networks: the CLI says what the app
+        # says for device_off_network.
+        self.assertIn(
+            "\n\nNext steps:\n  1. Check the address, or connect this computer to the device's network", rendered,
+        )
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertIn("stage=acp_port_probe", finished["error"])
-        self.assertIn("Failed to enable SSH via ACP: Could not connect to ACP on 10.0.0.99:5009", finished["error"])
+        self.assertIn("Failed to enable SSH via ACP: Could not connect to ACP.", finished["error"])
+        self.assertIn("\nNo answer from 10.0.0.99:5009.", finished["error"])
         self.assertIn("acp_port_probe_attempts=3", finished["error"])
         self.assertIn("acp_port_probe_last_error=Connection refused", finished["error"])
 

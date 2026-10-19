@@ -127,7 +127,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 label = "Failed to enable SSH via ACP"
                 message = f"{label}: {error_text}"
                 print(color_red(f"{label}:"))
-                print("\n".join(error_text.splitlines()))
+                print(command_context.with_next_steps(error_text, e))
                 command_context.fail_with_error(message)
                 return 1
 
@@ -186,14 +186,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         except RebootFlowError as e:
             error_text = str(e)
             print(color_red("Failed to verify SSH disable:"))
-            print(error_text)
+            print(command_context.with_next_steps(error_text, e))
             command_context.fail_with_error(error_text)
             return 1
         except Exception as e:
             error_text = str(e)
             message = f"Failed to disable SSH over SSH: {error_text}"
             print(color_red("Failed to disable SSH over SSH:"))
-            print(error_text)
+            print(command_context.with_next_steps(error_text, e))
             command_context.fail_with_error(message)
             return 1
 

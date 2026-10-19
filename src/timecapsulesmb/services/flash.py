@@ -300,11 +300,11 @@ def load_flash_manifest(backup_dir: Path) -> dict[str, object]:
     try:
         data = json.loads(manifest_path.read_text())
     except OSError as exc:
-        raise FlashAnalysisError(f"flash manifest not found: {manifest_path}") from exc
+        raise FlashAnalysisError(f"Flash manifest not found: {manifest_path}") from exc
     except json.JSONDecodeError as exc:
-        raise FlashAnalysisError(f"flash manifest is not valid JSON: {manifest_path}") from exc
+        raise FlashAnalysisError(f"Flash manifest is not valid JSON: {manifest_path}") from exc
     if not isinstance(data, dict):
-        raise FlashAnalysisError(f"flash manifest is not an object: {manifest_path}")
+        raise FlashAnalysisError(f"Flash manifest is not an object: {manifest_path}")
     return data
 
 
@@ -371,21 +371,21 @@ def _read_backup_raw(backup_dir: Path, manifest: dict[str, object]) -> tuple[byt
         primary = _manifest_file_path(manifest, backup_dir, "primary").read_bytes()
         secondary = _manifest_file_path(manifest, backup_dir, "secondary").read_bytes()
     except OSError as exc:
-        raise FlashAnalysisError(f"flash backup raw bank file could not be read: {exc}") from exc
+        raise FlashAnalysisError(f"Flash backup raw bank file could not be read: {exc}") from exc
     return primary, secondary
 
 
 def _backup_syap(manifest: dict[str, object]) -> str:
     syap = str(manifest.get("syap") or "").strip()
     if not syap:
-        raise FlashAnalysisError("flash manifest is missing syAP")
+        raise FlashAnalysisError("Flash manifest is missing syAP")
     return normalize_syap(syap)
 
 
 def _backup_os_release(manifest: dict[str, object]) -> str:
     os_release = str(manifest.get("os_release") or "").strip()
     if not os_release:
-        raise FlashAnalysisError("flash manifest is missing os_release")
+        raise FlashAnalysisError("Flash manifest is missing os_release")
     return os_release
 
 
@@ -407,7 +407,7 @@ def inspect_backup(
     operation: str,
 ) -> FlashAnalysisBundle:
     if operation not in READ_OPERATIONS:
-        raise FlashAnalysisError(f"unsupported flash operation: {operation}")
+        raise FlashAnalysisError(f"Unsupported flash operation: {operation}")
     backup_dir = backup_dir.expanduser().resolve()
     manifest = load_flash_manifest(backup_dir)
     if operation != "read_only":
@@ -541,7 +541,7 @@ def plan_from_operation(
         )
     if operation == "read_only":
         return None
-    raise FlashAnalysisError(f"unsupported flash plan operation: {operation}")
+    raise FlashAnalysisError(f"Unsupported flash plan operation: {operation}")
 
 
 def save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashInspection) -> Path | None:
@@ -730,19 +730,19 @@ def validate_live_target_matches_backup(
         live_sha256 = sha256_hex(dump_remote_bank(connection, "/dev/rflash0.raw", log=log))
         if live_sha256 != plan.secondary_refresh.primary_sha256:
             raise FlashAnalysisError(
-                "refusing to write because the live primary firmware bank changed since the saved backup: "
-                f"live_sha256={live_sha256} backup_sha256={plan.secondary_refresh.primary_sha256}"
+                "Refusing to write because the live primary firmware bank changed since the saved backup",
+                detail=f"live_sha256={live_sha256} backup_sha256={plan.secondary_refresh.primary_sha256}",
             )
         return
     if plan.target_bank is None:
-        raise FlashAnalysisError("flash plan has no target bank")
+        raise FlashAnalysisError("Flash plan has no target bank")
     _emit(log, f"Verifying live {plan.target_bank.name} bank still matches the saved backup...")
     live = dump_remote_bank(connection, plan.target_bank.device, log=log)
     live_sha256 = sha256_hex(live)
     if live_sha256 != plan.target_bank.sha256:
         raise FlashAnalysisError(
-            "refusing to write because the live firmware bank changed since the saved backup: "
-            f"bank={plan.target_bank.name} live_sha256={live_sha256} backup_sha256={plan.target_bank.sha256}"
+            "Refusing to write because the live firmware bank changed since the saved backup",
+            detail=f"bank={plan.target_bank.name} live_sha256={live_sha256} backup_sha256={plan.target_bank.sha256}",
         )
 
 
@@ -754,7 +754,7 @@ def write_flash_plan(
     log: object | None = None,
 ) -> dict[str, object]:
     if plan.target_name is None or plan.payload is None:
-        raise FlashAnalysisError("flash plan has no write payload")
+        raise FlashAnalysisError("Flash plan has no write payload")
     record_write_outcome(
         bundle=bundle,
         plan=plan,

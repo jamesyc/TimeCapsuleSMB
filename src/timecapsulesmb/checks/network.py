@@ -237,27 +237,54 @@ def classify_network_link(
 PORT_CHECK_TIMEOUT_SECONDS = 2.0
 
 
-def closed_ssh_port_error(host: str) -> tuple[ErrorCode, str, dict[str, object]]:
-    """Why SSH port 22 is closed: the code, message and details.
+@dataclass(frozen=True)
+class ClosedSshPort:
+    """Why SSH port 22 is closed at `host`: SSH is off while ACP answers
+    (`acp_error` None), or nothing answers there at all."""
+
+    host: str
+    acp_error: str | None
+
+    @property
+    def code(self) -> ErrorCode:
+        return ErrorCode.SSH_DISABLED if self.acp_error is None else ErrorCode.DEVICE_UNREACHABLE
+
+    @property
+    def message(self) -> str:
+        """An error's message."""
+        return "SSH is turned off on the device." if self.acp_error is None else "The device is not answering."
+
+    @property
+    def detail(self) -> str:
+        """An error's facts."""
+        if self.acp_error is None:
+            return f"AirPort ACP answers at {self.host} on port {ACP_PORT}, but SSH port 22 is closed."
+        return f"Neither SSH port 22 nor AirPort ACP port {ACP_PORT} is reachable at {self.host} ({self.acp_error})."
+
+    @property
+    def line(self) -> str:
+        """Checkup's result line."""
+        if self.acp_error is None:
+            return f"SSH is turned off on {self.host}: AirPort ACP answers on port {ACP_PORT}, but SSH port 22 is closed."
+        return (
+            f"The device is not answering at {self.host}: neither SSH port 22 nor AirPort ACP port {ACP_PORT} "
+            f"is reachable ({self.acp_error})."
+        )
+
+    @property
+    def details(self) -> dict[str, object]:
+        return {} if self.acp_error is None else {"acp_port_error": self.acp_error}
+
+
+def closed_ssh_port_error(host: str) -> ClosedSshPort:
+    """Why SSH port 22 is closed.
 
     The user fixes the two causes differently: SSH is off (after a reset, or
     turned off in SSH Access) while the device still answers AirPort ACP, or
     nothing answers at this address at all (the device is off, or DHCP gave
     it another address). One TCP connect to the ACP port tells them apart.
     """
-    acp_error = tcp_connect_error(host, ACP_PORT, PORT_CHECK_TIMEOUT_SECONDS)
-    if acp_error is None:
-        return (
-            ErrorCode.SSH_DISABLED,
-            f"SSH is turned off on {host}: AirPort ACP answers on port {ACP_PORT}, but SSH port 22 is closed.",
-            {},
-        )
-    return (
-        ErrorCode.DEVICE_UNREACHABLE,
-        f"The device is not answering at {host}: neither SSH port 22 nor AirPort ACP port {ACP_PORT} "
-        f"is reachable ({acp_error}).",
-        {"acp_port_error": acp_error},
-    )
+    return ClosedSshPort(host, tcp_connect_error(host, ACP_PORT, PORT_CHECK_TIMEOUT_SECONDS))
 
 
 def check_ssh_login(connection: SshConnection) -> CheckResult:
@@ -288,8 +315,8 @@ def _unanswered_ssh_port(target: str) -> CheckResult | None:
     ssh_error = tcp_connect_error(host, 22, PORT_CHECK_TIMEOUT_SECONDS)
     if ssh_error is None:
         return None
-    code, message, details = closed_ssh_port_error(host)
-    return CheckResult("FAIL", message, {"code": code, "ssh_port_error": ssh_error, **details})
+    closed = closed_ssh_port_error(host)
+    return CheckResult("FAIL", closed.line, {"code": closed.code, "ssh_port_error": ssh_error, **closed.details})
 
 
 def ssh_login_failure_code(error: TransportError | None) -> str:

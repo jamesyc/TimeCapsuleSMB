@@ -23,7 +23,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device import probe as device_probe
 from timecapsulesmb.device import acpd
-from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network_message
+from timecapsulesmb.services.acp_ssh import client_networks_if_off_network, device_off_network
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
 from timecapsulesmb.transport.ssh import SshConnection
@@ -59,7 +59,7 @@ AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not wo
 
 
 ACP_UNREACHABLE_MESSAGE = (
-    "This computer cannot reach AirPort ACP (port 5009) on {host}, although the device's own ACP works. "
+    "This computer cannot reach AirPort ACP (port 5009) on the device, although the device's own ACP works. "
     "This command needs ACP from this computer, so nothing was changed."
 )
 
@@ -136,8 +136,9 @@ def require_acpd_ready(
         host = endpoint_host(connection.host)
         client_networks = client_networks_if_off_network(host)
         if client_networks is not None:
-            raise DeviceAccessError(device_off_network_message(host, client_networks), code=ErrorCode.DEVICE_OFF_NETWORK)
-        raise DeviceAccessError(ACP_UNREACHABLE_MESSAGE.format(host=host), code=ErrorCode.ACP_UNREACHABLE)
+            message, facts = device_off_network(host, client_networks)
+            raise DeviceAccessError(message, code=ErrorCode.DEVICE_OFF_NETWORK, detail=facts)
+        raise DeviceAccessError(ACP_UNREACHABLE_MESSAGE, code=ErrorCode.ACP_UNREACHABLE, detail=f"Device address {host}.")
 
 
 def learn_airport_identity(host: str, password: str, callbacks: OperationCallbacks) -> None:
@@ -186,8 +187,9 @@ def confirm_device_address(
         callbacks.message(located.rejected_note)
     if trigger == "identity_mismatch":
         raise DeviceAccessError(
-            f"A different AirPort answers at {endpoint_host(host)}, and this device was not found on the network.",
+            "A different AirPort answers at the saved address, and this device was not found on the network.",
             code=ErrorCode.DEVICE_IDENTITY_MISMATCH,
+            detail=f"Saved address {endpoint_host(host)}.",
         )
     return host, reading
 
@@ -224,8 +226,8 @@ def probe_failure_error(probe_result: ProbeResult, host: str) -> DeviceAccessErr
     """The error for a probe that did not log in; a closed SSH port says why
     (checks.network.closed_ssh_port_error)."""
     if probe_result.ssh_status == SshAccessStatus.CLOSED:
-        code, message, _details = closed_ssh_port_error(endpoint_host(host))
-        return DeviceAccessError(message, code=code)
+        closed = closed_ssh_port_error(endpoint_host(host))
+        return DeviceAccessError(closed.message, code=closed.code, detail=closed.detail)
     return DeviceAccessError(
         probe_result.error or "Failed to probe device compatibility.",
         code=PROBE_STATUS_ERROR_CODES.get(probe_result.ssh_status, ErrorCode.REMOTE_ERROR),

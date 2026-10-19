@@ -79,21 +79,25 @@ def require_compatible_install(connection: SshConnection, callbacks: OperationCa
     )
     if version.release_tag is None or version.cli_version_code is None:
         raise ActivationInstallError(
-            "The installed TimeCapsuleSMB has no version information, so it is older than "
-            f"{OLDEST_ACTIVATABLE_RELEASE_TAG}, the oldest release {RELEASE_TAG} can start.",
+            "The installed TimeCapsuleSMB has no version information, so it is older than the oldest release "
+            "this version can start.",
             code=ErrorCode.RUNTIME_OUTDATED,
+            detail=f"Oldest startable release {OLDEST_ACTIVATABLE_RELEASE_TAG}; this version {RELEASE_TAG}.",
         )
     if release_major(version.cli_version_code) > release_major(CLI_VERSION_CODE):
         raise ActivationInstallError(
-            f"The installed TimeCapsuleSMB {version.release_tag} is from a newer major version than this "
-            f"version, {RELEASE_TAG}.",
+            "The installed TimeCapsuleSMB is from a newer major version than this version.",
             code=ErrorCode.CLIENT_OUTDATED,
+            detail=f"Installed {version.release_tag}; this version {RELEASE_TAG}.",
         )
     if version.cli_version_code < OLDEST_ACTIVATABLE_VERSION_CODE:
         raise ActivationInstallError(
-            f"The installed TimeCapsuleSMB {version.release_tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}, "
-            f"the oldest release {RELEASE_TAG} can start.",
+            "The installed TimeCapsuleSMB is older than the oldest release this version can start.",
             code=ErrorCode.RUNTIME_OUTDATED,
+            detail=(
+                f"Installed {version.release_tag}; oldest startable release {OLDEST_ACTIVATABLE_RELEASE_TAG}; "
+                f"this version {RELEASE_TAG}."
+            ),
         )
 
 

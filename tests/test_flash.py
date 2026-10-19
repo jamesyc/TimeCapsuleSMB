@@ -760,9 +760,9 @@ class FlashBackupServiceTests(unittest.TestCase):
             self.assertIn("flash_plan", flash_service.load_flash_manifest(backup_dir))
             with mock.patch(
                 "timecapsulesmb.services.flash.plan_from_operation",
-                side_effect=FlashAnalysisError("refusing to restore"),
+                side_effect=FlashAnalysisError("Refusing to restore"),
             ):
-                with self.assertRaisesRegex(FlashAnalysisError, "refusing to restore"):
+                with self.assertRaisesRegex(FlashAnalysisError, "Refusing to restore"):
                     flash_service.plan_flash_from_backup(
                         backup_dir=backup_dir,
                         operation="check_apple",
@@ -772,7 +772,7 @@ class FlashBackupServiceTests(unittest.TestCase):
                     )
             saved = flash_service.load_flash_manifest(backup_dir)
 
-        self.assertEqual(saved["flash_plan_error"], {"stage": "plan_flash", "message": "refusing to restore"})
+        self.assertEqual(saved["flash_plan_error"], {"stage": "plan_flash", "message": "Refusing to restore"})
         self.assertNotIn("flash_plan", saved)
         self.assertEqual(saved["operation"], "check_apple")
         self.assertEqual(saved["flash_plan_params"]["firmware_version"], "7.8.1")

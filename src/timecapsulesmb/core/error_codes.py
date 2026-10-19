@@ -120,6 +120,9 @@ class CodedError(Exception):
     words. `detail` holds the facts of this failure (an address, a file, an exit
     status), or None. The error reads as both, each on its line, wherever its
     text is shown whole: the CLI, the app's English details, telemetry.
+    A wrapper that names its step before the cause ("Failed to enable SSH via
+    ACP: <cause>") keeps that form: the telemetry dashboard sorts failures by
+    such prefixes, whitespace collapsed.
 
     A subclass may set `code` for every instance; None means the error names no
     cause, and whoever reports it chooses the generic code that fits.

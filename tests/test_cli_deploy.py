@@ -715,7 +715,7 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "MaSt found 1 deployable HFS volume(s), but deploy could not write to any of them.\n\n"
+            "Deploy could not write to any deployable HFS volume.\nMaSt found 1 deployable HFS volume(s).\n\n"
             "Next steps:\n"
             "  1. Wake or remount the disk.\n"
             "  2. Check available free space.\n"
@@ -747,8 +747,8 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "MaSt found 1 deployable HFS volume(s), but none of them was mounted and the device did not "
-            "mount one when asked.\n\n"
+            "No deployable HFS volume was mounted, and the device did not mount one when asked.\n"
+            "MaSt found 1 deployable HFS volume(s).\n\n"
             "Next steps:\n"
             "  1. Wait a minute, then run `tcapsule deploy` again.\n"
             "  2. Restart the device if the disk still does not mount.",
@@ -774,8 +774,8 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "MaSt found 1 deployable HFS volume(s). A volume is mounted, but the device would not keep it mounted "
-            "for TimeCapsuleSMB, so it could be unmounted during deploy.\n\n"
+            "A volume is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be "
+            "unmounted during deploy.\nMaSt found 1 deployable HFS volume(s).\n\n"
             "Next steps:\n"
             "  1. Wait a minute, then run `tcapsule deploy` again.\n"
             "  2. Restart the device if this keeps happening.",
@@ -799,7 +799,7 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
-            "No internal disk was detected after 10 MaSt queries spaced 3 seconds apart.\n\n"
+            "No internal disk was detected.\nAfter 10 MaSt queries spaced 3 seconds apart.\n\n"
             "Next steps:\n"
             "  1. Check that the disk is connected and seated.\n"
             "  2. Power-cycle the device and retry after the disk spins up.\n"
@@ -926,6 +926,7 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
+            "The installed files could not be verified on the disk.\n"
             "managed payload verification failed at /Volumes/dk2/.samba4: missing smbd\n\n"
             "Next steps:\n"
             "  1. Wake the disk, then try again.\n"
@@ -952,6 +953,7 @@ class CliDeployTests(CliTestCase):
 
         self.assertEqual(
             str(result.exception),
+            "The installed files could not be verified on the disk.\n"
             "managed payload verification failed at /Volumes/dk2/.samba4: missing payload directory\n\n"
             "Next steps:\n"
             "  1. Run `tcapsule deploy` again.\n"

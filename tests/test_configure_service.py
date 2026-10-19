@@ -359,7 +359,7 @@ class ConfigureServiceTests(unittest.TestCase):
                             with self.assertRaises(ACPConnectionError) as raised:
                                 enable_ssh_and_reprobe(self.make_connection(), callbacks=callbacks)
 
-        self.assertIn("Could not connect to ACP on 10.0.0.2:5009", str(raised.exception))
+        self.assertIn("No answer from 10.0.0.2:5009.", str(raised.exception))
         self.assertEqual(tcp_connect_error.call_args_list, [
             mock.call("10.0.0.2", ACP_PORT),
             mock.call("10.0.0.2", ACP_PORT),
@@ -459,7 +459,7 @@ class ConfigureServiceTests(unittest.TestCase):
 
                 self.assertIsInstance(error, ACPNoRouteError)
                 self.assertEqual(
-                    str(error), "Could not connect to ACP on 10.0.0.2:5009.",
+                    str(error), "Could not connect to ACP.\nNo answer from 10.0.0.2:5009.",
                 )
 
     def test_port_probe_failures_that_are_not_all_no_route_stay_generic(self) -> None:
@@ -477,7 +477,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 error = self.probe_failure(errors)
                 self.assertIs(type(error), ACPConnectionError)
                 self.assertEqual(
-                    str(error), "Could not connect to ACP on 10.0.0.2:5009.",
+                    str(error), "Could not connect to ACP.\nNo answer from 10.0.0.2:5009.",
                 )
 
     def test_port_probe_no_route_to_another_network_says_the_device_is_off_this_computers_network(self) -> None:
@@ -654,7 +654,7 @@ class ConfigureServiceTests(unittest.TestCase):
         run = self.preflight(port_answers=False)
 
         self.assertIsInstance(run.outcome, ACPConnectionError)
-        self.assertIn("Could not connect to ACP on 192.168.1.218:5009", str(run.outcome))
+        self.assertIn("Could not connect to ACP.\nNo answer from 192.168.1.218:5009.", str(run.outcome))
         run.set_dbug.assert_not_called()
 
     def test_a_device_found_with_another_password_is_reported_and_keeps_the_connection_error(self) -> None:
@@ -663,7 +663,7 @@ class ConfigureServiceTests(unittest.TestCase):
         run = self.preflight(port_answers=False, located=LocateResult("password_rejected", address="10.0.1.1"))
 
         self.assertIsInstance(run.outcome, ACPConnectionError)
-        self.assertIn("Could not connect to ACP on 192.168.1.218:5009", str(run.outcome))
+        self.assertIn("Could not connect to ACP.\nNo answer from 192.168.1.218:5009.", str(run.outcome))
         self.assertIn(LocateResult("password_rejected", address="10.0.1.1").rejected_note, run.logs)
         run.set_dbug.assert_not_called()
 

@@ -504,14 +504,15 @@ class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
     def test_runtime_kept_off_by_a_failing_disk_keeps_its_code(self) -> None:
         # The repair finished; the disk's own errors say why file sharing did
         # not come back, rather than "run Activate".
-        from timecapsulesmb.device.disk_errors import disk_failing_message
+        from timecapsulesmb.device.disk_errors import DiskFailingError
 
         errors = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
         outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(disk_errors=errors))
 
         self.assertEqual(outcome.status, 0)
         self.assertEqual(outcome.runtime_restart_code, "disk_failing")
-        self.assertEqual(outcome.failure, f"Disk repair completed. {disk_failing_message(errors)}")
+        self.assertEqual(outcome.failure, f"Disk repair completed. {DiskFailingError(errors)}")
+        self.assertTrue(outcome.failure.endswith(f"\n{errors[-1]}"))
         self.assertFalse(recorder.fields["runtime_restarted"])
 
     def test_runtime_that_serves_without_rsync_restarted_file_sharing(self) -> None:
@@ -667,11 +668,11 @@ class InstalledNetbsd4AutostartTests(unittest.TestCase):
     def test_netbsd4_install_this_version_cannot_start_is_left_off_with_the_reason(self) -> None:
         newer_major = (release_major(CLI_VERSION_CODE) + 1) * 10000
         cases = (
-            ("v2.2.9", 20209, "runtime_outdated", "v2.2.9 is older than"),
+            ("v2.2.9", 20209, "runtime_outdated", "Installed v2.2.9; oldest startable release"),
             # No /sbin/diskd guard, which the readiness check requires: the
             # restart would time out, so it is not tried.
-            ("v3.2.0", 30200, "runtime_outdated", f"v3.2.0 is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}"),
-            ("v9.0.0", newer_major, "client_outdated", "v9.0.0 is from a newer major version"),
+            ("v3.2.0", 30200, "runtime_outdated", f"Installed v3.2.0; oldest startable release {OLDEST_ACTIVATABLE_RELEASE_TAG}"),
+            ("v9.0.0", newer_major, "client_outdated", "Installed v9.0.0; this version"),
         )
         for tag, code, reason, message in cases:
             with self.subTest(tag=tag):
@@ -867,7 +868,8 @@ class ActivateRuntimeTests(unittest.TestCase):
         result, _recorder, run_actions, settle, verify = self.activate(ready=False, installed=(None, None))
 
         self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="runtime_outdated")
-        self.assertIn(f"older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", str(result))
+        self.assertIn("has no version information", result.message)
+        self.assertIn(f"Oldest startable release {OLDEST_ACTIVATABLE_RELEASE_TAG}", result.detail)
 
     def test_install_older_than_the_oldest_startable_release_is_refused(self) -> None:
         # These lack what this version verifies, so activation would wait the
@@ -879,7 +881,7 @@ class ActivateRuntimeTests(unittest.TestCase):
                 result, _recorder, run_actions, settle, verify = self.activate(ready=True, installed=(tag, code))
 
                 self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="runtime_outdated")
-                self.assertIn(f"{tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", str(result))
+                self.assertIn(f"Installed {tag}; oldest startable release {OLDEST_ACTIVATABLE_RELEASE_TAG}", result.detail)
                 self.assertIn("Run `tcapsule deploy`.", cli_steps("activate", result.code))
 
     def test_other_releases_of_this_major_version_are_started_and_verified(self) -> None:
@@ -908,7 +910,8 @@ class ActivateRuntimeTests(unittest.TestCase):
         result, _recorder, run_actions, settle, verify = self.activate(ready=False, installed=("v9.0.0", newer_major))
 
         self.assert_refused_before_touching_the_runtime(result, run_actions, settle, verify, code="client_outdated")
-        self.assertIn("v9.0.0 is from a newer major version", str(result))
+        self.assertIn("is from a newer major version", result.message)
+        self.assertEqual(result.detail, f"Installed v9.0.0; this version {RELEASE_TAG}.")
         self.assertIn("Update TimeCapsuleSMB, then start it again.", cli_steps("activate", result.code))
 
     def test_oldest_startable_release_is_in_this_major_version(self) -> None:

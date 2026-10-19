@@ -268,7 +268,7 @@ class FlashWorkflowTests(unittest.TestCase):
             active_selection=ActiveSelectionInfo("no_candidates", (), None),
         )
 
-        with self.assertRaisesRegex(FlashAnalysisError, "no firmware bank passed active selection"):
+        with self.assertRaisesRegex(FlashAnalysisError, "(?i)no firmware bank passed active selection"):
             plan_restore_apple(inspection, syap="116", firmware_template=None)
 
     def write_plan(self, *, payload: AcpFlashPayload | None = None, readback: bytes | None = None) -> tuple[FlashPlan, bytes]:
@@ -351,7 +351,7 @@ class FlashWorkflowTests(unittest.TestCase):
                     login=SimpleNamespace(classification="stock"),
                     footer=SimpleNamespace(checksum=0x11111111),
                 )),
-                "LOGIN classification is stock",
+                "LOGIN classification is not the expected one.\nGot stock",
             ),
         ]
         for get_property, analyze, expected_error in cases:

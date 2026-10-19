@@ -353,14 +353,16 @@ class ProbeFailureErrorTests(unittest.TestCase):
         acp_probe.assert_called_once_with("10.0.0.2", 5009, PORT_CHECK_TIMEOUT_SECONDS)
         self.assertIsInstance(error, DeviceError)
         self.assertEqual(error.code, "ssh_disabled")
-        self.assertIn("SSH is turned off on 10.0.0.2", str(error))
+        self.assertEqual(error.message, "SSH is turned off on the device.")
+        self.assertIn("AirPort ACP answers at 10.0.0.2", error.detail)
 
     def test_closed_ssh_with_acp_silent_means_the_device_is_unreachable(self) -> None:
         error = self.probe_failure_with((self.failed_probe(SshAccessStatus.CLOSED),
             "root@10.0.0.2"), mock.Mock(return_value="[Errno 64] Host is down"))
 
         self.assertEqual(error.code, "device_unreachable")
-        self.assertIn("not answering at 10.0.0.2", str(error))
+        self.assertEqual(error.message, "The device is not answering.")
+        self.assertIn("reachable at 10.0.0.2", error.detail)
         self.assertIn("[Errno 64] Host is down", str(error))
 
     def test_acp_check_targets_ipv6_and_hostname_devices_too(self) -> None:
@@ -794,9 +796,9 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
     def test_an_unanswered_network_read_off_this_computers_network_says_so(self) -> None:
         unanswered = AirportAcpReading(password_matches=None, error="No route to host")
         networks = [ipaddress.ip_network("192.168.5.0/24")]
-        with mock.patch("timecapsulesmb.services.runtime.device_off_network_message", return_value="off network") as message:
+        with mock.patch("timecapsulesmb.services.runtime.device_off_network", return_value=("off network", "facts")) as message:
             error, _debug, _answer, _processes = self.gate(reading=unanswered, off_network=networks)
-        self.assertEqual((error.code, str(error)), ("device_off_network", "off network"))
+        self.assertEqual((error.code, error.message, error.detail), ("device_off_network", "off network", "facts"))
         message.assert_called_once_with("10.0.0.2", networks)
 
     def test_an_ssh_failure_asking_acpd_is_raised_not_blamed_on_acpd(self) -> None:
@@ -879,7 +881,8 @@ class ConfirmDeviceAddressTests(unittest.TestCase):
 
         self.assertIsInstance(outcome, service_runtime.DeviceAccessError)
         self.assertEqual(outcome.code, "device_identity_mismatch")
-        self.assertIn("A different AirPort answers at 10.0.0.2", str(outcome))
+        self.assertIn("A different AirPort answers at the saved address", str(outcome))
+        self.assertIn("Saved address 10.0.0.2.", str(outcome))
 
     def test_a_device_back_with_another_password_is_reported_and_stays_at_its_saved_address(self) -> None:
         # Only the record's MAC says it is this device, and the record may be a

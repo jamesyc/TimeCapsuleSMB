@@ -1551,7 +1551,7 @@ Current deploy flow:
 - selects exactly one writable persistent payload home:
   - first writable internal `builtin=true` HFS volume
   - else first writable external HFS volume
-  - else fails with `MaSt found N deployable HFS volume(s), but deploy could not write to any of them.`
+  - else fails with `Deploy could not write to any deployable HFS volume.` (code `deploy_disk_not_writable`), and `MaSt found N deployable HFS volume(s).` as its detail
 - computes the device-specific runtime and payload paths from that payload home
 - builds the plan and renders configuration locally before stopping services
 - confirms installation and reboot before stopping or replacing managed software (unless `--yes` is used)

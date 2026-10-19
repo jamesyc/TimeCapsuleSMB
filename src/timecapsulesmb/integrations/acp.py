@@ -6,6 +6,8 @@ import socket
 import struct
 import zlib
 
+from timecapsulesmb.core.error_codes import CodedError, ErrorCode
+
 
 ACP_PORT = 5009
 # Apple's on-device ACP client: a hard link to /sbin/ACPd in every NetBSD 4 and
@@ -36,8 +38,9 @@ DBUG_SSH_VALUE = 0x3000
 LogCallback = Callable[[str], None]
 
 
-class ACPError(RuntimeError):
-    """Base error for Apple ACP protocol operations."""
+class ACPError(CodedError, RuntimeError):
+    """Base error for Apple ACP protocol operations. One that names no code
+    gets one from the operation that hit it, by its stage."""
 
 
 class ACPConnectionError(ACPError):
@@ -46,6 +49,8 @@ class ACPConnectionError(ACPError):
 
 class ACPAuthError(ACPError):
     """Raised when the device rejects an authenticated ACP command."""
+
+    code = ErrorCode.AUTH_FAILED
 
 
 class ACPProtocolError(ACPError):

@@ -4,6 +4,7 @@ from collections.abc import Callable
 import sys
 import time
 
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.checks.network import IpNetwork, classify_network_link, host_networks, local_lan_networks, reportable_network
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device import probe
@@ -33,12 +34,16 @@ class ACPDeviceOffNetworkError(ACPConnectionError):
     """ACP did not answer, and the device's address is on none of this
     computer's networks (VPN tunnels and virtual bridges aside)."""
 
+    code = ErrorCode.DEVICE_OFF_NETWORK
+
 
 class ACPNoRouteError(ACPConnectionError):
     """Every ACP connect was refused with "No route to host", and the address
     is not known to be off this computer's networks. A device that stops
     answering times out or reports "Host is down" first. The macOS app reads
     this as its Local Network access being blocked."""
+
+    code = ErrorCode.ACP_NO_ROUTE
 
 
 # Advice for an ACP port that does not answer at an address on this
@@ -48,17 +53,19 @@ class AirportIdentityMismatchError(ACPError):
     found anywhere else."""
 
 
-def device_off_network_message(
+def device_off_network(
     address: str,
     client_networks: list[IpNetwork],
     *,
     platform: str | None = None,
-) -> str:
+) -> tuple[str, str]:
+    """An error's message that the device is off this computer's networks,
+    and the facts: its address and those networks."""
     computer = "this Mac" if (platform or sys.platform) == "darwin" else "this computer"
-    # The message reaches telemetry as the operation's error, so this
+    # The detail reaches telemetry with the operation's error, so this
     # computer's public networks are shown only by family and prefix length.
     networks = ", ".join(reportable_network(network, hide_hosts=True) for network in client_networks)
-    return f"{address} is not on {computer}'s network ({networks})."
+    return f"The device's address is not on {computer}'s network.", f"{address} is not on {computer}'s network ({networks})."
 
 
 def client_networks_if_off_network(host: str) -> list[IpNetwork] | None:
@@ -162,13 +169,15 @@ def _probe_acp_port(
         acp_port_probe_error_kinds=[entry["kind"] for entry in errors],
     )
     _record_port_probe_context(host, record, callbacks)
-    failure = f"Could not connect to ACP on {host}:{ACP_PORT}."
+    failure = "Could not connect to ACP."
+    unanswered = f"No answer from {host}:{ACP_PORT}."
     client_networks = client_networks_if_off_network(host)
     if client_networks:
-        raise ACPDeviceOffNetworkError(f"{failure} {device_off_network_message(host, client_networks)}")
+        message, facts = device_off_network(host, client_networks)
+        raise ACPDeviceOffNetworkError(f"{failure} {message}", detail=f"{unanswered} {facts}")
     if all(entry["kind"] == "no_route" for entry in errors):
-        raise ACPNoRouteError(failure)
-    raise ACPConnectionError(failure)
+        raise ACPNoRouteError(failure, detail=unanswered)
+    raise ACPConnectionError(failure, detail=unanswered)
 
 
 def _follow(

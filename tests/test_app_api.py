@@ -994,7 +994,7 @@ class AppApiTests(unittest.TestCase):
 
     def test_flash_patch_refused_for_a_bad_secondary_points_the_app_at_restore(self) -> None:
         collector = CollectingSink()
-        refusal = SecondaryBankInvalidError("refusing to patch primary because the secondary (backup) firmware bank ...")
+        refusal = SecondaryBankInvalidError("Refusing to patch primary because the secondary (backup) firmware bank ...")
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", side_effect=refusal):
                 service.run_api_request(
@@ -1010,7 +1010,7 @@ class AppApiTests(unittest.TestCase):
     def test_flash_secondary_read_disagreement_asks_the_app_for_a_fresh_backup(self) -> None:
         # Our read finds the secondary damaged, ACPd's own read finds it intact.
         refusal = SecondaryBankReadMismatchError(
-            "refusing to rewrite the secondary bank because the secondary (backup) firmware bank read differently ..."
+            "Refusing to rewrite the secondary bank because the secondary (backup) firmware bank read differently ..."
         )
         for action, mode in (("plan", "restore"), ("plan", "patch"), ("write", "restore")):
             with self.subTest(action=action, mode=mode):
@@ -3796,7 +3796,7 @@ class AppApiTests(unittest.TestCase):
         # The only terminal event says the saved address does not answer: no confirmation.
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "device_unreachable")
-        self.assertIn("Could not connect to ACP on 10.0.0.2:5009", error["message"])
+        self.assertIn("Could not connect to ACP.\nNo answer from 10.0.0.2:5009.", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "device_unreachable")
         self.assertEqual(self._telemetry_client.emit.call_args_list[-1].kwargs["result"], "failure")
 
@@ -4388,7 +4388,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "device_off_network")
         self.assertEqual(
             error["message"],
-            "Could not connect to ACP on 10.0.1.1:5009. 10.0.1.1 is not on this Mac's network (192.168.1.0/24).",
+            "Could not connect to ACP. The device's address is not on this Mac's network.\n"
+            "No answer from 10.0.1.1:5009. 10.0.1.1 is not on this Mac's network (192.168.1.0/24).",
         )
         self.assertEqual(error["recovery"]["localization_key"], "device_off_network")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
@@ -4483,7 +4484,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "acp_no_route")
         self.assertEqual(
             error["message"],
-            "No AirPort ACP service responded at this address: Could not connect to ACP on 10.0.0.99:5009.",
+            # The dashboard counts these by this prefix, whitespace collapsed.
+            "No AirPort ACP service responded at this address: Could not connect to ACP.\nNo answer from 10.0.0.99:5009.",
         )
         self.assertEqual(error["recovery"]["localization_key"], "local_network_permission_denied")
         self.assertEqual(error["recovery"]["action_ids"], ["open_system_settings", "retry"])
@@ -6346,7 +6348,7 @@ MaSt = (
         acp_probe.assert_called_once_with("10.0.0.2", 5009, 2.0)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "ssh_disabled")
-        self.assertIn("SSH is turned off on 10.0.0.2", error["message"])
+        self.assertIn("SSH is turned off on the device.\nAirPort ACP answers at 10.0.0.2", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "ssh_disabled")
         self.assertEqual(error["recovery"]["action_ids"], ["open_ssh_access"])
         self.assert_not_unsupported_model_guidance(error)
@@ -6361,7 +6363,7 @@ MaSt = (
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "device_unreachable")
-        self.assertIn("not answering at 10.0.0.2", error["message"])
+        self.assertIn("The device is not answering.\nNeither SSH port 22 nor AirPort ACP port 5009 is reachable at 10.0.0.2", error["message"])
         self.assertIn("Host is down", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "device_unreachable")
         self.assert_not_unsupported_model_guidance(error)
@@ -6541,7 +6543,7 @@ MaSt = (
 
                 self.assertEqual(rc, 1)
                 self.assertEqual(error["code"], "runtime_outdated")
-                self.assertIn(f"{tag} is older than {OLDEST_ACTIVATABLE_RELEASE_TAG}", error["message"])
+                self.assertIn(f"Installed {tag}; oldest startable release {OLDEST_ACTIVATABLE_RELEASE_TAG}", error["message"])
                 self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
 
     def test_activate_against_a_newer_install_asks_to_update_the_app(self) -> None:

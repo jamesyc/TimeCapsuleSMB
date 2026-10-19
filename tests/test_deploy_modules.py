@@ -3884,7 +3884,8 @@ class NoDiskErrorTests(unittest.TestCase):
         error = mast_no_volume_error(self.EMPTY_MAST, no_internal_disk=True)
 
         self.assertEqual(error.code, "deploy_no_usb_disk_detected")
-        self.assertIn("No USB disk was detected after 10 MaSt queries", str(error))
+        self.assertTrue(str(error).startswith("No USB disk was detected."))
+        self.assertEqual(error.detail, "After 10 MaSt queries spaced 3 seconds apart.")
 
     def test_empty_mast_on_a_time_capsule_still_reports_the_internal_disk(self) -> None:
         error = mast_no_volume_error(self.EMPTY_MAST)

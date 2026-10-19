@@ -261,11 +261,11 @@ def _try_candidates(
             missing_key_errors += 1
 
     if missing_key_errors and missing_key_errors == candidate_count:
-        raise FlashAnalysisError(f"{UNSUPPORTED_FIRMWARE_KEY_MESSAGE} syAP={normalized_syap}")
+        raise FlashAnalysisError(UNSUPPORTED_FIRMWARE_KEY_MESSAGE, detail=f"syAP={normalized_syap}")
     detail = "; ".join(errors[:3])
     if len(errors) > 3:
         detail += f"; ... {len(errors) - 3} more template errors"
-    raise FlashAnalysisError(f"no firmware template matched the {target_label} for syAP {normalized_syap}: {detail}")
+    raise FlashAnalysisError(f"No firmware template matched the {target_label}", detail=f"syAP {normalized_syap}: {detail}")
 
 
 def _build_candidate_with_cache_refresh(
@@ -398,8 +398,8 @@ def find_apple_firmware_match(
     if first_valid is not None:
         return first_valid
     if missing_key_errors and missing_key_errors == candidate_count:
-        raise FlashAnalysisError(f"{UNSUPPORTED_FIRMWARE_KEY_MESSAGE} syAP={normalized_syap}")
+        raise FlashAnalysisError(UNSUPPORTED_FIRMWARE_KEY_MESSAGE, detail=f"syAP={normalized_syap}")
     detail = "; ".join(errors[:3])
     if len(errors) > 3:
         detail += f"; ... {len(errors) - 3} more template errors"
-    raise FlashAnalysisError(f"no Apple firmware template could be checked for syAP {normalized_syap}: {detail}")
+    raise FlashAnalysisError("No Apple firmware template could be checked", detail=f"syAP {normalized_syap}: {detail}")

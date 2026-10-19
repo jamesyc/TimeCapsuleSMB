@@ -43,14 +43,14 @@ def default_firmware_template_cache_root() -> Path:
 
 def normalize_syap(value: str | int | None) -> str:
     if value is None:
-        raise FlashAnalysisError("cannot select firmware template because syAP is missing")
+        raise FlashAnalysisError("Cannot select firmware template because syAP is missing")
     text = str(value).strip()
     if not text:
-        raise FlashAnalysisError("cannot select firmware template because syAP is empty")
+        raise FlashAnalysisError("Cannot select firmware template because syAP is empty")
     try:
         return str(int(text, 0))
     except ValueError as exc:
-        raise FlashAnalysisError(f"cannot select firmware template because syAP is invalid: {text!r}") from exc
+        raise FlashAnalysisError(f"Cannot select firmware template because syAP is invalid: {text!r}") from exc
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -82,7 +82,7 @@ def _parse_firmware_catalog(data: bytes) -> list[dict[str, object]]:
     try:
         catalog = plistlib.loads(data)
     except Exception as exc:
-        raise FlashAnalysisError("failed to parse Apple firmware catalog") from exc
+        raise FlashAnalysisError("Failed to parse Apple firmware catalog") from exc
     updates = catalog.get("firmwareUpdates") if isinstance(catalog, dict) else None
     if not isinstance(updates, list):
         raise FlashAnalysisError("Apple firmware catalog did not contain firmwareUpdates")
@@ -102,7 +102,7 @@ def load_apple_firmware_catalog(*, cache_dir: Path) -> list[dict[str, object]]:
         if not catalog_path.exists():
             if isinstance(exc, FlashAnalysisError):
                 raise
-            raise FlashAnalysisError(f"failed to download Apple firmware catalog: {exc}") from exc
+            raise FlashAnalysisError(f"Failed to download Apple firmware catalog: {exc}") from exc
         return _parse_firmware_catalog(catalog_path.read_bytes())
 
 

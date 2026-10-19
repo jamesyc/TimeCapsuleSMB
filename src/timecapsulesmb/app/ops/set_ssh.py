@@ -64,10 +64,8 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 code=ErrorCode.AUTH_FAILED,
                 debug=str(exc),
             ) from exc
-        except ACPDeviceOffNetworkError as exc:
-            raise AppOperationError(str(exc), code=ErrorCode.DEVICE_OFF_NETWORK) from exc
-        except ACPNoRouteError as exc:
-            raise AppOperationError(str(exc), code=ErrorCode.ACP_NO_ROUTE) from exc
+        except (ACPDeviceOffNetworkError, ACPNoRouteError) as exc:
+            raise AppOperationError(str(exc), code=exc.code) from exc
         except ACPConnectionError as exc:
             if context.current_stage == "acp_port_probe":
                 # Neither SSH nor ACP answers at the saved address: the app then

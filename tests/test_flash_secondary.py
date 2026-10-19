@@ -203,13 +203,13 @@ class SecondaryRestoreTargetTests(unittest.TestCase):
                 with self.assertRaises(SecondaryBankReadMismatchError) as restore_refusal:
                     plan_full_restore(inspection)
                 restore_text = str(restore_refusal.exception)
-                self.assertIn("refusing to rewrite the secondary bank because", restore_text)
+                self.assertIn("Refusing to rewrite the secondary bank because", restore_text)
                 self.assertIn(detail, restore_text)
                 self.assertNotIn("--force", restore_text)
                 with self.assertRaises(SecondaryBankReadMismatchError) as patch_refusal:
                     require_primary_patch_ready(inspection)
                 patch_text = str(patch_refusal.exception)
-                self.assertIn("refusing to patch primary because", patch_text)
+                self.assertIn("Refusing to patch primary because", patch_text)
                 self.assertIn(detail, patch_text)
                 # The code's next steps read the banks again; patching can still be forced.
                 steps = cli_steps("flash", patch_refusal.exception.code)
@@ -353,14 +353,14 @@ class SecondaryRefreshWriteTests(unittest.TestCase):
             with self.subTest(name):
                 flash = device()
                 setup(flash)
-                with self.assertRaisesRegex(FlashAnalysisError, "was written but could not be verified \\(read-back SHA-256"):
+                with self.assertRaisesRegex(FlashAnalysisError, "was written but could not be verified(.|\\n)*\\nRead-back SHA-256"):
                     write_refresh(flash, refresh_plan())
 
     def test_a_failed_write_command_says_the_bank_was_not_written(self) -> None:
         flash = device()
         flash.write_error = SshError("ssh command failed with rc=1")
 
-        with self.assertRaisesRegex(FlashAnalysisError, "could not be written \\(ssh command failed with rc=1\\)") as raised:
+        with self.assertRaisesRegex(FlashAnalysisError, "could not be written(.|\\n)*\\nssh command failed with rc=1") as raised:
             write_refresh(flash, refresh_plan())
         self.assertNotIn("was written", str(raised.exception))
         self.assertIn("you can retry", str(raised.exception))

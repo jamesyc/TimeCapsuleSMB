@@ -3,7 +3,7 @@ from __future__ import annotations
 import signal
 import sys
 
-from timecapsulesmb.core.error_codes import ErrorCode
+from timecapsulesmb.core.error_codes import ErrorCode, exception_chain
 
 
 class TransportError(Exception):
@@ -135,14 +135,7 @@ SSH_TIMEOUT_SLOW_DEVICE_MESSAGE = ssh_timeout_slow_device_message()
 
 
 def is_ssh_timeout_error(exc: BaseException | None) -> bool:
-    seen: set[int] = set()
-    current = exc
-    while current is not None and id(current) not in seen:
-        if isinstance(current, SshCommandTimeout):
-            return True
-        seen.add(id(current))
-        current = current.__cause__ or current.__context__
-    return False
+    return any(isinstance(error, SshCommandTimeout) for error in exception_chain(exc))
 
 
 def format_ssh_timeout_slow_device_error(exc: BaseException, *, device_name: str | None = None) -> str:

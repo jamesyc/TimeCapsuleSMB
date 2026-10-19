@@ -542,18 +542,16 @@ def _best_effort_debug_summary(render, value: object) -> object | None:
         return None
 
 
-def no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
-    return (
-        f"No internal disk was detected after {attempts} MaSt queries "
-        f"spaced {delay_seconds} seconds apart."
-    )
+NO_INTERNAL_DISK_MESSAGE = "No internal disk was detected."
+NO_USB_DISK_MESSAGE = (
+    "No USB disk was detected. An AirPort Extreme has no internal disk, so it needs a USB disk formatted for "
+    "Mac (HFS+)."
+)
 
 
-def no_usb_disk_message(*, attempts: int, delay_seconds: int) -> str:
-    return (
-        f"No USB disk was detected after {attempts} MaSt queries spaced {delay_seconds} seconds apart. "
-        "An AirPort Extreme has no internal disk, so it needs a USB disk formatted for Mac (HFS+)."
-    )
+def mast_queries_detail(*, attempts: int, delay_seconds: int) -> str:
+    """How long the device was asked for its disks."""
+    return f"After {attempts} MaSt queries spaced {delay_seconds} seconds apart."
 
 
 def device_has_no_internal_disk(compatibility: DeviceCompatibility | None) -> bool:
@@ -575,22 +573,18 @@ def no_hfs_partition_message() -> str:
     return "A disk was found, but no valid HFS partition was detected."
 
 
-def no_writable_mast_volumes_message(volume_count: int) -> str:
-    return f"MaSt found {volume_count} deployable HFS volume(s), but deploy could not write to any of them."
+NO_WRITABLE_VOLUME_MESSAGE = "Deploy could not write to any deployable HFS volume."
+NO_MOUNTED_VOLUME_MESSAGE = (
+    "No deployable HFS volume was mounted, and the device did not mount one when asked."
+)
+UNCONFIRMED_VOLUME_MESSAGE = (
+    "A volume is mounted, but the device would not keep it mounted for TimeCapsuleSMB, so it could be "
+    "unmounted during deploy."
+)
 
 
-def no_mounted_mast_volumes_message(volume_count: int) -> str:
-    return (
-        f"MaSt found {volume_count} deployable HFS volume(s), but none of them was mounted "
-        "and the device did not mount one when asked."
-    )
-
-
-def unconfirmed_mast_volumes_message(volume_count: int) -> str:
-    return (
-        f"MaSt found {volume_count} deployable HFS volume(s). A volume is mounted, but the device would not "
-        "keep it mounted for TimeCapsuleSMB, so it could be unmounted during deploy."
-    )
+def mast_volumes_detail(volume_count: int) -> str:
+    return f"MaSt found {volume_count} deployable HFS volume(s)."
 
 
 def mast_disk_inventory_debug_summary(disks: tuple[MaStDiskSnapshot, ...]) -> list[dict[str, object]]:
@@ -620,22 +614,17 @@ def mast_no_volume_error(mast_discovery: MaStDiscoveryResult, *, no_internal_dis
         disks = ()
     if disks:
         return DeployDeviceError(no_hfs_partition_message(), code=ErrorCode.DEPLOY_NO_HFS_PARTITION)
+    detail = mast_queries_detail(attempts=MAST_DISCOVERY_ATTEMPTS, delay_seconds=MAST_DISCOVERY_DELAY_SECONDS)
     if no_internal_disk:
-        return DeployDeviceError(
-            no_usb_disk_message(attempts=MAST_DISCOVERY_ATTEMPTS, delay_seconds=MAST_DISCOVERY_DELAY_SECONDS),
-            code=ErrorCode.DEPLOY_NO_USB_DISK_DETECTED,
-        )
-    return DeployDeviceError(
-        no_mast_volumes_message(
-            attempts=MAST_DISCOVERY_ATTEMPTS,
-            delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
-        ),
-        code=ErrorCode.DEPLOY_NO_DISK_DETECTED,
+        return DeployDeviceError(NO_USB_DISK_MESSAGE, code=ErrorCode.DEPLOY_NO_USB_DISK_DETECTED, detail=detail)
+    return DeployDeviceError(NO_INTERNAL_DISK_MESSAGE, code=ErrorCode.DEPLOY_NO_DISK_DETECTED, detail=detail)
+
+
+def payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> DeviceError:
+    return DeviceError(
+        "The installed files could not be verified on the disk.",
+        detail=f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}",
     )
-
-
-def payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
-    return f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}"
 
 
 def startup_mode_for_deploy(*, is_netbsd4: bool) -> DeploymentStartupMode:
@@ -832,12 +821,11 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
         raise DeployDeviceError(render_compatibility_message(compatibility), code=ErrorCode.UNSUPPORTED_DEVICE)
     if not compatibility.payload_family:
         compatibility_message = render_compatibility_message(compatibility)
-        if compatibility_message:
-            raise DeployDeviceError(
-                f"{compatibility_message}\nNo deployable payload is available for this detected device.",
-                code=ErrorCode.UNSUPPORTED_DEVICE,
-            )
-        raise DeployDeviceError("No deployable payload is available for this detected device.", code=ErrorCode.UNSUPPORTED_DEVICE)
+        raise DeployDeviceError(
+            "No deployable payload is available for this detected device.",
+            code=ErrorCode.UNSUPPORTED_DEVICE,
+            detail=compatibility_message or None,
+        )
     return compatibility
 
 
@@ -909,12 +897,12 @@ def select_deploy_payload_home(
         volume_count = len(mast_discovery.volumes)
         # One code per cause: the app shows its own text for each code.
         if any(check.mounted for check in selection.checks):
-            message, code = no_writable_mast_volumes_message(volume_count), ErrorCode.DEPLOY_DISK_NOT_WRITABLE
+            message, code = NO_WRITABLE_VOLUME_MESSAGE, ErrorCode.DEPLOY_DISK_NOT_WRITABLE
         elif any(check.mount.present for check in selection.checks):
-            message, code = unconfirmed_mast_volumes_message(volume_count), ErrorCode.DEPLOY_DISK_NOT_CONFIRMED
+            message, code = UNCONFIRMED_VOLUME_MESSAGE, ErrorCode.DEPLOY_DISK_NOT_CONFIRMED
         else:
-            message, code = no_mounted_mast_volumes_message(volume_count), ErrorCode.DEPLOY_DISK_NOT_MOUNTED
-        raise DeployDeviceError(message, code=code)
+            message, code = NO_MOUNTED_VOLUME_MESSAGE, ErrorCode.DEPLOY_DISK_NOT_MOUNTED
+        raise DeployDeviceError(message, code=code, detail=mast_volumes_detail(volume_count))
     return selection.payload_home
 
 
@@ -1028,7 +1016,7 @@ def _verify_deployed_payload(
     if on_verified is not None:
         on_verified(verification, post_sync)
     if not verification.ok:
-        raise DeviceError(payload_verification_error(payload_home, verification))
+        raise payload_verification_error(payload_home, verification)
 
 
 def report_migration_progress(callbacks: OperationCallbacks, stage: str, progress: MigrationProgress) -> None:

@@ -56,11 +56,11 @@ SECONDARY_BANK_WRITE_PROTECTED_MESSAGE = (
     "its previous contents. The primary firmware is unchanged."
 )
 SECONDARY_BANK_WRITE_FAILED_MESSAGE = (
-    "The secondary (backup) firmware bank could not be written ({detail}). "
+    "The secondary (backup) firmware bank could not be written. "
     "The primary firmware is unchanged; you can retry."
 )
 SECONDARY_BANK_UNVERIFIED_MESSAGE = (
-    "The secondary (backup) firmware bank was written but could not be verified ({detail}). "
+    "The secondary (backup) firmware bank was written but could not be verified. "
     "The primary firmware is unchanged; you can retry. "
     "If it keeps failing, this Time Capsule's flash may be failing."
 )
@@ -225,7 +225,7 @@ def _secondary_read_mismatch_reason(action: str, inspection: FlashInspection) ->
     if state != "mismatch":
         return None
     return (
-        f"refusing to {action} because the secondary (backup) firmware bank read differently in two reads: "
+        f"Refusing to {action} because the secondary (backup) firmware bank read differently in two reads: "
         f"{detail}."
     )
 
@@ -243,7 +243,7 @@ def require_primary_patch_ready(inspection: FlashInspection, *, force: bool = Fa
     primary = inspection.primary
     if primary.analysis is None:
         raise FlashAnalysisError(
-            "refusing to patch primary because the primary firmware bank could not be analyzed",
+            "Refusing to patch primary because the primary firmware bank could not be analyzed",
             detail=_bank_status(inspection),
         )
 
@@ -253,20 +253,20 @@ def require_primary_patch_ready(inspection: FlashInspection, *, force: bool = Fa
 
     if not force and _secondary_needs_refresh(inspection):
         raise SecondaryBankInvalidError(
-            "refusing to patch primary because the secondary (backup) firmware bank is not a valid backup",
+            "Refusing to patch primary because the secondary (backup) firmware bank is not a valid backup",
             detail=_bank_status(inspection),
         )
 
     if not force and not _both_backup_banks_valid(inspection):
         raise FlashAnalysisError(
-            "refusing to patch primary because both firmware banks must be valid backups",
+            "Refusing to patch primary because both firmware banks must be valid backups",
             code=ErrorCode.FLASH_PATCH_REFUSED,
             detail=_bank_status(inspection),
         )
 
     if not force and not primary.active_candidate:
         raise FlashAnalysisError(
-            "refusing to patch primary because primary is not an active firmware candidate",
+            "Refusing to patch primary because primary is not an active firmware candidate",
             code=ErrorCode.FLASH_PATCH_REFUSED,
             detail=_bank_status(inspection),
         )
@@ -276,18 +276,18 @@ def require_primary_patch_ready(inspection: FlashInspection, *, force: bool = Fa
         return analysis
     if analysis.login.classification != "stock":
         raise FlashAnalysisError(
-            f"refusing to patch primary bank with LOGIN classification {analysis.login.classification}"
+            f"Refusing to patch primary bank with LOGIN classification {analysis.login.classification}"
         )
     if analysis.patch is None:
         detail = f": {analysis.patch_error}" if analysis.patch_error else ""
-        raise FlashAnalysisError(f"refusing to patch because primary bank has no patch candidate{detail}")
+        raise FlashAnalysisError(f"Refusing to patch because primary bank has no patch candidate{detail}")
     return analysis
 
 
 def require_restore_target_bank(inspection: FlashInspection) -> tuple[BankAnalysis, tuple[str, ...]]:
     if not _both_backup_banks_valid(inspection):
         raise FlashAnalysisError(
-            "refusing to restore because both firmware banks must be valid backups",
+            "Refusing to restore because both firmware banks must be valid backups",
             detail=_bank_status(inspection),
         )
 
@@ -304,7 +304,7 @@ def require_restore_target_bank(inspection: FlashInspection) -> tuple[BankAnalys
     if analysis is not None:
         raise FlashAnalysisError(active_selection_error_message(analysis, write=True))
     raise FlashAnalysisError(
-        "refusing to restore because firmware bank inspection failed",
+        "Refusing to restore because firmware bank inspection failed",
         detail=_bank_status(inspection),
     )
 
@@ -324,7 +324,7 @@ def _require_read_candidates(inspection: FlashInspection) -> tuple[BankAnalysis,
     analysis = inspection.strict_analysis
     if analysis is not None:
         raise FlashAnalysisError(active_selection_error_message(analysis, write=False))
-    raise FlashAnalysisError("no firmware bank could be checked against Apple firmware")
+    raise FlashAnalysisError("No firmware bank could be checked against Apple firmware")
 
 
 def _selected_active_for_read_plan(inspection: FlashInspection) -> BankAnalysis | None:
@@ -470,8 +470,8 @@ def build_secondary_bank_image(prefix: bytes) -> tuple[bytes, int]:
     """A whole bank as Apple lays it out: firmware, 0xFF, then the footer at bank end - 32."""
     if not MIN_FIRMWARE_BANK_IMAGE_SIZE <= len(prefix) <= FIRMWARE_BANK_FOOTER_OFFSET:
         raise FlashAnalysisError(
-            f"Apple firmware payload size {len(prefix)} does not fit a firmware bank "
-            f"({MIN_FIRMWARE_BANK_IMAGE_SIZE}..{FIRMWARE_BANK_FOOTER_OFFSET} bytes)"
+            "Apple firmware payload size does not fit a firmware bank.",
+            detail=f"{len(prefix)} bytes; a bank holds {MIN_FIRMWARE_BANK_IMAGE_SIZE}..{FIRMWARE_BANK_FOOTER_OFFSET}.",
         )
     checksum = zlib.adler32(prefix) & 0xFFFFFFFF
     image = bytearray(b"\xff" * FIRMWARE_BANK_SIZE)
@@ -495,14 +495,14 @@ def plan_refresh_secondary(
     normalized_syap = normalize_syap(syap)
     if normalized_syap not in SECONDARY_REFRESH_SYAPS:
         raise FlashAnalysisError(
-            "refusing to restore because the secondary firmware bank is invalid "
+            "Refusing to restore because the secondary firmware bank is invalid "
             f"and rewriting it is not supported on syAP {normalized_syap} yet",
             detail=_bank_status(inspection),
         )
     for bank in (inspection.primary, inspection.secondary):
         if bank.size != FIRMWARE_BANK_SIZE:
             raise FlashAnalysisError(
-                f"refusing to restore the secondary bank: the {bank.name} bank read {bank.size} bytes, "
+                f"Refusing to restore the secondary bank: the {bank.name} bank read {bank.size} bytes, "
                 f"expected {FIRMWARE_BANK_SIZE}",
                 detail=_bank_status(inspection),
             )
@@ -626,14 +626,14 @@ def active_checksum_property(bank_name: str) -> str:
         return "cks1"
     if bank_name == "secondary":
         return "cks2"
-    raise FlashAnalysisError(f"unknown active bank: {bank_name}")
+    raise FlashAnalysisError(f"Unknown active bank: {bank_name}")
 
 
 def expected_bank_after_write(active: BankAnalysis, payload: AcpFlashPayload) -> tuple[bytes, int]:
     if len(payload.expected_prefix) != active.footer.end_offset:
         raise FlashAnalysisError(
-            "flash payload expected prefix length does not match target bank footer end_offset: "
-            f"payload={len(payload.expected_prefix)}, target_end_offset={active.footer.end_offset}"
+            "Flash payload expected prefix length does not match target bank footer end_offset.",
+            detail=f"payload={len(payload.expected_prefix)}, target_end_offset={active.footer.end_offset}",
         )
     expected = bytearray(active.data)
     expected[: active.footer.end_offset] = payload.expected_prefix
@@ -654,7 +654,7 @@ def write_and_validate_plan(
     timeout: int,
 ) -> dict[str, object]:
     if plan.target_bank is None or plan.payload is None:
-        raise FlashAnalysisError("flash plan has no write payload")
+        raise FlashAnalysisError("Flash plan has no write payload")
     active = plan.target_bank
     payload = plan.payload
     try:
@@ -675,15 +675,15 @@ def write_and_validate_plan(
     actual_prefix_sha256 = sha256_hex(actual_prefix)
     if actual_prefix != expected_prefix:
         raise FlashAnalysisError(
-            "read-back firmware bank prefix SHA-256 mismatch after ACP write: "
-            f"got {actual_prefix_sha256}, expected {payload.expected_prefix_sha256}"
+            "Read-back firmware bank prefix SHA-256 mismatch after ACP write.",
+            detail=f"Got {actual_prefix_sha256}, expected {payload.expected_prefix_sha256}.",
         )
     expected_bank, expected_footer_checksum = expected_bank_after_write(active, payload)
     expected_bank_sha256 = sha256_hex(expected_bank)
     if readback != expected_bank:
         raise FlashAnalysisError(
-            "read-back firmware bank SHA-256 mismatch after ACP write: "
-            f"got {readback_sha256}, expected {expected_bank_sha256}"
+            "Read-back firmware bank SHA-256 mismatch after ACP write.",
+            detail=f"Got {readback_sha256}, expected {expected_bank_sha256}.",
         )
 
     checksum_property = active_checksum_property(active.name)
@@ -700,13 +700,13 @@ def write_and_validate_plan(
         build_patch_candidate=False,
     )
     if not readback_analysis.footer_valid:
-        raise FlashAnalysisError("read-back firmware bank footer checksum is invalid after ACP write")
+        raise FlashAnalysisError("Read-back firmware bank footer checksum is invalid after ACP write")
     if readback_analysis.acp_checksum_matches is not True:
         raise FlashAnalysisError(f"ACP {checksum_property} does not match read-back firmware footer after write")
     if payload.expected_login_classification is not None and readback_analysis.login.classification != payload.expected_login_classification:
         raise FlashAnalysisError(
-            f"read-back firmware bank LOGIN classification is {readback_analysis.login.classification}; "
-            f"expected {payload.expected_login_classification}"
+            "Read-back firmware bank LOGIN classification is not the expected one.",
+            detail=f"Got {readback_analysis.login.classification}, expected {payload.expected_login_classification}.",
         )
 
     return {
@@ -757,13 +757,13 @@ def write_and_validate_secondary_refresh(
     """
     refresh = plan.secondary_refresh
     if refresh is None or plan.payload is None:
-        raise FlashAnalysisError("flash plan has no secondary bank image")
+        raise FlashAnalysisError("Flash plan has no secondary bank image")
     password = connection.password
     cks1_before = _read_checksum_property(get_property_int_func, acp_host, password, "cks1", "before")
     try:
         run_write_func(connection, SECONDARY_BANK_WRITE_COMMAND, input_bytes=refresh.image, timeout=timeout)  # type: ignore[operator]
     except SshError as exc:
-        raise FlashAnalysisError(SECONDARY_BANK_WRITE_FAILED_MESSAGE.format(detail=exc)) from exc
+        raise FlashAnalysisError(SECONDARY_BANK_WRITE_FAILED_MESSAGE, detail=str(exc)) from exc
 
     readback = dump_remote_bank_func(connection, SECONDARY_BANK_DEVICE)  # type: ignore[operator]
     if readback != refresh.image:
@@ -773,19 +773,20 @@ def write_and_validate_secondary_refresh(
     if readback != refresh.image:
         if readback_sha256 == refresh.previous_secondary_sha256:
             raise FlashAnalysisError(SECONDARY_BANK_WRITE_PROTECTED_MESSAGE)
-        raise FlashAnalysisError(SECONDARY_BANK_UNVERIFIED_MESSAGE.format(
-            detail=f"read-back SHA-256 {readback_sha256}, expected {refresh.image_sha256}",
-        ))
+        raise FlashAnalysisError(
+            SECONDARY_BANK_UNVERIFIED_MESSAGE, detail=f"Read-back SHA-256 {readback_sha256}, expected {refresh.image_sha256}.",
+        )
 
     cks2 = _read_checksum_property(get_property_int_func, acp_host, password, "cks2", "after")
     if cks2 != refresh.footer_checksum:
-        raise FlashAnalysisError(SECONDARY_BANK_UNVERIFIED_MESSAGE.format(
-            detail=f"ACP cks2 0x{cks2:08x}, footer 0x{refresh.footer_checksum:08x}",
-        ))
+        raise FlashAnalysisError(
+            SECONDARY_BANK_UNVERIFIED_MESSAGE, detail=f"ACP cks2 0x{cks2:08x}, footer 0x{refresh.footer_checksum:08x}.",
+        )
     cks1_after = _read_checksum_property(get_property_int_func, acp_host, password, "cks1", "after")
     if cks1_after != cks1_before:
         raise FlashAnalysisError(
-            f"ACP cks1 changed during the secondary bank write: before 0x{cks1_before:08x}, after 0x{cks1_after:08x}"
+            "ACP cks1 changed during the secondary bank write.",
+            detail=f"Before 0x{cks1_before:08x}, after 0x{cks1_after:08x}.",
         )
 
     return {

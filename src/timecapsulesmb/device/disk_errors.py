@@ -74,13 +74,16 @@ DISK_FAILING_WAY_OUT = (
 )
 
 
+DISK_FAILING_MESSAGE = (
+    "The device's disk reported errors it could not recover from, so it is probably failing. "
+    "File sharing and Time Machine will not work reliably on it, and reinstalling will not fix the disk. "
+    "AirPort Utility may still show the disk as OK: its own check does not catch these errors."
+)
+
+
 def disk_failing_message(errors: tuple[str, ...]) -> str:
-    """Why Samba is off."""
-    return (
-        f"The device's disk reported errors it could not recover from ({errors[-1]}), so it is probably failing. "
-        "File sharing and Time Machine will not work reliably on it, and reinstalling will not fix the disk. "
-        "AirPort Utility may still show the disk as OK: its own check does not catch these errors."
-    )
+    """Checkup's line for why Samba is off, naming the kernel's last disk error."""
+    return DISK_FAILING_MESSAGE.replace("from,", f"from ({errors[-1]}),", 1)
 
 
 _PREFLIGHT_EFFECTS = {
@@ -106,5 +109,5 @@ class DiskFailingError(DeviceError):
     samba_off = True
 
     def __init__(self, errors: tuple[str, ...]) -> None:
-        super().__init__(disk_failing_message(errors))
+        super().__init__(DISK_FAILING_MESSAGE, detail=errors[-1])
         self.errors = errors

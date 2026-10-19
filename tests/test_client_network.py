@@ -532,7 +532,8 @@ class AcpPortPreflightTests(unittest.TestCase):
         self.assertIsInstance(error, ACPDeviceOffNetworkError)
         self.assertEqual(
             str(error),
-            f"Could not connect to ACP on 10.0.1.1:{ACP_PORT}. 10.0.1.1 is not on this Mac's network (192.168.1.0/24).",
+            "Could not connect to ACP. The device's address is not on this Mac's network.\n"
+            f"No answer from 10.0.1.1:{ACP_PORT}. 10.0.1.1 is not on this Mac's network (192.168.1.0/24).",
         )
 
     def test_this_macs_public_network_reaches_the_message_only_by_family_and_length(self) -> None:
@@ -563,7 +564,8 @@ class AcpPortPreflightTests(unittest.TestCase):
             with self.subTest(case=name):
                 error = self.failure(host, local)
                 self.assertNotIsInstance(error, ACPDeviceOffNetworkError)
-                self.assertRegex(str(error), r"^Could not connect to ACP on .+:5009\.$")
+                self.assertEqual(error.message, "Could not connect to ACP.")
+                self.assertRegex(error.detail, r"^No answer from .+:5009\.$")
 
     def test_a_failing_network_check_does_not_claim_the_device_is_off_network(self) -> None:
         with mock.patch("timecapsulesmb.services.acp_ssh.host_networks", side_effect=OSError("boom")):
