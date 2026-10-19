@@ -650,6 +650,7 @@
 "backend.error.ssh_disabled" = "SSH è disabilitato su questo dispositivo.";
 "backend.error.device_unreachable" = "Il dispositivo non risponde né tramite SSH né tramite AirPort ACP.";
 "backend.error.local_network_filtered" = "Questo Mac ha interrotto la connessione prima che raggiungesse il dispositivo. Una VPN, un firewall o un software di sicurezza sta filtrando il traffico della rete locale.";
+"backend.error.acp_no_route" = "macOS ha rifiutato la connessione al dispositivo. TimeCapsuleSMB potrebbe non avere accesso alla rete locale, oppure una VPN, un firewall o un software di sicurezza potrebbe bloccare il traffico della rete locale.";
 "backend.error.device_off_network" = "L’indirizzo del dispositivo non è sulla rete di questo Mac. Controlla l’indirizzo oppure collega questo Mac alla rete del dispositivo tramite Wi-Fi o una delle sue porte LAN, poi riprova.";
 "backend.error.reboot_not_started" = "Il dispositivo non si è riavviato dopo la richiesta di riavvio.";
 "backend.error.reboot_not_finished" = "Il dispositivo non è tornato disponibile dopo il riavvio.";
@@ -700,7 +701,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS impedisce a TimeCapsuleSMB di accedere ai dispositivi sulla rete locale.";
 "backend.recovery.local_network_permission_denied.action.1" = "Apri “Impostazioni di Sistema” > “Privacy e Sicurezza” > “Rete locale”.";
 "backend.recovery.local_network_permission_denied.action.2" = "Abilita TimeCapsuleSMB in “Rete locale”.";
-"backend.recovery.local_network_permission_denied.action.3" = "Esci da TimeCapsuleSMB e riaprilo, poi riprova la configurazione del dispositivo.";
+"backend.recovery.local_network_permission_denied.action.3" = "Esci da TimeCapsuleSMB e riaprilo, poi riprova.";
+"backend.recovery.local_network_permission_denied.action.4" = "Se TimeCapsuleSMB è già abilitato, disabilitalo e abilitalo di nuovo. Se non basta, elimina le altre copie di TimeCapsuleSMB e riavvia il Mac.";
 "backend.recovery.local_network_filtered.title" = "Connessione bloccata su questo Mac";
 "backend.recovery.local_network_filtered.message" = "Questo Mac ha interrotto la connessione prima che raggiungesse il dispositivo. Una VPN, un firewall o un software di sicurezza sta filtrando il traffico della rete locale.";
 "backend.recovery.device_off_network.title" = "Dispositivo non sulla rete di questo Mac";

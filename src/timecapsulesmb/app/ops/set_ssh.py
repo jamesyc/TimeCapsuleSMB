@@ -6,7 +6,7 @@ from timecapsulesmb.app.contracts import set_ssh_payload
 from timecapsulesmb.app.ops.common import load_request_config, require_request_acpd_ready
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError
+from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError, ACPNoRouteError
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.credentials import saved_airport_mac
@@ -65,6 +65,8 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
             ) from exc
         except ACPDeviceOffNetworkError as exc:
             raise AppOperationError(str(exc), code="device_off_network") from exc
+        except ACPNoRouteError as exc:
+            raise AppOperationError(str(exc), code="acp_no_route") from exc
         except ACPConnectionError as exc:
             if context.current_stage == "acp_port_probe":
                 # Neither SSH nor ACP answers at the saved address: the app then

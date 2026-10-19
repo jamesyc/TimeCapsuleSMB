@@ -650,6 +650,7 @@
 "backend.error.ssh_disabled" = "SSH est désactivé sur cet appareil.";
 "backend.error.device_unreachable" = "L’appareil ne répond ni par SSH ni par AirPort ACP.";
 "backend.error.local_network_filtered" = "Ce Mac a interrompu la connexion avant qu’elle n’atteigne l’appareil. Un VPN, un coupe-feu ou un logiciel de sécurité filtre le trafic du réseau local.";
+"backend.error.acp_no_route" = "macOS a refusé la connexion à l’appareil. TimeCapsuleSMB n’a peut-être pas accès au réseau local, ou un VPN, un coupe-feu ou un logiciel de sécurité bloque peut-être le trafic du réseau local.";
 "backend.error.device_off_network" = "L’adresse de l’appareil n’est pas sur le réseau de ce Mac. Vérifiez l’adresse, ou connectez ce Mac au réseau de l’appareil en Wi-Fi ou par l’un de ses ports LAN, puis réessayez.";
 "backend.error.reboot_not_started" = "L’appareil n’a pas redémarré après la demande de redémarrage.";
 "backend.error.reboot_not_finished" = "L’appareil n’est pas revenu après son redémarrage.";
@@ -700,7 +701,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS empêche TimeCapsuleSMB d’accéder aux appareils de votre réseau local.";
 "backend.recovery.local_network_permission_denied.action.1" = "Ouvrez « Réglages Système » > « Confidentialité et sécurité » > « Réseau local ».";
 "backend.recovery.local_network_permission_denied.action.2" = "Activez TimeCapsuleSMB dans « Réseau local ».";
-"backend.recovery.local_network_permission_denied.action.3" = "Quittez et rouvrez TimeCapsuleSMB, puis relancez la configuration.";
+"backend.recovery.local_network_permission_denied.action.3" = "Quittez et rouvrez TimeCapsuleSMB, puis réessayez.";
+"backend.recovery.local_network_permission_denied.action.4" = "Si TimeCapsuleSMB est déjà activé, désactivez-le puis réactivez-le. Si cela ne suffit pas, supprimez les autres copies de TimeCapsuleSMB et redémarrez le Mac.";
 "backend.recovery.local_network_filtered.title" = "Connexion bloquée sur ce Mac";
 "backend.recovery.local_network_filtered.message" = "Ce Mac a interrompu la connexion avant qu’elle n’atteigne l’appareil. Un VPN, un coupe-feu ou un logiciel de sécurité filtre le trafic du réseau local.";
 "backend.recovery.device_off_network.title" = "Appareil absent du réseau de ce Mac";

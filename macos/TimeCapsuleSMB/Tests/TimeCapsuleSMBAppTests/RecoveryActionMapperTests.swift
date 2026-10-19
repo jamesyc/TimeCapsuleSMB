@@ -237,6 +237,55 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
     }
 
+    func testNoRouteOnEveryAcpAttemptShowsTheLocalNetworkCardWithItsOwnErrorLine() throws {
+        // As the helper sends it to Add Device and to SSH Access: the generic
+        // English message and the Local Network card, with no suggested operation.
+        let recovery = try JSONValue.object([
+            "title": .string("Local Network access blocked"),
+            "message": .string("macOS is blocking TimeCapsuleSMB from accessing devices on your local network."),
+            "actions": .array([
+                .string("Open “System Settings” > “Privacy & Security” > “Local Network”."),
+                .string("Enable TimeCapsuleSMB in “Local Network”."),
+                .string("Quit and reopen TimeCapsuleSMB, then try again."),
+                .string("If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, delete other copies of TimeCapsuleSMB and restart the Mac.")
+            ]),
+            "action_ids": .array([.string("open_system_settings"), .string("retry")]),
+            "retryable": .bool(true),
+            "suggested_operation": .null,
+            "localization_key": .string("local_network_permission_denied")
+        ]).decode(BackendRecoveryPayload.self)
+
+        for operation in ["configure", "set-ssh"] {
+            let error = BackendErrorViewModel(
+                operation: operation,
+                code: "acp_no_route",
+                message: "Could not connect to ACP on 192.168.0.251:5009. Check the device IP address or hostname, and turn off any VPN or firewall that filters local network traffic.",
+                recovery: recovery
+            )
+
+            L10n.apply(language: .english)
+            let english = RecoveryGuidancePresentation(error: error)
+            XCTAssertEqual(english.title, "Local Network access blocked", operation)
+            XCTAssertEqual(
+                english.errorMessage,
+                "macOS refused the connection to the device. TimeCapsuleSMB may not have Local Network access, or a VPN, firewall or security app may be blocking local network traffic.",
+                operation
+            )
+            XCTAssertEqual(english.steps.count, 4, operation)
+            // Every button works on both screens: none names another operation.
+            XCTAssertEqual(
+                RecoveryActionMapper.actions(for: error).map(\.kind),
+                [.openSystemSettings, .retry, .copyDiagnostics],
+                operation
+            )
+
+            L10n.apply(language: .simplifiedChinese)
+            let chinese = RecoveryGuidancePresentation(error: error)
+            XCTAssertEqual(chinese.title, "本地网络访问被阻止", operation)
+            XCTAssertTrue(chinese.errorMessage.hasPrefix("macOS 拒绝了到设备的连接。"), chinese.errorMessage)
+        }
+    }
+
     func testSSHTurnedOffRecoveryOffersSSHAccessAndRetry() throws {
         // As the helper sends it: no suggested operation, one action ID.
         let recovery = try JSONValue.object([

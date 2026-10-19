@@ -650,6 +650,7 @@
 "backend.error.ssh_disabled" = "SSH is uitgeschakeld op dit apparaat.";
 "backend.error.device_unreachable" = "Het apparaat reageert niet via SSH of AirPort ACP.";
 "backend.error.local_network_filtered" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
+"backend.error.acp_no_route" = "macOS heeft de verbinding met het apparaat geweigerd. Mogelijk heeft TimeCapsuleSMB geen toegang tot het lokale netwerk, of blokkeert een VPN, firewall of beveiligingssoftware lokaal netwerkverkeer.";
 "backend.error.device_off_network" = "Het adres van het apparaat ligt niet in het netwerk van deze Mac. Controleer het adres, of verbind deze Mac via Wi-Fi of een van de LAN-poorten van het apparaat met het netwerk van het apparaat en probeer het opnieuw.";
 "backend.error.reboot_not_started" = "Het apparaat is na het herstartverzoek niet opnieuw opgestart.";
 "backend.error.reboot_not_finished" = "Het apparaat is na het opnieuw opstarten niet teruggekomen.";
@@ -700,7 +701,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS blokkeert de toegang van TimeCapsuleSMB tot apparaten in uw lokale netwerk.";
 "backend.recovery.local_network_permission_denied.action.1" = "Open ‘Systeeminstellingen’ > ‘Privacy en beveiliging’ > ‘Lokaal netwerk’.";
 "backend.recovery.local_network_permission_denied.action.2" = "Schakel TimeCapsuleSMB in onder ‘Lokaal netwerk’.";
-"backend.recovery.local_network_permission_denied.action.3" = "Stop TimeCapsuleSMB en open de app weer; probeer daarna opnieuw te configureren.";
+"backend.recovery.local_network_permission_denied.action.3" = "Stop TimeCapsuleSMB en open de app weer; probeer het daarna opnieuw.";
+"backend.recovery.local_network_permission_denied.action.4" = "Staat TimeCapsuleSMB al aan, schakel het dan uit en weer in. Helpt dat niet, verplaats andere kopieën van TimeCapsuleSMB naar de prullenmand en start de Mac opnieuw op.";
 "backend.recovery.local_network_filtered.title" = "Verbinding geblokkeerd op deze Mac";
 "backend.recovery.local_network_filtered.message" = "Deze Mac heeft de verbinding verbroken voordat die het apparaat bereikte. Een VPN, firewall of beveiligingssoftware filtert lokaal netwerkverkeer.";
 "backend.recovery.device_off_network.title" = "Apparaat niet in het netwerk van deze Mac";

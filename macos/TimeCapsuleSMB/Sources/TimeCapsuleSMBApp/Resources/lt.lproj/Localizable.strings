@@ -650,6 +650,7 @@
 "backend.error.ssh_disabled" = "Šiame įrenginyje SSH išjungta.";
 "backend.error.device_unreachable" = "Įrenginys neatsako nei per SSH, nei per AirPort ACP.";
 "backend.error.local_network_filtered" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
+"backend.error.acp_no_route" = "macOS atmetė ryšį su įrenginiu. Gali būti, kad TimeCapsuleSMB neturi vietinio tinklo prieigos arba VPN, užkarda ar saugos programa blokuoja vietinio tinklo srautą.";
 "backend.error.device_off_network" = "Įrenginio adresas nėra šio Mac tinkle. Patikrinkite adresą arba prijunkite šį Mac prie įrenginio tinklo per Wi-Fi arba vieną iš jo LAN prievadų ir bandykite dar kartą.";
 "backend.error.reboot_not_started" = "Įrenginys nebuvo paleistas iš naujo po paleidimo iš naujo užklausos.";
 "backend.error.reboot_not_finished" = "Įrenginys negrįžo po paleidimo iš naujo.";
@@ -700,7 +701,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS neleidžia TimeCapsuleSMB pasiekti įrenginių jūsų vietiniame tinkle.";
 "backend.recovery.local_network_permission_denied.action.1" = "Atidarykite sistemos nustatymus ir eikite į Privacy & Security > Local Network.";
 "backend.recovery.local_network_permission_denied.action.2" = "Skiltyje Local Network įjunkite TimeCapsuleSMB.";
-"backend.recovery.local_network_permission_denied.action.3" = "Išeikite iš TimeCapsuleSMB ir vėl ją atidarykite, tada bandykite konfigūruoti dar kartą.";
+"backend.recovery.local_network_permission_denied.action.3" = "Išeikite iš TimeCapsuleSMB ir vėl ją atidarykite, tada bandykite dar kartą.";
+"backend.recovery.local_network_permission_denied.action.4" = "Jei TimeCapsuleSMB jau įjungta, išjunkite ją ir vėl įjunkite. Jei tai nepadeda, ištrinkite kitas TimeCapsuleSMB kopijas ir paleiskite Mac iš naujo.";
 "backend.recovery.local_network_filtered.title" = "Ryšys užblokuotas šiame Mac";
 "backend.recovery.local_network_filtered.message" = "Šis Mac nutraukė ryšį dar prieš jam pasiekiant įrenginį. VPN, užkarda arba saugos programa filtruoja vietinio tinklo srautą.";
 "backend.recovery.device_off_network.title" = "Įrenginys ne šio Mac tinkle";

@@ -27,7 +27,7 @@ from timecapsulesmb.services.app import (
     string_param,
 )
 from timecapsulesmb.services import configure as configure_service
-from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError
+from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError, ACPNoRouteError
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     build_managed_config_env_values,
@@ -320,9 +320,10 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         raise AppOperationError(str(exc), code="device_off_network") from exc
     except ACPConnectionError as exc:
         if context.current_stage == "acp_port_probe":
+            # The telemetry dashboard groups these failures by this prefix.
             raise AppOperationError(
                 f"No AirPort ACP service responded at this address: {exc}",
-                code="remote_error",
+                code="acp_no_route" if isinstance(exc, ACPNoRouteError) else "remote_error",
             ) from exc
         raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
     except ACPError as exc:

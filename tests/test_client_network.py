@@ -29,6 +29,7 @@ from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.acp_ssh import (
     ACPDeviceOffNetworkError,
     ACP_PORT,
+    ACP_UNREACHABLE_ADVICE,
     enable_ssh_with_port_preflight,
 )
 
@@ -564,7 +565,7 @@ class AcpPortPreflightTests(unittest.TestCase):
             with self.subTest(case=name):
                 error = self.failure(host, local)
                 self.assertNotIsInstance(error, ACPDeviceOffNetworkError)
-                self.assertTrue(str(error).endswith("Check the device IP address or hostname."), str(error))
+                self.assertTrue(str(error).endswith(ACP_UNREACHABLE_ADVICE), str(error))
 
     def test_a_failing_network_check_keeps_the_general_advice(self) -> None:
         with mock.patch("timecapsulesmb.services.acp_ssh.host_networks", side_effect=OSError("boom")):

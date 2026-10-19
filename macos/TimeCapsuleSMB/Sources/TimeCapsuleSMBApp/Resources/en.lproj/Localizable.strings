@@ -648,6 +648,7 @@
 "backend.error.ssh_disabled" = "SSH is turned off on this device.";
 "backend.error.device_unreachable" = "The device isn't answering on SSH or AirPort ACP.";
 "backend.error.local_network_filtered" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
+"backend.error.acp_no_route" = "macOS refused the connection to the device. TimeCapsuleSMB may not have Local Network access, or a VPN, firewall or security app may be blocking local network traffic.";
 "backend.error.device_off_network" = "The device's address isn't on this Mac's network. Check the address, or connect this Mac to the device's network by Wi-Fi or one of its LAN ports, then try again.";
 "backend.error.reboot_not_started" = "The device did not restart after the reboot request.";
 "backend.error.reboot_not_finished" = "The device did not come back after restarting.";
@@ -698,7 +699,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.";
 "backend.recovery.local_network_permission_denied.action.1" = "Open “System Settings” > “Privacy & Security” > “Local Network”.";
 "backend.recovery.local_network_permission_denied.action.2" = "Enable TimeCapsuleSMB in “Local Network”.";
-"backend.recovery.local_network_permission_denied.action.3" = "Quit and reopen TimeCapsuleSMB, then try adding the device again.";
+"backend.recovery.local_network_permission_denied.action.3" = "Quit and reopen TimeCapsuleSMB, then try again.";
+"backend.recovery.local_network_permission_denied.action.4" = "If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, delete other copies of TimeCapsuleSMB and restart the Mac.";
 "backend.recovery.local_network_filtered.title" = "Connection blocked on this Mac";
 "backend.recovery.local_network_filtered.message" = "This Mac dropped the connection before it reached the device. A VPN, firewall or security app is filtering local network traffic.";
 "backend.recovery.device_off_network.title" = "Device not on this Mac's network";

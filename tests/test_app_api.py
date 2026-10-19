@@ -70,7 +70,7 @@ from timecapsulesmb.deploy.executor import XattrMigrationResult
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourQueryDiagnostics, BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
+from timecapsulesmb.services.acp_ssh import ACP_UNREACHABLE_ADVICE, SSH_ENABLE_TIMEOUT_MESSAGE
 from timecapsulesmb.services.activation import OLDEST_ACTIVATABLE_RELEASE_TAG
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import (
@@ -3964,6 +3964,32 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["recovery"]["localization_key"], "device_off_network")
         self.assertEqual(error["recovery"]["title"], "Device not on this Mac's network")
 
+    def test_set_ssh_enable_with_no_route_on_every_acp_attempt_shows_the_local_network_card(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            initial_status = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False)
+            params = {"config": str(config_path), "action": "enable", "password": "secret"}
+            collector = CollectingSink()
+            here = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="[Errno 65] No route to host"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=here), \
+                    mock.patch("timecapsulesmb.services.set_ssh.reboot_device", return_value=None) as reboot:
+                rc = service.run_api_request({"operation": "set-ssh", "params": params}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        reboot.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "acp_no_route")
+        self.assertNotIn("Local Network", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "local_network_permission_denied")
+        self.assertEqual(error["recovery"]["action_ids"], ["open_system_settings", "retry"])
+        # SSH Access retries its own operation; the card names no other one.
+        self.assertIsNone(error["recovery"]["suggested_operation"])
+
     def test_set_ssh_rejected_admin_password_uses_auth_failed_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
@@ -4414,7 +4440,9 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("macos_local_network_preflight_result=denied", telemetry_error)
         self.assertIn("macos_local_network_preflight_error=policy denied", telemetry_error)
 
-    def test_configure_reports_an_unanswered_acp_port_on_this_macs_network(self) -> None:
+    def test_configure_with_no_route_on_every_acp_attempt_shows_the_local_network_card(self) -> None:
+        # macOS refuses the app at once, with no route to an address on this
+        # Mac's own network, when its Local Network access is blocked.
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
@@ -4446,11 +4474,18 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         error = collector.events_of_type("error")[0]
-        self.assertEqual(error["code"], "remote_error")
-        self.assertIn("No AirPort ACP service responded at this address", error["message"])
+        self.assertEqual(error["code"], "acp_no_route")
+        self.assertEqual(
+            error["message"],
+            f"No AirPort ACP service responded at this address: Could not connect to ACP on 10.0.0.99:5009. {ACP_UNREACHABLE_ADVICE}",
+        )
+        self.assertEqual(error["recovery"]["localization_key"], "local_network_permission_denied")
+        self.assertEqual(error["recovery"]["action_ids"], ["open_system_settings", "retry"])
         self.assertFalse(config_path.exists())
-        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
-        self.assertIn("acp_port_probe_last_error=[Errno 65] No route to host", telemetry_error)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["error_code"], "acp_no_route")
+        self.assertIn("stage=acp_port_probe", finished["error"])
+        self.assertIn("acp_port_probe_last_error=[Errno 65] No route to host", finished["error"])
 
     def test_configure_reports_unsupported_device(self) -> None:
         collector = CollectingSink()

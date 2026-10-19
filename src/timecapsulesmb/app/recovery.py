@@ -86,10 +86,15 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         (
             "Open “System Settings” > “Privacy & Security” > “Local Network”.",
             "Enable TimeCapsuleSMB in “Local Network”.",
-            "Quit and reopen TimeCapsuleSMB, then try adding the device again.",
+            "Quit and reopen TimeCapsuleSMB, then try again.",
+            # macOS can block a copy of the app that "Local Network" shows as
+            # allowed, as when several copies of the app are on the Mac.
+            "If TimeCapsuleSMB is already on, turn it off and on again. If that doesn't help, "
+            "delete other copies of TimeCapsuleSMB and restart the Mac.",
         ),
+        # No suggested operation: Add Device and SSH Access both show this
+        # card, and each retries its own operation.
         retryable=True,
-        suggested_operation="configure",
         action_ids=("open_system_settings", "retry"),
     ),
     # The helper's own message names the address and this Mac's networks.
@@ -744,6 +749,10 @@ def recovery_for(
     *,
     stage: str | None = None,
 ) -> dict[str, object]:
+    if code == "acp_no_route":
+        # Every ACP attempt refused at once with no route is, on this Mac, Local
+        # Network access (the app's error line for acp_no_route names VPNs too).
+        code = "local_network_permission_denied"
     if stage:
         policy = _STAGE_RECOVERY.get((operation, code, stage))
         if policy is not None:

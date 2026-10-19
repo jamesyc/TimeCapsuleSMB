@@ -650,6 +650,7 @@
 "backend.error.ssh_disabled" = "此设备上的 SSH 已禁用。";
 "backend.error.device_unreachable" = "设备在 SSH 和 AirPort ACP 上都没有响应。";
 "backend.error.local_network_filtered" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
+"backend.error.acp_no_route" = "macOS 拒绝了到设备的连接。TimeCapsuleSMB 可能没有本地网络访问权限，或者 VPN、防火墙或安全软件可能正在阻止本地网络流量。";
 "backend.error.device_off_network" = "设备的地址不在此 Mac 的网络中。请检查地址，或通过 Wi-Fi 或设备的某个 LAN 端口将此 Mac 连接到设备的网络，然后重试。";
 "backend.error.reboot_not_started" = "设备在收到重启请求后未重启。";
 "backend.error.reboot_not_finished" = "设备重启后未重新上线。";
@@ -700,7 +701,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS 正在阻止 TimeCapsuleSMB 访问本地网络上的设备。";
 "backend.recovery.local_network_permission_denied.action.1" = "打开“系统设置”>“隐私与安全”>“本地网络”。";
 "backend.recovery.local_network_permission_denied.action.2" = "在“本地网络”中启用 TimeCapsuleSMB。";
-"backend.recovery.local_network_permission_denied.action.3" = "退出并重新打开 TimeCapsuleSMB，然后重试配置。";
+"backend.recovery.local_network_permission_denied.action.3" = "退出并重新打开 TimeCapsuleSMB，然后重试。";
+"backend.recovery.local_network_permission_denied.action.4" = "如果 TimeCapsuleSMB 已启用，请将其禁用后再重新启用。如果仍无效，请删除 TimeCapsuleSMB 的其他副本并重新启动 Mac。";
 "backend.recovery.local_network_filtered.title" = "此 Mac 上的连接被阻止";
 "backend.recovery.local_network_filtered.message" = "此 Mac 在连接到达设备之前将其中断。VPN、防火墙或安全软件正在过滤本地网络流量。";
 "backend.recovery.device_off_network.title" = "设备不在此 Mac 的网络中";

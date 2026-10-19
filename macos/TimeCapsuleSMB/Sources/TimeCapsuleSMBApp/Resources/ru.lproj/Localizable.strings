@@ -650,6 +650,7 @@
 "backend.error.ssh_disabled" = "SSH отключен на этом устройстве.";
 "backend.error.device_unreachable" = "Устройство не отвечает ни по SSH, ни по AirPort ACP.";
 "backend.error.local_network_filtered" = "Этот Mac прервал соединение до того, как оно достигло устройства. Трафик локальной сети фильтрует VPN, брандмауэр или защитное ПО.";
+"backend.error.acp_no_route" = "macOS отклонила подключение к устройству. Возможно, у TimeCapsuleSMB нет доступа к локальной сети или трафик локальной сети блокирует VPN, брандмауэр или защитное ПО.";
 "backend.error.device_off_network" = "Адрес устройства не входит в сеть этого Mac. Проверьте адрес или подключите этот Mac к сети устройства по Wi-Fi или через один из его портов LAN и повторите попытку.";
 "backend.error.reboot_not_started" = "Устройство не перезагрузилось после запроса перезагрузки.";
 "backend.error.reboot_not_finished" = "Устройство не вернулось в сеть после перезагрузки.";
@@ -700,7 +701,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS блокирует доступ TimeCapsuleSMB к устройствам в вашей локальной сети.";
 "backend.recovery.local_network_permission_denied.action.1" = "Откройте «Системные настройки» > «Конфиденциальность и безопасность» > «Локальная сеть».";
 "backend.recovery.local_network_permission_denied.action.2" = "Включите TimeCapsuleSMB в разделе «Локальная сеть».";
-"backend.recovery.local_network_permission_denied.action.3" = "Завершите и снова откройте TimeCapsuleSMB, затем повторите добавление устройства.";
+"backend.recovery.local_network_permission_denied.action.3" = "Завершите и снова откройте TimeCapsuleSMB, затем повторите попытку.";
+"backend.recovery.local_network_permission_denied.action.4" = "Если TimeCapsuleSMB уже включен, отключите его и включите снова. Если это не поможет, переместите другие копии TimeCapsuleSMB в Корзину и перезагрузите Mac.";
 "backend.recovery.local_network_filtered.title" = "Соединение заблокировано на этом Mac";
 "backend.recovery.local_network_filtered.message" = "Этот Mac прервал соединение до того, как оно достигло устройства. Трафик локальной сети фильтрует VPN, брандмауэр или защитное ПО.";
 "backend.recovery.device_off_network.title" = "Устройство не в сети этого Mac";

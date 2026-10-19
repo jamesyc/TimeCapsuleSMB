@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import sys
 import tempfile
 import unittest
@@ -20,7 +21,15 @@ from timecapsulesmb.device.probe import AirportAcpReading, ProbeResult, ProbedDe
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACP_PORT, DBUG_SSH_VALUE, ACPAuthError, ACPConnectionError
 from timecapsulesmb.services import acp_ssh
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, AirportIdentityMismatchError, enable_ssh_with_port_preflight
+from timecapsulesmb.checks.network import LocalInterfaceNetwork
+from timecapsulesmb.services.acp_ssh import (
+    SSH_ENABLE_TIMEOUT_MESSAGE,
+    ACPDeviceOffNetworkError,
+    ACP_UNREACHABLE_ADVICE,
+    ACPNoRouteError,
+    AirportIdentityMismatchError,
+    enable_ssh_with_port_preflight,
+)
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
@@ -423,6 +432,60 @@ class ConfigureServiceTests(unittest.TestCase):
                 {"acp_ssh_enable_succeeded": True},
             ],
         )
+
+    def probe_failure(self, errors: list[str], *, lan: str = "10.0.0.0/24") -> ACPConnectionError:
+        """The error one failed port probe of 10.0.0.2 raises, with each
+        attempt's connect error and this computer on `lan`."""
+        networks = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network(lan)),)
+        callbacks, _stages, _logs, _debug_fields, _update_fields = self.callbacks()
+        with mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=networks), \
+                mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+            with self.assertRaises(ACPConnectionError) as raised:
+                enable_ssh_with_port_preflight(
+                    "10.0.0.2",
+                    "pw",
+                    callbacks=callbacks,
+                    tcp_connect_error_func=mock.Mock(side_effect=errors),
+                    sleep_func=mock.Mock(),
+                )
+        enable_ssh.assert_not_called()
+        return raised.exception
+
+    def test_port_probe_with_no_route_on_every_attempt_says_so(self) -> None:
+        # The macOS app reads this as Local Network access being blocked.
+        for errors in (["[Errno 65] No route to host"] * 3, ["[Errno 113] No route to host"] * 3):
+            with self.subTest(errors[0]):
+                error = self.probe_failure(errors)
+
+                self.assertIsInstance(error, ACPNoRouteError)
+                self.assertEqual(
+                    str(error), f"Could not connect to ACP on 10.0.0.2:5009. {ACP_UNREACHABLE_ADVICE}",
+                )
+
+    def test_port_probe_failures_that_are_not_all_no_route_stay_generic(self) -> None:
+        # A device that stops answering times out or is "down" before its
+        # address is refused at once.
+        cases = {
+            "timeout then no route": ["timed out", "[Errno 65] No route to host", "[Errno 65] No route to host"],
+            "host down then no route": ["[Errno 64] Host is down", "[Errno 65] No route to host", "[Errno 65] No route to host"],
+            "host down": ["[Errno 64] Host is down"] * 3,
+            "refused": ["Connection refused"] * 3,
+            "timeout": ["timed out"] * 3,
+        }
+        for name, errors in cases.items():
+            with self.subTest(name):
+                error = self.probe_failure(errors)
+                self.assertIs(type(error), ACPConnectionError)
+                self.assertEqual(
+                    str(error), f"Could not connect to ACP on 10.0.0.2:5009. {ACP_UNREACHABLE_ADVICE}",
+                )
+
+    def test_port_probe_no_route_to_another_network_says_the_device_is_off_this_computers_network(self) -> None:
+        error = self.probe_failure(["[Errno 65] No route to host"] * 3, lan="192.168.20.0/24")
+
+        self.assertIsInstance(error, ACPDeviceOffNetworkError)
+        self.assertNotIsInstance(error, ACPNoRouteError)
 
     def test_port_probe_records_its_context_with_the_selected_record(self) -> None:
         callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()

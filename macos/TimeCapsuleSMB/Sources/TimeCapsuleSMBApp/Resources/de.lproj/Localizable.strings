@@ -650,6 +650,7 @@
 "backend.error.ssh_disabled" = "SSH ist auf diesem Gerät deaktiviert.";
 "backend.error.device_unreachable" = "Das Gerät antwortet weder über SSH noch über AirPort ACP.";
 "backend.error.local_network_filtered" = "Dieser Mac hat die Verbindung getrennt, bevor sie das Gerät erreicht hat. Ein VPN, eine Firewall oder Sicherheitssoftware filtert den lokalen Netzwerkverkehr.";
+"backend.error.acp_no_route" = "macOS hat die Verbindung zum Gerät abgelehnt. Möglicherweise hat TimeCapsuleSMB keinen Zugriff auf das lokale Netzwerk, oder ein VPN, eine Firewall oder Sicherheitssoftware blockiert den lokalen Netzwerkverkehr.";
 "backend.error.device_off_network" = "Die Adresse des Geräts liegt nicht im Netzwerk dieses Mac. Prüfen Sie die Adresse oder verbinden Sie diesen Mac per Wi-Fi oder über einen LAN-Anschluss des Geräts mit dessen Netzwerk und versuchen Sie es erneut.";
 "backend.error.reboot_not_started" = "Das Gerät ist nach der Neustartanforderung nicht neu gestartet.";
 "backend.error.reboot_not_finished" = "Das Gerät ist nach dem Neustart nicht zurückgekehrt.";
@@ -700,7 +701,8 @@
 "backend.recovery.local_network_permission_denied.message" = "macOS verhindert, dass TimeCapsuleSMB auf Geräte in Ihrem lokalen Netzwerk zugreift.";
 "backend.recovery.local_network_permission_denied.action.1" = "Öffnen Sie „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Lokales Netzwerk“.";
 "backend.recovery.local_network_permission_denied.action.2" = "Aktivieren Sie TimeCapsuleSMB unter „Lokales Netzwerk“.";
-"backend.recovery.local_network_permission_denied.action.3" = "Beenden Sie TimeCapsuleSMB, öffnen Sie es erneut und versuchen Sie dann noch einmal, das Gerät hinzuzufügen.";
+"backend.recovery.local_network_permission_denied.action.3" = "Beenden Sie TimeCapsuleSMB, öffnen Sie es erneut und versuchen Sie es dann noch einmal.";
+"backend.recovery.local_network_permission_denied.action.4" = "Wenn TimeCapsuleSMB bereits aktiviert ist, deaktivieren Sie es und aktivieren Sie es erneut. Hilft das nicht, löschen Sie andere Kopien von TimeCapsuleSMB und starten Sie den Mac neu.";
 "backend.recovery.local_network_filtered.title" = "Verbindung auf diesem Mac blockiert";
 "backend.recovery.local_network_filtered.message" = "Dieser Mac hat die Verbindung getrennt, bevor sie das Gerät erreicht hat. Ein VPN, eine Firewall oder Sicherheitssoftware filtert den lokalen Netzwerkverkehr.";
 "backend.recovery.device_off_network.title" = "Gerät nicht im Netzwerk dieses Mac";

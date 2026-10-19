@@ -34,6 +34,20 @@ class ACPDeviceOffNetworkError(ACPConnectionError):
     computer's networks (VPN tunnels and virtual bridges aside)."""
 
 
+class ACPNoRouteError(ACPConnectionError):
+    """Every ACP connect was refused with "No route to host", and the address
+    is not known to be off this computer's networks. A device that stops
+    answering times out or reports "Host is down" first. The macOS app reads
+    this as its Local Network access being blocked."""
+
+
+# Advice for an ACP port that does not answer at an address on this
+# computer's network.
+ACP_UNREACHABLE_ADVICE = (
+    "Check the device IP address or hostname, and turn off any VPN or firewall that filters local network traffic."
+)
+
+
 class AirportIdentityMismatchError(ACPError):
     """Another AirPort answers at the address, and the expected one was not
     found anywhere else."""
@@ -161,7 +175,9 @@ def _probe_acp_port(
     client_networks = client_networks_if_off_network(host)
     if client_networks:
         raise ACPDeviceOffNetworkError(failure + device_off_network_message(host, client_networks))
-    raise ACPConnectionError(failure + "Check the device IP address or hostname.")
+    if all(entry["kind"] == "no_route" for entry in errors):
+        raise ACPNoRouteError(failure + ACP_UNREACHABLE_ADVICE)
+    raise ACPConnectionError(failure + ACP_UNREACHABLE_ADVICE)
 
 
 def _follow(
