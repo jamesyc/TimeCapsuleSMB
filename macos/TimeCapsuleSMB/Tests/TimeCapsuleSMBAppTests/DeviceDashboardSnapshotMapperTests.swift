@@ -103,21 +103,31 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(snapshot.thisMac?.status, .fail)
     }
 
-    func testPayloadMissingFromDiskNeedsInstallEvenOnNetBSD4() throws {
-        // Erased disk: Activate cannot help, only Install / Update can. The
-        // same Checkup on NetBSD 4 must not ask for Activate.
+    func testPayloadMissingOrDamagedOnDiskNeedsInstallEvenOnNetBSD4() throws {
+        // Erased disk, or a damaged copy on it: Activate cannot help, only
+        // Install / Update can. The same Checkup on NetBSD 4 must not ask for
+        // Activate, and the state keeps which of the two it was.
         let profile = try makeProfile(payloadFamily: "netbsd4le_samba4")
+        for code in [DoctorSummary.payloadMissingFromDiskResultCode, DoctorSummary.payloadDamagedOnDiskResultCode] {
+            let summary = try makeDoctorSummary(checks: [
+                testDoctorCheck(status: "FAIL", message: "the Samba files on the disk cannot be used",
+                                domain: "device", code: code)
+            ])
+
+            let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: profile, skipSSH: false, state: .failed, summary: summary)
+
+            XCTAssertEqual(summary.payloadProblemCode, code)
+            XCTAssertEqual(runtimeState?.state, .notInstalled)
+            XCTAssertEqual(runtimeState?.errorCode, code)
+        }
+    }
+
+    func testAFailedCheckupWithoutAPayloadCodeHasNoPayloadProblem() throws {
         let summary = try makeDoctorSummary(checks: [
-            testDoctorCheck(status: "FAIL", message: "the Samba files are missing from every disk",
-                            domain: "device", code: "payload_missing_from_disk")
+            testDoctorCheck(status: "FAIL", message: "managed smbd parent process is not running", domain: "device")
         ])
-
-        let runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
-            profile: profile, skipSSH: false, state: .failed, summary: summary)
-
-        XCTAssertTrue(summary.payloadMissingFromDisk)
-        XCTAssertEqual(runtimeState?.state, .notInstalled)
-        XCTAssertEqual(runtimeState?.errorCode, DoctorSummary.payloadMissingFromDiskResultCode)
+        XCTAssertNil(summary.payloadProblemCode)
     }
 
     func testDiskNotMountingIsUnhealthyWithItsOwnCode() throws {

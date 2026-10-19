@@ -85,7 +85,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
 from timecapsulesmb.device.probe import (
-    DISK_PAYLOAD_MISSING_MESSAGE,
+    DISK_PAYLOAD_PROBLEMS,
     FILE_LOCKS_DISK_TDBS,
     FILE_LOCKS_RAM_TDBS,
     FOREIGN_WCIFSND_RUNNING,
@@ -3316,32 +3316,81 @@ class CheckTests(unittest.TestCase):
         )
         return run, smbd
 
-    def test_doctor_stops_at_a_payload_missing_from_every_disk_without_waiting_for_startup(self) -> None:
-        # An Erase in AirPort Utility: Samba stays off until a reinstall, so
-        # doctor neither waits out the startup window nor lists what follows.
-        debug_fields: dict[str, object] = {}
-        erase = "umount: /Volumes/dk2: Device busy\nInitialized /dev/rdk2 as a 1861 GB HFS Plus volume"
-        run, smbd = self.run_doctor_with_manager(
-            ManagerStartupAgeProbeResult(12.0, "manager started 12s ago", payload_missing=True),
-            debug_fields=debug_fields,
-            log_tails={"remote_manager_log_tail": erase},
-        )
+    def test_doctor_stops_at_a_payload_missing_or_damaged_without_waiting_for_startup(self) -> None:
+        # An Erase in AirPort Utility, or a binary on the disk that fails its
+        # deployed checksum: Samba stays off until a reinstall, so doctor
+        # neither waits out the startup window nor lists what follows.
+        logs = {
+            "payload=missing": "umount: /Volumes/dk2: Device busy\nInitialized /dev/rdk2 as a 1861 GB HFS Plus volume",
+            "payload=damaged": "copy verify failed: /Volumes/dk2/.samba4/smbd -> /mnt/Memory/samba4/sbin/smbd: "
+                               "CRC-32 read da7a298c, deployed 961339d2",
+        }
+        for problem in (problem for problem in DISK_PAYLOAD_PROBLEMS if problem.samba_off):
+            log = logs[problem.token]
+            with self.subTest(problem.token):
+                debug_fields: dict[str, object] = {}
+                run, smbd = self.run_doctor_with_manager(
+                    ManagerStartupAgeProbeResult(12.0, "manager started 12s ago", payload_problems=(problem,)),
+                    debug_fields=debug_fields,
+                    log_tails={"remote_manager_log_tail": log},
+                )
 
-        failure = run.results[-1]
-        self.assertEqual((failure.status, failure.message), ("FAIL", DISK_PAYLOAD_MISSING_MESSAGE))
-        self.assertEqual(failure.details["code"], DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK)
-        self.assertTrue(run.fatal)
-        smbd.assert_not_called()
-        self.assertEqual(sum(result.status == "FAIL" for result in run.results), 1)
-        self.assertTrue(debug_fields["manager_startup_age"]["payload_missing"])
-        # The manager's log reaches telemetry: it shows what removed the payload.
-        self.assertEqual(debug_fields["remote_manager_log_tail"], erase)
-        self.assertEqual(debug_fields["remote_runtime_ram_diagnostics"], "ram ok")
+                failure = run.results[-1]
+                self.assertEqual((failure.status, failure.message), ("FAIL", problem.message))
+                self.assertEqual(failure.details["code"], problem.code)
+                self.assertTrue(run.fatal)
+                smbd.assert_not_called()
+                self.assertEqual(sum(result.status == "FAIL" for result in run.results), 1)
+                # One flag per cause, so a query reads the same key in every
+                # release's telemetry.
+                for other in DISK_PAYLOAD_PROBLEMS:
+                    self.assertEqual(debug_fields["manager_startup_age"][other.debug_key], other is problem)
+                self.assertEqual({other.debug_key for other in DISK_PAYLOAD_PROBLEMS},
+                                 {"payload_missing", "payload_damaged", "rsync_missing", "rsync_damaged"})
+                # The manager's log reaches telemetry: it shows what removed
+                # or damaged the payload.
+                self.assertEqual(debug_fields["remote_manager_log_tail"], log)
+                self.assertEqual(debug_fields["remote_runtime_ram_diagnostics"], "ram ok")
+
+    def test_doctor_reports_a_verdict_that_leaves_samba_on_in_the_rsync_check(self) -> None:
+        # rsync=missing or rsync=damaged keeps only rsync off: doctor goes on
+        # through the Samba checks, and the rsync check fails with why instead
+        # of waiting for rsync. The manager's log reaches telemetry, as for
+        # any verdict.
+        logs = {
+            "rsync=missing": "stage: /Volumes/dk2/.samba4/rsync is missing",
+            "rsync=damaged": "copy verify failed: /Volumes/dk2/.samba4/rsync -> /mnt/Memory/samba4/sbin/rsync: "
+                             "CRC-32 read 1, deployed 2",
+        }
+        problems = [problem for problem in DISK_PAYLOAD_PROBLEMS if not problem.samba_off]
+        self.assertEqual({problem.token for problem in problems}, set(logs))
+        for problem in problems:
+            with self.subTest(problem.token):
+                debug_fields: dict[str, object] = {}
+                rsync = mock.Mock(side_effect=AssertionError("doctor probed rsync"))
+                smbd = mock.Mock(return_value=mock.Mock(ready=True, detail="managed smbd ready",
+                                                        lines=("PASS:managed smbd parent process is running",)))
+                run, _ = self.run_doctor_with_manager(
+                    ManagerStartupAgeProbeResult(400.0, "manager started 400s ago", payload_problems=(problem,)),
+                    debug_fields=debug_fields,
+                    log_tails={"remote_manager_log_tail": logs[problem.token]},
+                    extra_patches={
+                        "timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": smbd,
+                        "timecapsulesmb.checks.doctor_steps.probe_managed_rsync_conn": rsync,
+                    },
+                )
+                failures = [result for result in run.results if result.status == "FAIL"]
+                self.assertEqual([(result.message, result.details.get("code")) for result in failures],
+                                 [(problem.message, problem.code)])
+                smbd.assert_called()
+                rsync.assert_not_called()
+                self.assertTrue(debug_fields["manager_startup_age"][problem.debug_key])
+                self.assertEqual(debug_fields["remote_manager_log_tail"], logs[problem.token])
 
     def test_doctor_goes_on_to_the_samba_checks_when_the_payload_is_present(self) -> None:
         run = self.run_doctor_with_hostname(DeviceHostnameProbeResult("capsule", self.MAPPED))
 
-        self.assertNotIn(DISK_PAYLOAD_MISSING_MESSAGE, [result.message for result in run.results])
+        self.assertFalse({problem.message for problem in DISK_PAYLOAD_PROBLEMS} & {result.message for result in run.results})
         self.assertNotIn(DISK_NOT_MOUNTING_MESSAGE, [result.message for result in run.results])
         self.assertTrue(any("smbd" in result.message for result in run.results))
 
@@ -4318,6 +4367,114 @@ class CheckTests(unittest.TestCase):
                     on_stage=lambda *stage: stages.append(stage),
                 )
                 self.assertEqual(stages[0][1], f"device services started 42s ago; waiting up to 138s for {named} to finish starting...")
+
+    def test_run_doctor_checks_startup_wait_ends_at_a_verdict_that_turns_samba_off(self) -> None:
+        # The first staging run after a boot finds smbd damaged on the disk
+        # while doctor waits for Samba: waiting cannot help, so doctor stops
+        # and says to reinstall, as it would have had the verdict come first.
+        smbd_mock = mock.Mock(side_effect=lambda *a, **k: self._smbd_not_staged_probe())
+        damaged = next(p for p in DISK_PAYLOAD_PROBLEMS if p.token == "payload=damaged")
+        reads: list[int] = []
+
+        def verdicts(*args, **kwargs):
+            reads.append(1)
+            return (damaged,) if len(reads) > 1 else ()
+
+        debug_fields: dict[str, object] = {}
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=8.0, smbd_mock=smbd_mock, debug_fields=debug_fields,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.manager_payload_problems": verdicts},
+        )
+        self.assertEqual(len(sleeps), 2)
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "verdict")
+        failure = run.results[-1]
+        self.assertEqual((failure.status, failure.details.get("code")), ("FAIL", damaged.code))
+        self.assertTrue(run.fatal)
+
+    def test_run_doctor_checks_keeps_the_verdict_that_ended_its_wait(self) -> None:
+        # The wait stops at payload=damaged; the read after it fails. The
+        # verdict the wait saw stands, so doctor still says to reinstall.
+        damaged = next(p for p in DISK_PAYLOAD_PROBLEMS if p.token == "payload=damaged")
+        reads = iter([(damaged,), None])
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=8.0, smbd_mock=mock.Mock(side_effect=lambda *a, **k: self._smbd_not_staged_probe()),
+            extra_patches={"timecapsulesmb.checks.doctor_steps.manager_payload_problems":
+                           mock.Mock(side_effect=lambda *a, **k: next(reads))},
+        )
+        failure = run.results[-1]
+        self.assertEqual((failure.status, failure.details.get("code")), ("FAIL", damaged.code))
+        self.assertTrue(run.fatal)
+
+    @staticmethod
+    def _rsync_probe(ready: bool) -> ReadinessProbeResult:
+        if ready:
+            return ReadinessProbeResult(ready=True, detail="managed rsync is ready", steps=(
+                ProbeStepResult("rsync_process", "pass", "managed rsync process is running"),))
+        return ReadinessProbeResult(ready=False, detail="managed rsync process is not running", steps=(
+            ProbeStepResult("rsync_process", "fail", "managed rsync process is not running"),))
+
+    def test_run_doctor_checks_reads_rsync_damage_found_while_it_waited(self) -> None:
+        # rsync was still starting when the wait began; its first run found
+        # its disk copy damaged meanwhile. The verdict ends the wait for rsync
+        # and is what the rsync check reports, not a process not running.
+        problem = next(p for p in DISK_PAYLOAD_PROBLEMS if p.token == "rsync=damaged")
+        rsync = mock.Mock(return_value=self._rsync_probe(False))
+        debug_fields: dict[str, object] = {}
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=8.0, smbd_mock=mock.Mock(return_value=self._smbd_probe(True)), debug_fields=debug_fields,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.manager_payload_problems": mock.Mock(return_value=(problem,)),
+                           "timecapsulesmb.checks.doctor_steps.probe_managed_rsync_conn": rsync},
+        )
+        failures = [(result.message, result.details.get("code")) for result in run.results if result.status == "FAIL"]
+        self.assertEqual(failures, [(problem.message, problem.code)])
+        # The wait ended at a verdict, as at Samba's: rsync is not ready.
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "verdict")
+        self.assertEqual(len(sleeps), 1)
+        rsync.assert_called_once()
+
+    def test_run_doctor_checks_waits_for_rsync_as_for_samba(self) -> None:
+        # Right after a boot rsync starts beside Samba: doctor waits for it,
+        # names it, and reports the rsync it found once it runs.
+        stages: list[tuple[str, str | None]] = []
+        rsync = mock.Mock(side_effect=[self._rsync_probe(False), self._rsync_probe(False), self._rsync_probe(True)])
+        debug_fields: dict[str, object] = {}
+        run, sleeps = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=8.0, smbd_mock=mock.Mock(return_value=self._smbd_probe(True)), debug_fields=debug_fields,
+            on_stage=lambda *stage: stages.append(stage),
+            extra_patches={"timecapsulesmb.checks.doctor_steps.manager_payload_problems": mock.Mock(return_value=()),
+                           "timecapsulesmb.checks.doctor_steps.probe_managed_rsync_conn": rsync},
+        )
+        self.assertEqual(len(sleeps), 2)
+        self.assertIn("for rsync to finish starting", stages[0][1])
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "ready")
+        self.assertEqual(rsync.call_count, 3)
+        self.assertNotIn("managed rsync process is not running",
+                         [result.message for result in run.results if result.status == "FAIL"])
+
+    def test_run_doctor_checks_keeps_its_verdict_when_the_re_read_fails(self) -> None:
+        # ps failed after the startup wait: that says nothing about rsync, so
+        # the verdict read before the wait stands.
+        problem = next(p for p in DISK_PAYLOAD_PROBLEMS if not p.samba_off)
+        run, _ = self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=8.0, smbd_mock=mock.Mock(return_value=self._smbd_probe(True)),
+            startup_age_mock=mock.Mock(return_value=ManagerStartupAgeProbeResult(
+                8.0, "manager started 8s ago", payload_problems=(problem,))),
+            extra_patches={"timecapsulesmb.checks.doctor_steps.manager_payload_problems": mock.Mock(return_value=None),
+                           "timecapsulesmb.checks.doctor_steps.probe_managed_rsync_conn":
+                               mock.Mock(side_effect=AssertionError("doctor probed rsync"))},
+        )
+        codes = [result.details.get("code") for result in run.results if result.status == "FAIL"]
+        self.assertIn(problem.code, codes)
 
     def test_run_doctor_checks_startup_wait_stops_on_a_structural_samba_failure(self) -> None:
         # NBNS still starting is not worth waiting for when Samba is broken.

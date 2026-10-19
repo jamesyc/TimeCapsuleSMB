@@ -53,6 +53,44 @@ discovery, under the NetBIOS name of the hostname it maps in `/etc/hosts`, not
 the one its settings read derived: the first read at boot runs before ACPd sets
 the hostname and falls back to `syNm`.
 
+smbd and rsync are separate units (`service/manager.c` `struct unit`), each with
+its RAM image, staging job and publish, and both go through one pump
+(`pump_unit`) and one launch gate; `struct unit_kind` holds what differs.
+Samba's run maps the hostname, writes its three files and copies smbd; rsync's
+run writes rsyncd.conf and copies rsync. Neither waits on, stops or copies the
+other, and a payload is valid with Samba's files alone. A run that copies a
+binary anew and fails stops the program still serving the old copy. Deploy
+writes `checksums` into the payload after the binaries, one `NAME XXXXXXXX`
+CRC-32 line each, so a payload on another disk is checked against its own. Staging checks the bytes it reads against them, and a
+read error (EIO) counts as damage too; each launch checks the RAM image, so a
+copy damaged in RAM, or gone, is copied afresh instead of crashing at every
+relaunch, and each program starts only from a copy its unit verified.
+`samba/image.c` holds the rules for each image: after damage, on the disk or in
+RAM, the next copy waits 5, 15, then 60 s and copies go on every 60 s until the
+program serves from one; a retry first checks the disk copy in place, so damage
+that has not changed is neither copied into RAM nor logged again, and each wait
+is logged once. Disk damage stays reported until a copy's bytes match. That
+wait paces copies only; each unit has its own retry for failed runs: Samba's
+after 5 s, rsync's after 5, 15, then 60 s, which a publish, another payload or
+rsync turned back on starts over. Both units have the same verdicts, which only
+a reinstall clears: Samba's in the title as `payload=missing|damaged` (missing
+from every disk, or smbd damaged), rsync's as `rsync=missing|damaged` (rsync or
+rsyncd.conf missing from the payload, or rsync damaged). Doctor, deploy and
+Activate report each as a reinstall (`DISK_PAYLOAD_PROBLEMS` in
+`device/probe.py`, which the host manager tests and the app's contract test hold
+to the title); rsync's leave Samba serving. They wait for rsync as for Samba:
+until it is ready, a verdict says why it is off, or their window ends, which
+reports rsync alone (`rsync_not_running`, which sends the user to Checkup) when
+Samba serves. A run's findings about the payload count only from a disk that
+stayed the payload's until the run ended: a disk going away reads as files
+missing or other bytes. smbd missing from a payload is storage's to report
+(`payload=missing`), since Samba's files are what makes one. Activate never
+restarts a Samba that serves; it waits for rsync instead. A publish while smbd is still starting
+reaches it as a SIGHUP once it is ready. rsync's RAM files go once rsync is
+disabled or its payload is gone, including files an earlier manager left. A
+symlink at the RAM path is a test build linked in by hand: it must be readable
+but need not match. A payload without a `checksums` file is not checked.
+
 `service --print-mast [--timeout-seconds N]` performs a bounded `acp -A MaSt`
 read without starting a daemon. The manager uses the same collector asynchronously,
 with a native parser, five-second topology confirmation and ten-second recovery

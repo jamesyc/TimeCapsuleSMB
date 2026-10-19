@@ -93,10 +93,10 @@ from timecapsulesmb.device.probe import (
     RuntimeNamingIdentityProbeResult,
     DISCOVERY_UNREADABLE,
     DISKD_UNREADABLE,
-    DISK_PAYLOAD_MISSING_ERROR,
+    DISK_PAYLOAD_PROBLEMS,
+    RSYNC_NOT_RUNNING_STEP,
     MANAGER_UNREADABLE,
-    DISK_PAYLOAD_MISSING_MESSAGE,
-    runtime_payload_missing,
+    runtime_payload_problem,
     FOREIGN_WCIFSND_RUNNING,
     NATIVE_NBNS_OFF_DETAIL,
     MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
@@ -129,7 +129,7 @@ from timecapsulesmb.device.storage import (
     mounted_mast_volumes_conn,
 )
 from timecapsulesmb.services.activation import activate_runtime, decide_manual_activation
-from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
+from timecapsulesmb.device.errors import DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
@@ -230,13 +230,20 @@ class DeployModuleTests(unittest.TestCase):
         rc_local_autostart: bool = False,
     ) -> PreparedDeployPlan:
         payload_home = self._payload_home()
+        # Deploy records the CRC-32 of the binaries the device stages to RAM,
+        # so these two must exist.
+        binaries = tempfile.TemporaryDirectory()
+        self.addCleanup(binaries.cleanup)
+        smbd, rsync = Path(binaries.name) / "smbd", Path(binaries.name) / "rsync"
+        smbd.write_bytes(b"smbd")
+        rsync.write_bytes(b"rsync")
         plan = build_deployment_plan(
             "root@10.0.0.2",
             payload_home,
-            Path("bin/smbd"),
+            smbd,
 
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
-            rsync_path=Path("bin/rsync"),
+            rsync_path=rsync,
             startup_mode=startup_mode,
             wait_after_reboot=wait_after_reboot,
          service_path=Path("bin/service"))
@@ -1701,6 +1708,27 @@ class DeployModuleTests(unittest.TestCase):
                 if not nbns_steps:
                     self.assertNotIn("native_nbns_detail", fields)
 
+    def test_runtime_verification_measurement_tells_rsync_alone_from_a_runtime_failure(self) -> None:
+        cases = (
+            (self._runtime_not_ready(samba_ready=True), "rsync_not_ready", True),
+            (self._runtime_not_ready(), "not_ready", False),
+        )
+        for verification, result, samba_ready in cases:
+            with self.subTest(result):
+                measurements: list[tuple[str, dict[str, object]]] = []
+                with mock.patch("timecapsulesmb.services.runtime_verification.recheck_cached_adisk"):
+                    with self.assertRaises(DeviceError):
+                        verify_managed_runtime_ready(
+                            SshConnection("host", "pw", ""),
+                            callbacks=OperationCallbacks(
+                                record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
+                            stage="verify_runtime_activation", timeout_seconds=200, heading="Runtime verification:",
+                            failure_message="not ready", probe_runtime=mock.Mock(return_value=verification),
+                            read_runtime_logs=mock.Mock(return_value={}),
+                        )
+                fields = next(fields for kind, fields in measurements if kind == "runtime_verification")
+                self.assertEqual((fields["result"], fields["samba_ready"]), (result, samba_ready))
+
     def test_runtime_verification_measurement_reports_what_a_timed_out_listing_waited_for(self) -> None:
         # A timed-out process listing carries the table read just after it and
         # the processes asleep in the kernel; other failures carry neither.
@@ -3038,7 +3066,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=[runtime_timeout, runtime_ready]) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=[runtime_timeout, runtime_ready]) as runtime_once:
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=10,
@@ -3060,7 +3088,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(False, "managed mDNS registrant not active", ("FAIL:managed mDNS registrant not active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=0,
@@ -3083,7 +3111,7 @@ describe_managed_smbd_status "" ""
         )
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.1, 5.2, 5.3, 5.4])
-        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
             with mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(monotonic_values)):
                 result = probe_managed_runtime_conn(
                     connection,
@@ -3104,7 +3132,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=False), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready):
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready):
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=0,
@@ -3117,7 +3145,17 @@ describe_managed_smbd_status "" ""
         self.assertIn("FAIL:runtime verification timed out after 0s plus 2 final checks", result.lines)
 
     @staticmethod
-    def _runtime_not_ready() -> ManagedRuntimeProbeResult:
+    def _runtime_not_ready(samba_ready: bool = False) -> ManagedRuntimeProbeResult:
+        if samba_ready:
+            # Samba serves; only rsync is not running.
+            return ManagedRuntimeProbeResult(
+                ready=False,
+                detail="managed rsync process is not running",
+                smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+                mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
+                extra_steps=(ProbeStepResult(id="rsync", status="fail", detail="managed rsync process is not running"),),
+                samba_ready=True,
+            )
         return ManagedRuntimeProbeResult(
             ready=False,
             detail="managed smbd not ready; managed mDNS registrant not active",
@@ -3125,30 +3163,50 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(False, "managed mDNS registrant not active", ("FAIL:managed mDNS registrant not active",)),
         )
 
-    def _payload_missing_runtime(self) -> ManagedRuntimeProbeResult:
-        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=True):
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=self._runtime_not_ready()):
+    def _payload_problem_runtime(self, problem) -> ManagedRuntimeProbeResult:
+        runtime = self._runtime_not_ready(samba_ready=not problem.samba_off)
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)):
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime):
                 return probe_managed_runtime_conn(
                     SshConnection("host", "pw", "-o foo"), timeout_seconds=200, poll_interval_seconds=0.0,
                     smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
                 )
 
-    def test_probe_managed_runtime_stops_waiting_when_no_disk_holds_the_payload(self) -> None:
-        # The manager's payload=missing keeps Samba off however long the
-        # verification waits: it ends after the first attempt, not at 200 s.
+    def test_probe_managed_runtime_stops_waiting_at_any_verdict_in_the_title(self) -> None:
+        # payload=missing, payload=damaged or rsync=damaged holds however long
+        # the verification waits: it ends after the first attempt, not at
+        # 200 s; rsync's once Samba is ready, so the result says how it is.
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing", return_value=True) as missing:
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=self._runtime_not_ready()) as runtime_once:
+        for problem in DISK_PAYLOAD_PROBLEMS:
+            with self.subTest(problem.token):
+                with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)) as asked:
+                    with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
+                                    return_value=self._runtime_not_ready(samba_ready=not problem.samba_off)) as runtime_once:
+                        result = probe_managed_runtime_conn(
+                            connection, timeout_seconds=200, poll_interval_seconds=0.0,
+                            smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
+                        )
+                self.assertFalse(result.ready)
+                self.assertEqual(runtime_once.call_count, 1)
+                asked.assert_called_once_with(connection)
+                self.assertIs(runtime_payload_problem(result), problem)
+                self.assertEqual(result.detail, problem.message)
+                self.assertIn(f"FAIL:{problem.message}", result.lines)
+
+    def test_a_verdict_that_leaves_samba_on_waits_for_samba(self) -> None:
+        # rsync=damaged while smbd is still starting (or failing): the wait
+        # goes on, and a Samba that never comes up is what the result reports.
+        problem = next(p for p in DISK_PAYLOAD_PROBLEMS if not p.samba_off)
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)):
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
+                            return_value=self._runtime_not_ready()) as runtime_once:
                 result = probe_managed_runtime_conn(
-                    connection, timeout_seconds=200, poll_interval_seconds=0.0,
-                    smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
+                    SshConnection("host", "pw", "-o foo"), timeout_seconds=1, poll_interval_seconds=0.0,
+                    smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0, final_attempts=0,
                 )
         self.assertFalse(result.ready)
-        self.assertEqual(runtime_once.call_count, 1)
-        missing.assert_called_once_with(connection)
-        self.assertTrue(runtime_payload_missing(result))
-        self.assertEqual(result.detail, DISK_PAYLOAD_MISSING_MESSAGE)
-        self.assertIn(f"FAIL:{DISK_PAYLOAD_MISSING_MESSAGE}", result.lines)
+        self.assertGreater(runtime_once.call_count, 1)
+        self.assertIsNone(runtime_payload_problem(result))
 
     def test_probe_managed_runtime_does_not_ask_about_the_payload_once_ready(self) -> None:
         runtime_ready = ManagedRuntimeProbeResult(
@@ -3157,20 +3215,23 @@ describe_managed_smbd_status "" ""
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
             mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
-        with mock.patch("timecapsulesmb.device.probe.manager_reports_payload_missing") as missing:
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems") as asked:
             with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_ready):
                 result = probe_managed_runtime_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=200)
         self.assertTrue(result.ready)
-        missing.assert_not_called()
-        self.assertFalse(runtime_payload_missing(result))
+        asked.assert_not_called()
+        self.assertIsNone(runtime_payload_problem(result))
 
-    def test_verify_managed_runtime_ready_rechecks_this_macs_adisk_copy_only_after_a_ready_runtime(self) -> None:
+    def test_verify_managed_runtime_ready_rechecks_this_macs_adisk_copy_only_once_samba_serves(self) -> None:
+        # rsync alone failing leaves Samba serving, and Time Machine needs the
+        # record as much as when everything is ready.
         connection = SshConnection("host", "pw", "")
-        for ready in (True, False):
-            with self.subTest(ready=ready):
+        for ready, samba_ready in ((True, True), (False, True), (False, False)):
+            with self.subTest(ready=ready, samba_ready=samba_ready):
                 verification = ManagedRuntimeProbeResult(
                     ready=ready, detail="ready" if ready else "smbd missing",
-                    smbd=readiness_result(ready, "smbd", ()), mdns=readiness_result(ready, "mdns", ()),
+                    smbd=readiness_result(samba_ready, "smbd", ()), mdns=readiness_result(samba_ready, "mdns", ()),
+                    samba_ready=samba_ready,
                 )
                 callbacks = OperationCallbacks()
                 with mock.patch("timecapsulesmb.services.runtime_verification.recheck_cached_adisk") as recheck:
@@ -3182,7 +3243,7 @@ describe_managed_smbd_status "" ""
                         )
                     except DeviceError:
                         self.assertFalse(ready)
-                if ready:
+                if samba_ready:
                     recheck.assert_called_once_with(connection, callbacks, stage="verify_runtime_reboot")
                 else:
                     recheck.assert_not_called()
@@ -3247,7 +3308,7 @@ describe_managed_smbd_status "" ""
                 self.assertEqual(fields["result"], "error")
                 self.assertIn(message, fields["error"])
 
-    def test_verify_managed_runtime_ready_raises_the_payload_code_only_for_a_missing_payload(self) -> None:
+    def test_verify_managed_runtime_ready_raises_each_verdicts_own_code_and_no_other(self) -> None:
         def verify(verification: ManagedRuntimeProbeResult) -> None:
             verify_managed_runtime_ready(
                 SshConnection("host", "pw", ""),
@@ -3260,31 +3321,124 @@ describe_managed_smbd_status "" ""
                 read_runtime_logs=mock.Mock(return_value={}),
             )
 
-        with self.assertRaises(DiskPayloadMissingError) as raised:
-            verify(self._payload_missing_runtime())
-        self.assertEqual(raised.exception.code, "payload_missing_from_disk")
-        self.assertEqual(str(raised.exception), f"NetBSD4 activation failed. {DISK_PAYLOAD_MISSING_ERROR}")
+        self.assertEqual([problem.code for problem in DISK_PAYLOAD_PROBLEMS],
+                         ["payload_missing_from_disk", "payload_damaged_on_disk", "rsync_missing_from_disk",
+                          "rsync_damaged_on_disk"])
+        for problem in DISK_PAYLOAD_PROBLEMS:
+            with self.subTest(problem.token):
+                with self.assertRaises(problem.error_type) as raised:
+                    verify(self._payload_problem_runtime(problem))
+                self.assertEqual(raised.exception.code, problem.code)
+                # The caller's failure line says Samba did not start, which a
+                # verdict that leaves Samba on would contradict.
+                expected = f"NetBSD4 activation failed. {problem.error}" if problem.samba_off else problem.error
+                self.assertEqual(str(raised.exception), expected)
+                self.assertEqual(raised.exception.samba_off, problem.samba_off)
+
+        rsync = next(p for p in DISK_PAYLOAD_PROBLEMS if not p.samba_off)
+        self.assertTrue(rsync.error.startswith("File sharing and Time Machine are running, but the rsync file"))
 
         with self.assertRaises(DeviceError) as raised:
             verify(self._runtime_not_ready())
-        self.assertNotIsInstance(raised.exception, DiskPayloadMissingError)
+        self.assertNotIsInstance(raised.exception, (DiskPayloadError, RsyncNotRunningError))
 
-    def test_activate_refuses_before_starting_when_the_manager_found_no_payload(self) -> None:
+        # Samba serves and rsync is off with no verdict saying why: an error
+        # of its own, which does not say file sharing failed, and sends the
+        # user to Checkup, which says why, rather than to a reinstall.
+        with self.assertRaises(RsyncNotRunningError) as raised:
+            verify(self._runtime_not_ready(samba_ready=True))
+        self.assertEqual(raised.exception.code, "rsync_not_running")
+        self.assertFalse(raised.exception.samba_off)
+        self.assertEqual(str(raised.exception),
+                         "File sharing and Time Machine are running, but rsync is not: managed rsync process is not "
+                         'running. Run "Checkup" in the macOS app, or tcapsule doctor from the command line, for '
+                         "details.")
+
+    def test_probe_managed_runtime_waits_for_rsync_as_long_as_for_samba(self) -> None:
+        # No verdict says why rsync is off (a configuration without a path
+        # line): rsync gets the whole window, final checks included, as smbd
+        # would; then the result says only rsync failed, not a timeout.
+        runtime = self._runtime_not_ready(samba_ready=True)
+        clock = iter(range(0, 100000, 10))
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), \
+                mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime), \
+                mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(clock)), \
+                mock.patch("timecapsulesmb.device.probe.time.sleep"):
+            result = probe_managed_runtime_conn(
+                SshConnection("host", "pw", "-o foo"), timeout_seconds=200, poll_interval_seconds=0.0,
+                smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0, final_attempts=2,
+            )
+        self.assertFalse(result.ready)
+        self.assertTrue(result.samba_ready)
+        self.assertEqual([a.phase for a in result.attempts][-3:], ["soft_window", "final_check", "final_check"])
+        self.assertEqual((result.steps[-1].id, result.steps[-1].status), (RSYNC_NOT_RUNNING_STEP, "fail"))
+        self.assertEqual(result.detail, "managed rsync process is not running")
+        self.assertNotIn("runtime_timeout", {step.id for step in result.steps})
+
+    def _final_check_runtime(self, runtimes, verdicts) -> ManagedRuntimeProbeResult:
+        """A verification whose soft window has one attempt and whose final
+        checks have the rest: the clock moves 100 s at each reading."""
+        clock = iter(range(0, 100000, 100))
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", side_effect=verdicts), \
+                mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=runtimes), \
+                mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(clock)), \
+                mock.patch("timecapsulesmb.device.probe.time.sleep"):
+            return probe_managed_runtime_conn(
+                SshConnection("host", "pw", "-o foo"), timeout_seconds=200, poll_interval_seconds=0.0,
+                smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0, final_attempts=2,
+            )
+
+    def test_final_checks_end_at_verdicts_as_the_soft_window_does(self) -> None:
+        # rsync=damaged while smbd still starts, then Samba serves in a final
+        # check whose read of the title fails: still rsync's damage, not an
+        # rsync that merely did not start.
+        rsync = next(p for p in DISK_PAYLOAD_PROBLEMS if not p.samba_off)
+        result = self._final_check_runtime(
+            [self._runtime_not_ready(), self._runtime_not_ready(samba_ready=True)], [(rsync,), None])
+        self.assertEqual([a.phase for a in result.attempts], ["soft_window", "final_check"])
+        self.assertIs(runtime_payload_problem(result), rsync)
+        self.assertNotIn(RSYNC_NOT_RUNNING_STEP, {step.id for step in result.steps})
+        # Damage first seen in a final check ends the wait as in the soft
+        # window, not as a timeout, so Activate does not start the runtime.
+        damaged = next(p for p in DISK_PAYLOAD_PROBLEMS if p.token == "payload=damaged")
+        result = self._final_check_runtime([self._runtime_not_ready()] * 2, [(), (damaged,)])
+        self.assertIs(runtime_payload_problem(result), damaged)
+        self.assertNotIn("runtime_timeout", {step.id for step in result.steps})
+
+    def test_probe_managed_runtime_reports_rsync_alone_at_its_deadline(self) -> None:
+        # A wait shorter than rsync's start (activation's first look): at its
+        # deadline Samba serves, so the result is rsync's, not a timeout.
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=None), \
+                mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
+                           return_value=self._runtime_not_ready(samba_ready=True)):
+            result = probe_managed_runtime_conn(
+                SshConnection("host", "pw", "-o foo"), timeout_seconds=1, poll_interval_seconds=0.0,
+                smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0, final_attempts=0,
+            )
+        self.assertFalse(result.ready)
+        self.assertEqual(result.steps[-1].id, RSYNC_NOT_RUNNING_STEP)
+        self.assertNotIn("runtime_timeout", {step.id for step in result.steps})
+
+    def test_activate_refuses_before_starting_when_the_manager_reports_a_payload_verdict(self) -> None:
         # The manager already runs and found no payload (the disk was erased
-        # while it ran): starting it again cannot help, only a reinstall.
-        messages: list[str] = []
-        callbacks = OperationCallbacks(log=messages.append)
-        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"):
-            with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
-                            return_value=self._payload_missing_runtime()):
-                with mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
-                    with self.assertRaises(DiskPayloadMissingError) as raised:
-                        activate_runtime(SshConnection("host", "pw", ""), [], callbacks=callbacks)
-        run_actions.assert_not_called()
-        self.assertEqual(raised.exception.code, "payload_missing_from_disk")
-        # One sentence, said once: the progress line is not repeated by the error.
-        self.assertEqual(str(raised.exception), f"NetBSD4 activation failed. {DISK_PAYLOAD_MISSING_ERROR}")
-        self.assertNotIn(DISK_PAYLOAD_MISSING_MESSAGE, messages)
+        # while it ran), a damaged one or a damaged rsync: starting it again
+        # cannot help, only a reinstall.
+        for problem in DISK_PAYLOAD_PROBLEMS:
+            with self.subTest(problem.token):
+                messages: list[str] = []
+                callbacks = OperationCallbacks(log=messages.append)
+                with mock.patch("timecapsulesmb.services.activation.require_compatible_install"):
+                    with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
+                                    return_value=self._payload_problem_runtime(problem)):
+                        with mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
+                            with self.assertRaises(problem.error_type) as raised:
+                                activate_runtime(SshConnection("host", "pw", ""), [], callbacks=callbacks)
+                run_actions.assert_not_called()
+                self.assertEqual(raised.exception.code, problem.code)
+                # One sentence, said once: the progress line is not repeated
+                # by the error.
+                self.assertEqual(str(raised.exception), problem.error_after("NetBSD4 activation failed."))
+                self.assertNotIn(problem.message, messages)
 
     def test_activate_runs_when_the_runtime_is_only_not_ready(self) -> None:
         with mock.patch("timecapsulesmb.services.activation.require_compatible_install"):

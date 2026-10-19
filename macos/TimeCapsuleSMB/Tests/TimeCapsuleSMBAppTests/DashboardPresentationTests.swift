@@ -132,6 +132,157 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(row.message.contains("xattr_tdb"))
     }
 
+    func testCheckupPresentationLocalizesPayloadDamagedOnDiskCheck() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "the Samba files on the disk are damaged and no longer match what was installed; run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line",
+                domain: "device",
+                code: "payload_damaged_on_disk"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        let presentation = CheckupPresentation(summary: summary, state: .failed)
+        let row = try XCTUnwrap(presentation.domains.first?.rows.first)
+
+        XCTAssertEqual(presentation.domains.first?.domain, .device)
+        XCTAssertEqual(
+            row.message,
+            "The Samba files on the disk are damaged and no longer match what was installed. Run “Install / Update Samba” to reinstall."
+        )
+        XCTAssertFalse(row.message.contains("tcapsule deploy"))
+    }
+
+    func testCheckupPresentationLocalizesRsyncDamagedOnDiskWithoutCallingSambaUninstalled() throws {
+        // A damaged rsync keeps only rsync off: the Checkup line says to
+        // reinstall, and the dashboard does not take Samba for missing.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "the rsync file on the disk is damaged and no longer matches what was installed, so rsync is off; run \"Install / Update Samba\" in the macOS app, or tcapsule deploy from the command line",
+                domain: "device",
+                code: "rsync_damaged_on_disk"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        let presentation = CheckupPresentation(summary: summary, state: .failed)
+        let row = try XCTUnwrap(presentation.domains.first?.rows.first)
+        XCTAssertEqual(
+            row.message,
+            "The rsync file on the disk is damaged and no longer matches what was installed, so rsync is off. File sharing and Time Machine keep working. Run “Install / Update Samba” to reinstall."
+        )
+        XCTAssertEqual(summary.payloadProblem?.stopsSamba, false)
+        var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+        XCTAssertEqual(profile.runtimeState?.state, .unhealthy)
+        XCTAssertEqual(profile.runtimeState?.errorCode, "rsync_damaged_on_disk")
+
+        // A failure on this Mac is not the device's: the row still names rsync.
+        let withMacFailure = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "FAIL", message: "rsync damaged", domain: "device", code: "rsync_damaged_on_disk"),
+            testDoctorCheck(status: "FAIL", message: "this Mac cannot reach the device", domain: "computer")
+        ]).decode(DoctorPayload.self))
+        XCTAssertEqual(DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: withMacFailure)?.errorCode, "rsync_damaged_on_disk")
+        // Another failure on the device is one the Checkup lists.
+        let withDeviceFailure = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "FAIL", message: "rsync damaged", domain: "device", code: "rsync_damaged_on_disk"),
+            testDoctorCheck(status: "FAIL", message: "smbd is not running", domain: "device")
+        ]).decode(DoctorPayload.self))
+        XCTAssertEqual(DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: withDeviceFailure)?.errorCode, "doctor_failed")
+    }
+
+    func testEveryPayloadProblemReachesItsCheckupTextAndInstallRow() throws {
+        // DoctorSummary.payloadProblems is the one list of them: each code
+        // there reaches the summary, the dashboard's state and row, and the
+        // Checkup line, with text of its own. Only one that stops Samba makes
+        // the device read as not installed; each row offers Install.
+        XCTAssertEqual(DoctorSummary.payloadProblems.map(\.stopsSamba), [true, true, false, false])
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        let problems = DoctorSummary.payloadProblems
+        XCTAssertEqual(Set(problems.map(\.code)).count, problems.count)
+        XCTAssertEqual(Set(problems.map(\.rowID)).count, problems.count)
+        XCTAssertEqual(Set(problems.map(\.detailKey)).count, problems.count)
+        for problem in problems {
+            let detail = L10n.string(problem.detailKey)
+            XCTAssertNotEqual(detail, problem.detailKey, "no catalog text for \(problem.detailKey)")
+            let check = testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device", code: problem.code)
+            let summary = DoctorSummary(payload: try testDoctorPayload(checks: [check]).decode(DoctorPayload.self))
+            XCTAssertEqual(summary.payloadProblemCode, problem.code)
+            XCTAssertEqual(summary.checks.first?.localizedMessage, detail)
+            var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+            profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: profile, skipSSH: false, state: .failed, summary: summary)
+            XCTAssertEqual(profile.runtimeState?.state, problem.stopsSamba ? .notInstalled : .unhealthy)
+            XCTAssertEqual(profile.runtimeState?.errorCode, problem.code)
+            let presentation = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+                profile: profile,
+                passwordState: .available,
+                displayStatus: .readyToInstall,
+                primaryAction: .installSMB,
+                hostWarning: nil
+            ))
+            let runtimeRow = try row(.runtime, in: presentation)
+            XCTAssertEqual(runtimeRow.id, problem.rowID)
+            XCTAssertEqual(runtimeRow.detail, detail)
+            // A damaged rsync fails the Checkup like anything else.
+            XCTAssertEqual(runtimeRow.status, .failed)
+            XCTAssertEqual(runtimeRow.action, .installUpdate)
+        }
+    }
+
+    func testADamagedRsyncNeverHidesAnotherFailure() throws {
+        // rsync damaged and smbd down in the same Checkup: the dashboard does
+        // not show the rsync row, whose text says file sharing works, but the
+        // generic failure that sends the user to the Checkup's full list.
+        let summary = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "FAIL", message: "managed smbd parent process is not running", domain: "device"),
+            testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device",
+                            code: DoctorSummary.rsyncDamagedOnDiskResultCode),
+        ]).decode(DoctorPayload.self))
+        var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: summary)
+        XCTAssertEqual(profile.runtimeState?.state, .unhealthy)
+        XCTAssertEqual(profile.runtimeState?.errorCode, "doctor_failed")
+        let presentation = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile, passwordState: .available, displayStatus: .readyToInstall,
+            primaryAction: .installSMB, hostWarning: nil))
+        XCTAssertEqual(try row(.runtime, in: presentation).id, "runtime-unhealthy")
+    }
+
+    func testADeployThatEndsOnADamagedRsyncNamesItWithInstall() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        profile.runtimeState = DeviceRuntimeStateSnapshot(
+            state: .installFailed, source: .deploy, stage: "verify_runtime_activation", payloadFamily: "netbsd4_samba4",
+            verified: false, summary: "", errorCode: DoctorSummary.rsyncDamagedOnDiskResultCode,
+            errorMessage: nil, recovery: nil)
+        let presentation = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile, passwordState: .available, displayStatus: .readyToInstall,
+            primaryAction: .installSMB, hostWarning: nil))
+        let runtimeRow = try row(.runtime, in: presentation)
+        XCTAssertEqual(runtimeRow.id, "runtime-rsync-damaged")
+        XCTAssertEqual(runtimeRow.detail, L10n.string("doctor.check.rsync_damaged_on_disk"))
+        XCTAssertEqual(runtimeRow.action, .installUpdate)
+    }
+
     func testCheckupPresentationLocalizesMetadataMigrationInProgressCheck() throws {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
@@ -835,6 +986,25 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(erasedRow.action, .installUpdate)
         XCTAssertEqual(erasedRow.detail, L10n.string("doctor.check.payload_missing_from_disk"))
 
+        // The files on the disk fail their deployed checksum: its own text,
+        // the same Install action.
+        var damagedProfile = netbsd4Profile
+        damagedProfile.runtimeState = testRuntimeState(
+            state: .notInstalled, source: .doctor, payloadFamily: "netbsd4_samba4", verified: false,
+            summary: "", errorCode: DoctorSummary.payloadDamagedOnDiskResultCode)
+        let damaged = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: damagedProfile,
+            passwordState: .available,
+            displayStatus: .readyToInstall,
+            primaryAction: .installSMB,
+            hostWarning: nil
+        ))
+        let damagedRow = try row(.runtime, in: damaged)
+        XCTAssertEqual(damagedRow.id, "runtime-payload-damaged")
+        XCTAssertEqual(damagedRow.status, .failed)
+        XCTAssertEqual(damagedRow.action, .installUpdate)
+        XCTAssertEqual(damagedRow.detail, L10n.string("doctor.check.payload_damaged_on_disk"))
+        XCTAssertNotEqual(damagedRow.detail, erasedRow.detail)
         // A disk will not mount and none holds the Samba files: say restart,
         // not only how many checks failed.
         var stuckProfile = healthyProfile

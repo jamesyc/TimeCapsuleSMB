@@ -88,7 +88,7 @@ void tc_stuck_word(char *out, size_t size, const char *text);
 /* The uninterruptible sleepers in this pass's process table. */
 int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table);
 /* The manager's process title, which doctor reads from ps:
- *   role=manager started=S[ waiting=hostname][ payload=missing][ unmounted=S][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
+ *   role=manager started=S[ waiting=hostname][ payload=missing|damaged][ rsync=missing|damaged][ unmounted=S][ stuck=PID:COMM:WAIT:SECONDS,...[,+N]]
  * started= is when the manager started, in whole seconds on the kernel's
  * monotonic clock (started_ms; omitted when negative, a failed clock read).
  * Doctor subtracts it from `service --print-monotonic-ms`, the same clock:
@@ -97,15 +97,22 @@ int tc_stuck_read(struct tc_stuck_sample *out, const struct tc_proctable *table)
  * is rewritten only on changes, so it carries the start, not the age. Stuck
  * entries come last, longest first, at most limit of them and then +N for
  * the rest (stuck=+N alone when limit is 0): a title cut at size loses stuck
- * entries, never started=. Their seconds are now - since. payload=missing
- * means every available disk was inspected and none holds a payload, as after
- * an Erase in AirPort Utility: Samba stays off until the payload is
- * reinstalled, so doctor and activation report that instead of waiting.
+ * entries, never started=. Their seconds are now - since. payload (NULL for
+ * none) is "missing" when every available disk was inspected and none holds a
+ * payload, as after an Erase in AirPort Utility, and "damaged" when smbd on
+ * the disk does not match its payload's checksum or cannot be read. Either way Samba stays
+ * off until the payload is reinstalled, so doctor, deploy and activation
+ * report that instead of waiting. rsync= (rsync) is the same for rsync while
+ * it is enabled: "missing" when the payload lacks rsync or rsyncd.conf,
+ * "damaged" when rsync on the disk does not match its checksum or cannot be
+ * read. Samba serves without it, and doctor's rsync check, deploy and
+ * activation say to reinstall.
  * unmounted= is since when a disk MaSt lists has not mounted while no other
  * holds the Samba files, so Samba is off; on the same clock as started=
  * (unmounted_ms; omitted when negative). The manager shows it only once that
  * has lasted TC_UNMOUNTED_MS, not counting time diskd spent checking or
  * formatting a disk, and doctor then says to restart. */
-void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, int payload_missing,
-                      long long unmounted_ms, const struct tc_stuck *stuck, size_t limit, long long now);
+void tc_manager_title(char *out, size_t size, long long started_ms, int waiting, const char *payload,
+                      const char *rsync, long long unmounted_ms, const struct tc_stuck *stuck, size_t limit,
+                      long long now);
 #endif

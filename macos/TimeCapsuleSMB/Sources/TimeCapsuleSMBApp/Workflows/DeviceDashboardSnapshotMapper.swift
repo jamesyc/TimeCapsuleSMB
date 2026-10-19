@@ -71,8 +71,9 @@ enum DeviceDashboardSnapshotMapper {
                 recovery: nil
             )
         case .fail:
-            // Installed files gone from every disk: only Install brings Samba back.
-            if summary.runtimeNotInstalled || summary.payloadMissingFromDisk {
+            // Installed files gone from every disk, or Samba's damaged: only
+            // Install brings Samba back.
+            if summary.runtimeNotInstalled || summary.payloadProblem?.stopsSamba == true {
                 return DeviceRuntimeStateSnapshot(
                     state: .notInstalled,
                     source: .doctor,
@@ -80,9 +81,8 @@ enum DeviceDashboardSnapshotMapper {
                     payloadFamily: payloadFamily,
                     verified: false,
                     summary: "",
-                    errorCode: summary.payloadMissingFromDisk
-                        ? DoctorSummary.payloadMissingFromDiskResultCode
-                        : DoctorSummary.runtimeNotInstalledResultCode,
+                    errorCode: summary.payloadProblem.flatMap { $0.stopsSamba ? $0.code : nil }
+                        ?? DoctorSummary.runtimeNotInstalledResultCode,
                     errorMessage: nil,
                     recovery: nil
                 )
@@ -96,8 +96,12 @@ enum DeviceDashboardSnapshotMapper {
                 verified: false,
                 summary: countSummary,
                 summaryRef: countSummaryRef,
-                // A disk that will not mount has one fix the dashboard names.
-                errorCode: summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode : "doctor_failed",
+                // A disk that will not mount has one fix the dashboard names,
+                // and so does a damaged rsync when nothing else failed: with
+                // other failures (Samba's own) the generic row sends the user
+                // to the Checkup, which lists them all.
+                errorCode: summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode
+                    : device.failCount == 1 ? summary.payloadProblemCode ?? "doctor_failed" : "doctor_failed",
                 errorMessage: nil,
                 recovery: nil
             )

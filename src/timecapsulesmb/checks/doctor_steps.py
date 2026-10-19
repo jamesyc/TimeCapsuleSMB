@@ -5,7 +5,7 @@ import re
 import sys
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypeVar
 
@@ -136,9 +136,11 @@ from timecapsulesmb.device.probe import (
     probe_usb_printer_conn,
     probe_device_hostname_conn,
     probe_managed_smbd_conn,
+    manager_payload_problems,
     probe_manager_startup_age_conn,
-    DISK_PAYLOAD_MISSING_MESSAGE,
+    DISK_PAYLOAD_PROBLEMS,
     ManagerStartupAgeProbeResult,
+    ManagerVerdicts,
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
     read_file_locks_conn,
@@ -2498,18 +2500,40 @@ def _doctor_probe_startup_age(
             "started_monotonic_s": probe.started_monotonic_s,
             "now_monotonic_ms": probe.now_monotonic_ms,
             "detail": probe.detail,
-            "payload_missing": probe.payload_missing,
+            # One flag per verdict, so a query reads the same key in every
+            # release's telemetry.
+            **{problem.debug_key: problem in probe.payload_problems for problem in DISK_PAYLOAD_PROBLEMS},
             "unmounted_since": probe.unmounted_since,
         }
     return probe
 
 
+def _doctor_refresh_payload_problems(
+    target: DoctorTarget, remote: RemoteAccess, manager: ManagerStartupAgeProbeResult | None,
+    verdicts: ManagerVerdicts,
+) -> ManagerStartupAgeProbeResult | None:
+    """The manager's verdicts as they are after the startup wait, which the
+    reading before it can be minutes older than: one can appear, or clear,
+    while the device starts. verdicts holds the last reading that worked,
+    before or during the wait, which a failed read leaves standing."""
+    if manager is None or not remote.remote_checks_enabled:
+        return manager
+    age = manager.manager_started_seconds_ago
+    if age is None or age >= DOCTOR_STARTUP_WINDOW_SECONDS:
+        return manager
+    verdicts.update(manager_payload_problems(target.connection))
+    return replace(manager, payload_problems=verdicts.problems)
+
+
 def _doctor_check_disk_payload(manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink) -> StepDecision:
-    """The manager found no payload on any disk: Samba stays off until a
-    reinstall, so this is the whole verdict, before any startup wait."""
-    if manager is None or not manager.payload_missing:
+    """The manager found no payload on any disk, or a damaged one: Samba stays
+    off until a reinstall, so this is the whole verdict, before any startup
+    wait."""
+    problems = manager.payload_problems if manager is not None else ()
+    problem = next((problem for problem in problems if problem.samba_off), None)
+    if problem is None:
         return StepDecision()
-    sink.add(CheckResult("FAIL", DISK_PAYLOAD_MISSING_MESSAGE, details={"code": DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK}))
+    sink.add(CheckResult("FAIL", problem.message, details={"code": problem.code}))
     return StepDecision(stop=True)
 
 
@@ -2693,10 +2717,12 @@ def _doctor_check_managed_smbd(
 
 @dataclass(frozen=True)
 class StartupReadiness:
-    """The startup wait's last Samba and mDNS probes, which their checks
-    report; None when nothing waited, so each check probes and retries."""
+    """The startup wait's last Samba, mDNS and rsync probes, which their
+    checks report; None when nothing waited (or, for rsync, when a verdict
+    says why it is off), so each check probes and retries."""
     smbd: ReadinessProbeResult | None = None
     mdns: ReadinessProbeResult | None = None
+    rsync: ReadinessProbeResult | None = None
 
 
 def _readiness_broken(probe: ReadinessProbeResult, transient: set[str]) -> bool:
@@ -2704,8 +2730,10 @@ def _readiness_broken(probe: ReadinessProbeResult, transient: set[str]) -> bool:
     return not probe.ready and not _readiness_probe_retryable(probe, transient)
 
 
-def _startup_pending_services(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> str:
-    """What the wait is for, named for people: Samba, NetBIOS, Bonjour."""
+def _startup_pending_services(
+    smbd: ReadinessProbeResult, mdns: ReadinessProbeResult, rsync_starting: bool = False,
+) -> str:
+    """What the wait is for, named for people: Samba, NetBIOS, Bonjour, rsync."""
     names: list[str] = []
     if _readiness_probe_retryable(smbd, STARTING_SMBD_READINESS_FAILURES):
         names.append("Samba")
@@ -2718,6 +2746,8 @@ def _startup_pending_services(smbd: ReadinessProbeResult, mdns: ReadinessProbeRe
         ):
             if any(matches(detail) for detail in details):
                 names.append(name)
+    if rsync_starting:
+        names.append("rsync")
     if not names:
         return "device services"
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
@@ -2725,13 +2755,16 @@ def _startup_pending_services(smbd: ReadinessProbeResult, mdns: ReadinessProbeRe
 
 def _doctor_wait_for_startup(
     target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, startup_age: float | None,
+    verdicts: ManagerVerdicts,
 ) -> StartupReadiness:
-    """Poll Samba and mDNS while either is still starting, until the manager
-    is DOCTOR_STARTUP_WINDOW_SECONDS old: native NBNS can take minutes after a
-    boot, and Samba starts just before it.
+    """Poll Samba, mDNS and rsync while any is still starting, until the
+    manager is DOCTOR_STARTUP_WINDOW_SECONDS old: native NBNS can take minutes
+    after a boot, Samba starts just before it, and rsync stages and starts on
+    its own beside Samba.
 
-    Stops early once nothing is starting, or when either reports a state
-    waiting cannot fix. Only what is still starting is probed again. Runs
+    Stops early once nothing is starting, when either reports a state
+    waiting cannot fix, or at a verdict that keeps Samba off, which stays in
+    verdicts for the checks after the wait. Only what is still starting is probed again. Runs
     before the device checks, so they see the device after the wait and
     report what they find: nothing is excused as still starting.
     """
@@ -2745,16 +2778,23 @@ def _doctor_wait_for_startup(
     started = _clock.monotonic()
     deadline = started + window_left
 
-    def settling(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> bool:
+    def rsync_starting(rsync: ReadinessProbeResult | None) -> bool:
+        # The manager's title saying why rsync is off leaves nothing to wait for.
+        return (rsync is not None and verdicts.rsync is None
+                and _readiness_probe_retryable(rsync, TRANSIENT_RSYNC_READINESS_FAILURES))
+
+    def settling(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult, rsync: ReadinessProbeResult | None) -> bool:
         if _readiness_broken(smbd, STARTING_SMBD_READINESS_FAILURES) or _readiness_broken(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
             return False
         return (_readiness_probe_retryable(smbd, STARTING_SMBD_READINESS_FAILURES)
-                or _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES))
+                or _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES)
+                or rsync_starting(rsync))
 
     smbd, mdns = probe_managed_smbd_conn(target.connection), probe_managed_mdns_conn(target.connection)
+    rsync = None if verdicts.rsync else probe_managed_rsync_conn(target.connection)
     rounds = 1
-    waiting = False
-    while settling(smbd, mdns):
+    waiting = verdict = False
+    while settling(smbd, mdns, rsync):
         left = deadline - _clock.monotonic()
         if left <= 0:
             break
@@ -2763,19 +2803,34 @@ def _doctor_wait_for_startup(
             sink.stage(
                 DOCTOR_STAGE_WAIT_FOR_STARTUP,
                 f"device services started {int(DOCTOR_STARTUP_WINDOW_SECONDS - left)}s ago; waiting up to "
-                f"{int(left + 0.999)}s for {_startup_pending_services(smbd, mdns)} to finish starting...",
+                f"{int(left + 0.999)}s for {_startup_pending_services(smbd, mdns, rsync_starting(rsync))} "
+                "to finish starting...",
             )
         _clock.sleep(min(DOCTOR_STARTUP_POLL_SECONDS, left))
+        # A verdict that turns Samba off can appear while it starts (the
+        # first staging run finds the payload damaged): waiting cannot help.
+        verdicts.update(manager_payload_problems(target.connection))
+        if verdicts.samba_off is not None:
+            verdict = True
+            break
         if _readiness_probe_retryable(smbd, STARTING_SMBD_READINESS_FAILURES):
             smbd = probe_managed_smbd_conn(target.connection)
         if _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
             mdns = probe_managed_mdns_conn(target.connection)
+        if verdicts.rsync:
+            rsync = None
+        elif rsync_starting(rsync):
+            rsync = probe_managed_rsync_conn(target.connection)
         rounds += 1
     if waiting:
         sink.stage(DOCTOR_STAGE_FINISH_CHECKS)
-    if smbd.ready and mdns.ready:
+    # Ready is all three: an rsync the manager's title keeps off is a verdict
+    # as Samba's is.
+    if smbd.ready and mdns.ready and rsync is not None and rsync.ready:
         outcome = "ready"
-    elif settling(smbd, mdns):
+    elif verdict or verdicts.rsync:
+        outcome = "verdict"
+    elif settling(smbd, mdns, rsync):
         outcome = "outlasted"
     else:
         outcome = "structural"
@@ -2787,7 +2842,7 @@ def _doctor_wait_for_startup(
             "probes": rounds,
             "outcome": outcome,
         }
-    return StartupReadiness(smbd=smbd, mdns=mdns)
+    return StartupReadiness(smbd=smbd, mdns=mdns, rsync=rsync)
 
 
 def _doctor_check_managed_mdns(
@@ -2962,11 +3017,22 @@ def _doctor_check_usb_printer(
     )
 
 
-def _doctor_check_managed_rsync(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+def _doctor_check_managed_rsync(
+    target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink, manager: ManagerStartupAgeProbeResult | None,
+    waited_probe: ReadinessProbeResult | None = None,
+) -> None:
+    """`waited_probe` is the startup wait's last one (StartupReadiness);
+    without it, the usual retries."""
     if not remote.remote_checks_enabled:
         return
+    # rsync's verdict: the manager keeps rsync off until a reinstall, and
+    # waiting for it would only end in a vaguer failure.
+    problem = ManagerVerdicts(manager.payload_problems if manager is not None else ()).rsync
+    if problem is not None:
+        sink.add(CheckResult("FAIL", problem.message, details={"code": problem.code}))
+        return
 
-    rsync_probe = _run_doctor_retryable_check(
+    rsync_probe = waited_probe if waited_probe is not None else _run_doctor_retryable_check(
         lambda: probe_managed_rsync_conn(target.connection),
         lambda probe: _readiness_probe_retryable(probe, TRANSIENT_RSYNC_READINESS_FAILURES),
     )

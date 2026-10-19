@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Literal, Union
 
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.errors import (
+    DeviceError,
+    DiskPayloadDamagedError,
+    DiskPayloadError,
+    DiskPayloadMissingError,
+    RsyncDamagedError,
+    RsyncMissingError,
+)
 from timecapsulesmb.device.processes import (
     PROBE_PROCESS_HELPERS,
     PROCESS_SNAPSHOT_COMMAND,
@@ -458,6 +465,9 @@ class ManagedRuntimeProbeResult:
     smbd: ReadinessProbeResult
     mdns: ReadinessProbeResult
     extra_steps: tuple[ProbeStepResult, ...] = ()
+    # File sharing serves (smbd and settled mDNS), whatever rsync, which is
+    # optional, does: ready also needs rsync.
+    samba_ready: bool = False
     attempts: tuple[RuntimeProbeAttemptSummary, ...] = ()
     soft_timeout_seconds: int | None = None
     final_attempts_allowed: int = 0
@@ -2110,22 +2120,24 @@ def probe_managed_runtime_once_conn(
     mdns = probe_managed_mdns_conn(connection, native_nbns="advisory", bonjour_registrations="advisory")
     rsync = probe_managed_rsync_conn(connection)
 
-    if smbd.ready and mdns.ready and rsync.ready:
+    if smbd.ready and mdns.ready:
         time.sleep(mdns_settle_seconds)
         settled_mdns = probe_managed_mdns_conn(connection, native_nbns="advisory", bonjour_registrations="advisory")
         if settled_mdns.ready:
+            settled = (
+                ProbeStepResult(
+                    id="mdns_settle",
+                    status="pass",
+                    detail="mdns remained healthy after settle delay",
+                ),
+            )
             return ManagedRuntimeProbeResult(
-                ready=True,
-                detail="managed runtime is ready",
+                ready=rsync.ready,
+                detail="managed runtime is ready" if rsync.ready else _managed_runtime_detail(smbd, settled_mdns, rsync),
                 smbd=smbd,
                 mdns=settled_mdns,
-                extra_steps=rsync.steps + (
-                    ProbeStepResult(
-                        id="mdns_settle",
-                        status="pass",
-                        detail="mdns remained healthy after settle delay",
-                    ),
-                ),
+                extra_steps=rsync.steps + settled,
+                samba_ready=True,
             )
         mdns = ReadinessProbeResult(
             ready=False,
@@ -2193,30 +2205,120 @@ def _runtime_timeout_detail(timeout_seconds: int, final_attempts_allowed: int) -
     return f"runtime verification timed out after {timeout_seconds}s plus {final_attempts_allowed} final checks"
 
 
-DISK_PAYLOAD_MISSING_STEP_ID = "disk_payload"
-_PAYLOAD_MISSING_CAUSE = "the Samba files are missing from every disk, as after an Erase in AirPort Utility"
-_PAYLOAD_MISSING_FIX = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
-# A check result's line, and the sentences an operation's error ends with.
-DISK_PAYLOAD_MISSING_MESSAGE = f"{_PAYLOAD_MISSING_CAUSE}; {_PAYLOAD_MISSING_FIX}"
-DISK_PAYLOAD_MISSING_ERROR = (
-    f"{_PAYLOAD_MISSING_CAUSE[:1].upper()}{_PAYLOAD_MISSING_CAUSE[1:]}. "
-    f"{_PAYLOAD_MISSING_FIX[:1].upper()}{_PAYLOAD_MISSING_FIX[1:]}."
+@dataclass(frozen=True)
+class DiskPayloadProblem:
+    """A verdict the manager's title carries (token): only a reinstall fixes
+    it, however long anything waits. samba_off: Samba is off for it;
+    otherwise Samba serves and only rsync, which is optional, is off."""
+
+    token: str
+    step_id: str
+    cause: str
+    error_type: type[DiskPayloadError]
+
+    @property
+    def code(self) -> str:
+        return self.error_type.code
+
+    @property
+    def samba_off(self) -> bool:
+        return self.error_type.samba_off
+
+    @property
+    def message(self) -> str:
+        """A check result's line."""
+        return f"{self.cause}; {_PAYLOAD_REINSTALL}"
+
+    @property
+    def error(self) -> str:
+        """The sentences an operation's error ends with."""
+        cause = self.cause if self.samba_off else f"file sharing and Time Machine are running, but {self.cause}"
+        return f"{cause[:1].upper()}{cause[1:]}. {_PAYLOAD_REINSTALL[:1].upper()}{_PAYLOAD_REINSTALL[1:]}."
+
+    def error_after(self, failure: str) -> str:
+        """An operation's error: its own failure line when Samba is off for
+        the verdict, which a verdict that leaves Samba on would contradict."""
+        return f"{failure.rstrip()} {self.error}" if self.samba_off else self.error
+
+    @property
+    def debug_key(self) -> str:
+        """Doctor's flag for it, the same key in every release's telemetry."""
+        return self.token.replace("=", "_")
+
+
+_PAYLOAD_REINSTALL = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
+DISK_PAYLOAD_MISSING = DiskPayloadProblem(
+    "payload=missing", "disk_payload",
+    "the Samba files are missing from every disk, as after an Erase in AirPort Utility",
+    DiskPayloadMissingError,
 )
+DISK_PAYLOAD_DAMAGED = DiskPayloadProblem(
+    "payload=damaged", "disk_payload_damaged",
+    "the Samba files on the disk are damaged and no longer match what was installed",
+    DiskPayloadDamagedError,
+)
+RSYNC_DAMAGED = DiskPayloadProblem(
+    "rsync=damaged", "rsync_damaged",
+    "the rsync file on the disk is damaged and no longer matches what was installed, so rsync is off",
+    RsyncDamagedError,
+)
+RSYNC_MISSING = DiskPayloadProblem(
+    "rsync=missing", "rsync_missing",
+    "the rsync files are missing from the disk, so rsync is off",
+    RsyncMissingError,
+)
+# Every verdict the manager's title can carry (stuck.h tc_manager_title),
+# those that turn Samba off first. Doctor, deploy, activation and the restart
+# after a disk repair all go through this list, so a new verdict reaches each.
+DISK_PAYLOAD_PROBLEMS = (DISK_PAYLOAD_MISSING, DISK_PAYLOAD_DAMAGED, RSYNC_MISSING, RSYNC_DAMAGED)
 
 
-def manager_reports_payload_missing(connection: SshConnection) -> bool:
-    """The manager's title says payload=missing. ps only: the startup-age
-    probe also execs the service for a clock reading this does not need."""
+def manager_payload_problems(connection: SshConnection) -> tuple[DiskPayloadProblem, ...] | None:
+    """The verdicts the manager's title carries now, those that turn Samba off
+    first; None when ps could not be read, which says nothing about them (a
+    caller keeps what it read before). ps only: the startup-age probe also
+    execs the service for a clock reading this does not need."""
     try:
         proc = run_ssh(connection, PS_CAPTURE_SSH_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
     except SshCommandTimeout:
-        return False
-    rows = service_role_processes(proc.stdout or "", "manager") if proc.returncode == 0 else []
-    return len(rows) == 1 and _title_payload_missing(list(rows[0].argv[1:]))
+        return None
+    if proc.returncode != 0:
+        return None
+    rows = service_role_processes(proc.stdout or "", "manager")
+    return _title_payload_problems(list(rows[0].argv[1:])) if len(rows) == 1 else ()
 
 
-def _title_payload_missing(title: list[str]) -> bool:
-    return "payload=missing" in title
+class ManagerVerdicts:
+    """The verdicts the manager's title carried at the last read that worked.
+    A read that failed (manager_payload_problems' None) says nothing about
+    them, so it leaves them as they were; an empty reading clears them."""
+
+    def __init__(self, problems: tuple[DiskPayloadProblem, ...] = ()) -> None:
+        self.problems = tuple(problems)
+
+    def update(self, read: tuple[DiskPayloadProblem, ...] | None) -> None:
+        if read is not None:
+            self.problems = tuple(read)
+
+    @property
+    def samba_off(self) -> DiskPayloadProblem | None:
+        """The verdict that keeps Samba off, if any."""
+        return next((problem for problem in self.problems if problem.samba_off), None)
+
+    @property
+    def rsync(self) -> DiskPayloadProblem | None:
+        """rsync's verdict, if any: it keeps only rsync off."""
+        return next((problem for problem in self.problems if not problem.samba_off), None)
+
+    def ending(self, samba_ready: bool) -> DiskPayloadProblem | None:
+        """The verdict a wait for the runtime ends at: one that keeps Samba
+        off at once; rsync's once Samba serves, so the result says how Samba
+        is and that only rsync failed."""
+        return self.samba_off or (self.rsync if samba_ready else None)
+
+
+def _title_payload_problems(title: list[str]) -> tuple[DiskPayloadProblem, ...]:
+    return tuple(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.token in title)
 
 
 def _title_unmounted_since(title: list[str]) -> int | None:
@@ -2224,8 +2326,19 @@ def _title_unmounted_since(title: list[str]) -> int | None:
     return int(values[0]) if len(values) == 1 and _DECIMAL.fullmatch(values[0]) else None
 
 
-def runtime_payload_missing(result: ManagedRuntimeProbeResult) -> bool:
-    return any(step.id == DISK_PAYLOAD_MISSING_STEP_ID for step in result.steps)
+RSYNC_NOT_RUNNING_STEP = "rsync_not_running"
+
+
+def _rsync_not_running(result: ManagedRuntimeProbeResult) -> ManagedRuntimeProbeResult:
+    """Samba serves, but rsync is not: the result says so in a step of its own."""
+    detail = "; ".join(step.detail for step in result.extra_steps if step.status == "fail" and step.detail)
+    step = ProbeStepResult(id=RSYNC_NOT_RUNNING_STEP, status="fail", detail=detail or "rsync is not running")
+    return replace(result, ready=False, detail=step.detail, extra_steps=result.extra_steps + (step,))
+
+
+def runtime_payload_problem(result: ManagedRuntimeProbeResult) -> DiskPayloadProblem | None:
+    ids = {step.id for step in result.steps}
+    return next((problem for problem in DISK_PAYLOAD_PROBLEMS if problem.step_id in ids), None)
 
 
 def probe_managed_runtime_conn(
@@ -2241,55 +2354,46 @@ def probe_managed_runtime_conn(
     deadline = time.monotonic() + timeout_seconds
     attempts: list[RuntimeProbeAttemptSummary] = []
     last_result: ManagedRuntimeProbeResult | None = None
+    verdicts = ManagerVerdicts()
+    phase: RuntimeProbeAttemptPhase = "soft_window"
+    finals_left = final_attempts
 
-    while time.monotonic() < deadline:
+    def finish(result: ManagedRuntimeProbeResult) -> ManagedRuntimeProbeResult:
+        return _runtime_result_with_attempts(
+            result,
+            attempts=attempts,
+            soft_timeout_seconds=timeout_seconds,
+            final_attempts_allowed=final_attempts,
+        )
+
+    # The soft window polls until the deadline, then a few final checks run
+    # back to back. Each attempt in either ends the same way (_runtime_outcome).
+    while True:
+        if phase == "soft_window" and time.monotonic() >= deadline:
+            phase = "final_check"
+        if phase == "final_check":
+            if not finals_left:
+                break
+            finals_left -= 1
         result, summary = _run_runtime_probe_attempt(
             connection,
             index=len(attempts) + 1,
-            phase="soft_window",
+            phase=phase,
             smbd_mdns_stagger_seconds=smbd_mdns_stagger_seconds,
             mdns_settle_seconds=mdns_settle_seconds,
         )
         attempts.append(summary)
         last_result = result
-        if result.ready:
-            return _runtime_result_with_attempts(
-                result,
-                attempts=attempts,
-                soft_timeout_seconds=timeout_seconds,
-                final_attempts_allowed=final_attempts,
-            )
-        # No payload on any disk keeps Samba off however long this waits.
-        if manager_reports_payload_missing(connection):
-            step = ProbeStepResult(id=DISK_PAYLOAD_MISSING_STEP_ID, status="fail", detail=DISK_PAYLOAD_MISSING_MESSAGE)
-            return _runtime_result_with_attempts(
-                replace(result, detail=DISK_PAYLOAD_MISSING_MESSAGE, extra_steps=result.extra_steps + (step,)),
-                attempts=attempts,
-                soft_timeout_seconds=timeout_seconds,
-                final_attempts_allowed=final_attempts,
-            )
-        _sleep_until_next_runtime_attempt(
-            attempt_duration_seconds=summary.duration_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-            deadline=deadline,
-        )
-
-    for _ in range(final_attempts):
-        result, summary = _run_runtime_probe_attempt(
-            connection,
-            index=len(attempts) + 1,
-            phase="final_check",
-            smbd_mdns_stagger_seconds=smbd_mdns_stagger_seconds,
-            mdns_settle_seconds=mdns_settle_seconds,
-        )
-        attempts.append(summary)
-        last_result = result
-        if result.ready:
-            return _runtime_result_with_attempts(
-                result,
-                attempts=attempts,
-                soft_timeout_seconds=timeout_seconds,
-                final_attempts_allowed=final_attempts,
+        if not result.ready:
+            verdicts.update(manager_payload_problems(connection))
+        outcome = _runtime_outcome(result, verdicts)
+        if outcome is not None:
+            return finish(outcome)
+        if phase == "soft_window":
+            _sleep_until_next_runtime_attempt(
+                attempt_duration_seconds=summary.duration_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                deadline=deadline,
             )
 
     if last_result is None:
@@ -2299,25 +2403,39 @@ def probe_managed_runtime_conn(
             smbd=ReadinessProbeResult(ready=False, detail="managed smbd not ready"),
             mdns=ReadinessProbeResult(ready=False, detail="managed mDNS registrant not active"),
         )
+    return finish(_runtime_outcome(
+        last_result, verdicts, timeout_detail=_runtime_timeout_detail(timeout_seconds, final_attempts),
+    ))
 
-    timeout_detail = _runtime_timeout_detail(timeout_seconds, final_attempts)
-    return _runtime_result_with_attempts(
-        replace(
-            last_result,
-            ready=False,
-            detail=f"{timeout_detail}; {last_result.detail}",
-            extra_steps=last_result.extra_steps
-            + (
-                ProbeStepResult(
-                    id="runtime_timeout",
-                    status="fail",
-                    detail=timeout_detail,
-                ),
-            ),
-        ),
-        attempts=attempts,
-        soft_timeout_seconds=timeout_seconds,
-        final_attempts_allowed=final_attempts,
+
+def _runtime_outcome(
+    result: ManagedRuntimeProbeResult,
+    verdicts: ManagerVerdicts,
+    *,
+    timeout_detail: str | None = None,
+) -> ManagedRuntimeProbeResult | None:
+    """How a wait for the runtime ends after an attempt. Samba and rsync are
+    judged alike: ready; at a verdict in the manager's title, which holds
+    however long it waits (rsync's once Samba serves, so the result says how
+    Samba is); else, at the deadline (timeout_detail), whichever is not
+    ready: rsync alone while Samba serves, or the runtime timed out. None:
+    wait on."""
+    if result.ready:
+        return result
+    problem = verdicts.ending(result.samba_ready)
+    if problem is not None:
+        step = ProbeStepResult(id=problem.step_id, status="fail", detail=problem.message)
+        return replace(result, detail=problem.message, extra_steps=result.extra_steps + (step,))
+    if timeout_detail is None:
+        return None
+    if result.samba_ready:
+        return _rsync_not_running(result)
+    step = ProbeStepResult(id="runtime_timeout", status="fail", detail=timeout_detail)
+    return replace(
+        result,
+        ready=False,
+        detail=f"{timeout_detail}; {result.detail}",
+        extra_steps=result.extra_steps + (step,),
     )
 
 
@@ -2667,10 +2785,8 @@ class ManagerStartupAgeProbeResult:
     detail: str
     started_monotonic_s: int | None = None
     now_monotonic_ms: int | None = None
-    # The title's payload=missing: every disk was inspected and none holds a
-    # payload, as after an Erase in AirPort Utility. Samba stays off until a
-    # reinstall, however long anything waits.
-    payload_missing: bool = False
+    # The verdicts the title carries (DISK_PAYLOAD_PROBLEMS), in its order.
+    payload_problems: tuple[DiskPayloadProblem, ...] = ()
     # The title's unmounted=: since when a disk MaSt lists has not mounted
     # while no other holds the Samba files, so Samba is off; in seconds on the
     # started= clock. The manager shows it only once that has lasted 10
@@ -2717,7 +2833,7 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
     title = list(rows[0].argv[1:])
     return replace(
         _manager_startup_age(title, now_text),
-        payload_missing=_title_payload_missing(title),
+        payload_problems=_title_payload_problems(title),
         unmounted_since=_title_unmounted_since(title),
     )
 

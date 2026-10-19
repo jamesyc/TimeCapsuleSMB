@@ -7,6 +7,7 @@ from pathlib import Path
 import shlex
 import time
 import tempfile
+import zlib
 
 from timecapsulesmb.core.config import (
     DEFAULTS,
@@ -58,6 +59,7 @@ from timecapsulesmb.deploy.planner import (
     BINARY_XATTR_MIGRATOR_SOURCE,
     DeploymentPlan,
     GENERATED_FLASH_CONFIG_SOURCE,
+    GENERATED_PAYLOAD_CHECKSUMS_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
@@ -1010,6 +1012,8 @@ def _deployment_upload_sources(
     generated_flash_config.write_text(flash_config_text)
     generated_rsync_config = tmpdir / "rsyncd.conf"
     generated_rsync_config.write_text(rsync_config_text)
+    generated_checksums = tmpdir / "checksums"
+    generated_checksums.write_text(render_payload_checksums(smbd_path=plan.smbd_path, rsync_path=plan.rsync_path))
     return {
         BINARY_SMBD_SOURCE: plan.smbd_path,
         BINARY_XATTR_MIGRATOR_SOURCE: plan.xattr_migrator_path,
@@ -1017,6 +1021,7 @@ def _deployment_upload_sources(
         BINARY_RSYNC_SOURCE: plan.rsync_path,
         GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
         GENERATED_RSYNC_CONFIG_SOURCE: generated_rsync_config,
+        GENERATED_PAYLOAD_CHECKSUMS_SOURCE: generated_checksums,
         PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path("rc.local")),
         PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
         PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
@@ -1700,6 +1705,14 @@ def _runtime_unsigned_override_value(value: str | int) -> str | int:
     if not raw_value.isdigit():
         raise ValueError("runtime setting override must be a non-negative integer")
     return str(int(raw_value))
+
+
+def render_payload_checksums(*, smbd_path: Path, rsync_path: Path) -> str:
+    """The payload's own checksums: the manager copies each binary from the
+    disk to RAM at every boot and runs a copy only when its CRC-32 matches.
+    They travel with the files they describe, so a payload on another disk is
+    checked against its own."""
+    return "".join(f"{name} {zlib.crc32(path.read_bytes()):08x}\n" for name, path in (("smbd", smbd_path), ("rsync", rsync_path)))
 
 
 def render_flash_runtime_config(

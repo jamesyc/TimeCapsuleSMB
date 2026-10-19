@@ -10,7 +10,7 @@ from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
 from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_actions, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
+from timecapsulesmb.device.errors import DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device.processes import render_process_present_by_ucomm
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
 from timecapsulesmb.services import storage as storage_service
@@ -423,6 +423,7 @@ def run_fsck(
     if rebooting and wait and netbsd4_autostart is not None:
         # A failed repair still starts file sharing: the reboot does on every
         # device that starts it by itself.
+        runtime_restarted = False
         try:
             start_netbsd4_runtime_after_reboot(
                 connection,
@@ -431,16 +432,19 @@ def run_fsck(
                 callbacks=callbacks,
                 messages=RESTART_AFTER_REBOOT_MESSAGES,
             )
-        except DiskPayloadMissingError as exc:
+        except (DiskPayloadError, RsyncNotRunningError) as exc:
             runtime_restart_error = str(exc)
             runtime_restart_code = exc.code
+            # File sharing did restart when only rsync is off.
+            runtime_restarted = not exc.samba_off
         except DeviceError as exc:
             runtime_restart_error = str(exc)
         except TransportError as exc:
             runtime_restart_error = f"{RUNTIME_RESTART_FAILURE_MESSAGE} {exc}"
         else:
+            runtime_restarted = True
             callbacks.message("File sharing is running again after the reboot.")
-        callbacks.update(runtime_restarted=runtime_restart_error is None)
+        callbacks.update(runtime_restarted=runtime_restarted)
     if runtime_restart_error is not None:
         failure = (
             f"{failure}\n{runtime_restart_error}"

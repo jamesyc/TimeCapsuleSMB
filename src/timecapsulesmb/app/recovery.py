@@ -249,6 +249,45 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=False,
         suggested_operation="deploy",
     ),
+    # A payload binary on the disk did not match its deployed checksum
+    # (device.errors.DiskPayloadDamagedError).
+    "payload_damaged_on_disk": RecoveryInfo(
+        "Samba files are damaged",
+        "The TimeCapsuleSMB files on the device's disk are damaged and no longer match what was installed.",
+        ("Run “Install / Update Samba”.", "If the files are damaged again after reinstalling, the disk may be failing."),
+        retryable=False,
+        suggested_operation="deploy",
+    ),
+    # The payload has no rsync or rsyncd.conf; Samba serves without it
+    # (device.errors.RsyncMissingError).
+    "rsync_missing_from_disk": RecoveryInfo(
+        "rsync files are missing",
+        "The rsync files are missing from the disk, so rsync is off. File sharing and Time Machine keep working.",
+        ("Run “Install / Update Samba”.",),
+        retryable=False,
+        suggested_operation="deploy",
+    ),
+    # rsync on the disk did not match its deployed checksum; Samba serves
+    # without it (device.errors.RsyncDamagedError).
+    "rsync_damaged_on_disk": RecoveryInfo(
+        "rsync file is damaged",
+        "The rsync file on the disk is damaged and no longer matches what was installed, so rsync is off. "
+        "File sharing and Time Machine keep working.",
+        ("Run “Install / Update Samba”.", "If the files are damaged again after reinstalling, the disk may be failing."),
+        retryable=False,
+        suggested_operation="deploy",
+    ),
+    # File sharing serves, but rsync did not start, with no verdict saying why
+    # (device.errors.RsyncNotRunningError): a port in use, a configuration
+    # rsync refuses, a crash. Checkup says which; a reinstall fixes only some.
+    "rsync_not_running": RecoveryInfo(
+        "rsync is not running",
+        "File sharing and Time Machine are running, but rsync did not start.",
+        ("Run “Checkup” for details.", "Run “Install / Update Samba”."),
+        retryable=False,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
     "ssh_still_enabled": RecoveryInfo(
         "SSH is still enabled",
         "The device restarted, but SSH was still enabled afterwards.",

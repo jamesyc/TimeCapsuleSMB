@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 from timecapsulesmb.deploy.verify import VerificationResult
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
-from timecapsulesmb.device.probe import DISK_PAYLOAD_MISSING_ERROR, DeployedVersionProbeResult
+from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS, DeployedVersionProbeResult
 from timecapsulesmb.services.activation import (
     MANUAL_START_AFTER_REBOOT_MESSAGE,
     OLDEST_ACTIVATABLE_RELEASE_TAG,
@@ -482,16 +482,30 @@ class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
         self.assertEqual(outcome.failure, f"Disk repair completed. {error}")
         self.assertFalse(recorder.fields["runtime_restarted"])
 
-    def test_runtime_that_finds_no_payload_keeps_the_payload_code(self) -> None:
-        # The disk was erased: only a reinstall starts file sharing again, so
-        # the outcome says so instead of "did not restart".
-        outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(payload_missing=True))
+    def test_runtime_that_reports_a_payload_verdict_keeps_its_code(self) -> None:
+        # The disk was erased, or a binary fails its checksum: only a
+        # reinstall fixes it, so the outcome says so instead of "did not
+        # restart". A damaged rsync leaves file sharing running, which the
+        # outcome says too, and is no failed restart.
+        for problem in DISK_PAYLOAD_PROBLEMS:
+            with self.subTest(problem.token):
+                outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(payload_problem=problem))
 
-        self.assertEqual(outcome.status, 0)
-        self.assertEqual(outcome.runtime_restart_code, "payload_missing_from_disk")
-        self.assertIn(DISK_PAYLOAD_MISSING_ERROR, outcome.failure)
-        self.assertTrue(outcome.failure.startswith("Disk repair completed. "))
-        self.assertFalse(recorder.fields["runtime_restarted"])
+                self.assertEqual(outcome.status, 0)
+                self.assertEqual(outcome.runtime_restart_code, problem.code)
+                self.assertIn(problem.error, outcome.failure)
+                self.assertTrue(outcome.failure.startswith("Disk repair completed. "))
+                self.assertEqual(recorder.fields["runtime_restarted"], not problem.samba_off)
+                if not problem.samba_off:
+                    self.assertNotIn("did not restart", outcome.failure)
+                    self.assertNotIn("Activate", outcome.failure)
+
+    def test_runtime_that_serves_without_rsync_restarted_file_sharing(self) -> None:
+        outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(rsync_not_running=True))
+
+        self.assertEqual(outcome.runtime_restart_code, "rsync_not_running")
+        self.assertTrue(recorder.fields["runtime_restarted"])
+        self.assertNotIn("did not restart", outcome.failure)
 
     def test_runtime_that_does_not_start_has_no_code_of_its_own(self) -> None:
         outcome, _recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(becomes_ready=False))
@@ -769,13 +783,16 @@ class ActivateRuntimeTests(unittest.TestCase):
         self,
         *,
         ready: bool,
+        samba_ready: bool = False,
         verify_error=None,
         config_present: bool = True,
         installed: tuple[str | None, int | None] = (RELEASE_TAG, CLI_VERSION_CODE),
     ):
         recorder = RecordingCallbacks()
         runtime = SimpleNamespace(
-            ready=ready, detail="managed runtime is ready" if ready else "managed runtime is not ready", steps=(),
+            ready=ready, samba_ready=ready or samba_ready, steps=(),
+            detail="managed runtime is ready" if ready else
+            "managed rsync process is not running" if samba_ready else "managed runtime is not ready",
         )
         version = DeployedVersionProbeResult(installed[0], installed[1], "ok")
         with mock.patch("timecapsulesmb.services.activation.flash_runtime_config_present_conn", return_value=config_present):
@@ -900,6 +917,30 @@ class ActivateRuntimeTests(unittest.TestCase):
         self.assertEqual(verify.call_args.kwargs["stage"], "verify_runtime_activation")
         self.assertEqual(verify.call_args.kwargs["timeout_seconds"], 200)
         self.assertEqual(verify.call_args.kwargs["failure_message"], "NetBSD4 activation failed.")
+
+    def test_serving_samba_without_rsync_is_verified_not_restarted(self) -> None:
+        # Starting the runtime again would stop file sharing that works, and
+        # the serving manager starts rsync itself: Activate only waits, with
+        # the verification's full window, for how rsync ends up.
+        decision, recorder, run_actions, _settle, verify = self.activate(ready=False, samba_ready=True)
+
+        self.assertEqual(decision.reason, "samba_already_ready")
+        self.assertFalse(decision.run_actions)
+        run_actions.assert_not_called()
+        verify.assert_called_once()
+        self.assertEqual(verify.call_args.kwargs["stage"], "verify_runtime_activation")
+        self.assertEqual(verify.call_args.kwargs["timeout_seconds"], 200)
+        self.assertEqual(verify.call_args.kwargs["failure_message"], "NetBSD4 activation failed.")
+        self.assertNotIn("run_activation", recorder.stages)
+
+    def test_serving_samba_whose_rsync_never_starts_reports_rsync_alone(self) -> None:
+        error = RsyncNotRunningError("File sharing and Time Machine are running, but rsync is not: "
+                                     "managed rsync process is not running.")
+        result, _recorder, run_actions, _settle, _verify = self.activate(
+            ready=False, samba_ready=True, verify_error=error)
+
+        self.assertIs(result, error)
+        run_actions.assert_not_called()
 
     def test_runtime_that_never_becomes_ready_fails_the_activation(self) -> None:
         error = DeviceError("NetBSD4 activation failed. managed runtime is not ready")

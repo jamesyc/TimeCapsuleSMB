@@ -463,15 +463,14 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             return runtimeNotInstalledRow()
         }
         switch runtimeState.state {
-        case .notInstalled where runtimeState.errorCode == DoctorSummary.payloadMissingFromDiskResultCode:
-            return DashboardHealthRow(
-                id: "runtime-payload-missing",
-                title: DashboardHealthDomain.runtime.title,
-                detail: L10n.string("doctor.check.payload_missing_from_disk"),
-                status: .failed,
-                action: .installUpdate
-            )
-        case .unknown, .notInstalled:
+        case .notInstalled:
+            // Installed files missing from every disk, or damaged: say which,
+            // and offer Install rather than the generic "not installed" text.
+            guard let problem = DoctorSummary.payloadProblem(code: runtimeState.errorCode) else {
+                return runtimeNotInstalledRow()
+            }
+            return payloadProblemRow(problem)
+        case .unknown:
             return runtimeNotInstalledRow()
         case .installing:
             return DashboardHealthRow(
@@ -498,6 +497,10 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: .runCheckup
             )
         case .installFailed, .installInterrupted:
+            // A deploy that ended on a damaged rsync: name it, with Install.
+            if let problem = DoctorSummary.payloadProblem(code: runtimeState.errorCode) {
+                return payloadProblemRow(problem)
+            }
             return DashboardHealthRow(
                 id: "runtime-install-failed",
                 title: DashboardHealthDomain.runtime.title,
@@ -522,6 +525,10 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: .viewCheckup
             )
         case .unhealthy:
+            // A damaged rsync, and nothing else failed: Install is the fix.
+            if let problem = DoctorSummary.payloadProblem(code: runtimeState.errorCode) {
+                return payloadProblemRow(problem)
+            }
             return DashboardHealthRow(
                 id: "runtime-unhealthy",
                 title: DashboardHealthDomain.runtime.title,
@@ -530,6 +537,18 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: .viewCheckup
             )
         }
+    }
+
+    /// Only a reinstall fixes it. A damaged rsync fails the Checkup like
+    /// anything else, though its text says file sharing keeps working.
+    private static func payloadProblemRow(_ problem: PayloadProblem) -> DashboardHealthRow {
+        DashboardHealthRow(
+            id: problem.rowID,
+            title: DashboardHealthDomain.runtime.title,
+            detail: L10n.string(problem.detailKey),
+            status: .failed,
+            action: .installUpdate
+        )
     }
 
     private static func runtimeNotInstalledRow() -> DashboardHealthRow {

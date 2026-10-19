@@ -41,6 +41,7 @@ native/common/policy.c
 native/common/topology.c
 native/storage/settle.c
 native/samba/staging.c
+native/samba/image.c
 native/service/inspect.c
 native/service/manager.c
 native/service/bufstall.c

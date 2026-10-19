@@ -5,25 +5,25 @@ from typing import Literal
 
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
-    DISK_PAYLOAD_MISSING_ERROR,
     ManagedRuntimeProbeResult,
     ProbedDeviceState,
     flash_runtime_config_present_conn,
     probe_managed_runtime_conn,
     read_deployed_version_conn,
-    runtime_payload_missing,
+    runtime_payload_problem,
 )
 from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
+from timecapsulesmb.services.runtime_verification import runtime_failure_error, verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshConnection
 
 
 ActivationDecisionReason = Literal[
     "runtime_already_ready",
+    "samba_already_ready",
     "runtime_not_ready",
 ]
 
@@ -111,6 +111,17 @@ def decide_manual_activation(
             run_actions=False,
             verify_runtime=False,
             reason="runtime_already_ready",
+            detail=runtime.detail,
+            runtime=runtime,
+        )
+    if runtime.samba_ready:
+        # The manager runs and serves: it starts rsync itself, and starting
+        # the runtime again would stop file sharing that works. Only the
+        # verification's wait can tell how rsync ends up.
+        return ActivationDecision(
+            run_actions=False,
+            verify_runtime=True,
+            reason="samba_already_ready",
             detail=runtime.detail,
             runtime=runtime,
         )
@@ -278,12 +289,22 @@ def activate_runtime(
         activation_decision=decision.reason,
         manual_activation_required=decision.run_actions,
     )
-    if decision.run_actions and decision.runtime is not None and runtime_payload_missing(decision.runtime):
-        # The running manager already found no payload: starting it again
-        # cannot help.
-        raise DiskPayloadMissingError(f"NetBSD4 activation failed. {DISK_PAYLOAD_MISSING_ERROR}")
+    runtime = decision.runtime
+    if runtime is not None and not runtime.ready and runtime_payload_problem(runtime) is not None:
+        # The running manager already found Samba's or rsync's files missing
+        # or damaged: starting it again cannot help, only a reinstall.
+        raise runtime_failure_error(runtime, "NetBSD4 activation failed.")
     callbacks.message(decision.detail)
-    if decision.run_actions:
+    if decision.verify_runtime and not decision.run_actions:
+        verify_managed_runtime_ready(
+            connection,
+            callbacks=callbacks,
+            stage="verify_runtime_activation",
+            timeout_seconds=200,
+            heading="Waiting for rsync to start on the NetBSD 4 device...",
+            failure_message="NetBSD4 activation failed.",
+        )
+    elif decision.run_actions:
         run_activation_actions_and_verify(
             connection,
             activation_actions,

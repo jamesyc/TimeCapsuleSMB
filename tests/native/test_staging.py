@@ -3,9 +3,11 @@ import os
 import plistlib
 import shutil
 import subprocess
+import zlib
 
 import pytest
 from tests.native.build import ROOT, compile_modules
+from timecapsulesmb.services.deploy import render_payload_checksums
 
 
 @pytest.fixture(scope="module")
@@ -51,6 +53,10 @@ def test_stage_copies_then_publishes_config_and_private_auth(stage):
     result = run()
     assert result.returncode == 0, result.stderr
     assert (root / "ram/sbin/smbd").read_bytes() == b"samba-image"
+    # Samba's run never touches rsync's files: rsync stages on its own.
+    assert not (root / "ram/sbin/rsync").exists() and not (root / "ram/etc/rsyncd.conf").exists()
+    result = run("rsync-copy")
+    assert result.returncode == 0, result.stderr
     assert (root / "ram/sbin/rsync").read_bytes() == b"rsync-image"
     assert f"path = {root}/dk2/ShareRoot" in (root / "ram/etc/rsyncd.conf").read_text()
     password = root / "ram/private/smbpasswd"
@@ -76,7 +82,7 @@ def test_reload_does_not_replace_running_images_and_discard_keeps_applied(stage)
     assert "log level = 10" in (root / "ram/etc/smb.conf").read_text()
 
 
-@pytest.mark.parametrize("fault", ["unmounted", "readonly", "no_binary", "bad_rsync", "bad_auth", "symlink"])
+@pytest.mark.parametrize("fault", ["unmounted", "readonly", "no_binary", "bad_auth", "symlink"])
 def test_failed_stage_keeps_applied_configuration_and_retries(stage, fault):
     root, payload, run = stage
     assert run().returncode == 0
@@ -88,7 +94,6 @@ def test_failed_stage_keeps_applied_configuration_and_retries(stage, fault):
     elif fault == "no_binary":
         (payload / "smbd").unlink()
         command = "copy"
-    elif fault == "bad_rsync": (payload / "rsyncd.conf").write_text("[Data]\n")
     elif fault == "bad_auth": env["FAIL_HASH"] = "1"
     else:
         shutil.rmtree(payload / "logs/cores/smbd")
@@ -104,6 +109,67 @@ def test_failed_stage_keeps_applied_configuration_and_retries(stage, fault):
     assert (root / "ram/sbin/smbd").read_bytes() == b"retry-image"
 
 
+@pytest.mark.parametrize("fault", ["bad_config", "no_binary"])
+def test_a_failed_rsync_run_touches_nothing_of_samba_and_removes_its_own_files(stage, fault):
+    # rsync is optional and stages on its own: its failure leaves Samba's
+    # published files alone and no copy or prepared file of its own behind.
+    root, payload, run = stage
+    assert run().returncode == 0 and run("rsync-copy").returncode == 0
+    applied = {name: (root / name).read_bytes() for name in ("ram/etc/smb.conf", "ram/etc/rsyncd.conf")}
+    (root / "ram/sbin/rsync").unlink()
+    if fault == "bad_config": (payload / "rsyncd.conf").write_text("[Data]\n")
+    else: (payload / "rsync").unlink()
+    result = run("rsync-copy")
+    assert result.returncode == 3
+    # A bad configuration costs no copy; a missing binary is the payload's
+    # verdict, logged unless the last run found it missing too.
+    if fault == "bad_config":
+        assert result.stdout.decode().strip() == "copy=-1 crc=-1 read=-1 missing=0"
+        assert f"stage: {payload}/rsyncd.conf has no path line".encode() in result.stderr
+    else:
+        assert result.stdout.decode().strip() == "copy=-1 crc=-1 read=-1 missing=2"
+        assert f"stage: {payload}/rsync is missing".encode() in result.stderr
+        assert b"is missing" not in run("rsync-copy", MISSING="2").stderr
+    assert {name: (root / name).read_bytes() for name in applied} == applied
+    assert not (root / "ram/sbin/rsync").exists()
+    assert not list((root / "ram").rglob("*.next"))
+
+
+def test_each_missing_file_is_logged_once(stage):
+    # Each file rsync needs has its own place in the set: one the last run
+    # found missing is not logged again, one newly missing is.
+    root, payload, run = stage
+    (payload / "rsync").unlink()
+    (payload / "rsyncd.conf").unlink()
+    result = run("rsync-copy")
+    assert result.stdout.decode().strip() == "copy=-1 crc=-1 read=-1 missing=3"
+    for name in ("rsyncd.conf", "rsync"):
+        assert f"stage: {payload}/{name} is missing".encode() in result.stderr
+    result = run("rsync-copy", MISSING="1")
+    assert f"stage: {payload}/rsync is missing".encode() in result.stderr
+    assert b"rsyncd.conf is missing" not in result.stderr
+    # A run that does not copy the binary needs only the configuration.
+    assert run("rsync", MISSING="3").stdout.decode().strip() == "copy=-1 crc=-1 read=-1 missing=1"
+
+
+@pytest.mark.parametrize("finding", ["missing", "damaged"])
+def test_a_disk_that_goes_away_during_a_run_reports_nothing_about_the_payload(stage, finding):
+    # A disk being detached reads as files missing, or as other bytes: only
+    # one that stayed the payload's disk until the run ended says either.
+    root, payload, run = stage
+    checksums(root, payload)
+    if finding == "missing":
+        (payload / "rsync").unlink()
+    else:
+        (payload / "rsync").write_bytes(b"rsync-imagf")
+    expected = "missing=2" if finding == "missing" else "copy=-2 "
+    assert expected in run("rsync-copy").stdout.decode()
+    result = run("rsync-copy", TC_TEST_UNMOUNT_AT=str(payload / "rsync"))
+    assert result.returncode == 3
+    copy, crc, read, missing = result.stdout.decode().split()
+    assert (copy, read, missing) == ("copy=-1", "read=-1", "missing=-1")
+
+
 def test_lock_cleanup_preserves_mount_root_and_never_follows_symlinks(stage):
     root, _, run = stage
     locks = root / 'locks'
@@ -117,3 +183,113 @@ def test_lock_cleanup_preserves_mount_root_and_never_follows_symlinks(stage):
     assert run('clear-locks').returncode == 0
     assert locks.stat().st_ino == inode and list(locks.iterdir()) == []
     assert (protected / 'preserve').read_text() == 'user data'
+
+
+def checksums(root, payload):
+    """The checksums file deploy writes into the payload with its binaries."""
+    (payload / "checksums").write_text(render_payload_checksums(smbd_path=payload / "smbd", rsync_path=payload / "rsync"))
+    return {name: f"{zlib.crc32((payload / name).read_bytes()):08x}" for name in ("smbd", "rsync")}
+
+
+@pytest.mark.parametrize("image", ["smbd", "rsync"])
+def test_stage_refuses_a_copy_that_differs_from_its_payloads_checksum(stage, image):
+    root, payload, run = stage
+    command = {"smbd": "copy", "rsync": "rsync-copy"}[image]
+    crc = checksums(root, payload)
+    assert run().returncode == 0 and run("rsync-copy").returncode == 0
+    applied = (root / "ram/etc/smb.conf").read_bytes()
+    good = (payload / image).read_bytes()
+    # Same size, other bytes: what a disk returning stale blocks would give.
+    (payload / image).write_bytes(good[:-1] + b"!")
+    result = run(command)
+    assert result.returncode == 3
+    read = zlib.crc32(good[:-1] + b"!")
+    assert result.stdout.decode().strip() == f"copy=-2 crc={int(crc[image], 16)} read={read} missing=0"
+    assert f"copy verify failed: {payload}/{image} -> {root}/ram/sbin/{image}: ".encode() in result.stderr
+    assert f"CRC-32 read {read:08x}, deployed {crc[image]} (copied {len(good)} of {len(good)} bytes".encode() in result.stderr
+    assert not (root / f"ram/sbin/{image}").exists()
+    assert (root / "ram/etc/smb.conf").read_bytes() == applied
+    assert not list((root / "ram").rglob("*.next"))
+    (payload / image).write_bytes(good)
+    result = run(command)
+    assert result.returncode == 0 and result.stdout.decode().strip() == f"copy=0 crc={int(crc[image], 16)} read=-1 missing=0"
+    assert (root / f"ram/sbin/{image}").read_bytes() == good
+
+
+def test_a_damaged_image_is_checked_in_place_and_logged_once_per_reading(stage):
+    # After damage the manager asks for a probe: a disk copy that still
+    # fails is neither copied into RAM nor logged again for the same reading.
+    root, payload, run = stage
+    crc = checksums(root, payload)
+    good = (payload / "smbd").read_bytes()
+    (payload / "smbd").write_bytes(good[:-1] + b"!")
+    read = zlib.crc32(good[:-1] + b"!")
+    result = run("copy", PROBE="1")
+    assert result.returncode == 3 and result.stdout.decode().strip() == f"copy=-2 crc={int(crc['smbd'], 16)} read={read} missing=0"
+    assert f"copy verify failed: {payload}/smbd: CRC-32 read {read:08x}, deployed {crc['smbd']}".encode() in result.stderr
+    assert not (root / "ram/sbin/smbd").exists()
+    result = run("copy", PROBE="1", SEEN=str(read))
+    assert result.returncode == 3 and b"copy verify failed" not in result.stderr
+    # A disk that cannot return the bytes is damage the same way.
+    result = run("copy", PROBE="1", TC_TEST_EIO=str(payload / "smbd"))
+    assert result.returncode == 3 and result.stdout.decode().strip() == f"copy=-2 crc={int(crc['smbd'], 16)} read=-2 missing=0"
+    result = run("copy", PROBE="1", SEEN="-2", TC_TEST_EIO=str(payload / "smbd"))
+    assert result.returncode == 3 and b"copy verify failed" not in result.stderr
+    (payload / "smbd").write_bytes(good)
+    result = run("copy", PROBE="1", SEEN=str(read))
+    assert result.returncode == 0 and (root / "ram/sbin/smbd").read_bytes() == good
+
+
+@pytest.mark.parametrize("content", ["smbd 1234567\nrsync 89abcdef\n", "smbd 1234567G\n", "rsync 89abcdef\n",
+                                     "x" * 300])
+def test_a_damaged_checksums_file_is_damage_too(stage, content):
+    root, payload, run = stage
+    (payload / "checksums").write_text(content)
+    result = run()
+    assert result.returncode == 3 and result.stdout.decode().strip() == "copy=-2 crc=-1 read=-3 missing=0"
+    assert f"stage: {payload}/checksums is damaged: no checksum for smbd".encode() in result.stderr
+    assert not (root / "ram/sbin/smbd").exists()
+    # The manager passes back what the last run read: the same damage is not
+    # logged again.
+    result = run(PROBE="1", SEEN="-3")
+    assert result.returncode == 3 and result.stdout.decode().strip() == "copy=-2 crc=-1 read=-3 missing=0"
+    assert b"checksums is damaged" not in result.stderr
+
+
+def test_a_run_that_fails_at_once_still_reports_its_result(stage):
+    root, payload, run = stage
+    result = run(BAD_HASH="1")
+    assert result.returncode == 3 and result.stdout.decode().strip() == "copy=-1 crc=-1 read=-1 missing=-1"
+
+
+def test_a_checksums_file_that_cannot_be_read_says_so(stage):
+    # Damage all the same, but the log names the read error, not a missing
+    # entry: the disk is what to look at, not the deploy.
+    root, payload, run = stage
+    (payload / "checksums").mkdir()
+    result = run()
+    assert result.returncode == 3 and result.stdout.decode().strip() == "copy=-2 crc=-1 read=-3 missing=0"
+    assert f"stage: {payload}/checksums unreadable: Is a directory".encode() in result.stderr
+    assert b"no checksum" not in result.stderr
+
+
+def test_a_checksums_file_that_cannot_be_opened_is_a_plain_failure(stage):
+    # Not the disk's damage (no EIO): the run fails and retries as any other.
+    root, payload, run = stage
+    checksums(root, payload)
+    (payload / "checksums").chmod(0)
+    try:
+        result = run()
+    finally:
+        (payload / "checksums").chmod(0o600)
+    assert result.returncode != 0 and result.stdout.decode().strip() == "copy=-1 crc=-1 read=-1 missing=0"
+    assert f"stage: {payload}/checksums unreadable: Permission denied".encode() in result.stderr
+    assert not (root / "ram/sbin/smbd").exists()
+
+
+def test_a_payload_without_a_checksums_file_is_copied_unchecked(stage):
+    # A payload from before checksums, or one another disk kept: nothing to
+    # check it against, so it is copied as it was.
+    root, payload, run = stage
+    result = run()
+    assert result.returncode == 0 and result.stdout.decode().strip() == "copy=0 crc=-1 read=-1 missing=0"

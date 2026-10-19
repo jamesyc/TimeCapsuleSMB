@@ -14,11 +14,14 @@ import signal
 import subprocess
 import sys
 import time
+import zlib
 
 import pytest
 from tests.executables import write_executable
 from tests.native.build import compile_service
 from tests.timing import hang_guard
+from timecapsulesmb.device import probe
+from timecapsulesmb.services.deploy import render_payload_checksums
 
 
 # This host build shortens the manager's waits; the device keeps the defaults.
@@ -29,6 +32,7 @@ TIMINGS=dict(
     JOB_RETRY_MS=500,           # device 5 s
     TC_PAYLOAD_RECHECK_MS=3000, # device 30 s
     TC_STALE_KILL_MS=2000,      # device 10 s
+    TC_ROLE_READY_MS=4000,      # device 10 s
     # test_stall_while_stopping_is_still_recovered injects a stall after the
     # stop begins; its raise and wake (about 1 s) must land before the drain ends.
     TC_CHILD_GRACE_MS=5000,     # device 10 s
@@ -47,6 +51,9 @@ TIMINGS=dict(
     TC_BUFSTALL_REPORT_TIMEOUT_MS=15000, # device 180 s
     TC_STUCK_MS=1000,            # device 120 s
     TC_STUCK_REPORT_MS=3000,     # device 300 s
+    # A role that exits waits this, doubled per exit; repeated damage tests
+    # go through several exits.
+    TC_ROLE_RETRY_MS=100,        # device 1 s
     TC_UNMOUNTED_MS=2000,        # device 600 s; whole seconds: tests compare the logged "for N s"
 )
 
@@ -75,6 +82,14 @@ def event(kind):
         for name in ('sbmax','maxfiles','maxproc'):
             row[name]=(kern/name).read_text().split()[0] if (kern/name).is_file() else None
     with log.open('a') as f:f.write(json.dumps(row)+'\\n')
+# Like a RAM copy damaged after staging verified it: the program damages its
+# own image and crashes before it serves. smbd-corrupt counts the times left.
+corrupt=Path(os.environ['TC_TEST_ROOT'])/'smbd-corrupt'
+if role=='smbd' and corrupt.exists() and int(corrupt.read_text())>0:
+    corrupt.write_text(str(int(corrupt.read_text())-1))
+    image=bytearray(Path(sys.argv[0]).read_bytes());image[len(image)//2]^=1
+    Path(sys.argv[0]).write_bytes(bytes(image))
+    event('corrupted');sys.exit(1)
 # Like smbd still starting up: no signal handlers yet, so SIGHUP kills it.
 while role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-hold').exists():time.sleep(.05)
 def stopped(sig,frame):
@@ -87,6 +102,11 @@ stuck=((role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'smbd-ignore-term').e
 if stuck:signal.signal(signal.SIGTERM,signal.SIG_IGN)
 signal.signal(signal.SIGHUP,lambda sig,frame:event('reload'))
 event('start')
+# Like the program exiting on its own with some status: the next start exits
+# with the status this file holds.
+own=Path(os.environ['TC_TEST_ROOT'])/f'{role}-exit-status'
+if own.exists():
+    status=int(own.read_text());own.unlink();sys.exit(status)
 if role=='diskd':
     # The process table the manager reads in place of the kernel's
     # (proctable.h); dropped once this PID is gone.
@@ -198,7 +218,7 @@ def manager(manager_tools):
     else:hosts.unlink(missing_ok=True)
     for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','diskd-absent','diskd-fail','record-acp','fail-claim','record-audit','record-fstat','smbd-hold','hold-activation',
                  'bufcache','bufcache.writes','bufcache.wakes','bufcache.tmp','bufcache.new','fork-fail','smbd-ignore-term','telemetry-hang',
-                 'report-hold','report-exit','titles'):
+                 'report-hold','report-exit','titles','smbd-corrupt','smbd-exit-status','rsync-exit-status','discovery-exit-status'):
         (root/name).unlink(missing_ok=True)
     (root/'wake').mkdir(exist_ok=True)
     (root/'procs').mkdir()
@@ -555,7 +575,7 @@ def test_rename_while_staging_is_in_flight_restages_with_the_new_name(manager):
         (root/'hostname').write_text('renamed\n')
         # The manager stops the stale run, which cannot finish while our end
         # stays open, and starts another that opens the FIFO again.
-        wait_log(root,'manager: staging failed or superseded; will retry',timeout=30)
+        wait_log(root,'manager: smbd staging superseded; staging again',timeout=30)
         held.append(wait_for_fifo_reader(hosts))
     finally:
         for fd in held:os.close(fd) # end of file: staging writes the real file
@@ -567,13 +587,17 @@ def test_rename_while_staging_is_in_flight_restages_with_the_new_name(manager):
 
 
 def test_failed_mapping_holds_samba_and_staging_retries_until_it_works(manager):
-    # The mapping is load-bearing: a write failure fails staging, which retries.
+    # The mapping is load-bearing: a write failure fails staging, which
+    # retries. A failure that is not damage never makes the retries wait
+    # longer, however often it repeats: a disk can simply not be ready yet.
     root,start,events,wait,_,_=manager
     (root/'hosts').mkdir() # reading a directory fails with EISDIR
     start()
     wait_log(root,f'stage: could not update {root}/hosts for capsule: Is a directory')
-    wait_log(root,'manager: staging failed or superseded; will retry')
-    until(root,lambda:runtime_log(root).count('stage: could not update')>=2)
+    # Five runs at JOB_RETRY_MS (0.5 s here) fit in 10 s; growing waits
+    # would take 14 s. The same wait is logged once.
+    until(root,lambda:runtime_log(root).count('stage: could not update')>=5,10)
+    assert stage_retries(root)==[500]
     assert not smbd_starts(events())
     (root/'hosts').rmdir()
     rows=wait(lambda rows:smbd_starts(rows))
@@ -605,6 +629,614 @@ def test_failed_stage_never_advertises_desired_shares_and_retries(manager):
     process.send_signal(signal.SIGHUP)
     wait(started('smbd'),20)
     wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+
+
+def deploy_checksum(root,rsync=False,disk='dk2'):
+    """What deploy writes: the payload's own checksums file, beside the
+    binaries it describes. rsync, when asked for, gets other bytes than smbd,
+    so a check against the wrong binary's checksum shows."""
+    payload=root/disk/'.samba4'
+    good=(payload/'smbd').read_bytes()
+    lines=['TELEMETRY=0']
+    if rsync:
+        (payload/'rsync').write_bytes(good+b'# rsync\n');(payload/'rsync').chmod(0o755)
+        (payload/'rsyncd.conf').write_text('[Data]\npath = /old/ShareRoot\n')
+        lines.append('RSYNC_ENABLED=1')
+    elif not (payload/'rsync').exists():
+        (payload/'rsync').write_bytes(good+b'# rsync\n')
+    (payload/'checksums').write_text(render_payload_checksums(smbd_path=payload/'smbd',rsync_path=payload/'rsync'))
+    (root/'config').write_text('\n'.join(lines)+'\n')
+    return good
+
+
+def verdicts(root):
+    """The manager's verdicts as doctor and deploy read them: the last title
+    through probe's own parser, so a token renamed on one side fails here."""
+    titles=manager_titles(root)
+    return probe._title_payload_problems(titles[-1].split()) if titles else ()
+
+
+def console_log(root):
+    path=root/'dk2/.samba4/logs/smbd-console.log'
+    return path.read_text() if path.exists() else ''
+
+
+def logged_waits(root,message):
+    """The waits the manager logged with message, in order."""
+    return [int(d) for d in re.findall(rf'{re.escape(message)} (\d+) ms',runtime_log(root))]
+
+
+def copy_delays(root,name='smbd'):
+    """The wait the manager logged before each fresh copy of a damaged RAM image."""
+    return logged_waits(root,f'manager: {name} in RAM is damaged; copying it again from the disk in')
+
+
+def stage_retries(root,name='smbd'):
+    """The waits a unit's failed runs logged: each only when it changed."""
+    return logged_waits(root,f'manager: {name} staging failed; retry in')
+
+
+def smbd_reloads(rows):
+    """The NetBIOS name smbd had at each SIGHUP."""
+    return [e['netbios'] for e in rows if e['role']=='smbd' and e['kind']=='reload']
+
+
+def serving(rows):
+    """smbd serves: discovery advertises its shares only then."""
+    return any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows)
+
+
+def damage(path,good):
+    """Same size, one bit flipped past the header: a copy that would still run."""
+    data=bytearray(good);data[len(data)//2]^=1;path.write_bytes(bytes(data))
+    return bytes(data)
+
+
+@pytest.mark.parametrize('kind',['middle','missing'])
+def test_a_damaged_or_missing_smbd_image_in_ram_is_copied_again_before_it_runs(manager,kind):
+    # The launch checks the RAM image against its payload's checksum, so
+    # damage anywhere in it is caught, not only a header the kernel refuses:
+    # an image damaged past the header would run and crash at every relaunch.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root)
+    start()
+    smb=smbd_starts(wait(started('smbd')))[0]
+    image=root/'ram/sbin/smbd'
+    if kind=='middle':data=damage(image,good)
+    else:image.unlink()
+    os.kill(smb['pid'],signal.SIGKILL)
+    rows=wait(lambda rows:len(smbd_starts(rows))==2,30)
+    assert copy_delays(root)==[500]
+    assert image.read_bytes()==good
+    if kind=='middle':
+        assert f'launch: {image} has CRC-32 {zlib.crc32(data):08x}, deployed {zlib.crc32(good):08x}; not starting it' in console_log(root)
+    else:
+        assert f'launch: {image} unreadable: No such file or directory' in console_log(root)
+    assert smbd_starts(rows)[1]['pid']!=smb['pid']
+
+
+def test_smbd_gone_from_the_payload_is_the_payload_missing(manager):
+    # Samba's files are what makes a payload: smbd gone from it while Samba
+    # serves is reported by storage, as payload=missing, not as a verdict of
+    # Samba's own, and the run that found it out says which file.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root)
+    start()
+    smb=smbd_starts(wait(started('smbd')))[0]
+    (root/'dk2/.samba4/smbd').unlink()
+    (root/'ram/sbin/smbd').unlink()
+    os.kill(smb['pid'],signal.SIGKILL)
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_MISSING,),40)
+    assert f"stage: {root}/dk2/.samba4/smbd is missing" in runtime_log(root)
+    assert len(smbd_starts(events()))==1
+
+
+def test_an_rsync_without_its_listener_is_restarted_and_says_so(manager):
+    # The same audit as smbd's: a program that never binds its port is
+    # restarted once its time to get ready has passed, and the log says why.
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    (root/'no-listener').touch()
+    start()
+    wait(lambda rows:rsync_starts(rows),40)
+    until(root,lambda:'manager: rsync missing required listeners; restarting' in runtime_log(root),40)
+
+
+@pytest.mark.parametrize('checksum',[True,False])
+def test_an_image_that_fails_to_exec_is_not_copied_again_unless_it_fails_its_checksum(manager,checksum):
+    # A copy that matches what deploy wrote, or one there is no checksum for,
+    # would come back the same: relaunching backs off, nothing is copied.
+    root,start,events,wait,_,_=manager
+    payload=root/'dk2/.samba4/smbd'
+    payload.write_bytes(b'not an executable\n');payload.chmod(0o755)
+    if checksum:deploy_checksum(root)
+    start()
+    until(root,lambda:console_log(root).count(f'exec {root}/ram/sbin/smbd: Exec format error')>=2)
+    inode=(root/'ram/sbin/smbd').stat().st_ino
+    until(root,lambda:console_log(root).count('Exec format error')>=3)
+    assert (root/'ram/sbin/smbd').stat().st_ino==inode
+    assert not copy_delays(root) and 'not starting it' not in console_log(root)
+    assert not smbd_starts(events())
+
+
+def test_an_image_damaged_after_every_copy_is_copied_again_each_time_and_never_left(manager):
+    # Real damage after each verified copy. Copies wait 1x, 3x, then 12x
+    # TC_STORAGE_RETRY_MS (0.5, 1.5, 6 s here) and go on at 12x: no number of
+    # them ends the copies, and a verified copy alone does not end the waits.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root)
+    (root/'smbd-corrupt').write_text('4')
+    start()
+    rows=wait(serving,90)
+    assert copy_delays(root)==[500,1500,6000,6000]
+    assert len([e for e in rows if e['kind']=='corrupted'])==4
+    assert len(smbd_starts(rows))==1 and (root/'ram/sbin/smbd').read_bytes()==good
+
+
+def test_serving_from_a_copy_starts_the_damage_waits_over(manager):
+    # Waits grow while copies keep coming back damaged, and start over once
+    # smbd serves from one, however it stops later.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root)
+    (root/'smbd-corrupt').write_text('1')
+    start()
+    smb=smbd_starts(wait(serving,40))[0]
+    damage(root/'ram/sbin/smbd',good)
+    os.kill(smb['pid'],signal.SIGKILL)
+    wait(lambda rows:len(smbd_starts(rows))==2,30)
+    assert copy_delays(root)==[500,500]
+
+
+def test_a_test_build_linked_into_ram_runs_without_being_copied_over(manager):
+    # tests.samba.swap_smbd links a test build at the RAM path: only the
+    # regular file staging writes must match its checksum, and the link is
+    # not read through for one.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root)
+    start()
+    smb=smbd_starts(wait(started('smbd')))[0]
+    build=root/'dk2/swap/smbd';build.parent.mkdir()
+    build.write_bytes(good+b'# a test build\n');build.chmod(0o755)
+    image=root/'ram/sbin/smbd';image.unlink();image.symlink_to(build)
+    os.kill(smb['pid'],signal.SIGKILL)
+    wait(lambda rows:len(smbd_starts(rows))==2,30)
+    assert image.is_symlink() and not copy_delays(root)
+
+
+def test_a_link_to_a_build_that_is_gone_is_replaced_by_a_fresh_copy(manager):
+    # A linked test build whose disk went away would fail every relaunch.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root)
+    start()
+    smb=smbd_starts(wait(started('smbd')))[0]
+    image=root/'ram/sbin/smbd';image.unlink();image.symlink_to(root/'dk2/swap/gone')
+    os.kill(smb['pid'],signal.SIGKILL)
+    wait(lambda rows:len(smbd_starts(rows))==2,30)
+    assert copy_delays(root)==[500]
+    assert not image.is_symlink() and image.read_bytes()==good
+    assert f'launch: {image} unreadable: No such file or directory' in console_log(root)
+
+
+def test_a_damaged_rsync_while_smbd_serves_is_copied_again_alone_and_never_holds_samba(manager):
+    # rsync is checked against its own checksum and copied again by its own
+    # run. While its disk copy stays damaged smbd keeps serving, comes back
+    # after an exit and takes a rename, and the title names rsync, not the
+    # payload, which doctor would take as Samba being off.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    payload=root/'dk2/.samba4/rsync';good=payload.read_bytes()
+    start()
+    rows=wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    assert not copy_delays(root,'rsync') # its own checksum, not smbd's
+    rsync=rsync_starts(rows)[0];smb=smbd_starts(rows)[0]
+    # The disk copy goes bad, and so does the RAM one, which the next launch refuses.
+    payload.write_bytes(good[:-1]+b'!')
+    damage(root/'ram/sbin/rsync',good)
+    os.kill(rsync['pid'],signal.SIGKILL)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_DAMAGED,))
+    assert copy_delays(root,'rsync')==[500]
+    assert runtime_log(root).count(f'copy verify failed: {payload} ->')==1
+    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
+    os.kill(smb['pid'],signal.SIGKILL)
+    wait(lambda rows:len(smbd_starts(rows))==2,30)
+    (root/'hostname').write_text('renamed\n')
+    wait(lambda rows:smbd_reloads(rows)==['renamed'],30)
+    payload.write_bytes(good)
+    wait(lambda rows:len(rsync_starts(rows))==2,40)
+    assert (root/'ram/sbin/rsync').read_bytes()==good
+    assert verdicts(root)==()
+    # rsync's own run brought it back: smbd, which reads none of it, got no
+    # SIGHUP, which one still starting would not take.
+    assert smbd_reloads(events())==['renamed']
+
+
+def test_a_damaged_rsync_at_startup_leaves_only_rsync_off_and_says_why(manager):
+    # rsync stages on its own: its damaged copy keeps only rsync off.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    payload=root/'dk2/.samba4/rsync';good=payload.read_bytes()
+    payload.write_bytes(good[:-1]+b'!')
+    start()
+    wait(serving,40)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_DAMAGED,))
+    assert f'copy verify failed: {payload} ->' in runtime_log(root)
+    assert not rsync_starts(events()) and not (root/'ram/sbin/rsync').exists()
+    payload.write_bytes(good)
+    wait(lambda rows:rsync_starts(rows),40)
+    assert (root/'ram/sbin/rsync').read_bytes()==good
+
+
+@pytest.mark.parametrize('lost',['rsync','rsyncd.conf'])
+def test_rsync_files_missing_from_the_payload_never_keep_samba_off(manager,lost):
+    # Only Samba's files make a payload: a payload whose rsync is gone serves
+    # Samba, the title says rsync's files are missing, as it says Samba's,
+    # and rsync's own runs wait longer each time, logging the cause once.
+    # Putting the file back clears it.
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    payload=root/'dk2/.samba4';lost=payload/lost;kept=lost.read_bytes()
+    lost.unlink()
+    start()
+    wait(serving,40)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_MISSING,))
+    until(root,lambda:stage_retries(root,'rsync')[:3]==[500,1500,6000],40)
+    assert runtime_log(root).count(f'stage: {lost} is missing')==1
+    assert not rsync_starts(events())
+    lost.write_bytes(kept);lost.chmod(0o755)
+    wait(lambda rows:rsync_starts(rows),40)
+    until(root,lambda:verdicts(root)==())
+
+
+def test_a_payload_without_rsync_stops_the_rsync_of_the_old_one(manager):
+    # The payload moves to a disk whose payload has no rsync: the old rsync
+    # stops, and the title says rsync's files are missing.
+    root,start,events,wait,inventory,volumes=manager
+    deploy_checksum(root,rsync=True)
+    other=root/'dk3/.samba4'
+    shutil.copytree(root/'dk2/.samba4',other)
+    (other/'rsync').unlink()
+    process=start()
+    rows=wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    old=rsync_starts(rows)[0]
+    inventory(volumes[1:])
+    (root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_MISSING,),40)
+    until(root,lambda:any(e['role']=='rsync' and e['kind']=='stop' for e in events()),20)
+    assert [e['pid'] for e in rsync_starts(events())]==[old['pid']]
+
+
+def test_samba_runs_never_stop_copy_or_remove_a_healthy_rsync(manager):
+    # smbd's RAM copy is refused and copied again, and later smbd's disk copy
+    # turns out damaged: rsync, verified and serving, is untouched by either.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root,rsync=True)
+    start()
+    rows=wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    rsync=rsync_starts(rows)[0];inode=(root/'ram/sbin/rsync').stat().st_ino
+    damage(root/'ram/sbin/smbd',good)
+    os.kill(smbd_starts(rows)[0]['pid'],signal.SIGKILL)
+    rows=wait(lambda rows:len(smbd_starts(rows))==2,30)
+    payload=root/'dk2/.samba4/smbd';payload.write_bytes(good[:-1]+b'!')
+    damage(root/'ram/sbin/smbd',good)
+    os.kill(smbd_starts(rows)[1]['pid'],signal.SIGKILL)
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_DAMAGED,))
+    assert [e['pid'] for e in rsync_starts(events())]==[rsync['pid']]
+    assert not any(e['role']=='rsync' and e['kind']=='stop' for e in events())
+    assert (root/'ram/sbin/rsync').stat().st_ino==inode
+
+
+def test_a_stalled_rsync_read_never_holds_samba(manager):
+    # rsync's run blocks on its source (a disk retrying a bad sector, here a
+    # FIFO nobody writes): Samba is staged and serves meanwhile.
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    source=root/'dk2/.samba4/rsync';source.unlink();os.mkfifo(source)
+    start()
+    wait(serving,40)
+    assert not rsync_starts(events())
+
+
+def test_a_failed_run_for_samba_leaves_rsync_alone(manager):
+    # A rename's restage fails at the hosts write, then works. Samba's runs,
+    # failed or published, never stop, copy or restart rsync.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    start()
+    wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    inode=(root/'ram/sbin/rsync').stat().st_ino
+    (root/'hosts').unlink(missing_ok=True);(root/'hosts').mkdir()
+    (root/'hostname').write_text('renamed\n')
+    until(root,lambda:'stage: could not update' in runtime_log(root),40)
+    (root/'hosts').rmdir()
+    wait(lambda rows:smbd_reloads(rows)==['renamed'],30)
+    assert len(rsync_starts(events()))==1 and (root/'ram/sbin/rsync').stat().st_ino==inode
+
+
+def test_a_publish_while_smbd_starts_reloads_it_once_it_is_ready(manager):
+    # smbd still starting has no SIGHUP handler: a rename published then would
+    # kill it. It gets the reload once ready instead.
+    root,start,events,wait,_,_=manager
+    (root/'smbd-hold').touch();(root/'record-fstat').touch()
+    start()
+    wait(lambda rows:any(e['role']=='fstat' for e in rows),30) # smbd launched, not ready
+    (root/'hostname').write_text('renamed\n')
+    until(root,lambda:'manager: hostname changed from capsule to renamed' in runtime_log(root))
+    time.sleep(1)
+    (root/'smbd-hold').unlink()
+    wait(lambda rows:smbd_reloads(rows)==['renamed'],30)
+    assert len(smbd_starts(events()))==1
+    assert 'manager: smbd exited' not in runtime_log(root)
+
+
+def test_an_rsync_that_keeps_failing_waits_longer_each_time_and_says_why(manager):
+    # Not damage: rsync's configuration on the disk has no path line. Samba
+    # serves without rsync, and rsync's runs wait 1x, 3x, then 12x
+    # TC_STORAGE_RETRY_MS (0.5, 1.5, 6 s here), not the short staging retry,
+    # each wait logged once.
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    conf=root/'dk2/.samba4/rsyncd.conf';conf.write_text('[Data]\nread only = no\n')
+    start()
+    wait(serving,40)
+    until(root,lambda:stage_retries(root,'rsync')==[500,1500,6000],40)
+    assert f'stage: {conf} has no path line' in runtime_log(root)
+    assert not rsync_starts(events()) and not (root/'ram/sbin/rsync').exists()
+    assert verdicts(root)==()
+    conf.write_text('[Data]\npath = /old/ShareRoot\n')
+    wait(lambda rows:rsync_starts(rows),40)
+
+
+def test_a_run_that_fails_before_reading_rsync_keeps_its_damage_quiet(manager):
+    # rsync's disk copy is damaged, then for a while its configuration is
+    # bad too, so runs fail before reading the binary: they say nothing new
+    # about it, and once the configuration is good the unchanged damage is
+    # not logged again.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root,rsync=True)
+    payload=root/'dk2/.samba4'
+    damage(payload/'rsync',good+b'# rsync\n')
+    start()
+    wait(serving,40)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_DAMAGED,))
+    conf=payload/'rsyncd.conf';text=conf.read_text()
+    conf.write_text('[Data]\nread only = no\n')
+    until(root,lambda:f'stage: {conf} has no path line' in runtime_log(root),40)
+    conf.write_text(text)
+    time.sleep(7.5) # the next run, 6 s on, probes the unchanged copy
+    log=runtime_log(root)
+    assert log.count(f'copy verify failed: {payload}/rsync')==1, log
+    assert verdicts(root)==(probe.RSYNC_DAMAGED,)
+
+
+def test_rsync_failing_again_after_it_was_turned_back_on_starts_over(manager):
+    # rsync turned off and on again is another episode: its retries start
+    # over, and its first failure is logged again.
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    conf=root/'dk2/.samba4/rsyncd.conf';conf.write_text('[Data]\nread only = no\n')
+    process=start()
+    wait(serving,40)
+    until(root,lambda:stage_retries(root,'rsync')==[500,1500,6000],40)
+    config=root/'config'
+    config.write_text(config.read_text().replace('RSYNC_ENABLED=1','RSYNC_ENABLED=0'))
+    process.send_signal(signal.SIGHUP)
+    time.sleep(1)
+    config.write_text(config.read_text().replace('RSYNC_ENABLED=0','RSYNC_ENABLED=1'))
+    process.send_signal(signal.SIGHUP)
+    until(root,lambda:stage_retries(root,'rsync')==[500,1500,6000,500],40)
+
+
+def test_a_failed_copy_from_another_payload_stops_the_rsync_of_the_old_one(manager):
+    # The payload moves to a disk whose rsync is damaged: the rsync serving
+    # the old disk stops with it, as the title's "rsync is off" says, rather
+    # than go on serving a disk that is no longer the payload's.
+    root,start,events,wait,inventory,volumes=manager
+    deploy_checksum(root,rsync=True)
+    other=root/'dk3/.samba4'
+    shutil.copytree(root/'dk2/.samba4',other)
+    damage(other/'rsync',(other/'rsync').read_bytes())
+    process=start()
+    rows=wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    old=rsync_starts(rows)[0]
+    inventory(volumes[1:])
+    (root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_DAMAGED,),40)
+    until(root,lambda:any(e['role']=='rsync' and e['kind']=='stop' for e in events()),20)
+    assert [e['pid'] for e in rsync_starts(events())]==[old['pid']]
+    assert not (root/'ram/sbin/rsync').exists()
+
+
+def test_a_foreign_rsync_holds_back_only_rsync(manager):
+    # An earlier manager's rsync daemon must be gone before ours starts, but
+    # Samba stages and serves meanwhile: rsync is optional. The fake process
+    # table lists the killed daemon until it is reaped.
+    root,start,events,wait,_,_=manager
+    enable_rsync(root)
+    foreign=sleeper(ignore_term=True)
+    try:
+        external(root,
+            f'{foreign.pid} 1 {foreign.pid} S rsync /mnt/Memory/samba4/sbin/rsync --daemon --no-detach\n')
+        start()
+        wait(serving,40)
+        os.kill(foreign.pid,0) # still listed, so rsync is still blocked
+        assert not rsync_starts(events())
+        assert foreign.wait(timeout=15)==-signal.SIGKILL
+        wait(started('rsync'),30)
+    finally:
+        if foreign.poll() is None:foreign.kill()
+        foreign.wait()
+
+
+@pytest.mark.parametrize('role',['rsync','discovery'])
+def test_a_programs_own_exit_status_is_never_taken_for_a_damaged_image(manager,role):
+    # rsync exits 125 (RERR_CMD_KILLED) of its own accord, and discovery,
+    # which has no RAM image, exits 120: each a plain relaunch with its
+    # backoff, never a fresh copy.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    start()
+    rows=wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    inode=(root/'ram/sbin/rsync').stat().st_ino
+    (root/f'{role}-exit-status').write_text('125' if role=='rsync' else '120')
+    # The one running now: discovery restarts once smbd serves.
+    starts=lambda rows:[e for e in rows if e['role']==role and e['kind']=='start']
+    before=len(starts(rows))
+    os.kill(starts(rows)[-1]['pid'],signal.SIGKILL)
+    wait(lambda rows:len(starts(rows))>=before+2,30)
+    # One line for the kill, one for the exit status: both plain exits.
+    assert runtime_log(root).count(f'manager: {role} exited; retry in ')==2
+    assert not copy_delays(root,role) and (root/'ram/sbin/rsync').stat().st_ino==inode
+
+
+def test_a_refused_launch_adds_nothing_to_the_programs_own_relaunch_wait(manager):
+    # Exits double the relaunch wait; a launch that refused a damaged image is
+    # not an exit of smbd's, so only the two kills count.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root)
+    start()
+    smb=smbd_starts(wait(serving,40))[0]
+    damage(root/'ram/sbin/smbd',good)
+    os.kill(smb['pid'],signal.SIGKILL)
+    smb=smbd_starts(wait(lambda rows:len(smbd_starts(rows))==2,30))[1]
+    assert copy_delays(root)==[500]
+    os.kill(smb['pid'],signal.SIGKILL)
+    wait(lambda rows:len(smbd_starts(rows))==3,30)
+    step=TIMINGS['TC_ROLE_RETRY_MS']
+    assert logged_waits(root,'manager: smbd exited; retry in')==[2*step,4*step]
+
+
+def test_a_damaged_payload_stays_reported_through_a_run_that_read_nothing(manager):
+    # A staging run that fails before reading the file (here the hosts
+    # write) says nothing new about it: payload=damaged stays.
+    root,start,events,wait,_,_=manager
+    payload=root/'dk2/.samba4/smbd'
+    good=deploy_checksum(root)
+    payload.write_bytes(good[:-1]+b'!')
+    start()
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_DAMAGED,))
+    (root/'hosts').unlink(missing_ok=True);(root/'hosts').mkdir()
+    until(root,lambda:'stage: could not update' in runtime_log(root),40)
+    titles=manager_titles(root)
+    first=min(i for i,t in enumerate(titles) if 'payload=damaged' in t)
+    assert all(probe._title_payload_problems(t.split())==(probe.DISK_PAYLOAD_DAMAGED,) for t in titles[first:])
+    (root/'hosts').rmdir();payload.write_bytes(good)
+    wait(lambda rows:smbd_starts(rows),40)
+    assert verdicts(root)==()
+
+
+def test_a_disk_that_cannot_read_smbd_is_damage_too(manager,monkeypatch):
+    # A bad sector inside smbd: the read fails rather than returning other
+    # bytes, which a reinstall fixes all the same.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root)
+    monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/smbd'))
+    start()
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_DAMAGED,))
+    until(root,lambda:stage_retries(root)==[500,1500],20)
+    assert not smbd_starts(events())
+
+
+def test_payloads_on_two_disks_are_each_checked_against_their_own_checksums(manager):
+    # Another disk keeps an older payload, with its own checksums, that
+    # deploy could not reach: storage may pick either, and neither is damage.
+    root,start,events,wait,inventory,volumes=manager
+    good=deploy_checksum(root)
+    other=root/'dk3/.samba4';shutil.copytree(root/'dk2/.samba4',other)
+    (other/'smbd').write_bytes(good+b'# an older release\n')
+    deploy_checksum(root,disk='dk3')
+    process=start();wait(serving,40)
+    inventory(volumes[1:]);(root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:len(smbd_starts(rows))==2,40)
+    assert (root/'ram/sbin/smbd').read_bytes()==(other/'smbd').read_bytes()
+    assert not any(probe._title_payload_problems(t.split()) for t in manager_titles(root))
+
+
+def test_rsync_files_leave_ram_with_the_payload_and_come_back_with_it(manager):
+    root,start,events,wait,inventory,volumes=manager
+    enable_rsync(root)
+    process=start();wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    inventory(volumes[1:]);(root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    until(root,lambda:not (root/'ram/sbin/rsync').exists() and not (root/'ram/etc/rsyncd.conf').exists())
+    assert any(e['role']=='rsync' and e['kind']=='stop' for e in events())
+    inventory(volumes);(root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:len(rsync_starts(rows))==2,40)
+    assert (root/'ram/etc/rsyncd.conf').exists()
+
+
+def test_rsync_disabled_after_its_disk_copy_failed_leaves_no_files_in_ram(manager):
+    # The failed copy removed the binary; the configuration an earlier run
+    # published goes once rsync is disabled, damaged or not.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    payload=root/'dk2/.samba4/rsync';good=payload.read_bytes()
+    process=start()
+    rows=wait(lambda rows:rsync_starts(rows) and serving(rows),40)
+    payload.write_bytes(good[:-1]+b'!')
+    damage(root/'ram/sbin/rsync',good)
+    os.kill(rsync_starts(rows)[0]['pid'],signal.SIGKILL)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_DAMAGED,))
+    assert (root/'ram/etc/rsyncd.conf').exists()
+    (root/'config').write_text((root/'config').read_text().replace('RSYNC_ENABLED=1','RSYNC_ENABLED=0'))
+    process.send_signal(signal.SIGHUP)
+    until(root,lambda:not (root/'ram/etc/rsyncd.conf').exists() and not (root/'ram/sbin/rsync').exists())
+    until(root,lambda:verdicts(root)==())
+
+
+def test_rsync_files_an_earlier_manager_left_are_removed_when_rsync_is_off(manager):
+    root,start,events,wait,_,_=manager
+    (root/'ram/sbin').mkdir(parents=True,exist_ok=True);(root/'ram/etc').mkdir(parents=True,exist_ok=True)
+    (root/'ram/sbin/rsync').write_bytes(b'old');(root/'ram/etc/rsyncd.conf').write_text('[Data]\n')
+    start();wait(serving,40)
+    until(root,lambda:not (root/'ram/sbin/rsync').exists() and not (root/'ram/etc/rsyncd.conf').exists())
+
+
+def test_a_damaged_payload_gives_way_to_missing_when_no_disk_holds_it(manager):
+    # payload=damaged speaks for the payload a disk holds; once none does, the
+    # title says nothing about it until payload=missing is confirmed.
+    root,start,events,wait,inventory,volumes=manager
+    payload=root/'dk2/.samba4/smbd'
+    good=deploy_checksum(root)
+    payload.write_bytes(good[:-1]+b'!')
+    process=start()
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_DAMAGED,))
+    inventory(volumes[1:]);(root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
+    process.send_signal(signal.SIGHUP)
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_MISSING,))
+    titles=[probe._title_payload_problems(t.split()) for t in manager_titles(root)]
+    last_damaged=max(i for i,t in enumerate(titles) if probe.DISK_PAYLOAD_DAMAGED in t)
+    first_missing=min(i for i,t in enumerate(titles) if probe.DISK_PAYLOAD_MISSING in t)
+    assert last_damaged<first_missing
+    assert any(t==() for t in titles[last_damaged+1:first_missing])
+
+
+def test_smbd_that_fails_its_checksum_never_runs_and_staging_waits_longer(manager):
+    root,start,events,wait,_,_=manager
+    payload=root/'dk2/.samba4/smbd'
+    good=deploy_checksum(root)
+    # Same size, other bytes: what a disk returning stale blocks would give.
+    payload.write_bytes(good[:-1]+b'!')
+    start()
+    # Retries wait 1x, 3x, then 12x TC_STORAGE_RETRY_MS (0.5, 1.5, 6 s here)
+    # and go on at 12x; each wait is logged once, and the damage once, since
+    # a retry checks the disk copy where it is.
+    until(root,lambda:stage_retries(root)==[500,1500,6000],40)
+    time.sleep(6.5)
+    assert stage_retries(root)==[500,1500,6000]
+    assert runtime_log(root).count('copy verify failed: ')==1
+    assert not smbd_starts(events()) and not (root/'ram/sbin/smbd').exists()
+    assert not serving(events())
+    # Doctor and deploy read this to say "reinstall" instead of waiting.
+    assert verdicts(root)==(probe.DISK_PAYLOAD_DAMAGED,)
+    payload.write_bytes(good)
+    rows=wait(lambda rows:smbd_starts(rows),30)
+    assert (root/'ram/sbin/smbd').read_bytes()==good
+    assert len(smbd_starts(rows))==1
+    assert verdicts(root)==()
 
 
 def test_payload_removal_stops_samba_even_with_other_disk_available(manager):
@@ -949,12 +1581,14 @@ def test_failed_diskd_restart_is_backed_off_without_holding_back_discovery(manag
     (root/'diskd-absent').touch();(root/'diskd-fail').touch()
     # Discovery does not wait for diskd.
     start();wait(started('discovery'))
-    # Each failure doubles the wait before the next start: 2 s, then 4 s,
-    # counted from the exit, which follows the start. A loaded host only
-    # lengthens the gaps, so they are measured rather than slept through.
+    # Each failure doubles the wait before the next start: 2x, then 4x
+    # TC_ROLE_RETRY_MS (2 s, then 4 s on the device), counted from the exit,
+    # which follows the start. A loaded host only lengthens the gaps, so they
+    # are measured rather than slept through.
     def diskd_starts(rows):return [e['at'] for e in rows if e['role']=='diskd' and e['kind']=='start']
     at=diskd_starts(wait(lambda rows:len(diskd_starts(rows))>=3,timeout=30))
-    assert at[1]-at[0]>2 and at[2]-at[1]>4
+    step=TIMINGS['TC_ROLE_RETRY_MS']/1000
+    assert at[1]-at[0]>2*step and at[2]-at[1]>4*step
 
 
 def test_discovery_receives_exact_applied_names_devices_and_uuids_as_argv(manager):
@@ -1255,7 +1889,9 @@ def wait_storage_failure(root, stage):
     pytest.fail('storage failure not observed: '+(log.read_text() if log.exists() else 'no log'))
 
 
-@pytest.mark.parametrize('failure',['claim','guard','share','marker','executable','private','rsync'])
+# rsync's files are not part of the payload's inspection: see
+# test_rsync_files_missing_from_the_payload_never_keep_samba_off.
+@pytest.mark.parametrize('failure',['claim','guard','share','marker','executable','private'])
 def test_preparation_recovers_on_unchanged_inventory(manager,failure):
     root,start,events,wait,_,_=manager
     home=root/'dk2/.samba4'
@@ -1273,12 +1909,8 @@ def test_preparation_recovers_on_unchanged_inventory(manager,failure):
         repair=block.unlink;stage='share preparation'
     elif failure=='executable':
         block=home/'smbd';block.chmod(0o600);repair=lambda:block.chmod(0o755)
-    elif failure=='private':
-        block=home/'private';block.rename(home/'private.saved');repair=lambda:(home/'private.saved').rename(block)
     else:
-        (root/'config').write_text('TELEMETRY=0\nRSYNC_ENABLED=1\n')
-        shutil.copy2(home/'smbd',home/'rsync')
-        repair=lambda:(home/'rsyncd.conf').write_text('port = 873\npath = /old/ShareRoot\n')
+        block=home/'private';block.rename(home/'private.saved');repair=lambda:(home/'private.saved').rename(block)
     process=start()
     wait_storage_failure(root,stage)
     assert not started('smbd')(events())

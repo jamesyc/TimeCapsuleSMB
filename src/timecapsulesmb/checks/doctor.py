@@ -35,6 +35,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_device_hostname,
     _doctor_check_disk_mounting,
     _doctor_check_disk_payload,
+    _doctor_refresh_payload_problems,
     _doctor_check_diskd_rpc,
     _doctor_check_managed_smbd,
     _doctor_check_nbns,
@@ -52,7 +53,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.models import DOMAIN_COMPUTER, CheckResult
 from timecapsulesmb.core.smb_config import parse_active_share_names
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.probe import AirportAcpReading, ProbedDeviceState
+from timecapsulesmb.device.probe import AirportAcpReading, ManagerVerdicts, ProbedDeviceState
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -125,14 +126,19 @@ def run_doctor_checks(
         _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
         return sink.results, sink.fatal()
     startup_age = manager.manager_started_seconds_ago if manager is not None else None
-    readiness = _doctor_wait_for_startup(target, remote, sink, startup_age)
+    verdicts = ManagerVerdicts(manager.payload_problems if manager is not None else ())
+    readiness = _doctor_wait_for_startup(target, remote, sink, startup_age, verdicts)
+    manager = _doctor_refresh_payload_problems(target, remote, manager, verdicts)
+    if _doctor_check_disk_payload(manager, sink).stop:
+        _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
+        return sink.results, sink.fatal()
 
     naming = _doctor_check_runtime_naming_identity(target, remote, sink)
     probed_mac = _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_device_hostname(target, remote, sink)
     smbd_serving = _doctor_check_managed_smbd(target, remote, sink, readiness.smbd)
     native_nbns, bonjour_registered, link_plan = _doctor_check_managed_mdns(target, remote, sink, readiness.mdns)
-    _doctor_check_managed_rsync(target, remote, sink)
+    _doctor_check_managed_rsync(target, remote, sink, manager, readiness.rsync)
     _doctor_check_diskd_rpc(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
     if remote.remote_checks_enabled:

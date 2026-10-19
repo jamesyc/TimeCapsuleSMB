@@ -13,7 +13,7 @@ from unittest import mock
 
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.services.deploy import render_flash_runtime_config, render_rsync_daemon_config
+from timecapsulesmb.services.deploy import render_flash_runtime_config, render_payload_checksums, render_rsync_daemon_config
 from timecapsulesmb.services.deploy import render_flash_runtime_config as render_gui_flash_runtime_config
 from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
@@ -925,6 +925,25 @@ if sys.argv[1] == "df":
         )
 
         self.assertIn("TELEMETRY=false\n", rendered)
+
+    def test_payload_checksums_record_the_crc32_of_each_binary_staged_to_ram(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            smbd, rsync = Path(tmp) / "smbd", Path(tmp) / "rsync"
+            smbd.write_bytes(b"payload data")
+            rsync.write_bytes(b"rsync 316")
+            rendered = render_payload_checksums(smbd_path=smbd, rsync_path=rsync)
+        # zlib's CRC-32, eight lowercase hex digits with leading zeros kept,
+        # in the "NAME XXXXXXXX" lines the manager's staging reads.
+        self.assertEqual(rendered, "smbd 84d769f0\nrsync 00e7f91d\n")
+
+    def test_flash_runtime_config_records_no_checksums(self) -> None:
+        # They travel with the payload they describe, not in device config.
+        rendered = render_flash_runtime_config(
+            AppConfig.from_values({}),
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+        )
+
+        self.assertNotIn("CRC32", rendered)
 
     def test_flash_runtime_config_can_enable_rsync(self) -> None:
         rendered = render_flash_runtime_config(

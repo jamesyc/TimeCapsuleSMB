@@ -115,9 +115,6 @@ int tc_samba_raise_kern(enum tc_kern_limit limit, unsigned wanted) {
     return current >= (int)wanted ? 0 : kern_set(limit, (int)wanted);
 }
 
-static const char *prepared[] = {TC_SMBD_CONF, TC_RAM_ROOT "/private/smbpasswd",
-                                 TC_RAM_ROOT "/private/username.map", TC_RSYNC_CONF};
-
 int tc_samba_settings_read(struct tc_samba_settings *settings, const char *hostname) {
     memset(settings, 0, sizeof(*settings));
     if (tc_runtime_config_load(&settings->config)) {
@@ -165,8 +162,10 @@ static int stage_rsync_config(const char *payload, const char *root) {
     FILE *input, *output;
     snprintf(source, sizeof(source), "%s/rsyncd.conf", payload);
     input = fopen(source, "r");
-    if (!input)
+    if (!input) {
+        fprintf(stderr, "stage: %s unreadable: %s\n", source, strerror(errno));
         return -1;
+    }
     output = prepare_file(TC_RSYNC_CONF);
     if (!output) {
         fclose(input);
@@ -197,47 +196,211 @@ static int stage_rsync_config(const char *payload, const char *root) {
     fclose(input);
     if (finish(output))
         failed = 1;
+    /* Each failure names its cause: rsync is left out of the run for it. */
+    if (failed)
+        fprintf(stderr, "stage: %s could not be staged (a line too long, or a read or write failed)\n", source);
+    else if (!found)
+        fprintf(stderr, "stage: %s has no path line\n", source);
     return !found || failed ? -1 : 0;
 }
 
-void tc_samba_discard(void) {
+/* Each program's files, published apart: Samba's three and rsync's one. */
+static const char *const samba_files[] = {TC_SMBD_CONF, TC_RAM_ROOT "/private/smbpasswd",
+                                          TC_RAM_ROOT "/private/username.map"};
+static const char *const rsync_files[] = {TC_RSYNC_CONF};
+
+static void discard(const char *const *files, size_t count) {
     size_t i;
     char path[512];
-    for (i = 0; i < sizeof(prepared) / sizeof(prepared[0]); i++) {
-        snprintf(path, sizeof(path), "%s.next", prepared[i]);
+    for (i = 0; i < count; i++) {
+        snprintf(path, sizeof(path), "%s.next", files[i]);
         unlink(path);
     }
 }
-int tc_samba_publish(int rsync) {
+static int publish(const char *const *files, size_t count) {
     size_t i;
     char path[512];
-    for (i = 0; i < (rsync ? 4u : 3u); i++) {
-        snprintf(path, sizeof(path), "%s.next", prepared[i]);
-        if (rename(path, prepared[i])) {
-            fprintf(stderr, "publish configuration failed: %s: %s\n", prepared[i], strerror(errno));
+    for (i = 0; i < count; i++) {
+        snprintf(path, sizeof(path), "%s.next", files[i]);
+        if (rename(path, files[i])) {
+            fprintf(stderr, "publish configuration failed: %s: %s\n", files[i], strerror(errno));
             return -1;
         }
     }
     return 0;
 }
+void tc_samba_discard(void) {
+    discard(samba_files, sizeof(samba_files) / sizeof(samba_files[0]));
+}
+int tc_samba_publish(void) {
+    return publish(samba_files, sizeof(samba_files) / sizeof(samba_files[0]));
+}
+void tc_rsync_discard(void) {
+    discard(rsync_files, 1);
+}
+int tc_rsync_publish(void) {
+    return publish(rsync_files, 1);
+}
+
+/* Sets result->crc32 to the CRC-32 the payload's checksums file records for
+ * name. Deploy writes it with the binaries, one "NAME XXXXXXXX" line each, so
+ * a payload carries the checksums of its own files. -1 without the file (a
+ * payload from before checksums: nothing to check). Returns 0;
+ * TC_COPY_DISK_DAMAGED when the disk cannot read the file or it has no valid
+ * line for name, since that is damage too (logged unless the last run saw
+ * it); or -1 for another failure to open it. */
+static int payload_checksum(const char *payload, const char *name, const struct tc_stage_copy *how,
+                            struct tc_stage_result *result) {
+    char path[352], text[256], *line, *save = NULL;
+    size_t length, n = strlen(name);
+    int failed, unreadable = 0;
+    FILE *file;
+    result->crc32 = -1;
+    snprintf(path, sizeof(path), "%s/checksums", payload);
+    file = fopen(path, "r");
+    if (!file && errno == ENOENT)
+        return 0;
+    if (!file && errno != EIO) {
+        fprintf(stderr, "stage: %s unreadable: %s\n", path, strerror(errno));
+        return -1;
+    }
+    if (!file)
+        unreadable = errno;
+    else {
+        length = fread(text, 1, sizeof(text) - 1, file);
+        if (ferror(file))
+            unreadable = errno ? errno : EIO;
+        failed = unreadable || fgetc(file) != EOF;
+        fclose(file);
+        text[length] = 0;
+        for (line = failed ? NULL : strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save))
+            if (!strncmp(line, name, n) && line[n] == ' ' && strlen(line + n + 1) == 8 &&
+                strspn(line + n + 1, "0123456789abcdef") == 8) {
+                result->crc32 = (long long)strtoul(line + n + 1, NULL, 16);
+                return 0;
+            }
+    }
+    result->read = TC_STAGE_BAD_CHECKSUMS;
+    if (how->seen != TC_STAGE_BAD_CHECKSUMS) {
+        if (unreadable)
+            fprintf(stderr, "stage: %s unreadable: %s\n", path, strerror(unreadable));
+        else
+            fprintf(stderr, "stage: %s is damaged: no checksum for %s\n", path, name);
+    }
+    return TC_COPY_DISK_DAMAGED;
+}
+
+/* Which of the files a run needs the payload lacks: result->missing, a bit
+ * for each in order (0 for none), returned. Each is logged unless the last
+ * run found it missing too: it lasts until a reinstall. */
+static int payload_missing(const char *const *paths, size_t count, const struct tc_stage_copy *how,
+                           struct tc_stage_result *result) {
+    struct stat st;
+    size_t i;
+    result->missing = 0;
+    for (i = 0; i < count; i++) {
+#ifdef TC_NATIVE_TEST
+        /* Host tests take the payload's disk away once the run has looked
+         * for the file TC_TEST_UNMOUNT_AT names. */
+        const char *at = getenv("TC_TEST_UNMOUNT_AT"), *mounts = getenv("TC_TEST_MOUNTS");
+        if (at && mounts && !strcmp(at, paths[i]))
+            (void)truncate(mounts, 0);
+#endif
+        if (stat(paths[i], &st) && errno == ENOENT) {
+            if (!(how->missing & 1 << i))
+                fprintf(stderr, "stage: %s is missing\n", paths[i]);
+            result->missing |= 1 << i;
+        }
+    }
+    return result->missing;
+}
+
+/* A run's hold on the payload's volume: the guard says whether it is still
+ * the disk the run started on (tc_storage_guard_valid). */
+struct stage_run {
+    const struct tc_volume *volume;
+    int guard;
+};
+/* Starts a run: nothing found yet, and the payload's volume held. -1 when
+ * there is no payload or it is not mounted. */
+static int stage_open(struct stage_run *run, const struct tc_storage_snapshot *storage, struct tc_stage_result *result) {
+    result->copy = result->missing = -1;
+    result->crc32 = result->read = -1;
+    if (storage->payload_index < 0 || (size_t)storage->payload_index >= storage->inventory.count)
+        return -1;
+    run->volume = &storage->inventory.volumes[storage->payload_index];
+    run->guard = tc_storage_guard(run->volume);
+    return run->guard < 0 ? -1 : 0;
+}
+/* Ends a run: one that got through still needs its disk to be the one it
+ * started on. A failed run leaves none of its files, and the binary only
+ * when it did not copy it. Whether the payload lacks a file, or what its
+ * damage read, counts only from a disk that stayed: a disk going away reads
+ * as both. */
+static int stage_close(struct stage_run *run, int failed, const struct tc_stage_copy *how,
+                       struct tc_stage_result *result, void (*discard)(void), const char *binary) {
+    if (!tc_storage_guard_valid(run->volume, run->guard)) {
+        failed = 1;
+        result->missing = -1;
+        if (result->copy == TC_COPY_DISK_DAMAGED) {
+            result->copy = -1;
+            result->read = -1;
+        }
+    }
+    close(run->guard);
+    if (failed) {
+        discard();
+        if (how->copy)
+            unlink(binary);
+    }
+    return failed ? -1 : 0;
+}
+
+/* Copies a program's binary to RAM, checked against its payload's checksum.
+ * After damage (how->probe), the disk copy is first checked where it is: one
+ * that has not changed is neither copied into RAM again nor logged again. */
+static int copy_binary(const char *payload, const char *name, const char *source, const char *destination,
+                       const struct tc_stage_copy *how, struct tc_stage_result *result) {
+    uint32_t crc = 0;
+    int checked = payload_checksum(payload, name, how, result);
+    if (checked)
+        return result->copy = checked;
+    if (how->probe) {
+        if (tc_file_crc32(source, &crc)) {
+            if (errno != EIO) {
+                fprintf(stderr, "copy open source failed: %s: %s\n", source, strerror(errno));
+                return result->copy = -1;
+            }
+            result->read = TC_COPY_UNREADABLE;
+            if (how->seen != TC_COPY_UNREADABLE)
+                fprintf(stderr, "copy verify failed: %s: %s\n", source, strerror(EIO));
+            return result->copy = TC_COPY_DISK_DAMAGED;
+        }
+        if (result->crc32 >= 0 && crc != (uint32_t)result->crc32) {
+            result->read = crc;
+            if (how->seen != (long long)crc)
+                fprintf(stderr, "copy verify failed: %s: CRC-32 read %08x, deployed %08x\n", source, (unsigned)crc,
+                        (unsigned)result->crc32);
+            return result->copy = TC_COPY_DISK_DAMAGED;
+        }
+    }
+    return result->copy = tc_copy_file(source, destination, 0755, result->crc32, &result->read);
+}
 
 int tc_samba_stage(const struct tc_storage_snapshot *storage, const struct tc_samba_settings *settings,
-                   int copy_smbd, int copy_rsync) {
+                   const struct tc_stage_copy *how, struct tc_stage_result *result) {
     const struct tc_runtime_config *config = &settings->config;
-    const struct tc_volume *volume;
-    char path[512], source[352];
-    int guard = -1, failed = 1;
+    struct stage_run run;
+    char path[512];
+    int failed = 1;
     FILE *file;
     static const char *directories[] = {TC_RAM_ROOT, TC_RAM_ROOT "/sbin", TC_RAM_ROOT "/etc",
                                         TC_RAM_ROOT "/var", TC_RAM_ROOT "/private"};
     size_t i;
-    if (storage->payload_index < 0 || (size_t)storage->payload_index >= storage->inventory.count ||
-        strlen(settings->nt_hash) != 32 || strspn(settings->nt_hash, "0123456789ABCDEF") != 32)
+    if (stage_open(&run, storage, result))
         return -1;
-    volume = &storage->inventory.volumes[storage->payload_index];
-    guard = tc_storage_guard(volume);
-    if (guard < 0)
-        return -1;
+    if (strlen(settings->nt_hash) != 32 || strspn(settings->nt_hash, "0123456789ABCDEF") != 32)
+        goto out;
     for (i = 0; i < sizeof(directories) / sizeof(directories[0]); i++)
         if (tc_make_dir(directories[i], i == 4 ? 0700 : 0755))
             goto out;
@@ -258,16 +421,10 @@ int tc_samba_stage(const struct tc_storage_snapshot *storage, const struct tc_sa
     /* A 15 MiB RAM disk cannot hold two smbd images. The manager must stop
      * the old generation before asking for replacement; there is no rollback
      * generation. A failed job is retried from the payload after cleanup. */
-    if (copy_smbd && tc_copy_file(storage->smbd_source, TC_SMBD_BIN, 0755))
-        goto out;
-    if (config->rsync) {
-        snprintf(path, sizeof(path), "%s/ShareRoot", volume->root);
-        if (tc_make_dir(path, 0755))
-            goto out;
-        snprintf(source, sizeof(source), "%s/rsync", storage->payload);
-        if (copy_rsync && tc_copy_file(source, TC_RSYNC_BIN, 0755))
-            goto out;
-        if (stage_rsync_config(storage->payload, volume->root))
+    if (how->copy) {
+        const char *needed[] = {storage->smbd_source};
+        if (payload_missing(needed, 1, how, result) ||
+            copy_binary(storage->payload, "smbd", storage->smbd_source, TC_SMBD_BIN, how, result))
             goto out;
     }
     file = prepare_file(TC_SMBD_CONF);
@@ -288,18 +445,40 @@ int tc_samba_stage(const struct tc_storage_snapshot *storage, const struct tc_sa
     if (!file)
         goto out;
     fputs("!root = root\nroot = *\n", file);
-    if (finish(file) || !tc_storage_guard_valid(volume, guard))
+    if (finish(file))
         goto out;
     failed = 0;
 out:
-    close(guard);
-    if (failed) {
-        tc_samba_discard();
-        /* Only images whose generation was already stopped may be removed. */
-        if (copy_smbd)
-            unlink(TC_SMBD_BIN);
-        if (copy_rsync)
-            unlink(TC_RSYNC_BIN);
-    }
-    return failed ? -1 : 0;
+    /* Only an image whose generation was already stopped may be removed. */
+    return stage_close(&run, failed, how, result, tc_samba_discard, TC_SMBD_BIN);
+}
+
+int tc_rsync_stage(const struct tc_storage_snapshot *storage, const struct tc_stage_copy *how,
+                   struct tc_stage_result *result) {
+    struct stage_run run;
+    char path[512], conf[352], source[352];
+    int failed = 1;
+    static const char *directories[] = {TC_RAM_ROOT, TC_RAM_ROOT "/sbin", TC_RAM_ROOT "/etc"};
+    const char *needed[] = {conf, source};
+    size_t i;
+    if (stage_open(&run, storage, result))
+        return -1;
+    for (i = 0; i < sizeof(directories) / sizeof(directories[0]); i++)
+        if (tc_make_dir(directories[i], 0755))
+            goto out;
+    snprintf(path, sizeof(path), "%s/ShareRoot", run.volume->root);
+    if (tc_make_dir(path, 0755))
+        goto out;
+    /* What rsync needs from the payload, which only a reinstall puts back
+     * (the binary only for a copy); then the small configuration, so a
+     * payload that cannot give it costs no copy of the binary. */
+    snprintf(conf, sizeof(conf), "%s/rsyncd.conf", storage->payload);
+    snprintf(source, sizeof(source), "%s/rsync", storage->payload);
+    if (payload_missing(needed, how->copy ? 2 : 1, how, result) || stage_rsync_config(storage->payload, run.volume->root))
+        goto out;
+    if (how->copy && copy_binary(storage->payload, "rsync", source, TC_RSYNC_BIN, how, result))
+        goto out;
+    failed = 0;
+out:
+    return stage_close(&run, failed, how, result, tc_rsync_discard, TC_RSYNC_BIN);
 }

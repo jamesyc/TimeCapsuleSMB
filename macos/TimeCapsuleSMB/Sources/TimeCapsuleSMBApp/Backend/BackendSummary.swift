@@ -239,9 +239,10 @@ extension SSHAccessPayload: BackendSummarized {}
 
 extension DoctorCheckPayload {
     var localizedMessage: String {
+        if let problem = DoctorSummary.payloadProblem(code: code) {
+            return L10n.string(problem.detailKey)
+        }
         switch code {
-        case "payload_missing_from_disk":
-            return L10n.string("doctor.check.payload_missing_from_disk")
         case "metadata_migration_in_progress":
             return L10n.string("doctor.check.metadata_migration_in_progress")
         case "disk_not_mounting":

@@ -18,7 +18,7 @@ def tools(tmp_path_factory):
     return directory
 
 
-@pytest.mark.parametrize("case", ["copy", "faults", "report", "directories", "commands", "cancel"])
+@pytest.mark.parametrize("case", ["copy", "faults", "report", "checksum", "directories", "commands", "cancel"])
 def test_setup_worker(tools, tmp_path, case):
     result = subprocess.run([str(tools / "worker"), case], cwd=tmp_path,
                             capture_output=True, timeout=20, start_new_session=True)

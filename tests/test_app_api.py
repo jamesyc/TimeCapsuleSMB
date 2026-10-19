@@ -46,6 +46,7 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
+    DISK_PAYLOAD_PROBLEMS,
     AirportAcpReading,
     DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
@@ -5381,7 +5382,8 @@ class AppApiTests(unittest.TestCase):
                                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
                                                 with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"), mock.patch("timecapsulesmb.services.deploy.reboot_device", return_value=None) as wait:
                                                     with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=managed_runtime_probe()) as verify_runtime:
-                                                        with mock.patch("timecapsulesmb.services.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime:
+                                                        with mock.patch("timecapsulesmb.services.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime, \
+                                                                mock.patch("timecapsulesmb.services.deploy.render_payload_checksums", return_value="sums\n") as render_checksums:
                                                             rc = service.run_api_request(
                                                                 {
                                                                     "operation": "deploy",
@@ -5413,6 +5415,13 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
         self.assertEqual(render_runtime.call_args.kwargs["ata_idle_seconds"], 0)
         self.assertEqual(render_runtime.call_args.kwargs["ata_standby"], 0)
+        # The checksums the device checks its RAM copies against are of the
+        # very files uploaded, and go into the payload with them.
+        self.assertEqual(render_checksums.call_args.kwargs["smbd_path"], upload_sources["binary:smbd"])
+        self.assertEqual(render_checksums.call_args.kwargs["rsync_path"], upload_sources["binary:rsync"])
+        self.assertIn("generated:checksums", upload_sources)
+        self.assertNotIn("CRC32", "".join(str(arg) for arg in render_runtime.call_args.kwargs))
+        self.assertEqual(upload_sources["binary:smbd"], REPO_ROOT / "bin/samba4/smbd")
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], True)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["verified"], True)
 
@@ -5475,6 +5484,8 @@ class AppApiTests(unittest.TestCase):
                 "upload_xattr_migrator",
                 "upload_smbd",
                 "upload_rsync",
+                # The payload's checksums, after the binaries they describe.
+                "upload_payload",
                 "upload_boot_files",
                 "upload_runtime_config",
             ],
@@ -7118,20 +7129,22 @@ MaSt = (
         self.assertEqual(error["recovery"]["suggested_operation"], "activate")
         self.assertEqual(error["recovery"]["action_ids"], ["start_smb", "run_checkup"])
 
-    def test_fsck_on_netbsd4_whose_disk_has_no_payload_offers_a_reinstall(self) -> None:
-        rc, collector, _reboot = self._run_confirmed_fsck(
-            "tcapsule-fsck: fsck_hfs exit status 0\n",
-            ssh_returncode=0,
-            probe_state=netbsd4_probed_state(),
-            runtime=FakeInstalledRuntime(payload_missing=True),
-        )
+    def test_fsck_on_netbsd4_whose_manager_reports_a_payload_verdict_offers_a_reinstall(self) -> None:
+        for problem in DISK_PAYLOAD_PROBLEMS:
+            with self.subTest(problem.token):
+                rc, collector, _reboot = self._run_confirmed_fsck(
+                    "tcapsule-fsck: fsck_hfs exit status 0\n",
+                    ssh_returncode=0,
+                    probe_state=netbsd4_probed_state(),
+                    runtime=FakeInstalledRuntime(payload_problem=problem),
+                )
 
-        self.assertEqual(rc, 1)
-        error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "payload_missing_from_disk")
-        self.assertTrue(error["message"].startswith("Disk repair completed. "))
-        self.assertEqual(error["recovery"]["localization_key"], "payload_missing_from_disk")
-        self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], problem.code)
+                self.assertTrue(error["message"].startswith("Disk repair completed. "))
+                self.assertEqual(error["recovery"]["localization_key"], problem.code)
+                self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
 
     def test_fsck_whose_device_probe_fails_stops_before_touching_the_disk(self) -> None:
         # Without the probe fsck cannot know whether file sharing must be

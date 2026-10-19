@@ -294,20 +294,58 @@ class ProbeTests(unittest.TestCase):
                 ))
                 self.assertEqual(result.manager_started_seconds_ago, 41.0)
 
-    def test_probe_manager_startup_age_conn_reads_a_missing_payload_from_the_title(self) -> None:
+    def test_probe_manager_startup_age_conn_reads_the_payload_state_from_the_title(self) -> None:
         # payload=missing: every disk was inspected and none holds a payload.
-        for title, missing in (
-            ("service: role=manager started=19 payload=missing", True),
-            ("service: role=manager started=19 waiting=hostname payload=missing stuck=3166:smbd:needbuf:600", True),
-            ("service: role=manager started=19", False),
-            ("service: role=manager started=19 payload=present", False),
+        # payload=damaged: a payload binary failed its deployed checksum.
+        for title, problem in (
+            ("service: role=manager started=19 payload=missing", probe.DISK_PAYLOAD_MISSING),
+            ("service: role=manager started=19 waiting=hostname payload=missing stuck=3166:smbd:needbuf:600",
+             probe.DISK_PAYLOAD_MISSING),
+            ("service: role=manager started=19 payload=damaged", probe.DISK_PAYLOAD_DAMAGED),
+            ("service: role=manager started=19 payload=damaged stuck=3166:smbd:needbuf:600", probe.DISK_PAYLOAD_DAMAGED),
+            ("service: role=manager started=19", None),
+            ("service: role=manager started=19 payload=present", None),
         ):
             with self.subTest(title=title):
                 result, _ = self._probe_manager_age(self._manager_age_output(
                     *self._MANAGER_PEERS, f"  250 1 250 Ss 0 - 0:41 service       {title}", now_ms="60000"
                 ))
-                self.assertEqual(result.payload_missing, missing)
+                self.assertEqual(result.payload_problems, (problem,) if problem else ())
                 self.assertEqual(result.manager_started_seconds_ago, 41.0)
+
+    def test_probe_manager_startup_age_conn_reads_a_damaged_rsync_from_the_title(self) -> None:
+        # rsync=damaged: Samba serves without rsync, which only a reinstall
+        # starts again. It says nothing about the Samba payload.
+        for title, problems in (
+            ("service: role=manager started=19 rsync=damaged", (probe.RSYNC_DAMAGED,)),
+            ("service: role=manager started=19 payload=damaged rsync=damaged unmounted=7",
+             (probe.DISK_PAYLOAD_DAMAGED, probe.RSYNC_DAMAGED)),
+            ("service: role=manager started=19 payload=damaged", (probe.DISK_PAYLOAD_DAMAGED,)),
+            ("service: role=manager started=19 rsync=present", ()),
+        ):
+            with self.subTest(title=title):
+                result, _ = self._probe_manager_age(self._manager_age_output(
+                    *self._MANAGER_PEERS, f"  250 1 250 Ss 0 - 0:41 service       {title}", now_ms="60000"
+                ))
+                self.assertEqual(result.payload_problems, problems)
+
+    def test_the_apps_verdict_fixture_matches_the_table(self) -> None:
+        # The macOS app checks its own table against this fixture.
+        from tests.fixtures import payload_problems
+        self.assertEqual(payload_problems.FIXTURE_PATH.read_text(), payload_problems.render())
+
+    def test_every_verdict_in_the_table_has_its_own_token_step_code_and_flag(self) -> None:
+        # Every consumer goes through this list: what tells them apart must
+        # be unique, and only rsync's leaves Samba on.
+        problems = probe.DISK_PAYLOAD_PROBLEMS
+        for field in ("token", "step_id", "code", "debug_key"):
+            with self.subTest(field):
+                self.assertEqual(len({getattr(problem, field) for problem in problems}), len(problems))
+        self.assertEqual([problem.token for problem in problems if not problem.samba_off],
+                         ["rsync=missing", "rsync=damaged"])
+        # Those that turn Samba off come first: a title carrying both is
+        # reported for Samba.
+        self.assertEqual([problem.samba_off for problem in problems], sorted((p.samba_off for p in problems), reverse=True))
 
     def test_probe_manager_startup_age_conn_reads_when_a_disk_stopped_mounting_from_the_title(self) -> None:
         # unmounted=S: a disk MaSt lists has not mounted since S, on the
@@ -341,37 +379,79 @@ class ProbeTests(unittest.TestCase):
             " 250 1 250 Ss 0 - 0:41 service service: role=manager started=19 payload=missing", now_ms=""
         ))
         self.assertIsNone(result.manager_started_seconds_ago)
-        self.assertTrue(result.payload_missing)
+        self.assertEqual(result.payload_problems, (probe.DISK_PAYLOAD_MISSING,))
 
     def test_probe_manager_startup_age_conn_reports_no_missing_payload_without_a_manager(self) -> None:
         result, _ = self._probe_manager_age(self._manager_age_output(*self._MANAGER_PEERS))
         self.assertEqual(result.detail, "manager is not running")
-        self.assertFalse(result.payload_missing)
+        self.assertEqual(result.payload_problems, ())
 
-    def test_manager_reports_payload_missing_reads_only_the_process_list(self) -> None:
+    def test_manager_payload_problem_reads_only_the_process_list(self) -> None:
         # Polled while a deploy or activation waits: ps alone, no exec of the
         # service for a clock reading.
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         manager = "  250 1 250 Ss 0 - 0:41 service       service: role=manager started=19{}"
         cases = (
-            ("ok", [*self._MANAGER_PEERS, manager.format(" payload=missing")], 0, True),
-            ("present", [*self._MANAGER_PEERS, manager.format("")], 0, False),
-            ("no manager", list(self._MANAGER_PEERS), 0, False),
-            ("two managers", [manager.format(" payload=missing"), manager.replace("250", "251").format(" payload=missing")], 0, False),
-            ("ps failed", [manager.format(" payload=missing")], 1, False),
+            ("missing", [*self._MANAGER_PEERS, manager.format(" payload=missing")], 0, probe.DISK_PAYLOAD_MISSING),
+            ("damaged", [*self._MANAGER_PEERS, manager.format(" payload=damaged")], 0, probe.DISK_PAYLOAD_DAMAGED),
+            ("rsync", [*self._MANAGER_PEERS, manager.format(" rsync=damaged")], 0, probe.RSYNC_DAMAGED),
+            ("both", [*self._MANAGER_PEERS, manager.format(" payload=damaged rsync=damaged")], 0, probe.DISK_PAYLOAD_DAMAGED),
+            ("present", [*self._MANAGER_PEERS, manager.format("")], 0, None),
+            ("no manager", list(self._MANAGER_PEERS), 0, None),
+            ("two managers", [manager.format(" payload=missing"), manager.replace("250", "251").format(" payload=missing")], 0, None),
+            ("ps failed", [manager.format(" payload=missing")], 1, "unread"),
         )
         for name, rows, returncode, expected in cases:
             with self.subTest(name):
                 proc = subprocess.CompletedProcess(args=["ssh"], returncode=returncode, stdout="".join(f"{row}\n" for row in rows))
                 with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-                    self.assertEqual(probe.manager_reports_payload_missing(connection), expected)
+                    problems = probe.manager_payload_problems(connection)
+                    if expected == "unread":
+                        self.assertIsNone(problems)
+                    else:
+                        self.assertIs(problems[0] if problems else None, expected)
                 self.assertEqual(run_ssh_mock.call_args.args[1], probe.PS_CAPTURE_SSH_COMMAND)
                 self.assertFalse(run_ssh_mock.call_args.kwargs["check"])
 
-    def test_manager_reports_payload_missing_is_false_when_ps_times_out(self) -> None:
+    def test_manager_payload_problem_is_none_when_ps_times_out(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshCommandTimeout("ps")):
-            self.assertFalse(probe.manager_reports_payload_missing(connection))
+            self.assertIsNone(probe.manager_payload_problems(connection))
+
+    def test_manager_verdicts_keep_the_last_reading_that_worked(self) -> None:
+        verdicts = probe.ManagerVerdicts((probe.RSYNC_DAMAGED,))
+        self.assertIsNone(verdicts.samba_off)
+        self.assertIs(verdicts.rsync, probe.RSYNC_DAMAGED)
+        self.assertIsNone(verdicts.ending(samba_ready=False))
+        self.assertIs(verdicts.ending(samba_ready=True), probe.RSYNC_DAMAGED)
+        verdicts.update(None)  # ps failed: says nothing new
+        self.assertEqual(verdicts.problems, (probe.RSYNC_DAMAGED,))
+        verdicts.update((probe.DISK_PAYLOAD_DAMAGED, probe.RSYNC_DAMAGED))
+        self.assertIs(verdicts.samba_off, probe.DISK_PAYLOAD_DAMAGED)
+        self.assertIs(verdicts.ending(samba_ready=False), probe.DISK_PAYLOAD_DAMAGED)
+        verdicts.update(())  # read, and cleared
+        self.assertEqual(verdicts.problems, ())
+        self.assertIsNone(verdicts.rsync)
+
+    def test_payload_problems_name_their_cause_and_the_reinstall(self) -> None:
+        # The check line and the operation error say the same thing, each in
+        # its own form, and carry the error code the app localizes.
+        reinstall = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
+        for problem, cause, code in (
+            (probe.DISK_PAYLOAD_MISSING, "the Samba files are missing from every disk, as after an Erase in AirPort Utility",
+             "payload_missing_from_disk"),
+            (probe.DISK_PAYLOAD_DAMAGED, "the Samba files on the disk are damaged and no longer match what was installed",
+             "payload_damaged_on_disk"),
+            (probe.RSYNC_DAMAGED, "the rsync file on the disk is damaged and no longer matches what was installed, so rsync is off",
+             "rsync_damaged_on_disk"),
+        ):
+            with self.subTest(problem.token):
+                self.assertEqual(problem.message, f"{cause}; {reinstall}")
+                # An operation's error says Samba runs when the verdict leaves it on.
+                said = cause if problem.samba_off else f"file sharing and Time Machine are running, but {cause}"
+                self.assertEqual(problem.error, f"{said[0].upper()}{said[1:]}. {reinstall[0].upper()}{reinstall[1:]}.")
+                self.assertEqual(problem.code, code)
+                self.assertEqual(problem.error_type("x").code, code)
 
     def test_probe_manager_startup_age_conn_counts_the_second_the_manager_started_in(self) -> None:
         # started= is whole seconds; the age is too, so a reading in the same

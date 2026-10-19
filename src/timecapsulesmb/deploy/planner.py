@@ -32,6 +32,7 @@ PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
 PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
 GENERATED_RSYNC_CONFIG_SOURCE = "generated:rsyncd.conf"
+GENERATED_PAYLOAD_CHECKSUMS_SOURCE = "generated:checksums"
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
 DEFAULT_DISKD_USE_VOLUME_ATTEMPTS = 2
 PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
@@ -221,6 +222,7 @@ def build_deployment_plan(
         "xattr_migrator": f"{payload_dir}/xattr-hfs-migrate",
         "rsync": f"{payload_dir}/rsync",
         "rsyncd.conf": f"{payload_dir}/rsyncd.conf",
+        "checksums": f"{payload_dir}/checksums",
     }
     private_dir = f"{payload_dir}/private"
     cache_dir = f"{payload_dir}/cache"
@@ -242,6 +244,7 @@ def build_deployment_plan(
         RemotePermission(payload_targets["smbd"], "755"),
         RemotePermission(payload_targets["rsync"], "755"),
         RemotePermission(payload_targets["rsyncd.conf"], "600"),
+        RemotePermission(payload_targets["checksums"], "600"),
         RemotePermission(flash_targets["boot.sh"], "755"),
         RemotePermission(flash_targets["service"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
@@ -296,6 +299,10 @@ def build_deployment_plan(
             FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
             FileTransfer(BINARY_RSYNC_SOURCE, payload_targets["rsync"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in rsync"),
             FileTransfer(GENERATED_RSYNC_CONFIG_SOURCE, payload_targets["rsyncd.conf"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated rsync daemon config"),
+            # After the binaries it describes: a payload never has checksums
+            # for files that are not its own (an interrupted deploy removed
+            # the old ones first).
+            FileTransfer(GENERATED_PAYLOAD_CHECKSUMS_SOURCE, payload_targets["checksums"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated payload checksums"),
             FileTransfer(BINARY_SERVICE_SOURCE, flash_targets["service"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "native manager, discovery and telemetry service"),
             FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),

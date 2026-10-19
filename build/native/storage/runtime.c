@@ -186,8 +186,7 @@ static int prepare_share(const struct tc_volume *volume, int internal_root, int 
 }
 
 /* 0 present, 1 successfully absent, -1 failed/incomplete inspection. */
-static int payload_at(struct tc_storage_snapshot *snapshot, size_t index,
-                      const struct tc_runtime_config *config) {
+static int payload_at(struct tc_storage_snapshot *snapshot, size_t index) {
     const struct tc_volume *volume = &snapshot->inventory.volumes[index];
     char payload[288], source[320], path[320];
     struct stat st;
@@ -206,12 +205,8 @@ static int payload_at(struct tc_storage_snapshot *snapshot, size_t index,
     snprintf(path, sizeof(path), "%s/private", payload);
     if (lstat(path, &st)) goto out;
     if (!S_ISDIR(st.st_mode)) { errno = ENOTDIR; goto out; }
-    if (config->rsync) {
-        snprintf(path, sizeof(path), "%s/rsync", payload);
-        if (access(path, X_OK)) goto out;
-        snprintf(path, sizeof(path), "%s/rsyncd.conf", payload);
-        if (access(path, R_OK)) goto out;
-    }
+    /* Only Samba's files make a payload: rsync is optional, and its own
+     * staging reports a missing rsync without holding Samba. */
     result = 0;
 out:
     {
@@ -301,7 +296,7 @@ int tc_storage_prepare(struct tc_storage_snapshot *snapshot, const struct tc_inv
                 if (j == i) tune_disk(volume, config);
             }
         }
-        if (payload_at(snapshot, i, config) < 0) {
+        if (payload_at(snapshot, i) < 0) {
             snapshot->retry_payload |= bit;
             storage_error(volume, "payload inspection");
         }

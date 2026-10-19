@@ -182,7 +182,7 @@ class Device:
                 assert not self.path(name).exists()
                 continue
             assert self.path(name).read_bytes() == content
-            mode = 0o600 if name.endswith('.conf') else 0o755
+            mode = 0o600 if name.endswith(('.conf', '/checksums')) else 0o755
             assert self.path(name).stat().st_mode & 0o777 == mode
         assert not self.path('/Volumes/dk2/.samba4/mdns-smbd-advertiser').exists()
         assert not self.path('/Volumes/dk2/.samba4/sbin/smbd').exists()

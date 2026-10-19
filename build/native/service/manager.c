@@ -3,6 +3,7 @@
 #include "../common/log.h"
 #include "../common/process.h"
 #include "../common/worker.h"
+#include "../samba/image.h"
 #include "../samba/staging.h"
 #include "../storage/settle.h"
 #include "bufstall.h"
@@ -27,6 +28,11 @@
  * storage pass with no payload anywhere. payload=missing waits for a second
  * pass this long after the first to agree: longer than a MaSt poll
  * (INVENTORY_MS) plus TC_STORAGE_SETTLE_MS, so a late disk is in it. */
+/* How long a started smbd or rsync has to bind its listeners before the
+ * audit restarts it. */
+#ifndef TC_ROLE_READY_MS
+#define TC_ROLE_READY_MS 10000
+#endif
 #ifndef TC_PAYLOAD_RECHECK_MS
 #define TC_PAYLOAD_RECHECK_MS 30000
 #endif
@@ -36,6 +42,15 @@
  * spun-down disk mounts in the first. */
 #ifndef TC_UNMOUNTED_MS
 #define TC_UNMOUNTED_MS 600000
+#endif
+/* launch_role's exit status when the RAM image does not match its deployed
+ * checksum or is gone: neither rsync (errcode.h: 0-35, 124-127) nor smbd
+ * exits with it. */
+#define LAUNCH_EXIT_DAMAGED 120
+/* A role that exits waits this, doubled per exit to at most 64 times this.
+ * Host tests shorten it. */
+#ifndef TC_ROLE_RETRY_MS
+#define TC_ROLE_RETRY_MS 1000
 #endif
 #ifndef TC_STALE_KILL_MS
 #define TC_STALE_KILL_MS 10000
@@ -71,17 +86,84 @@ struct stale_process {
     int killed;
 };
 
+struct unit;
 struct managed {
     struct tc_child child;
     long long started, retry, ready_at;
     unsigned failures;
     int ready, requested_stop;
+    /* The unit whose RAM image this role runs (smbd, rsync), else NULL. */
+    struct unit *unit;
 };
+/* A program staged from the payload into RAM and run from there: smbd for
+ * Samba, and rsync. Each has its own image (image.h), staging job and
+ * publish, so neither waits on, stops or copies the other. */
+struct manager;
+/* What differs between the units; everything else is one pump (pump_unit). */
+struct unit_kind {
+    const char *name;
+    unsigned block;
+    /* rsync: nothing needs it back quickly, so each failed run waits longer
+     * than the last (1x, 3x, then 12x TC_STORAGE_RETRY_MS); Samba retries
+     * after JOB_RETRY_MS. */
+    int backs_off;
+    /* Samba: its files are what makes a payload (storage/runtime.c), so one
+     * missing is for storage to report (payload=missing); rsync's missing
+     * files are its own verdict. */
+    int defines_payload;
+    int (*job)(void *);
+    int (*publish)(void);
+    void (*discard)(void);
+    /* Whether the unit runs at all (rsync can be disabled), and whether it
+     * may stage now (Samba maps the hostname, so it waits for one). */
+    int (*wanted)(const struct manager *);
+    int (*may_stage)(const struct manager *);
+    /* Before a run; 0 to wait (Samba's copy needs the old smbd gone first). */
+    int (*prepare)(struct manager *, long long now);
+    /* After a publish: hand the new files to the running program. */
+    void (*deliver)(struct manager *, long long now);
+};
+struct unit {
+    const struct unit_kind *kind;
+    struct managed *role;
+    struct tc_image image;
+    struct tc_child job;
+    /* What the run in flight does with the binary, and what it reported. */
+    struct tc_stage_copy how;
+    struct tc_stage_result result;
+    /* revision counts changes to what the unit stages, stage_revision is the
+     * run in flight's; dirty: its published files are not the current ones;
+     * retry: when a run may start again after one failed (the kind's
+     * policy), apart from the image's wait, which paces copies only. */
+    unsigned revision, stage_revision;
+    int dirty;
+    struct tc_storage_retry retry;
+    /* The CRC-32 the verified RAM copy was checked against (-1 for none),
+     * which each launch checks; what the last damage read; and the wait the
+     * last failure logged, so a retry that changes nothing logs nothing. */
+    long long crc32, seen, logged_wait;
+    /* The files the last run that got that far found missing from the
+     * payload (tc_stage_result.missing): the title's verdict, until a run
+     * finds them or the payload changes. */
+    int missing;
+};
+/* What a unit's title token says (stuck.h): its disk copy is damaged, or a
+ * file it needs is missing from the payload. Only a reinstall fixes either. */
+enum verdict { VERDICT_NONE, VERDICT_MISSING, VERDICT_DAMAGED };
+static const char *const verdict_names[] = {NULL, "missing", "damaged"};
+static enum verdict unit_verdict(const struct unit *u) {
+    if (u->image.state == TC_IMAGE_DISK_DAMAGED)
+        return VERDICT_DAMAGED;
+    /* Files that make the payload missing are storage's to report. */
+    return u->missing && !u->kind->defines_payload ? VERDICT_MISSING : VERDICT_NONE;
+}
 struct role_launch {
     char *const *argv;
     const char *log;
     const struct tc_volume *volume;
     int unbounded;
+    /* The CRC-32 argv[0] must have, or -1 for no check. */
+    long long crc32;
 };
 struct audit_result {
     struct tc_process_table table;
@@ -102,7 +184,10 @@ struct manager {
     struct tc_storage_snapshot storage, applied_storage, storage_result;
     struct tc_samba_settings settings, applied_settings, settings_result;
     struct managed smb, discovery, telemetry, rsync, diskd;
-    struct tc_child storage_job, settings_job, stage_job, audit_job;
+    struct tc_child storage_job, settings_job, audit_job;
+    struct unit samba_unit, rsync_unit;
+    /* Both, for everything done to each alike. */
+    struct unit *units[2];
     struct audit_result audit_result;
     struct tc_child mast_job;
     struct mast_result mast_result;
@@ -110,13 +195,15 @@ struct manager {
     char discovery_name[16];
     int discovery_diskless, discovery_afp, discovery_debug;
     int have_settings, have_applied, stopping, tune_ata;
-    int storage_dirty, config_dirty, ownership_ready;
+    int storage_dirty, ownership_ready;
     unsigned blocked;
     struct stale_process stale[TC_PROCESS_MAX];
     size_t stale_count;
-    int copy_smbd, copy_rsync, binary_valid, rsync_valid;
-    unsigned revision, storage_revision, storage_generation, stage_revision;
-    long long mast_at, settings_at, storage_at, stage_at, audit_at;
+    unsigned storage_revision, storage_generation;
+    long long mast_at, settings_at, storage_at, audit_at;
+    /* Samba's files were published while smbd was still starting: it gets
+     * its SIGHUP once ready, since one sent earlier would kill it. */
+    int smb_reload_pending;
     /* The device hostname staging last mapped: empty until first found.
      * Staging, and so Samba, waits while the kernel hostname is unset. */
     char hostname[256];
@@ -134,6 +221,9 @@ struct manager {
      * report was delivered, once per manager. Process-local. */
     long long unmounted_since, unmounted_paused, unmounted_sampled;
     int unmounted_shown, unmounted_reported, unmounted_maintenance;
+    /* Samba's and rsync's verdicts as update_payload_title last derived them
+     * (the title's payload= and rsync=). */
+    enum verdict samba_verdict, rsync_verdict;
     long long hostname_wait_since;
     /* When this manager started, on the monotonic clock (-1 if unreadable):
      * the title's started=, from which doctor measures the startup age. */
@@ -169,12 +259,13 @@ static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-/* Doctor reads started=, payload=missing, unmounted= and stuck=PID:COMM:WAIT:SECONDS[,...]
+/* Doctor reads started=, payload=missing|damaged, rsync=missing|damaged, unmounted= and stuck=PID:COMM:WAIT:SECONDS[,...]
  * from the title (stuck.h tc_manager_title; ps shows a sleep time of at most
  * 127 s, and none for a wait that keeps waking). */
 static void set_manager_title(const struct manager *m) {
     char title[256];
-    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, m->payload_missing,
+    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting,
+                     m->payload_missing ? "missing" : verdict_names[m->samba_verdict], verdict_names[m->rsync_verdict],
                      m->unmounted_shown ? m->unmounted_since : -1, &m->stuck,
                      STUCK_TITLE_MAX, acp_monotonic_ms());
 #if defined(__NetBSD__)
@@ -195,6 +286,21 @@ static void set_manager_title(const struct manager *m) {
 #endif
 }
 static void changed(struct manager *m, long long now);
+/* Each unit's verdict, the same way for both: its program stays off until a
+ * reinstall, so doctor and deploy report it instead of waiting. Samba's
+ * keeps file sharing off; rsync's, while rsync is enabled, only rsync, and
+ * doctor's rsync check reports it. */
+static enum verdict shown_verdict(const struct manager *m, const struct unit *u) {
+    return m->have_settings && u->kind->wanted(m) ? unit_verdict(u) : VERDICT_NONE;
+}
+static void update_payload_title(struct manager *m) {
+    enum verdict samba = shown_verdict(m, &m->samba_unit), rsync = shown_verdict(m, &m->rsync_unit);
+    if (samba != m->samba_verdict || rsync != m->rsync_verdict) {
+        m->samba_verdict = samba;
+        m->rsync_verdict = rsync;
+        set_manager_title(m);
+    }
+}
 /* ACPd sets the hostname a few seconds after the manager starts and gives no
  * notice (sethostname() only); the loop wakes at least once a second, so each
  * pass checks it. smbd resolves this name at every login (issue #54), so
@@ -229,11 +335,23 @@ static void observe_hostname(struct manager *m, long long now) {
         set_manager_title(m);
     }
 }
+/* A run in flight read what is about to change: it is superseded. */
+static void unit_superseded(struct unit *u, long long now) {
+    u->revision++;
+    if (u->job.group)
+        tc_child_stop(&u->job, now, 1);
+}
+/* What the unit stages changed: its files are published again. Another
+ * episode: its retries start over, and its first failure is logged whatever
+ * the last one waited. */
+static void unit_changed(struct unit *u, long long now) {
+    unit_superseded(u, now);
+    u->dirty = 1;
+    tc_storage_retry_finish(&u->retry, now, 0);
+    u->logged_wait = -1;
+}
 static void changed(struct manager *m, long long now) {
-    m->revision++;
-    m->config_dirty = 1;
-    if (m->stage_job.group)
-        tc_child_stop(&m->stage_job, now, 1);
+    unit_changed(&m->samba_unit, now);
 }
 static void stop_role(struct managed *role, long long now, int allow_kill) {
     role->ready = 0;
@@ -244,12 +362,22 @@ static void stop_role(struct managed *role, long long now, int allow_kill) {
 static void poll_role(struct managed *role, const char *name, long long now, int allow_kill) {
     if (!role->child.group || !tc_child_poll(&role->child, now))
         return;
-    if (!role->requested_stop) {
+    if (role->unit && !role->requested_stop && !role->child.overflow && WIFEXITED(role->child.status) &&
+        WEXITSTATUS(role->child.status) == LAUNCH_EXIT_DAMAGED) {
+        /* The launch found the RAM copy damaged or gone, which relaunching
+         * never fixes, and it is no exit of the program's own: staging
+         * copies it again when the image allows, and the program starts as
+         * soon as that copy is verified. Only a unit's role checks an image. */
+        tc_image_refused(&role->unit->image, now);
+        role->retry = now;
+        timestamped_fprintf(stderr, "manager: %s in RAM is damaged; copying it again from the disk in %lld ms\n",
+                            name, role->unit->image.wait.at - now);
+    } else if (!role->requested_stop) {
         if (now - role->started >= 60000)
             role->failures = 0;
         if (role->failures < 6)
             role->failures++;
-        role->retry = now + (1000LL << role->failures);
+        role->retry = now + ((long long)TC_ROLE_RETRY_MS << role->failures);
         timestamped_fprintf(stderr, "manager: %s exited; retry in %lld ms\n", name, role->retry - now);
     }
     tc_child_close(&role->child);
@@ -283,13 +411,35 @@ static int launch_role(void *opaque) {
     if (guard >= 0) close(guard);
     if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) { close(fd); return 1; }
     if (fd > STDERR_FILENO) close(fd);
+    /* Staging checked the bytes it read from the disk; this checks what
+     * exec reads, the RAM copy, which can differ or change after staging,
+     * and a damaged image may run and crash rather than fail to exec. A
+     * symlink is a test build linked in by hand (tests.samba.swap_smbd): it
+     * must be readable but need not match, so it is not read through. A
+     * regular file, the only kind staging writes, must match. Either way a
+     * fresh copy replaces one that fails. */
+    if (launch->crc32 >= 0) {
+        uint32_t crc;
+        int linked = !lstat(launch->argv[0], &st) && S_ISLNK(st.st_mode), fd = -1;
+        if (linked ? (fd = open(launch->argv[0], O_RDONLY)) < 0 : tc_file_crc32(launch->argv[0], &crc) != 0) {
+            fprintf(stderr, "launch: %s unreadable: %s\n", launch->argv[0], strerror(errno));
+            return LAUNCH_EXIT_DAMAGED;
+        }
+        if (fd >= 0)
+            close(fd);
+        if (!linked && crc != (uint32_t)launch->crc32) {
+            fprintf(stderr, "launch: %s has CRC-32 %08x, deployed %08x; not starting it\n", launch->argv[0],
+                    (unsigned)crc, (unsigned)launch->crc32);
+            return LAUNCH_EXIT_DAMAGED;
+        }
+    }
     execv(launch->argv[0], launch->argv);
     fprintf(stderr, "exec %s: %s\n", launch->argv[0], strerror(errno));
     return 127;
 }
 static int start_role(struct managed *role, char *const argv[], const char *log, long long now,
                       int allow_kill, const struct tc_volume *volume, int unbounded) {
-    struct role_launch launch = {argv, log, volume, unbounded};
+    struct role_launch launch = {argv, log, volume, unbounded, role->unit ? role->unit->crc32 : -1};
     if (role->child.group || now < role->retry)
         return -1;
     if (tc_child_fork(&role->child, launch_role, &launch, MANAGER_LOG, NULL, 0, 0)) {
@@ -298,7 +448,7 @@ static int start_role(struct managed *role, char *const argv[], const char *log,
     }
     role->child.allow_kill = allow_kill;
     role->started = now;
-    role->ready_at = now + 10000;
+    role->ready_at = now + TC_ROLE_READY_MS;
     return 0;
 }
 static int settings_job(void *opaque) {
@@ -306,7 +456,7 @@ static int settings_job(void *opaque) {
     struct tc_samba_settings result;
     tc_worker_begin("settings");
     /* The hostname staging maps, so a read after it is set derives the same
-     * NetBIOS name staging gave Samba (see pump_stage) and changes nothing. */
+     * NetBIOS name staging gave Samba (see samba_prepare) and changes nothing. */
     if (tc_samba_settings_read(&result, m->hostname))
         return tc_worker_finish(1);
     /* Hostname/model fallbacks are useful at cold boot. A later ACP failure
@@ -327,18 +477,31 @@ static int storage_job(void *opaque) {
         return tc_worker_finish(1);
     return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
-static int stage_job(void *opaque) {
+static int samba_job(void *opaque) {
     struct manager *m = opaque;
+    struct tc_stage_result result = TC_STAGE_RESULT_NONE;
+    int failed = 1;
     tc_worker_begin("stage");
     /* Samba logins stall without this mapping, so a failed write fails
      * staging, which retries. */
-    if (tc_hosts_update(TC_HOSTS_PATH, m->hostname) < 0) {
+    if (tc_hosts_update(TC_HOSTS_PATH, m->hostname) < 0)
         fprintf(stderr, "stage: could not update %s for %s: %s\n", TC_HOSTS_PATH, m->hostname, strerror(errno));
-        return tc_worker_finish(1);
-    }
-    if (m->copy_smbd && tc_samba_clear_locks())
-        return tc_worker_finish(1);
-    return tc_worker_finish(tc_samba_stage(&m->storage, &m->settings, m->copy_smbd, m->copy_rsync) ? 1 : 0);
+    else if (!m->samba_unit.how.copy || !tc_samba_clear_locks())
+        failed = tc_samba_stage(&m->storage, &m->settings, &m->samba_unit.how, &result) != 0;
+    /* The image's outcome goes back even when the run failed. */
+    if (tc_worker_result(&result, sizeof(result)))
+        failed = 1;
+    return tc_worker_finish(failed);
+}
+static int rsync_job(void *opaque) {
+    struct manager *m = opaque;
+    struct tc_stage_result result = TC_STAGE_RESULT_NONE;
+    int failed;
+    tc_worker_begin("stage rsync");
+    failed = tc_rsync_stage(&m->storage, &m->rsync_unit.how, &result) != 0;
+    if (tc_worker_result(&result, sizeof(result)))
+        failed = 1;
+    return tc_worker_finish(failed);
 }
 static int audit_job(void *opaque) {
     struct manager *m = opaque;
@@ -387,6 +550,9 @@ static int storage_projection_same(const struct tc_storage_snapshot *a, const st
 }
 static void invalidate_storage(struct manager *m, long long now) {
     changed(m, now);
+    /* rsync's run in flight read a payload about to be inspected again; its
+     * files stay published unless the payload turns out to have changed. */
+    unit_superseded(&m->rsync_unit, now);
     m->storage_generation++;
     m->storage_dirty = 1;
     m->storage_at = now;
@@ -400,7 +566,8 @@ static int samba_settings_equal(const struct tc_samba_settings *a, const struct 
     size_t i;
     for (i = 0; i < 2; i++) {
         struct tc_runtime_config *c = configs[i];
-        c->telemetry = c->discovery_debug = 0;
+        /* smb.conf does not depend on these. */
+        c->telemetry = c->discovery_debug = c->rsync = 0;
         c->mount_attempts = c->mount_timeout = c->mount_poll = c->ata_idle = 0;
         memset(c->ata_standby, 0, sizeof(c->ata_standby));
     }
@@ -459,7 +626,6 @@ static void pump_settings(struct manager *m, long long now) {
                 int storage_changed =
                     !m->have_settings ||
                     m->settings.config.internal_root != m->settings_result.config.internal_root ||
-                    m->settings.config.rsync != m->settings_result.config.rsync ||
                     m->settings.config.advertise_afp != m->settings_result.config.advertise_afp;
                 if (!m->have_settings || m->settings.config.ata_idle != m->settings_result.config.ata_idle ||
                     strcmp(m->settings.config.ata_standby, m->settings_result.config.ata_standby)) {
@@ -468,6 +634,10 @@ static void pump_settings(struct manager *m, long long now) {
                 }
                 if (!m->have_settings || !samba_settings_equal(&m->settings, &m->settings_result))
                     changed(m, now);
+                /* rsync enabled again stages its configuration again; its
+                 * files went when it was disabled (reconcile_roles). */
+                if (m->have_settings && !m->settings.config.rsync && m->settings_result.config.rsync)
+                    unit_changed(&m->rsync_unit, now);
                 m->settings = m->settings_result;
                 m->have_settings = 1;
                 if (storage_changed)
@@ -484,12 +654,26 @@ static void pump_settings(struct manager *m, long long now) {
             m->settings_at = now + JOB_RETRY_MS;
     }
 }
+/* Whether either unit's run is in flight: storage waits for both. */
+static int units_staging(const struct manager *m) {
+    return m->units[0]->job.group || m->units[1]->job.group;
+}
 static void pump_storage(struct manager *m, long long now) {
     if (m->storage_job.group && tc_child_poll(&m->storage_job, now)) {
         if (tc_child_ok(&m->storage_job) && !m->storage_job.stopping &&
             m->storage_job.used == sizeof(m->storage_result) &&
             m->storage_revision == m->storage_generation) {
             int projected_change = !storage_projection_same(&m->storage, &m->storage_result);
+            /* Another payload, or none, is another file to copy and check,
+             * for each unit. */
+            if (!payload_same(&m->storage, &m->storage_result)) {
+                size_t i;
+                for (i = 0; i < 2; i++) {
+                    tc_image_reset(&m->units[i]->image);
+                    m->units[i]->missing = 0;
+                }
+                unit_changed(&m->rsync_unit, now);
+            }
             m->storage = m->storage_result;
             m->storage_dirty = 0;
             m->storage_at = 0;
@@ -532,7 +716,7 @@ static void pump_storage(struct manager *m, long long now) {
         m->storage_at = now;
     }
     if ((m->storage_dirty || (storage_pending(m) && now >= m->storage_retry.at)) && m->have_settings && m->topology.initialized && !m->topology.pending &&
-        !m->storage_job.group && !m->stage_job.group && now >= m->storage_at) {
+        !m->storage_job.group && !units_staging(m) && now >= m->storage_at) {
         m->storage_revision = m->storage_generation;
         m->storage_request = m->storage_dirty ? UINT32_MAX : storage_pending(m);
         /* At most 16 disks, each with a bounded native activation. Child
@@ -550,6 +734,25 @@ static const char *role_name(enum tc_process_role role) {
     static const char *const names[] = {"process", "smbd", "discovery", "telemetry", "rsync",
                                         "wcifsfs", "wcifsnd", "diskd", "diskd"};
     return (size_t)role < sizeof(names) / sizeof(names[0]) ? names[role] : "process";
+}
+/* What the audit found of a unit's program, the same for both: once it has
+ * its listeners it serves, from a copy whose wait starts over; one still
+ * without them when ready_at passes is restarted. Returns whether it serves. */
+static int audit_serving(struct managed *role, pid_t pid, int probed, int listening, long long now) {
+    if (!role->child.pid || role->child.pid != pid || role->child.stopping || !probed)
+        return 0;
+    if (listening) {
+        if (!role->ready)
+            tc_image_serving(&role->unit->image);
+        role->ready = 1;
+        return 1;
+    }
+    if (now >= role->ready_at) {
+        timestamped_fprintf(stderr, "manager: %s missing required listeners; restarting\n", role->unit->kind->name);
+        stop_role(role, now, 1);
+        role->retry = now + JOB_RETRY_MS;
+    }
+    return 0;
 }
 static void apply_audit(struct manager *m, long long now) {
     size_t i;
@@ -629,25 +832,14 @@ static void apply_audit(struct manager *m, long long now) {
         else if (m->diskd.retry > now)
             lower(&m->audit_at, m->diskd.retry);
     }
-    if (m->smb.child.pid && m->smb.child.pid == m->audit_result.smb_pid && !m->smb.child.stopping &&
-        m->audit_result.smb_probe) {
-        if ((m->audit_result.smb & 3) == 3)
-            m->smb.ready = 1;
-        else if (now >= m->smb.ready_at) {
-            timestamped_fprintf(stderr, "manager: smbd missing required listeners; restarting\n");
-            stop_role(&m->smb, now, 1);
-            m->smb.retry = now + JOB_RETRY_MS;
-        }
+    if (audit_serving(&m->smb, m->audit_result.smb_pid, m->audit_result.smb_probe,
+                      (m->audit_result.smb & 3) == 3, now) &&
+        m->smb_reload_pending) {
+        m->smb_reload_pending = 0;
+        kill(m->smb.child.pid, SIGHUP);
     }
-    if (m->rsync.child.pid && m->rsync.child.pid == m->audit_result.rsync_pid && !m->rsync.child.stopping &&
-        m->audit_result.rsync_probe) {
-        if (m->audit_result.rsync)
-            m->rsync.ready = 1;
-        else if (now >= m->rsync.ready_at) {
-            stop_role(&m->rsync, now, 1);
-            m->rsync.retry = now + JOB_RETRY_MS;
-        }
-    }
+    (void)audit_serving(&m->rsync, m->audit_result.rsync_pid, m->audit_result.rsync_probe, m->audit_result.rsync,
+                        now);
     if ((m->smb.child.pid && !m->smb.ready) || (m->rsync.child.pid && !m->rsync.ready))
         m->audit_at = now + 1000;
 }
@@ -813,8 +1005,8 @@ static const char *group_role(const struct manager *m, pid_t group) {
     } owners[] = {
         {&m->smb.child, "smbd"},         {&m->discovery.child, "discovery"}, {&m->telemetry.child, "telemetry"},
         {&m->rsync.child, "rsync"},      {&m->diskd.child, "diskd"},         {&m->storage_job, "storage"},
-        {&m->settings_job, "settings"},  {&m->stage_job, "stage"},           {&m->audit_job, "audit"},
-        {&m->mast_job, "inventory"},     {&m->report_job, "report"},
+        {&m->settings_job, "settings"},  {&m->samba_unit.job, "stage"},      {&m->rsync_unit.job, "stage"},
+        {&m->audit_job, "audit"},        {&m->mast_job, "inventory"},        {&m->report_job, "report"},
     };
     size_t i;
     for (i = 0; group > 0 && i < sizeof(owners) / sizeof(owners[0]); i++)
@@ -1068,44 +1260,122 @@ static void pump_sample(struct manager *m, long long now) {
     if (!m->stopping && foreign_netbios(m))
         lower(&m->audit_at, now);
 }
-static void pump_stage(struct manager *m, long long now) {
-    if (m->stage_job.group && tc_child_poll(&m->stage_job, now)) {
-        if (tc_child_ok(&m->stage_job) && !m->stage_job.stopping && m->stage_revision == m->revision &&
-            !tc_samba_publish(m->settings.config.rsync)) {
-            m->applied_storage = m->storage;
-            m->applied_settings = m->settings;
-            m->have_applied = 1;
-            m->config_dirty = 0;
-            m->binary_valid = 1;
-            if (m->settings.config.rsync)
-                m->rsync_valid = 1;
-            if (m->smb.child.pid && !m->smb.child.stopping)
-                kill(m->smb.child.pid, SIGHUP);
-            if (m->rsync.child.pid)
-                stop_role(&m->rsync, now, 1);
-        } else {
-            tc_samba_discard();
-            m->stage_at = now + JOB_RETRY_MS;
-            timestamped_fprintf(stderr, "manager: staging failed or superseded; will retry\n");
-        }
-        tc_child_close(&m->stage_job);
+/* When the unit's next run may start: after its retry, and, when the run
+ * copies the binary, after the image's wait (damage, a refused launch). A
+ * run that only restages the files never waits for a copy. */
+static long long next_run_at(const struct unit *u) {
+    long long at = u->retry.at;
+    if (tc_image_wanted(&u->image) && u->image.wait.at > at)
+        at = u->image.wait.at;
+    return at;
+}
+/* A unit's run ended: what it reported goes to the image, and a current run
+ * that succeeded is published. Returns whether it was published. */
+static int finish_run(struct unit *u, long long now) {
+    const struct unit_kind *k = u->kind;
+    int current = u->stage_revision == u->revision;
+    int published = tc_child_ok(&u->job) && !u->job.stopping && current && !k->publish();
+    struct tc_stage_result r = TC_STAGE_RESULT_NONE;
+    if (u->job.used == sizeof(u->result))
+        r = u->result;
+    /* A superseded run says nothing about the image it was replacing, and
+     * only a run that copied it says anything about it at all. */
+    if (current) {
+        if (u->how.copy)
+            tc_image_staged(&u->image, r.copy, published, now);
+        /* What damage read, until a copy's bytes match: a run that failed
+         * before reading says nothing new, so the next probe stays quiet. */
+        if (r.copy == TC_COPY_DISK_DAMAGED)
+            u->seen = r.read;
+        else if (!r.copy)
+            u->seen = -1;
+        if (published && u->how.copy)
+            u->crc32 = r.crc32;
+        if (r.missing >= 0)
+            u->missing = r.missing;
     }
-    if (!m->config_dirty || !m->have_settings || m->storage.payload_index < 0 || !m->hostname[0] || m->hostname_waiting ||
-        m->storage_dirty || m->topology.pending || m->storage_job.group || m->stage_job.group ||
-        !m->ownership_ready || (m->blocked & (BLOCK_SMB | (m->settings.config.rsync ? BLOCK_RSYNC : 0))) ||
-        now < m->stage_at)
+    if (published) {
+        u->dirty = 0;
+        u->logged_wait = -1;
+        tc_storage_retry_finish(&u->retry, now, 0);
+        return 1;
+    }
+    k->discard();
+    if (current && k->backs_off)
+        tc_storage_retry_finish(&u->retry, now, 1);
+    else
+        u->retry.at = now + JOB_RETRY_MS;
+    if (!current)
+        timestamped_fprintf(stderr, "manager: %s staging superseded; staging again\n", k->name);
+    else {
+        /* Retries go on, but the same failure with the same wait is logged
+         * once: damage can last until a reinstall. */
+        long long wait = next_run_at(u) - now;
+        if (wait != u->logged_wait)
+            timestamped_fprintf(stderr, "manager: %s staging failed; retry in %lld ms\n", k->name, wait);
+        u->logged_wait = wait;
+    }
+    return 0;
+}
+static void start_run(struct manager *m, struct unit *u, long long now) {
+    u->how.probe = u->how.copy && u->image.state == TC_IMAGE_DISK_DAMAGED;
+    u->how.seen = u->seen;
+    u->how.missing = u->missing;
+    u->stage_revision = u->revision;
+    if (u->how.copy)
+        tc_image_copying(&u->image);
+    if (tc_child_fork(&u->job, u->kind->job, m, MANAGER_LOG, &u->result, sizeof(u->result), now + STAGE_JOB_MS))
+        u->retry.at = now + JOB_RETRY_MS;
+}
+/* The one pump both units go through. */
+static void pump_unit(struct manager *m, struct unit *u, long long now) {
+    const struct unit_kind *k = u->kind;
+    if (u->job.group && tc_child_poll(&u->job, now)) {
+        int current = u->stage_revision == u->revision, copied = u->how.copy;
+        if (finish_run(u, now))
+            k->deliver(m, now);
+        else if (current && copied)
+            /* The running program is the copy this run was to replace (from
+             * another payload, or one damaged): it goes with it rather than
+             * go on serving the old disk while the title says it is off. */
+            stop_role(u->role, now, 1);
+        tc_child_close(&u->job);
+        /* A payload without the files that make one is no payload: storage
+         * inspects it again, once each time they go missing, and reports it
+         * as it would any other. */
+        if (current && k->defines_payload && u->missing > 0 && !u->how.missing)
+            invalidate_storage(m, now);
+    }
+    if (!(u->dirty || tc_image_wanted(&u->image)) || !m->have_settings || !k->wanted(m) || !k->may_stage(m) ||
+        m->storage.payload_index < 0 || m->storage_dirty || m->topology.pending || m->storage_job.group ||
+        u->job.group || !m->ownership_ready || (m->blocked & k->block) || now < next_run_at(u))
         return;
-    m->copy_smbd = !m->binary_valid || !m->have_applied || !payload_same(&m->storage, &m->applied_storage);
-    m->copy_rsync =
-        m->settings.config.rsync && (!m->rsync_valid || m->copy_smbd || !m->applied_settings.config.rsync);
-    if (m->copy_smbd)
+    /* A payload change or a failed copy leaves the image wanted. */
+    u->how.copy = tc_image_wanted(&u->image);
+    if (k->prepare(m, now))
+        start_run(m, u, now);
+}
+/* Whether a unit's program may start: from the copy its unit verified, with
+ * the files it published. */
+static int unit_may_start(const struct manager *m, const struct unit *u) {
+    return m->have_settings && u->kind->wanted(m) && !u->dirty && u->image.state == TC_IMAGE_VERIFIED &&
+           !u->role->child.group && !(m->blocked & u->kind->block) && !m->storage_dirty &&
+           m->storage.payload_index >= 0 && m->ownership_ready;
+}
+static int unit_always(const struct manager *m) {
+    (void)m;
+    return 1;
+}
+static int samba_may_stage(const struct manager *m) {
+    return m->hostname[0] && !m->hostname_waiting;
+}
+static int samba_prepare(struct manager *m, long long now) {
+    /* A 15 MiB RAM disk cannot hold two smbd images: the old one stops first. */
+    if (m->samba_unit.how.copy) {
         stop_role(&m->smb, now, 1);
-    if (m->copy_smbd || m->copy_rsync)
-        stop_role(&m->rsync, now, 1);
-    if (m->copy_smbd && m->smb.child.group)
-        return;
-    if ((m->copy_smbd || m->copy_rsync) && m->rsync.child.group)
-        return;
+        if (m->smb.child.group)
+            return 0;
+    }
     /* Samba and discovery take their NetBIOS name from the hostname staged
      * here, not from the settings read: a read before ACPd sets the hostname
      * (the first one at boot) falls back to syNm. Setting it in m->settings
@@ -1115,17 +1385,41 @@ static void pump_stage(struct manager *m, long long now) {
     char netbios[sizeof(m->settings.identity.netbios)];
     if (!normalize_netbios_name(netbios, sizeof(netbios), m->hostname))
         strcpy(m->settings.identity.netbios, netbios);
-    m->stage_revision = m->revision;
-    /* Applied config can still describe the old generation after an aborted
-     * replacement. Track the RAM images separately so reverting the desired
-     * payload cannot mistake a removed/partial image for that old generation. */
-    if (m->copy_smbd)
-        m->binary_valid = 0;
-    if (m->copy_rsync)
-        m->rsync_valid = 0;
-    if (tc_child_fork(&m->stage_job, stage_job, m, MANAGER_LOG, NULL, 0, now + STAGE_JOB_MS))
-        m->stage_at = now + JOB_RETRY_MS;
+    return 1;
 }
+/* Samba's files are published: smbd reads them at a SIGHUP. One still
+ * starting may not take the signal yet (it would die), so it gets it once
+ * ready; one started after the publish read the new files already. */
+static void samba_deliver(struct manager *m, long long now) {
+    (void)now;
+    m->applied_storage = m->storage;
+    m->applied_settings = m->settings;
+    m->have_applied = 1;
+    if (!m->smb.child.pid || m->smb.child.stopping)
+        return;
+    if (m->smb.ready)
+        kill(m->smb.child.pid, SIGHUP);
+    else
+        m->smb_reload_pending = 1;
+}
+static int rsync_wanted(const struct manager *m) {
+    return m->settings.config.rsync;
+}
+/* A running rsync keeps its old copy while the new one is written. */
+static int rsync_prepare(struct manager *m, long long now) {
+    (void)m;
+    (void)now;
+    return 1;
+}
+/* rsync reads its configuration as it starts: new files restart it. */
+static void rsync_deliver(struct manager *m, long long now) {
+    if (m->rsync.child.pid)
+        stop_role(&m->rsync, now, 1);
+}
+static const struct unit_kind samba_kind = {"smbd", BLOCK_SMB, 0, 1, samba_job, tc_samba_publish, tc_samba_discard,
+                                            unit_always, samba_may_stage, samba_prepare, samba_deliver};
+static const struct unit_kind rsync_kind = {"rsync", BLOCK_RSYNC, 1, 0, rsync_job, tc_rsync_publish, tc_rsync_discard,
+                                            rsync_wanted, unit_always, rsync_prepare, rsync_deliver};
 static void reconcile_discovery(struct manager *m, long long now) {
     int diskless = !m->have_applied || !m->smb.ready;
     const struct tc_share_set empty = {0};
@@ -1178,40 +1472,46 @@ static void reconcile_discovery(struct manager *m, long long now) {
     }
 }
 static void reconcile_roles(struct manager *m, long long now) {
-    if (m->have_applied && !m->config_dirty && !m->storage_dirty && m->storage.payload_index >= 0 &&
-        m->ownership_ready) {
+    /* Each program starts only from the copy its unit verified (image.h) and
+     * with the files it published. */
+    if (m->have_applied && unit_may_start(m, &m->samba_unit)) {
         char log[352];
         snprintf(log, sizeof(log), "%s/logs/smbd-console.log", m->applied_storage.payload);
         char *argv[] = {TC_SMBD_BIN, "-F", "--no-process-group", "-s", TC_SMBD_CONF, NULL};
         const struct tc_volume *volume = &m->applied_storage.inventory.volumes[m->applied_storage.payload_index];
         int unbounded = m->applied_settings.config.debug || m->applied_settings.config.discovery_debug;
-        if (!(m->blocked & BLOCK_SMB) && !m->smb.child.group) {
-            /* Before smbd starts: it sizes its sockets then (kern.sbmax), and its
-             * opens and aio_fork helpers count against the system's file and
-             * process tables (kern.maxfiles, kern.maxproc). */
-            unsigned wanted[TC_KERN_LIMITS] = {TC_SMBD_SBMAX(m->applied_settings.config.netbsd4), TC_MAXFILES,
-                                               TC_MAXPROC};
-            enum tc_kern_limit limit;
-            for (limit = 0; limit < TC_KERN_LIMITS; limit++)
-                if (tc_samba_raise_kern(limit, wanted[limit]))
-                    timestamped_fprintf(stderr, "manager: could not raise kern.%s to %u: %s\n",
-                                        tc_kern_limit_names[limit], wanted[limit], strerror(errno));
-            if (!start_role(&m->smb, argv, log, now, 1, volume, unbounded))
-                m->audit_at = now + 1000;
+        /* Before smbd starts: it sizes its sockets then (kern.sbmax), and its
+         * opens and aio_fork helpers count against the system's file and
+         * process tables (kern.maxfiles, kern.maxproc). */
+        unsigned wanted[TC_KERN_LIMITS] = {TC_SMBD_SBMAX(m->applied_settings.config.netbsd4), TC_MAXFILES,
+                                           TC_MAXPROC};
+        enum tc_kern_limit limit;
+        for (limit = 0; limit < TC_KERN_LIMITS; limit++)
+            if (tc_samba_raise_kern(limit, wanted[limit]))
+                timestamped_fprintf(stderr, "manager: could not raise kern.%s to %u: %s\n",
+                                    tc_kern_limit_names[limit], wanted[limit], strerror(errno));
+        if (!start_role(&m->smb, argv, log, now, 1, volume, unbounded)) {
+            /* It reads the published files as it starts. */
+            m->smb_reload_pending = 0;
+            m->audit_at = now + 1000;
         }
-        if (m->settings.config.rsync && !(m->blocked & BLOCK_RSYNC)) {
-            char *rsync[] = {TC_RSYNC_BIN, "--daemon", "--no-detach", "--config=" TC_RSYNC_CONF, NULL};
-            if (!m->rsync.child.group && !start_role(&m->rsync, rsync, TC_RAM_ROOT "/var/rsync.log", now, 1, NULL, 0))
-                m->audit_at = now + 1000;
-        }
+    }
+    if (unit_may_start(m, &m->rsync_unit)) {
+        char *rsync[] = {TC_RSYNC_BIN, "--daemon", "--no-detach", "--config=" TC_RSYNC_CONF, NULL};
+        if (!start_role(&m->rsync, rsync, TC_RAM_ROOT "/var/rsync.log", now, 1, NULL, 0))
+            m->audit_at = now + 1000;
     }
     if (!m->have_settings || !m->settings.config.rsync)
         stop_role(&m->rsync, now, 1);
-    if ((!m->have_settings || !m->settings.config.rsync || m->storage.payload_index < 0) &&
-        !m->rsync.child.group && !(m->blocked & BLOCK_RSYNC) && m->rsync_valid) {
-        if ((!unlink(TC_RSYNC_BIN) || errno == ENOENT) && (!unlink(TC_RSYNC_CONF) || errno == ENOENT))
-            m->rsync_valid = 0;
-    }
+    /* RAM keeps rsync's files only while rsync may run. Once it is disabled
+     * or no disk holds its payload, they go when nothing runs or stages
+     * them; a staging run could otherwise write them again after the
+     * unlink. Files an earlier manager left go the same way. */
+    if (m->have_settings && (!m->settings.config.rsync || (!m->storage_dirty && m->storage.payload_index < 0)) &&
+        m->ownership_ready && !m->rsync.child.group && !m->rsync_unit.job.group && !(m->blocked & BLOCK_RSYNC) &&
+        tc_image_in_ram(&m->rsync_unit.image) && (!unlink(TC_RSYNC_BIN) || errno == ENOENT) &&
+        (!unlink(TC_RSYNC_CONF) || errno == ENOENT))
+        tc_image_removed(&m->rsync_unit.image);
     if (m->have_settings && m->settings.config.telemetry && m->ownership_ready &&
         !(m->blocked & BLOCK_TELEMETRY)) {
         char *argv[] = {TC_SERVICE_BIN, "telemetry", "--daemon", NULL};
@@ -1228,14 +1528,15 @@ static void stopping(struct manager *m, long long now) {
     stop_role(&m->telemetry, now, 0);
     tc_child_stop(&m->storage_job, now, 1);
     tc_child_stop(&m->settings_job, now, 1);
-    tc_child_stop(&m->stage_job, now, 1);
+    tc_child_stop(&m->samba_unit.job, now, 1);
+    tc_child_stop(&m->rsync_unit.job, now, 1);
     tc_child_stop(&m->audit_job, now, 1);
     tc_child_stop(&m->mast_job, now, 1);
     tc_child_stop(&m->report_job, now, 1);
 }
 static int drained(struct manager *m, long long now) {
-    struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->stage_job, &m->audit_job,
-                               &m->mast_job, &m->report_job};
+    struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->samba_unit.job, &m->rsync_unit.job,
+                               &m->audit_job, &m->mast_job, &m->report_job};
     size_t i;
     for (i = 0; i < sizeof(jobs) / sizeof(jobs[0]); i++) {
         if (jobs[i]->group && tc_child_poll(jobs[i], now))
@@ -1267,6 +1568,20 @@ int tc_manager_main(int argc, char **argv) {
         return 1;
     }
     m->storage.payload_index = m->applied_storage.payload_index = -1;
+    {
+        const struct unit_kind *kinds[] = {&samba_kind, &rsync_kind};
+        struct managed *roles[] = {&m->smb, &m->rsync};
+        size_t i;
+        m->units[0] = &m->samba_unit;
+        m->units[1] = &m->rsync_unit;
+        for (i = 0; i < 2; i++) {
+            struct unit *u = m->units[i];
+            u->kind = kinds[i];
+            u->role = roles[i];
+            roles[i]->unit = u;
+            u->crc32 = u->seen = u->logged_wait = -1;
+        }
+    }
     if (tc_events_init(&m->events)) {
         free(m);
         close(lock);
@@ -1310,15 +1625,17 @@ int tc_manager_main(int argc, char **argv) {
             pump_settings(m, now);
             pump_storage(m, now);
             pump_audit(m, now);
-            pump_stage(m, now);
+            pump_unit(m, m->units[0], now);
+            pump_unit(m, m->units[1], now);
             reconcile_roles(m, now);
+            update_payload_title(m);
         }
         FD_ZERO(&reads);
         tc_events_prepare(&m->events, &reads, &maxfd);
         struct tc_child *children[] = {&m->smb.child,       &m->rsync.child,  &m->discovery.child,
                                        &m->telemetry.child, &m->settings_job, &m->storage_job,
-                                       &m->stage_job,       &m->audit_job, &m->mast_job,
-                                       &m->report_job};
+                                       &m->samba_unit.job,  &m->rsync_unit.job, &m->audit_job,
+                                       &m->mast_job,        &m->report_job};
         size_t i;
         for (i = 0; i < sizeof(children) / sizeof(children[0]); i++)
             tc_child_prepare(children[i], &reads, &maxfd, &deadline);
@@ -1329,7 +1646,7 @@ int tc_manager_main(int argc, char **argv) {
                 lower(&deadline, m->settings_at);
             if (!m->audit_job.group)
                 lower(&deadline, m->audit_at);
-            if (!m->storage_job.group && !m->stage_job.group && m->have_settings &&
+            if (!m->storage_job.group && !units_staging(m) && m->have_settings &&
                 m->topology.initialized && !m->topology.pending) {
                 if (m->storage_dirty) lower(&deadline, m->storage_at);
                 else if (storage_pending(m))
@@ -1345,6 +1662,7 @@ int tc_manager_main(int argc, char **argv) {
     tc_events_close(&m->events);
     bufstall_restore();
     tc_samba_discard();
+    tc_rsync_discard();
     tc_child_close(&m->diskd.child);
     free(m);
     close(lock);

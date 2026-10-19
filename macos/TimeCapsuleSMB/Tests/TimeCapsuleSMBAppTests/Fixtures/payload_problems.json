@@ -1,0 +1,22 @@
+[
+  {
+    "code": "payload_missing_from_disk",
+    "samba_off": true,
+    "token": "payload=missing"
+  },
+  {
+    "code": "payload_damaged_on_disk",
+    "samba_off": true,
+    "token": "payload=damaged"
+  },
+  {
+    "code": "rsync_missing_from_disk",
+    "samba_off": false,
+    "token": "rsync=missing"
+  },
+  {
+    "code": "rsync_damaged_on_disk",
+    "samba_off": false,
+    "token": "rsync=damaged"
+  }
+]

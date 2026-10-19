@@ -5,16 +5,15 @@ from collections.abc import Callable
 
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
-from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
+from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.probe import (
-    DISK_PAYLOAD_MISSING_ERROR,
     ManagedRuntimeProbeResult,
     RuntimeNamingIdentityProbeResult,
     limit_remote_log_tail,
     probe_managed_runtime_conn,
     probe_remote_runtime_naming_identity_conn,
     read_runtime_log_tails_conn,
-    runtime_payload_missing,
+    runtime_payload_problem,
 )
 from timecapsulesmb.discovery.bonjour import BonjourQuery, BonjourServiceInstance
 from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -62,21 +61,39 @@ def verify_managed_runtime_ready(
     )
     for line in render_managed_runtime_verification(verification, heading=heading):
         callbacks.message(line)
-    if verification.ready:
+    if verification.ready or verification.samba_ready:
+        # File sharing serves, with rsync or without it: Time Machine finds
+        # the device through this Mac's copy of its _adisk record either way.
         recheck_cached_adisk(connection, callbacks, stage=stage)
+    if verification.ready:
         return verification
 
-    detail = verification.detail.strip()
     try:
         callbacks.debug(**read_runtime_logs(connection))
     except Exception as exc:
         callbacks.debug(remote_runtime_log_tail_error=system_exit_message(exc))
 
-    if runtime_payload_missing(verification):
-        raise DiskPayloadMissingError(f"{failure_message.rstrip()} {DISK_PAYLOAD_MISSING_ERROR}")
-    if detail:
-        failure_message = f"{failure_message.rstrip()} {detail}"
-    raise DeviceError(failure_message)
+    raise runtime_failure_error(verification, failure_message)
+
+
+CHECKUP_SENTENCE = 'Run "Checkup" in the macOS app, or tcapsule doctor from the command line, for details.'
+
+
+def runtime_failure_error(verification: ManagedRuntimeProbeResult, failure_message: str) -> DeviceError:
+    """The error for a runtime that is not ready: the manager's verdict, or
+    rsync's alone while file sharing serves (whose error must not say file
+    sharing failed), or failure_message with the probe's detail."""
+    problem = runtime_payload_problem(verification)
+    if problem is not None:
+        return problem.error_type(problem.error_after(failure_message))
+    if verification.samba_ready:
+        # No verdict says why: Checkup's rsync check does.
+        return RsyncNotRunningError(
+            f"File sharing and Time Machine are running, but rsync is not: {verification.detail.strip()}. "
+            f"{CHECKUP_SENTENCE}"
+        )
+    detail = verification.detail.strip()
+    return DeviceError(f"{failure_message.rstrip()} {detail}" if detail else failure_message)
 
 
 def recheck_cached_adisk(
@@ -153,9 +170,11 @@ def _runtime_verification_measurement(
         "timeout_sec": timeout_seconds,
         "duration_sec": round(duration_seconds, 3),
         "ready": verification.ready,
-        "result": "success" if verification.ready else "not_ready",
+        # rsync_not_ready: file sharing serves and only rsync does not.
+        "result": "success" if verification.ready else "rsync_not_ready" if verification.samba_ready else "not_ready",
         "smbd_ready": verification.smbd.ready,
         "mdns_ready": verification.mdns.ready,
+        "samba_ready": verification.samba_ready,
         "step_count": len(steps),
         "pass_step_count": status_counts["pass"],
         "fail_step_count": status_counts["fail"],
