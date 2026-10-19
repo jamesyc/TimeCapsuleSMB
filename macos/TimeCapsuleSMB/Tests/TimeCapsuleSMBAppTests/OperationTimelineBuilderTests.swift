@@ -346,10 +346,8 @@ final class OperationTimelineBuilderTests: XCTestCase {
             OperationTimelineBuilder.stageDetail(for: "fsck", stage: "post_reboot_activation"),
             "Starting SMB after SSH returns."
         )
-        // The other rebooting operations leave file sharing as the reboot left it.
-        for operation in ["uninstall", "flash", "set-ssh"] {
-            XCTAssertEqual(OperationTimelineBuilder.stageTitle(for: operation, stage: "post_reboot_activation"), "Post Reboot Activation", operation)
-        }
+        // A stage name reads the same in every operation; only deploy and fsck
+        // report this one (tests/test_stage_titles.py).
     }
 
     func testAllKnownDeployStagesHaveLocalizedTitlesAndDetails() {

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, Union
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.device.probe import probe_ssh_command_conn
 from timecapsulesmb.integrations.acp import ACP_PORT
@@ -236,7 +237,7 @@ def classify_network_link(
 PORT_CHECK_TIMEOUT_SECONDS = 2.0
 
 
-def closed_ssh_port_error(host: str) -> tuple[str, str, dict[str, object]]:
+def closed_ssh_port_error(host: str) -> tuple[ErrorCode, str, dict[str, object]]:
     """Why SSH port 22 is closed: the code, message and details.
 
     The user fixes the two causes differently: SSH is off (after a reset, or
@@ -247,12 +248,12 @@ def closed_ssh_port_error(host: str) -> tuple[str, str, dict[str, object]]:
     acp_error = tcp_connect_error(host, ACP_PORT, PORT_CHECK_TIMEOUT_SECONDS)
     if acp_error is None:
         return (
-            "ssh_disabled",
+            ErrorCode.SSH_DISABLED,
             f"SSH is turned off on {host}: AirPort ACP answers on port {ACP_PORT}, but SSH port 22 is closed.",
             {},
         )
     return (
-        "device_unreachable",
+        ErrorCode.DEVICE_UNREACHABLE,
         f"The device is not answering at {host}: neither SSH port 22 nor AirPort ACP port {ACP_PORT} "
         f"is reachable ({acp_error}).",
         {"acp_port_error": acp_error},

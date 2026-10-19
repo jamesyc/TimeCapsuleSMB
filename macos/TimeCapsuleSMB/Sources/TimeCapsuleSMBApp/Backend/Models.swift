@@ -223,6 +223,28 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         case recheck
     }
 
+    /// The operation log's line: the helper's own English, in every app
+    /// language, as Copy Diagnostics shows it.
+    public var logLine: String {
+        switch type {
+        case "stage":
+            return stage.map { "\(operation): \($0)" } ?? operation
+        case "check":
+            return "\(status ?? "INFO") \(message ?? "")"
+        case "result":
+            return payloadSummary ?? "\(operation): \(ok == true ? "finished" : "failed")"
+        case "error":
+            return "\(operation): \(message ?? "error")"
+        case "progress":
+            if let entries {
+                return "\(operation): \(stage ?? "progress") \(entries)"
+            }
+            return "\(operation): \([stage, phase].compactMap { $0 }.joined(separator: " "))"
+        default:
+            return message ?? stage ?? operation
+        }
+    }
+
     public var summary: String {
         switch type {
         case "stage":

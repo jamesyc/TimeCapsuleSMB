@@ -50,6 +50,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("version-check", "check_version"): StagePolicy(LOCAL_READ, True, "Fetch or read version metadata."),
     ("configure", "local_network_preflight"): StagePolicy(LOCAL_READ, True, "Check macOS Local Network permission before configuring."),
     ("configure", "load_existing_config"): StagePolicy(LOCAL_READ, True, "Read the existing .env configuration."),
+    ("configure", "check_device_model"): StagePolicy(LOCAL_READ, True, "Check that the selected device's model can run TimeCapsuleSMB."),
     ("configure", "select_target"): StagePolicy(REMOTE_READ, True, "Find the selected device address that answers AirPort ACP."),
     ("configure", "ssh_probe"): StagePolicy(REMOTE_READ, True, "Probe SSH reachability and device compatibility."),
     ("configure", "confirm_enable_ssh"): StagePolicy(REBOOT, True, "Confirm SSH enablement and reboot through AirPort ACP."),

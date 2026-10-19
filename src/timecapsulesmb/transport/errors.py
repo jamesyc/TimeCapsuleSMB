@@ -3,6 +3,8 @@ from __future__ import annotations
 import signal
 import sys
 
+from timecapsulesmb.core.error_codes import ErrorCode
+
 
 class TransportError(Exception):
     """Base class for recoverable transport-layer failures."""
@@ -149,3 +151,13 @@ def format_ssh_timeout_slow_device_error(exc: BaseException, *, device_name: str
     if not detail:
         return message
     return f"{message}\n{detail}"
+
+
+def transport_error_code(exc: TransportError) -> ErrorCode:
+    """The code the app and the CLI both report for a connection failure: one
+    this computer dropped gets its own guidance, not the device's."""
+    if isinstance(exc, SshClientError):
+        return ErrorCode.SSH_CLIENT_FAILED
+    if isinstance(exc, SshLocalNetworkFilteredError):
+        return ErrorCode.LOCAL_NETWORK_FILTERED
+    return ErrorCode.REMOTE_ERROR

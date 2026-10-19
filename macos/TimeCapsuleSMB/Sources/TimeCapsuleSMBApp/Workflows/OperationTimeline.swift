@@ -22,75 +22,7 @@ struct OperationTimelineItem: Equatable, Identifiable {
     var elapsedSince: Date? = nil
 }
 
-private struct OperationStageLocalization {
-    let titleKey: String
-    let detailKey: String
-}
-
 enum OperationTimelineBuilder {
-    private static let activateStageLocalizations: [String: OperationStageLocalization] = [
-        "probe_runtime": .init(titleKey: "timeline.activate.title.probe_runtime", detailKey: "timeline.activate.detail.probe_runtime")
-    ]
-
-    private static let deployStageLocalizations: [String: OperationStageLocalization] = [
-        "load_config": .init(titleKey: "timeline.deploy.title.load_config", detailKey: "timeline.deploy.detail.load_config"),
-        "resolve_managed_target": .init(titleKey: "timeline.deploy.title.resolve_managed_target", detailKey: "timeline.deploy.detail.resolve_managed_target"),
-        "validate_artifacts": .init(titleKey: "timeline.deploy.title.validate_artifacts", detailKey: "timeline.deploy.detail.validate_artifacts"),
-        "check_compatibility": .init(titleKey: "timeline.deploy.title.check_compatibility", detailKey: "timeline.deploy.detail.check_compatibility"),
-        "read_mast": .init(titleKey: "timeline.deploy.title.read_mast", detailKey: "timeline.deploy.detail.read_mast"),
-        "select_payload_home": .init(titleKey: "timeline.deploy.title.select_payload_home", detailKey: "timeline.deploy.detail.select_payload_home"),
-        "inventory_legacy_metadata": .init(titleKey: "timeline.deploy.title.inventory_legacy_metadata", detailKey: "timeline.deploy.detail.inventory_legacy_metadata"),
-        "build_deployment_plan": .init(titleKey: "timeline.deploy.title.build_deployment_plan", detailKey: "timeline.deploy.detail.build_deployment_plan"),
-        "check_flash_capacity": .init(titleKey: "timeline.deploy.title.check_flash_capacity", detailKey: "timeline.deploy.detail.check_flash_capacity"),
-        "pre_upload_actions": .init(titleKey: "timeline.deploy.title.pre_upload_actions", detailKey: "timeline.deploy.detail.pre_upload_actions"),
-        "prepare_deployment_files": .init(titleKey: "timeline.deploy.title.prepare_deployment_files", detailKey: "timeline.deploy.detail.prepare_deployment_files"),
-        "upload_payload": .init(titleKey: "timeline.deploy.title.upload_payload", detailKey: "timeline.deploy.detail.upload_payload"),
-        "upload_smbd": .init(titleKey: "timeline.deploy.title.upload_smbd", detailKey: "timeline.deploy.detail.upload_smbd"),
-        "upload_xattr_migrator": .init(titleKey: "timeline.deploy.title.upload_xattr_migrator", detailKey: "timeline.deploy.detail.upload_xattr_migrator"),
-        "inspect_migration_sources": .init(titleKey: "timeline.deploy.title.inspect_migration_sources", detailKey: "timeline.deploy.detail.inspect_migration_sources"),
-        "wait_for_previous_migration": .init(titleKey: "timeline.deploy.title.wait_for_previous_migration", detailKey: "timeline.deploy.detail.wait_for_previous_migration"),
-        "migrate_xattrs_copy": .init(titleKey: "timeline.deploy.title.migrate_xattrs_copy", detailKey: "timeline.deploy.detail.migrate_xattrs_copy"),
-        "migrate_xattrs_cleanup": .init(titleKey: "timeline.deploy.title.migrate_xattrs_cleanup", detailKey: "timeline.deploy.detail.migrate_xattrs_cleanup"),
-        "replace_software": .init(titleKey: "timeline.deploy.title.replace_software", detailKey: "timeline.deploy.detail.replace_software"),
-        "install_runtime_config": .init(titleKey: "timeline.deploy.title.install_runtime_config", detailKey: "timeline.deploy.detail.install_runtime_config"),
-        "upload_rsync": .init(titleKey: "timeline.deploy.title.upload_rsync", detailKey: "timeline.deploy.detail.upload_rsync"),
-        "upload_boot_files": .init(titleKey: "timeline.deploy.title.upload_boot_files", detailKey: "timeline.deploy.detail.upload_boot_files"),
-        "upload_runtime_config": .init(titleKey: "timeline.deploy.title.upload_runtime_config", detailKey: "timeline.deploy.detail.upload_runtime_config"),
-        "post_upload_actions": .init(titleKey: "timeline.deploy.title.post_upload_actions", detailKey: "timeline.deploy.detail.post_upload_actions"),
-        "verify_payload_upload": .init(titleKey: "timeline.deploy.title.verify_payload_upload", detailKey: "timeline.deploy.detail.verify_payload_upload"),
-        "flush_payload_upload": .init(titleKey: "timeline.deploy.title.flush_payload_upload", detailKey: "timeline.deploy.detail.flush_payload_upload"),
-        "enable_boot": .init(titleKey: "timeline.deploy.title.upload_boot_files", detailKey: "timeline.deploy.detail.upload_boot_files"),
-        "flush_boot_hook": .init(titleKey: "timeline.deploy.title.flush_payload_upload", detailKey: "timeline.deploy.detail.flush_payload_upload"),
-        "verify_payload_upload_after_sync": .init(titleKey: "timeline.deploy.title.verify_payload_upload_after_sync", detailKey: "timeline.deploy.detail.verify_payload_upload_after_sync"),
-        "post_reboot_activation": .init(titleKey: "timeline.deploy.title.post_reboot_activation", detailKey: "timeline.deploy.detail.post_reboot_activation"),
-        "verify_runtime_activation": .init(titleKey: "timeline.deploy.title.verify_runtime_activation", detailKey: "timeline.deploy.detail.verify_runtime_activation"),
-        "verify_runtime_reboot": .init(titleKey: "timeline.deploy.title.verify_runtime_reboot", detailKey: "timeline.deploy.detail.verify_runtime_reboot")
-    ]
-
-    // Every operation that reboots the device goes through the helper's one
-    // reboot path, so these stages read the same everywhere.
-    private static let rebootStageLocalizations: [String: OperationStageLocalization] = [
-        "reboot": .init(titleKey: "timeline.deploy.title.reboot", detailKey: "timeline.deploy.detail.reboot"),
-        "wait_for_reboot_down": .init(titleKey: "timeline.deploy.title.wait_for_reboot_down", detailKey: "timeline.deploy.detail.wait_for_reboot_down"),
-        "wait_for_reboot_up": .init(titleKey: "timeline.deploy.title.wait_for_reboot_up", detailKey: "timeline.deploy.detail.wait_for_reboot_up")
-    ]
-
-    // fsck starts file sharing again after its reboot the way deploy does, so
-    // these stages read as deploy's.
-    private static let postRebootStartStageLocalizations: [String: OperationStageLocalization] =
-        deployStageLocalizations.filter { ["post_reboot_activation", "verify_runtime_activation"].contains($0.key) }
-
-    private static let fsckStageLocalizations: [String: OperationStageLocalization] =
-        postRebootStartStageLocalizations.merging([
-            "run_fsck": .init(titleKey: "timeline.stage.repairing_disk", detailKey: "timeline.fsck.detail.run_fsck")
-        ]) { _, new in new }
-
-    private static let stageLocalizations: [String: [String: OperationStageLocalization]] = [
-        "activate": activateStageLocalizations,
-        "deploy": deployStageLocalizations,
-        "fsck": fsckStageLocalizations
-    ]
-
     /// Whether a running stage shows how long it has run and a note to leave
     /// the device alone: Disk Repair can spend an hour on one step.
     private static func isLongDeviceStep(operation: String, stage: String?) -> Bool {
@@ -248,7 +180,7 @@ enum OperationTimelineBuilder {
         case "configure":
             return L10n.string("timeline.operation.configure")
         case "update-config-settings":
-            return L10n.string("timeline.stage.saving_device")
+            return L10n.string("timeline.operation.saving_device")
         case "deploy":
             return L10n.string("timeline.operation.deploy")
         case "doctor":
@@ -272,143 +204,34 @@ enum OperationTimelineBuilder {
         }
     }
 
+    /// A step's title: `timeline.<operation>.<stage>.title`, else the title
+    /// every operation shares for that stage, `timeline.stage.<stage>.title`
+    /// (app/stage_policy.py lists the stages; tests/test_stage_titles.py checks
+    /// each has one). A stage with neither reads as its code name.
     static func stageTitle(for operation: String, stage: String?) -> String {
         guard let stage else {
             return operationTitle(operation)
         }
-        if let title = localizedStageTitle(for: operation, stage: stage) {
-            return title
-        }
-        if operation == "flash", let key = flashStageTitleKeys[stage] {
-            return L10n.string(key)
-        }
-        switch (operation, stage) {
-        case ("discover", "bonjour_discovery"):
-            return L10n.string("timeline.stage.finding_devices")
-        case ("reachability", "build_candidates"):
-            return L10n.string("timeline.stage.reachability_candidates")
-        case ("reachability", "check_dns"):
-            return L10n.string("timeline.stage.reachability_dns")
-        case ("reachability", "check_ping"):
-            return L10n.string("timeline.stage.reachability_ping")
-        case ("reachability", "check_ssh_port"):
-            return L10n.string("timeline.stage.reachability_ssh_port")
-        case ("reachability", "check_ssh_auth"):
-            return L10n.string("timeline.stage.reachability_ssh_auth")
-        case ("reachability", "check_smb_port"):
-            return L10n.string("timeline.stage.reachability_smb_port")
-        case ("set-ssh", "probe_ssh"):
-            return L10n.string("timeline.stage.checking_ssh")
-        case ("set-ssh", "confirm_enable_ssh"):
-            return L10n.string("timeline.stage.confirming_ssh_enable")
-        case ("set-ssh", "acp_port_probe"):
-            return L10n.string("timeline.stage.checking_airport_acp")
-        case ("set-ssh", "acp_enable_ssh"):
-            return L10n.string("timeline.stage.enabling_ssh")
-        case ("configure", "ssh_probe"), ("configure", "ssh_probe_after_acp"):
-            return L10n.string("timeline.stage.checking_ssh")
-        case ("configure", "confirm_enable_ssh"):
-            return L10n.string("timeline.stage.confirming_ssh_enable")
-        case ("configure", "check_device_model"):
-            return L10n.string("timeline.stage.checking_device_model")
-        case ("configure", "select_target"), ("configure", "acp_port_probe"):
-            return L10n.string("timeline.stage.checking_airport_acp")
-        case ("configure", "acp_enable_ssh"):
-            return L10n.string("timeline.stage.enabling_ssh")
-        case ("configure", "write_env"):
-            return L10n.string("timeline.stage.saving_device")
-        case ("update-config-settings", "load_existing_config"),
-             ("update-config-settings", "write_env"):
-            return L10n.string("timeline.stage.saving_device")
-        case ("doctor", "run_checks"):
-            return L10n.string("timeline.stage.running_checkup")
-        case ("doctor", "wait_for_device_startup"):
-            return L10n.string("timeline.stage.waiting_for_device_startup")
-        case ("doctor", "finish_checks"):
-            return L10n.string("timeline.stage.finishing_checkup")
-        case ("activate", "build_activation_plan"):
-            return L10n.string("timeline.stage.planning_start_smb")
-        case ("activate", "run_activation"):
-            return L10n.string("timeline.stage.starting_smb")
-        case ("uninstall", "build_uninstall_plan"):
-            return L10n.string("timeline.stage.planning_uninstall")
-        case ("uninstall", "uninstall_payload"):
-            return L10n.string("timeline.stage.removing_managed_files")
-        case ("fsck", "read_mast"), ("fsck", "select_fsck_volume"):
-            return L10n.string("timeline.stage.finding_volumes")
-        case ("fsck", "run_fsck"):
-            return L10n.string("timeline.stage.repairing_disk")
-        case ("validate-install", "validate_install"):
-            return L10n.string("timeline.stage.validating_app_bundle")
-        // Stages other operations share with Install / Update read the same.
-        case (_, "load_config"), ("configure", "load_existing_config"):
-            return L10n.string("timeline.deploy.title.load_config")
-        case (_, "resolve_connection"), ("activate", "resolve_managed_target"):
-            return L10n.string("timeline.deploy.title.resolve_managed_target")
-        case ("uninstall", "read_mast"):
-            return L10n.string("timeline.deploy.title.read_mast")
-        case ("flash", "check_compatibility"):
-            return L10n.string("timeline.deploy.title.check_compatibility")
-        case ("activate", "verify_runtime_activation"):
-            return L10n.string("timeline.deploy.title.verify_runtime_activation")
-        case ("configure", "local_network_preflight"):
-            return L10n.string("timeline.stage.checking_local_network")
-        case ("fsck", "list_fsck_volumes"):
-            return L10n.string("timeline.stage.finding_volumes")
-        case ("fsck", "mount_hfs_volumes"), ("uninstall", "mount_mast_volumes"):
-            return L10n.string("timeline.stage.mounting_volumes")
-        case ("uninstall", "verify_post_uninstall"):
-            return L10n.string("timeline.stage.verifying_uninstall")
-        case ("set-ssh", "confirm_disable_ssh"):
-            return L10n.string("timeline.stage.confirming_ssh_disable")
-        case ("set-ssh", "disable_ssh"):
-            return L10n.string("timeline.stage.disabling_ssh")
-        case (_, "resolve_paths"):
-            return L10n.string("timeline.stage.finding_app_files")
-        case ("capabilities", "summarize_capabilities"):
-            return L10n.string("timeline.stage.checking_app_components")
-        case ("version-check", "check_version"):
-            return L10n.string("timeline.stage.checking_for_updates")
-        case ("set-telemetry", "write_bootstrap"):
-            return L10n.string("timeline.stage.saving_setting")
-        default:
-            return stage
+        return stageText(operation: operation, stage: stage, part: "title")
+            ?? stage
                 .split(separator: "_")
                 .map { $0.prefix(1).uppercased() + $0.dropFirst() }
                 .joined(separator: " ")
-        }
     }
 
-    private static let flashStageTitleKeys: [String: String] = [
-        "read_flash": "timeline.flash.read_flash",
-        "analyze_flash": "timeline.flash.analyze_flash",
-        "inspect_backup": "timeline.flash.inspect_backup",
-        "save_raw_backup": "timeline.flash.save_raw_backup",
-        "save_backup": "timeline.flash.save_backup",
-        "plan_flash": "timeline.flash.plan_flash",
-        "confirm_write": "timeline.flash.confirm_write",
-        "pre_write_validation": "timeline.flash.pre_write_validation",
-        "write_primary_bank": "timeline.flash.write_primary_bank",
-        "write_active_bank": "timeline.flash.write_active_bank",
-        "write_secondary_bank": "timeline.flash.write_secondary_bank",
-        "post_write_validation": "timeline.flash.post_write_validation"
-    ]
-
-    /// The step's translated detail; nil when it has none (the helper's
-    /// English description stays in the raw log).
+    /// The step's translated detail, found as its title is; nil when it has
+    /// none (the helper's English description stays in the raw log).
     static func stageDetail(for operation: String, stage: String?) -> String? {
-        stage.flatMap { localizedStageDetail(for: operation, stage: $0) }
+        stage.flatMap { stageText(operation: operation, stage: $0, part: "detail") }
     }
 
-    private static func stageLocalization(for operation: String, stage: String) -> OperationStageLocalization? {
-        stageLocalizations[operation]?[stage] ?? rebootStageLocalizations[stage]
-    }
-
-    private static func localizedStageTitle(for operation: String, stage: String) -> String? {
-        stageLocalization(for: operation, stage: stage).map { L10n.string($0.titleKey) }
-    }
-
-    private static func localizedStageDetail(for operation: String, stage: String) -> String? {
-        stageLocalization(for: operation, stage: stage).map { L10n.string($0.detailKey) }
+    private static func stageText(operation: String, stage: String, part: String) -> String? {
+        for key in ["timeline.\(operation).\(stage).\(part)", "timeline.stage.\(stage).\(part)"] {
+            let value = L10n.string(key)
+            if value != key {
+                return value
+            }
+        }
+        return nil
     }
 }
