@@ -9,6 +9,22 @@
 #ifndef TC_LOCKS_ROOT
 #define TC_LOCKS_ROOT "/mnt/Locks"
 #endif
+/* What Samba's lock directory may hold before the manager restarts smbd with
+ * it empty (boot.sh mounts room for 6 MiB of files there: tmpfs on NetBSD 6,
+ * MFS on NetBSD 4). Full, it makes smbd fail opens and abort, which costs Macs
+ * their backups. Each tdb file grows in one step of a quarter of its size
+ * (tdb_expand_adjust()), and smbXsrv_open_global.tdb, the largest, holds about
+ * two thirds of what is used. From 4 MiB, every file can still grow once
+ * (5 MiB) or that one twice (5.5 MiB) while smbd stops. */
+#ifndef TC_LOCKS_RESET_BYTES
+#define TC_LOCKS_RESET_BYTES (4096LL * 1024)
+#endif
+/* Within TC_LOCKS_RESET_GAP_MS of a reset, smbd restarts again only past
+ * this: from 4.75 MiB one step of every file reaches 5.9 MiB, about all the
+ * 6 MiB holds, so a quick refill restarts smbd only when it would fill. */
+#ifndef TC_LOCKS_FULL_BYTES
+#define TC_LOCKS_FULL_BYTES (4864LL * 1024)
+#endif
 #ifndef TC_SERVICE_BIN
 #define TC_SERVICE_BIN "/mnt/Flash/service"
 #endif

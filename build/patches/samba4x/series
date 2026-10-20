@@ -348,7 +348,7 @@
 # by name, so it relies on 0062's share-root working directory.
 0029-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
 # Upstream bugs that leave durable-open records and leases in the lock
-# directory for good; on the appliance its 4 MiB RAM disk then fills, and a
+# directory for good; on the appliance its small RAM disk then fills, and a
 # full one makes client smbds fail opens and abort. A share entry dropped as
 # stale (a disconnected open, or one of a dead smbd, found by another open)
 # kept its lease: remove the lease with the entry, as a close does. Only the

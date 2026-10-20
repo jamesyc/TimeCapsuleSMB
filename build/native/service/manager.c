@@ -36,6 +36,16 @@
 #ifndef TC_PAYLOAD_RECHECK_MS
 #define TC_PAYLOAD_RECHECK_MS 30000
 #endif
+/* How often a running smbd's lock directory is measured (check_locks). The
+ * reset limit leaves room for a few tdb steps; filling it takes far longer. */
+#ifndef TC_LOCKS_CHECK_MS
+#define TC_LOCKS_CHECK_MS 5000
+#endif
+/* After a reset, a refill restarts smbd again this soon only past
+ * TC_LOCKS_FULL_BYTES, so it cannot keep restarting smbd. */
+#ifndef TC_LOCKS_RESET_GAP_MS
+#define TC_LOCKS_RESET_GAP_MS 600000
+#endif
 /* A disk not mounting this long, with no other holding the Samba files, goes
  * in the title and a heartbeat (sample_unmounted). A claim cycle takes about
  * a minute (two attempts of DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS); a
@@ -204,6 +214,10 @@ struct manager {
     /* Samba's files were published while smbd was still starting: it gets
      * its SIGHUP once ready, since one sent earlier would kill it. */
     int smb_reload_pending;
+    /* The lock directory passed TC_LOCKS_RESET_BYTES: smbd is stopping, and
+     * the directory is emptied before it starts again. */
+    int locks_reset;
+    long long locks_check_at, locks_reset_at;
     /* The device hostname staging last mapped: empty until first found.
      * Staging, and so Samba, waits while the kernel hostname is unset. */
     char hostname[256];
@@ -1471,6 +1485,41 @@ static void reconcile_discovery(struct manager *m, long long now) {
         }
     }
 }
+/* A full lock directory makes smbd fail opens and abort. Before it fills,
+ * stop smbd the usual graceful way and start it again with the directory
+ * empty: clients reconnect, as after a dropped connection. Samba truncates
+ * its volatile tdb files itself on a clean start, but only when no process
+ * still holds one, and never its other files. */
+static void check_locks(struct manager *m, long long now) {
+    long long used, limit;
+    char reason[64];
+    if (m->locks_reset) {
+        /* Only once the whole old group is gone, as staging clears them. */
+        if (m->smb.child.group || !m->ownership_ready)
+            return;
+        /* No errno: clear_directory() fails on paths that set none. */
+        if (tc_samba_clear_locks())
+            timestamped_fprintf(stderr, "manager: could not empty %s; starting smbd anyway\n", TC_LOCKS_ROOT);
+        m->locks_reset = 0;
+        return;
+    }
+    if (!m->smb.ready || now < m->locks_check_at)
+        return;
+    m->locks_check_at = now + TC_LOCKS_CHECK_MS;
+    used = tc_samba_locks_bytes();
+    limit = m->locks_reset_at && now < m->locks_reset_at + TC_LOCKS_RESET_GAP_MS ? TC_LOCKS_FULL_BYTES
+                                                                                : TC_LOCKS_RESET_BYTES;
+    if (used < limit)
+        return;
+    timestamped_fprintf(stderr, "manager: %s holds %lld KiB; restarting smbd with it empty\n", TC_LOCKS_ROOT,
+                        used / 1024);
+    /* One heartbeat per reset: a leak that comes back shows in telemetry. */
+    snprintf(reason, sizeof(reason), "locks_reset:%lld", used / 1024);
+    push_stuck_report(m, reason);
+    m->locks_reset = 1;
+    m->locks_reset_at = now;
+    stop_role(&m->smb, now, 1);
+}
 static void reconcile_roles(struct manager *m, long long now) {
     /* Each program starts only from the copy its unit verified (image.h) and
      * with the files it published. */
@@ -1618,6 +1667,7 @@ int tc_manager_main(int argc, char **argv) {
             pump_audit(m, now);
             pump_unit(m, m->units[0], now);
             pump_unit(m, m->units[1], now);
+            check_locks(m, now);
             reconcile_roles(m, now);
             update_payload_title(m);
         }

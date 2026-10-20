@@ -79,14 +79,16 @@ MOUNTS
             for tc_entry in "$LOCKS_ROOT"/* "$LOCKS_ROOT"/.[!.]* "$LOCKS_ROOT"/..?*; do
                 if [ -e "$tc_entry" ] || [ -L "$tc_entry" ]; then return 0; fi
             done
-            /sbin/mount_tmpfs -s 4m tmpfs "$LOCKS_ROOT" && return 0
+            /sbin/mount_tmpfs -s 6m tmpfs "$LOCKS_ROOT" && return 0
             echo 'boot: Locks tmpfs unavailable; using existing directory'
             return 0
             ;;
         *)
             # NetBSD 4 has a tiny root RAM filesystem. Its separate mfs uses
-            # 512-byte sectors: 8192 sectors is 4 MiB; rootfs fallback is unsafe.
-            /sbin/mount_mfs -s 8192 swap "$LOCKS_ROOT" || return 1
+            # 512-byte sectors, and its UFS keeps 7% for itself: 13312 sectors
+            # (6.5 MiB) holds about 6 MiB of files, as NetBSD 6's tmpfs does.
+            # rootfs fallback is unsafe.
+            /sbin/mount_mfs -s 13312 swap "$LOCKS_ROOT" || return 1
             ;;
     esac
 }

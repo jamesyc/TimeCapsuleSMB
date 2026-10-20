@@ -38,15 +38,15 @@
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "5d7263c38749563c6c0d7d30c1591ed7e2df0f197e6f29e6c4a3505127d5755b"
+      "sha256": "e59e8b2e54e52929b1693c2470b5044d187f85fe40c9e57e012fb69a0bc536fc"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "b0c1508884f12325685d226cda943064c36ab50e7a7fc869ada31b4a8313431f"
+      "sha256": "40f4144b5ec95f6a0d71e71fa7057eca5c036fa7c5b1e479ec0fe74781de00a1"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "2e40376b59d136d33a0802408a044e3ee5486336a81ac99d528a34b12a98094f"
+      "sha256": "ef7a628de24d7bff91c002469b0a5d2a5a5521c24a1120a1ba55fcca18a5a71d"
     }
   }
 }

@@ -54,7 +54,7 @@ with (Path(os.environ['BOOT_ROOT'])/'calls').open('a') as log:log.write(json.dum
     return tmp_path, run, calls
 
 
-@pytest.mark.parametrize('kernel,mount,amount', [('6.0','mount_tmpfs','4m'),('4.0','mount_mfs','8192')])
+@pytest.mark.parametrize('kernel,mount,amount', [('6.0','mount_tmpfs','6m'),('4.0','mount_mfs','13312')])
 def test_boot_prepares_platform_then_execs_native_manager(boot, kernel, mount, amount):
     root, run, calls = boot
     result = run(KERNEL=kernel, BUFCACHE='10')
@@ -145,7 +145,7 @@ def test_boot_installs_both_guards_and_still_prepares_and_starts(boot):
     assert sorted(path.name for path in (root/'ram/sbin').iterdir()) == ['ACPd', *GUARDS]
     # The commands after the guards still ran: their heredocs swallowed nothing.
     operations = calls()
-    assert ['mount_mfs', '-s', '8192', 'swap', str(root/'Locks')] in operations
+    assert ['mount_mfs', '-s', '13312', 'swap', str(root/'Locks')] in operations
     assert operations[-1] == ['service', 'manager']
 
 

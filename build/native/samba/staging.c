@@ -45,6 +45,35 @@ static int clear_directory(const char *path, unsigned depth) {
     closedir(dir);
     return result;
 }
+/* Counted from the files rather than statvfs(): a NetBSD tmpfs's free count
+ * also shrinks with free memory, and st_blocks is the space a file takes on
+ * tmpfs and on NetBSD 4's MFS alike. A file gone between readdir() and lstat()
+ * takes none. */
+static long long directory_bytes(const char *path, unsigned depth) {
+    DIR *dir = opendir(path);
+    struct dirent *entry;
+    struct stat st;
+    long long total = 0;
+    if (!dir)
+        return -1;
+    while ((entry = readdir(dir))) {
+        char child[1024];
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") ||
+            snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) >= (int)sizeof(child) || lstat(child, &st))
+            continue;
+        total += (long long)st.st_blocks * 512;
+        if (S_ISDIR(st.st_mode) && depth == 0) {
+            long long inner = directory_bytes(child, 1);
+            if (inner > 0)
+                total += inner;
+        }
+    }
+    closedir(dir);
+    return total;
+}
+long long tc_samba_locks_bytes(void) {
+    return directory_bytes(TC_LOCKS_ROOT, 0);
+}
 int tc_samba_clear_locks(void) {
     if (clear_directory(TC_LOCKS_ROOT, 0))
         return -1;

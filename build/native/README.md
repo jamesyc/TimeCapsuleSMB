@@ -176,7 +176,8 @@ clears), the title carries `unmounted=<start>` on the `started=` clock and one
 diskd spends in `fsck_hfs` or `newfs_hfs` does not count towards the 10
 minutes; a disk that fails while another serves the Samba files is left to
 doctor's share checks. Doctor reads both words from the title; `unmounted=`
-is its whole verdict.
+is its whole verdict. A restart of smbd with an emptied lock directory
+(`/mnt/Locks` past 4 MiB, DETAIL.md) sends a `locks_reset:<KiB>` heartbeat.
 
 Apple's mDNSResponder and afpserver remain alive; the AFP preference controls
 advertising only. Loopback diskd retains filesystem ownership. Discovery alone

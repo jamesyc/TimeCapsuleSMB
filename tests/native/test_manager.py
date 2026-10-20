@@ -55,6 +55,9 @@ TIMINGS=dict(
     # go through several exits.
     TC_ROLE_RETRY_MS=100,        # device 1 s
     TC_UNMOUNTED_MS=2000,        # device 600 s; whole seconds: tests compare the logged "for N s"
+    TC_LOCKS_CHECK_MS=200,       # device 5 s
+    # The refill test's quiet window lasts about 3 s; this leaves it 5x.
+    TC_LOCKS_RESET_GAP_MS=15000, # device 10 min
 )
 
 CHILD = '''
@@ -205,7 +208,7 @@ if not (root/'no-listener').exists():
         f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
         f'-DTC_FLASH_CONFIG_PATH="{root}/config"',f'-DTC_VOLUMES_ROOT="{root}"',
         f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_FSTAT_PATH="{root}/fstat"',
-        f'-DTC_BUFWAKE_DIR="{root}/wake"',
+        f'-DTC_BUFWAKE_DIR="{root}/wake"',f'-DTC_LOCKS_ROOT="{root}/locks"',
         *(f'-D{name}={value}' for name,value in TIMINGS.items()),
         *extra_flags,
     ])
@@ -215,7 +218,7 @@ if not (root/'no-listener').exists():
 @pytest.fixture
 def manager(manager_tools):
     root,binary=manager_tools
-    for path in ('ram','dk2','dk3','procs','kern'):
+    for path in ('ram','dk2','dk3','procs','kern','locks'):
         shutil.rmtree(root/path,ignore_errors=True)
     hosts=root/'hosts'
     if hosts.is_dir():hosts.rmdir()
@@ -227,6 +230,7 @@ def manager(manager_tools):
     (root/'wake').mkdir(exist_ok=True)
     (root/'procs').mkdir()
     (root/'kern').mkdir()
+    (root/'locks').mkdir()
     kern(root,**APPLE_KERN,**APPLE_TCP)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
@@ -418,6 +422,137 @@ def test_smbd_starts_when_a_sysctl_cannot_be_set(manager,name,readonly,error):
     wait_log(root,f'manager: could not set {prefix}.{name} to {wanted[name]}: {error}')
     # The other settings are still applied, and the pool stays unchanged.
     assert all(smb[other]==str(value) for other,value in wanted.items() if other!=name)
+
+
+# The manager restarts smbd with an empty lock directory once its files take
+# TC_LOCKS_RESET_BYTES (4 MiB), before a full one makes smbd abort.
+LOCKS_RESET=4*1024*1024
+# Within TC_LOCKS_RESET_GAP_MS of a reset, only past 4.75 MiB.
+LOCKS_FULL=4864*1024
+LOCKS_RESET_LOG='restarting smbd with it empty'
+
+
+def seconds_of_day():
+    """Now on the clock the manager's log lines carry."""
+    now=time.localtime()
+    return now.tm_hour*3600+now.tm_min*60+now.tm_sec
+
+
+def locks_resets(root):
+    """(seconds of the day, KiB) of each reset the manager logged."""
+    return [(int(h)*3600+int(m)*60+int(s),int(kib)) for h,m,s,kib in
+            re.findall(r'(\d\d):(\d\d):(\d\d) manager: \S* holds (\d+) KiB; restarting smbd with it empty',
+                       runtime_log(root))]
+
+
+def fill(path,size):
+    # Written, not truncated: the manager counts the space files take.
+    with path.open('ab') as f:f.write(b'\0'*size)
+
+
+def test_a_lock_directory_past_the_limit_restarts_smbd_with_it_empty(manager):
+    root,start,events,wait,_,_=manager
+    locks=root/'locks'
+    (root/'config').write_text('TELEMETRY=1\n')
+    start()
+    # Staging empties the directory before smbd's first start; Samba's files
+    # come after it.
+    first=smbd_starts(wait(started('smbd')))[0]
+    (locks/'msg.lock').mkdir()
+    fill(locks/'msg.lock'/'123',64)
+    fill(locks/'smbXsrv_open_global.tdb',3*1024*1024)
+    # Well under the limit: many checks pass and nothing happens.
+    time.sleep(2)
+    assert LOCKS_RESET_LOG not in runtime_log(root)
+    assert len(smbd_starts(events()))==1 and (locks/'smbXsrv_open_global.tdb').exists()
+    fill(locks/'leases.tdb',LOCKS_RESET-3*1024*1024+64*1024)
+    log=wait_log(root,LOCKS_RESET_LOG)
+    assert re.search(r'manager: \S*locks holds 4\d{3} KiB; restarting smbd with it empty',log)
+    rows=wait(lambda rows:len(smbd_starts(rows))==2)
+    again=smbd_starts(rows)[1]
+    # The usual graceful stop, then a start with every file gone.
+    stops=[e for e in rows if e['kind']=='stop' and e['pid']==first['pid']]
+    assert stops and stops[0]['at']<=again['at']
+    assert list(locks.iterdir())==[]
+    # One heartbeat per reset, with the size the manager logged.
+    [(_,kib)]=locks_resets(root)
+    wait(lambda rows:[r for r in reports(events) if r.startswith('locks_reset')]==[f'locks_reset:{kib}'])
+    # The emptied directory is under the limit: no second reset.
+    time.sleep(1)
+    assert runtime_log(root).count(LOCKS_RESET_LOG)==1 and len(smbd_starts(events()))==2
+
+
+def test_a_refill_soon_after_a_reset_restarts_smbd_only_when_nearly_full(manager):
+    root,start,events,wait,_,_=manager
+    locks=root/'locks'
+    gap=TIMINGS['TC_LOCKS_RESET_GAP_MS']/1000
+    start()
+    wait(started('smbd'))
+    fill(locks/'locking.tdb',LOCKS_RESET+4096)
+    wait_log(root,LOCKS_RESET_LOG)
+    wait(lambda rows:len(smbd_starts(rows))==2)
+    # Past the first limit again, within the gap: smbd keeps running.
+    fill(locks/'locking.tdb',LOCKS_RESET+64*1024)
+    time.sleep(2)
+    [(reset_at,_)]=locks_resets(root)
+    # The window ran inside the gap on the manager's clock (its log's).
+    assert seconds_of_day()-reset_at<gap-1
+    assert len(smbd_starts(events()))==2
+    # Nearly full: it restarts at once, gap or not.
+    fill(locks/'leases.tdb',LOCKS_FULL-LOCKS_RESET)
+    wait(lambda rows:len(locks_resets(root))==2)
+    first,second=locks_resets(root)
+    assert second[0]-first[0]<gap and second[1]>=LOCKS_FULL//1024
+    wait(lambda rows:len(smbd_starts(rows))==3)
+    # Past the first limit once more: the next restart waits out the gap
+    # from the last one, on the manager's own clock.
+    fill(locks/'locking.tdb',LOCKS_RESET+64*1024)
+    wait(lambda rows:len(locks_resets(root))==3,gap+10)
+    third=locks_resets(root)[2]
+    assert gap-1<=third[0]-second[0] and LOCKS_RESET//1024<=third[1]<LOCKS_FULL//1024
+
+
+def test_the_lock_directory_is_emptied_only_once_smbd_has_exited(manager):
+    root,start,events,wait,_,_=manager
+    locks=root/'locks'
+    # An smbd that ignores SIGTERM keeps its files open until the manager's
+    # SIGKILL after TC_CHILD_GRACE_MS; emptying the directory under it would
+    # lose them while it still runs.
+    (root/'smbd-ignore-term').write_text('')
+    start()
+    first=smbd_starts(wait(started('smbd')))[0]
+    fill(locks/'locking.tdb',LOCKS_RESET+4096)
+    wait_log(root,LOCKS_RESET_LOG)
+    while True:
+        try:os.kill(first['pid'],0)
+        except ProcessLookupError:break
+        assert (locks/'locking.tdb').exists()
+        time.sleep(.05)
+    wait(lambda rows:len(smbd_starts(rows))==2)
+    assert list(locks.iterdir())==[]
+    # Telemetry is off: the reset sends no heartbeat.
+    assert reports(events)==[]
+
+
+def test_smbd_restarts_when_the_lock_directory_cannot_be_emptied(manager):
+    root,start,events,wait,_,_=manager
+    locks=root/'locks'
+    stuck=locks/'stuck'
+    try:
+        start()
+        smbd_starts(wait(started('smbd')))
+        stuck.mkdir()
+        fill(stuck/'held',LOCKS_RESET+4096)
+        stuck.chmod(0o500)
+        wait_log(root,LOCKS_RESET_LOG)
+        # Samba truncates its volatile tdb files itself: smbd still starts.
+        wait(lambda rows:len(smbd_starts(rows))==2)
+        assert f'manager: could not empty {locks}; starting smbd anyway' in runtime_log(root)
+        # Still past the first limit, but the gap keeps smbd running.
+        time.sleep(2)
+        assert len(locks_resets(root))==1 and len(smbd_starts(events()))==2
+    finally:
+        if stuck.exists():stuck.chmod(0o700)
 
 
 def test_smbd_starts_when_a_too_high_maxproc_cannot_be_lowered(manager):

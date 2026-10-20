@@ -48,4 +48,7 @@ int tc_rsync_publish(void);
 void tc_rsync_discard(void);
 /* Call only after ownership audit and the entire old smbd group has exited. */
 int tc_samba_clear_locks(void);
+/* The space the files in the lock directory take, msg.lock's included, or
+ * -1 when it cannot be read. */
+long long tc_samba_locks_bytes(void);
 #endif

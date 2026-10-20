@@ -675,16 +675,39 @@ Current behavior:
 
 `rc.local` backgrounds `boot.sh` with stdin/stdout/stderr detached so Apple's
 startup can continue. `boot.sh` performs only platform preparation: RAM
-directories, existing-compatible `/root` prefixes, and the 4 MiB locks
+directories, existing-compatible `/root` prefixes, and the 6 MiB locks
 filesystem. It leaves Apple's kernel tunables, including the buffer cache, as
 the firmware set them. It preserves existing files and mounts, then executes
 `/mnt/Flash/service manager`.
 
-NetBSD 6 uses `mount_tmpfs -s 4m`, retaining its plain-directory fallback if
-mounting fails. NetBSD 4 uses `mount_mfs -s 8192` and refuses rootfs fallback.
-Boot never clears active locks. The native manager first locks its existing
-executable inode, reconciles old processes, and waits for all Samba workers to
-exit before clearing obsolete locks during executable replacement.
+NetBSD 6 uses `mount_tmpfs -s 6m`, retaining its plain-directory fallback if
+mounting fails. NetBSD 4 uses `mount_mfs -s 13312` and refuses rootfs fallback:
+6.5 MiB, of which its UFS keeps 7% (12288 sectors showed 5711 KiB in `df`), so
+both hold about 6 MiB of files.
+Either takes memory only as files grow (an MFS keeps what it once held until
+reboot). Boot never clears active locks. The native manager first locks its
+existing executable inode, reconciles old processes, and waits for all Samba
+workers to exit before clearing obsolete locks during executable replacement.
+
+A full lock directory makes smbd fail opens and abort mid-backup, which can
+leave Time Machine starting new sparse bundles (issue 384). Every 5 s while
+smbd serves, the manager adds up the space the files in `/mnt/Locks` take
+(their `st_blocks`, not `statvfs()`: a NetBSD tmpfs's free count also shrinks
+with free memory). From 4 MiB it logs `manager: /mnt/Locks holds N KiB;
+restarting smbd with it empty`, stops smbd the usual graceful way (SIGTERM,
+then SIGKILL to the group after 10 s), empties the directory once the whole
+group has exited, and starts smbd again; clients reconnect as after a dropped
+connection, and their durable handles are gone. Each reset sends a
+`locks_reset:<KiB>` heartbeat when telemetry is on. For 10 minutes after a
+reset, a refill restarts smbd again only past 4.75 MiB, where one more step of
+every file would fill the directory, so a quick refill cannot keep restarting
+it. Samba truncates its volatile
+tdb files on a clean start only when no process still holds one, so the
+directory is emptied either way. Each tdb file grows in one step of a quarter
+of its size, and `smbXsrv_open_global.tdb`, the largest, holds about two
+thirds of what is used: from 4 MiB every file can still grow once (5 MiB) or
+that one twice (5.5 MiB) while smbd stops, within the 6 MiB either kernel's
+filesystem holds.
 
 ### Native manager
 
