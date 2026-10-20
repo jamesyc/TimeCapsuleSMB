@@ -7,6 +7,7 @@
 #include "lib/util/sys_rw.h"
 #include "lib/global_contexts.h"
 #include <sys/wait.h>
+#include <poll.h>
 #ifdef HAVE_PTHREAD
 #error These regressions must exercise the no-pthread appliance build.
 #endif
@@ -15,7 +16,7 @@
 
 static struct tevent_context *event;
 static int io_fd, fail_fork, fail_send, fail_read, fail_allocation, io_error;
-static bool oversized_reply;
+static bool oversized_reply, fast_reply;
 static pid_t workers[128];
 static size_t worker_count;
 static unsigned destructors;
@@ -89,6 +90,12 @@ static struct tevent_req *controlled_packet_send(TALLOC_CTX *ctx,
 	ssize_t (*more)(uint8_t *, size_t, void *), void *data)
 {
 	if (fail_allocation) { fail_allocation--; return NULL; }
+	if (fast_reply) {
+		/* A helper that answers before this process starts reading: the
+		 * read then completes at once, in read_packet_send. */
+		struct pollfd ready = { .fd = fd, .events = POLLIN };
+		CHECK(poll(&ready, 1, 10000) == 1);
+	}
 	return read_packet_send(ctx, ev, fd, initial, more, data);
 }
 
@@ -261,6 +268,33 @@ static void run_until_active(struct tevent_req *req)
 	}
 }
 
+/*
+ * Run the callbacks of the two requests past the queue limit if they have not
+ * run yet. aio_fork_send runs those synchronously and posts their callbacks.
+ * requests[0]'s reply can be read in its own send, too: read_packet_send tries
+ * one recvmsg before it waits, and a helper that answers before this process
+ * gets there completes the read at once and posts it ahead of them. Then the
+ * FIFO's next turn is queued behind those callbacks, so deliver them before
+ * counting its turns.
+ */
+static void deliver_sync_fallbacks(struct tevent_req **requests, unsigned count)
+{
+	unsigned i, turns;
+	/* requests[0] is active and the next AIO_FORK_MAX_PENDING queued. */
+	for (i = AIO_FORK_MAX_PENDING + 1; i < count; i++)
+		for (turns = 0; !calls_of(requests[i]); turns++) {
+			CHECK(turns < 8);
+			CHECK(tevent_loop_once(event) == 0);
+		}
+}
+
+/* The scenarios test_queue() runs; NAME+fast_reply names one of them too. */
+static bool queue_case(const char *name)
+{
+	return !strcmp(name, "queue") || !strcmp(name, "cancel_queued") || !strcmp(name, "cancel_active") ||
+	       !strcmp(name, "queued_fork_failure");
+}
+
 static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 {
 	struct tevent_req *requests[AIO_FORK_MAX_PENDING + 3];
@@ -287,7 +321,10 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 	if (!strcmp(scenario, "cancel_active")) {
 		/* Freed while its helper works: the helper stays, busy with the
 		 * pending reply, instead of being killed, and nothing else is
-		 * dispatched or completed inside the destructor. */
+		 * dispatched or completed inside the destructor. With
+		 * fast_reply the reply is already read and only its callback
+		 * waits: the destructor hands that finished read over the same
+		 * way. */
 		TALLOC_FREE(requests[0]);
 		CHECK(list->num_children == 1 && list->children == worker);
 		CHECK(worker->busy && worker->orphan_read != NULL);
@@ -307,6 +344,7 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 		finish(requests[0], -1, EIO);
 		requests[0] = NULL;
 		CHECK(list->num_children == 0);
+		deliver_sync_fallbacks(requests, count);
 		for (i = 1; i <= AIO_FORK_MAX_PENDING; i++) {
 			CHECK(calls_of(requests[i]) == 0);
 			CHECK(tevent_loop_once(event) == 0);
@@ -326,6 +364,11 @@ static void test_queue(struct vfs_handle_struct *h, const char *scenario)
 		}
 		finish(requests[i], 4, 0);
 		CHECK(!memcmp(buffers[i], "data", 4));
+		/* Only after requests[0]: in cancel_active it is gone and
+		 * run_until_active() ran the synchronous fallbacks' callbacks,
+		 * and in queued_fork_failure deliver_sync_fallbacks() already
+		 * did. */
+		if (i == 0) deliver_sync_fallbacks(requests, count);
 	}
 	CHECK(list->num_pending == 0 && list->pending == NULL);
 	fail_fork = 0;
@@ -657,7 +700,17 @@ int main(int argc, char **argv)
 	struct vfs_handle_struct *h;
 	int *marker, status;
 	size_t i;
+	char *suffix;
 	CHECK(argc == 2);
+	/* NAME+fast_reply runs NAME with every helper reply read in its send. */
+	suffix = strstr(argv[1], "+fast_reply");
+	if (suffix != NULL && suffix[strlen("+fast_reply")] == '\0') {
+		*suffix = '\0';
+		fast_reply = true;
+		/* Only the queue scenarios count turns that a reply read in its
+		 * send can shift; anything else would run unchanged. */
+		CHECK(queue_case(argv[1]));
+	}
 	if (test_exit_handlers(argv[1])) {
 		/* The check is the process exiting 0 after its handlers ran. */
 		printf("PASS %s\n", argv[1]);
@@ -680,8 +733,7 @@ int main(int argc, char **argv)
 	CHECK(io_fd >= 0 && unlink(path) == 0);
 	CHECK(write(io_fd, "data", 4) == 4);
 	h = share(frame, 1);
-	if (!strcmp(argv[1], "queue") || !strncmp(argv[1], "cancel_", 7) ||
-	    !strcmp(argv[1], "queued_fork_failure")) test_queue(h, argv[1]);
+	if (queue_case(argv[1])) test_queue(h, argv[1]);
 	else if (!strcmp(argv[1], "teardown")) test_teardown(h);
 	else if (!strcmp(argv[1], "orphan_error")) test_orphan_error(h);
 	else if (strstr(argv[1], "failure")) test_failures(h, argv[1]);
@@ -703,6 +755,6 @@ int main(int argc, char **argv)
 	close(io_fd);
 	TALLOC_FREE(frame);
 	CHECK(destructors == 1 && !talloc_stackframe_exists());
-	printf("PASS %s\n", argv[1]);
+	printf("PASS %s%s\n", argv[1], fast_reply ? "+fast_reply" : "");
 	return 0;
 }

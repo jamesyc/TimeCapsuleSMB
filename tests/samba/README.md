@@ -64,7 +64,14 @@ disk.
 The cases cover talloc isolation through the real AIO fork path, preservation of
 worker errors, successful and failed synchronous fallback, worker limits and
 share isolation, FIFO saturation, cancellation, worker failure recovery and idle
-cleanup. Durable tests cover live-to-disconnected transition, bounded retry
+cleanup. The queue cases (`queue`, `cancel_queued`, `cancel_active`,
+`queued_fork_failure`) also run as `NAME+fast_reply`: each helper reply is
+already readable when the read starts, so `read_packet_send()` completes it in
+its send and posts it ahead of the requests past the queue limit, as happens
+at random on a loaded host. They must count the queue's turns the same way.
+`cancel_active+fast_reply` also frees `requests[0]` after its reply was read
+but before its callback ran, where the plain case frees it while its helper
+still works. Only those cases take the suffix. Durable tests cover live-to-disconnected transition, bounded retry
 exhaustion, unlocked waiting and identity/ownership rejection. They do not assert
 the literal retry limit of 34. The `scavenger_hello_*` cases run the smbd
 parent's wait for a new scavenger's hello (patch 0075) against a forked child
