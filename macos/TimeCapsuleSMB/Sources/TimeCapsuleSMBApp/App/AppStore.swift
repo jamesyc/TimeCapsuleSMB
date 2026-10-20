@@ -59,7 +59,7 @@ final class AppStore: ObservableObject {
             passwordStore: passwordStore
         )
         self.activityStore = activityStore ?? ActivityStore(coordinator: operationCoordinator)
-        self.appUpdateStore = appUpdateStore ?? AppUpdateStore(coordinator: operationCoordinator)
+        self.appUpdateStore = appUpdateStore ?? AppUpdateStore()
         self.deviceDiscovery = deviceDiscovery ?? DeviceDiscoveryStore(
             coordinator: operationCoordinator,
             readinessStore: appReadinessStore,
@@ -134,7 +134,7 @@ final class AppStore: ObservableObject {
         appReadinessStore.start()
         deviceDiscovery.startMonitoring()
         if appSettingsStore.settings.checkForUpdatesOnLaunch {
-            appUpdateStore.checkNow(settings: appSettingsStore.settings)
+            appUpdateStore.checkNow(automatically: true)
         }
     }
 

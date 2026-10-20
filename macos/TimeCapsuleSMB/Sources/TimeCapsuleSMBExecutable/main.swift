@@ -27,5 +27,8 @@ struct TimeCapsuleSMBExecutable: App {
         WindowGroup {
             ContentView()
         }
+        .commands {
+            AppUpdateCommands()
+        }
     }
 }

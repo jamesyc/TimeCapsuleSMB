@@ -25,6 +25,10 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Profile vfs_aio_fork: true"))
         XCTAssertTrue(text.contains("- Active device:profile-one: deploy"))
         XCTAssertTrue(text.contains("- Pending Confirmation: none"))
+        XCTAssertTrue(text.contains("- Source: https://api.github.com/repos/jamesyc/TimeCapsuleSMB/releases/latest"))
+        XCTAssertTrue(text.contains("- Installed Version: 2.1.4"))
+        XCTAssertTrue(text.contains("- Latest Tag: v2.1.4"))
+        XCTAssertTrue(text.contains("- Update Available: false"))
     }
 
     func testExportShowsTheLastCheckupAndEachSection() {
@@ -182,7 +186,14 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             ),
             runtimeIssues: [],
             updateState: .current,
-            updatePayload: versionPayload(),
+            updatePayload: AppUpdateResult(
+                installedVersion: "2.1.4",
+                release: GitHubAppRelease(
+                    tag: "v2.1.4",
+                    downloadURL: URL(string: "https://github.com/jamesyc/TimeCapsuleSMB/releases/download/v2.1.4/TimeCapsuleSMB.app.zip")!
+                ),
+                updateAvailable: false
+            ),
             updateError: nil,
             selectedProfile: profile(),
             selectedProfileIsFallback: false,

@@ -13,7 +13,7 @@ struct DiagnosticsExportContext {
     var validation: InstallValidationPayload?
     var runtimeIssues: [BundleRuntimeIssue]
     var updateState: AppUpdateState
-    var updatePayload: VersionCheckPayload?
+    var updatePayload: AppUpdateResult?
     var updateError: BackendErrorViewModel?
     var selectedProfile: DeviceProfile?
     var selectedProfileIsFallback: Bool
@@ -82,13 +82,11 @@ struct DiagnosticsExportBuilder {
         appendSection("Updates", to: &lines) { lines in
             append("State", value: context.updateState.title, to: &lines)
             if let payload = context.updatePayload {
-                append("Summary", value: payload.summary, to: &lines)
-                append("Source", value: payload.source, to: &lines)
-                append("Local Version Code", value: payload.localVersionCode, to: &lines)
-                append("Current Version", value: payload.currentVersion.map(String.init) ?? "unknown", to: &lines)
-                append("Minimum Supported Version", value: payload.minSupportedVersion.map(String.init) ?? "unknown", to: &lines)
-                append("Latest Tag", value: payload.latestTag ?? "unknown", to: &lines)
-                append("Download URL", value: payload.downloadURL, to: &lines)
+                append("Source", value: GitHubReleaseChecker.feedURL.absoluteString, to: &lines)
+                append("Installed Version", value: payload.installedVersion, to: &lines)
+                append("Latest Tag", value: payload.release.tag, to: &lines)
+                append("Update Available", value: payload.updateAvailable, to: &lines)
+                append("Download URL", value: payload.release.downloadURL.absoluteString, to: &lines)
             }
             if let error = context.updateError {
                 append("Error", value: "\(error.operation) \(error.code): \(error.diagnosticMessage ?? error.message)", to: &lines)

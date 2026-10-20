@@ -1,9 +1,11 @@
 import SwiftUI
 
 public struct ContentView: View {
+    @Environment(\.openURL) private var openURL
     @StateObject private var appStore: AppStore
     @ObservedObject private var appReadinessStore: AppReadinessStore
     @ObservedObject private var appSettingsStore: AppSettingsStore
+    @ObservedObject private var appUpdateStore: AppUpdateStore
     @ObservedObject private var deviceRegistry: DeviceRegistryStore
     @ObservedObject private var operationCoordinator: OperationCoordinator
     @ObservedObject private var activityStore: ActivityStore
@@ -29,6 +31,7 @@ public struct ContentView: View {
         _appStore = StateObject(wrappedValue: composition.appStore)
         _appReadinessStore = ObservedObject(wrappedValue: composition.appStore.appReadinessStore)
         _appSettingsStore = ObservedObject(wrappedValue: composition.appStore.appSettingsStore)
+        _appUpdateStore = ObservedObject(wrappedValue: composition.appStore.appUpdateStore)
         _deviceRegistry = ObservedObject(wrappedValue: composition.appStore.deviceRegistry)
         _operationCoordinator = ObservedObject(wrappedValue: composition.appStore.operationCoordinator)
         _activityStore = ObservedObject(wrappedValue: composition.appStore.activityStore)
@@ -111,6 +114,10 @@ public struct ContentView: View {
         .frame(minWidth: 1080, minHeight: 720)
         .preferredColorScheme(appSettingsStore.settings.appearance.preferredColorScheme(systemColorScheme: systemColorScheme))
         .background(WindowCloseGuardInstaller())
+        .focusedSceneValue(\.appUpdateAction, AppUpdateAction(
+            isChecking: appUpdateStore.isChecking,
+            check: { appUpdateStore.checkNow() }
+        ))
         .onAppear {
             configureCloseGuard()
             systemColorScheme = SystemAppearance.currentColorScheme
@@ -180,6 +187,26 @@ public struct ContentView: View {
             Text(deleteErrorMessage ?? "")
         }
         .alert(
+            appUpdateStore.notice?.title ?? "",
+            isPresented: updateNoticePresented,
+            presenting: appUpdateStore.notice
+        ) { notice in
+            if case .available(let result) = notice {
+                Button(L10n.string("app_update.download")) {
+                    openURL(result.release.downloadURL) { accepted in
+                        if !accepted {
+                            Task { @MainActor in appUpdateStore.downloadOpeningFailed() }
+                        }
+                    }
+                }
+                Button(L10n.string("app_update.later"), role: .cancel) {}
+            } else {
+                Button(L10n.string("action.ok"), role: .cancel) {}
+            }
+        } message: { notice in
+            Text(notice.message)
+        }
+        .alert(
             operationCoordinator.readyConfirmation?.title ?? "",
             isPresented: confirmationPresented,
             presenting: operationCoordinator.readyConfirmation
@@ -200,6 +227,13 @@ public struct ContentView: View {
         } message: { confirmation in
             Text(confirmation.message)
         }
+    }
+
+    private var updateNoticePresented: Binding<Bool> {
+        Binding(
+            get: { appUpdateStore.notice != nil },
+            set: { if !$0 { appUpdateStore.notice = nil } }
+        )
     }
 
     private var deleteConfirmationPresented: Binding<Bool> {

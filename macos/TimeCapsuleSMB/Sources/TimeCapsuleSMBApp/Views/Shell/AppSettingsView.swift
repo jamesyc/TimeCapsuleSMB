@@ -71,13 +71,9 @@ struct AppSettingsView: View {
 
                 SettingsFormSection(title: L10n.string("app_settings.section.updates"), contentWidth: contentWidth) {
                     Toggle(L10n.string("app_settings.check_updates_on_launch"), isOn: $editor.draft.checkForUpdatesOnLaunch)
-                    SettingsFormRow(title: L10n.string("app_settings.version_url")) {
-                        TextField(L10n.string("value.auto"), text: $editor.draft.versionCheckURL)
-                            .frame(maxWidth: 420)
-                    }
                     HStack(spacing: 10) {
                         Button {
-                            appUpdateStore.checkNow(settings: appSettingsStore.settings)
+                            appUpdateStore.checkNow()
                         } label: {
                             Label(L10n.string("app_settings.check_now"), systemImage: "arrow.clockwise")
                         }
@@ -91,12 +87,22 @@ struct AppSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(updateStatusColor)
                     }
+                    if let result = appUpdateStore.payload, result.updateAvailable {
+                        Link(L10n.string("app_update.download"), destination: result.release.downloadURL)
+                    }
                     if let error = appUpdateStore.error {
                         // Retry is the one action this screen carries out.
                         ErrorRecoveryView(error: error) { kind in
-                            kind == .retry ? { appUpdateStore.checkNow(settings: appSettingsStore.settings) } : nil
+                            kind == .retry ? { appUpdateStore.checkNow() } : nil
                         }
                     }
+                    SettingsFormRow(title: L10n.string("app_settings.version_url")) {
+                        TextField(L10n.string("value.auto"), text: $editor.draft.versionCheckURL)
+                            .frame(maxWidth: 420)
+                    }
+                    Text(L10n.string("app_update.feed_description"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 SettingsFormSection(title: L10n.string("app_settings.section.privacy"), contentWidth: contentWidth) {
@@ -172,9 +178,6 @@ struct AppSettingsView: View {
     }
 
     private var updateStatusText: String {
-        if let payload = appUpdateStore.payload {
-            return payload.localizedSummary
-        }
         return appUpdateStore.state.title
     }
 

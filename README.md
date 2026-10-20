@@ -68,6 +68,13 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 
 Please [read the FAQ](FAQ.md) for more information. If you have an issue that could not be resolved via the FAQ, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help.
 
+The app checks GitHub Releases for newer stable versions on launch. You can turn
+this off in Settings or check manually with **TimeCapsuleSMB > Check for Updates...**.
+When an update is available, **Download Update** opens the release's
+`TimeCapsuleSMB.app.zip` download in your browser. Unzip it and replace the
+installed app; updates are not installed automatically. This updates the Mac app,
+not Samba on your Time Capsule.
+
 ## Quick Start (with python)
 
 Download (or run `git clone`) this repository to a folder on your Mac or Linux machine.

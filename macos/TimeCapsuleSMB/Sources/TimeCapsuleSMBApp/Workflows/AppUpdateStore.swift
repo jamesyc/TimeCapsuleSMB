@@ -30,112 +30,104 @@ enum AppUpdateState: String, Equatable {
 @MainActor
 final class AppUpdateStore: ObservableObject {
     @Published private(set) var state: AppUpdateState = .idle
-    @Published private(set) var payload: VersionCheckPayload?
+    @Published private(set) var payload: AppUpdateResult?
     @Published private(set) var error: BackendErrorViewModel?
-    @Published private(set) var currentStage: OperationStageState?
+    @Published var notice: AppUpdateNotice?
 
-    let lane: OperationLane
+    private let checker: AppReleaseChecking
+    private let installedVersion: String?
 
-    private let operationObserver = BackendOperationObserver()
-    private var cancellables: Set<AnyCancellable> = []
-
-    init(coordinator: OperationCoordinator) {
-        self.lane = coordinator.lane(for: .localPath("app-update"))
-        lane.backend.$events
-            .sink { [weak self] events in
-                Task { @MainActor in
-                    self?.process(events)
-                }
-            }
-            .store(in: &cancellables)
-        lane.backend.$isRunning
-            .dropFirst()
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
+    init(
+        checker: AppReleaseChecking = GitHubReleaseChecker(),
+        installedVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    ) {
+        self.checker = checker
+        self.installedVersion = installedVersion
     }
 
     var isChecking: Bool {
-        lane.backend.isRunning
+        state == .checking
     }
 
-    func checkNow(settings: AppSettings) {
-        guard !lane.isBusy else {
-            state = .failed
-            error = BackendErrorViewModel(
-                operation: "version-check",
-                code: "operation_rejected",
-                message: L10n.string("operation.error.already_running")
-            )
-            return
-        }
-        lane.clear()
-        operationObserver.clear()
+    func checkNow(automatically: Bool = false) {
+        guard !isChecking else { return }
         state = .checking
         payload = nil
         error = nil
-        currentStage = nil
+        notice = nil
 
-        let params = OperationParams.Readiness.versionCheck(url: settings.versionCheckURL)
-        switch lane.run(operation: "version-check", params: params, context: nil, activeDeviceID: nil) {
-        case .started(let operation):
-            operationObserver.start(operation)
-            process(lane.backend.events)
-        case .rejected(let message):
-            state = .failed
-            operationObserver.clear()
-            error = BackendErrorViewModel(
-                operation: "version-check",
-                code: "operation_rejected",
-                message: message
-            )
-        }
-    }
-
-    private func process(_ events: [BackendEvent]) {
-        operationObserver.process(events) { event, _ in
-            handle(event)
-        }
-    }
-
-    private func handle(_ event: BackendEvent) {
-        guard event.operation == "version-check" else {
-            return
-        }
-        if let stage = OperationStageState(event: event) {
-            currentStage = stage
-            return
-        }
-        if event.type == "error" {
-            error = BackendErrorViewModel(event: event)
-            state = .failed
-            operationObserver.finish()
-            return
-        }
-        guard event.type == "result" else {
-            return
-        }
-        do {
-            let result = try event.decodePayload(VersionCheckPayload.self)
-            payload = result
-            if result.shouldBlock || result.updateAvailable {
-                state = .updateAvailable
-            } else if result.source == "unavailable" {
-                state = .unavailable
-            } else {
-                state = .current
+        Task {
+            do {
+                guard let installedVersion, let installed = AppReleaseVersion(installedVersion) else {
+                    throw AppUpdateError.installedVersionUnavailable
+                }
+                let release = try await checker.latestRelease()
+                guard let latest = AppReleaseVersion(release.tag), !latest.isPrerelease else {
+                    throw AppUpdateError.invalidRelease
+                }
+                let result = AppUpdateResult(
+                    installedVersion: installedVersion,
+                    release: release,
+                    updateAvailable: latest.isNewerStableRelease(than: installed)
+                )
+                payload = result
+                state = result.updateAvailable ? .updateAvailable : .current
+                if result.updateAvailable {
+                    notice = .available(result)
+                } else if !automatically {
+                    notice = .current
+                }
+            } catch {
+                self.error = BackendErrorViewModel(
+                    operation: "release-check",
+                    code: "release_check_failed",
+                    message: error.localizedDescription
+                )
+                state = .failed
+                if !automatically {
+                    notice = .failed(error.localizedDescription)
+                }
             }
-            error = nil
-            operationObserver.finish()
-        } catch {
-            self.error = BackendErrorViewModel(
-                operation: "version-check",
-                code: "contract_decode_failed",
-                message: error.localizedDescription
-            )
-            state = .failed
-            operationObserver.finish()
+        }
+    }
+
+    func downloadOpeningFailed() {
+        let message = AppUpdateError.openDownloadFailed.localizedDescription
+        error = BackendErrorViewModel(operation: "release-check", code: "open_download_failed", message: message)
+        notice = .failed(message)
+    }
+}
+
+struct AppUpdateResult: Equatable {
+    let installedVersion: String
+    let release: GitHubAppRelease
+    let updateAvailable: Bool
+}
+
+enum AppUpdateNotice: Equatable {
+    case available(AppUpdateResult)
+    case current
+    case failed(String)
+
+    var title: String {
+        switch self {
+        case .available:
+            return L10n.string("app_update.alert.available_title")
+        case .current:
+            return AppUpdateState.current.title
+        case .failed:
+            return AppUpdateState.failed.title
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .available(let result):
+            return L10n.format("app_update.alert.available_message", result.release.tag, result.installedVersion)
+        case .current:
+            return L10n.string("app_update.alert.current_message")
+        case .failed(let message):
+            return message
         }
     }
 }
