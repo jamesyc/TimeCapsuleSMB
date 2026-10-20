@@ -44,6 +44,7 @@ DURABLE_CASES = (
     "rename_message", "rename_message_other_share", "rename_case_only",
     "rename_message_reused_path", "rename_stat_failure",
     "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_silent",
+    "rescan_dead_owners", "rescan_nothing_dead", "cleanup_dead_owner", "cleanup_live_owner",
 )
 
 STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
@@ -126,6 +127,11 @@ def stage(source: Path) -> None:
     scavenger = (source / "source3/smbd/scavenger.c").read_text()
     (modules / "tc_scavenger_hello.inc").write_text(
         cut(scavenger, "#ifndef TC_SCAVENGER_HELLO_SECONDS", "static bool scavenger_wait_hello(") + "\n")
+    # The walk after an unclean exit (patch 0077) and the message it builds.
+    message = scavenger.index("struct scavenger_message {")
+    (modules / "tc_scavenger_rescan.inc").write_text(
+        scavenger[message:scavenger.index("};", message) + 2] + "\n\n"
+        + cut(scavenger, "struct scavenger_rescan_rec {", "static size_t scavenger_rescan(void)") + "\n")
     # Exercise the real descendant rename and its per-file bookkeeping.
     reply = (source / "source3/smbd/smb2_reply.c").read_text()
     (modules / "tc_rename_open_files.inc").write_text(

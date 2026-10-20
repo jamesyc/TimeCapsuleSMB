@@ -369,6 +369,22 @@ expires it at its 30 s grant has already run. Then the
 scavenger must expire the other, so the reconnect is refused and another client's exclusive open gets the
 file within 15 s (a stale lease's break would take
 35 s; the margin covers a data disk that spun down during the wait). The
+`orphan:` cases read `/mnt/Locks` over SSH (`tdb_records.py`, the devices
+have no tdbdump) to check what stays once opens lose their owner (issue 384,
+patch 0077); a copy that does not parse as a tdb counts as not yet, never as
+an empty one. `orphan:killed` kills the smbd that the client's 20 durable,
+leased open records name, and only when they all name the same one, which
+started serving a client with the test's connection;
+within 60 s every open, replay and lease record of it must be gone, and the
+log must name the signal and the release. `orphan:superseded` drops a
+connection holding 5 durable, leased opens and opens the same files from a
+new client GUID, as a Mac that wakes and mounts afresh does: the old leases
+must go within 60 s, not stay for good, and the new client's must stay.
+`orphan:failed-reconnect` grows a
+dropped open's file over SSH so its reconnect fails after reattaching the
+share entry and taking over the open's byte-range lock: the lease must go at
+once, another client must get the same lock at once, and the open must keep
+its own disconnect time until it expires (up to 5.5 minutes). The
 macOS case stops the smbd serving a mount for `--stall` seconds (default 60; 0 skips it) while a write is pending
 and checks that the Mac's reconnect keeps the handle and its data. It works in a
 `__tc_durable_test__` folder and removes it at the end.

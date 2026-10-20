@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from tests.device_ps import ps_row
-from tests.samba import device_processes, durable_device
+from tests.samba import device_processes, durable_device, tdb_records
 from tests.samba.durable_device import (DURABLE_TIMEOUT_SECONDS, OLD_SMBD_EXIT_SECONDS, REQUESTED_TIMEOUT_MSEC,
                                         STATUS_OBJECT_NAME_NOT_FOUND, _scavengers,
                                         serves_client)
@@ -454,6 +454,272 @@ class ExpiryCaseTest(unittest.TestCase):
     def test_a_handle_retained_past_the_deadline_fails_expiry(self) -> None:
         results, _, _, _, _ = self.run_case(exit_seconds=100, retention=1000)
         self.assertEqual(results.failed, ["expiry: the expired handle no longer reconnects"])
+
+
+GUID = b"\x11" * 16
+KILLED_CHECKS = ["orphan:killed: one smbd serves the client and holds every open",
+                 "orphan:killed: the dead smbd's opens, replay records and leases are released",
+                 "orphan:killed: the parent logs the signal and the scavenger the release",
+                 "orphan:killed: a reconnect of a released open is refused"]
+SUPERSEDED_CHECKS = ["orphan:superseded: the dropped opens are disconnected and keep their leases",
+                     "orphan:superseded: the new client's opens release the old leases",
+                     "orphan:superseded: the new client keeps its own leases"]
+OTHER_GUID = b"\x22" * 16
+FAILED_CHECKS = ["orphan:failed-reconnect: the open locks its first byte",
+                 "orphan:failed-reconnect: the dropped open is disconnected",
+                 "orphan:failed-reconnect: the reconnect is refused",
+                 "orphan:failed-reconnect: its lease is gone at once",
+                 "orphan:failed-reconnect: its open stays disconnected with its own disconnect time",
+                 "orphan:failed-reconnect: another client locks the same byte at once",
+                 "orphan:failed-reconnect: the open and its replay record expire"]
+STATUS_LOCK_NOT_GRANTED = 0xC0000055  # what a fail-at-once lock gets on the device
+
+
+class OrphanLocks:
+    """What /mnt/Locks holds of the client, as the device would answer
+    _orphans(): the opens, their replay records and leases. Each case's
+    device behaviour is a set of times on the fake clock."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.opens: list[tdb_records.Open] = []
+        self.replays = self.leases = 0
+        # Leases of other client GUIDs.
+        self.other_leases: dict[bytes, int] = {}
+        self.release_at: float | None = None
+        self.commands: list[str] = []
+        # The smbd each new open of the client is stored under, in turn.
+        self.owner_pids = [3994]
+        # A copy of /mnt/Locks that does not parse, as a failed cat gives.
+        self.invalid = self.invalid_after_kill = False
+        # The failed reconnect kept the open's byte-range lock.
+        self.lock_conflict = False
+
+    def sh(self, command: str, *, check: bool = True) -> str:
+        self.commands.append(command)
+        return ""
+
+    def orphans(self, _device, guid, owner=None):
+        if self.invalid:
+            raise tdb_records.InvalidTdb("no tdb header in 0 bytes")
+        if self.release_at is not None and self.clock.now >= self.release_at:
+            self.opens, self.replays, self.leases = [], 0, 0
+        if guid != GUID:
+            return [], 0, self.other_leases.get(guid, 0)
+        return ([o for o in self.opens if owner is None or o.pid == owner], self.replays, self.leases)
+
+
+class OrphanClient:
+    """DurableClient as orphan_case uses it; reconnects are refused."""
+
+    def __init__(self, locks: OrphanLocks, on_reconnect=None, guid: bytes = GUID, on_open=None) -> None:
+        self.client_guid = mock.Mock(bytes=guid)
+        self.lease_key = self.create_guid = None
+        self.locks, self.on_reconnect, self.on_open = locks, on_reconnect, on_open
+        self.conns: list[mock.Mock] = []
+
+    def connect(self, previous_session_id: int = 0):
+        conn = mock.Mock()
+        self.conns.append(conn)
+        return conn, mock.Mock(), mock.Mock()
+
+    def open_durable(self, tree, path):
+        guid = self.client_guid.bytes
+        if guid != GUID:
+            # Another client: its open may drop the first client's entries.
+            self.locks.other_leases[guid] = self.locks.other_leases.get(guid, 0) + 1
+            if self.on_open:
+                self.on_open(self.locks)
+            handle = mock.Mock(file_id=b"other")
+            if self.locks.lock_conflict:
+                handle.lock.side_effect = ResponseError(STATUS_LOCK_NOT_GRANTED)
+            return handle, True
+        n = len(self.locks.opens)
+        pid = self.locks.owner_pids[n % len(self.locks.owner_pids)]
+        self.locks.opens.append(tdb_records.Open(n + 1, pid, 0, GUID))
+        self.locks.replays += 1
+        self.locks.leases += 1
+        return mock.Mock(file_id=b"id%d" % n), True
+
+    def reconnect(self, tree, path, file_id):
+        if self.on_reconnect:
+            self.on_reconnect()
+        raise ResponseError(STATUS_OBJECT_NAME_NOT_FOUND)
+
+
+class OrphanCaseTest(unittest.TestCase):
+    def run_case(self, mode, *, release_after=None, logged=None, on_reset=None, on_reconnect=None, on_other_open=None,
+                 setup=None, children=None):
+        clock = FakeClock()
+        locks = OrphanLocks(clock)
+        if setup:
+            setup(locks)
+        client = OrphanClient(locks, on_reconnect and (lambda: on_reconnect(locks)))
+        clients = iter([client, OrphanClient(locks, guid=OTHER_GUID, on_open=on_other_open)])
+
+        def kill_or_sh(command, *, check=True):
+            locks.sh(command)
+            if command == "kill -9 3994" and release_after is not None:
+                locks.release_at = clock.now + release_after
+            if command.startswith("kill -9 ") and locks.invalid_after_kill:
+                locks.invalid = True
+            # fstat's output names the process; serves_client is faked on it.
+            return command if command.startswith("/usr/bin/fstat -p ") else ""
+
+        locks_device = mock.Mock(root="/Volumes/dk2/Share", sh=kill_or_sh)
+        # 3994 serves this client; a scavenger forked meanwhile (4100) does not.
+        children = children or [[457], [457, 3994, 4100]]
+        results = Results()
+        with mock.patch.object(durable_device, "time", clock), \
+                mock.patch.object(durable_device, "DurableClient", lambda _device: next(clients)), \
+                mock.patch.object(durable_device, "_smbd_children", side_effect=children), \
+                mock.patch.object(durable_device, "serves_client", lambda fstat: "3994" in fstat), \
+                mock.patch.object(durable_device, "_orphans", locks.orphans), \
+                mock.patch.object(durable_device, "_smbd_log", return_value=("log.smbd", 100)), \
+                mock.patch.object(durable_device, "_smbd_log_since", return_value=logged or ""), \
+                mock.patch.object(durable_device, "_reset", lambda conn: on_reset(locks, clock)), \
+                mock.patch("smbprotocol.exceptions.SMBResponseException", ResponseError), \
+                contextlib.redirect_stdout(io.StringIO()):
+            durable_device.orphan_case(results, locks_device, mode)
+        return results, locks, client, clock
+
+    LOGGED = "child 3994 ended by signal 9\n... removed 20 opens left by exited smbds\n"
+
+    def test_killed_smbd_released_at_once_passes(self) -> None:
+        results, locks, client, _ = self.run_case("killed", release_after=5, logged=self.LOGGED)
+        self.assertEqual(results.failed, [])
+        self.assertEqual(results.passed, len(KILLED_CHECKS))
+        self.assertIn("kill -9 3994", locks.commands)
+        for conn in client.conns:
+            conn.disconnect.assert_called()
+
+    def test_killed_smbd_records_that_stay_fail_the_release(self) -> None:
+        # Before 0077 nothing releases them: the 60 s wait runs out.
+        results, _, _, clock = self.run_case("killed", logged=self.LOGGED)
+        self.assertEqual(results.failed, [KILLED_CHECKS[1]])
+        self.assertGreaterEqual(clock.now - 1000, durable_device.ORPHAN_RELEASE_SECONDS)
+
+    def assert_no_kill(self, locks) -> None:
+        self.assertFalse([c for c in locks.commands if c.startswith("kill")])
+
+    def test_killed_opens_stored_under_two_smbds_send_no_kill(self) -> None:
+        results, locks, _, _ = self.run_case("killed", release_after=5, logged=self.LOGGED,
+                                             setup=lambda locks: setattr(locks, "owner_pids", [3994, 4001]))
+        self.assertEqual(results.failed, [KILLED_CHECKS[0]])
+        self.assert_no_kill(locks)
+
+    def test_killed_owner_that_started_no_client_connection_is_not_killed(self) -> None:
+        # Another client's smbd (100) appeared between the snapshots; the
+        # client's own records name 3994, which is not among them.
+        results, locks, _, _ = self.run_case("killed", release_after=5, logged=self.LOGGED,
+                                             children=[[457], [457, 100, 4100]])
+        self.assertEqual(results.failed, [KILLED_CHECKS[0]])
+        self.assert_no_kill(locks)
+        self.assertNotIn("kill -9 100", locks.commands)
+
+    def test_killed_unreadable_open_records_send_no_kill(self) -> None:
+        results, locks, _, _ = self.run_case("killed", release_after=5, logged=self.LOGGED,
+                                             setup=lambda locks: setattr(locks, "invalid", True))
+        self.assertEqual(results.failed, [KILLED_CHECKS[0]])
+        self.assert_no_kill(locks)
+
+    def test_killed_copies_that_stop_parsing_never_count_as_released(self) -> None:
+        # An empty or cut-short cat would otherwise read as "no records".
+        results, locks, _, clock = self.run_case("killed", logged=self.LOGGED,
+                                                 setup=lambda locks: setattr(locks, "invalid_after_kill", True))
+        self.assertIn("kill -9 3994", locks.commands)
+        self.assertIn(KILLED_CHECKS[1], results.failed)
+        self.assertGreaterEqual(clock.now - 1000, durable_device.ORPHAN_RELEASE_SECONDS)
+
+    def test_killed_smbd_released_without_its_log_lines_fails_the_log_check(self) -> None:
+        results, _, _, _ = self.run_case("killed", release_after=5, logged="removed 20 opens left by exited smbds\n")
+        self.assertEqual(results.failed, [KILLED_CHECKS[2]])
+
+    def superseded(self, *, released=True, own_kept=True, leases_at_reset=None):
+        """The reset leaves the 5 opens disconnected with their leases (or
+        leases_at_reset of them); each of the new client's opens releases
+        the old leases or not, and keeps its own or not."""
+        n = durable_device.ORPHAN_SUPERSEDED_OPENS
+
+        def reset(locks, clock):
+            locks.opens = [tdb_records.Open(i + 1, tdb_records.DISCONNECTED_PID, 2000, GUID) for i in range(n)]
+            if leases_at_reset is not None:
+                locks.leases = leases_at_reset
+
+        def other_open(locks):
+            if released:
+                locks.leases = 0
+            if not own_kept:
+                locks.other_leases[OTHER_GUID] = 0
+
+        return self.run_case("superseded", on_reset=reset, on_other_open=other_open)
+
+    def test_superseded_leases_released_with_the_dropped_entries_pass(self) -> None:
+        results, locks, client, _ = self.superseded()
+        self.assertEqual(results.failed, [])
+        self.assertEqual(results.passed, len(SUPERSEDED_CHECKS))
+        self.assertEqual(locks.other_leases[OTHER_GUID], durable_device.ORPHAN_SUPERSEDED_OPENS)
+        client.conns[0].disconnect.assert_called()
+
+    def test_superseded_leases_that_stay_fail_after_the_release_wait(self) -> None:
+        # Before 0077 the dropped entries' leases stayed in leases.tdb for good.
+        results, _, _, clock = self.superseded(released=False)
+        self.assertEqual(results.failed, [SUPERSEDED_CHECKS[1]])
+        self.assertGreaterEqual(clock.now - 1000, durable_device.ORPHAN_RELEASE_SECONDS)
+
+    def test_superseded_release_that_takes_the_new_clients_leases_fails(self) -> None:
+        results, _, _, _ = self.superseded(own_kept=False)
+        self.assertEqual(results.failed, [SUPERSEDED_CHECKS[2]])
+
+    def test_superseded_leases_gone_before_the_new_client_fail_the_setup_check(self) -> None:
+        # Nothing would show a lease kept by the dropped entries.
+        results, _, _, _ = self.superseded(leases_at_reset=0)
+        self.assertEqual(results.failed, [SUPERSEDED_CHECKS[0]])
+
+    def failed_reconnect(self, *, lease_kept=False, time_after=None, expires=True, lock_kept=False):
+        """The dropped open is disconnected at 2000 (NTTIME units are
+        irrelevant here); the failed reconnect then leaves its lease or not
+        and stores time_after; the open expires 300 s after the reset."""
+        def reset(locks, clock):
+            locks.opens = [tdb_records.Open(1, tdb_records.DISCONNECTED_PID, 2000, GUID)]
+            if expires:
+                locks.release_at = clock.now + DURABLE_TIMEOUT_SECONDS
+
+        def reconnect(locks):
+            if not lease_kept:
+                locks.leases = 0
+            if time_after is not None:
+                locks.opens = [tdb_records.Open(1, tdb_records.DISCONNECTED_PID, time_after, GUID)]
+
+        def setup(locks):
+            locks.lock_conflict = lock_kept
+
+        return self.run_case("failed-reconnect", on_reset=reset, on_reconnect=reconnect, setup=setup)
+
+    def test_failed_reconnect_that_keeps_its_time_and_drops_its_lease_passes(self) -> None:
+        results, locks, _, _ = self.failed_reconnect()
+        self.assertEqual(results.failed, [])
+        self.assertEqual(results.passed, len(FAILED_CHECKS))
+        self.assertIn("echo grown >> /Volumes/dk2/Share/__tc_durable_test__/orphan-failed.bin", locks.commands)
+
+    def test_a_lease_kept_after_the_failed_reconnect_fails_its_check(self) -> None:
+        results, _, _, _ = self.failed_reconnect(lease_kept=True)
+        self.assertEqual(results.failed, [FAILED_CHECKS[3]])
+
+    def test_an_open_stored_with_disconnect_time_0_fails_its_check(self) -> None:
+        # Before 0077 the failed reconnect's TALLOC_FREE stored it with 0.
+        results, _, _, _ = self.failed_reconnect(time_after=0)
+        self.assertEqual(results.failed, [FAILED_CHECKS[4]])
+
+    def test_a_lock_kept_by_the_failed_reconnect_fails_the_other_clients_check(self) -> None:
+        # Before 0077 the reconnecting smbd kept the lock it took over.
+        results, _, _, _ = self.failed_reconnect(lock_kept=True)
+        self.assertEqual(results.failed, [FAILED_CHECKS[5]])
+
+    def test_an_open_that_never_expires_fails_after_the_durable_timeout(self) -> None:
+        results, _, _, clock = self.failed_reconnect(expires=False)
+        self.assertEqual(results.failed, [FAILED_CHECKS[6]])
+        self.assertGreaterEqual(clock.now - 1000, DURABLE_TIMEOUT_SECONDS)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,26 @@ futimens() on that handle's descriptor, which NetBSD 4 libc lacks, and 0002's
 replacement once always failed (NOT_SUPPORTED). settime:attributes uses a
 handle opened only for attributes, as macOS does, which smbd serves by name.
 
+The orphan cases check what /mnt/Locks keeps once a client's opens lose
+their owner (issue 384, patch 0077), reading its tdb files over SSH:
+- orphan:killed: 20 durable and leased opens, then the serving smbd is
+  killed (SIGKILL). The parent logs the signal, cleanupd asks the scavenger
+  to walk the open records, and every open, replay and lease record of the
+  dead smbd must be gone within a minute, with no 300 s expiry; the
+  reconnect is then refused.
+- orphan:superseded: a dropped connection's 5 durable and leased opens,
+  then a new client GUID opens the same files, as a Mac that wakes and
+  mounts afresh does. Those opens drop the disconnected entries as stale,
+  and the old leases must go with them, long before the opens' 300 s
+  expiry (before patch 0077 they stayed for good); the new client's own
+  leases must stay.
+- orphan:failed-reconnect: a dropped connection's durable open, holding a
+  byte-range lock, then its file grows over SSH so that the reconnect fails
+  after it reattached the share entry and took the lock over. Its lease must
+  go at once, another client must get the same lock at once, and its open
+  must stay disconnected with its own disconnect time (not 0) until it
+  expires.
+
 The macOS case holds a file open on a mount, stops the smbd serving it long
 enough for macOS to open a new session, resumes it, and checks the pending
 write and the data. It works inside a `__tc_durable_test__` folder that it
@@ -96,7 +116,7 @@ import uuid
 from pathlib import Path
 
 from timecapsulesmb.core.config import parse_env_file
-from tests.samba import device_processes
+from tests.samba import device_processes, tdb_records
 from tests.samba.links_device import Device, Results, mount, unmount
 
 TEST_DIR = "__tc_durable_test__"
@@ -116,9 +136,16 @@ WRITE_MODES = ("short-write", "smb-in-data")
 DELETE_ON_CLOSE_MODES = ("drop", "drop+ipc-tdis", "logoff", "logoff+ipc-tdis")
 SETTIME_MODES = ("data", "attributes")
 RENAME_MODES = ("same", "unicode", "case", "other-client", "other-client-case")
+ORPHAN_MODES = ("killed", "superseded", "failed-reconnect")
 CASES = (DROP_MODES + ("stopped+previous",) + WRITE_MODES + tuple(f"doc:{mode}" for mode in DELETE_ON_CLOSE_MODES)
          + tuple(f"settime:{mode}" for mode in SETTIME_MODES) + ("timemachine", "expiry")
-         + tuple(f"rename:{mode}" for mode in RENAME_MODES))
+         + tuple(f"rename:{mode}" for mode in RENAME_MODES)
+         + tuple(f"orphan:{mode}" for mode in ORPHAN_MODES))
+# A dead smbd's records go as soon as the scavenger walks them; allow for
+# the parent forking a scavenger and waiting for its hello (0075's 30 s).
+ORPHAN_RELEASE_SECONDS = 60
+ORPHAN_OPENS = 20
+ORPHAN_SUPERSEDED_OPENS = 5
 # 0024 keeps every durable-v2 open 300 s, whatever timeout it granted; the
 # scavenger's timer fires then.
 DURABLE_TIMEOUT_SECONDS = 300
@@ -610,6 +637,186 @@ def expiry_case(r: Results, device: Device) -> None:
             conn3.disconnect()
 
 
+def _locks_db(device: Device, name: str) -> bytes:
+    return device.sh_bytes(f"cat /mnt/Locks/{shlex.quote(name)}")
+
+
+def _orphans(device: Device, guid: bytes, owner: int | None = None) -> tuple[list, int, int]:
+    """This client's opens (owned by owner when given), replay records and
+    leases in /mnt/Locks."""
+    opens_db = _locks_db(device, "smbXsrv_open_global.tdb")
+    opens = [o for o in tdb_records.opens(opens_db)
+             if o.client_guid == guid and (owner is None or o.pid == owner)]
+    replays = sum(1 for key, _ in tdb_records.records(opens_db) if len(key) == 32 and key[:16] == guid)
+    leases = tdb_records.lease_clients(_locks_db(device, "leases.tdb")).count(guid)
+    return opens, replays, leases
+
+
+def _open_leased(client: DurableClient, tree, path: str):
+    """A durable open with its own lease key and create GUID, as macOS
+    gives each file."""
+    client.lease_key = uuid.uuid4().bytes
+    client.create_guid = uuid.uuid4()
+    handle, _ = client.open_durable(tree, path)
+    return handle, client.lease_key, client.create_guid
+
+
+def _poll(check, seconds: float, step: float = 1) -> bool:
+    """Whether check() comes true within seconds. A tdb copy that does not
+    parse counts as not yet, never as an empty database."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            ok = check()
+        except tdb_records.InvalidTdb:
+            ok = False
+        if ok:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(step)
+
+
+def _lock_first_byte(handle) -> None:
+    """An exclusive lock on the handle's first byte that fails at once
+    instead of waiting for a conflicting one."""
+    from smbprotocol.open import LockFlags, SMB2LockElement
+
+    lock = SMB2LockElement()
+    lock["offset"] = 0
+    lock["length"] = 1
+    lock["flags"] = LockFlags.SMB2_LOCKFLAG_EXCLUSIVE_LOCK | LockFlags.SMB2_LOCKFLAG_FAIL_IMMEDIATELY
+    handle.lock([lock])
+
+
+def _owner(device: Device, guid: bytes) -> int | None:
+    """The one smbd that this client's open records name, or None when
+    they name several, none, or cannot be read."""
+    try:
+        owners = {o.pid for o in _orphans(device, guid)[0]}
+    except tdb_records.InvalidTdb:
+        return None
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
+def orphan_case(r: Results, device: Device, mode: str) -> None:
+    from smbprotocol.exceptions import SMBResponseException
+
+    client = DurableClient(device)
+    # smbprotocol sends the client GUID as uuid.bytes, and Samba stores the
+    # NDR it received.
+    guid = client.client_guid.bytes
+    old = set(_smbd_children(device))
+    conn, _, tree = client.connect()
+    # A scavenger forked meanwhile is new too; it serves no client.
+    serving = [pid for pid in _smbd_children(device) if pid not in old and
+               serves_client(device.sh(f"/usr/bin/fstat -p {pid}", check=False))]
+    log, start = _smbd_log(device)
+    conn2 = conn3 = None
+    try:
+        if mode == "killed":
+            opened = [_open_leased(client, tree, f"{TEST_DIR}\\orphan{i:02d}.bin") for i in range(ORPHAN_OPENS)]
+            # Kill only the smbd that this client's own open records name,
+            # and only if it is one that started serving a client with this
+            # one: on a shared device a guess could be another client's.
+            owner = _owner(device, guid)
+            owned = owner in serving and len(_orphans(device, guid, owner)[0]) == ORPHAN_OPENS
+            r.check("orphan:killed: one smbd serves the client and holds every open", lambda: owned)
+            if not owned:
+                return
+            device.sh(f"kill -9 {owner}")
+            r.check("orphan:killed: the dead smbd's opens, replay records and leases are released",
+                    lambda: _poll(lambda: _orphans(device, guid) == ([], 0, 0), ORPHAN_RELEASE_SECONDS))
+            logged = _smbd_log_since(device, log, start)
+            r.check("orphan:killed: the parent logs the signal and the scavenger the release",
+                    lambda: f"child {owner} ended by signal 9" in logged and
+                    f"removed {ORPHAN_OPENS} opens left by exited smbds" in logged)
+            conn2, _, tree2 = client.connect()
+            handle, client.lease_key, client.create_guid = opened[0]
+
+            def refused() -> bool:
+                try:
+                    client.reconnect(tree2, f"{TEST_DIR}\\orphan00.bin", handle.file_id)
+                except SMBResponseException as error:
+                    return error.status == STATUS_OBJECT_NAME_NOT_FOUND
+                return False
+
+            r.check("orphan:killed: a reconnect of a released open is refused", refused)
+            return
+        if mode == "superseded":
+            paths = [f"{TEST_DIR}\\superseded{i}.bin" for i in range(ORPHAN_SUPERSEDED_OPENS)]
+            for path in paths:
+                _open_leased(client, tree, path)
+            _reset(conn)
+
+            def dropped() -> bool:
+                opens, _, leases = _orphans(device, guid)
+                return (len(opens) == ORPHAN_SUPERSEDED_OPENS and all(o.disconnected for o in opens)
+                        and leases == ORPHAN_SUPERSEDED_OPENS)
+
+            r.check("orphan:superseded: the dropped opens are disconnected and keep their leases",
+                    lambda: _poll(dropped, OLD_SMBD_EXIT_SECONDS))
+            # A Mac that wakes mounts afresh, under a new client GUID.
+            other = DurableClient(device)
+            conn2, _, tree2 = other.connect()
+            for path in paths:
+                _open_leased(other, tree2, path)
+            r.check("orphan:superseded: the new client's opens release the old leases",
+                    lambda: _poll(lambda: _orphans(device, guid)[2] == 0, ORPHAN_RELEASE_SECONDS))
+            r.check("orphan:superseded: the new client keeps its own leases",
+                    lambda: _orphans(device, other.client_guid.bytes)[2] == ORPHAN_SUPERSEDED_OPENS)
+            return
+        path = f"{TEST_DIR}\\orphan-failed.bin"
+        handle, lease_key, create_guid = _open_leased(client, tree, path)
+        handle.write(b"durable payload\n", 0)
+        # The reconnect takes this lock over before it checks the file.
+        r.check("orphan:failed-reconnect: the open locks its first byte", lambda: _lock_first_byte(handle) or True)
+        _reset(conn)
+        dropped: list = []
+
+        def disconnected() -> bool:
+            dropped[:] = [o for o in _orphans(device, guid)[0] if o.disconnected]
+            return len(dropped) == 1
+
+        r.check("orphan:failed-reconnect: the dropped open is disconnected",
+                lambda: _poll(disconnected, OLD_SMBD_EXIT_SECONDS))
+        # The cookie's size no longer matches: the reconnect fails after it
+        # reattached the share entry (vfs_default_durable_reconnect_fn).
+        device.sh(f"echo grown >> {shlex.quote(device.root + '/' + TEST_DIR + '/orphan-failed.bin')}")
+        conn2, _, tree2 = client.connect()
+        client.lease_key, client.create_guid = lease_key, create_guid
+
+        def refused_reconnect() -> bool:
+            try:
+                client.reconnect(tree2, path, handle.file_id)
+            except SMBResponseException as error:
+                return error.status == STATUS_OBJECT_NAME_NOT_FOUND
+            return False
+
+        r.check("orphan:failed-reconnect: the reconnect is refused", refused_reconnect)
+        try:
+            opens, _, leases = _orphans(device, guid)
+        except tdb_records.InvalidTdb:
+            # Both checks fail; neither may take a bad copy for an empty one.
+            opens, leases = None, None
+        r.check("orphan:failed-reconnect: its lease is gone at once", lambda: leases == 0)
+        r.check("orphan:failed-reconnect: its open stays disconnected with its own disconnect time",
+                lambda: dropped and opens is not None and
+                [(o.open_id, o.disconnected, o.disconnect_time) for o in opens] ==
+                [(dropped[0].open_id, True, dropped[0].disconnect_time)] and dropped[0].disconnect_time != 0)
+        other = DurableClient(device)
+        conn3, _, tree3 = other.connect()
+        r.check("orphan:failed-reconnect: another client locks the same byte at once",
+                lambda: _lock_first_byte(_open_leased(other, tree3, path)[0]) or True)
+        r.check("orphan:failed-reconnect: the open and its replay record expire",
+                lambda: _poll(lambda: _orphans(device, guid) == ([], 0, 0),
+                              DURABLE_TIMEOUT_SECONDS * (1 + DEVICE_CLOCK_SLEW) + 30, step=10))
+    finally:
+        for c in (conn3, conn2, conn):
+            with contextlib.suppress(Exception):
+                c.disconnect()
+
+
 def _take_message_ids(conn, count: int) -> int:
     """Reserve count message IDs in smbprotocol's window for raw requests."""
     with conn.sequence_lock:
@@ -977,6 +1184,9 @@ def main() -> int:
                 rename_case(results, device, mode)
         if "expiry" in wanted:
             expiry_case(results, device)
+        for mode in ORPHAN_MODES:
+            if f"orphan:{mode}" in wanted:
+                orphan_case(results, device, mode)
         if args.stall and "mac" in wanted:
             mac_stall_case(results, device, work / "smb", args.stall)
     finally:

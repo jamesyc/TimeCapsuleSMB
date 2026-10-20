@@ -1,0 +1,649 @@
+diff --git a/source3/locking/brlock.c b/source3/locking/brlock.c
+--- a/source3/locking/brlock.c
++++ b/source3/locking/brlock.c
+@@ -1512,6 +1512,37 @@ bool brl_reconnect_disconnected(struct files_struct *fsp,
+ 	return true;
+ }
+ 
++/*
++ * Undo brl_reconnect_disconnected() for a durable reconnect that failed
++ * after it. The open has lost its share mode entry, so nothing can
++ * reconnect it again, and its locks now belong to this live smbd, which
++ * brl_cleanup_disconnected() never touches: they would block every other
++ * client for as long as this connection lasts. Drop them the way
++ * brl_cleanup_disconnected() does. The reconnect took no POSIX locks, so
++ * only the records go.
++ */
++void brl_drop_reconnected(struct files_struct *fsp,
++			  struct byte_range_lock *br_lck)
++{
++	uint32_t tid = fsp->conn->cnum;
++	uint64_t fnum = fsp->fnum;
++	struct server_id self = messaging_server_id(fsp->conn->sconn->msg_ctx);
++	unsigned int i;
++
++	for (i = 0; i < br_lck->num_locks; i++) {
++		struct lock_struct *lock = &br_lck->lock_data[i];
++
++		if (lock->context.tid != tid || lock->fnum != fnum ||
++		    !server_id_equal(&lock->context.pid, &self)) {
++			continue;
++		}
++		/* Deleted in byte_range_lock_flush(). */
++		lock->context.pid.pid = 0;
++		br_lck->modified = true;
++	}
++	fsp->current_lock_count = 0;
++}
++
+ struct brl_forall_cb {
+ 	void (*fn)(struct file_id id, struct server_id pid,
+ 		   enum brl_type lock_type,
+@@ -1935,24 +1966,19 @@ bool brl_cleanup_disconnected(struct file_id fid, uint64_t open_persistent_id)
+ 			continue;
+ 		}
+ 
+-		if (lock->persistent) {
+-			if (serverid_exists(&ctx->pid)) {
+-				struct server_id_buf tmp;
+-				DBG_WARNING("byte range lock %s used by "
+-					    "server %s, do not cleanup\n",
+-					    file_id_str_buf(fid, &buf),
+-					    server_id_str_buf(ctx->pid, &tmp));
+-				continue;
+-			}
+-		} else {
+-			if (!server_id_is_disconnected(&ctx->pid)) {
+-				struct server_id_buf tmp;
+-				DBG_WARNING("byte range lock %s used by "
+-					    "server %s, do not cleanup\n",
+-					    file_id_str_buf(fid, &buf),
+-					    server_id_str_buf(ctx->pid, &tmp));
+-				continue;
+-			}
++		/*
++		 * Keep a lock of a live smbd. A disconnected durable open's
++		 * lock goes, and so does one whose smbd died without closing
++		 * it (the scavenger's rescan).
++		 */
++		if (!server_id_is_disconnected(&ctx->pid) &&
++		    serverid_exists(&ctx->pid)) {
++			struct server_id_buf tmp;
++			DBG_WARNING("byte range lock %s used by "
++				    "server %s, do not cleanup\n",
++				    file_id_str_buf(fid, &buf),
++				    server_id_str_buf(ctx->pid, &tmp));
++			continue;
+ 		}
+ 
+ 		/*
+diff --git a/source3/locking/proto.h b/source3/locking/proto.h
+--- a/source3/locking/proto.h
++++ b/source3/locking/proto.h
+@@ -86,6 +86,8 @@ bool brl_mark_disconnected(struct files_struct *fsp,
+ 			   struct byte_range_lock *br_lck);
+ bool brl_reconnect_disconnected(struct files_struct *fsp,
+ 				struct byte_range_lock *br_lck);
++void brl_drop_reconnected(struct files_struct *fsp,
++			  struct byte_range_lock *br_lck);
+ void brl_close_fnum(struct byte_range_lock *br_lck);
+ int brl_forall(void (*fn)(struct file_id id, struct server_id pid,
+ 			  enum brl_type lock_type,
+diff --git a/source3/locking/share_mode_lock.c b/source3/locking/share_mode_lock.c
+--- a/source3/locking/share_mode_lock.c
++++ b/source3/locking/share_mode_lock.c
+@@ -58,6 +58,7 @@ struct share_mode_lock {
+ #include "../librpc/gen_ndr/ndr_open_files.h"
+ #include "../librpc/gen_ndr/ndr_smbXsrv.h"
+ #include "source3/lib/dbwrap/dbwrap_watch.h"
++#include "librpc/gen_ndr/leases_db.h"
+ #include "locking/leases_db.h"
+ #include "../lib/util/memcache.h"
+ #include "lib/util/tevent_ntstatus.h"
+@@ -2237,7 +2238,8 @@ static bool share_mode_for_one_entry(
+ 	size_t *i,
+ 	uint8_t *data,
+ 	size_t *num_share_modes,
+-	bool *writeback)
++	bool *writeback,
++	struct leases_db_key **dropped_leases)
+ {
+ 	DATA_BLOB blob = {
+ 		.data = data + (*i) * SHARE_MODE_ENTRY_SIZE,
+@@ -2280,6 +2282,25 @@ static bool share_mode_for_one_entry(
+ 			NDR_PRINT_DEBUG(share_mode_entry, &e);
+ 		}
+ 
++		if (e.op_type == LEASE_OPLOCK) {
++			size_t n = talloc_array_length(*dropped_leases);
++			struct leases_db_key *l = talloc_realloc(
++				talloc_tos(),
++				*dropped_leases,
++				struct leases_db_key,
++				n + 1);
++			if (l != NULL) {
++				l[n] = (struct leases_db_key) {
++					.client_guid = e.client_guid,
++					.lease_key = e.lease_key,
++				};
++				*dropped_leases = l;
++			} else {
++				DBG_WARNING("talloc_realloc failed, "
++					    "lease kept\n");
++			}
++		}
++
+ 		if (*i < *num_share_modes) {
+ 			memmove(blob.data,
+ 				blob.data + SHARE_MODE_ENTRY_SIZE,
+@@ -2347,6 +2368,7 @@ bool share_mode_forall_entries(
+ 	uint8_t *share_entries = NULL;
+ 	size_t num_share_entries;
+ 	bool writeback = false;
++	struct leases_db_key *dropped_leases = NULL;
+ 	NTSTATUS status;
+ 	bool stop = false;
+ 	size_t i;
+@@ -2382,7 +2404,8 @@ bool share_mode_forall_entries(
+ 			&i,
+ 			share_entries,
+ 			&num_share_entries,
+-			&writeback);
++			&writeback,
++			&dropped_leases);
+ 		if (stop) {
+ 			break;
+ 		}
+@@ -2413,9 +2436,26 @@ bool share_mode_forall_entries(
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		DBG_ERR("share_mode_data_ltdb_store failed: %s\n",
+ 			nt_errstr(status));
++		TALLOC_FREE(dropped_leases);
+ 		return false;
+ 	}
+ 
++	/*
++	 * A dropped entry takes its lease with it, unless another entry on
++	 * this file still holds the same lease: the rule a close follows
++	 * (remove_share_oplock()). The callers drop stale entries of a dead
++	 * smbd or of a disconnected durable open (share_entry_stale_pid())
++	 * and the scavenger's expired ones; the lease would otherwise stay
++	 * in leases.tdb for good. This runs after the store, so that
++	 * remove_lease_if_stale() no longer sees the dropped entries.
++	 */
++	for (i = 0; i < talloc_array_length(dropped_leases); i++) {
++		remove_lease_if_stale(lck,
++				      &dropped_leases[i].client_guid,
++				      &dropped_leases[i].lease_key);
++	}
++	TALLOC_FREE(dropped_leases);
++
+ 	return true;
+ }
+ 
+diff --git a/source3/smbd/durable.c b/source3/smbd/durable.c
+--- a/source3/smbd/durable.c
++++ b/source3/smbd/durable.c
+@@ -850,6 +850,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+ 	struct file_id file_id;
+ 	struct server_id old_pid;
+ 	bool have_share_mode_entry = false;
++	bool have_reconnected_locks = false;
+ 	uint32_t dosmode;
+ 	int ret;
+ 	bool ok;
+@@ -946,6 +947,7 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+ 				nt_errstr(state->status));
+ 			goto fail;
+ 		}
++		have_reconnected_locks = true;
+ 	}
+ 
+ 	/*
+@@ -1034,11 +1036,27 @@ static void vfs_default_durable_reconnect_fn(struct share_mode_lock *lck,
+ 	return;
+ 
+ fail:
++	if (have_reconnected_locks) {
++		/*
++		 * The checks after brl_reconnect_disconnected() failed:
++		 * give up the locks it took over with the share mode
++		 * entry below.
++		 */
++		brl_drop_reconnected(fsp, br_lck);
++	}
+ 	if (have_share_mode_entry) {
+ 		/*
+ 		 * Something is screwed up, delete the sharemode entry.
+ 		 */
+ 		del_share_mode(lck, fsp);
++		/*
++		 * And its lease, unless another open still holds it: a
++		 * close removes it the same way (remove_share_oplock()).
++		 * Nothing else would ever delete this lease record.
++		 */
++		if (e.op_type == LEASE_OPLOCK) {
++			remove_lease_if_stale(lck, &e.client_guid, &e.lease_key);
++		}
+ 	}
+ 	if (fsp_get_pathref_fd(fsp) != -1) {
+ 		NTSTATUS close_status;
+diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
+--- a/source3/smbd/scavenger.c
++++ b/source3/smbd/scavenger.c
+@@ -341,6 +341,7 @@ fail:
+ 
+ static void scavenger_add_timer(struct smbd_scavenger_state *state,
+ 				struct scavenger_message *msg);
++static size_t scavenger_rescan(void);
+ 
+ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+ 			       void *private_data,
+@@ -392,6 +393,15 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+ 	}
+ 
+ 	DEBUG(10, ("scavenger: got a message\n"));
++	if (data->length == 0) {
++		(void)scavenger_rescan();
++		goto done;
++	}
++	if (data->length != sizeof(struct scavenger_message)) {
++		DBG_WARNING("scavenger: ignore message of %zu bytes\n",
++			    data->length);
++		goto done;
++	}
+ 	msg = (struct scavenger_message*)data->data;
+ 	scavenger_add_timer(state, msg);
+ done:
+@@ -487,7 +497,6 @@ struct cleanup_disconnected_state {
+ 	uint32_t name_hash;
+ 	struct share_mode_lock *lck;
+ 	uint64_t open_persistent_id;
+-	struct share_mode_entry e;
+ };
+ 
+ static bool cleanup_disconnected_share_mode_entry_fn(
+@@ -502,11 +511,14 @@ static bool cleanup_disconnected_share_mode_entry_fn(
+ 		return false;
+ 	}
+ 
+-	if (e->flags & SHARE_ENTRY_FLAG_PERSISTENT_OPEN) {
+-		disconnected = !serverid_exists(&e->pid);
+-	} else {
+-		disconnected = server_id_is_disconnected(&e->pid);
+-	}
++	/*
++	 * A disconnected durable open, or one whose smbd died without
++	 * closing it (scavenger_rescan()). serverid_exists() alone would
++	 * also be false for a disconnected id, but only because its pid
++	 * is -1.
++	 */
++	disconnected = server_id_is_disconnected(&e->pid) ||
++		       !serverid_exists(&e->pid);
+ 	if (!disconnected) {
+ 		char *name = share_mode_filename(talloc_tos(), state->lck);
+ 		struct file_id_buf tmp1;
+@@ -530,7 +542,6 @@ static bool cleanup_disconnected_share_mode_entry_fn(
+ 	 * the indication to delete the entry.
+ 	 */
+ 	e->stale = true;
+-	state->e = *e;
+ 
+ 	return true;
+ }
+@@ -547,7 +558,6 @@ bool share_mode_cleanup_disconnected(
+ 	TALLOC_CTX *frame = talloc_stackframe();
+ 	char *name = NULL;
+ 	struct file_id_buf idbuf;
+-	NTSTATUS status;
+ 	bool ok;
+ 
+ 	state.lck = get_existing_share_mode_lock(frame, fid);
+@@ -593,45 +603,58 @@ bool share_mode_cleanup_disconnected(
+ 		goto done;
+ 	}
+ 
+-	if (state.e.stale && (state.e.op_type == LEASE_OPLOCK)) {
+-		status = remove_lease_if_stale(state.lck,
+-					       &state.e.client_guid,
+-					       &state.e.lease_key);
+-		if (!NT_STATUS_IS_OK(status)) {
+-			struct GUID_txt_buf gbuf;
+-			int dbg_level = DBGLVL_WARNING;
+-
+-			if ((state.e.flags & SHARE_ENTRY_FLAG_PERSISTENT_OPEN) &&
+-			    NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND))
+-			{
+-				dbg_level = DBGLVL_DEBUG;
+-				ret = true;
+-			}
+-
+-			DBG_PREFIX(dbg_level,
+-				   ("Failed to clean up lease associated "
+-				    "with file (file-id='%s', servicepath='%s', "
+-				    "name='%s', open_persistent_id=%" PRIu64 ", "
+-				    "client_guid=%s, "
+-				    "lease_key=%"PRIx64"/%"PRIx64"): %s\n",
+-				    file_id_str_buf(fid, &idbuf),
+-				    share_mode_servicepath(state.lck),
+-				    name,
+-				    open_persistent_id,
+-				    GUID_buf_string(&state.e.client_guid, &gbuf),
+-				    state.e.lease_key.data[0],
+-				    state.e.lease_key.data[1],
+-				    nt_errstr(status)));
+-			goto done;
+-		}
+-	}
+-
++	/*
++	 * share_mode_forall_entries() removed the entry's lease with it,
++	 * unless another open still holds that lease.
++	 */
+ 	ret = true;
+ done:
+ 	talloc_free(frame);
+ 	return ret;
+ }
+ 
++/*
++ * Expire one open: its global record first, then its share mode entry,
++ * byte-range locks and lease. smbXsrv_open_cleanup() decides under the
++ * record's lock and deletes only an expired disconnected open or one whose
++ * smbd is gone; any other answer leaves everything as it is. Returns
++ * whether it removed the open.
++ */
++static bool scavenger_cleanup(const struct scavenger_message *msg)
++{
++	struct file_id_buf idbuf;
++	NTSTATUS status;
++	bool ok;
++
++	status = smbXsrv_open_cleanup(msg->open_persistent_id);
++	if (NT_STATUS_EQUAL(status, NT_STATUS_CANNOT_DELETE)) {
++		DBG_DEBUG("open %"PRIu64" of file %s is in use or not "
++			  "expired\n",
++			  msg->open_persistent_id,
++			  file_id_str_buf(msg->file_id, &idbuf));
++		return false;
++	}
++	if (!NT_STATUS_IS_OK(status)) {
++		DBG_WARNING("Failed to cleanup open global for file %s open "
++			    "%"PRIu64": %s\n",
++			    file_id_str_buf(msg->file_id, &idbuf),
++			    msg->open_persistent_id,
++			    nt_errstr(status));
++		return false;
++	}
++
++	ok = share_mode_cleanup_disconnected(msg->file_id,
++					     msg->open_persistent_id,
++					     msg->name_hash);
++	if (!ok) {
++		DBG_WARNING("Failed to cleanup share modes and byte range "
++			    "locks for file %s open %"PRIu64"\n",
++			    file_id_str_buf(msg->file_id, &idbuf),
++			    msg->open_persistent_id);
++	}
++	return true;
++}
++
+ static void scavenger_timer(struct tevent_context *ev,
+ 			    struct tevent_timer *te,
+ 			    struct timeval t, void *data)
+@@ -639,33 +662,129 @@ static void scavenger_timer(struct tevent_context *ev,
+ 	struct scavenger_timer_context *ctx =
+ 		talloc_get_type_abort(data, struct scavenger_timer_context);
+ 	struct file_id_buf idbuf;
+-	NTSTATUS status;
+-	bool ok;
+ 
+ 	DBG_DEBUG("do cleanup for file %s at %s\n",
+ 		  file_id_str_buf(ctx->msg.file_id, &idbuf),
+ 		  timeval_string(talloc_tos(), &t, true));
+ 
+-	status = smbXsrv_open_cleanup(ctx->msg.open_persistent_id);
++	(void)scavenger_cleanup(&ctx->msg);
++}
++
++/*
++ * An smbd that dies without closing its files (a crash, an abort, a kill)
++ * leaves its open records with its server id, live as far as anyone can
++ * tell. Nothing indexes opens by owner, and cleanupd only rescans
++ * persistent handles, so they stayed until smbd restarted: a reconnect
++ * finds such a record "not cleaned up" and refuses it, and the client opens
++ * the file again under a new record. After an unclean exit cleanupd asks
++ * for this walk (scavenger_rescan_request()); clean exits closed or
++ * disconnected their opens, so ordinary reconnects never trigger it.
++ * Disconnected opens are left to their timers, persistent ones to
++ * cleanup_ph().
++ */
++struct scavenger_rescan_rec {
++	struct scavenger_message msg;
++	struct server_id owner;
++};
++
++struct scavenger_rescan_state {
++	TALLOC_CTX *mem_ctx;
++	struct scavenger_rescan_rec *recs;
++};
++
++static int scavenger_rescan_fn(struct db_record *rec,
++			       struct smbXsrv_open_global *global,
++			       TDB_DATA *rc_open_global_key,
++			       void *private_data)
++{
++	struct scavenger_rescan_state *state = private_data;
++	size_t n = talloc_array_length(state->recs);
++	struct scavenger_rescan_rec *recs = NULL;
++
++	/*
++	 * Collect only: no system calls under the traverse's chain lock,
++	 * as cleanup_ph_fn().
++	 */
++	if (global == NULL || global->persistent ||
++	    server_id_is_disconnected(&global->server_id)) {
++		return 0;
++	}
++
++	recs = talloc_realloc(state->mem_ctx,
++			      state->recs,
++			      struct scavenger_rescan_rec,
++			      n + 1);
++	if (recs == NULL) {
++		DBG_ERR("talloc_realloc failed\n");
++		return -1;
++	}
++	recs[n] = (struct scavenger_rescan_rec) {
++		.msg = {
++			.file_id = global->file_id,
++			.open_persistent_id = global->open_persistent_id,
++			.name_hash = global->name_hash,
++		},
++		.owner = global->server_id,
++	};
++	state->recs = recs;
++	return 0;
++}
++
++/*
++ * Returns how many opens it removed: an owner that closed or disconnected
++ * its opens, then exited cleanly after the walk, left none to remove.
++ */
++static size_t scavenger_rescan(void)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	struct scavenger_rescan_state state = { .mem_ctx = frame, };
++	size_t i, n, removed = 0;
++	NTSTATUS status;
++
++	status = smbXsrv_open_global_traverse(scavenger_rescan_fn, &state);
+ 	if (!NT_STATUS_IS_OK(status)) {
+-		DBG_WARNING("Failed to cleanup open global for file %s open "
+-			    "%"PRIu64": %s\n",
+-			    file_id_str_buf(ctx->msg.file_id, &idbuf),
+-			    ctx->msg.open_persistent_id,
+-			    nt_errstr(status));
+-		return;
++		DBG_ERR("smbXsrv_open_global_traverse failed: %s\n",
++			nt_errstr(status));
+ 	}
+ 
+-	ok = share_mode_cleanup_disconnected(ctx->msg.file_id,
+-					     ctx->msg.open_persistent_id,
+-					     ctx->msg.name_hash);
+-	if (!ok) {
+-		DBG_WARNING("Failed to cleanup share modes and byte range "
+-			    "locks for file %s open %"PRIu64"\n",
+-			    file_id_str_buf(ctx->msg.file_id, &idbuf),
+-			    ctx->msg.open_persistent_id);
++	n = talloc_array_length(state.recs);
++	for (i = 0; i < n; i++) {
++		if (serverid_exists(&state.recs[i].owner)) {
++			continue;
++		}
++		if (scavenger_cleanup(&state.recs[i].msg)) {
++			removed += 1;
++		}
++	}
++
++	if (removed != 0) {
++		DBG_ERR("removed %zu opens left by exited smbds\n", removed);
+ 	}
++	TALLOC_FREE(frame);
++	return removed;
++}
+ 
++void scavenger_rescan_request(struct messaging_context *msg_ctx)
++{
++	NTSTATUS status;
++
++	if (smbd_scavenger_state == NULL) {
++		return;
++	}
++
++	/*
++	 * An empty MSG_SMB_SCAVENGER asks for scavenger_rescan(). The
++	 * parent forwards it like any other, starting a scavenger if none
++	 * runs. cleanupd may run in the parent itself; messaging delivers
++	 * to self, and scavenger_schedule_disconnected() would assert.
++	 */
++	status = messaging_send(msg_ctx,
++				smbd_scavenger_state->parent_id,
++				MSG_SMB_SCAVENGER,
++				&data_blob_null);
++	if (!NT_STATUS_IS_OK(status)) {
++		DBG_WARNING("messaging_send failed: %s\n", nt_errstr(status));
++	}
+ }
+ 
+ static void scavenger_add_timer(struct smbd_scavenger_state *state,
+diff --git a/source3/smbd/scavenger.h b/source3/smbd/scavenger.h
+--- a/source3/smbd/scavenger.h
++++ b/source3/smbd/scavenger.h
+@@ -26,6 +26,7 @@ bool smbd_scavenger_init(TALLOC_CTX *mem_ctx,
+ 			 struct messaging_context *msg,
+ 			 struct tevent_context *ev);
+ 
++void scavenger_rescan_request(struct messaging_context *msg_ctx);
+ void scavenger_schedule_disconnected(struct messaging_context *msg_ctx,
+ 				     uint64_t open_persistent_id,
+ 				     struct file_id *file_id,
+diff --git a/source3/smbd/server.c b/source3/smbd/server.c
+--- a/source3/smbd/server.c
++++ b/source3/smbd/server.c
+@@ -1250,12 +1250,23 @@ static void smbd_sig_chld_handler(struct tevent_context *ev,
+ 			ignore = (exitcode ==
+ 				  SMB_SUICIDE_EXIT_STATUS_BYPASS_CLEANUP);
+ #endif
++			if (unclean_shutdown) {
++				DBG_ERR("child %d exited with status %d\n",
++					(int)pid, exitcode);
++			}
+ 		}
+ 		/* If the child terminated due to a signal
+ 		   we always assume it was unclean.
+ 		*/
+ 		if (WIFSIGNALED(status)) {
+ 			unclean_shutdown = True;
++			/*
++			 * Upstream logs nothing here; a child that dies leaves
++			 * its opens to the scavenger's rescan, and this line
++			 * says which one died and why.
++			 */
++			DBG_ERR("child %d ended by signal %d\n",
++				(int)pid, WTERMSIG(status));
+ 		}
+ 		remove_child_pid(parent, pid, unclean_shutdown, ignore);
+ 	}
+diff --git a/source3/smbd/smb2_create.c b/source3/smbd/smb2_create.c
+--- a/source3/smbd/smb2_create.c
++++ b/source3/smbd/smb2_create.c
+@@ -24,6 +24,7 @@
+ #include "smbd/smbd.h"
+ #include "smbd/globals.h"
+ #include "smbd/smbXsrv_open.h"
++#include "smbd/scavenger.h"
+ #include "../libcli/smb/smb_common.h"
+ #include "../librpc/gen_ndr/ndr_security.h"
+ #include "../librpc/gen_ndr/ndr_smb2_lease_struct.h"
+@@ -1211,6 +1212,25 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
+ 				   nt_errstr(status),
+ 				   nt_errstr(return_status));
+ 
++			/*
++			 * smb2srv_open_recreate() stored the open as ours.
++			 * Store it disconnected again with its own disconnect
++			 * time and tell the scavenger, as close_durable() does.
++			 * Freeing the op alone stores it with disconnect time
++			 * 0, and the scavenger may have run its timer while
++			 * this reconnect held the open, or found it ours when
++			 * its disconnect message arrived: nothing would expire
++			 * it.
++			 */
++			status = smbXsrv_open_close(
++				state->op, state->op->global->disconnect_time);
++			if (NT_STATUS_IS_OK(status)) {
++				scavenger_schedule_disconnected(
++					smb1req->sconn->msg_ctx,
++					state->op->global->open_persistent_id,
++					&state->op->global->file_id,
++					state->op->global->name_hash);
++			}
+ 			TALLOC_FREE(state->op);
+ 			tevent_req_nterror(req, return_status);
+ 			return tevent_req_post(req, state->ev);
+@@ -1973,6 +1993,18 @@ static void smbd_smb2_create_after_exec(struct tevent_req *req)
+ 
+ 	if (state->update_open) {
+ 		state->op->global->create_guid = state->_create_guid;
++		/*
++		 * fsp_bind_smb() stored the open before a new file had an
++		 * id. Store the file's, so that the record alone leads to
++		 * its share mode entry (scavenger_rescan(), cleanup_ph()).
++		 * An open that stores nothing here (no durable handle,
++		 * create GUID or replay) keeps a new file's zero id: after
++		 * a crash the rescan removes its record, but its share mode
++		 * entry stays until another open of the file drops it as
++		 * stale. Storing every open would cost a write per open.
++		 */
++		state->op->global->file_id = state->result->file_id;
++		state->op->global->name_hash = state->result->name_hash;
+ 		if (state->need_replay_cache) {
+ 			state->op->flags |= SMBXSRV_OPEN_NEED_REPLAY_CACHE;
+ 		}
+diff --git a/source3/smbd/smbd_cleanupd.c b/source3/smbd/smbd_cleanupd.c
+--- a/source3/smbd/smbd_cleanupd.c
++++ b/source3/smbd/smbd_cleanupd.c
+@@ -340,6 +340,11 @@ static void smbd_cleanupd_process_exited(struct messaging_context *msg,
+ 		if (!NT_STATUS_IS_OK(status)) {
+ 			DBG_ERR("Persistent handle cleanup failed\n");
+ 		}
++		/*
++		 * A child that crashed or was killed left its opens live as
++		 * far as anyone can tell; the scavenger releases them.
++		 */
++		scavenger_rescan_request(msg);
+ 	}
+ 
+ 	TALLOC_FREE(frame);

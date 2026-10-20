@@ -153,6 +153,139 @@ static int scavenger_hello(const char *name)
 	return 0;
 }
 
+/*
+ * The scavenger's walk after an unclean exit (patch 0077), cut from the
+ * patched scavenger.c (tests/samba/run.py stage), over the real
+ * smbXsrv_open.c traverse callback. It must release exactly the opens whose
+ * smbd is gone (pid 789; 123 is live), and leave live, disconnected and
+ * persistent opens and replay records alone, and count only the opens
+ * scavenger_cleanup() removed. scavenger_cleanup() is recorded
+ * here; the cleanup_* cases run the real smbXsrv_open_cleanup() it calls.
+ */
+struct scavenger_message;
+static bool rescan_cleanup(const struct scavenger_message *msg);
+static NTSTATUS rescan_traverse(
+	int (*fn)(struct db_record *rec, struct smbXsrv_open_global *global,
+		  TDB_DATA *rc_open_global_key, void *private_data),
+	void *private_data)
+{
+	struct smbXsrv_open_global_traverse_state state = {.fn = fn, .private_data = private_data};
+	int count = 0;
+	return dbwrap_traverse_read(database, smbXsrv_open_global_traverse_fn, &state, &count);
+}
+#define scavenger_cleanup rescan_cleanup
+#undef smbXsrv_open_global_traverse
+#define smbXsrv_open_global_traverse rescan_traverse
+#include "tc_scavenger_rescan.inc"
+#undef smbXsrv_open_global_traverse
+#undef scavenger_cleanup
+
+static uint64_t rescan_cleaned[8];
+static unsigned rescan_cleaned_count;
+/* An open whose cleanup finds nothing to remove: its smbd exited cleanly
+ * after the walk, or a timer removed it meanwhile. */
+static uint64_t rescan_already_gone;
+
+static bool rescan_cleanup(const struct scavenger_message *msg)
+{
+	CHECK(rescan_cleaned_count < 8);
+	rescan_cleaned[rescan_cleaned_count++] = msg->open_persistent_id;
+	return msg->open_persistent_id != rescan_already_gone;
+}
+
+static int compare_ids(const void *a, const void *b)
+{
+	uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+	return (x > y) - (x < y);
+}
+
+/* Store an open record with id and owner, and its replay record. */
+static void store_open(uint32_t id, uint64_t pid, bool disconnected, bool persistent)
+{
+	struct smbXsrv_open_global_key_buf key_buf;
+	struct smbXsrv_open_replay_cache_key_buf rc_buf;
+	struct GUID create_guid = {.time_low = id};
+	TDB_DATA rc_key, value;
+
+	record = (struct smbXsrv_open_global) {
+		.open_global_id = id, .open_persistent_id = id, .durable = true,
+		.persistent = persistent, .server_id = {.pid = pid},
+		.client_guid = {.time_low = 11}, .create_guid = create_guid,
+		.open_owner = global_sid_System, .durable_timeout_msec = 300000,
+	};
+	if (disconnected) {
+		server_id_set_disconnected(&record.server_id);
+		record.disconnect_time = timeval_to_nttime(&(struct timeval){.tv_sec = time(NULL)});
+	}
+	record_key = smbXsrv_open_global_id_to_key(id, &key_buf);
+	write_record();
+	rc_key = smbXsrv_open_replay_cache_key(&record.client_guid, &create_guid, &rc_buf);
+	value = smbXsrv_open_global_id_to_key(id, &key_buf);
+	CHECK(NT_STATUS_IS_OK(dbwrap_store(database, rc_key, value, TDB_REPLACE)));
+}
+
+static bool open_stored(uint32_t id)
+{
+	struct smbXsrv_open_global_key_buf key_buf;
+	return dbwrap_exists(database, smbXsrv_open_global_id_to_key(id, &key_buf));
+}
+
+static bool replay_stored(uint32_t id)
+{
+	struct smbXsrv_open_replay_cache_key_buf rc_buf;
+	struct GUID client_guid = {.time_low = 11}, create_guid = {.time_low = id};
+	return dbwrap_exists(database, smbXsrv_open_replay_cache_key(&client_guid, &create_guid, &rc_buf));
+}
+
+static int rescan_case(const char *name)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	NTSTATUS status;
+
+	setup_logging("tc_durable_reconnect_test", DEBUG_STDERR);
+	alarm(10);
+	database = db_open_rbt(frame);
+	CHECK(database != NULL);
+	smbXsrv_open_global_db_ctx = database;
+	if (!strcmp(name, "rescan_dead_owners")) {
+		store_open(7, 123, false, false);	/* live owner */
+		store_open(8, 789, false, false);	/* its smbd died */
+		store_open(12, 789, false, false);	/* the same smbd's next open */
+		store_open(13, 123, false, false);	/* the live owner's next open */
+		store_open(9, 0, true, false);		/* disconnected, left to its timer */
+		store_open(10, 789, false, true);	/* persistent: cleanup_ph()'s */
+		store_open(11, 790, false, false);	/* another dead smbd */
+		rescan_already_gone = 12;
+		CHECK(scavenger_rescan() == 2);
+		CHECK(rescan_cleaned_count == 3);
+		qsort(rescan_cleaned, rescan_cleaned_count, sizeof(rescan_cleaned[0]), compare_ids);
+		CHECK(rescan_cleaned[0] == 8 && rescan_cleaned[1] == 11 && rescan_cleaned[2] == 12);
+	} else if (!strcmp(name, "rescan_nothing_dead")) {
+		store_open(7, 123, false, false);
+		store_open(9, 0, true, false);
+		CHECK(scavenger_rescan() == 0);
+		CHECK(rescan_cleaned_count == 0);
+	} else if (!strcmp(name, "cleanup_dead_owner")) {
+		/* What the rescan's scavenger_cleanup() does to such an open. */
+		store_open(8, 789, false, false);
+		status = smbXsrv_open_cleanup(8);
+		CHECK(NT_STATUS_IS_OK(status));
+		CHECK(!open_stored(8) && !replay_stored(8));
+	} else {
+		/* A live open answers CANNOT_DELETE and keeps everything. */
+		CHECK(!strcmp(name, "cleanup_live_owner"));
+		store_open(7, 123, false, false);
+		status = smbXsrv_open_cleanup(7);
+		CHECK(NT_STATUS_EQUAL(status, NT_STATUS_CANNOT_DELETE));
+		CHECK(open_stored(7) && replay_stored(7));
+	}
+	CHECK(lock_depth == 0);
+	smbXsrv_open_global_db_ctx = NULL;
+	TALLOC_FREE(frame);
+	printf("PASS %s\n", name);
+	return 0;
+}
+
 /* Execute both production rename helpers with real fsp names and file IDs.
  * Only share-mode locking/notifications are observed; name hashes and stat
  * preservation use Samba's own fsp_set_smb_fname(). */
@@ -369,6 +502,9 @@ int main(int argc, char **argv)
 	if (!strncmp(argv[1], "rename_", 7)) return rename_descendants(argv[1]);
 	if (!strncmp(argv[1], "scavenger_hello_", 16)) {
 		return scavenger_hello(argv[1]);
+	}
+	if (!strncmp(argv[1], "rescan_", 7) || !strncmp(argv[1], "cleanup_", 8)) {
+		return rescan_case(argv[1]);
 	}
 	/* A v1 reconnect names no create GUID. */
 	if (strncmp(argv[1], "v1_", 3)) guid = &create_guid;

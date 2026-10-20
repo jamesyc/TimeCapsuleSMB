@@ -347,6 +347,23 @@
 # 2026-09-27 during durable_device's macOS stall case). The post-close stat is
 # by name, so it relies on 0062's share-root working directory.
 0029-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
+# Upstream bugs that leave durable-open records and leases in the lock
+# directory for good; on the appliance its 4 MiB RAM disk then fills, and a
+# full one makes client smbds fail opens and abort. A share entry dropped as
+# stale (a disconnected open, or one of a dead smbd, found by another open)
+# kept its lease: remove the lease with the entry, as a close does. Only the
+# entry's own smbd removed its open records, so an smbd that crashed or was
+# killed left them until smbd restarted: after an unclean exit cleanupd asks
+# the scavenger to walk the open records and release those of exited smbds.
+# Clean exits, ordinary reconnects included, trigger no walk. A durable open's
+# record now carries its file id: it was stored before a newly created file
+# had one, so nothing could find the open's share mode entry from it. A durable
+# reconnect that failed stored its open back with disconnect time 0 and no
+# expiry, and kept its lease and the byte-range locks it had taken over:
+# store it with its own time and schedule the scavenger, and remove the lease
+# and those locks. The parent logs a child that a signal ended or that exited
+# with an error status.
+0077-smbd-release-orphaned-durable-opens.patch|release durable opens and leases left by dead smbds and failed reconnects
 # macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
 # request while probing backup-disk capabilities. The default VFS finishes that
 # read at once but delivers its callback from an immediate event, so fruit's

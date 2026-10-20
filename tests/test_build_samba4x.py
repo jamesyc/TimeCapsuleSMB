@@ -130,9 +130,11 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         }.items():
             self.make_file(src_dir / "source3/smbd" / filename,
                            "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names))
-        # The scavenger hello wait tc_durable_reconnect_test compiles.
+        # The scavenger hello wait and rescan tc_durable_reconnect_test compiles.
         self.make_file(src_dir / "source3/smbd/scavenger.c",
-                       "#ifndef TC_SCAVENGER_HELLO_SECONDS\n#endif\n\nstatic bool scavenger_wait_hello(void)\n{\n}\n")
+                       "struct scavenger_message {\n};\n\n"
+                       "#ifndef TC_SCAVENGER_HELLO_SECONDS\n#endif\n\nstatic bool scavenger_wait_hello(void)\n{\n}\n\n"
+                       "struct scavenger_rescan_rec {\n};\n\nstatic size_t scavenger_rescan(void)\n{\n}\n")
         # The durable driver also compiles the production rename helpers.
         self.make_file(src_dir / "source3/smbd/smb2_reply.c",
                        "static void rename_open_files(void)\n{\n}\n\n"

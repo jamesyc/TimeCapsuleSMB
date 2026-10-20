@@ -14,15 +14,15 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "07eec6e0c048358c110a7bad3045f1d2d4c6f6a20bdf6aab3a64f8e0d34269ec"
+      "sha256": "9cd40662921d1058ad436bbbd110b58e9e2615222d9798ab997413348a6c929d"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "ef927d89aa8021ac6d7f0db10fb7a97b3dcd4d0845aea8aea1a3e8cebd3e141d"
+      "sha256": "e901279f08a5874c347d07ef0601eb66821c128f24b74603773e1809664c1ea8"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "ec8784244a8ffb5d63af8a1cff4eef89575363eeaf88d020295327410829ea95"
+      "sha256": "8b3a65c95def5a045039f0c5f69b0bbed9e0b2bd7a9d1dae865e74ac78346eac"
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
