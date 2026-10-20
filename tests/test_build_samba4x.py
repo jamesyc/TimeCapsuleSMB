@@ -140,6 +140,19 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                        "static void rename_open_files(void)\n{\n}\n\n"
                        "NTSTATUS rename_open_files_below(void)\n{\n}\n")
         self.make_file(src_dir / "source3/smbd/open.c", "void msg_file_was_renamed(void)\n{\n}\n")
+        # And the durable reconnect's byte-range lock steps with the record
+        # parse and store they run under.
+        self.make_file(src_dir / "source3/locking/brlock.c",
+                       "struct byte_range_lock {\n};\n\n"
+                       "static bool brl_parse_data(TALLOC_CTX *mem_ctx,\n\t\t\t   struct byte_range_lock *br_lck,\n"
+                       "\t\t\t   TDB_DATA data)\n{\n}\n\n"
+                       "static void byte_range_lock_flush(void)\n{\n}\n\n"
+                       "struct brl_get_locks_readonly_state {\n};\n\n"
+                       "static struct byte_range_lock *brl_get_locks_readonly_parse(void)\n{\n}\n\n"
+                       "bool brl_reconnect_disconnected(void)\n{\n}\n\n"
+                       "void brl_drop_reconnected(void)\n{\n}\n\n"
+                       "struct share_mode_do_locked_brl_state {\n};\n\n"
+                       "static void share_mode_do_locked_brl_fn(void)\n{\n}\n")
         # The timestamp regression compiles the production conversion twice.
         self.make_file(src_dir / "lib/util/time.c",
                        "#define TIME_FIXUP_CONSTANT_INT INT64_C(11644473600)\n"

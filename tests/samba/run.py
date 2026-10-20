@@ -45,6 +45,8 @@ DURABLE_CASES = (
     "rename_message_reused_path", "rename_stat_failure",
     "scavenger_hello_sent", "scavenger_hello_exited", "scavenger_hello_silent",
     "rescan_dead_owners", "rescan_nothing_dead", "cleanup_dead_owner", "cleanup_live_owner",
+    "brlock_reconnect", "brlock_reconnect_dropped", "brlock_reconnect_foreign",
+    "brlock_reconnect_foreign_first",
 )
 
 STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
@@ -132,6 +134,21 @@ def stage(source: Path) -> None:
     (modules / "tc_scavenger_rescan.inc").write_text(
         scavenger[message:scavenger.index("};", message) + 2] + "\n\n"
         + cut(scavenger, "struct scavenger_rescan_rec {", "static size_t scavenger_rescan(void)") + "\n")
+    # The durable reconnect's byte-range lock steps (patch 0077),
+    # with the record parse and store and the locked-record wrapper that owns
+    # their br_lck, for tc_durable_reconnect_test. Each piece is in the order
+    # its callers need; brl_parse_data()'s definition, not its declaration.
+    brlock = (source / "source3/locking/brlock.c").read_text()
+    start = brlock.index("struct byte_range_lock {")
+    parse = "static bool brl_parse_data(TALLOC_CTX *mem_ctx,\n\t\t\t   struct byte_range_lock *br_lck,\n\t\t\t   TDB_DATA data)\n{"
+    (modules / "tc_brlock_reconnect.inc").write_text("\n\n".join((
+        brlock[start:brlock.index("\n};", start) + 3],
+        cut(brlock, parse, parse),
+        cut(brlock, "static void byte_range_lock_flush(", "static void byte_range_lock_flush("),
+        cut(brlock, "struct brl_get_locks_readonly_state {", "static struct byte_range_lock *brl_get_locks_readonly_parse("),
+        cut(brlock, "bool brl_reconnect_disconnected(", "void brl_drop_reconnected("),
+        cut(brlock, "struct share_mode_do_locked_brl_state {", "static void share_mode_do_locked_brl_fn("),
+    )) + "\n")
     # Exercise the real descendant rename and its per-file bookkeeping.
     reply = (source / "source3/smbd/smb2_reply.c").read_text()
     (modules / "tc_rename_open_files.inc").write_text(

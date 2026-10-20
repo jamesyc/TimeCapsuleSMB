@@ -361,8 +361,11 @@
 # reconnect that failed stored its open back with disconnect time 0 and no
 # expiry, and kept its lease and the byte-range locks it had taken over:
 # store it with its own time and schedule the scavenger, and remove the lease
-# and those locks. The parent logs a child that a signal ended or that exited
-# with an error status.
+# and those locks. A reconnect that met another open's lock (or one a failed
+# reconnect left behind) freed the caller's br_lck in
+# brl_reconnect_disconnected(), which share_mode_do_locked_brl() freed again:
+# a "Bad talloc magic value" panic. Leave br_lck to its owner. The parent
+# logs a child that a signal ended or that exited with an error status.
 0077-smbd-release-orphaned-durable-opens.patch|release durable opens and leases left by dead smbds and failed reconnects
 # macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
 # request while probing backup-disk capabilities. The default VFS finishes that

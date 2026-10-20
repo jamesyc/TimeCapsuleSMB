@@ -1,7 +1,31 @@
 diff --git a/source3/locking/brlock.c b/source3/locking/brlock.c
 --- a/source3/locking/brlock.c
 +++ b/source3/locking/brlock.c
-@@ -1512,6 +1512,37 @@ bool brl_reconnect_disconnected(struct files_struct *fsp,
+@@ -1480,23 +1480,19 @@ bool brl_reconnect_disconnected(struct files_struct *fsp,
+ 			if (fsp->op->global->persistent) {
+ 				continue;
+ 			}
+-			TALLOC_FREE(br_lck);
+ 			return false;
+ 		}
+ 
+ 		if (!fsp->op->global->persistent) {
+ 			if (lock->context.tid != TID_FIELD_INVALID) {
+-				TALLOC_FREE(br_lck);
+ 				return false;
+ 			}
+ 
+ 			if (!server_id_is_disconnected(&lock->context.pid)) {
+-				TALLOC_FREE(br_lck);
+ 				return false;
+ 			}
+ 
+ 			if (lock->fnum != FNUM_FIELD_INVALID) {
+-				TALLOC_FREE(br_lck);
+ 				return false;
+ 			}
+ 		}
+@@ -1512,6 +1508,37 @@ bool brl_reconnect_disconnected(struct files_struct *fsp,
  	return true;
  }
  
@@ -39,7 +63,7 @@ diff --git a/source3/locking/brlock.c b/source3/locking/brlock.c
  struct brl_forall_cb {
  	void (*fn)(struct file_id id, struct server_id pid,
  		   enum brl_type lock_type,
-@@ -1935,24 +1966,19 @@ bool brl_cleanup_disconnected(struct file_id fid, uint64_t open_persistent_id)
+@@ -1935,24 +1962,19 @@ bool brl_cleanup_disconnected(struct file_id fid, uint64_t open_persistent_id)
  			continue;
  		}
  

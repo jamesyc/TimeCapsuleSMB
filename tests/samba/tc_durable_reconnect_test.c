@@ -286,6 +286,155 @@ static int rescan_case(const char *name)
 	return 0;
 }
 
+/*
+ * A durable reconnect's byte-range lock steps, cut from the patched brlock.c
+ * (tests/samba/run.py stage): the real locked-record wrapper
+ * share_mode_do_locked_brl_fn() reads br_lck, hands it to the callback, which
+ * does what vfs_default_durable_reconnect_fn() does with it, then stores it
+ * if it changed and frees it. The record parse and store are the real ones,
+ * over an rbt database; this process is pid 456.
+ */
+static struct db_context *brlock_db;
+static unsigned brlock_wakeups;
+
+static void brlock_wakeup(struct file_id id)
+{
+	(void)id;
+	brlock_wakeups++;
+}
+#define brl_reconnect_disconnected regression_brl_reconnect_disconnected
+#define brl_drop_reconnected regression_brl_drop_reconnected
+#define share_mode_wakeup_waiters brlock_wakeup
+#define lp_locking(params) true
+#define messaging_server_id current_process
+#include "tc_brlock_reconnect.inc"
+#undef messaging_server_id
+#undef lp_locking
+
+static TDB_DATA brlock_key(files_struct *fsp)
+{
+	return make_tdb_data((uint8_t *)&fsp->file_id, sizeof(fsp->file_id));
+}
+
+/* The record byte_range_lock_flush() writes: version, then the locks. */
+static void brlock_store(files_struct *fsp, const struct lock_struct *locks, unsigned count)
+{
+	uint8_t data[sizeof(uint32_t) + 2 * sizeof(*locks)];
+	CHECK(count <= 2);
+	PUSH_BE_U32(data, 0, SHARE_MODE_DATA_VERSION_1);
+	memcpy(data + sizeof(uint32_t), locks, count * sizeof(*locks));
+	CHECK(NT_STATUS_IS_OK(dbwrap_store(brlock_db, brlock_key(fsp),
+		make_tdb_data(data, sizeof(uint32_t) + count * sizeof(*locks)), 0)));
+}
+
+static TDB_DATA brlock_record(TALLOC_CTX *ctx, files_struct *fsp)
+{
+	TDB_DATA stored = {0};
+	NTSTATUS status = dbwrap_fetch(brlock_db, ctx, brlock_key(fsp), &stored);
+	CHECK(NT_STATUS_IS_OK(status) || NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND));
+	return stored;
+}
+
+struct brlock_reconnect_case {
+	files_struct *fsp;
+	bool later_failure, reconnected;
+};
+
+/* vfs_default_durable_reconnect_fn(): take the handle's locks over, and give
+ * them up at its fail: label when a later step (the cookie) fails. */
+static void brlock_reconnect_cb(struct share_mode_lock *lck,
+	struct byte_range_lock *br_lck, void *private_data)
+{
+	struct brlock_reconnect_case *c = private_data;
+	(void)lck;
+	CHECK(br_lck && br_lck->fsp == c->fsp);
+	c->reconnected = brl_reconnect_disconnected(c->fsp, br_lck);
+	if (c->reconnected && c->later_failure) {
+		brl_drop_reconnected(c->fsp, br_lck);
+	}
+}
+
+static int brlock_reconnect(const char *name)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct smbd_server_connection sconn = {0};
+	connection_struct conn = {.cnum = 5, .sconn = &sconn};
+	struct smbXsrv_open_global global = {.open_persistent_id = 7, .durable = true};
+	struct smbXsrv_open op = {.global = &global};
+	files_struct fsp = {.conn = &conn, .op = &op, .fnum = 77,
+		.file_id = {.devid = 1, .inode = 42}};
+	struct brlock_reconnect_case c = {.fsp = &fsp,
+		.later_failure = !strcmp(name, "brlock_reconnect_dropped")};
+	struct share_mode_do_locked_brl_state state = {
+		.cb = brlock_reconnect_cb, .cb_data = &c, .fsp = &fsp, .status = NT_STATUS_OK};
+	/* The handle's own lock, as brl_mark_disconnected() left it. */
+	struct lock_struct own = {
+		.context = {.smblctx = 7, .tid = TID_FIELD_INVALID},
+		.start = 10, .size = 1, .fnum = FNUM_FIELD_INVALID,
+		.lock_type = WRITE_LOCK, .lock_flav = WINDOWS_LOCK,
+	};
+	/* Another open's lock on the file, here a live one of this smbd
+	 * (fnum 78). A durable reconnect fails on it and must leave it. */
+	struct lock_struct other = {
+		.context = {.smblctx = 8, .tid = 5, .pid = {.pid = 456}},
+		.start = 20, .size = 1, .fnum = 78,
+		.lock_type = WRITE_LOCK, .lock_flav = WINDOWS_LOCK,
+	};
+	struct lock_struct locks[2];
+	bool foreign = !strncmp(name, "brlock_reconnect_foreign", 24);
+	unsigned count = 1;
+	TDB_DATA before, after;
+	struct lock_struct kept;
+
+	CHECK(frame);
+	fsp.fsp_flags.can_lock = true;
+	brlock_db = db_open_rbt(frame);
+	CHECK(brlock_db);
+	server_id_set_disconnected(&own.context.pid);
+	locks[0] = own;
+	if (foreign) {
+		/* Both orders: the reconnect must not depend on where it meets it. */
+		bool other_first = !strcmp(name, "brlock_reconnect_foreign_first");
+		locks[other_first ? 0 : 1] = other;
+		locks[other_first ? 1 : 0] = own;
+		count = 2;
+	}
+	brlock_store(&fsp, locks, count);
+	before = brlock_record(frame, &fsp);
+
+	/* The wrapper frees br_lck after the callback, so a callee that frees
+	 * it too fails here (talloc's double-free check, ASan on the host). */
+	share_mode_do_locked_brl_fn(NULL, &state);
+	CHECK(NT_STATUS_IS_OK(state.status));
+	CHECK(c.reconnected == !foreign);
+	after = brlock_record(frame, &fsp);
+
+	if (foreign) {
+		/* Refused before anything changed: nothing stored, no waiter woken. */
+		CHECK(brlock_wakeups == 0);
+		CHECK(after.dsize == before.dsize && memcmp(after.dptr, before.dptr, before.dsize) == 0);
+		CHECK(fsp.current_lock_count == 0);
+	} else if (c.later_failure) {
+		/* Taken over, then given up with the failed reconnect: no record. */
+		CHECK(brlock_wakeups == 1);
+		CHECK(after.dptr == NULL);
+		CHECK(fsp.current_lock_count == 0);
+	} else {
+		/* Taken over by this smbd's new handle. */
+		CHECK(brlock_wakeups == 1);
+		CHECK(after.dsize == sizeof(uint32_t) + sizeof(struct lock_struct));
+		CHECK(PULL_BE_U32(after.dptr, 0) == SHARE_MODE_DATA_VERSION_1);
+		/* The locks follow a 4-byte version: copy, they are not aligned. */
+		memcpy(&kept, after.dptr + sizeof(uint32_t), sizeof(kept));
+		CHECK(kept.context.pid.pid == 456 && kept.context.tid == 5);
+		CHECK(kept.fnum == 77 && kept.context.smblctx == 7 && kept.start == 10);
+		CHECK(fsp.current_lock_count == 1);
+	}
+	TALLOC_FREE(frame);
+	printf("PASS %s\n", name);
+	return 0;
+}
+
 /* Execute both production rename helpers with real fsp names and file IDs.
  * Only share-mode locking/notifications are observed; name hashes and stat
  * preservation use Samba's own fsp_set_smb_fname(). */
@@ -506,6 +655,7 @@ int main(int argc, char **argv)
 	if (!strncmp(argv[1], "rescan_", 7) || !strncmp(argv[1], "cleanup_", 8)) {
 		return rescan_case(argv[1]);
 	}
+	if (!strncmp(argv[1], "brlock_", 7)) return brlock_reconnect(argv[1]);
 	/* A v1 reconnect names no create GUID. */
 	if (strncmp(argv[1], "v1_", 3)) guid = &create_guid;
 	setup_logging(argv[0], DEBUG_STDERR);

@@ -170,6 +170,28 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
               "static size_t scavenger_rescan(void)\n{\n\tif (before) {\n\t\treturn;\n\t}\n}")
     (smbd / "scavenger.c").write_text("static int before;\n\n" + message + "\n\nstatic int between;\n\n" + hello
                                       + "\n\n" + rescan + "\n\nstatic void after(void)\n{\n}\n")
+    # The brlock cut: the private struct, the parse definition (not its
+    # declaration, which comes first), the store, the read, the reconnect
+    # steps and the wrapper, each ending at its last function's column-0
+    # brace, in the order callers need them, whatever order the file has.
+    locking = tmp_path / "source3/locking"
+    locking.mkdir()
+    lock_struct = "struct byte_range_lock {\n\tunsigned int num_locks;\n};"
+    parse_head = ("static bool brl_parse_data(TALLOC_CTX *mem_ctx,\n\t\t\t   struct byte_range_lock *br_lck,\n"
+                  "\t\t\t   TDB_DATA data)")
+    parse = parse_head + "\n{\n\tif (data.dsize) {\n\t\treturn true;\n\t}\n\treturn false;\n}"
+    flush = "static void byte_range_lock_flush(struct byte_range_lock *br_lck)\n{\n}"
+    read = ("struct brl_get_locks_readonly_state {\n\tint mem_ctx;\n};\n\n"
+            "static void brl_get_locks_readonly_parser(void)\n{\n}\n\n"
+            "static struct byte_range_lock *brl_get_locks_readonly_parse(void)\n{\n}")
+    reconnect = ("bool brl_reconnect_disconnected(void)\n{\n\tif (1) {\n\t\treturn false;\n\t}\n\treturn true;\n}\n\n"
+                 "/* undo */\nvoid brl_drop_reconnected(void)\n{\n}")
+    wrapper = ("struct share_mode_do_locked_brl_state {\n\tint cb;\n};\n\n"
+               "static void share_mode_do_locked_brl_fn(void)\n{\n}")
+    (locking / "brlock.c").write_text(
+        "static int before;\n\n" + lock_struct + "\n\n" + reconnect + "\n\n" + parse_head + ";\n\n"
+        + "static int brl_traverse_fn(void)\n{\n}\n\n" + flush + "\n\n" + parse + "\n\n" + read
+        + "\n\nstruct brl_forall_cb {\n};\n\n" + wrapper + "\n\nNTSTATUS after(void)\n{\n}\n")
     rename = ("static void rename_open_files(void)\n{\n}\n\n"
               "NTSTATUS rename_open_files_below(void)\n{\n    return NT_STATUS_OK;\n}")
     (smbd / "smb2_reply.c").write_text(rename)
@@ -184,6 +206,8 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     assert (modules / "tc_file_growth_callers.inc").read_text() == "\n\n".join(regions) + "\n"
     assert (modules / "tc_scavenger_hello.inc").read_text() == hello + "\n"
     assert (modules / "tc_scavenger_rescan.inc").read_text() == message + "\n\n" + rescan + "\n"
+    assert (modules / "tc_brlock_reconnect.inc").read_text() == "\n\n".join(
+        (lock_struct, parse, flush, read, reconnect, wrapper)) + "\n"
     calls = []
 
     class Builder:

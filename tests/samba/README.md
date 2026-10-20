@@ -69,7 +69,14 @@ exhaustion, unlocked waiting and identity/ownership rejection. They do not asser
 the literal retry limit of 34. The `scavenger_hello_*` cases run the smbd
 parent's wait for a new scavenger's hello (patch 0075) against a forked child
 that says hello, exits without one, or stays silent: only the silent child is
-waited out and killed, with the limit set to 3 s for that case alone.
+waited out and killed, with the limit set to 3 s for that case alone. The
+`brlock_reconnect*` cases run a durable reconnect's byte-range lock steps
+(patch 0077) inside the real `share_mode_do_locked_brl_fn()`, which reads,
+stores and frees the lock record, with brlock.c's own record format: the
+handle's disconnected lock is taken over; taken over and given up again when a
+later step fails (`brl_drop_reconnected()`); or, with another open's lock before
+or after the handle's own, the reconnect fails without freeing the record twice
+and stores nothing.
 
 Storage reload cases compile the production connection code and the unchanged
 parent/worker callback bodies from the source being built. They check revoked
