@@ -18,7 +18,7 @@ from timecapsulesmb.device.compat import (
     render_compatibility_message,
 )
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
-from timecapsulesmb.device.disk_errors import disk_failing_warning, read_disk_errors_conn
+from timecapsulesmb.device.disk_errors import disk_failing_warning, read_disk_failing_evidence_conn
 
 
 LogCallback = Optional[Callable[[str], None]]
@@ -252,16 +252,16 @@ _ANYWAY_PROMPTS = {"install": "Install anyway?", "uninstall": "Uninstall anyway?
 
 def confirm_despite_failing_disk(connection, operation: str, *, yes: bool, command: str, update_fields) -> bool | None:
     """The preflight before an operation that cannot fix a failing disk
-    ("install", "uninstall" or "repair"): None when this boot's kernel log
-    shows no disk errors (device.disk_errors); else whether to go on, which
-    --yes answers after printing the warning. update_fields records that it
-    warned, for telemetry."""
-    errors = read_disk_errors_conn(connection)
-    if not errors:
+    ("install", "uninstall" or "repair"): None when nothing says the disk is
+    failing (device.disk_errors.read_disk_failing_evidence_conn); else whether
+    to go on, which --yes answers after printing the warning. update_fields
+    records that it warned, for telemetry."""
+    evidence = read_disk_failing_evidence_conn(connection)
+    if not evidence:
         return None
     update_fields(disk_failing_warned=True)
     # stderr, so a --json run's output stays JSON.
-    print(f"Warning: {disk_failing_warning(errors, operation)}", file=sys.stderr, flush=True)
+    print(f"Warning: {disk_failing_warning(evidence, operation)}", file=sys.stderr, flush=True)
     if yes:
         return True
     return confirm(

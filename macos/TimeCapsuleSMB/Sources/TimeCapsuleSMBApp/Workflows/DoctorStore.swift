@@ -37,15 +37,17 @@ enum DoctorSectionStatus: String, Equatable, Codable {
     case notChecked = "not_checked"
 }
 
-/// A Checkup result that leaves only a reinstall, with the dashboard row and
-/// the Checkup text it shows. DoctorSummary.payloadProblems is the one list.
+/// A manager verdict a Checkup result reports, with the dashboard row and the
+/// Checkup text it shows. DoctorSummary.payloadProblems is the one list.
 /// stopsSamba: file sharing is off for it; otherwise Samba serves and only
-/// rsync, which is optional, is off.
+/// rsync, which is optional, is off. replacesDisk: the disk could not read
+/// the files, so a new disk fixes it, not Install.
 struct PayloadProblem: Equatable {
     let code: String
     let rowID: String
     let detailKey: String
     let stopsSamba: Bool
+    var replacesDisk = false
 }
 
 struct DoctorSummary: Equatable {
@@ -53,23 +55,30 @@ struct DoctorSummary: Equatable {
     static let runtimeNotStartedResultCode = "runtime_not_started"
     static let payloadMissingFromDiskResultCode = "payload_missing_from_disk"
     static let payloadDamagedOnDiskResultCode = "payload_damaged_on_disk"
+    static let payloadUnreadableOnDiskResultCode = "payload_unreadable_on_disk"
     static let rsyncMissingFromDiskResultCode = "rsync_missing_from_disk"
     static let rsyncDamagedOnDiskResultCode = "rsync_damaged_on_disk"
+    static let rsyncUnreadableOnDiskResultCode = "rsync_unreadable_on_disk"
     static let diskNotMountingResultCode = "disk_not_mounting"
     static let diskFailingResultCode = "disk_failing"
     /// The installed files are missing from every disk, as after an Erase in
-    /// AirPort Utility, or the disk's copy of Samba is damaged; or rsync's
-    /// files are missing or damaged, which leaves Samba serving. Those that
-    /// stop Samba come first.
+    /// AirPort Utility, the disk's copy of Samba is damaged, or the disk could
+    /// not read it (a failing disk); or rsync's files are missing,
+    /// damaged or unreadable, which leaves Samba serving. Those that stop
+    /// Samba come first.
     static let payloadProblems = [
         PayloadProblem(code: payloadMissingFromDiskResultCode, rowID: "runtime-payload-missing",
                        detailKey: "doctor.check.payload_missing_from_disk", stopsSamba: true),
         PayloadProblem(code: payloadDamagedOnDiskResultCode, rowID: "runtime-payload-damaged",
                        detailKey: "doctor.check.payload_damaged_on_disk", stopsSamba: true),
+        PayloadProblem(code: payloadUnreadableOnDiskResultCode, rowID: "runtime-payload-unreadable",
+                       detailKey: "doctor.check.payload_unreadable_on_disk", stopsSamba: true, replacesDisk: true),
         PayloadProblem(code: rsyncMissingFromDiskResultCode, rowID: "runtime-rsync-missing",
                        detailKey: "doctor.check.rsync_missing_from_disk", stopsSamba: false),
         PayloadProblem(code: rsyncDamagedOnDiskResultCode, rowID: "runtime-rsync-damaged",
                        detailKey: "doctor.check.rsync_damaged_on_disk", stopsSamba: false),
+        PayloadProblem(code: rsyncUnreadableOnDiskResultCode, rowID: "runtime-rsync-unreadable",
+                       detailKey: "doctor.check.rsync_unreadable_on_disk", stopsSamba: false, replacesDisk: true),
     ]
 
     static func payloadProblem(code: String?) -> PayloadProblem? {
@@ -82,8 +91,8 @@ struct DoctorSummary: Equatable {
     let infoCount: Int
     let runtimeNotInstalled: Bool
     let runtimeNotStarted: Bool
-    /// The check code that leaves only a reinstall (payloadProblems), the
-    /// first in that list when there are several. nil when none.
+    /// The check code of a manager verdict (payloadProblems), the first in
+    /// that list when there are several. nil when none.
     let payloadProblemCode: String?
     var payloadProblem: PayloadProblem? { Self.payloadProblem(code: payloadProblemCode) }
     /// A disk will not mount and no other holds the Samba files, as when

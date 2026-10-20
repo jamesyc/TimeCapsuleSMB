@@ -849,7 +849,7 @@ class CliMaintenanceTests(CliTestCase):
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(self.make_valid_env())))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.runtime.read_disk_errors_conn", return_value=errors))
+            stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors))
             stack.enter_context(mock.patch("builtins.input", side_effect=lambda prompt="": prompts.append(prompt) or "n"))
             run_ssh = stack.enter_context(mock.patch("timecapsulesmb.services.maintenance.run_ssh"))
             with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as warning:
@@ -869,7 +869,7 @@ class CliMaintenanceTests(CliTestCase):
                 with ExitStack() as stack:
                     stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
                     self._patch_mast_volume_flow(stack, "uninstall")
-                    stack.enter_context(mock.patch("timecapsulesmb.cli.runtime.read_disk_errors_conn", return_value=errors))
+                    stack.enter_context(mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors))
                     stack.enter_context(mock.patch("builtins.input", return_value=answer))
                     remove = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
                     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):

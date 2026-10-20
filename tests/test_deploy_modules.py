@@ -3266,11 +3266,12 @@ describe_managed_smbd_status "" ""
         )
 
     def _payload_problem_runtime(self, problem) -> ManagedRuntimeProbeResult:
+        # A wait whose window is already over: every verdict ends it.
         runtime = self._runtime_not_ready(samba_ready=not problem.samba_off)
         with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)):
             with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime):
                 return probe_managed_runtime_conn(
-                    SshConnection("host", "pw", "-o foo"), timeout_seconds=200, poll_interval_seconds=0.0,
+                    SshConnection("host", "pw", "-o foo"), timeout_seconds=0, poll_interval_seconds=0.0,
                     smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
                 )
 
@@ -3279,7 +3280,7 @@ describe_managed_smbd_status "" ""
         # the verification waits: it ends after the first attempt, not at
         # 200 s; rsync's once Samba is ready, so the result says how it is.
         connection = SshConnection("host", "pw", "-o foo")
-        for problem in DISK_PAYLOAD_PROBLEMS:
+        for problem in (problem for problem in DISK_PAYLOAD_PROBLEMS if not problem.replaces_disk):
             with self.subTest(problem.token):
                 with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)) as asked:
                     with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
@@ -3294,6 +3295,51 @@ describe_managed_smbd_status "" ""
                 self.assertIs(runtime_payload_problem(result), problem)
                 self.assertEqual(result.detail, problem.message)
                 self.assertIn(f"FAIL:{problem.message}", result.lines)
+
+    def test_files_the_disk_could_not_read_are_reported_only_at_the_end_of_the_wait(self) -> None:
+        # payload=unreadable or rsync=unreadable: the manager reads the files
+        # again within seconds, so the wait goes on through the soft window,
+        # and the verdict, still there at the final checks, is the result.
+        for problem in DISK_PAYLOAD_PROBLEMS:
+            if not problem.replaces_disk:
+                continue
+            with self.subTest(problem.token):
+                with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)):
+                    with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
+                                    return_value=self._runtime_not_ready(samba_ready=not problem.samba_off)) as runtime_once:
+                        result = probe_managed_runtime_conn(
+                            SshConnection("host", "pw", "-o foo"), timeout_seconds=1, poll_interval_seconds=0.0,
+                            smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
+                        )
+                self.assertFalse(result.ready)
+                # Soft-window attempts, then the first final check, which ends it.
+                self.assertGreater(runtime_once.call_count, 2)
+                phases = [attempt.phase for attempt in result.attempts]
+                self.assertEqual(phases[-1], "final_check")
+                self.assertEqual(phases.count("final_check"), 1)
+                self.assertIs(runtime_payload_problem(result), problem)
+                self.assertEqual(result.detail, problem.message)
+
+    def test_files_the_disk_reads_again_end_the_wait_ready(self) -> None:
+        # One slow read at a cold start: the manager's next check reads smbd
+        # whole, clears payload=unreadable and starts Samba, and the wait,
+        # which went on through the verdict, ends ready.
+        unreadable = next(p for p in DISK_PAYLOAD_PROBLEMS if p.token == "payload=unreadable")
+        ready = ManagedRuntimeProbeResult(
+            ready=True,
+            detail="managed runtime is ready",
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
+        )
+        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(unreadable,)):
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
+                            side_effect=[self._runtime_not_ready(), self._runtime_not_ready(), ready]):
+                result = probe_managed_runtime_conn(
+                    SshConnection("host", "pw", "-o foo"), timeout_seconds=200, poll_interval_seconds=0.0,
+                    smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0,
+                )
+        self.assertTrue(result.ready)
+        self.assertIsNone(runtime_payload_problem(result))
 
     def test_a_verdict_that_leaves_samba_on_waits_for_samba(self) -> None:
         # rsync=damaged while smbd is still starting (or failing): the wait
@@ -3424,8 +3470,8 @@ describe_managed_smbd_status "" ""
             )
 
         self.assertEqual([problem.code for problem in DISK_PAYLOAD_PROBLEMS],
-                         ["payload_missing_from_disk", "payload_damaged_on_disk", "rsync_missing_from_disk",
-                          "rsync_damaged_on_disk"])
+                         ["payload_missing_from_disk", "payload_damaged_on_disk", "payload_unreadable_on_disk",
+                          "rsync_missing_from_disk", "rsync_damaged_on_disk", "rsync_unreadable_on_disk"])
         for problem in DISK_PAYLOAD_PROBLEMS:
             with self.subTest(problem.token):
                 with self.assertRaises(problem.error_type) as raised:

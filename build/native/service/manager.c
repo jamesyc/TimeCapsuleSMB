@@ -20,6 +20,9 @@
 /* Staging copies smbd from the disk, and reads can be slow for the first
  * minutes after boot while the disk spins up and settles. */
 #define STAGE_JOB_MS 240000
+/* A staging run reads its binary at most twice (worker.h): both reads, at
+ * their budget, and the run's other steps fit before it is stopped. */
+typedef char stage_job_fits_two_payload_reads[2 * TC_PAYLOAD_READ_BUDGET_MS + 30000 <= STAGE_JOB_MS ? 1 : -1];
 /* Host tests shorten these two; the device uses the defaults. */
 #ifndef JOB_RETRY_MS
 #define JOB_RETRY_MS 5000
@@ -84,9 +87,23 @@
 #ifndef TC_BUFSTALL_REPORT_TIMEOUT_MS
 #define TC_BUFSTALL_REPORT_TIMEOUT_MS 180000
 #endif
-/* Stuck-process heartbeats waiting for the report job; each episode sends at
- * most two, so a few cover several at once. */
-#define STUCK_REPORT_QUEUE 4
+/* Heartbeats waiting for the report job: stuck processes (each episode sends
+ * at most two), lock-directory resets, and the reports sent once per manager
+ * (once_prefixes), so a few cover several at once. A once-report that a full
+ * queue drops is queued again later (report_once). */
+#define REPORT_QUEUE 4
+/* Room for the once-reports a manager delivers: today unmounted:internal|usb,
+ * payload: and rsync:, each missing|damaged|unreadable, and a slow_copy: for
+ * each program, with room to spare. A full list sends no new one rather than one again and again. */
+#ifndef ONCE_REPORTS
+#define ONCE_REPORTS 16
+#endif
+/* A copy of a binary this slow is reported once per manager and program
+ * (slow_copy:NAME:SECONDS, a once-report): how close healthy disks come to
+ * the read budget (worker.h TC_PAYLOAD_READ_BUDGET_MS). */
+#ifndef TC_SLOW_COPY_MS
+#define TC_SLOW_COPY_MS 30000
+#endif
 /* Stuck processes named in the manager's process title, longest first. */
 #define STUCK_TITLE_MAX 4
 enum { BLOCK_SMB = 1, BLOCK_RSYNC = 2, BLOCK_DISCOVERY = 4, BLOCK_TELEMETRY = 8 };
@@ -152,18 +169,23 @@ struct unit {
      * which each launch checks; what the last damage read; and the wait the
      * last failure logged, so a retry that changes nothing logs nothing. */
     long long crc32, seen, logged_wait;
+    /* The first slow copy's report (TC_SLOW_COPY_MS), sent once per manager
+     * (report_once); empty for none. */
+    char slow_copy[64];
     /* The files the last run that got that far found missing from the
      * payload (tc_stage_result.missing): the title's verdict, until a run
      * finds them or the payload changes. */
     int missing;
 };
-/* What a unit's title token says (stuck.h): its disk copy is damaged, or a
- * file it needs is missing from the payload. Only a reinstall fixes either. */
-enum verdict { VERDICT_NONE, VERDICT_MISSING, VERDICT_DAMAGED };
-static const char *const verdict_names[] = {NULL, "missing", "damaged"};
+/* What a unit's title token says (stuck.h): a file it needs is missing from
+ * the payload, or its disk copy is damaged (other bytes than deploy wrote),
+ * which a reinstall fixes; or the disk could not read it, or only too slowly
+ * (worker.h tc_read_damage), which a reinstall does not: the disk is failing. */
+enum verdict { VERDICT_NONE, VERDICT_MISSING, VERDICT_DAMAGED, VERDICT_UNREADABLE };
+static const char *const verdict_names[] = {NULL, "missing", "damaged", "unreadable"};
 static enum verdict unit_verdict(const struct unit *u) {
     if (u->image.state == TC_IMAGE_DISK_DAMAGED)
-        return VERDICT_DAMAGED;
+        return tc_stage_disk_unreadable(u->seen) ? VERDICT_UNREADABLE : VERDICT_DAMAGED;
     /* Files that make the payload missing are storage's to report. */
     return u->missing && !u->kind->defines_payload ? VERDICT_MISSING : VERDICT_NONE;
 }
@@ -231,10 +253,9 @@ struct manager {
      * title's unmounted=). unmounted_paused is how much of that diskd spent
      * checking or formatting a disk, which does not count towards
      * TC_UNMOUNTED_MS; unmounted_sampled is the previous sample and
-     * unmounted_maintenance whether it saw that. unmounted_reported: its
-     * report was delivered, once per manager. Process-local. */
+     * unmounted_maintenance whether it saw that. Process-local. */
     long long unmounted_since, unmounted_paused, unmounted_sampled;
-    int unmounted_shown, unmounted_reported, unmounted_maintenance;
+    int unmounted_shown, unmounted_maintenance;
     /* Samba's and rsync's verdicts as update_payload_title last derived them
      * (the title's payload= and rsync=). */
     enum verdict samba_verdict, rsync_verdict;
@@ -260,26 +281,37 @@ struct manager {
     long long report_inflight_longest;
     /* Processes stuck in the kernel (stuck.h); process-local by design. */
     struct tc_stuck stuck;
-    long long stuck_report_at;
-    int stuck_truncated_logged, stuck_reports_dropped;
+    int stuck_truncated_logged;
     /* Heartbeat reasons not yet sent, oldest first, and the one in flight
-     * (empty when the in-flight report, if any, is a buffer-stall one). */
-    char stuck_reports[STUCK_REPORT_QUEUE][64];
-    size_t stuck_report_count;
-    char stuck_inflight[64];
+     * (empty when the in-flight report, if any, is a buffer-stall one);
+     * queue_at: not before then, after a failed send. once_delivered: the
+     * once-reports this manager delivered. Process-local. */
+    char queue[REPORT_QUEUE][64];
+    size_t queue_count;
+    char queue_inflight[64];
+    long long queue_at;
+    int queue_dropped;
+    char once_delivered[ONCE_REPORTS][64];
+    size_t once_count;
+    int once_full_logged;
 };
 
 static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-/* Doctor reads started=, payload=missing|damaged, rsync=missing|damaged, unmounted= and stuck=PID:COMM:WAIT:SECONDS[,...]
- * from the title (stuck.h tc_manager_title; ps shows a sleep time of at most
+/* The title's payload= word: Samba's files missing from every disk, else
+ * Samba's own verdict; NULL for none. */
+static const char *payload_word(const struct manager *m) {
+    return m->payload_missing ? "missing" : verdict_names[m->samba_verdict];
+}
+/* Doctor reads started=, payload=missing|damaged|unreadable, rsync=missing|damaged|unreadable, unmounted= and
+ * stuck=PID:COMM:WAIT:SECONDS[,...] from the title (stuck.h tc_manager_title; ps shows a sleep time of at most
  * 127 s, and none for a wait that keeps waking). */
 static void set_manager_title(const struct manager *m) {
     char title[256];
-    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting,
-                     m->payload_missing ? "missing" : verdict_names[m->samba_verdict], verdict_names[m->rsync_verdict],
+    tc_manager_title(title, sizeof(title), m->started_ms, m->hostname_waiting, payload_word(m),
+                     verdict_names[m->rsync_verdict],
                      m->unmounted_shown ? m->unmounted_since : -1, &m->stuck,
                      STUCK_TITLE_MAX, acp_monotonic_ms());
 #if defined(__NetBSD__)
@@ -301,9 +333,10 @@ static void set_manager_title(const struct manager *m) {
 }
 static void changed(struct manager *m, long long now);
 /* Each unit's verdict, the same way for both: its program stays off until a
- * reinstall, so doctor and deploy report it instead of waiting. Samba's
- * keeps file sharing off; rsync's, while rsync is enabled, only rsync, and
- * doctor's rsync check reports it. */
+ * reinstall or, for an unreadable disk copy, a new disk, so doctor and
+ * deploy report it instead of waiting. Samba's keeps file sharing off;
+ * rsync's, while rsync is enabled, only rsync, and doctor's rsync check
+ * reports it. */
 static enum verdict shown_verdict(const struct manager *m, const struct unit *u) {
     return m->have_settings && u->kind->wanted(m) ? unit_verdict(u) : VERDICT_NONE;
 }
@@ -905,36 +938,75 @@ static void bufstall_restore(void) {
         timestamped_fprintf(stderr, "manager: restored vm.bufmem_lowater from %llu to %llu at stop\n",
                             (unsigned long long)sample.lowater, (unsigned long long)apple);
 }
-static void drop_stuck_report(struct manager *m, const char *reason) {
+static void drop_report(struct manager *m, const char *reason) {
     /* Logged once until a report fits again. */
-    if (!m->stuck_reports_dropped)
+    if (!m->queue_dropped)
         timestamped_fprintf(stderr, "manager: report queue full; dropping %s\n", reason);
-    m->stuck_reports_dropped = 1;
+    m->queue_dropped = 1;
 }
-static void push_stuck_report(struct manager *m, const char *reason) {
-    if (m->stuck_report_count < STUCK_REPORT_QUEUE) {
-        snprintf(m->stuck_reports[m->stuck_report_count++], sizeof(m->stuck_reports[0]), "%s", reason);
-        m->stuck_reports_dropped = 0;
+static void push_report(struct manager *m, const char *reason) {
+    if (m->queue_count < REPORT_QUEUE) {
+        snprintf(m->queue[m->queue_count++], sizeof(m->queue[0]), "%s", reason);
+        m->queue_dropped = 0;
     } else {
-        drop_stuck_report(m, reason);
+        drop_report(m, reason);
     }
 }
-#define UNMOUNTED_REPORT "unmounted:"
-/* The unmounted report waits in the queue or is in flight. */
-static int unmounted_report_pending(const struct manager *m) {
+static void pop_report(struct manager *m) {
+    if (!m->queue_count)
+        return;
+    memmove(m->queue[0], m->queue[1], (m->queue_count - 1) * sizeof(m->queue[0]));
+    m->queue_count--;
+}
+/* Reports each manager sends once each: the state lasts (a disk that will
+ * not mount, a verdict the title carries), so one report says it, and the
+ * heartbeat carries the uptime. A verdict that changes (damaged, then
+ * unreadable) is a new report. A slow copy is reported for the first one. */
+static const char *const once_prefixes[] = {"unmounted:", "payload:", "rsync:", "slow_copy:"};
+static int is_once(const char *reason) {
     size_t i;
-    if (!strncmp(m->stuck_inflight, UNMOUNTED_REPORT, sizeof(UNMOUNTED_REPORT) - 1))
-        return 1;
-    for (i = 0; i < m->stuck_report_count; i++)
-        if (!strncmp(m->stuck_reports[i], UNMOUNTED_REPORT, sizeof(UNMOUNTED_REPORT) - 1))
+    for (i = 0; i < sizeof(once_prefixes) / sizeof(once_prefixes[0]); i++)
+        if (!strncmp(reason, once_prefixes[i], strlen(once_prefixes[i])))
             return 1;
     return 0;
 }
-static void pop_stuck_report(struct manager *m) {
-    if (!m->stuck_report_count)
+/* Queues reason, a once-report, unless this manager delivered it or it waits
+ * or is in flight. A full queue drops a report, at a push or when a failed
+ * one goes back, so it is queued again on the next call until delivered. */
+static void report_once(struct manager *m, const char *reason) {
+    size_t i;
+    if (!strcmp(m->queue_inflight, reason))
         return;
-    memmove(m->stuck_reports[0], m->stuck_reports[1], (m->stuck_report_count - 1) * sizeof(m->stuck_reports[0]));
-    m->stuck_report_count--;
+    for (i = 0; i < m->once_count; i++)
+        if (!strcmp(m->once_delivered[i], reason))
+            return;
+    for (i = 0; i < m->queue_count; i++)
+        if (!strcmp(m->queue[i], reason))
+            return;
+    if (m->once_count == ONCE_REPORTS) {
+        if (!m->once_full_logged)
+            timestamped_fprintf(stderr, "manager: once-report list full; not sending %s\n", reason);
+        m->once_full_logged = 1;
+        return;
+    }
+    push_report(m, reason);
+}
+/* The title's verdicts and each program's first slow copy, each reported
+ * once (report_once). */
+static void report_verdicts(struct manager *m) {
+    char reason[64];
+    size_t i;
+    if (payload_word(m)) {
+        snprintf(reason, sizeof(reason), "payload:%s", payload_word(m));
+        report_once(m, reason);
+    }
+    if (verdict_names[m->rsync_verdict]) {
+        snprintf(reason, sizeof(reason), "rsync:%s", verdict_names[m->rsync_verdict]);
+        report_once(m, reason);
+    }
+    for (i = 0; i < 2; i++)
+        if (m->units[i]->slow_copy[0])
+            report_once(m, m->units[i]->slow_copy);
 }
 /* Buffer-stall and stuck-process heartbeats share one report job, the one
  * step here that starts a process, so never while stopping and never during a
@@ -948,20 +1020,20 @@ static void pump_reports(struct manager *m, long long now) {
     int bufstall_due;
     if (m->report_job.group && tc_child_poll(&m->report_job, now)) {
         int delivered = tc_child_ok(&m->report_job) && !m->report_job.stopping;
-        if (m->stuck_inflight[0]) {
+        if (m->queue_inflight[0]) {
             if (!delivered) {
                 /* Back to the front: reports go out in order. A queue that
                  * filled meanwhile loses its newest. */
-                if (m->stuck_report_count == STUCK_REPORT_QUEUE)
-                    drop_stuck_report(m, m->stuck_reports[--m->stuck_report_count]);
-                memmove(m->stuck_reports[1], m->stuck_reports[0], m->stuck_report_count * sizeof(m->stuck_reports[0]));
-                memcpy(m->stuck_reports[0], m->stuck_inflight, sizeof(m->stuck_inflight));
-                m->stuck_report_count++;
-                m->stuck_report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
-            } else if (!strncmp(m->stuck_inflight, UNMOUNTED_REPORT, sizeof(UNMOUNTED_REPORT) - 1)) {
-                m->unmounted_reported = 1;
+                if (m->queue_count == REPORT_QUEUE)
+                    drop_report(m, m->queue[--m->queue_count]);
+                memmove(m->queue[1], m->queue[0], m->queue_count * sizeof(m->queue[0]));
+                memcpy(m->queue[0], m->queue_inflight, sizeof(m->queue_inflight));
+                m->queue_count++;
+                m->queue_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+            } else if (is_once(m->queue_inflight) && m->once_count < ONCE_REPORTS) {
+                memcpy(m->once_delivered[m->once_count++], m->queue_inflight, sizeof(m->queue_inflight));
             }
-            m->stuck_inflight[0] = 0;
+            m->queue_inflight[0] = 0;
         } else if (delivered) {
             m->report_at = now + TC_BUFSTALL_REPORT_MS;
         } else {
@@ -983,14 +1055,14 @@ static void pump_reports(struct manager *m, long long now) {
             m->report_outcome = TC_BUFSTALL_NO_EPISODE;
             m->report_longest = 0;
         }
-        m->stuck_report_count = 0;
+        m->queue_count = 0;
         return;
     }
     if (bufstall_due)
         snprintf(reason, sizeof(reason), "bufstall:%s:%lld", tc_bufstall_outcome_name(m->report_outcome),
                  m->report_longest / 1000);
-    else if (m->stuck_report_count && !m->bufstall.outcome && now >= m->stuck_report_at)
-        snprintf(reason, sizeof(reason), "%s", m->stuck_reports[0]);
+    else if (m->queue_count && !m->bufstall.outcome && now >= m->queue_at)
+        snprintf(reason, sizeof(reason), "%s", m->queue[0]);
     else
         return;
     /* --report never starts signed jobs, so its whole group may be killed
@@ -1003,13 +1075,13 @@ static void pump_reports(struct manager *m, long long now) {
             m->report_outcome = TC_BUFSTALL_NO_EPISODE;
             m->report_longest = 0;
         } else {
-            memcpy(m->stuck_inflight, reason, sizeof(m->stuck_inflight));
-            pop_stuck_report(m);
+            memcpy(m->queue_inflight, reason, sizeof(m->queue_inflight));
+            pop_report(m);
         }
     } else if (bufstall_due) {
         m->report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
     } else {
-        m->stuck_report_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
+        m->queue_at = now + TC_BUFSTALL_REPORT_RETRY_MS;
     }
 }
 static const char *group_role(const struct manager *m, pid_t group) {
@@ -1048,12 +1120,12 @@ static void stuck_changed(const struct tc_stuck_event *e, void *context) {
                                     "running\n", name, wmesg, seconds);
     } else if (e->change == TC_STUCK_REPORT) {
         snprintf(reason, sizeof(reason), "stuck:%s:%s:%lld", comm, wmesg, seconds);
-        push_stuck_report(m, reason);
+        push_report(m, reason);
     } else {
         timestamped_fprintf(stderr, "manager: stuck: %s no longer stuck after %lld s\n", name, seconds);
         if (e->entry.reported) {
             snprintf(reason, sizeof(reason), "stuck-cleared:%s:%s:%lld", comm, wmesg, seconds);
-            push_stuck_report(m, reason);
+            push_report(m, reason);
         }
     }
 }
@@ -1236,15 +1308,13 @@ static void sample_unmounted(struct manager *m, long long now) {
                                 "manager: storage: a disk with the Samba files is mounted again, or none is listed\n");
         set_manager_title(m);
     }
-    /* Queued again whenever it is neither delivered nor waiting: a full
-     * queue drops a report, at a push or when a failed one goes back. */
-    if (shown && !m->unmounted_reported && !unmounted_report_pending(m)) {
+    if (shown) {
         /* Whether the internal disk is among them is what telemetry cannot
-         * tell otherwise; the heartbeat carries the uptime. */
+         * tell otherwise. */
         for (i = 0; i < m->storage.inventory.count; i++)
             if ((pending & (1u << i)) && m->storage.inventory.volumes[i].builtin)
                 internal = 1;
-        push_stuck_report(m, internal ? UNMOUNTED_REPORT "internal" : UNMOUNTED_REPORT "usb");
+        report_once(m, internal ? "unmounted:internal" : "unmounted:usb");
     }
 }
 /* One process-table read per pass (proctable.h), shared by buffer-stall
@@ -1296,7 +1366,7 @@ static int finish_run(struct unit *u, long long now) {
      * only a run that copied it says anything about it at all. */
     if (current) {
         if (u->how.copy)
-            tc_image_staged(&u->image, r.copy, published, now);
+            tc_image_staged(&u->image, r.copy, tc_stage_disk_unreadable(r.read), published, now);
         /* What damage read, until a copy's bytes match: a run that failed
          * before reading says nothing new, so the next probe stays quiet. */
         if (r.copy == TC_COPY_DISK_DAMAGED)
@@ -1305,6 +1375,8 @@ static int finish_run(struct unit *u, long long now) {
             u->seen = -1;
         if (published && u->how.copy)
             u->crc32 = r.crc32;
+        if (u->how.copy && !r.copy && r.copy_ms >= TC_SLOW_COPY_MS && !u->slow_copy[0])
+            snprintf(u->slow_copy, sizeof(u->slow_copy), "slow_copy:%s:%lld", k->name, r.copy_ms / 1000);
         if (r.missing >= 0)
             u->missing = r.missing;
     }
@@ -1515,7 +1587,7 @@ static void check_locks(struct manager *m, long long now) {
                         used / 1024);
     /* One heartbeat per reset: a leak that comes back shows in telemetry. */
     snprintf(reason, sizeof(reason), "locks_reset:%lld", used / 1024);
-    push_stuck_report(m, reason);
+    push_report(m, reason);
     m->locks_reset = 1;
     m->locks_reset_at = now;
     stop_role(&m->smb, now, 1);
@@ -1670,6 +1742,7 @@ int tc_manager_main(int argc, char **argv) {
             check_locks(m, now);
             reconcile_roles(m, now);
             update_payload_title(m);
+            report_verdicts(m);
         }
         FD_ZERO(&reads);
         tc_events_prepare(&m->events, &reads, &maxfd);

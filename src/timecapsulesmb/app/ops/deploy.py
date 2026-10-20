@@ -18,7 +18,7 @@ from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_target,
 )
-from timecapsulesmb.device.disk_errors import read_disk_errors_conn
+from timecapsulesmb.device.disk_errors import read_disk_failing_evidence_conn
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import load_install_identity
 from timecapsulesmb.services.app import (
@@ -273,10 +273,10 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             no_wait=no_wait,
             device_name=device_name,
         )
-        disk_errors = read_disk_errors_conn(connection)
-        if disk_errors:
+        disk_failing = read_disk_failing_evidence_conn(connection)
+        if disk_failing:
             context.update_fields(disk_failing_warned=True)
-            presentation = replace(presentation, **disk_failing_confirmation_fields(operation, disk_errors))
+            presentation = replace(presentation, **disk_failing_confirmation_fields(operation, disk_failing))
         presentation_values = {
             "device_name": device_name,
             "netbsd4": is_netbsd4,
@@ -284,7 +284,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             "no_wait": no_wait,
             "startup_mode": startup_mode,
             "rsync_enabled": rsync_enabled,
-            **({"disk_failing": True} if disk_errors else {}),
+            **({"disk_failing": True} if disk_failing else {}),
         }
         require_confirmation(
             params,
@@ -303,7 +303,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                     "requires_reboot": preflight.requires_reboot,
                     "no_wait": no_wait,
                     "startup_mode": startup_mode,
-                    **({"disk_failing": True} if disk_errors else {}),
+                    **({"disk_failing": True} if disk_failing else {}),
                 },
                 presentation_id=presentation.presentation_id,
                 presentation_values=presentation_values,

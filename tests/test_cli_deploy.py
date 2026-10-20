@@ -987,7 +987,7 @@ class CliDeployTests(CliTestCase):
         # Asked before the payload volume is chosen; no is the default.
         errors = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
         prompts: list[str] = []
-        with mock.patch("timecapsulesmb.cli.runtime.read_disk_errors_conn", return_value=errors):
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
             result = self.run_deploy_cli(
                 [],
                 artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],

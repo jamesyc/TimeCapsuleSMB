@@ -23,19 +23,25 @@ struct tc_stage_copy {
 /* What a run did with its binary: tc_copy_file's result (worker.h), -1 when
  * the run did not get that far; the CRC-32 its payload's checksums file
  * records, -1 for none, which each launch checks the RAM copy against; and,
- * on damage, what it read: the binary's CRC-32, TC_COPY_UNREADABLE, or
- * TC_STAGE_BAD_CHECKSUMS for a checksums file without the binary's entry;
- * else -1. */
+ * on damage, what it read: the binary's CRC-32, TC_COPY_UNREADABLE,
+ * TC_COPY_STALLED, TC_STAGE_BAD_CHECKSUMS for a checksums file without the
+ * binary's entry, or TC_STAGE_UNREADABLE_CHECKSUMS for one the disk could not
+ * read; else -1. */
 #define TC_STAGE_BAD_CHECKSUMS -3
+#define TC_STAGE_UNREADABLE_CHECKSUMS -5
+/* Whether what damage read says the disk could not return the payload, or
+ * not in time: a failing disk, which a reinstall does not fix. */
+int tc_stage_disk_unreadable(long long read);
 /* missing: the files the run needs that the payload lacks, a bit for each
  * (only a reinstall puts them back: the title's NAME=missing), 0 for none,
  * -1 when the run did not get that far. A run whose disk did not stay the
  * payload's reports neither missing files nor damage. */
+/* copy_ms: how long a copy that went through took to read, -1 for none. */
 struct tc_stage_result {
     int copy, missing;
-    long long crc32, read;
+    long long crc32, read, copy_ms;
 };
-#define TC_STAGE_RESULT_NONE {-1, -1, -1, -1}
+#define TC_STAGE_RESULT_NONE {-1, -1, -1, -1, -1}
 /* Samba's run: its directories, smbd and its three files. rsync's run:
  * ShareRoot, rsyncd.conf and rsync. Each stages and publishes alone, so
  * neither program waits on the other. */

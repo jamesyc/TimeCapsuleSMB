@@ -147,6 +147,9 @@
 "confirm.deploy.disk_failing.action" = "Trotzdem installieren";
 "confirm.deploy.disk_failing.message" = "Die Festplatte des Geräts hat Fehler gemeldet, die sie nicht beheben konnte; sie fällt wahrscheinlich aus. Eine Installation behebt das nicht, und das AirPort-Dienstprogramm zeigt die Festplatte möglicherweise trotzdem als in Ordnung an. Kopieren Sie zuerst die Dateien, die Sie brauchen. Trotzdem installieren?";
 "confirm.deploy.disk_failing.title" = "Die Festplatte fällt aus";
+"confirm.deploy.disk_unreadable.action" = "Trotzdem installieren";
+"confirm.deploy.disk_unreadable.message" = "Die Festplatte des Geräts konnte die TimeCapsuleSMB-Dateien nicht oder nur zu langsam lesen; sie fällt wahrscheinlich aus. Eine Installation behebt das nicht, und das AirPort-Dienstprogramm zeigt die Festplatte möglicherweise trotzdem als in Ordnung an. Kopieren Sie zuerst die Dateien, die Sie brauchen. Trotzdem installieren?";
+"confirm.deploy.disk_unreadable.title" = "Die Festplatte fällt aus";
 "confirm.fsck.no_reboot.action" = "fsck ausführen";
 "confirm.fsck.no_reboot.message" = "fsck auf dem ausgewählten HFS-Volume ausführen? Auf einer großen Festplatte kann das eine Stunde oder länger dauern. Trennen Sie die Time Capsule nicht vom Strom, bis der Vorgang abgeschlossen ist.";
 "confirm.fsck.no_reboot.title" = "Festplattenreparatur ausführen?";
@@ -156,6 +159,9 @@
 "confirm.fsck.disk_failing.action" = "Trotzdem reparieren";
 "confirm.fsck.disk_failing.message" = "Die Festplatte des Geräts hat Fehler gemeldet, die sie nicht beheben konnte; sie fällt wahrscheinlich aus. Eine Festplattenreparatur kann eine ausfallende Festplatte nicht reparieren und belastet sie stark. Kopieren Sie zuerst die Dateien, die Sie brauchen. Trotzdem reparieren?";
 "confirm.fsck.disk_failing.title" = "Die Festplatte fällt aus";
+"confirm.fsck.disk_unreadable.action" = "Trotzdem reparieren";
+"confirm.fsck.disk_unreadable.message" = "Die Festplatte des Geräts konnte die TimeCapsuleSMB-Dateien nicht oder nur zu langsam lesen; sie fällt wahrscheinlich aus. Eine Festplattenreparatur kann eine ausfallende Festplatte nicht reparieren und belastet sie stark. Kopieren Sie zuerst die Dateien, die Sie brauchen. Trotzdem reparieren?";
+"confirm.fsck.disk_unreadable.title" = "Die Festplatte fällt aus";
 "confirm.flash.patch_write.action" = "Firmware schreiben";
 "confirm.flash.patch_write.message" = "Den Starthook der primären Firmware-Bank auf %@ patchen? Nach erfolgreichem Schreiben muss das Gerät manuell vom Strom getrennt und wieder angeschlossen werden.";
 "confirm.flash.patch_write.title" = "Firmware-Starthook patchen?";
@@ -174,6 +180,9 @@
 "confirm.uninstall.disk_failing.action" = "Trotzdem deinstallieren";
 "confirm.uninstall.disk_failing.message" = "Die Festplatte des Geräts hat Fehler gemeldet, die sie nicht beheben konnte; sie fällt wahrscheinlich aus. Eine Deinstallation behebt das nicht, und das AirPort-Dienstprogramm zeigt die Festplatte möglicherweise trotzdem als in Ordnung an. Kopieren Sie zuerst die Dateien, die Sie brauchen. Trotzdem deinstallieren?";
 "confirm.uninstall.disk_failing.title" = "Die Festplatte fällt aus";
+"confirm.uninstall.disk_unreadable.action" = "Trotzdem deinstallieren";
+"confirm.uninstall.disk_unreadable.message" = "Die Festplatte des Geräts konnte die TimeCapsuleSMB-Dateien nicht oder nur zu langsam lesen; sie fällt wahrscheinlich aus. Eine Deinstallation behebt das nicht, und das AirPort-Dienstprogramm zeigt die Festplatte möglicherweise trotzdem als in Ordnung an. Kopieren Sie zuerst die Dateien, die Sie brauchen. Trotzdem deinstallieren?";
+"confirm.uninstall.disk_unreadable.title" = "Die Festplatte fällt aus";
 "dashboard.action.install_update_smb" = "Samba installieren / aktualisieren";
 "dashboard.action.refresh_status" = "Status aktualisieren";
 "dashboard.action.settings" = "Einstellungen";
@@ -294,8 +303,10 @@
 "dialog.forget.title" = "Dieses Gerät vergessen?";
 "doctor.check.payload_missing_from_disk" = "Die Samba-Dateien fehlen auf allen Datenträgern, etwa nach „Festplatte löschen“ im AirPort-Dienstprogramm. Führen Sie „Samba installieren / aktualisieren“ zur Neuinstallation aus.";
 "doctor.check.payload_damaged_on_disk" = "Die Samba-Dateien auf dem Datenträger sind beschädigt und stimmen nicht mehr mit der Installation überein. Führen Sie „Samba installieren / aktualisieren“ zur Neuinstallation aus.";
+"doctor.check.payload_unreadable_on_disk" = "Die Festplatte des Geräts konnte die Samba-Dateien nicht oder nur zu langsam lesen; sie fällt wahrscheinlich aus, und die Dateifreigabe ist aus. Eine Neuinstallation repariert die Festplatte nicht, und das AirPort-Dienstprogramm zeigt sie möglicherweise trotzdem als in Ordnung an. Kopieren Sie die Dateien, die Sie brauchen, ersetzen Sie die Festplatte, löschen Sie dann die neue Festplatte im AirPort-Dienstprogramm und führen Sie „Samba installieren / aktualisieren“ aus.";
 "doctor.check.rsync_missing_from_disk" = "Die rsync-Dateien fehlen auf dem Datenträger, daher ist rsync aus. Die Dateifreigabe und Time Machine funktionieren weiter. Führen Sie „Samba installieren / aktualisieren“ zur Neuinstallation aus.";
 "doctor.check.rsync_damaged_on_disk" = "Die rsync-Datei auf dem Datenträger ist beschädigt und stimmt nicht mehr mit der Installation überein, daher ist rsync aus. Die Dateifreigabe und Time Machine funktionieren weiter. Führen Sie „Samba installieren / aktualisieren“ zur Neuinstallation aus.";
+"doctor.check.rsync_unreadable_on_disk" = "Die Festplatte des Geräts konnte die rsync-Datei nicht oder nur zu langsam lesen, daher ist rsync aus, und die Festplatte fällt wahrscheinlich aus. Die Dateifreigabe und Time Machine funktionieren vorerst weiter. Eine Neuinstallation repariert die Festplatte nicht: Kopieren Sie die Dateien, die Sie brauchen, ersetzen Sie die Festplatte, löschen Sie dann die neue Festplatte im AirPort-Dienstprogramm und führen Sie „Samba installieren / aktualisieren“ aus.";
 "doctor.check.metadata_migration_in_progress" = "Auf dem Gerät läuft noch eine Metadaten-Migration. „Samba installieren / aktualisieren“ wartet, bis sie abgeschlossen ist, und installiert erst dann.";
 "doctor.check.disk_not_mounting" = "Ein Datenträger auf dem Gerät lässt sich nicht einbinden, daher sind die Dateifreigabe und Time Machine aus. Starten Sie das Gerät neu; wenn es nicht wieder erscheint, trennen Sie es 10 Sekunden lang vom Strom. Wenn der Datenträger danach immer noch nicht eingebunden wird, führen Sie die „Festplattenreparatur“ aus; wenn dies weiterhin passiert, muss die Festplatte möglicherweise ersetzt werden.";
 "doctor.check.disk_failing" = "Die Festplatte des Geräts hat Fehler gemeldet, die sie nicht beheben konnte; sie fällt wahrscheinlich aus, und die Dateifreigabe ist aus. Eine Neuinstallation repariert die Festplatte nicht, und das AirPort-Dienstprogramm zeigt sie möglicherweise trotzdem als in Ordnung an. Kopieren Sie die Dateien, die Sie brauchen, ersetzen Sie die Festplatte, löschen Sie dann die neue Festplatte im AirPort-Dienstprogramm und führen Sie „Samba installieren / aktualisieren“ aus.";
@@ -925,6 +936,11 @@
 "backend.recovery.payload_damaged_on_disk.message" = "Die TimeCapsuleSMB-Dateien auf dem Datenträger des Geräts sind beschädigt und stimmen nicht mehr mit der Installation überein.";
 "backend.recovery.payload_damaged_on_disk.action.1" = "Führen Sie „Samba installieren / aktualisieren“ aus.";
 "backend.recovery.payload_damaged_on_disk.action.2" = "Wenn die Dateien nach der Neuinstallation wieder beschädigt sind, ist die Festplatte möglicherweise defekt.";
+"backend.recovery.payload_unreadable_on_disk.title" = "Die Festplatte kann die Samba-Dateien nicht lesen";
+"backend.recovery.payload_unreadable_on_disk.message" = "Die Festplatte des Geräts konnte die TimeCapsuleSMB-Dateien nicht oder nur zu langsam lesen; sie fällt wahrscheinlich aus, und die Dateifreigabe ist aus. Eine Neuinstallation repariert die Festplatte nicht, und das AirPort-Dienstprogramm zeigt sie möglicherweise trotzdem als in Ordnung an.";
+"backend.recovery.payload_unreadable_on_disk.action.1" = "Kopieren Sie die Dateien, die Sie brauchen. Wenn die Dateifreigabe aus ist, bauen Sie die Festplatte aus und schließen Sie sie mit einem SATA-USB-Adapter an einen Mac an.";
+"backend.recovery.payload_unreadable_on_disk.action.2" = "Ersetzen Sie die Festplatte.";
+"backend.recovery.payload_unreadable_on_disk.action.3" = "Löschen Sie die neue Festplatte im AirPort-Dienstprogramm und führen Sie dann „Samba installieren / aktualisieren“ aus. Time Machine beginnt darauf ein neues, vollständiges Backup.";
 "backend.recovery.rsync_missing_from_disk.title" = "rsync-Dateien fehlen";
 "backend.recovery.rsync_missing_from_disk.message" = "Die rsync-Dateien fehlen auf dem Datenträger, daher ist rsync aus. Die Dateifreigabe und Time Machine funktionieren weiter.";
 "backend.recovery.rsync_missing_from_disk.action.1" = "Führen Sie „Samba installieren / aktualisieren“ aus.";
@@ -932,6 +948,11 @@
 "backend.recovery.rsync_damaged_on_disk.message" = "Die rsync-Datei auf dem Datenträger ist beschädigt und stimmt nicht mehr mit der Installation überein, daher ist rsync aus. Die Dateifreigabe und Time Machine funktionieren weiter.";
 "backend.recovery.rsync_damaged_on_disk.action.1" = "Führen Sie „Samba installieren / aktualisieren“ aus.";
 "backend.recovery.rsync_damaged_on_disk.action.2" = "Wenn die Dateien nach der Neuinstallation wieder beschädigt sind, ist die Festplatte möglicherweise defekt.";
+"backend.recovery.rsync_unreadable_on_disk.title" = "Die Festplatte kann rsync nicht lesen";
+"backend.recovery.rsync_unreadable_on_disk.message" = "Die Festplatte des Geräts konnte die rsync-Datei nicht oder nur zu langsam lesen, daher ist rsync aus, und die Festplatte fällt wahrscheinlich aus. Die Dateifreigabe und Time Machine funktionieren vorerst weiter.";
+"backend.recovery.rsync_unreadable_on_disk.action.1" = "Kopieren Sie die Dateien, die Sie brauchen.";
+"backend.recovery.rsync_unreadable_on_disk.action.2" = "Ersetzen Sie die Festplatte.";
+"backend.recovery.rsync_unreadable_on_disk.action.3" = "Löschen Sie die neue Festplatte im AirPort-Dienstprogramm und führen Sie dann „Samba installieren / aktualisieren“ aus. Time Machine beginnt darauf ein neues, vollständiges Backup.";
 "backend.recovery.rsync_not_running.title" = "rsync läuft nicht";
 "backend.recovery.rsync_not_running.message" = "Die Dateifreigabe und Time Machine laufen, aber rsync wurde nicht gestartet.";
 "backend.recovery.rsync_not_running.action.1" = "Führen Sie die „Überprüfung“ aus, um Details zu sehen.";

@@ -166,8 +166,12 @@ final class BackendClientTests: XCTestCase {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         L10n.apply(language: .german)
+        // From the kernel's errors or from files the disk could not read:
+        // each its own text, both with Cancel the default.
         for (presentationID, prefersCancel) in [("deploy.disk_failing", true), ("uninstall.disk_failing", true),
-                                                ("fsck.disk_failing", true), ("uninstall.no_reboot", false)] {
+                                                ("fsck.disk_failing", true), ("deploy.disk_unreadable", true),
+                                                ("uninstall.disk_unreadable", true), ("fsck.disk_unreadable", true),
+                                                ("uninstall.no_reboot", false)] {
             let event = BackendEvent(
                 type: "error", operation: "deploy", code: "confirmation_required", message: "English",
                 details: .object([
@@ -181,7 +185,10 @@ final class BackendClientTests: XCTestCase {
             XCTAssertEqual(confirmation.message, L10n.string("confirm.\(presentationID).message"))
             XCTAssertEqual(confirmation.actionTitle, L10n.string("confirm.\(presentationID).action"))
             XCTAssertNotEqual(confirmation.title, "English title")
+            XCTAssertNotEqual(confirmation.message, "English message?")
         }
+        XCTAssertNotEqual(L10n.string("confirm.deploy.disk_unreadable.message"),
+                          L10n.string("confirm.deploy.disk_failing.message"))
     }
 
     func testLegacyEventsWithoutRequestIDStillUpdatePolicyAndConfirmation() async throws {

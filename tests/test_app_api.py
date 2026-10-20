@@ -31,7 +31,7 @@ from timecapsulesmb.core.messages import NETBSD4_ACTIVATION_COMPLETED
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.events import AppClient, AppEvent, EventSink
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.app.confirmations import build_confirmation
+from timecapsulesmb.app.confirmations import build_confirmation, disk_failing_confirmation_fields
 from timecapsulesmb.app.stage_policy import stage_policy
 from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.flash_workflow import SecondaryBankInvalidError, SecondaryBankReadMismatchError
@@ -45,9 +45,12 @@ from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import compatibility_from_probe_result
-from timecapsulesmb.device.disk_errors import disk_failing_warning
+from timecapsulesmb.device.disk_errors import UNREADABLE_EVIDENCE, disk_failing_warning, kernel_evidence
 from timecapsulesmb.device.probe import (
+    DISK_PAYLOAD_DAMAGED,
     DISK_PAYLOAD_PROBLEMS,
+    DISK_UNREADABLE_PROBLEMS,
+    RSYNC_UNREADABLE,
     AirportAcpReading,
     DeployedVersionProbeResult,
     ManagedRuntimeProbeResult,
@@ -6647,17 +6650,36 @@ MaSt = (
 
     DISK_ERRORS = ("NetBSD IAL (ERROR)  [0 0] device error occured",)
 
-    def run_uninstall_with_disk_errors(self, errors, params: dict[str, object]):
+    def run_uninstall_with_disk_errors(self, errors, params: dict[str, object], verdicts=()):
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.read_disk_errors_conn", return_value=errors):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.prepare_uninstall") as prepare:
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
-                            rc = service.run_api_request({"operation": "uninstall", "params": params}, collector.sink)
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+                    with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", return_value=verdicts):
+                        with mock.patch("timecapsulesmb.app.ops.maintenance.prepare_uninstall") as prepare:
+                            with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
+                                rc = service.run_api_request({"operation": "uninstall", "params": params},
+                                                             collector.sink)
         return collector, rc, prepare, uninstall
+
+    def test_uninstall_warns_from_the_managers_verdict_when_the_kernel_kept_no_line(self) -> None:
+        # NetBSD 4's kernel log wraps during boot; the manager's title still
+        # says the disk could not read its files. A damaged copy, which a
+        # reinstall fixes, gets the usual question.
+        collector, rc, prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            (), {"no_reboot": True}, verdicts=(RSYNC_UNREADABLE,),
+        )
+        self.assertEqual(rc, 1)
+        # Its own confirmation: the app words it from what the manager saw.
+        details = self.assert_confirmation(collector, "uninstall.disk_unreadable", {"disk_failing": True})
+        self.assertEqual(details["message"], f"{disk_failing_warning(UNREADABLE_EVIDENCE, 'uninstall')} Uninstall anyway?")
+        prepare.assert_not_called()
+        damaged, _rc, _prepare, _uninstall = self.run_uninstall_with_disk_errors(
+            (), {"no_reboot": True}, verdicts=(DISK_PAYLOAD_DAMAGED,),
+        )
+        self.assert_confirmation(damaged, "uninstall.no_reboot")
 
     def test_uninstall_on_a_failing_disk_asks_with_its_warning_first(self) -> None:
         # Uninstall cannot fix the disk: the confirmation says so instead of
@@ -6668,7 +6690,7 @@ MaSt = (
         details = self.assert_confirmation(collector, "uninstall.disk_failing", {"disk_failing": True})
         self.assertEqual(details["title"], "The Disk Is Failing")
         self.assertEqual(details["action_title"], "Uninstall Anyway")
-        self.assertEqual(details["message"], f"{disk_failing_warning(self.DISK_ERRORS, 'uninstall')} Uninstall anyway?")
+        self.assertEqual(details["message"], f"{disk_failing_warning(kernel_evidence(self.DISK_ERRORS), 'uninstall')} Uninstall anyway?")
         prepare.assert_not_called()
         uninstall.assert_not_called()
 
@@ -6702,7 +6724,7 @@ MaSt = (
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
-                            with mock.patch("timecapsulesmb.app.ops.deploy.read_disk_errors_conn", return_value=self.DISK_ERRORS):
+                            with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=self.DISK_ERRORS):
                                 with mock.patch("timecapsulesmb.services.deploy.run_remote_actions") as remote_actions:
                                     service.run_api_request({"operation": "deploy", "params": {"dry_run": False}}, deploy.sink)
         details = self.assert_confirmation(deploy, "deploy.disk_failing", {"disk_failing": True})
@@ -6712,12 +6734,23 @@ MaSt = (
         repair = CollectingSink()
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.read_disk_errors_conn", return_value=self.DISK_ERRORS):
+                with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=self.DISK_ERRORS):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.run_fsck") as run_fsck:
                         service.run_api_request({"operation": "fsck", "params": {"no_reboot": True}}, repair.sink)
         details = self.assert_confirmation(repair, "fsck.disk_failing", {"disk_failing": True})
         self.assertIn("A disk repair cannot fix a failing disk", details["message"])
         run_fsck.assert_not_called()
+
+    def test_each_cause_of_a_failing_disk_has_its_own_confirmation(self) -> None:
+        # The app shows its own words for each presentation id, so kernel
+        # errors and unreadable files must not share one.
+        for operation, kind in (("deploy", "install"), ("uninstall", "uninstall"), ("fsck", "repair")):
+            for evidence, suffix in ((kernel_evidence(self.DISK_ERRORS), "disk_failing"),
+                                     (UNREADABLE_EVIDENCE, "disk_unreadable")):
+                with self.subTest(operation=operation, suffix=suffix):
+                    fields = disk_failing_confirmation_fields(operation, evidence)
+                    self.assertEqual(fields["presentation_id"], f"{operation}.{suffix}")
+                    self.assertTrue(fields["message"].startswith(disk_failing_warning(evidence, kind)))
 
     def test_uninstall_requires_reboot_confirmation_before_remote_connection(self) -> None:
         collector = CollectingSink()
@@ -7252,7 +7285,9 @@ MaSt = (
         self.assertEqual(error["recovery"]["suggested_operation"], "activate")
         self.assertEqual(error["recovery"]["action_ids"], ["start_smb", "run_checkup"])
 
-    def test_fsck_on_netbsd4_whose_manager_reports_a_payload_verdict_offers_a_reinstall(self) -> None:
+    def test_fsck_on_netbsd4_whose_manager_reports_a_payload_verdict_offers_its_fix(self) -> None:
+        # A reinstall for missing or damaged files; for a disk that could not
+        # read them, the failing disk's guidance, which offers no Install.
         for problem in DISK_PAYLOAD_PROBLEMS:
             with self.subTest(problem.token):
                 rc, collector, _reboot = self._run_confirmed_fsck(
@@ -7267,7 +7302,8 @@ MaSt = (
                 self.assertEqual(error["code"], problem.code)
                 self.assertTrue(error["message"].startswith("Disk repair completed. "))
                 self.assertEqual(error["recovery"]["localization_key"], problem.code)
-                self.assertEqual(error["recovery"]["suggested_operation"], "deploy")
+                self.assertEqual(error["recovery"]["suggested_operation"],
+                                 None if problem in DISK_UNREADABLE_PROBLEMS else "deploy")
 
     def test_fsck_whose_device_probe_fails_stops_before_touching_the_disk(self) -> None:
         # Without the probe fsck cannot know whether file sharing must be

@@ -469,7 +469,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             guard let problem = DoctorSummary.payloadProblem(code: runtimeState.errorCode) else {
                 return runtimeNotInstalledRow()
             }
-            return payloadProblemRow(problem)
+            return payloadProblemRow(problem, newDiskAction: .viewCheckup)
         case .unknown:
             return runtimeNotInstalledRow()
         case .installing:
@@ -502,9 +502,10 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             if runtimeState.errorCode == DoctorSummary.diskFailingResultCode {
                 return diskFailingRow(action: .runCheckup)
             }
-            // A deploy that ended on a damaged rsync: name it, with Install.
+            // A deploy that ended on a damaged rsync: name it, with Install
+            // (or, for one the disk could not read, a Checkup).
             if let problem = DoctorSummary.payloadProblem(code: runtimeState.errorCode) {
-                return payloadProblemRow(problem)
+                return payloadProblemRow(problem, newDiskAction: .runCheckup)
             }
             return DashboardHealthRow(
                 id: "runtime-install-failed",
@@ -532,9 +533,10 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: .viewCheckup
             )
         case .unhealthy:
-            // A damaged rsync, and nothing else failed: Install is the fix.
+            // A damaged rsync, and nothing else failed: Install is the fix
+            // (a new disk for one the disk could not read).
             if let problem = DoctorSummary.payloadProblem(code: runtimeState.errorCode) {
-                return payloadProblemRow(problem)
+                return payloadProblemRow(problem, newDiskAction: .viewCheckup)
             }
             return DashboardHealthRow(
                 id: "runtime-unhealthy",
@@ -557,15 +559,20 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         )
     }
 
-    /// Only a reinstall fixes it. A damaged rsync fails the Checkup like
-    /// anything else, though its text says file sharing keeps working.
-    private static func payloadProblemRow(_ problem: PayloadProblem) -> DashboardHealthRow {
+    /// A reinstall fixes it, so the row offers Install; for files the disk
+    /// could not read, a new disk does, which the text explains, and the row
+    /// offers newDiskAction instead (never Install). A damaged or unreadable
+    /// rsync fails the Checkup like anything else, though its text says file
+    /// sharing keeps working.
+    private static func payloadProblemRow(
+        _ problem: PayloadProblem, newDiskAction: DashboardSecondaryAction
+    ) -> DashboardHealthRow {
         DashboardHealthRow(
             id: problem.rowID,
             title: DashboardHealthDomain.runtime.title,
             detail: L10n.string(problem.detailKey),
             status: .failed,
-            action: .installUpdate
+            action: problem.replacesDisk ? newDiskAction : .installUpdate
         )
     }
 

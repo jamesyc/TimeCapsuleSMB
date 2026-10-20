@@ -27,7 +27,7 @@ from timecapsulesmb.deploy.planner import (
     build_runtime_activation_plan,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.disk_errors import read_disk_errors_conn
+from timecapsulesmb.device.disk_errors import read_disk_failing_evidence_conn
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.services.app import (
     AppOperationError,
@@ -125,21 +125,21 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     if not dry_run and not no_reboot:
         require_request_acpd_ready(context, connection)
     if not dry_run:
-        disk_errors = read_disk_errors_conn(connection)
+        disk_failing = read_disk_failing_evidence_conn(connection)
         presentation = {
             "title": "Confirm uninstall",
             "message": "Remove managed TimeCapsuleSMB files from the device" + (" and reboot it?" if not no_reboot else "?"),
             "action_title": "Uninstall",
             "presentation_id": "uninstall.no_reboot" if no_reboot else "uninstall.reboot",
         }
-        if disk_errors:
+        if disk_failing:
             context.update_fields(disk_failing_warned=True)
-            presentation.update(disk_failing_confirmation_fields(operation, disk_errors))
+            presentation.update(disk_failing_confirmation_fields(operation, disk_failing))
         presentation_values = {
             "requires_reboot": not no_reboot,
             "no_reboot": no_reboot,
             "no_wait": no_wait,
-            **({"disk_failing": True} if disk_errors else {}),
+            **({"disk_failing": True} if disk_failing else {}),
         }
         require_confirmation(
             params,
@@ -153,7 +153,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
-                    **({"disk_failing": True} if disk_errors else {}),
+                    **({"disk_failing": True} if disk_failing else {}),
                 },
                 presentation_values=presentation_values,
                 **presentation,
@@ -215,16 +215,16 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         # The preflight reads the device before the confirmation.
         if connection is None:
             connection = _fsck_connection(params, context, rebooting=rebooting)
-        disk_errors = read_disk_errors_conn(connection)
+        disk_failing = read_disk_failing_evidence_conn(connection)
         presentation = {
             "title": "Confirm fsck",
             "message": "Run fsck on the selected HFS volume" + (" and reboot the device?" if not no_reboot else "?"),
             "action_title": "Run fsck",
             "presentation_id": "fsck.no_reboot" if no_reboot else "fsck.reboot",
         }
-        if disk_errors:
+        if disk_failing:
             context.update_fields(disk_failing_warned=True)
-            presentation.update(disk_failing_confirmation_fields(operation, disk_errors))
+            presentation.update(disk_failing_confirmation_fields(operation, disk_failing))
         require_confirmation(
             params,
             build_confirmation(
@@ -237,14 +237,14 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
-                    **({"disk_failing": True} if disk_errors else {}),
+                    **({"disk_failing": True} if disk_failing else {}),
                 },
                 presentation_values={
                     "volume": volume,
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
-                    **({"disk_failing": True} if disk_errors else {}),
+                    **({"disk_failing": True} if disk_failing else {}),
                 },
                 **presentation,
             ),

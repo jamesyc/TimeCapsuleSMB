@@ -146,7 +146,10 @@ def device_disks_healthy(monkeypatch: pytest.MonkeyPatch):
     # errors before they ask, and a runtime that does not start reads it to
     # say why (timecapsulesmb.device.disk_errors). Tests answer "no errors";
     # a test that needs some patches read_disk_errors_conn where it is used.
+    # The preflight also reads the manager's title for a disk it could not
+    # read: no verdicts.
     monkeypatch.setattr("timecapsulesmb.device.disk_errors.read_remote_command_conn", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("timecapsulesmb.device.disk_errors.manager_payload_problems", lambda *_args, **_kwargs: ())
     yield
 
 

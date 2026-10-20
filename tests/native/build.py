@@ -11,6 +11,7 @@ import sys
 import tempfile
 import shutil
 import os
+import re
 from functools import lru_cache
 
 from tests.executables import write_executable
@@ -30,6 +31,15 @@ def build_root(kind):
 def sources() -> list[Path]:
     return [ROOT / 'build' / line for line in
             (ROOT / 'build/native/service.sources').read_text().splitlines() if line]
+
+
+def header_define(header, name) -> int:
+    """The integer a header under build/native #defines as name, so a test
+    follows the production value instead of copying it."""
+    text = (ROOT / 'build/native' / header).read_text()
+    match = re.search(rf'^#define {re.escape(name)} (\d+)(?:LL)?$', text, re.M)
+    assert match, f'{name} not in {header}'
+    return int(match.group(1))
 
 
 def stub_platform_flags():

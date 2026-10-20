@@ -6,7 +6,7 @@ import json
 from typing import Mapping
 
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.device.disk_errors import disk_failing_warning
+from timecapsulesmb.device.disk_errors import DiskFailingEvidence, disk_failing_warning
 from timecapsulesmb.services.app import AppOperationError, jsonable
 
 
@@ -106,15 +106,16 @@ _DISK_FAILING_KINDS = {"deploy": ("install", "Install Anyway", "Install anyway?"
                        "fsck": ("repair", "Repair Anyway", "Repair anyway?")}
 
 
-def disk_failing_confirmation_fields(operation: str, errors: tuple[str, ...]) -> dict[str, str]:
+def disk_failing_confirmation_fields(operation: str, evidence: DiskFailingEvidence) -> dict[str, str]:
     """build_confirmation's title, message, action_title and presentation_id
-    for this boot's disk errors (device.disk_errors)."""
+    for what says the disk is failing (device.disk_errors.read_disk_failing_evidence_conn)."""
     kind, action_title, question = _DISK_FAILING_KINDS[operation]
     return {
         "title": "The Disk Is Failing",
-        "message": f"{disk_failing_warning(errors, kind)} {question}",
+        "message": f"{disk_failing_warning(evidence, kind)} {question}",
         "action_title": action_title,
-        "presentation_id": f"{operation}.disk_failing",
+        # Each cause of the warning has its own confirmation in the app.
+        "presentation_id": f"{operation}.{evidence.cause}",
     }
 
 

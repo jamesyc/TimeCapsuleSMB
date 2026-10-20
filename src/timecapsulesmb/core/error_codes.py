@@ -69,8 +69,10 @@ class ErrorCode(str, Enum):
     CLIENT_OUTDATED = "client_outdated"
     PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
     PAYLOAD_DAMAGED_ON_DISK = "payload_damaged_on_disk"
+    PAYLOAD_UNREADABLE_ON_DISK = "payload_unreadable_on_disk"
     RSYNC_MISSING_FROM_DISK = "rsync_missing_from_disk"
     RSYNC_DAMAGED_ON_DISK = "rsync_damaged_on_disk"
+    RSYNC_UNREADABLE_ON_DISK = "rsync_unreadable_on_disk"
     RSYNC_NOT_RUNNING = "rsync_not_running"
 
     # The disk.

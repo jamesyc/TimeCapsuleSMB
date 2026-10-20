@@ -45,6 +45,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _add_admin_password_result,
     DEVICE_SMB_PASSED,
     DOCTOR_CODE_HOSTNAME_UNMAPPED,
+    DOCTOR_STARTUP_WINDOW_SECONDS,
     DISK_NOT_MOUNTING_MESSAGE,
     DOCTOR_CODE_DISK_NOT_MOUNTING,
     DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK,
@@ -84,6 +85,7 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.migration_jobs import MigrationActivity, MigrationProgress, RunningMigration
+from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import DISK_FAILING_WAY_OUT, disk_failing_message
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_PROBLEMS,
@@ -3329,13 +3331,21 @@ class CheckTests(unittest.TestCase):
             "payload=missing": "umount: /Volumes/dk2: Device busy\nInitialized /dev/rdk2 as a 1861 GB HFS Plus volume",
             "payload=damaged": "copy verify failed: /Volumes/dk2/.samba4/smbd -> /mnt/Memory/samba4/sbin/smbd: "
                                "CRC-32 read da7a298c, deployed 961339d2",
+            # A disk that could not read smbd: no kernel line here (NetBSD 4's
+            # wraps), so the verdict alone says the disk is failing, with its
+            # code and way out instead of a reinstall. Its manager is past the
+            # startup window: a younger one may still clear it, so doctor
+            # waits for that (below).
+            "payload=unreadable": "copy read failed: /Volumes/dk2/.samba4/smbd -> /mnt/Memory/samba4/sbin/smbd: "
+                                  "Operation timed out (copied 3211264 of 10307500 bytes in 180 s)",
         }
         for problem in (problem for problem in DISK_PAYLOAD_PROBLEMS if problem.samba_off):
             log = logs[problem.token]
             with self.subTest(problem.token):
                 debug_fields: dict[str, object] = {}
+                age = 600.0 if problem.replaces_disk else 12.0
                 run, smbd = self.run_doctor_with_manager(
-                    ManagerStartupAgeProbeResult(12.0, "manager started 12s ago", payload_problems=(problem,)),
+                    ManagerStartupAgeProbeResult(age, f"manager started {int(age)}s ago", payload_problems=(problem,)),
                     debug_fields=debug_fields,
                     log_tails={"remote_manager_log_tail": log},
                 )
@@ -3351,7 +3361,10 @@ class CheckTests(unittest.TestCase):
                 for other in DISK_PAYLOAD_PROBLEMS:
                     self.assertEqual(debug_fields["manager_startup_age"][other.debug_key], other is problem)
                 self.assertEqual({other.debug_key for other in DISK_PAYLOAD_PROBLEMS},
-                                 {"payload_missing", "payload_damaged", "rsync_missing", "rsync_damaged"})
+                                 {"payload_missing", "payload_damaged", "payload_unreadable",
+                                  "rsync_missing", "rsync_damaged", "rsync_unreadable"})
+                self.assertEqual(problem.code == ErrorCode.PAYLOAD_UNREADABLE_ON_DISK, problem.token == "payload=unreadable")
+                self.assertEqual("replace the disk" in failure.message, problem.token == "payload=unreadable")
                 # The manager's log reaches telemetry: it shows what removed
                 # or damaged the payload.
                 self.assertEqual(debug_fields["remote_manager_log_tail"], log)
@@ -3366,6 +3379,8 @@ class CheckTests(unittest.TestCase):
             "rsync=missing": "stage: /Volumes/dk2/.samba4/rsync is missing",
             "rsync=damaged": "copy verify failed: /Volumes/dk2/.samba4/rsync -> /mnt/Memory/samba4/sbin/rsync: "
                              "CRC-32 read 1, deployed 2",
+            "rsync=unreadable": "copy read failed: /Volumes/dk2/.samba4/rsync -> /mnt/Memory/samba4/sbin/rsync: "
+                                "Input/output error (copied 32768 of 1037900 bytes in 4 s)",
         }
         problems = [problem for problem in DISK_PAYLOAD_PROBLEMS if not problem.samba_off]
         self.assertEqual({problem.token for problem in problems}, set(logs))
@@ -4517,6 +4532,46 @@ class CheckTests(unittest.TestCase):
         )
         failure = run.results[-1]
         self.assertEqual((failure.status, failure.details.get("code")), ("FAIL", damaged.code))
+        self.assertTrue(run.fatal)
+
+    def _run_doctor_on_a_young_manager_that_could_not_read_smbd(self, later_verdicts, smbd_mock, debug_fields):
+        unreadable = next(p for p in DISK_PAYLOAD_PROBLEMS if p.token == "payload=unreadable")
+        return unreadable, self._run_doctor_nbns(
+            mock.Mock(return_value=self._nbns_ready_probe()),
+            mock.Mock(return_value=CheckResult("PASS", "NBNS query for 'TimeCapsule' resolved to 10.0.0.2")),
+            startup_age=8.0, smbd_mock=smbd_mock, debug_fields=debug_fields,
+            startup_age_mock=mock.Mock(return_value=ManagerStartupAgeProbeResult(
+                8.0, "manager started 8s ago", payload_problems=(unreadable,))),
+            extra_patches={"timecapsulesmb.checks.doctor_steps.manager_payload_problems":
+                           mock.Mock(return_value=later_verdicts(unreadable))},
+        )
+
+    def test_run_doctor_checks_waits_for_a_young_manager_to_read_smbd_again(self) -> None:
+        # One slow read at a cold start: the manager says payload=unreadable,
+        # reads smbd again seconds later and starts Samba. Doctor waits
+        # through the verdict instead of telling the user to replace the disk.
+        probes = iter([self._smbd_not_staged_probe()])
+        smbd = mock.Mock(side_effect=lambda *a, **k: next(probes, self._smbd_probe(True)))
+        debug_fields: dict[str, object] = {}
+        unreadable, (run, sleeps) = self._run_doctor_on_a_young_manager_that_could_not_read_smbd(
+            lambda unreadable: (), smbd, debug_fields)
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "ready")
+        self.assertEqual(len(sleeps), 1)
+        self.assertNotIn(unreadable.code, [result.details.get("code") for result in run.results])
+        self.assertFalse(run.fatal)
+
+    def test_run_doctor_checks_reports_files_the_disk_could_not_read_after_the_window(self) -> None:
+        # The verdict holds through the whole startup window: the disk is
+        # failing, and doctor says so once the manager is past it.
+        smbd = mock.Mock(side_effect=lambda *a, **k: self._smbd_not_staged_probe())
+        debug_fields: dict[str, object] = {}
+        unreadable, (run, sleeps) = self._run_doctor_on_a_young_manager_that_could_not_read_smbd(
+            lambda unreadable: (unreadable,), smbd, debug_fields)
+        self.assertAlmostEqual(sum(sleeps), DOCTOR_STARTUP_WINDOW_SECONDS - 8.0)
+        self.assertEqual(debug_fields["startup_wait"]["outcome"], "outlasted")
+        failure = run.results[-1]
+        self.assertEqual((failure.status, failure.details.get("code")), ("FAIL", unreadable.code))
+        self.assertEqual(sum(result.status == "FAIL" for result in run.results), 1)
         self.assertTrue(run.fatal)
 
     @staticmethod

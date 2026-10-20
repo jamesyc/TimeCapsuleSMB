@@ -147,6 +147,9 @@
 "confirm.deploy.disk_failing.action" = "Install Anyway";
 "confirm.deploy.disk_failing.message" = "The device's disk reported errors it could not recover from, so it is probably failing. Installing will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Install anyway?";
 "confirm.deploy.disk_failing.title" = "The Disk Is Failing";
+"confirm.deploy.disk_unreadable.action" = "Install Anyway";
+"confirm.deploy.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Installing will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Install anyway?";
+"confirm.deploy.disk_unreadable.title" = "The Disk Is Failing";
 "confirm.fsck.no_reboot.action" = "Run fsck";
 "confirm.fsck.no_reboot.message" = "Run fsck on the selected HFS volume? This can take an hour or more on a large disk. Keep the Time Capsule plugged in until it finishes.";
 "confirm.fsck.no_reboot.title" = "Run Disk Repair?";
@@ -156,6 +159,9 @@
 "confirm.fsck.disk_failing.action" = "Repair Anyway";
 "confirm.fsck.disk_failing.message" = "The device's disk reported errors it could not recover from, so it is probably failing. A disk repair cannot fix a failing disk, and works it hard. Copy off the files you need first. Repair anyway?";
 "confirm.fsck.disk_failing.title" = "The Disk Is Failing";
+"confirm.fsck.disk_unreadable.action" = "Repair Anyway";
+"confirm.fsck.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. A disk repair cannot fix a failing disk, and works it hard. Copy off the files you need first. Repair anyway?";
+"confirm.fsck.disk_unreadable.title" = "The Disk Is Failing";
 "confirm.flash.patch_write.action" = "Write Firmware";
 "confirm.flash.patch_write.message" = "Patch the primary firmware bank boot hook on %@? Manual power cycle is required after a successful write.";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook?";
@@ -174,6 +180,9 @@
 "confirm.uninstall.disk_failing.action" = "Uninstall Anyway";
 "confirm.uninstall.disk_failing.message" = "The device's disk reported errors it could not recover from, so it is probably failing. Uninstalling will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Uninstall anyway?";
 "confirm.uninstall.disk_failing.title" = "The Disk Is Failing";
+"confirm.uninstall.disk_unreadable.action" = "Uninstall Anyway";
+"confirm.uninstall.disk_unreadable.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Uninstalling will not fix that, and AirPort Utility may still show the disk as OK. Copy off the files you need first. Uninstall anyway?";
+"confirm.uninstall.disk_unreadable.title" = "The Disk Is Failing";
 "dashboard.action.install_update_smb" = "Install / Update Samba";
 "dashboard.action.refresh_status" = "Refresh Status";
 "dashboard.action.settings" = "Settings";
@@ -294,8 +303,10 @@
 "dialog.forget.title" = "Forget This Device?";
 "doctor.check.payload_missing_from_disk" = "The Samba files are missing from every disk, as after an Erase in AirPort Utility. Run “Install / Update Samba” to reinstall.";
 "doctor.check.payload_damaged_on_disk" = "The Samba files on the disk are damaged and no longer match what was installed. Run “Install / Update Samba” to reinstall.";
+"doctor.check.payload_unreadable_on_disk" = "The device's disk could not read the Samba files, or only too slowly, so it is probably failing and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK. Copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
 "doctor.check.rsync_missing_from_disk" = "The rsync files are missing from the disk, so rsync is off. File sharing and Time Machine keep working. Run “Install / Update Samba” to reinstall.";
 "doctor.check.rsync_damaged_on_disk" = "The rsync file on the disk is damaged and no longer matches what was installed, so rsync is off. File sharing and Time Machine keep working. Run “Install / Update Samba” to reinstall.";
+"doctor.check.rsync_unreadable_on_disk" = "The device's disk could not read the rsync file, or only too slowly, so rsync is off and the disk is probably failing. File sharing and Time Machine keep working for now. Reinstalling will not fix the disk: copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
 "doctor.check.metadata_migration_in_progress" = "A metadata migration is still running on the device. “Install / Update Samba” waits for it to finish before installing.";
 "doctor.check.disk_not_mounting" = "A disk on the device will not mount, so file sharing and Time Machine are off. Restart the device; if it does not come back, unplug it for 10 seconds. If the disk still does not mount, run “Disk Repair”; if this keeps happening, the disk may need replacing.";
 "doctor.check.disk_failing" = "The device's disk reported errors it could not recover from, so it is probably failing and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK. Copy off the files you need, replace the disk, then erase the new disk in AirPort Utility and run “Install / Update Samba”.";
@@ -925,6 +936,11 @@
 "backend.recovery.payload_damaged_on_disk.message" = "The TimeCapsuleSMB files on the device's disk are damaged and no longer match what was installed.";
 "backend.recovery.payload_damaged_on_disk.action.1" = "Run “Install / Update Samba”.";
 "backend.recovery.payload_damaged_on_disk.action.2" = "If the files are damaged again after reinstalling, the disk may be failing.";
+"backend.recovery.payload_unreadable_on_disk.title" = "The disk cannot read the Samba files";
+"backend.recovery.payload_unreadable_on_disk.message" = "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK.";
+"backend.recovery.payload_unreadable_on_disk.action.1" = "Copy off the files you need. If file sharing is off, take the disk out and connect it to a Mac with a SATA-to-USB adapter.";
+"backend.recovery.payload_unreadable_on_disk.action.2" = "Replace the disk.";
+"backend.recovery.payload_unreadable_on_disk.action.3" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
 "backend.recovery.rsync_missing_from_disk.title" = "rsync files are missing";
 "backend.recovery.rsync_missing_from_disk.message" = "The rsync files are missing from the disk, so rsync is off. File sharing and Time Machine keep working.";
 "backend.recovery.rsync_missing_from_disk.action.1" = "Run “Install / Update Samba”.";
@@ -932,6 +948,11 @@
 "backend.recovery.rsync_damaged_on_disk.message" = "The rsync file on the disk is damaged and no longer matches what was installed, so rsync is off. File sharing and Time Machine keep working.";
 "backend.recovery.rsync_damaged_on_disk.action.1" = "Run “Install / Update Samba”.";
 "backend.recovery.rsync_damaged_on_disk.action.2" = "If the files are damaged again after reinstalling, the disk may be failing.";
+"backend.recovery.rsync_unreadable_on_disk.title" = "The disk cannot read rsync";
+"backend.recovery.rsync_unreadable_on_disk.message" = "The device's disk could not read the rsync file, or only too slowly, so rsync is off and the disk is probably failing. File sharing and Time Machine keep working for now.";
+"backend.recovery.rsync_unreadable_on_disk.action.1" = "Copy off the files you need.";
+"backend.recovery.rsync_unreadable_on_disk.action.2" = "Replace the disk.";
+"backend.recovery.rsync_unreadable_on_disk.action.3" = "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, full backup on it.";
 "backend.recovery.rsync_not_running.title" = "rsync is not running";
 "backend.recovery.rsync_not_running.message" = "File sharing and Time Machine are running, but rsync did not start.";
 "backend.recovery.rsync_not_running.action.1" = "Run “Checkup” for details.";

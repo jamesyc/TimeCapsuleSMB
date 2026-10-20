@@ -147,6 +147,9 @@
 "confirm.deploy.disk_failing.action" = "Все равно установить";
 "confirm.deploy.disk_failing.message" = "Диск устройства сообщил об ошибках, которые не удалось исправить, поэтому он, вероятно, неисправен. Установка этого не исправит, а Утилита AirPort может по-прежнему показывать диск как исправный. Сначала скопируйте нужные файлы. Все равно установить?";
 "confirm.deploy.disk_failing.title" = "Диск неисправен";
+"confirm.deploy.disk_unreadable.action" = "Все равно установить";
+"confirm.deploy.disk_unreadable.message" = "Диск устройства не смог прочитать файлы TimeCapsuleSMB или читал их слишком медленно, поэтому он, вероятно, неисправен. Установка этого не исправит, а Утилита AirPort может по-прежнему показывать диск как исправный. Сначала скопируйте нужные файлы. Все равно установить?";
+"confirm.deploy.disk_unreadable.title" = "Диск неисправен";
 "confirm.fsck.no_reboot.action" = "Запустить fsck";
 "confirm.fsck.no_reboot.message" = "Запустить fsck на выбранном томе HFS? На большом диске это может занять час или больше. Не отключайте Time Capsule от питания до завершения.";
 "confirm.fsck.no_reboot.title" = "Запустить исправление диска?";
@@ -156,6 +159,9 @@
 "confirm.fsck.disk_failing.action" = "Все равно исправить";
 "confirm.fsck.disk_failing.message" = "Диск устройства сообщил об ошибках, которые не удалось исправить, поэтому он, вероятно, неисправен. Исправление диска не может починить неисправный диск и сильно его нагружает. Сначала скопируйте нужные файлы. Все равно исправить?";
 "confirm.fsck.disk_failing.title" = "Диск неисправен";
+"confirm.fsck.disk_unreadable.action" = "Все равно исправить";
+"confirm.fsck.disk_unreadable.message" = "Диск устройства не смог прочитать файлы TimeCapsuleSMB или читал их слишком медленно, поэтому он, вероятно, неисправен. Исправление диска не может починить неисправный диск и сильно его нагружает. Сначала скопируйте нужные файлы. Все равно исправить?";
+"confirm.fsck.disk_unreadable.title" = "Диск неисправен";
 "confirm.flash.patch_write.action" = "Записать прошивку";
 "confirm.flash.patch_write.message" = "Изменить хук запуска основного банка прошивки на %@? После успешной записи нужно вручную отключить и снова подключить питание.";
 "confirm.flash.patch_write.title" = "Изменить хук запуска в прошивке?";
@@ -174,6 +180,9 @@
 "confirm.uninstall.disk_failing.action" = "Все равно удалить";
 "confirm.uninstall.disk_failing.message" = "Диск устройства сообщил об ошибках, которые не удалось исправить, поэтому он, вероятно, неисправен. Удаление этого не исправит, а Утилита AirPort может по-прежнему показывать диск как исправный. Сначала скопируйте нужные файлы. Все равно удалить?";
 "confirm.uninstall.disk_failing.title" = "Диск неисправен";
+"confirm.uninstall.disk_unreadable.action" = "Все равно удалить";
+"confirm.uninstall.disk_unreadable.message" = "Диск устройства не смог прочитать файлы TimeCapsuleSMB или читал их слишком медленно, поэтому он, вероятно, неисправен. Удаление этого не исправит, а Утилита AirPort может по-прежнему показывать диск как исправный. Сначала скопируйте нужные файлы. Все равно удалить?";
+"confirm.uninstall.disk_unreadable.title" = "Диск неисправен";
 "dashboard.action.install_update_smb" = "Установить/обновить Samba";
 "dashboard.action.refresh_status" = "Обновить статус";
 "dashboard.action.settings" = "Настройки";
@@ -294,8 +303,10 @@
 "dialog.forget.title" = "Забыть это устройство?";
 "doctor.check.payload_missing_from_disk" = "Файлы Samba отсутствуют на всех дисках, например после «Стереть диск» в Утилите AirPort. Запустите «Установить/обновить Samba», чтобы установить заново.";
 "doctor.check.payload_damaged_on_disk" = "Файлы Samba на диске повреждены и больше не совпадают с установленными. Запустите «Установить/обновить Samba», чтобы установить заново.";
+"doctor.check.payload_unreadable_on_disk" = "Диск устройства не смог прочитать файлы Samba или читал их слишком медленно, поэтому он, вероятно, неисправен, а общий доступ к файлам остановлен. Переустановка не исправит диск, а Утилита AirPort может по-прежнему показывать его как исправный. Скопируйте нужные файлы, замените диск, затем сотрите новый диск в Утилите AirPort и запустите «Установить/обновить Samba».";
 "doctor.check.rsync_missing_from_disk" = "Файлы rsync отсутствуют на диске, поэтому rsync выключен. Общий доступ к файлам и Time Machine продолжают работать. Запустите «Установить/обновить Samba», чтобы установить заново.";
 "doctor.check.rsync_damaged_on_disk" = "Файл rsync на диске поврежден и больше не совпадает с установленным, поэтому rsync выключен. Общий доступ к файлам и Time Machine продолжают работать. Запустите «Установить/обновить Samba», чтобы установить заново.";
+"doctor.check.rsync_unreadable_on_disk" = "Диск устройства не смог прочитать файл rsync или читал его слишком медленно, поэтому rsync выключен, а диск, вероятно, неисправен. Общий доступ к файлам и Time Machine пока продолжают работать. Переустановка не исправит диск: скопируйте нужные файлы, замените диск, затем сотрите новый диск в Утилите AirPort и запустите «Установить/обновить Samba».";
 "doctor.check.metadata_migration_in_progress" = "На устройстве все еще выполняется перенос метаданных. «Установить/обновить Samba» дождется его завершения перед установкой.";
 "doctor.check.disk_not_mounting" = "Диск на устройстве не монтируется, поэтому общий доступ к файлам и Time Machine не работают. Перезагрузите устройство; если оно не появится, отключите его от питания на 10 секунд. Если диск все еще не монтируется, запустите «Исправление диска»; если проблема сохраняется, может потребоваться замена.";
 "doctor.check.disk_failing" = "Диск устройства сообщил об ошибках, которые не удалось исправить, поэтому он, вероятно, неисправен, а общий доступ к файлам остановлен. Переустановка не исправит диск, а Утилита AirPort может по-прежнему показывать его как исправный. Скопируйте нужные файлы, замените диск, затем сотрите новый диск в Утилите AirPort и запустите «Установить/обновить Samba».";
@@ -925,6 +936,11 @@
 "backend.recovery.payload_damaged_on_disk.message" = "Файлы TimeCapsuleSMB на диске устройства повреждены и больше не совпадают с установленными.";
 "backend.recovery.payload_damaged_on_disk.action.1" = "Запустите «Установить/обновить Samba».";
 "backend.recovery.payload_damaged_on_disk.action.2" = "Если после переустановки файлы снова повреждены, возможно, диск неисправен.";
+"backend.recovery.payload_unreadable_on_disk.title" = "Диск не может прочитать файлы Samba";
+"backend.recovery.payload_unreadable_on_disk.message" = "Диск устройства не смог прочитать файлы TimeCapsuleSMB или читал их слишком медленно, поэтому он, вероятно, неисправен, а общий доступ к файлам остановлен. Переустановка не исправит диск, а Утилита AirPort может по-прежнему показывать его как исправный.";
+"backend.recovery.payload_unreadable_on_disk.action.1" = "Скопируйте нужные файлы. Если общий доступ к файлам остановлен, извлеките диск и подключите его к Mac через переходник SATA–USB.";
+"backend.recovery.payload_unreadable_on_disk.action.2" = "Замените диск.";
+"backend.recovery.payload_unreadable_on_disk.action.3" = "Сотрите новый диск в Утилите AirPort, затем запустите «Установить/обновить Samba». Time Machine начнет на нем новую полную резервную копию.";
 "backend.recovery.rsync_missing_from_disk.title" = "Файлы rsync отсутствуют";
 "backend.recovery.rsync_missing_from_disk.message" = "Файлы rsync отсутствуют на диске, поэтому rsync выключен. Общий доступ к файлам и Time Machine продолжают работать.";
 "backend.recovery.rsync_missing_from_disk.action.1" = "Запустите «Установить/обновить Samba».";
@@ -932,6 +948,11 @@
 "backend.recovery.rsync_damaged_on_disk.message" = "Файл rsync на диске поврежден и больше не совпадает с установленным, поэтому rsync выключен. Общий доступ к файлам и Time Machine продолжают работать.";
 "backend.recovery.rsync_damaged_on_disk.action.1" = "Запустите «Установить/обновить Samba».";
 "backend.recovery.rsync_damaged_on_disk.action.2" = "Если после переустановки файлы снова повреждены, возможно, диск неисправен.";
+"backend.recovery.rsync_unreadable_on_disk.title" = "Диск не может прочитать rsync";
+"backend.recovery.rsync_unreadable_on_disk.message" = "Диск устройства не смог прочитать файл rsync или читал его слишком медленно, поэтому rsync выключен, а диск, вероятно, неисправен. Общий доступ к файлам и Time Machine пока продолжают работать.";
+"backend.recovery.rsync_unreadable_on_disk.action.1" = "Скопируйте нужные файлы.";
+"backend.recovery.rsync_unreadable_on_disk.action.2" = "Замените диск.";
+"backend.recovery.rsync_unreadable_on_disk.action.3" = "Сотрите новый диск в Утилите AirPort, затем запустите «Установить/обновить Samba». Time Machine начнет на нем новую полную резервную копию.";
 "backend.recovery.rsync_not_running.title" = "rsync не работает";
 "backend.recovery.rsync_not_running.message" = "Общий доступ к файлам и Time Machine работают, но rsync не запустился.";
 "backend.recovery.rsync_not_running.action.1" = "Запустите операцию «Проверка», чтобы узнать подробности.";

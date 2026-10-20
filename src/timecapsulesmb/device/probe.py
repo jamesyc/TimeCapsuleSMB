@@ -17,8 +17,10 @@ from timecapsulesmb.device.errors import (
     DiskPayloadDamagedError,
     DiskPayloadError,
     DiskPayloadMissingError,
+    DiskPayloadUnreadableError,
     RsyncDamagedError,
     RsyncMissingError,
+    RsyncUnreadableError,
 )
 from timecapsulesmb.device.processes import (
     PROBE_PROCESS_HELPERS,
@@ -2205,11 +2207,22 @@ def _runtime_timeout_detail(timeout_seconds: int, final_attempts_allowed: int) -
     return f"runtime verification timed out after {timeout_seconds}s plus {final_attempts_allowed} final checks"
 
 
+# Checkup's results say what to do; an error's next steps come from its code.
+_PAYLOAD_REINSTALL = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
+# A failing disk's way out (device.disk_errors.DISK_FAILING_WAY_OUT).
+DISK_REPLACE = (
+    "copy off the files you need (if file sharing is off, take the disk out and connect it to a Mac with a "
+    "SATA-to-USB adapter), replace the disk, then erase the new disk in AirPort Utility and "
+    f"{_PAYLOAD_REINSTALL}"
+)
+
+
 @dataclass(frozen=True)
 class DiskPayloadProblem:
-    """A verdict the manager's title carries (token): only a reinstall fixes
-    it, however long anything waits. samba_off: Samba is off for it;
-    otherwise Samba serves and only rsync, which is optional, is off."""
+    """A verdict the manager's title carries (token), which holds however
+    long anything waits. samba_off: Samba is off for it; otherwise Samba
+    serves and only rsync, which is optional, is off. replaces_disk: the disk
+    could not read the files, so a new disk is the fix, not a reinstall."""
 
     token: str
     step_id: str
@@ -2225,14 +2238,23 @@ class DiskPayloadProblem:
         return self.error_type.samba_off
 
     @property
+    def replaces_disk(self) -> bool:
+        return self.error_type.replaces_disk
+
+    @property
+    def fix(self) -> str:
+        """What ends it, as Checkup's line says."""
+        return DISK_REPLACE if self.replaces_disk else _PAYLOAD_REINSTALL
+
+    @property
     def message(self) -> str:
         """A check result's line."""
-        return f"{self.cause}; {_PAYLOAD_REINSTALL}"
+        return f"{self.cause}; {self.fix}"
 
     @property
     def error(self) -> str:
         """The sentence an operation's error ends with; its code's next steps
-        say to reinstall."""
+        say what fixes it."""
         cause = self.cause if self.samba_off else f"file sharing and Time Machine are running, but {self.cause}"
         return f"{cause[:1].upper()}{cause[1:]}."
 
@@ -2247,8 +2269,6 @@ class DiskPayloadProblem:
         return self.token.replace("=", "_")
 
 
-# Checkup's results say what to do; an error's next steps come from its code.
-_PAYLOAD_REINSTALL = 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from the command line'
 DISK_PAYLOAD_MISSING = DiskPayloadProblem(
     "payload=missing", "disk_payload",
     "the Samba files are missing from every disk, as after an Erase in AirPort Utility",
@@ -2259,20 +2279,40 @@ DISK_PAYLOAD_DAMAGED = DiskPayloadProblem(
     "the Samba files on the disk are damaged and no longer match what was installed",
     DiskPayloadDamagedError,
 )
-RSYNC_DAMAGED = DiskPayloadProblem(
-    "rsync=damaged", "rsync_damaged",
-    "the rsync file on the disk is damaged and no longer matches what was installed, so rsync is off",
-    RsyncDamagedError,
+# The disk returned an error reading the files, or returned them too slowly
+# (the manager's read budget): it is failing, and a reinstall writes to it in
+# vain.
+DISK_PAYLOAD_UNREADABLE = DiskPayloadProblem(
+    "payload=unreadable", "disk_payload_unreadable",
+    "the device's disk could not read the Samba files, or only too slowly, so it is probably failing and file "
+    "sharing is off",
+    DiskPayloadUnreadableError,
 )
 RSYNC_MISSING = DiskPayloadProblem(
     "rsync=missing", "rsync_missing",
     "the rsync files are missing from the disk, so rsync is off",
     RsyncMissingError,
 )
+RSYNC_DAMAGED = DiskPayloadProblem(
+    "rsync=damaged", "rsync_damaged",
+    "the rsync file on the disk is damaged and no longer matches what was installed, so rsync is off",
+    RsyncDamagedError,
+)
+RSYNC_UNREADABLE = DiskPayloadProblem(
+    "rsync=unreadable", "rsync_unreadable",
+    "the device's disk could not read the rsync file, or only too slowly, so rsync is off and the disk is "
+    "probably failing",
+    RsyncUnreadableError,
+)
 # Every verdict the manager's title can carry (stuck.h tc_manager_title),
 # those that turn Samba off first. Doctor, deploy, activation and the restart
 # after a disk repair all go through this list, so a new verdict reaches each.
-DISK_PAYLOAD_PROBLEMS = (DISK_PAYLOAD_MISSING, DISK_PAYLOAD_DAMAGED, RSYNC_MISSING, RSYNC_DAMAGED)
+DISK_PAYLOAD_PROBLEMS = (
+    DISK_PAYLOAD_MISSING, DISK_PAYLOAD_DAMAGED, DISK_PAYLOAD_UNREADABLE,
+    RSYNC_MISSING, RSYNC_DAMAGED, RSYNC_UNREADABLE,
+)
+# The verdicts that say the disk is failing (fix: a new disk).
+DISK_UNREADABLE_PROBLEMS = tuple(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.replaces_disk)
 
 
 def manager_payload_problems(connection: SshConnection) -> tuple[DiskPayloadProblem, ...] | None:
@@ -2317,6 +2357,14 @@ class ManagerVerdicts:
         off at once; rsync's once Samba serves, so the result says how Samba
         is and that only rsync failed."""
         return self.samba_off or (self.rsync if samba_ready else None)
+
+    def lasting(self) -> ManagerVerdicts:
+        """The verdicts that end a wait before its window is over: all but
+        those for files the disk could not read. The manager reads those
+        again within seconds and clears the verdict once the disk returns
+        them, as after one slow read while a cold disk settles, so a wait
+        goes on through it and reports it only at its end."""
+        return ManagerVerdicts(tuple(problem for problem in self.problems if not problem.replaces_disk))
 
 
 def _title_payload_problems(title: list[str]) -> tuple[DiskPayloadProblem, ...]:
@@ -2369,7 +2417,9 @@ def probe_managed_runtime_conn(
         )
 
     # The soft window polls until the deadline, then a few final checks run
-    # back to back. Each attempt in either ends the same way (_runtime_outcome).
+    # back to back. Each attempt in either ends the same way (_runtime_outcome),
+    # except that in the soft window a verdict the manager may still clear
+    # (ManagerVerdicts.lasting) does not end it.
     while True:
         if phase == "soft_window" and time.monotonic() >= deadline:
             phase = "final_check"
@@ -2388,7 +2438,7 @@ def probe_managed_runtime_conn(
         last_result = result
         if not result.ready:
             verdicts.update(manager_payload_problems(connection))
-        outcome = _runtime_outcome(result, verdicts)
+        outcome = _runtime_outcome(result, verdicts if phase == "final_check" else verdicts.lasting())
         if outcome is not None:
             return finish(outcome)
         if phase == "soft_window":

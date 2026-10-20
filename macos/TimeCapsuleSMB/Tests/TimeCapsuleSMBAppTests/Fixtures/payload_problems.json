@@ -1,22 +1,38 @@
 [
   {
     "code": "payload_missing_from_disk",
+    "replaces_disk": false,
     "samba_off": true,
     "token": "payload=missing"
   },
   {
     "code": "payload_damaged_on_disk",
+    "replaces_disk": false,
     "samba_off": true,
     "token": "payload=damaged"
   },
   {
+    "code": "payload_unreadable_on_disk",
+    "replaces_disk": true,
+    "samba_off": true,
+    "token": "payload=unreadable"
+  },
+  {
     "code": "rsync_missing_from_disk",
+    "replaces_disk": false,
     "samba_off": false,
     "token": "rsync=missing"
   },
   {
     "code": "rsync_damaged_on_disk",
+    "replaces_disk": false,
     "samba_off": false,
     "token": "rsync=damaged"
+  },
+  {
+    "code": "rsync_unreadable_on_disk",
+    "replaces_disk": true,
+    "samba_off": false,
+    "token": "rsync=unreadable"
   }
 ]

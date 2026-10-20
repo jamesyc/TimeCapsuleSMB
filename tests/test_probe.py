@@ -330,6 +330,24 @@ class ProbeTests(unittest.TestCase):
                 ))
                 self.assertEqual(result.payload_problems, problems)
 
+    def test_probe_manager_startup_age_conn_reads_a_disk_that_could_not_read_the_files_from_the_title(self) -> None:
+        # payload=unreadable, rsync=unreadable: the disk returned an error, or
+        # too slowly, reading a binary. Each says only what it names.
+        for title, problems in (
+            ("service: role=manager started=19 payload=unreadable", (probe.DISK_PAYLOAD_UNREADABLE,)),
+            ("service: role=manager started=19 rsync=unreadable", (probe.RSYNC_UNREADABLE,)),
+            ("service: role=manager started=19 payload=unreadable rsync=unreadable stuck=211:service:biowait:130",
+             (probe.DISK_PAYLOAD_UNREADABLE, probe.RSYNC_UNREADABLE)),
+            ("service: role=manager started=19 payload=damaged rsync=unreadable",
+             (probe.DISK_PAYLOAD_DAMAGED, probe.RSYNC_UNREADABLE)),
+            ("service: role=manager started=19 payload=unreadables", ()),
+        ):
+            with self.subTest(title=title):
+                result, _ = self._probe_manager_age(self._manager_age_output(
+                    *self._MANAGER_PEERS, f"  250 1 250 Ss 0 - 0:41 service       {title}", now_ms="60000"
+                ))
+                self.assertEqual(result.payload_problems, problems)
+
     def test_the_apps_verdict_fixture_matches_the_table(self) -> None:
         # The macOS app checks its own table against this fixture.
         from tests.fixtures import payload_problems
@@ -343,10 +361,28 @@ class ProbeTests(unittest.TestCase):
             with self.subTest(field):
                 self.assertEqual(len({getattr(problem, field) for problem in problems}), len(problems))
         self.assertEqual([problem.token for problem in problems if not problem.samba_off],
-                         ["rsync=missing", "rsync=damaged"])
+                         ["rsync=missing", "rsync=damaged", "rsync=unreadable"])
         # Those that turn Samba off come first: a title carrying both is
         # reported for Samba.
         self.assertEqual([problem.samba_off for problem in problems], sorted((p.samba_off for p in problems), reverse=True))
+        # A disk that could not read the files is fixed by a new disk, for
+        # Samba and rsync alike; the others by a reinstall.
+        self.assertEqual([problem.token for problem in probe.DISK_UNREADABLE_PROBLEMS],
+                         ["payload=unreadable", "rsync=unreadable"])
+        for problem in problems:
+            with self.subTest(problem.token):
+                # Checkup's line is the cause, then its one fix: a reinstall,
+                # or for files the disk could not read, data off and a new
+                # disk (never a reinstall alone, which writes to it in vain).
+                self.assertEqual(problem.message.count(";"), 1)
+                cause, fix = problem.message.split("; ")
+                self.assertEqual(cause, problem.cause)
+                if problem.replaces_disk:
+                    self.assertTrue(fix.startswith("copy off the files you need"))
+                    self.assertIn("replace the disk", fix)
+                else:
+                    self.assertEqual(fix, 'run "Install / Update Samba" in the macOS app, or tcapsule deploy from '
+                                          "the command line")
 
     def test_probe_manager_startup_age_conn_reads_when_a_disk_stopped_mounting_from_the_title(self) -> None:
         # unmounted=S: a disk MaSt lists has not mounted since S, on the

@@ -18,7 +18,7 @@ from timecapsulesmb.app import recovery
 from timecapsulesmb.app.ops import OPERATION_SPECS
 from timecapsulesmb.core.error_codes import GENERIC_CODES, ErrorCode
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
-from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS, DeployedVersionProbeResult
+from timecapsulesmb.device.probe import DISK_PAYLOAD_PROBLEMS, DISK_UNREADABLE_PROBLEMS, DeployedVersionProbeResult
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
     MaStVolume,
@@ -219,18 +219,22 @@ class ErrorCodeCatalogTests(unittest.TestCase):
                     with self.subTest(language=language):
                         self.assertTrue(app_error_line(catalog(language), "activate", code))
 
-    def test_every_payload_verdict_points_to_a_reinstall_everywhere(self) -> None:
+    def test_every_payload_verdict_points_to_its_fix_everywhere(self) -> None:
         # Raised by activation, a deploy's runtime check and the restart
         # after a disk repair alike, for every verdict in the manager's
-        # title. Each cause has its own line.
+        # title. Each cause has its own line. A reinstall fixes the missing
+        # and damaged ones; one the disk could not read needs a new disk, and
+        # its guidance must not send the user to Install.
         codes = [problem.code for problem in DISK_PAYLOAD_PROBLEMS]
+        unreadable = {problem.code for problem in DISK_UNREADABLE_PROBLEMS}
         self.assertEqual(len(set(codes)), len(codes))
+        self.assertEqual(unreadable, {ErrorCode.PAYLOAD_UNREADABLE_ON_DISK, ErrorCode.RSYNC_UNREADABLE_ON_DISK})
         for code in codes:
             for operation in ("activate", "deploy", "fsck"):
                 with self.subTest(code=code, operation=operation):
                     payload = recovery.recovery_for(operation, code)
                     self.assertEqual(payload["localization_key"], code)
-                    self.assertEqual(payload["suggested_operation"], "deploy")
+                    self.assertEqual(payload["suggested_operation"], None if code in unreadable else "deploy")
                     for language in LANGUAGES:
                         with self.subTest(language=language):
                             strings = catalog(language)
