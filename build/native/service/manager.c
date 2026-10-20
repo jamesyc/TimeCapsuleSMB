@@ -1480,16 +1480,7 @@ static void reconcile_roles(struct manager *m, long long now) {
         char *argv[] = {TC_SMBD_BIN, "-F", "--no-process-group", "-s", TC_SMBD_CONF, NULL};
         const struct tc_volume *volume = &m->applied_storage.inventory.volumes[m->applied_storage.payload_index];
         int unbounded = m->applied_settings.config.debug || m->applied_settings.config.discovery_debug;
-        /* Before smbd starts: it sizes its sockets then (kern.sbmax), and its
-         * opens and aio_fork helpers count against the system's file and
-         * process tables (kern.maxfiles, kern.maxproc). */
-        unsigned wanted[TC_KERN_LIMITS] = {TC_SMBD_SBMAX(m->applied_settings.config.netbsd4), TC_MAXFILES,
-                                           TC_MAXPROC(m->applied_settings.config.netbsd4)};
-        enum tc_kern_limit limit;
-        for (limit = 0; limit < TC_KERN_LIMITS; limit++)
-            if (tc_samba_set_kern(limit, wanted[limit]))
-                timestamped_fprintf(stderr, "manager: could not set kern.%s to %u: %s\n",
-                                    tc_kern_limit_names[limit], wanted[limit], strerror(errno));
+        tc_samba_prepare_kernel(m->applied_settings.config.netbsd4);
         if (!start_role(&m->smb, argv, log, now, 1, volume, unbounded)) {
             /* It reads the published files as it starts. */
             m->smb_reload_pending = 0;

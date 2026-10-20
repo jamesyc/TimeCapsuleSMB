@@ -120,7 +120,11 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
     if (config->debug)
         fputs("    log level = 10\n", file);
     fputs("    smb ports = 445\n", file);
-    fprintf(file, "    socket options = TCP_NODELAY SO_RCVBUF=%u\n", TC_SMBD_RCVBUF(config->netbsd4));
+    fputs("    socket options = TCP_NODELAY", file);
+    /* NetBSD 6 autosizes sends; an explicit SO_SNDBUF would disable it. */
+    if (config->netbsd4)
+        fprintf(file, " SO_SNDBUF=%u", TC_SMBD_SNDBUF_FIXED_NETBSD4);
+    fprintf(file, " SO_RCVBUF=%u\n", TC_SMBD_RCVBUF(config->netbsd4));
     /* aio_fork's helper buffers cover Samba's default 8 MiB SMB2 reads and
      * writes (patch 0031), so the SMB2 sizes stay at their defaults. */
     if (config->aio_fork)

@@ -48,12 +48,4 @@ int tc_rsync_publish(void);
 void tc_rsync_discard(void);
 /* Call only after ownership audit and the entire old smbd group has exited. */
 int tc_samba_clear_locks(void);
-/* The kern. sysctls the manager sets before smbd starts. */
-enum tc_kern_limit { TC_KERN_SBMAX, TC_KERN_MAXFILES, TC_KERN_MAXPROC, TC_KERN_LIMITS };
-extern const char *const tc_kern_limit_names[TC_KERN_LIMITS];
-/* Raises sbmax and maxfiles to wanted and never lowers them, so a larger
- * value set elsewhere stays. Sets maxproc to exactly wanted, lowering it too:
- * any higher value can panic the kernel (TC_MAXPROC), and an older release's
- * higher value outlives an upgrade that does not reboot. */
-int tc_samba_set_kern(enum tc_kern_limit limit, unsigned wanted);
 #endif

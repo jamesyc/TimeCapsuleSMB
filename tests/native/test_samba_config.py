@@ -73,13 +73,16 @@ def test_netbsd4_cache_remains_disk_backed(renderer):
     assert conf["global"]["cache directory"] == "/Volumes/dk2/.samba4/cache"
 
 
-@pytest.mark.parametrize("args,rcvbuf", [((), "2097152"), (("netbsd4",), "524288")])
-def test_receive_buffer_holds_in_flight_writes_within_each_kernels_pool(renderer, args, rcvbuf):
-    # NetBSD 4's Ethernet driver lends its receive buffers to the stack, so its
-    # connections get a quarter of NetBSD 6's.
-    for options in (None, {"VFS_AIO_FORK_ENABLED": 1}):
+@pytest.mark.parametrize("args,socket_options", [
+    ((), "TCP_NODELAY SO_RCVBUF=2097152"),
+    (("netbsd4",), "TCP_NODELAY SO_SNDBUF=229376 SO_RCVBUF=393216"),
+])
+def test_socket_buffers_balance_throughput_and_each_kernels_pool(renderer, args, socket_options):
+    # Exercise the production renderer with AIO on and off: the fixed TCP
+    # buffers apply to both paths, and NetBSD 6 keeps its existing options.
+    for options in (None, {"VFS_AIO_FORK_ENABLED": 1}, {"VFS_AIO_FORK_ENABLED": 0}):
         conf = render(renderer, options, args=args)
-        assert conf["global"]["socket options"] == f"TCP_NODELAY SO_RCVBUF={rcvbuf}"
+        assert conf["global"]["socket options"] == socket_options
 
 
 @pytest.mark.parametrize("options,aio", [

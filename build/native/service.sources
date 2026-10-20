@@ -36,6 +36,7 @@ native/storage/mast.c
 native/storage/shares.c
 native/storage/runtime.c
 native/samba/config.c
+native/samba/kernel.c
 native/common/plan.c
 native/common/policy.c
 native/common/topology.c

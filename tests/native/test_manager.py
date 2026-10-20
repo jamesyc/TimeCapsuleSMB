@@ -77,9 +77,9 @@ def event(kind):
                if line.strip().startswith('netbios name')]
         row['netbios']=names[0] if names else None
     if role=='smbd' and kind=='start':
-        # The kern. sysctls this smbd started under.
+        # The sysctls this smbd started under, including the untouched pool.
         kern=Path(os.environ['TC_TEST_ROOT'])/'kern'
-        for name in ('sbmax','maxfiles','maxproc'):
+        for name in ('sbmax','maxfiles','maxproc','sendbuf_auto','sendbuf_max','nmbclusters'):
             row[name]=(kern/name).read_text().split()[0] if (kern/name).is_file() else None
     with log.open('a') as f:f.write(json.dumps(row)+'\\n')
 # Like a RAM copy damaged after staging verified it: the program damages its
@@ -227,6 +227,7 @@ def manager(manager_tools):
     (root/'wake').mkdir(exist_ok=True)
     (root/'procs').mkdir()
     (root/'kern').mkdir()
+    kern(root,**APPLE_KERN,**APPLE_TCP)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
     (root/'dk3').mkdir()
@@ -328,7 +329,9 @@ def test_supervision_direct_smb_child_and_applied_discovery(manager):
 # little- and big-endian NetBSD 4. maxproc keeps user address spaces within the
 # 90 the ARM pmap allocates at boot, after each build's kernel threads.
 APPLE_KERN={'sbmax':262144,'maxfiles':1024,'maxproc':84}
+APPLE_TCP={'sendbuf_auto':1,'sendbuf_max':262144,'nmbclusters':8192}
 SMBD_KERN={'sbmax':2048*1024//8*9,'maxfiles':4096,'maxproc':90}
+SMBD_TCP={'sendbuf_auto':1,'sendbuf_max':2048*1024,'nmbclusters':8192}
 SMBD_KERN_NETBSD4={'sbmax':512*1024//8*9,'maxfiles':4096,'maxproc':103}
 SMBD_KERN_NETBSD4_BE={'sbmax':512*1024//8*9,'maxfiles':4096,'maxproc':99}
 
@@ -340,33 +343,42 @@ def kern(root,**values):
 def smbd_starts(rows):return [e for e in rows if e['role']=='smbd' and e['kind']=='start']
 
 
-def check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,rcvbuf):
+def check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,socket_options):
     root,start,events,wait,_,_=manager
     if netbsd4:monkeypatch.setenv('TC_TEST_NETBSD4','1')
-    kern(root,**APPLE_KERN)
+    tcp={**APPLE_TCP,'sendbuf_auto':0}
+    wanted={**wanted,**(tcp if netbsd4 else SMBD_TCP)}
+    kern(root,**APPLE_KERN,**tcp)
     start()
     smb=smbd_starts(wait(started('smbd')))[0]
     assert {name:smb[name] for name in wanted}=={name:str(value) for name,value in wanted.items()}
     conf=(root/'ram/etc/smb.conf').read_text()
-    assert f'socket options = TCP_NODELAY SO_RCVBUF={rcvbuf}' in conf
+    actual=next(line.split('=',1)[1].strip() for line in conf.splitlines()
+                if line.strip().startswith('socket options ='))
+    assert actual==socket_options
+    assert next(line.split('=',1)[1].strip() for line in conf.splitlines()
+                if line.strip().startswith('max smbd processes ='))=='12'
     # Something set them back while smbd ran: the restarted smbd gets them again.
-    kern(root,**APPLE_KERN)
+    kern(root,**APPLE_KERN,**tcp)
     os.kill(smb['pid'],signal.SIGKILL)
     again=smbd_starts(wait(lambda rows:len(smbd_starts(rows))==2))[1]
     assert {name:again[name] for name in wanted}=={name:str(value) for name,value in wanted.items()}
 
 
-@pytest.mark.parametrize('netbsd4,wanted,rcvbuf',[(False,SMBD_KERN,2097152),(True,SMBD_KERN_NETBSD4,524288)],
-                         ids=['netbsd6','netbsd4-le'])
-def test_kern_limits_are_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,rcvbuf):
-    check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,rcvbuf)
+@pytest.mark.parametrize('netbsd4,wanted,socket_options',[
+    (False,SMBD_KERN,'TCP_NODELAY SO_RCVBUF=2097152'),
+    (True,SMBD_KERN_NETBSD4,'TCP_NODELAY SO_SNDBUF=229376 SO_RCVBUF=393216'),
+],ids=['netbsd6','netbsd4-le'])
+def test_kern_limits_are_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,socket_options):
+    check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,netbsd4,wanted,socket_options)
 
 
 # The big-endian NetBSD 4 build: the same manager compiled as the armeb
 # compiler compiles it, with __ARMEB__ defined.
 @pytest.mark.parametrize('manager_tools',[('-D__ARMEB__',)],indirect=True,ids=['netbsd4-be'])
 def test_big_endian_netbsd4_build_sets_its_own_maxproc(manager,monkeypatch):
-    check_kern_limits_set_before_every_smbd_start(manager,monkeypatch,True,SMBD_KERN_NETBSD4_BE,524288)
+    check_kern_limits_set_before_every_smbd_start(
+        manager,monkeypatch,True,SMBD_KERN_NETBSD4_BE,'TCP_NODELAY SO_SNDBUF=229376 SO_RCVBUF=393216')
 
 
 def test_larger_kern_limits_are_left_alone_but_maxproc_is_capped(manager):
@@ -379,18 +391,33 @@ def test_larger_kern_limits_are_left_alone_but_maxproc_is_capped(manager):
     assert 'kern.' not in runtime_log(root)
 
 
-@pytest.mark.parametrize('name',['sbmax','maxfiles','maxproc'])
-@pytest.mark.parametrize('readonly,error',[(True,'Permission denied'),(False,'No such file or directory')])
-def test_smbd_starts_when_a_kern_limit_cannot_be_set(manager,name,readonly,error):
+@pytest.mark.parametrize('auto,ceiling',[(0,262144),(1,4*1024*1024),(1,2*1024*1024)])
+def test_netbsd6_keeps_send_autosizing_with_exactly_a_2mib_ceiling(manager,auto,ceiling):
     root,start,events,wait,_,_=manager
-    kern(root,**APPLE_KERN)
+    kern(root,sendbuf_auto=auto,sendbuf_max=ceiling)
+    # Already-correct values must not need a write.
+    if auto==1:(root/'kern/sendbuf_auto').chmod(0o444)
+    if ceiling==2*1024*1024:(root/'kern/sendbuf_max').chmod(0o444)
+    start()
+    smb=smbd_starts(wait(started('smbd')))[0]
+    assert {name:smb[name] for name in SMBD_TCP}=={name:str(value) for name,value in SMBD_TCP.items()}
+    assert 'could not set' not in runtime_log(root)
+
+
+@pytest.mark.parametrize('name',['sbmax','maxfiles','maxproc','sendbuf_auto','sendbuf_max'])
+@pytest.mark.parametrize('readonly,error',[(True,'Permission denied'),(False,'No such file or directory')])
+def test_smbd_starts_when_a_sysctl_cannot_be_set(manager,name,readonly,error):
+    root,start,events,wait,_,_=manager
+    kern(root,**APPLE_KERN,sendbuf_auto=0)
     if readonly:(root/'kern'/name).chmod(0o444)
     else:(root/'kern'/name).unlink()
     start()
     smb=smbd_starts(wait(started('smbd')))[0]
-    wait_log(root,f'manager: could not set kern.{name} to {SMBD_KERN[name]}: {error}')
-    # The other limits are still set.
-    assert all(smb[other]==str(value) for other,value in SMBD_KERN.items() if other!=name)
+    wanted={**SMBD_KERN,**SMBD_TCP}
+    prefix='kern' if name in SMBD_KERN else 'net.inet.tcp'
+    wait_log(root,f'manager: could not set {prefix}.{name} to {wanted[name]}: {error}')
+    # The other settings are still applied, and the pool stays unchanged.
+    assert all(smb[other]==str(value) for other,value in wanted.items() if other!=name)
 
 
 def test_smbd_starts_when_a_too_high_maxproc_cannot_be_lowered(manager):

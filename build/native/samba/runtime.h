@@ -23,13 +23,23 @@
  * WRITE (Samba patch 0072). NetBSD 6 takes 2 MiB, about what a Mac's Time
  * Machine writes keep in flight. NetBSD 4's Ethernet driver lends the stack
  * its own 2048 2 KiB receive buffers per port and drops packets once all are
- * lent, so NetBSD 4 takes 512 KiB: enough for the Mac's writes to stream, not
- * enough to hold them all through a stall. */
-#define TC_SMBD_RCVBUF(netbsd4) ((netbsd4) ? 512u * 1024 : 2048u * 1024)
+ * lent. Issue 386's 1/2/4/8/12-connection controls, including stopped readers
+ * and partial uploads, selected 224 KiB send/384 KiB receive for NetBSD 4:
+ * improve reads over its fixed 32 KiB send default while bounding queued data.
+ * This is a throughput/memory compromise, not a twelve-backup guarantee. */
+#define TC_SMBD_SNDBUF_FIXED_NETBSD4 (224u * 1024)
+#define TC_SMBD_RCVBUF(netbsd4) ((netbsd4) ? 384u * 1024 : 2048u * 1024)
+/* NetBSD 6 starts sends at 32 KiB; raise Apple's automatic ceiling from
+ * 256 KiB to 2 MiB for single-client reads (issue 386). Leave SO_SNDBUF unset
+ * to preserve automatic growth. Fixed and automatic limits both allocate
+ * physical backing as used; a grown automatic limit does not shrink on idle.
+ * This does not enlarge the shared mbuf cluster pool. */
+#define TC_SMBD_SNDBUF_MAX_NETBSD6 (2048u * 1024)
 /* NetBSD refuses a socket buffer above kern.sbmax * MCLBYTES / (MSIZE +
  * MCLBYTES): 8/9 of kern.sbmax with ARM's 256-byte mbufs. Apple's kernels
- * start at 256 KiB. */
-#define TC_SMBD_SBMAX(netbsd4) (TC_SMBD_RCVBUF(netbsd4) / 8 * 9)
+ * start at 256 KiB. Keep NetBSD 4's tested 576 KiB ceiling despite its smaller
+ * receive buffer: sbmax also bounds mbuf-memory accounting. */
+#define TC_SMBD_SBMAX(netbsd4) ((netbsd4) ? 576u * 1024 : TC_SMBD_RCVBUF(netbsd4) / 8 * 9)
 /* Open files for the whole system (kern.maxfiles; Apple's kernels allow
  * 1024). A Time Machine sparse bundle keeps a hundred or more band files open
  * in its smbd, each taking more than one entry, so several Macs at once fill
@@ -68,6 +78,11 @@ struct tc_runtime_config {
     char ata_standby[32];
 };
 int tc_runtime_config_load(struct tc_runtime_config *);
+/* Before every smbd start, raise sbmax/maxfiles without lowering larger
+ * values, cap maxproc exactly (higher values can panic the kernel), and on
+ * NetBSD 6 enable send autosizing with its exact ceiling. Log failures and
+ * continue applying the remaining settings; never change the shared pool. */
+void tc_samba_prepare_kernel(int netbsd4);
 int tc_samba_render(FILE *, const struct tc_runtime_config *, const struct tc_samba_identity *,
                     const char *payload, const struct tc_share_set *);
 #endif

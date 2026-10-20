@@ -11,6 +11,7 @@ The shell runtime tests moved with their behavior:
 | --- | --- |
 | MaSt formats, UUIDs, malformed input and volatile fields | `test_mast.py`, `test_storage_settle.py` |
 | Share names, collisions, ADisk limits and Samba tuning | `test_samba_config.py`, exact-argv manager case |
+| Kernel limits and TCP autosizing, including native MIB lookup/read/write failures | `test_samba_kernel.py` (syscall boundary), `test_manager.py` (startup/restart) |
 | Diskd claims, failed mounts, markers and payload choice | `test_storage_runtime.py` |
 | RAM copies, auth/config failures, retries and desired-state reversion | `test_worker.py`, `test_staging.py`, `test_manager.py` |
 | Bind retention and cold startup | `test_plan.py` |
