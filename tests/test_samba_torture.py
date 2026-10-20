@@ -21,15 +21,16 @@ class PlanTest(unittest.TestCase):
                          set(FULL_SUITES) - {"smb2.dir", "smb2.compound_find"})
         self.assertLessEqual(QUICK_EXCLUDE, set(full))
 
-    def test_quick_leaves_out_only_the_slow_subtests(self) -> None:
+    def test_quick_leaves_out_the_slow_subtests_and_suites(self) -> None:
         quick = plan("quick")
         self.assertFalse(set(quick) & QUICK_EXCLUDE)
         self.assertNotIn("smb2.dir", quick)
         self.assertIn("smb2.dir.find", quick)
         self.assertIn("smb2.compound_find.compound_find_related", quick)
+        self.assertNotIn("smb2.lease", quick)
         # Every other suite still runs whole.
         self.assertEqual({s for s in quick if s.count(".") == 1},
-                         set(FULL_SUITES) - {"smb2.dir", "smb2.compound_find"})
+                         set(FULL_SUITES) - {"smb2.dir", "smb2.compound_find"} - QUICK_EXCLUDE)
 
     def test_selected_runs_only_named_tests_from_the_full_list(self) -> None:
         self.assertEqual(selected("quick", None), plan("quick"))

@@ -564,7 +564,9 @@ running smb.conf in RAM only, and puts the original back at the end.
 ## Test tiers and tooling
 
 AGENTS.md ("Test tiers") defines a quick tier (every iteration, about 25
-minutes) and a full tier (per commit batch, about 2-2.5 hours).
+minutes) and a full tier (per commit batch, about 2.25-2.75 hours; its
+smbtorture list adds `smb2.lease`, `smb2.durable-open`, `smb2.durable-v2-open`
+and `smb2.oplock`, about 14 minutes on NetBSD 4).
 `python -m tests.samba.check --tier quick|full --out DIR --build` runs one:
 `vm_build.py` builds the three lanes on the VM, `swap_smbd.py` runs the
 built smbd on a device without deploying (quick) or the full tier deploys,

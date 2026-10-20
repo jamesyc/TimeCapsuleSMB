@@ -5,13 +5,13 @@
 The client runs in Docker (tests/samba/smbtorture/Dockerfile, built from the
 Samba source build/env.sh pins); each suite or subtest runs in its own
 container with a 30-minute limit, and its output lands in DIR/<name>.txt.
-About 55 tests fail on the appliance for known reasons
+About 65 tests fail on the appliance for known reasons
 (tests/samba/smbtorture/known_failures.txt). The report lists only failures
 not in that list and listed failures that now pass, and the exit status is
 nonzero when there is a new failure or a run produced no results.
 
 Tiers (AGENTS.md, "Test tiers"): full runs every suite; quick leaves out the
-five slow subtests, which take about 85% of the full run.
+five slow subtests and the lease, durable-open and oplock suites.
 """
 from __future__ import annotations
 
@@ -35,7 +35,8 @@ FULL_SUITES = (
     "smb2.dir", "smb2.create", "smb2.rename", "smb2.delete-on-close-perms", "smb2.compound_find",
     "smb2.getinfo", "smb2.setinfo", "smb2.fileid", "smb2.dosmode", "smb2.maximum_allowed",
     "smb2.openattr", "smb2.winattr", "smb2.winattr2", "smb2.timestamps", "smb2.streams",
-    "smb2.charset", "smb2.name-mangling", "smb2.rw", "smb2.dirlease",
+    "smb2.charset", "smb2.name-mangling", "smb2.rw", "smb2.dirlease", "smb2.lease", "smb2.durable-open",
+    "smb2.durable-v2-open", "smb2.oplock",
 )
 # Suites the quick tier runs subtest by subtest, to leave the slow ones out.
 SUBTESTS = {
@@ -44,10 +45,12 @@ SUBTESTS = {
     "smb2.compound_find": ("compound_find_related", "compound_find_unrelated", "compound_find_close"),
 }
 # Measured 2026-09-28/29: compound_find_close 17-25 min, large-files 6-7,
-# sorted 4, many 3.5, 1kfiles_rename 9-12; the rest of the list about 8.
+# sorted 4, many 3.5, 1kfiles_rename 9-12; the rest of the list about 8. The
+# lease, durable and oplock suites take about 14 min on NetBSD 4.
 QUICK_EXCLUDE = frozenset({
     "smb2.compound_find.compound_find_close", "smb2.dir.large-files", "smb2.dir.sorted",
     "smb2.dir.many", "smb2.dir.1kfiles_rename",
+    "smb2.lease", "smb2.durable-open", "smb2.durable-v2-open", "smb2.oplock",
 })
 RESULT = re.compile(r"^(success|failure|error|skip|xfail|uxsuccess): (.+?)(?: \[)?$")
 
@@ -64,7 +67,7 @@ def plan(tier: str) -> list[str]:
         if suite in SUBTESTS:
             names += [f"{suite}.{test}" for test in SUBTESTS[suite]
                       if tier == "full" or f"{suite}.{test}" not in QUICK_EXCLUDE]
-        else:
+        elif tier == "full" or suite not in QUICK_EXCLUDE:
             names.append(suite)
     return names
 
