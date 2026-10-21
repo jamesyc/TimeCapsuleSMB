@@ -85,6 +85,17 @@ def test_socket_buffers_balance_throughput_and_each_kernels_pool(renderer, args,
         assert conf["global"]["socket options"] == socket_options
 
 
+@pytest.mark.parametrize("args", [(), ("netbsd4",)])
+def test_smb3_algorithms_prefer_the_cheapest_on_these_cpus(renderer, args):
+    # Samba takes its first algorithm the client offers, so the order is the
+    # preference. No lane's nettle has GHASH assembly: GMAC and GCM go last
+    # on both, and the slower AES-256-CCM still beats AES-128-GCM.
+    for options in (None, {"VFS_AIO_FORK_ENABLED": 0}):
+        global_ = render(renderer, options, args=args)["global"]
+        assert global_["server smb3 signing algorithms"] == "HMAC-SHA256 AES-128-CMAC AES-128-GMAC"
+        assert global_["server smb3 encryption algorithms"] == "AES-128-CCM AES-256-CCM AES-128-GCM AES-256-GCM"
+
+
 @pytest.mark.parametrize("options,aio", [
     ({}, True),  # deploy always writes the key; aio_fork is on without it too
     ({"VFS_AIO_FORK_ENABLED": 1}, True),
