@@ -224,7 +224,7 @@ static int payload_checksum(const char *payload, const char *name, const struct 
     FILE *file;
     result->crc32 = -1;
     snprintf(path, sizeof(path), "%s/checksums", payload);
-    file = fopen(path, "r");
+    file = tc_test_eio("TC_TEST_EIO_OPEN", path) ? NULL : fopen(path, "r");
     if (!file && errno == ENOENT)
         return 0;
     if (!file && errno != EIO) {
@@ -247,14 +247,20 @@ static int payload_checksum(const char *payload, const char *name, const struct 
                 return 0;
             }
     }
-    result->read = TC_STAGE_BAD_CHECKSUMS;
-    if (how->seen != TC_STAGE_BAD_CHECKSUMS) {
+    /* A file the disk could not read (EIO) is the disk's damage, as an
+     * unreadable binary is; one without the line is the payload's. */
+    result->read = tc_read_damage(unreadable) ? TC_STAGE_UNREADABLE_CHECKSUMS : TC_STAGE_BAD_CHECKSUMS;
+    if (how->seen != result->read) {
         if (unreadable)
             fprintf(stderr, "stage: %s unreadable: %s\n", path, strerror(unreadable));
         else
             fprintf(stderr, "stage: %s is damaged: no checksum for %s\n", path, name);
     }
     return TC_COPY_DISK_DAMAGED;
+}
+
+int tc_stage_disk_unreadable(long long read) {
+    return read == TC_COPY_UNREADABLE || read == TC_COPY_STALLED || read == TC_STAGE_UNREADABLE_CHECKSUMS;
 }
 
 /* Which of the files a run needs the payload lacks: result->missing, a bit
@@ -292,7 +298,7 @@ struct stage_run {
  * there is no payload or it is not mounted. */
 static int stage_open(struct stage_run *run, const struct tc_storage_snapshot *storage, struct tc_stage_result *result) {
     result->copy = result->missing = -1;
-    result->crc32 = result->read = -1;
+    result->crc32 = result->read = result->copy_ms = -1;
     if (storage->payload_index < 0 || (size_t)storage->payload_index >= storage->inventory.count)
         return -1;
     run->volume = &storage->inventory.volumes[storage->payload_index];
@@ -334,13 +340,14 @@ static int copy_binary(const char *payload, const char *name, const char *source
         return result->copy = checked;
     if (how->probe) {
         if (tc_file_crc32(source, &crc)) {
-            if (errno != EIO) {
+            long long unread = tc_read_damage(errno);
+            if (!unread) {
                 fprintf(stderr, "copy open source failed: %s: %s\n", source, strerror(errno));
                 return result->copy = -1;
             }
-            result->read = TC_COPY_UNREADABLE;
-            if (how->seen != TC_COPY_UNREADABLE)
-                fprintf(stderr, "copy verify failed: %s: %s\n", source, strerror(EIO));
+            result->read = unread;
+            if (how->seen != unread)
+                fprintf(stderr, "copy verify failed: %s: %s\n", source, strerror(errno));
             return result->copy = TC_COPY_DISK_DAMAGED;
         }
         if (result->crc32 >= 0 && crc != (uint32_t)result->crc32) {
@@ -351,7 +358,11 @@ static int copy_binary(const char *payload, const char *name, const char *source
             return result->copy = TC_COPY_DISK_DAMAGED;
         }
     }
-    return result->copy = tc_copy_file(source, destination, 0755, result->crc32, &result->read);
+    result->copy = tc_copy_file(source, destination, 0755, result->crc32, &result->read, &result->copy_ms);
+    /* Each copy's time: how far healthy disks are from the read budget. */
+    if (!result->copy)
+        fprintf(stderr, "stage: copied %s in %lld ms\n", name, result->copy_ms);
+    return result->copy;
 }
 
 int tc_samba_stage(const struct tc_storage_snapshot *storage, const struct tc_samba_settings *settings,

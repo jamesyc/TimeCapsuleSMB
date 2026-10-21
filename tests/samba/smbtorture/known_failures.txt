@@ -22,6 +22,32 @@ smb2.streams.rename2
 smb2.rename.simple_nodelete
 smb2.rename.no_share_delete_no_delete_access
 smb2.charset.Testing partial surrogate
+smb2.durable-open.delete_on_close2
+smb2.durable-v2-open.app-instance
+smb2.durable-v2-open.keep-disconnected-rh-with-rh-open
+smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open
+smb2.oplock.stream1
+# Upstream flapping list: the test tells the two lease breaks apart by arrival
+# order, which varies.
+flaky smb2.lease.two-leases
+
+# Lease, durable and oplock tests that fail for this server's settings.
+# Patch 0024 defers a durable reconnect of a handle that is still open for up
+# to 90 s before it answers OBJECT_NAME_NOT_FOUND; smbtorture gives up after
+# 60 s with IO_TIMEOUT. durable_device.py checks that the reconnect is refused
+# after the full wait.
+smb2.durable-open.reopen1
+smb2.durable-open.reopen5
+smb2.durable-v2-open.reopen1
+# Multichannel is off, so a second connection with the same client GUID gets
+# its own smbd, which sends the lease break on its own connection.
+smb2.lease.v2_complex1
+# strict rename = no: a directory rename checks only this smbd's opens and
+# breaks no H leases, so the other connection's opens below get no break.
+smb2.lease.rename_dir_openfile
+# Blocks a connection with FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT, which needs
+# the test-only "smbd:FSCTL_SMBTORTURE = yes".
+smb2.oplock.batch22b
 
 # Directory leases are off (smb3 directory leases = no); macOS does not use them.
 smb2.dirlease.v2_request_parent

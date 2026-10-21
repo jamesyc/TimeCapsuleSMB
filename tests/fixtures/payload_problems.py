@@ -23,7 +23,8 @@ FIXTURE_PATH = (
 
 
 def build() -> list[dict[str, object]]:
-    return [{"code": problem.code, "samba_off": problem.samba_off, "token": problem.token}
+    return [{"code": problem.code, "replaces_disk": problem.replaces_disk, "samba_off": problem.samba_off,
+             "token": problem.token}
             for problem in DISK_PAYLOAD_PROBLEMS]
 
 

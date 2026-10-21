@@ -2,6 +2,7 @@
 #include "acp.h"
 #include "parent.h"
 #include "process.h"
+#include <limits.h>
 #include <sys/stat.h>
 
 static volatile sig_atomic_t stopped;
@@ -138,37 +139,114 @@ static uint32_t crc32_update(uint32_t crc, const unsigned char *bytes, size_t le
     return ~crc;
 }
 
-/* Whether host tests make the payload file at path fail with EIO, as a bad
- * sector would: its reads (TC_TEST_EIO), or opening it (TC_TEST_EIO_OPEN,
- * a damaged catalog record). */
-static int test_eio(const char *variable, const char *path) {
 #ifdef TC_NATIVE_TEST
-    const char *failing = getenv(variable);
+/* A host-test fault's setting: the variable's value or, for "@FILE", what
+ * FILE holds, so a test clears the fault while a process runs by removing
+ * FILE. NULL for none. */
+static const char *test_fault(const char *variable, char *buffer, size_t size) {
+    const char *value = getenv(variable);
+    FILE *file;
+    size_t n;
+    if (!value || value[0] != '@')
+        return value;
+    if (!(file = fopen(value + 1, "r")))
+        return NULL;
+    n = fread(buffer, 1, size - 1, file);
+    fclose(file);
+    while (n && buffer[n - 1] == '\n')
+        n--;
+    buffer[n] = 0;
+    return buffer;
+}
+int tc_test_eio(const char *variable, const char *path) {
+    char buffer[1024];
+    const char *failing = test_fault(variable, buffer, sizeof(buffer));
     if (failing && !strcmp(failing, path)) {
         errno = EIO;
         return 1;
     }
-#else
-    (void)variable;
-    (void)path;
-#endif
     return 0;
 }
-static int open_payload(const char *path) {
-    return test_eio("TC_TEST_EIO_OPEN", path) ? -1 : open(path, O_RDONLY);
+/* How long each read of path takes on host tests' simulated clock
+ * (TC_TEST_SLOW_READ, "MS:PATH"), or -1 to read the real clock. */
+static long long test_read_ms(const char *path) {
+    char buffer[1024], *end;
+    const char *value = test_fault("TC_TEST_SLOW_READ", buffer, sizeof(buffer));
+    long long ms;
+    if (!value)
+        return -1;
+    ms = strtoll(value, &end, 10);
+    return *end == ':' && !strcmp(end + 1, path) ? ms : -1;
 }
-static ssize_t read_payload(int fd, void *buffer, size_t length, const char *path) {
-    return test_eio("TC_TEST_EIO", path) ? -1 : read(fd, buffer, length);
+#endif
+/* A payload file being read: what it is (fstat when opened), when reading it
+ * started, and how far it got. A disk that has not returned the rest within
+ * TC_PAYLOAD_READ_BUDGET_MS is failing; the last read, the one that finds the
+ * end, is never refused. */
+struct payload_reader {
+    int fd;
+    const char *path;
+    struct stat st;
+    long long started, reads;
+    off_t offset;
+};
+/* Opens path; -1 with errno (EIO when the disk could not read what the file
+ * is). */
+static int reader_open(struct payload_reader *r, const char *path) {
+    r->path = path;
+    r->started = acp_monotonic_ms();
+    r->reads = 0;
+    r->offset = 0;
+    r->fd = tc_test_eio("TC_TEST_EIO_OPEN", path) ? -1 : open(path, O_RDONLY);
+    if (r->fd >= 0 && fstat(r->fd, &r->st)) {
+        int saved = errno;
+        close(r->fd);
+        r->fd = -1;
+        errno = saved;
+    }
+    return r->fd;
+}
+/* How long the file has been read so far, -1 when the clock cannot be read
+ * (no budget then). Host tests' TC_TEST_SLOW_READ pins it on a simulated
+ * clock, so a stall needs no real wait. */
+static long long reader_elapsed(const struct payload_reader *r) {
+    long long now;
+#ifdef TC_NATIVE_TEST
+    long long ms = test_read_ms(r->path);
+    if (ms >= 0)
+        return r->reads * ms;
+#endif
+    now = acp_monotonic_ms();
+    return now < 0 || r->started < 0 ? -1 : now - r->started;
+}
+/* One read, refused with ETIMEDOUT once the budget is spent while bytes
+ * remain. A read already waiting on the disk cannot be stopped; a failing
+ * disk returns a chunk at a time, and the next read sees the budget. */
+static ssize_t reader_read(struct payload_reader *r, void *buffer, size_t length) {
+    ssize_t count;
+    if (r->offset < r->st.st_size && reader_elapsed(r) >= TC_PAYLOAD_READ_BUDGET_MS) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    r->reads++;
+    count = tc_test_eio("TC_TEST_EIO", r->path) ? -1 : read(r->fd, buffer, length);
+    if (count > 0)
+        r->offset += count;
+    return count;
+}
+long long tc_read_damage(int error) {
+    return error == EIO ? TC_COPY_UNREADABLE : error == ETIMEDOUT ? TC_COPY_STALLED : 0;
 }
 
 int tc_file_crc32(const char *path, uint32_t *crc) {
     unsigned char buffer[32768];
     ssize_t count;
-    int fd = open_payload(path), saved;
+    struct payload_reader reader;
+    int fd = reader_open(&reader, path), saved;
     *crc = 0;
     if (fd < 0)
         return -1;
-    while ((count = read_payload(fd, buffer, sizeof(buffer), path)) != 0) {
+    while ((count = reader_read(&reader, buffer, sizeof(buffer))) != 0) {
         if (count < 0 && errno == EINTR)
             continue;
         if (count >= 0 && tc_worker_cancelled()) {
@@ -188,12 +266,16 @@ int tc_file_crc32(const char *path, uint32_t *crc) {
     return 0;
 }
 
-int tc_copy_file(const char *source, const char *destination, mode_t mode, long long crc32, long long *read_out) {
+int tc_copy_file(const char *source, const char *destination, mode_t mode, long long crc32, long long *read_out,
+                 long long *elapsed_ms) {
     unsigned char buffer[32768];
     struct stat before, after, output_stat;
-    int input = -1, output = -1, result = -1, mismatch = 0, unreadable = 0;
+    int input = -1, output = -1, result = -1, mismatch = 0;
     off_t total = 0, size = -1;
     long long started = acp_monotonic_ms();
+    struct payload_reader reader;
+    /* What a read that failed said about the disk (tc_read_damage), 0 for nothing. */
+    long long unread = 0;
     ssize_t count;
     /* Of the bytes read from the source, which must be those deploy wrote. */
     uint32_t read_crc = 0;
@@ -201,13 +283,14 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode, long 
     int saved_errno;
     if (tc_worker_cancelled())
         return -1;
-    input = open_payload(source);
-    if (input < 0 || fstat(input, &before)) {
+    input = reader_open(&reader, source);
+    if (input < 0) {
         /* The disk could not read what the file is: damage, as a failed
          * read of its bytes is. */
-        unreadable = errno == EIO;
+        unread = tc_read_damage(errno);
         goto out;
     }
+    before = reader.st;
     size = before.st_size;
     if (!S_ISREG(before.st_mode)) {
         errno = EINVAL;
@@ -230,13 +313,14 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode, long 
             goto out;
         }
         operation = "read";
-        count = read_payload(input, buffer, sizeof(buffer), source);
+        count = reader_read(&reader, buffer, sizeof(buffer));
         if (count < 0 && errno == EINTR)
             continue;
         if (count < 0) {
-            /* The disk could not return the file's bytes: damage, as much
-             * as other bytes would be. */
-            unreadable = errno == EIO;
+            /* The disk could not return the file's bytes, or only so slowly
+             * that the budget ran out: damage, as much as other bytes
+             * would be. */
+            unread = tc_read_damage(errno);
             goto out;
         }
         if (!count)
@@ -282,6 +366,8 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode, long 
     }
     output = -1;
     result = 0;
+    if (elapsed_ms)
+        *elapsed_ms = reader_elapsed(&reader);
 out:
     saved_errno = errno;
     if (input >= 0)
@@ -310,6 +396,6 @@ out:
     }
     errno = saved_errno;
     if (read_out)
-        *read_out = unreadable ? TC_COPY_UNREADABLE : mismatch ? (long long)read_crc : -1;
-    return result && (mismatch || unreadable) ? TC_COPY_DISK_DAMAGED : result;
+        *read_out = unread ? unread : mismatch ? (long long)read_crc : -1;
+    return result && (mismatch || unread) ? TC_COPY_DISK_DAMAGED : result;
 }

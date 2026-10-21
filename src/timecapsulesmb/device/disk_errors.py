@@ -19,10 +19,19 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Literal
 
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError
-from timecapsulesmb.device.probe import DISK_EVIDENCE_COMMANDS, DiskPayloadProblem, read_remote_command_conn
+from timecapsulesmb.device.probe import (
+    DISK_EVIDENCE_COMMANDS,
+    DISK_REPLACE,
+    DISK_UNREADABLE_PROBLEMS,
+    DiskPayloadProblem,
+    manager_payload_problems,
+    read_remote_command_conn,
+)
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -67,11 +76,7 @@ def disk_errors_explain(
 
 
 # Checkup's result says the way out; an error's next steps come from its code.
-DISK_FAILING_WAY_OUT = (
-    "Copy off the files you need (if file sharing is off, take the disk out and connect it to a Mac with a "
-    "SATA-to-USB adapter), replace the disk, then erase the new disk in AirPort Utility and run "
-    '"Install / Update Samba" in the macOS app, or tcapsule deploy from the command line.'
-)
+DISK_FAILING_WAY_OUT = f"{DISK_REPLACE[:1].upper()}{DISK_REPLACE[1:]}."
 
 
 DISK_FAILING_MESSAGE = (
@@ -93,11 +98,50 @@ _PREFLIGHT_EFFECTS = {
 }
 
 
-def disk_failing_warning(errors: tuple[str, ...], operation: str) -> str:
-    """A preflight's warning before an operation that cannot fix the disk:
-    "install", "uninstall" or "repair"."""
+@dataclass(frozen=True)
+class DiskFailingEvidence:
+    """What says the disk is probably failing, for a preflight's warning.
+    cause names its confirmation (confirm.<operation>.<cause> in the app),
+    one for each cause: this boot's kernel disk errors (disk_failing, as
+    their error code), or the manager's title saying the disk could not read
+    its files (disk_unreadable). text is how the warning words it."""
+
+    cause: Literal["disk_failing", "disk_unreadable"]
+    text: str
+
+
+def kernel_evidence(errors: tuple[str, ...]) -> DiskFailingEvidence:
+    """This boot's disk errors as evidence, naming the last."""
+    return DiskFailingEvidence("disk_failing", f"reported errors it could not recover from ({errors[-1]})")
+
+
+# The manager's title saying it could not read its files from the disk
+# (probe.DISK_UNREADABLE_PROBLEMS), where the kernel kept no line.
+UNREADABLE_EVIDENCE = DiskFailingEvidence(
+    "disk_unreadable", "could not read the TimeCapsuleSMB files, or only too slowly",
+)
+
+
+def read_disk_failing_evidence_conn(connection: SshConnection) -> DiskFailingEvidence | None:
+    """Why the disk is probably failing: this boot's kernel disk errors, else
+    the manager's title saying the disk could not read its files (NetBSD 4's
+    kernel log keeps too little to rely on); None for neither, or when the
+    device could not be asked."""
+    errors = read_disk_errors_conn(connection)
+    if errors:
+        return kernel_evidence(errors)
+    try:
+        problems = manager_payload_problems(connection)
+    except TransportError:
+        return None
+    return UNREADABLE_EVIDENCE if any(problem in DISK_UNREADABLE_PROBLEMS for problem in problems or ()) else None
+
+
+def disk_failing_warning(evidence: DiskFailingEvidence, operation: str) -> str:
+    """A preflight's warning before an operation that cannot fix the disk
+    ("install", "uninstall" or "repair"), from read_disk_failing_evidence_conn."""
     return (
-        f"The device's disk reported errors it could not recover from ({errors[-1]}), so it is probably failing. "
+        f"The device's disk {evidence.text}, so it is probably failing. "
         f"{_PREFLIGHT_EFFECTS[operation]} Copy off the files you need first."
     )
 

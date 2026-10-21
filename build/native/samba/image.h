@@ -10,13 +10,17 @@
  *
  *   needed        no verified copy for the current payload
  *   verified      copied, matched the CRC-32 deploy recorded, and published
- *   disk_damaged  the bytes read from the disk did not match it
+ *   disk_damaged  the bytes read from the disk did not match it, or the disk
+ *                 could not return them (worker.h tc_read_damage)
  *
  * Damage, the disk's at staging or the RAM copy's at a launch, makes the next
  * copy wait 1x, 3x, then 12x TC_STORAGE_RETRY_MS, and copies go on at 12x for
- * as long as it lasts. Disk damage stays reported until a copy's bytes match
- * or the payload changes: a run that fails without reading other bytes says
- * nothing new. Any other staging failure leaves the wait alone: the unit's
+ * as long as it lasts. A disk that could not return the file at all, or not
+ * in time, waits longer after that: each wait doubles, up to a day, since
+ * every check reads the whole binary from a disk that is failing. Disk damage
+ * stays reported until a copy's bytes match or the payload changes: a run
+ * that fails without reading other bytes says nothing new. Any other staging
+ * failure leaves the wait alone: the unit's
  * own retry paces runs (manager.c), and a run that only restages the
  * program's files, without copying it, neither waits for nor touches the
  * image. The wait starts over once the program serves from a copy, or when
@@ -25,10 +29,17 @@
  * Whether RAM holds the files is apart from all that: another payload is
  * another file to trust, but the old one's files stay in RAM until removed. */
 enum tc_image_state { TC_IMAGE_NEEDED, TC_IMAGE_VERIFIED, TC_IMAGE_DISK_DAMAGED };
+/* The longest wait between checks of a disk that could not return the file. */
+#ifndef TC_IMAGE_UNREADABLE_MAX_MS
+#define TC_IMAGE_UNREADABLE_MAX_MS 86400000LL
+#endif
 struct tc_image {
     enum tc_image_state state;
     /* at: no copy before it (0 for none); failures: how far the wait has grown. */
     struct tc_storage_retry wait;
+    /* The last wait after 12x for a disk that could not return the file,
+     * which the next doubles; 0 before that. */
+    long long unreadable_wait;
     /* 1 once the manager removed the RAM files, until the next copy; 0, as
      * at the start, when RAM may hold them (an earlier manager's too). */
     int removed;
@@ -38,8 +49,10 @@ void tc_image_reset(struct tc_image *);
 /* A copy is starting and replaces the RAM file. */
 void tc_image_copying(struct tc_image *);
 /* A staging run that copied this image ended: tc_copy_file's result for it,
- * -1 when the run failed before reading it, and whether the run published it. */
-void tc_image_staged(struct tc_image *, int copy_result, int published, long long now);
+ * -1 when the run failed before reading it; for damage, whether the disk
+ * could not return the file (staging.h tc_stage_disk_unreadable); and
+ * whether the run published it. */
+void tc_image_staged(struct tc_image *, int copy_result, int unreadable, int published, long long now);
 /* The launch found the RAM copy damaged or unreadable. */
 void tc_image_refused(struct tc_image *, long long now);
 /* The program is serving from this copy. */

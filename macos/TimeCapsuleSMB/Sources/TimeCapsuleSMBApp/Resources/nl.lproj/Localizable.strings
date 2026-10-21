@@ -147,6 +147,9 @@
 "confirm.deploy.disk_failing.action" = "Toch installeren";
 "confirm.deploy.disk_failing.message" = "De schijf van het apparaat meldde fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect. Installeren lost dat niet op, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer eerst de bestanden die u nodig hebt. Toch installeren?";
 "confirm.deploy.disk_failing.title" = "De schijf is defect";
+"confirm.deploy.disk_unreadable.action" = "Toch installeren";
+"confirm.deploy.disk_unreadable.message" = "De schijf van het apparaat kon de TimeCapsuleSMB-bestanden niet of alleen te traag lezen, dus de schijf is waarschijnlijk defect. Installeren lost dat niet op, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer eerst de bestanden die u nodig hebt. Toch installeren?";
+"confirm.deploy.disk_unreadable.title" = "De schijf is defect";
 "confirm.fsck.no_reboot.action" = "fsck uitvoeren";
 "confirm.fsck.no_reboot.message" = "fsck uitvoeren op het geselecteerde HFS-volume? Op een grote schijf kan dit een uur of langer duren. Laat de Time Capsule aangesloten op het stopcontact tot het klaar is.";
 "confirm.fsck.no_reboot.title" = "Schijfreparatie uitvoeren?";
@@ -156,6 +159,9 @@
 "confirm.fsck.disk_failing.action" = "Toch repareren";
 "confirm.fsck.disk_failing.message" = "De schijf van het apparaat meldde fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect. Een schijfreparatie kan een defecte schijf niet repareren en belast die zwaar. Kopieer eerst de bestanden die u nodig hebt. Toch repareren?";
 "confirm.fsck.disk_failing.title" = "De schijf is defect";
+"confirm.fsck.disk_unreadable.action" = "Toch repareren";
+"confirm.fsck.disk_unreadable.message" = "De schijf van het apparaat kon de TimeCapsuleSMB-bestanden niet of alleen te traag lezen, dus de schijf is waarschijnlijk defect. Een schijfreparatie kan een defecte schijf niet repareren en belast die zwaar. Kopieer eerst de bestanden die u nodig hebt. Toch repareren?";
+"confirm.fsck.disk_unreadable.title" = "De schijf is defect";
 "confirm.flash.patch_write.action" = "Firmware schrijven";
 "confirm.flash.patch_write.message" = "De opstart-hook van de primaire firmwarebank op %@ patchen? Na succesvol schrijven moet het apparaat handmatig uit- en weer ingeschakeld worden.";
 "confirm.flash.patch_write.title" = "Opstart-hook in firmware patchen?";
@@ -174,6 +180,9 @@
 "confirm.uninstall.disk_failing.action" = "Toch verwijderen";
 "confirm.uninstall.disk_failing.message" = "De schijf van het apparaat meldde fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect. Verwijderen lost dat niet op, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer eerst de bestanden die u nodig hebt. Toch verwijderen?";
 "confirm.uninstall.disk_failing.title" = "De schijf is defect";
+"confirm.uninstall.disk_unreadable.action" = "Toch verwijderen";
+"confirm.uninstall.disk_unreadable.message" = "De schijf van het apparaat kon de TimeCapsuleSMB-bestanden niet of alleen te traag lezen, dus de schijf is waarschijnlijk defect. Verwijderen lost dat niet op, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer eerst de bestanden die u nodig hebt. Toch verwijderen?";
+"confirm.uninstall.disk_unreadable.title" = "De schijf is defect";
 "dashboard.action.install_update_smb" = "Samba installeren / bijwerken";
 "dashboard.action.refresh_status" = "Status vernieuwen";
 "dashboard.action.settings" = "Instellingen";
@@ -294,8 +303,10 @@
 "dialog.forget.title" = "Dit apparaat vergeten?";
 "doctor.check.payload_missing_from_disk" = "De Samba-bestanden ontbreken op alle schijven, zoals na ‘Wis schijf’ in AirPort-configuratieprogramma. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
 "doctor.check.payload_damaged_on_disk" = "De Samba-bestanden op de schijf zijn beschadigd en komen niet meer overeen met wat er is geïnstalleerd. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
+"doctor.check.payload_unreadable_on_disk" = "De schijf van het apparaat kon de Samba-bestanden niet of alleen te traag lezen, dus de schijf is waarschijnlijk defect en bestandsdeling staat uit. Opnieuw installeren repareert de schijf niet, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer de bestanden die u nodig hebt, vervang de schijf, wis daarna de nieuwe schijf in het AirPort-configuratieprogramma en voer ‘Samba installeren / bijwerken’ uit.";
 "doctor.check.rsync_missing_from_disk" = "De rsync-bestanden ontbreken op de schijf, dus rsync staat uit. Bestandsdeling en Time Machine blijven werken. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
 "doctor.check.rsync_damaged_on_disk" = "Het rsync-bestand op de schijf is beschadigd en komt niet meer overeen met wat er is geïnstalleerd, dus rsync staat uit. Bestandsdeling en Time Machine blijven werken. Voer ‘Samba installeren / bijwerken’ uit om opnieuw te installeren.";
+"doctor.check.rsync_unreadable_on_disk" = "De schijf van het apparaat kon het rsync-bestand niet of alleen te traag lezen, dus rsync staat uit en de schijf is waarschijnlijk defect. Bestandsdeling en Time Machine blijven voorlopig werken. Opnieuw installeren repareert de schijf niet: kopieer de bestanden die u nodig hebt, vervang de schijf, wis daarna de nieuwe schijf in het AirPort-configuratieprogramma en voer ‘Samba installeren / bijwerken’ uit.";
 "doctor.check.metadata_migration_in_progress" = "Op het apparaat loopt nog een metadatamigratie. ‘Samba installeren / bijwerken’ wacht tot die klaar is en installeert pas daarna.";
 "doctor.check.disk_not_mounting" = "Een schijf op het apparaat kan niet worden gekoppeld, waardoor bestandsdeling en Time Machine niet werken. Start het apparaat opnieuw op; als het niet terugkomt, haal dan 10 seconden de stekker eruit. Wordt de schijf daarna nog steeds niet gekoppeld, voer dan ‘Schijfreparatie’ uit; bij aanhoudende problemen moet de schijf mogelijk worden vervangen.";
 "doctor.check.disk_failing" = "De schijf van het apparaat meldde fouten die niet konden worden hersteld, dus de schijf is waarschijnlijk defect en bestandsdeling staat uit. Opnieuw installeren repareert de schijf niet, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen. Kopieer de bestanden die u nodig hebt, vervang de schijf, wis daarna de nieuwe schijf in het AirPort-configuratieprogramma en voer ‘Samba installeren / bijwerken’ uit.";
@@ -925,6 +936,11 @@
 "backend.recovery.payload_damaged_on_disk.message" = "De TimeCapsuleSMB-bestanden op de schijf van het apparaat zijn beschadigd en komen niet meer overeen met wat er is geïnstalleerd.";
 "backend.recovery.payload_damaged_on_disk.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";
 "backend.recovery.payload_damaged_on_disk.action.2" = "Als de bestanden na het opnieuw installeren weer beschadigd zijn, is de schijf mogelijk defect.";
+"backend.recovery.payload_unreadable_on_disk.title" = "De schijf kan de Samba-bestanden niet lezen";
+"backend.recovery.payload_unreadable_on_disk.message" = "De schijf van het apparaat kon de TimeCapsuleSMB-bestanden niet of alleen te traag lezen, dus de schijf is waarschijnlijk defect en bestandsdeling staat uit. Opnieuw installeren repareert de schijf niet, en het AirPort-configuratieprogramma kan de schijf nog steeds als in orde tonen.";
+"backend.recovery.payload_unreadable_on_disk.action.1" = "Kopieer de bestanden die u nodig hebt. Als bestandsdeling uit staat, haal de schijf eruit en sluit die met een SATA-naar-USB-adapter aan op een Mac.";
+"backend.recovery.payload_unreadable_on_disk.action.2" = "Vervang de schijf.";
+"backend.recovery.payload_unreadable_on_disk.action.3" = "Wis de nieuwe schijf in het AirPort-configuratieprogramma en voer daarna ‘Samba installeren / bijwerken’ uit. Time Machine begint er een nieuwe, volledige reservekopie op.";
 "backend.recovery.rsync_missing_from_disk.title" = "rsync-bestanden ontbreken";
 "backend.recovery.rsync_missing_from_disk.message" = "De rsync-bestanden ontbreken op de schijf, dus rsync staat uit. Bestandsdeling en Time Machine blijven werken.";
 "backend.recovery.rsync_missing_from_disk.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";
@@ -932,6 +948,11 @@
 "backend.recovery.rsync_damaged_on_disk.message" = "Het rsync-bestand op de schijf is beschadigd en komt niet meer overeen met wat er is geïnstalleerd, dus rsync staat uit. Bestandsdeling en Time Machine blijven werken.";
 "backend.recovery.rsync_damaged_on_disk.action.1" = "Voer ‘Samba installeren / bijwerken’ uit.";
 "backend.recovery.rsync_damaged_on_disk.action.2" = "Als de bestanden na het opnieuw installeren weer beschadigd zijn, is de schijf mogelijk defect.";
+"backend.recovery.rsync_unreadable_on_disk.title" = "De schijf kan rsync niet lezen";
+"backend.recovery.rsync_unreadable_on_disk.message" = "De schijf van het apparaat kon het rsync-bestand niet of alleen te traag lezen, dus rsync staat uit en de schijf is waarschijnlijk defect. Bestandsdeling en Time Machine blijven voorlopig werken.";
+"backend.recovery.rsync_unreadable_on_disk.action.1" = "Kopieer de bestanden die u nodig hebt.";
+"backend.recovery.rsync_unreadable_on_disk.action.2" = "Vervang de schijf.";
+"backend.recovery.rsync_unreadable_on_disk.action.3" = "Wis de nieuwe schijf in het AirPort-configuratieprogramma en voer daarna ‘Samba installeren / bijwerken’ uit. Time Machine begint er een nieuwe, volledige reservekopie op.";
 "backend.recovery.rsync_not_running.title" = "rsync draait niet";
 "backend.recovery.rsync_not_running.message" = "Bestandsdeling en Time Machine werken, maar rsync is niet gestart.";
 "backend.recovery.rsync_not_running.action.1" = "Voer ‘Controle’ uit voor details.";

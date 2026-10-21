@@ -14,14 +14,24 @@ from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.device.disk_errors import (
     DISK_FAILING_MESSAGE,
     KERNEL_DISK_MESSAGES_COMMAND,
+    UNREADABLE_EVIDENCE,
     DiskFailingError,
     disk_errors_explain,
     disk_errors_in,
     disk_failing_message,
     disk_failing_warning,
+    kernel_evidence,
     read_disk_errors_conn,
+    read_disk_failing_evidence_conn,
 )
-from timecapsulesmb.device.errors import DeviceError, DiskPayloadMissingError, RsyncNotRunningError
+from timecapsulesmb.device.errors import (
+    DeviceError,
+    DiskPayloadMissingError,
+    DiskPayloadUnreadableError,
+    RsyncNotRunningError,
+    RsyncUnreadableError,
+)
+from timecapsulesmb.device import probe
 from timecapsulesmb.device.probe import (
     DISK_PAYLOAD_PROBLEMS,
     ManagedRuntimeProbeResult,
@@ -130,6 +140,56 @@ class ReadDiskErrorsTests(unittest.TestCase):
                     self.assertIsNone(read_disk_errors_conn(self.CONNECTION))
 
 
+class DiskFailingEvidenceTests(unittest.TestCase):
+    """What a preflight warns with: this boot's kernel lines, else the
+    manager's title saying the disk could not read its files. NetBSD 4's
+    kernel log wraps during boot and keeps the lines only now and then; the
+    title keeps the verdict while the manager runs."""
+
+    CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
+
+    def evidence(self, errors, problems):
+        title = problems if callable(problems) else mock.Mock(return_value=problems)
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+            with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", title):
+                return read_disk_failing_evidence_conn(self.CONNECTION), title
+
+    def test_kernel_lines_come_first_and_name_the_last_error(self) -> None:
+        found, title = self.evidence((NETBSD4_DEVICE_ERROR[1], FINAL), (probe.DISK_PAYLOAD_UNREADABLE,))
+        self.assertEqual(found, kernel_evidence((FINAL,)))
+        self.assertEqual(found.cause, "disk_failing")
+        self.assertIn(FINAL, found.text)
+        title.assert_not_called()
+
+    def test_without_kernel_lines_an_unreadable_verdict_is_the_evidence(self) -> None:
+        for errors in ((), None):
+            for problems in ((probe.DISK_PAYLOAD_UNREADABLE,), (probe.RSYNC_UNREADABLE,),
+                             (probe.DISK_PAYLOAD_DAMAGED, probe.RSYNC_UNREADABLE)):
+                with self.subTest(errors=errors, problems=[p.token for p in problems]):
+                    self.assertEqual(self.evidence(errors, problems)[0], UNREADABLE_EVIDENCE)
+
+    def test_other_verdicts_and_a_quiet_title_say_nothing(self) -> None:
+        # Damaged or missing files are fixed by a reinstall: no disk warning.
+        for problems in ((), None, (probe.DISK_PAYLOAD_DAMAGED,), (probe.DISK_PAYLOAD_MISSING,),
+                         (probe.RSYNC_DAMAGED, probe.RSYNC_MISSING)):
+            with self.subTest(problems=problems):
+                self.assertIsNone(self.evidence((), problems)[0])
+
+    def test_a_title_that_cannot_be_read_says_nothing(self) -> None:
+        def unreadable(_connection):
+            raise SshNetworkError("Connection reset")
+        self.assertIsNone(self.evidence((), unreadable)[0])
+
+    def test_the_warning_says_what_the_evidence_is(self) -> None:
+        self.assertEqual(
+            disk_failing_warning(UNREADABLE_EVIDENCE, "install"),
+            "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing. Installing will not fix that. "
+            "Copy off the files you need first.",
+        )
+        self.assertIn(f"({FINAL}), so it is probably failing. Uninstalling will not fix that.",
+                      disk_failing_warning(kernel_evidence((FINAL,)), "uninstall"))
+
+
 class PrecedenceTests(unittest.TestCase):
     ERRORS = (FINAL,)
 
@@ -184,6 +244,29 @@ class RuntimeFailureTests(unittest.TestCase):
                               DiskPayloadMissingError)
         self.assertIsInstance(runtime_failure_error(runtime(samba_ready=True), "x", disk_errors=self.ERRORS),
                               RsyncNotRunningError)
+
+    def test_a_disk_that_could_not_read_the_files_is_the_failing_disk_without_kernel_lines(self) -> None:
+        # NetBSD 4's kernel log often kept no line: the manager's verdict is
+        # the evidence, a cause with its own code whose guidance is a new
+        # disk, not a reinstall. Kernel lines, when there are any, name the
+        # error and come first.
+        for errors in (None, ()):
+            with self.subTest(errors=errors):
+                error = runtime_failure_error(runtime(problem=probe.DISK_PAYLOAD_UNREADABLE),
+                                              "NetBSD4 activation failed.", disk_errors=errors)
+                self.assertIsInstance(error, DiskPayloadUnreadableError)
+                self.assertEqual(error.code, ErrorCode.PAYLOAD_UNREADABLE_ON_DISK)
+                self.assertTrue(error.samba_off)
+                self.assertIn("could not read the Samba files", str(error))
+        error = runtime_failure_error(runtime(problem=probe.DISK_PAYLOAD_UNREADABLE), "x", disk_errors=self.ERRORS)
+        self.assertIsInstance(error, DiskFailingError)
+        # rsync's leaves Samba serving: its own code, which says so.
+        error = runtime_failure_error(runtime(samba_ready=True, problem=probe.RSYNC_UNREADABLE), "x",
+                                      disk_errors=self.ERRORS)
+        self.assertIsInstance(error, RsyncUnreadableError)
+        self.assertEqual(error.code, ErrorCode.RSYNC_UNREADABLE_ON_DISK)
+        self.assertFalse(error.samba_off)
+        self.assertTrue(str(error).startswith("File sharing and Time Machine are running, but the device's disk"))
 
     def verify(self, verification, read):
         debug: dict[str, object] = {}
@@ -251,7 +334,7 @@ class RuntimeFailureTests(unittest.TestCase):
 class CommandLinePreflightTests(unittest.TestCase):
     CONNECTION = SshConnection("root@10.0.0.2", "pw", "")
 
-    def preflight(self, errors, *, yes=False, answer="", operation="install"):
+    def preflight(self, errors, *, problems=(), yes=False, answer="", operation="install"):
         fields: dict[str, object] = {}
         stderr = io.StringIO()
         prompts: list[str] = []
@@ -260,27 +343,31 @@ class CommandLinePreflightTests(unittest.TestCase):
             prompts.append(prompt)
             return answer
 
-        with mock.patch("timecapsulesmb.cli.runtime.read_disk_errors_conn", return_value=errors):
-            with mock.patch("builtins.input", side_effect=ask), redirect_stderr(stderr):
-                result = confirm_despite_failing_disk(self.CONNECTION, operation, yes=yes, command="deploy",
-                                                      update_fields=lambda **f: fields.update(f))
+        with mock.patch("timecapsulesmb.device.disk_errors.read_disk_errors_conn", return_value=errors):
+            with mock.patch("timecapsulesmb.device.disk_errors.manager_payload_problems", return_value=problems):
+                with mock.patch("builtins.input", side_effect=ask), redirect_stderr(stderr):
+                    result = confirm_despite_failing_disk(self.CONNECTION, operation, yes=yes, command="deploy",
+                                                          update_fields=lambda **f: fields.update(f))
         return result, stderr.getvalue(), prompts, fields
 
     def test_a_healthy_disk_asks_nothing(self) -> None:
-        for errors in (None, ()):
-            with self.subTest(errors=errors):
-                result, warned, prompts, fields = self.preflight(errors)
+        for errors, problems in ((None, ()), ((), ()), ((), (probe.DISK_PAYLOAD_DAMAGED,))):
+            with self.subTest(errors=errors, problems=problems):
+                result, warned, prompts, fields = self.preflight(errors, problems=problems)
                 self.assertIsNone(result)
                 self.assertEqual((warned, prompts, fields), ("", [], {}))
 
     def test_a_failing_disk_warns_and_defaults_to_no(self) -> None:
-        for answer, expected in (("", False), ("n", False), ("y", True)):
-            with self.subTest(answer=answer):
-                result, warned, prompts, fields = self.preflight((FINAL,), answer=answer)
-                self.assertIs(result, expected)
-                self.assertIn(disk_failing_warning((FINAL,), "install"), warned)
-                self.assertEqual(prompts, ["Install anyway? [y/N]: "])
-                self.assertEqual(fields, {"disk_failing_warned": True})
+        # From the kernel's lines, or the manager's title where it kept none.
+        for errors, problems, evidence in (((FINAL,), (), kernel_evidence((FINAL,))),
+                                           ((), (probe.DISK_PAYLOAD_UNREADABLE,), UNREADABLE_EVIDENCE)):
+            for answer, expected in (("", False), ("n", False), ("y", True)):
+                with self.subTest(evidence=evidence, answer=answer):
+                    result, warned, prompts, fields = self.preflight(errors, problems=problems, answer=answer)
+                    self.assertIs(result, expected)
+                    self.assertIn(disk_failing_warning(evidence, "install"), warned)
+                    self.assertEqual(prompts, ["Install anyway? [y/N]: "])
+                    self.assertEqual(fields, {"disk_failing_warned": True})
 
     def test_yes_goes_on_after_printing_the_warning(self) -> None:
         result, warned, prompts, _fields = self.preflight((FINAL,), yes=True, operation="repair")

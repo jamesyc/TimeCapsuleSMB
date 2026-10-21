@@ -64,7 +64,14 @@ disk.
 The cases cover talloc isolation through the real AIO fork path, preservation of
 worker errors, successful and failed synchronous fallback, worker limits and
 share isolation, FIFO saturation, cancellation, worker failure recovery and idle
-cleanup. Durable tests cover live-to-disconnected transition, bounded retry
+cleanup. The queue cases (`queue`, `cancel_queued`, `cancel_active`,
+`queued_fork_failure`) also run as `NAME+fast_reply`: each helper reply is
+already readable when the read starts, so `read_packet_send()` completes it in
+its send and posts it ahead of the requests past the queue limit, as happens
+at random on a loaded host. They must count the queue's turns the same way.
+`cancel_active+fast_reply` also frees `requests[0]` after its reply was read
+but before its callback ran, where the plain case frees it while its helper
+still works. Only those cases take the suffix. Durable tests cover live-to-disconnected transition, bounded retry
 exhaustion, unlocked waiting and identity/ownership rejection. They do not assert
 the literal retry limit of 34. The `scavenger_hello_*` cases run the smbd
 parent's wait for a new scavenger's hello (patch 0075) against a forked child
@@ -564,7 +571,9 @@ running smb.conf in RAM only, and puts the original back at the end.
 ## Test tiers and tooling
 
 AGENTS.md ("Test tiers") defines a quick tier (every iteration, about 25
-minutes) and a full tier (per commit batch, about 2-2.5 hours).
+minutes) and a full tier (per commit batch, about 2.25-2.75 hours; its
+smbtorture list adds `smb2.lease`, `smb2.durable-open`, `smb2.durable-v2-open`
+and `smb2.oplock`, about 14 minutes on NetBSD 4).
 `python -m tests.samba.check --tier quick|full --out DIR --build` runs one:
 `vm_build.py` builds the three lanes on the VM, `swap_smbd.py` runs the
 built smbd on a device without deploying (quick) or the full tier deploys,

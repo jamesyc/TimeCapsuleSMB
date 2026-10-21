@@ -18,7 +18,7 @@ import zlib
 
 import pytest
 from tests.executables import write_executable
-from tests.native.build import compile_service
+from tests.native.build import compile_service, header_define
 from tests.timing import hang_guard
 from timecapsulesmb.device import probe
 from timecapsulesmb.services.deploy import render_payload_checksums
@@ -55,6 +55,10 @@ TIMINGS=dict(
     # go through several exits.
     TC_ROLE_RETRY_MS=100,        # device 1 s
     TC_UNMOUNTED_MS=2000,        # device 600 s; whole seconds: tests compare the logged "for N s"
+    ONCE_REPORTS=2,              # device 16: test_a_full_once_report_list_sends_no_new_report fills it
+    # Checks of files the disk could not read double from 12x
+    # TC_STORAGE_RETRY_MS (6 s here) up to this.
+    TC_IMAGE_UNREADABLE_MAX_MS=12000, # device 1 day
     TC_LOCKS_CHECK_MS=200,       # device 5 s
     # The refill test's quiet window lasts about 3 s; this leaves it 5x.
     TC_LOCKS_RESET_GAP_MS=15000, # device 10 min
@@ -779,6 +783,8 @@ def test_rename_while_staging_is_in_flight_restages_with_the_new_name(manager):
     assert smbd_starts(rows)[0]['hosts']=='127.0.0.1\trenamed renamed.local\n'
     assert len(smbd_starts(events()))==1
     assert 'manager: hostname changed from capsule to renamed' in runtime_log(root)
+    # The stopped run said nothing about the payload.
+    assert not any('payload=' in title for title in manager_titles(root))
 
 
 def test_failed_mapping_holds_samba_and_staging_retries_until_it_works(manager):
@@ -1321,16 +1327,202 @@ def test_a_damaged_payload_stays_reported_through_a_run_that_read_nothing(manage
     assert verdicts(root)==()
 
 
-def test_a_disk_that_cannot_read_smbd_is_damage_too(manager,monkeypatch):
-    # A bad sector inside smbd: the read fails rather than returning other
-    # bytes, which a reinstall fixes all the same.
+# On the simulated clock (worker.c), a read that takes longer than the read
+# budget (worker.h): the next read of the file is refused.
+SLOW_READ_MS=header_define('common/worker.h','TC_PAYLOAD_READ_BUDGET_MS')+1
+
+
+def pad(path):
+    """Grow a fake program past one 32 KiB read with a trailing comment, so a
+    stalled disk leaves bytes unread."""
+    path.write_bytes(path.read_bytes()+b'\n#'+b'x'*40000+b'\n')
+
+
+def fault_setting(fault,path):
+    return str(path) if fault=='TC_TEST_EIO' else f'{SLOW_READ_MS}:{path}'
+
+
+@pytest.mark.parametrize('fault',['TC_TEST_EIO','TC_TEST_SLOW_READ'])
+def test_a_disk_that_cannot_read_smbd_is_unreadable_not_damaged(manager,monkeypatch,fault):
+    # A bad sector inside smbd (EIO), or a disk that returns it only after the
+    # read budget (a failing disk retrying each read): not other bytes, which
+    # a reinstall fixes, but a disk that needs replacing. Its checks wait 1x,
+    # 3x, then 12x TC_STORAGE_RETRY_MS as damage's do, then go on doubling
+    # (to the cap here) where damage's stay at 12x, so a failing disk is not
+    # kept reading; smbd never starts from it.
     root,start,events,wait,_,_=manager
+    pad(root/'dk2/.samba4/smbd')
     deploy_checksum(root)
+    monkeypatch.setenv(fault,fault_setting(fault,root/'dk2/.samba4/smbd'))
+    start()
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_UNREADABLE,))
+    until(root,lambda:stage_retries(root)==[500,1500,6000,12000],40)
+    assert not smbd_starts(events())
+    titles=manager_titles(root)
+    assert not any('payload=damaged' in title for title in titles)
+
+
+def test_a_disk_that_cannot_read_rsync_leaves_samba_serving(manager,monkeypatch):
+    # rsync=unreadable keeps only rsync off, as rsync=damaged does.
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/rsync'))
+    start()
+    wait(serving,40)
+    until(root,lambda:verdicts(root)==(probe.RSYNC_UNREADABLE,))
+    assert not rsync_starts(events())
+
+
+@pytest.mark.parametrize('fault',['TC_TEST_EIO','TC_TEST_SLOW_READ'])
+def test_a_disk_that_reads_again_clears_the_verdict_on_its_own(manager,monkeypatch,fault,tmp_path):
+    # The manager keeps checking the disk copy (after 0.5, 1.5, then 6 s
+    # here, doubling after that): once the disk returns smbd whole, the
+    # verdict goes and Samba starts, with no Activate or restart.
+    root,start,events,wait,_,_=manager
+    pad(root/'dk2/.samba4/smbd')
+    deploy_checksum(root)
+    control=tmp_path/'fault';control.write_text(fault_setting(fault,root/'dk2/.samba4/smbd'))
+    monkeypatch.setenv(fault,f'@{control}')
+    start()
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_UNREADABLE,))
+    # Each check of the disk copy fails the same way: the verdict stays.
+    until(root,lambda:stage_retries(root)==[500,1500],20)
+    assert verdicts(root)==(probe.DISK_PAYLOAD_UNREADABLE,)
+    control.unlink()
+    wait(lambda rows:smbd_starts(rows),40)
+    assert verdicts(root)==()
+
+
+def verdict_reports(events):
+    return [reason for reason in reports(events) if reason.startswith(('payload:','rsync:'))]
+
+
+def test_a_verdict_that_changes_is_reported_again(manager,monkeypatch,tmp_path):
+    # Other bytes first (payload:damaged), then the disk stops returning them
+    # at all: the title's new verdict is a report of its own, each once.
+    root,start,events,wait,_,_=manager
+    payload=root/'dk2/.samba4/smbd'
+    good=deploy_checksum(root)
+    (root/'config').write_text('TELEMETRY=1\n')
+    damage(payload,good)
+    control=tmp_path/'eio'
+    monkeypatch.setenv('TC_TEST_EIO',f'@{control}')
+    start()
+    wait(lambda rows:verdict_reports(events)==['payload:damaged'],20)
+    control.write_text(str(payload))
+    wait(lambda rows:verdict_reports(events)==['payload:damaged','payload:unreadable'],40)
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_UNREADABLE,))
+    time.sleep(2)
+    assert verdict_reports(events)==['payload:damaged','payload:unreadable']
+
+
+def test_a_slow_copy_is_reported_once_per_manager(manager,monkeypatch):
+    # A copy that went through but took TC_SLOW_COPY_MS (30 s) or more: how
+    # close healthy disks come to the read budget. Three reads of 20 s each
+    # on the simulated clock: 60 s.
+    root,start,events,wait,_,_=manager
+    pad(root/'dk2/.samba4/smbd')
+    deploy_checksum(root)
+    (root/'config').write_text('TELEMETRY=1\n')
+    monkeypatch.setenv('TC_TEST_SLOW_READ',f"20000:{root/'dk2/.samba4/smbd'}")
+    start()
+    wait(lambda rows:smbd_starts(rows),40)
+    wait(lambda rows:[r for r in reports(events) if r.startswith('slow_copy:')]==['slow_copy:smbd:60'],20)
+    assert 'stage: copied smbd in 60000 ms' in runtime_log(root)
+    assert verdicts(root)==()
+
+
+def test_a_slow_copy_dropped_from_a_full_queue_is_sent_once_it_fits(manager,monkeypatch):
+    # Stuck processes fill the report queue and every report fails, so the
+    # slow copy's report finds no room; it is queued again until delivered,
+    # once. Samba stages only once the hostname is set, after the queue fills.
+    root,start,events,wait,_,_=manager
+    pad(root/'dk2/.samba4/smbd')
+    deploy_checksum(root)
+    (root/'config').write_text('TELEMETRY=1\n')
+    (root/'report-exit').write_text('1')
+    (root/'hostname').write_text('')
+    sleepers(root,*[(8101+i,8101+i,0,LSSLEEP,0,400,0,'biowait',f'q{i+1}') for i in range(5)])
+    monkeypatch.setenv('TC_TEST_SLOW_READ',f"20000:{root/'dk2/.samba4/smbd'}")
+    start()
+    until(root,lambda:'report queue full; dropping' in stderr(root))
+    (root/'hostname').write_text('capsule\n')
+    until(root,lambda:'stage: copied smbd in 60000 ms' in runtime_log(root))
+    time.sleep(1)
+    assert not [r for r in reports(events) if r.startswith('slow_copy:')]
+    (root/'report-exit').unlink()
+    wait(lambda rows:'slow_copy:smbd:60' in reports(events),20)
+    time.sleep(2)
+    assert [r for r in reports(events) if r.startswith('slow_copy:')]==['slow_copy:smbd:60']
+
+
+def test_a_full_once_report_list_sends_no_new_report(manager,monkeypatch,tmp_path):
+    # The list of delivered once-reports holds ONCE_REPORTS (2 here). Once it
+    # is full, a new reason is logged once and not sent, rather than sent
+    # again and again because it was never recorded.
+    root,start,events,wait,_,_=manager
+    payload=root/'dk2/.samba4'
+    good=deploy_checksum(root,rsync=True)
+    (root/'config').write_text('TELEMETRY=1\nRSYNC_ENABLED=1\n')
+    damage(payload/'smbd',good)
+    monkeypatch.setenv('TC_TEST_EIO_OPEN',str(payload/'rsync'))
+    control=tmp_path/'eio'
+    monkeypatch.setenv('TC_TEST_EIO',f'@{control}')
+    start()
+    wait(lambda rows:sorted(verdict_reports(events))==['payload:damaged','rsync:unreadable'],30)
+    control.write_text(str(payload/'smbd'))
+    until(root,lambda:'manager: once-report list full; not sending payload:unreadable' in runtime_log(root),40)
+    time.sleep(2)
+    assert sorted(verdict_reports(events))==['payload:damaged','rsync:unreadable']
+    assert runtime_log(root).count('once-report list full')==1
+
+
+def test_verdicts_are_not_reported_with_telemetry_off(manager,monkeypatch):
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root) # TELEMETRY=0
     monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/smbd'))
     start()
-    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_DAMAGED,))
+    until(root,lambda:verdicts(root)==(probe.DISK_PAYLOAD_UNREADABLE,))
     until(root,lambda:stage_retries(root)==[500,1500],20)
-    assert not smbd_starts(events())
+    assert reports(events)==[]
+
+
+@pytest.mark.parametrize('fault,reason',[('eio','payload:unreadable'),('crc','payload:damaged')])
+def test_a_payload_verdict_is_reported_once_per_manager(manager,monkeypatch,fault,reason):
+    # The title's verdict lasts while the manager runs, through every retry
+    # of the copy: one heartbeat says it, as for a disk that will not mount.
+    root,start,events,wait,_,_=manager
+    good=deploy_checksum(root)
+    (root/'config').write_text('TELEMETRY=1\n')
+    if fault=='eio':
+        monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/smbd'))
+    else:
+        damage(root/'dk2/.samba4/smbd',good)
+    start()
+    wait(lambda rows:verdict_reports(events)==[reason],20)
+    until(root,lambda:stage_retries(root)==[500,1500],20)
+    time.sleep(2)
+    assert verdict_reports(events)==[reason]
+
+
+def test_a_failed_verdict_report_is_sent_again_until_delivered(manager,monkeypatch):
+    root,start,events,wait,_,_=manager
+    deploy_checksum(root,rsync=True)
+    (root/'config').write_text('TELEMETRY=1\nRSYNC_ENABLED=1\n')
+    (root/'report-exit').write_text('1')
+    monkeypatch.setenv('TC_TEST_EIO',str(root/'dk2/.samba4/rsync'))
+    start()
+    # Each failed send is retried TC_BUFSTALL_REPORT_RETRY_MS later.
+    wait(lambda rows:len(verdict_reports(events))>=2,30)
+    assert set(verdict_reports(events))=={'rsync:unreadable'}
+    (root/'report-exit').unlink()
+    sent=len(verdict_reports(events))
+    wait(lambda rows:len(verdict_reports(events))>sent,30)
+    # Delivered: never sent again, though the verdict stays in the title.
+    final=len(verdict_reports(events))
+    time.sleep(5*TIMINGS['TC_BUFSTALL_REPORT_RETRY_MS']/1000)
+    assert len(verdict_reports(events))==final
+    assert verdicts(root)==(probe.RSYNC_UNREADABLE,)
 
 
 def test_payloads_on_two_disks_are_each_checked_against_their_own_checksums(manager):

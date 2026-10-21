@@ -1,4 +1,5 @@
 """Stage and publish real RAM files, retaining applied config on preparation failures."""
+import errno
 import os
 import plistlib
 import shutil
@@ -6,8 +7,16 @@ import subprocess
 import zlib
 
 import pytest
-from tests.native.build import ROOT, compile_modules
+from tests.native.build import ROOT, compile_modules, header_define
 from timecapsulesmb.services.deploy import render_payload_checksums
+
+
+# The read budget (worker.h) and a simulated read that takes longer than it:
+# the first read goes through, the next is past the budget.
+BUDGET_MS = header_define('common/worker.h', 'TC_PAYLOAD_READ_BUDGET_MS')
+STALL_MS = BUDGET_MS + 1
+# The host libc's words for a stall: macOS and Linux differ.
+TIMED_OUT = os.strerror(errno.ETIMEDOUT)
 
 
 @pytest.fixture(scope="module")
@@ -152,19 +161,26 @@ def test_each_missing_file_is_logged_once(stage):
     assert run("rsync", MISSING="3").stdout.decode().strip() == "copy=-1 crc=-1 read=-1 missing=1"
 
 
-@pytest.mark.parametrize("finding", ["missing", "damaged"])
+@pytest.mark.parametrize("finding", ["missing", "damaged", "stalled"])
 def test_a_disk_that_goes_away_during_a_run_reports_nothing_about_the_payload(stage, finding):
-    # A disk being detached reads as files missing, or as other bytes: only
-    # one that stayed the payload's disk until the run ended says either.
+    # A disk being detached reads as files missing, as other bytes, or as a
+    # read that never finishes: only one that stayed the payload's disk until
+    # the run ended says any of them.
     root, payload, run = stage
     checksums(root, payload)
+    fault = {}
     if finding == "missing":
         (payload / "rsync").unlink()
-    else:
+    elif finding == "damaged":
         (payload / "rsync").write_bytes(b"rsync-imagf")
-    expected = "missing=2" if finding == "missing" else "copy=-2 "
-    assert expected in run("rsync-copy").stdout.decode()
-    result = run("rsync-copy", TC_TEST_UNMOUNT_AT=str(payload / "rsync"))
+    else:
+        # Bytes left after the first read, which the budget then refuses.
+        (payload / "rsync").write_bytes(b"rsync-image" * 10000)
+        checksums(root, payload)
+        fault = {"TC_TEST_SLOW_READ": f"{STALL_MS}:{payload / 'rsync'}"}
+    expected = {"missing": "missing=2", "damaged": "copy=-2 ", "stalled": "read=-4 "}[finding]
+    assert expected in run("rsync-copy", **fault).stdout.decode()
+    result = run("rsync-copy", TC_TEST_UNMOUNT_AT=str(payload / "rsync"), **fault)
     assert result.returncode == 3
     copy, crc, read, missing = result.stdout.decode().split()
     assert (copy, read, missing) == ("copy=-1", "read=-1", "missing=-1")
@@ -238,6 +254,104 @@ def test_a_damaged_image_is_checked_in_place_and_logged_once_per_reading(stage):
     (payload / "smbd").write_bytes(good)
     result = run("copy", PROBE="1", SEEN=str(read))
     assert result.returncode == 0 and (root / "ram/sbin/smbd").read_bytes() == good
+
+
+@pytest.mark.parametrize("image", ["smbd", "rsync"])
+@pytest.mark.parametrize("fault, read, logged", [("TC_TEST_EIO", -2, os.strerror(errno.EIO)),
+                                                 ("TC_TEST_SLOW_READ", -4, TIMED_OUT)])
+def test_a_disk_that_cannot_return_the_bytes_reports_what_it_read(stage, image, fault, read, logged):
+    # EIO, or a disk so slow that the read budget ran out: damage the disk
+    # did, which the manager tells apart from other bytes (read=) and which
+    # leaves nothing in RAM.
+    root, payload, run = stage
+    command = {"smbd": "copy", "rsync": "rsync-copy"}[image]
+    # Big enough that the budget runs out with bytes left to read.
+    for name in ("smbd", "rsync"):
+        (payload / name).write_bytes(name.encode() * 40000)
+    crc = checksums(root, payload)
+    setting = str(payload / image) if fault == "TC_TEST_EIO" else f"{STALL_MS}:{payload / image}"
+    result = run(command, **{fault: setting})
+    assert result.returncode == 3
+    assert result.stdout.decode().strip() == f"copy=-2 crc={int(crc[image], 16)} read={read} missing=0"
+    assert f"copy read failed: {payload}/{image} -> {root}/ram/sbin/{image}: {logged}".encode() in result.stderr
+    assert not (root / f"ram/sbin/{image}").exists()
+    # The probe after it reads the disk copy in place: the same reading is
+    # damage again, not logged a second time.
+    result = run(command, PROBE="1", **{fault: setting})
+    assert result.stdout.decode().strip() == f"copy=-2 crc={int(crc[image], 16)} read={read} missing=0"
+    assert f"copy verify failed: {payload}/{image}: {logged}".encode() in result.stderr
+    result = run(command, PROBE="1", SEEN=str(read), **{fault: setting})
+    assert result.returncode == 3 and b"copy verify failed" not in result.stderr
+    # Once the disk returns the bytes, the copy goes through.
+    result = run(command, PROBE="1", SEEN=str(read))
+    assert result.returncode == 0 and result.stdout.decode().strip() == f"copy=0 crc={int(crc[image], 16)} read=-1 missing=0"
+
+
+def test_each_copy_logs_how_long_its_reads_took(stage):
+    # How far healthy disks are from the read budget, in the field. On the
+    # simulated clock each read takes 1000 ms: the bytes, then the end.
+    root, payload, run = stage
+    checksums(root, payload)
+    result = run(TC_TEST_SLOW_READ=f"1000:{payload / 'smbd'}")
+    assert result.returncode == 0
+    assert b"stage: copied smbd in 2000 ms" in result.stderr
+
+
+def test_a_stall_on_another_file_leaves_this_copy_alone(stage):
+    # The budget is per file: rsync's stall says nothing about smbd.
+    root, payload, run = stage
+    crc = checksums(root, payload)
+    result = run(TC_TEST_SLOW_READ=f"{STALL_MS}:{payload / 'rsync'}")
+    assert result.returncode == 0 and result.stdout.decode().strip() == f"copy=0 crc={int(crc['smbd'], 16)} read=-1 missing=0"
+
+
+@pytest.mark.parametrize("read_ms, stalled", [(BUDGET_MS // 3 - 1, False), (BUDGET_MS // 2, True)])
+def test_the_read_budget_counts_only_while_bytes_remain(stage, read_ms, stalled):
+    # On the simulated clock each read takes read_ms. 100000 bytes are four
+    # 32 KiB reads and a fifth that finds the end: reads that start before
+    # the budget runs out go through, and the one that finds the end is never
+    # refused, so a disk that returned everything in time is not a stall.
+    root, payload, run = stage
+    (payload / "smbd").write_bytes(bytes(range(256)) * 390 + b"x" * 160)
+    crc = checksums(root, payload)
+    result = run(TC_TEST_SLOW_READ=f"{read_ms}:{payload / 'smbd'}")
+    if stalled:
+        # Reads start at 0, B/2 and B: the third is refused, two chunks in.
+        assert result.returncode == 3 and result.stdout.decode().strip() == f"copy=-2 crc={int(crc['smbd'], 16)} read=-4 missing=0"
+        assert f"{TIMED_OUT} (copied 65536 of 100000 bytes".encode() in result.stderr
+        assert not (root / "ram/sbin/smbd").exists()
+    else:
+        assert result.returncode == 0 and result.stdout.decode().strip() == f"copy=0 crc={int(crc['smbd'], 16)} read=-1 missing=0"
+        assert (root / "ram/sbin/smbd").read_bytes() == (payload / "smbd").read_bytes()
+
+
+def test_a_checksums_file_the_disk_cannot_read_is_the_disks_damage(stage):
+    # EIO on the checksums file is the disk's damage, as an unreadable binary
+    # is, not a payload without the line (read=-3): reinstalling would not
+    # help. It has its own reading (read=-5), so it is logged even right
+    # after an unreadable binary (read=-2), and not again after itself.
+    root, payload, run = stage
+    checksums(root, payload)
+    result = run(TC_TEST_EIO_OPEN=str(payload / "checksums"))
+    assert result.returncode == 3 and result.stdout.decode().strip() == "copy=-2 crc=-1 read=-5 missing=0"
+    assert f"stage: {payload}/checksums unreadable: Input/output error".encode() in result.stderr
+    result = run(PROBE="1", SEEN="-2", TC_TEST_EIO_OPEN=str(payload / "checksums"))
+    assert f"stage: {payload}/checksums unreadable: Input/output error".encode() in result.stderr
+    result = run(PROBE="1", SEEN="-5", TC_TEST_EIO_OPEN=str(payload / "checksums"))
+    assert result.returncode == 3 and b"checksums unreadable" not in result.stderr
+
+
+def test_a_fault_named_through_a_file_lasts_while_the_file_does(stage, tmp_path):
+    # "@FILE": the fault applies while FILE names the path, so a test can
+    # clear it while the manager runs.
+    root, payload, run = stage
+    crc = checksums(root, payload)
+    control = tmp_path / "eio"
+    control.write_text(f"{payload / 'smbd'}\n")
+    assert run(TC_TEST_EIO=f"@{control}").stdout.decode().strip() == f"copy=-2 crc={int(crc['smbd'], 16)} read=-2 missing=0"
+    control.unlink()
+    result = run(TC_TEST_EIO=f"@{control}")
+    assert result.returncode == 0 and (root / "ram/sbin/smbd").exists()
 
 
 @pytest.mark.parametrize("content", ["smbd 1234567\nrsync 89abcdef\n", "smbd 1234567G\n", "rsync 89abcdef\n",

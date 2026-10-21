@@ -2525,21 +2525,29 @@ def _doctor_refresh_payload_problems(
     reading before it can be minutes older than: one can appear, or clear,
     while the device starts. verdicts holds the last reading that worked,
     before or during the wait, which a failed read leaves standing."""
-    if manager is None or not remote.remote_checks_enabled:
-        return manager
-    age = manager.manager_started_seconds_ago
-    if age is None or age >= DOCTOR_STARTUP_WINDOW_SECONDS:
+    if manager is None or not remote.remote_checks_enabled or not _doctor_manager_starting(manager):
         return manager
     verdicts.update(manager_payload_problems(target.connection))
     return replace(manager, payload_problems=verdicts.problems)
 
 
-def _doctor_check_disk_payload(manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink) -> StepDecision:
-    """The manager found no payload on any disk, or a damaged one: Samba stays
-    off until a reinstall, so this is the whole verdict, before any startup
-    wait."""
-    problems = manager.payload_problems if manager is not None else ()
-    problem = next((problem for problem in problems if problem.samba_off), None)
+def _doctor_manager_starting(manager: ManagerStartupAgeProbeResult | None) -> bool:
+    """Whether the manager is younger than the startup window doctor waits
+    out."""
+    age = manager.manager_started_seconds_ago if manager is not None else None
+    return age is not None and age < DOCTOR_STARTUP_WINDOW_SECONDS
+
+
+def _doctor_check_disk_payload(
+    manager: ManagerStartupAgeProbeResult | None, sink: DoctorSink, *, final: bool = True,
+) -> StepDecision:
+    """The manager found no payload on any disk, a damaged one, or one the
+    disk could not read: Samba stays off until a reinstall or, for the last,
+    a new disk, so this is the whole verdict. Before the startup wait (final
+    False), files the disk could not read wait for it: the manager reads them
+    again within seconds and may clear the verdict (ManagerVerdicts.lasting)."""
+    verdicts = ManagerVerdicts(manager.payload_problems if manager is not None else ())
+    problem = (verdicts if final else verdicts.lasting()).samba_off
     if problem is None:
         return StepDecision()
     sink.add(CheckResult("FAIL", problem.message, details={"code": problem.code}))
@@ -2820,8 +2828,9 @@ def _doctor_wait_for_startup(
     its own beside Samba.
 
     Stops early once nothing is starting, when either reports a state
-    waiting cannot fix, or at a verdict that keeps Samba off, which stays in
-    verdicts for the checks after the wait. Only what is still starting is probed again. Runs
+    waiting cannot fix, or at a verdict that keeps Samba off however long it
+    waits (ManagerVerdicts.lasting), which stays in verdicts for the checks
+    after the wait. Only what is still starting is probed again. Runs
     before the device checks, so they see the device after the wait and
     report what they find: nothing is excused as still starting.
     """
@@ -2836,8 +2845,9 @@ def _doctor_wait_for_startup(
     deadline = started + window_left
 
     def rsync_starting(rsync: ReadinessProbeResult | None) -> bool:
-        # The manager's title saying why rsync is off leaves nothing to wait for.
-        return (rsync is not None and verdicts.rsync is None
+        # The manager's title saying why rsync is off leaves nothing to wait
+        # for, unless the manager may still clear it (ManagerVerdicts.lasting).
+        return (rsync is not None and verdicts.lasting().rsync is None
                 and _readiness_probe_retryable(rsync, TRANSIENT_RSYNC_READINESS_FAILURES))
 
     def settling(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult, rsync: ReadinessProbeResult | None) -> bool:
@@ -2848,7 +2858,7 @@ def _doctor_wait_for_startup(
                 or rsync_starting(rsync))
 
     smbd, mdns = probe_managed_smbd_conn(target.connection), probe_managed_mdns_conn(target.connection)
-    rsync = None if verdicts.rsync else probe_managed_rsync_conn(target.connection)
+    rsync = None if verdicts.lasting().rsync else probe_managed_rsync_conn(target.connection)
     rounds = 1
     waiting = verdict = False
     while settling(smbd, mdns, rsync):
@@ -2865,16 +2875,17 @@ def _doctor_wait_for_startup(
             )
         _clock.sleep(min(DOCTOR_STARTUP_POLL_SECONDS, left))
         # A verdict that turns Samba off can appear while it starts (the
-        # first staging run finds the payload damaged): waiting cannot help.
+        # first staging run finds the payload damaged): waiting cannot help,
+        # unless the manager may still clear it (files the disk could not read).
         verdicts.update(manager_payload_problems(target.connection))
-        if verdicts.samba_off is not None:
+        if verdicts.lasting().samba_off is not None:
             verdict = True
             break
         if _readiness_probe_retryable(smbd, STARTING_SMBD_READINESS_FAILURES):
             smbd = probe_managed_smbd_conn(target.connection)
         if _readiness_probe_retryable(mdns, TRANSIENT_MDNS_READINESS_FAILURES):
             mdns = probe_managed_mdns_conn(target.connection)
-        if verdicts.rsync:
+        if verdicts.lasting().rsync:
             rsync = None
         elif rsync_starting(rsync):
             rsync = probe_managed_rsync_conn(target.connection)
@@ -3082,8 +3093,9 @@ def _doctor_check_managed_rsync(
     without it, the usual retries."""
     if not remote.remote_checks_enabled:
         return
-    # rsync's verdict: the manager keeps rsync off until a reinstall, and
-    # waiting for it would only end in a vaguer failure.
+    # rsync's verdict: the manager keeps rsync off until a reinstall (or,
+    # for a disk that could not read it, a new disk), and waiting for it
+    # would only end in a vaguer failure.
     problem = ManagerVerdicts(manager.payload_problems if manager is not None else ()).rsync
     if problem is not None:
         sink.add(CheckResult("FAIL", problem.message, details={"code": problem.code}))

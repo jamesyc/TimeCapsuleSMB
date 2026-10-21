@@ -29,7 +29,10 @@ struct PendingConfirmation: Identifiable {
         }
 
         let presentation = ConfirmationPresentation(details: details)
-        self.prefersCancel = Self.detailString(details, "presentation_id")?.hasSuffix(".disk_failing") == true
+        // A warning that the disk is failing, from the kernel's errors or from
+        // files it could not read: Cancel is the default.
+        let presentationID = Self.detailString(details, "presentation_id") ?? ""
+        self.prefersCancel = presentationID.hasSuffix(".disk_failing") || presentationID.hasSuffix(".disk_unreadable")
         self.title = presentation?.title
             ?? Self.detailString(details, "title")
             ?? L10n.string("confirm.backend.title")

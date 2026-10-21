@@ -72,8 +72,11 @@ enum DeviceDashboardSnapshotMapper {
             )
         case .fail:
             // Installed files gone from every disk, or Samba's damaged: only
-            // Install brings Samba back, unless the disk itself is failing.
-            if !summary.diskFailing && (summary.runtimeNotInstalled || summary.payloadProblem?.stopsSamba == true) {
+            // Install brings Samba back, unless the disk itself is failing
+            // (its kernel errors, or files it could not read).
+            let replacesDisk = summary.diskFailing || (summary.payloadProblem?.replacesDisk ?? false)
+            let installFixes = summary.payloadProblem.map { $0.stopsSamba && !$0.replacesDisk } ?? false
+            if !replacesDisk && (summary.runtimeNotInstalled || installFixes) {
                 return DeviceRuntimeStateSnapshot(
                     state: .notInstalled,
                     source: .doctor,
@@ -81,7 +84,7 @@ enum DeviceDashboardSnapshotMapper {
                     payloadFamily: payloadFamily,
                     verified: false,
                     summary: "",
-                    errorCode: summary.payloadProblem.flatMap { $0.stopsSamba ? $0.code : nil }
+                    errorCode: (installFixes ? summary.payloadProblem?.code : nil)
                         ?? DoctorSummary.runtimeNotInstalledResultCode,
                     errorMessage: nil,
                     recovery: nil

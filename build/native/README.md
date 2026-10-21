@@ -72,13 +72,29 @@ that has not changed is neither copied into RAM nor logged again, and each wait
 is logged once. Disk damage stays reported until a copy's bytes match. That
 wait paces copies only; each unit has its own retry for failed runs: Samba's
 after 5 s, rsync's after 5, 15, then 60 s, which a publish, another payload or
-rsync turned back on starts over. Both units have the same verdicts, which only
-a reinstall clears: Samba's in the title as `payload=missing|damaged` (missing
-from every disk, or smbd damaged), rsync's as `rsync=missing|damaged` (rsync or
-rsyncd.conf missing from the payload, or rsync damaged). Doctor, deploy and
-Activate report each as a reinstall (`DISK_PAYLOAD_PROBLEMS` in
-`device/probe.py`, which the host manager tests and the app's contract test hold
-to the title); rsync's leave Samba serving. They wait for rsync as for Samba:
+rsync turned back on starts over. Both units have the same verdicts, which
+waiting does not clear: Samba's in the title as `payload=missing|damaged|unreadable`
+(missing from every disk, smbd damaged, or a disk that could not read it),
+rsync's as `rsync=missing|damaged|unreadable` (rsync or rsyncd.conf missing
+from the payload, rsync damaged, or unreadable). Unreadable is a read that
+failed with EIO, of the binary or its `checksums` file, or that took longer than
+`TC_PAYLOAD_READ_BUDGET_MS` (90 s while bytes remain; a healthy disk returns
+smbd in seconds; two reads and the run's other steps fit the 240 s staging
+deadline, and the verdict lands within Activate's and doctor's startup windows):
+the disk is failing, so a new disk fixes it, not a reinstall. The manager keeps
+checking the disk copy, after 5 and 15 s, then 60 s doubling each time up to a
+day (`TC_IMAGE_UNREADABLE_MAX_MS`), so a failing disk the user is copying files
+off is not kept busy, and clears the verdict once the disk returns it whole.
+Each copy's time is logged (`stage: copied smbd in N ms`), and a copy that
+took 30 s or more (`TC_SLOW_COPY_MS`) goes out once per manager and program as
+a `slow_copy:<name>:<seconds>` heartbeat, a once-report like the verdicts', which
+shows how close healthy disks come to the budget. Doctor, deploy and Activate report each with its fix
+(`DISK_PAYLOAD_PROBLEMS` in `device/probe.py`, which the host manager tests and
+the app's contract test hold to the title); rsync's leave Samba serving. They
+stop waiting at the other verdicts, but wait out their window through an
+unreadable one, which the manager's next checks may clear. Each
+verdict also goes out once per manager as a `payload:<verdict>` or
+`rsync:<verdict>` heartbeat; a verdict that changes is reported again. They wait for rsync as for Samba:
 until it is ready, a verdict says why it is off, or their window ends, which
 reports rsync alone (`rsync_not_running`, which sends the user to Checkup) when
 Samba serves. A run's findings about the payload count only from a disk that
@@ -172,7 +188,11 @@ and, after 5 minutes, in a `stuck:<comm>:<wait>:<seconds>` heartbeat
 not mounted for 10 minutes and no other holds the Samba files, so Samba is
 off (diskd can hang on a disk that stopped answering, which a restart
 clears), the title carries `unmounted=<start>` on the `started=` clock and one
-`unmounted:internal` or `unmounted:usb` heartbeat goes out per manager. Time
+`unmounted:internal` or `unmounted:usb` heartbeat goes out per manager (the
+same once-per-manager reports as the payload verdicts': each reason retried
+until delivered, then never sent again; the manager remembers 16 of them
+(`ONCE_REPORTS`), and when that list is full it logs once and sends no new
+one rather than resending one it cannot record). Time
 diskd spends in `fsck_hfs` or `newfs_hfs` does not count towards the 10
 minutes; a disk that fails while another serves the Samba files is left to
 doctor's share checks. Doctor reads both words from the title; `unmounted=`

@@ -287,8 +287,10 @@ def activate_runtime(
     )
     runtime = decision.runtime
     if runtime is not None and not runtime.ready and runtime_payload_problem(runtime) is not None:
-        # The running manager already found Samba's or rsync's files missing
-        # or damaged: starting it again cannot help, only a reinstall.
+        # The running manager already found Samba's or rsync's files missing,
+        # damaged or unreadable: starting it again cannot help. A reinstall
+        # fixes the first two, a new disk the last; the manager keeps
+        # checking the disk itself and clears a verdict the disk outgrew.
         raise runtime_failure_error(
             runtime, "NetBSD4 activation failed.", disk_errors=read_disk_errors_conn(connection),
         )

@@ -40,6 +40,15 @@ class RecoveryInfo:
         return payload
 
 
+# A failing disk's way out: the data first, then a new disk.
+_DISK_FAILING_STEPS = (
+    "Copy off the files you need. If file sharing is off, take the disk out and connect it to a Mac "
+    "with a SATA-to-USB adapter.",
+    "Replace the disk.",
+    "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, "
+    "full backup on it.",
+)
+
 # The app and its helper from different releases send requests the other does not know.
 _MISMATCH_TITLE = "TimeCapsuleSMB components do not match"
 _MISMATCH_MESSAGE = "Parts of this TimeCapsuleSMB installation are from different versions."
@@ -304,6 +313,32 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=False,
         suggested_operation="deploy",
     ),
+    # The disk could not return smbd or its checksums, or only too slowly
+    # (device.errors.DiskPayloadUnreadableError): the manager's own evidence
+    # of a failing disk, which NetBSD 4's kernel log often keeps no line of.
+    # The way out is the failing disk's.
+    ErrorCode.PAYLOAD_UNREADABLE_ON_DISK: RecoveryInfo(
+        "The disk cannot read the Samba files",
+        "The device's disk could not read the TimeCapsuleSMB files, or only too slowly, so it is probably failing "
+        "and file sharing is off. Reinstalling will not fix the disk, and AirPort Utility may still show it as OK.",
+        _DISK_FAILING_STEPS,
+        retryable=False,
+    ),
+    # The disk could not return rsync, or only too slowly; Samba serves
+    # without it (device.errors.RsyncUnreadableError). The disk is failing,
+    # so a reinstall would not help: the data comes first, then a new disk.
+    ErrorCode.RSYNC_UNREADABLE_ON_DISK: RecoveryInfo(
+        "The disk cannot read rsync",
+        "The device's disk could not read the rsync file, or only too slowly, so rsync is off and the disk is "
+        "probably failing. File sharing and Time Machine keep working for now.",
+        (
+            "Copy off the files you need.",
+            "Replace the disk.",
+            "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, "
+            "full backup on it.",
+        ),
+        retryable=False,
+    ),
     # File sharing serves, but rsync did not start, with no verdict saying why
     # (device.errors.RsyncNotRunningError): a port in use, a configuration
     # rsync refuses, a crash. Checkup says which; a reinstall fixes only some.
@@ -325,13 +360,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
             "and Time Machine will not work reliably on it, and reinstalling will not fix the disk. AirPort Utility "
             "may still show the disk as OK: its own check does not catch these errors."
         ),
-        (
-            "Copy off the files you need. If file sharing is off, take the disk out and connect it to a Mac "
-            "with a SATA-to-USB adapter.",
-            "Replace the disk.",
-            "Erase the new disk in AirPort Utility, then run “Install / Update Samba”. Time Machine starts a new, "
-            "full backup on it.",
-        ),
+        _DISK_FAILING_STEPS,
         retryable=False,
     ),
     ErrorCode.SSH_STILL_ENABLED: RecoveryInfo(

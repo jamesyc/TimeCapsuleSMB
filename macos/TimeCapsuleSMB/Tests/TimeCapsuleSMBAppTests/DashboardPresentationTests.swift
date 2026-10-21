@@ -204,12 +204,16 @@ final class DashboardPresentationTests: XCTestCase {
             profile: profile, skipSSH: false, state: .failed, summary: withDeviceFailure)?.errorCode, "doctor_failed")
     }
 
-    func testEveryPayloadProblemReachesItsCheckupTextAndInstallRow() throws {
+    func testEveryPayloadProblemReachesItsCheckupTextAndRow() throws {
         // DoctorSummary.payloadProblems is the one list of them: each code
         // there reaches the summary, the dashboard's state and row, and the
-        // Checkup line, with text of its own. Only one that stops Samba makes
-        // the device read as not installed; each row offers Install.
-        XCTAssertEqual(DoctorSummary.payloadProblems.map(\.stopsSamba), [true, true, false, false])
+        // Checkup line, with text of its own. Only one that stops Samba and a
+        // reinstall fixes makes the device read as not installed, and only
+        // those rows offer Install: files the disk could not read need a new
+        // disk, which the Checkup explains.
+        XCTAssertEqual(DoctorSummary.payloadProblems.map(\.stopsSamba), [true, true, true, false, false, false])
+        XCTAssertEqual(DoctorSummary.payloadProblems.filter(\.replacesDisk).map(\.code),
+                       [DoctorSummary.payloadUnreadableOnDiskResultCode, DoctorSummary.rsyncUnreadableOnDiskResultCode])
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
         L10n.apply(language: .english)
@@ -227,7 +231,8 @@ final class DashboardPresentationTests: XCTestCase {
             var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
             profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
                 profile: profile, skipSSH: false, state: .failed, summary: summary)
-            XCTAssertEqual(profile.runtimeState?.state, problem.stopsSamba ? .notInstalled : .unhealthy)
+            XCTAssertEqual(profile.runtimeState?.state,
+                           problem.stopsSamba && !problem.replacesDisk ? .notInstalled : .unhealthy)
             XCTAssertEqual(profile.runtimeState?.errorCode, problem.code)
             let presentation = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
                 profile: profile,
@@ -241,7 +246,7 @@ final class DashboardPresentationTests: XCTestCase {
             XCTAssertEqual(runtimeRow.detail, detail)
             // A damaged rsync fails the Checkup like anything else.
             XCTAssertEqual(runtimeRow.status, .failed)
-            XCTAssertEqual(runtimeRow.action, .installUpdate)
+            XCTAssertEqual(runtimeRow.action, problem.replacesDisk ? .viewCheckup : .installUpdate)
         }
     }
 
@@ -323,6 +328,61 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(runtimeRow.id, "runtime-rsync-damaged")
         XCTAssertEqual(runtimeRow.detail, L10n.string("doctor.check.rsync_damaged_on_disk"))
         XCTAssertEqual(runtimeRow.action, .installUpdate)
+    }
+
+    func testADeployThatEndsOnFilesTheDiskCouldNotReadOffersACheckupNotInstall() throws {
+        // The disk could not read Samba or rsync: installing again writes to a
+        // failing disk, so the row offers the Checkup, whose text says what to do.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        for problem in DoctorSummary.payloadProblems where problem.replacesDisk {
+            var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+            let error = BackendErrorViewModel(operation: "deploy", code: problem.code, message: "the helper's English")
+            profile.runtimeState = DeviceDashboardSnapshotMapper.failedDeploySnapshots(
+                operation: ActiveOperation(operation: "deploy", profileID: profile.id, context: nil), profile: profile,
+                stage: "verify_runtime_activation", payloadFamily: "netbsd4_samba4",
+                error: error, failedAt: Date()).runtimeState
+            let runtimeRow = try row(.runtime, in: DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+                profile: profile, passwordState: .available, displayStatus: .readyToInstall,
+                primaryAction: .installSMB, hostWarning: nil)))
+            XCTAssertEqual(runtimeRow.id, problem.rowID, problem.code)
+            XCTAssertEqual(runtimeRow.detail, L10n.string(problem.detailKey), problem.code)
+            XCTAssertEqual(runtimeRow.action, .runCheckup, problem.code)
+        }
+    }
+
+    func testFilesTheDiskCouldNotReadOutrankNotInstalled() throws {
+        // A Checkup that finds the runtime not installed and the disk unable
+        // to read its files: Install would write to a failing disk, so the
+        // device does not read as not installed, and the row offers the Checkup.
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        for problem in DoctorSummary.payloadProblems where problem.replacesDisk {
+            let summary = DoctorSummary(payload: try testDoctorPayload(checks: [
+                testDoctorCheck(status: "FAIL", message: "not installed", domain: "device",
+                                code: DoctorSummary.runtimeNotInstalledResultCode),
+                testDoctorCheck(status: "FAIL", message: "the helper's English", domain: "device", code: problem.code),
+            ]).decode(DoctorPayload.self))
+            XCTAssertTrue(summary.runtimeNotInstalled)
+            var profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+            profile.runtimeState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: profile, skipSSH: false, state: .failed, summary: summary)
+            XCTAssertEqual(profile.runtimeState?.state, .unhealthy, problem.code)
+            let runtimeRow = try row(.runtime, in: DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+                profile: profile, passwordState: .available, displayStatus: .failed,
+                primaryAction: .viewCheckup, hostWarning: nil)))
+            XCTAssertNotEqual(runtimeRow.action, .installUpdate, problem.code)
+        }
+        // Without the unreadable verdict the same Checkup still offers Install.
+        let notInstalled = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "FAIL", message: "not installed", domain: "device",
+                            code: DoctorSummary.runtimeNotInstalledResultCode),
+        ]).decode(DoctorPayload.self))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        XCTAssertEqual(DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: notInstalled)?.state, .notInstalled)
     }
 
     func testCheckupPresentationLocalizesMetadataMigrationInProgressCheck() throws {

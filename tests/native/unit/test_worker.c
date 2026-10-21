@@ -16,22 +16,22 @@ int main(int argc, char **argv) {
     tc_worker_begin("test");
     if (!strcmp(argv[1], "copy")) {
         contents("source", "payload data");
-        assert(tc_copy_file("source", "prepared", 0755, -1, NULL) == 0);
+        assert(tc_copy_file("source", "prepared", 0755, -1, NULL, NULL) == 0);
         assert(!stat("prepared", &st) && st.st_size == 12 && (st.st_mode & 0777) == 0755);
         contents("source", "replacement");
-        assert(tc_copy_file("source", "prepared", 0600, -1, NULL) == 0);
+        assert(tc_copy_file("source", "prepared", 0600, -1, NULL, NULL) == 0);
         assert(!stat("prepared", &st) && st.st_size == 11 && (st.st_mode & 0777) == 0600);
     } else if (!strcmp(argv[1], "faults")) {
         struct rlimit limit = {4, 4};
-        assert(tc_copy_file("missing", "prepared", 0600, -1, NULL) < 0);
+        assert(tc_copy_file("missing", "prepared", 0600, -1, NULL, NULL) < 0);
         assert(!mkdir("directory", 0700));
-        assert(tc_copy_file("directory", "prepared", 0600, -1, NULL) < 0);
+        assert(tc_copy_file("directory", "prepared", 0600, -1, NULL, NULL) < 0);
         contents("source", "payload too large for limit");
         signal(SIGXFSZ, SIG_IGN);
         assert(!setrlimit(RLIMIT_FSIZE, &limit));
-        assert(tc_copy_file("source", "prepared", 0600, -1, NULL) < 0);
+        assert(tc_copy_file("source", "prepared", 0600, -1, NULL, NULL) < 0);
         assert(lstat("prepared", &st) < 0 && errno == ENOENT);
-        assert(tc_copy_file("source", "directory", 0600, -1, NULL) < 0);
+        assert(tc_copy_file("source", "directory", 0600, -1, NULL, NULL) < 0);
         assert(!lstat("directory", &st) && S_ISDIR(st.st_mode));
     } else if (!strcmp(argv[1], "report")) {
         /* A failed copy says how far it got: the bytes and time tell a slow
@@ -43,11 +43,11 @@ int main(int argc, char **argv) {
         int captured[2];
         ssize_t n;
         assert(!pipe(captured) && dup2(captured[1], STDERR_FILENO) >= 0);
-        assert(tc_copy_file("missing", "prepared", 0600, -1, NULL) < 0);
+        assert(tc_copy_file("missing", "prepared", 0600, -1, NULL, NULL) < 0);
         contents("source", "payload too large for limit");
         signal(SIGXFSZ, SIG_IGN);
         assert(!setrlimit(RLIMIT_FSIZE, &limit));
-        assert(tc_copy_file("source", "prepared", 0600, -1, NULL) < 0);
+        assert(tc_copy_file("source", "prepared", 0600, -1, NULL, NULL) < 0);
         close(captured[1]);
         close(STDERR_FILENO);
         assert((n = read(captured[0], log, sizeof(log) - 1)) > 0);
@@ -73,32 +73,53 @@ int main(int argc, char **argv) {
         contents("source", "payload data");
         assert(!tc_file_crc32("source", &crc) && crc == 0x84d769f0);
         assert(tc_file_crc32("missing", &crc) < 0 && errno == ENOENT);
-        assert(tc_copy_file("source", "prepared", 0755, 0x84d769f0LL, &read_crc_out) == 0);
+        assert(tc_copy_file("source", "prepared", 0755, 0x84d769f0LL, &read_crc_out, NULL) == 0);
         assert(read_crc_out == -1); /* nothing damaged to report */
         assert(!stat("prepared", &st) && st.st_size == 12 && (st.st_mode & 0777) == 0755);
         assert(!pipe(captured) && dup2(captured[1], STDERR_FILENO) >= 0);
-        assert(tc_copy_file("source", "prepared", 0755, 0x12345678LL, &read_crc_out) == TC_COPY_DISK_DAMAGED);
+        assert(tc_copy_file("source", "prepared", 0755, 0x12345678LL, &read_crc_out, NULL) == TC_COPY_DISK_DAMAGED);
         assert(read_crc_out == 0x84d769f0); /* the bytes read, for the manager's log */
         assert(lstat("prepared", &st) < 0 && errno == ENOENT);
         /* A disk that cannot return the bytes (a bad sector) is damage too,
          * whether or not there is a checksum to check. */
         setenv("TC_TEST_EIO", "source", 1);
-        assert(tc_copy_file("source", "prepared", 0755, -1, NULL) == TC_COPY_DISK_DAMAGED);
+        assert(tc_copy_file("source", "prepared", 0755, -1, NULL, NULL) == TC_COPY_DISK_DAMAGED);
         assert(lstat("prepared", &st) < 0 && errno == ENOENT);
         /* What it read is no CRC-32, whatever part of the file came first. */
-        assert(tc_copy_file("source", "prepared", 0755, 0x12345678LL, &read_crc_out) == TC_COPY_DISK_DAMAGED);
+        assert(tc_copy_file("source", "prepared", 0755, 0x12345678LL, &read_crc_out, NULL) == TC_COPY_DISK_DAMAGED);
         assert(read_crc_out == TC_COPY_UNREADABLE);
         assert(tc_file_crc32("source", &crc) < 0 && errno == EIO);
         unsetenv("TC_TEST_EIO");
         /* So is one that cannot open it. */
         setenv("TC_TEST_EIO_OPEN", "source", 1);
-        assert(tc_copy_file("source", "prepared", 0755, 0x12345678LL, &read_crc_out) == TC_COPY_DISK_DAMAGED);
+        assert(tc_copy_file("source", "prepared", 0755, 0x12345678LL, &read_crc_out, NULL) == TC_COPY_DISK_DAMAGED);
         assert(read_crc_out == TC_COPY_UNREADABLE);
         assert(tc_file_crc32("source", &crc) < 0 && errno == EIO);
         unsetenv("TC_TEST_EIO_OPEN");
+        /* A disk that has not returned the rest when the read budget is
+         * spent is damage too, and says so apart from EIO. On the simulated
+         * clock (TC_TEST_SLOW_READ) each read takes longer than the budget:
+         * the first 32 KiB of 40000 come back, the next read is refused. */
+        {
+            static char large[40001];
+            memset(large, 'x', sizeof(large) - 1);
+            contents("large", large);
+        }
+        setenv("TC_TEST_SLOW_READ", "90001:large", 1);
+        assert(tc_copy_file("large", "prepared", 0755, 0x12345678LL, &read_crc_out, NULL) == TC_COPY_DISK_DAMAGED);
+        assert(read_crc_out == TC_COPY_STALLED);
+        assert(lstat("prepared", &st) < 0 && errno == ENOENT);
+        assert(tc_file_crc32("large", &crc) < 0 && errno == ETIMEDOUT);
+        unsetenv("TC_TEST_SLOW_READ");
+        /* A file returned whole in one read is not refused at its end. */
+        setenv("TC_TEST_SLOW_READ", "90001:source", 1);
+        assert(!tc_file_crc32("source", &crc) && crc == 0x84d769f0);
+        unsetenv("TC_TEST_SLOW_READ");
+        assert(tc_read_damage(EIO) == TC_COPY_UNREADABLE && tc_read_damage(ETIMEDOUT) == TC_COPY_STALLED);
+        assert(tc_read_damage(ECANCELED) == 0 && tc_read_damage(EACCES) == 0);
         /* No checksum to check against: the copy stands on its size alone. */
         contents("source", "other bytes");
-        assert(tc_copy_file("source", "prepared", 0755, -1, NULL) == 0);
+        assert(tc_copy_file("source", "prepared", 0755, -1, NULL, NULL) == 0);
         close(captured[1]);
         close(STDERR_FILENO);
         assert((n = read(captured[0], log, sizeof(log) - 1)) > 0);
@@ -113,7 +134,15 @@ int main(int argc, char **argv) {
         assert(strstr(line, "copy read failed: source -> prepared: Input/output error") == line);
         line = strchr(line, '\n') + 1;
         assert(strstr(line, "copy open source failed: source -> prepared: Input/output error") == line);
-        assert(!strchr(strchr(line, '\n') + 1, '\n')); /* Only those four logged. */
+        line = strchr(line, '\n') + 1;
+        /* The libc's words for ETIMEDOUT differ between macOS and Linux. */
+        {
+            char expected[160];
+            snprintf(expected, sizeof(expected), "copy read failed: large -> prepared: %s (copied 32768 of 40000 bytes",
+                     strerror(ETIMEDOUT));
+            assert(strstr(line, expected) == line);
+        }
+        assert(!strchr(strchr(line, '\n') + 1, '\n')); /* Only those five logged. */
     } else if (!strcmp(argv[1], "directories")) {
         assert(!tc_make_dir("directory", 0700));
         assert(!tc_make_dir("directory", 0700));
@@ -141,7 +170,7 @@ int main(int argc, char **argv) {
         close(life[1]);
         assert(tc_worker_cancelled());
         assert(tc_make_dir("never", 0700) < 0);
-        assert(tc_copy_file("missing", "never", 0700, -1, NULL) < 0);
+        assert(tc_copy_file("missing", "never", 0700, -1, NULL, NULL) < 0);
         assert(access("never", F_OK) < 0);
         {
             /* A checksum read stops between chunks too: a stalled disk
