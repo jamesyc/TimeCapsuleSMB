@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import ipaddress
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -178,7 +179,10 @@ class CliSetSshTests(CliTestCase):
     def test_set_ssh_enable_stops_when_acp_port_is_closed(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.99", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+        # The error advice must not depend on the runner having a LAN interface.
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)), \
+                mock.patch("timecapsulesmb.services.acp_ssh.client_networks_if_off_network",
+                           return_value=[ipaddress.ip_network("192.0.2.0/24")]):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="Connection refused"):
                     with mock.patch("timecapsulesmb.services.acp_ssh.time.sleep") as sleep:
