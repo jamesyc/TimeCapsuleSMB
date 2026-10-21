@@ -770,12 +770,36 @@ build_samba4x_nettle() {
     # library would choose at run time from /proc/cpuinfo, which NetBSD lacks,
     # and fall back to the ARMv5 ones. ASM_FLAGS lets the assembler accept
     # ARMv6 instructions; the C code stays ARMv4 like the rest of the lane.
-    # Neon stays off. The NetBSD 4 lanes (old ABI, ARMv5) keep the C code.
+    # Neon stays off.
+    #
+    # The NetBSD 4 little-endian lane (ARM926EJ-S, ARMv5TE) takes the ARMv5
+    # routines (nettle's arm/ directory: AES, memxor and some ECC): on the
+    # device they roughly double AES, so AES-CMAC signing goes from 7.6 to
+    # 14.2 MB/s and AES-128-CCM encryption from about 3.9 to 6.8 MB/s (smbd's
+    # CPU per signed or encrypted read falls by about 40%). They need ARMv4T
+    # (they return with bx), not just the ARMv3 the lane's C code targets.
+    # They suit the old ABI: their arguments come in r0-r3 and on the stack,
+    # they keep r4-r11, and they take no 64-bit or floating-point arguments,
+    # the same in both ABIs. NetBSD 4's gas 2.16.1 predates the unified
+    # syntax they use (push/pop, lsr as an instruction), so the NetBSD 6
+    # toolchain's gas assembles them, emitting the GNU (old) ABI. Its
+    # .ARM.attributes section is stripped: NetBSD 4's binutils call such an
+    # object "File format not recognized" and leave it out of the archive.
+    # The routines have no relocations. The big-endian lane keeps the C code:
+    # nettle's ARM code has big-endian paths, but no big-endian device has
+    # run them.
+    nettle_old_abi_asm=0
     if [ "$SDK_FAMILY" = "netbsd7" ]; then
         nettle_host="armv7-${SAMBA4X_HOST_ALIAS#*-}"
         nettle_assembler="--enable-assembler --disable-fat --disable-arm-neon"
         nettle_asm_flags="-march=armv6"
         nettle_stamp_suffix="-system-gmp-armv6-asm"
+    elif [ "$NETBSD4_ABI" = "le" ]; then
+        nettle_host="$SAMBA4X_HOST_ALIAS"
+        nettle_assembler="--enable-assembler --disable-fat --disable-arm-neon"
+        nettle_asm_flags=""
+        nettle_stamp_suffix="-system-gmp-armv5-asm"
+        nettle_old_abi_asm=1
     else
         nettle_host="$SAMBA4X_HOST_ALIAS"
         nettle_assembler="--disable-assembler"
@@ -789,9 +813,18 @@ build_samba4x_nettle() {
         echo "nettle $SAMBA4X_NETTLE_VERSION already built."
         return 0
     fi
+    if [ "$nettle_old_abi_asm" = "1" ]; then
+        set -- "$NETBSD7_OUT"/tools/bin/*-netbsdelf-eabi-as
+        nettle_gas=$1
+        nettle_objcopy="${nettle_gas%-as}-objcopy"
+        if [ ! -x "$nettle_gas" ] || [ ! -x "$nettle_objcopy" ]; then
+            echo "nettle's ARMv5 assembly needs the NetBSD 6 toolchain's as and objcopy under $NETBSD7_OUT/tools/bin"
+            exit 1
+        fi
+    fi
 
-    # Both variants install into the same deps/lib: once this build replaces
-    # the libraries, the other variant's stamp no longer describes them.
+    # The variants install into the same deps/lib: once this build replaces
+    # the libraries, another variant's stamp no longer describes them.
     rm -f "$SAMBA4X_DEPS"/.stamp-nettle-*
     archive="$(download_samba4x_archive "$SAMBA4X_NETTLE_URL" "nettle-$SAMBA4X_NETTLE_VERSION.tar.gz" "$SAMBA4X_NETTLE_SHA256")"
     extract_samba4x_archive "$archive" "nettle-$SAMBA4X_NETTLE_VERSION"
@@ -809,11 +842,32 @@ build_samba4x_nettle() {
             --enable-static \
             $nettle_assembler
     # configure links the routines it chose into the build directory; only
-    # the ARMv6 directory has a SHA-256 one. Without it the build would pass
-    # with nettle's C code under an assembly stamp.
+    # the ARMv6 directory has a SHA-256 one. Without the expected set the
+    # build would pass with nettle's C code under an assembly stamp.
     if [ "$SDK_FAMILY" = "netbsd7" ] && [ ! -e sha256-compress-n.asm ]; then
         echo "nettle configure did not select its ARMv6 assembly (host $nettle_host)"
         exit 1
+    fi
+    if [ "$nettle_old_abi_asm" = "1" ]; then
+        if [ ! -e aes-encrypt-internal.asm ] || [ -e sha256-compress-n.asm ]; then
+            echo "nettle configure did not select its ARMv5 assembly (host $nettle_host)"
+            exit 1
+        fi
+        # Assemble each routine as nettle's Makefile would (m4, then the
+        # assembler), but with the newer gas. The objects are newer than their
+        # inputs, so gmake keeps them.
+        nettle_m4="$(sed -n 's/^M4[[:space:]]*=[[:space:]]*//p' config.make)"
+        if [ -z "$nettle_m4" ]; then
+            echo "nettle's config.make names no m4 (M4 =), so its assembly cannot be expanded"
+            exit 1
+        fi
+        for nettle_asm in *.asm; do
+            nettle_obj="${nettle_asm%.asm}"
+            $nettle_m4 ./m4-utils.m4 ./asm.m4 config.m4 machine.m4 "$nettle_asm" > "$nettle_obj.s"
+            "$nettle_gas" -meabi=gnu -march=armv5te -mfloat-abi=soft -o "$nettle_obj.eabi.o" "$nettle_obj.s"
+            "$nettle_objcopy" -R .ARM.attributes "$nettle_obj.eabi.o" "$nettle_obj.o"
+            rm -f "$nettle_obj.eabi.o"
+        done
     fi
     gmake -j"$SAMBA4X_JOBS" DESTDIR= install
     touch "$stamp"

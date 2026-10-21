@@ -129,9 +129,12 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
      * assembly for GHASH, so GMAC and GCM are the slowest, and SHA-256 runs
      * faster than AES on both. Device smbd CPU seconds per 128 MiB signed
      * read: NetBSD 6 HMAC-SHA256 9.4, AES-CMAC 12.0, AES-GMAC 38.4; NetBSD 4
-     * 10.3, 20.0, 47.7. Encrypted: NetBSD 6 AES-128-CCM 20.9, AES-256-CCM
-     * 25.4, AES-128-GCM 45.6, AES-256-GCM 46.7; NetBSD 4 37.2, 47.5, 62.8,
-     * 68.1. Samba picks its first algorithm that the client offers. */
+     * with nettle's C AES (what the big-endian lane runs) 10.3, 20.0, 47.7,
+     * and with the little-endian lane's ARMv5 AES 10.2, 12.3. Encrypted:
+     * NetBSD 6 AES-128-CCM 20.9, AES-256-CCM 25.4, AES-128-GCM 45.6,
+     * AES-256-GCM 46.7; NetBSD 4 with C AES 37.2, 47.5, 62.8, 68.1, and with
+     * ARMv5 AES 23.1 and 28.6 for the two CCMs. Samba picks its first
+     * algorithm that the client offers. */
     fputs("    server smb3 signing algorithms = HMAC-SHA256 AES-128-CMAC AES-128-GMAC\n"
           "    server smb3 encryption algorithms = AES-128-CCM AES-256-CCM AES-128-GCM AES-256-GCM\n",
           file);
