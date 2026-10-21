@@ -131,8 +131,20 @@ RSYNC_NETBSD4BE_BUILD="${RSYNC_NETBSD4BE_BUILD:-$RSYNC_NETBSD4BE_WORK/build}"
 RSYNC_NETBSD4BE_DOWNLOAD_LOG="${RSYNC_NETBSD4BE_DOWNLOAD_LOG:-$NETBSD4BE_OUT/downloadrsyncold.log}"
 RSYNC_NETBSD4BE_LOG="${RSYNC_NETBSD4BE_LOG:-$NETBSD4BE_OUT/rsyncold.log}"
 
-SAMBA4X_JOBS="${SAMBA4X_JOBS:-2}"
+# waf/gmake jobs per lane. The VM has four vCPUs: a lane compiles in 86 s
+# at -j4 against 143 s at -j2, with the same output.
+SAMBA4X_JOBS="${SAMBA4X_JOBS:-4}"
 RSYNC_JOBS="${RSYNC_JOBS:-$SAMBA4X_JOBS}"
+# ccache for the Samba lanes' compilers (build/_samba4x.sh). Every lane build
+# starts from an empty bin/, so without a cache it recompiles all ~2,000 files;
+# ccache keys each object by its preprocessed source, flags and compiler, so
+# an unchanged file comes from the cache. The lanes share one cache, which
+# ccache locks. An empty SAMBA4X_CCACHE, or a path that is not executable (any
+# host but the VM, the build tests included), leaves the compilers unwrapped.
+# The three lanes' objects take about 55 MB of cache, so 1 GB holds many builds.
+SAMBA4X_CCACHE="${SAMBA4X_CCACHE-/usr/pkg/bin/ccache}"
+CCACHE_DIR="${CCACHE_DIR:-/root/.cache/tc-samba-ccache}"
+CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-1G}"
 RSYNC_BIN_NAME="${RSYNC_BIN_NAME:-rsync}"
 
 SERVICE_STAGE_NETBSD7="${SERVICE_STAGE_NETBSD7:-/root/tc-netbsd7}"
@@ -432,6 +444,7 @@ export DOWNLOAD_LOG TOOLS_LOG DIST_LOG HELLO_LOG PROBE_DIR PROBE_SRC PROBE_BIN
 export SERVICE_STAGE SERVICE_LOG
 export BUILD_EXPECT_OS_RELEASE BUILD_EXPECT_HOST_ALIAS BUILD_EXPECT_EABI BUILD_EXPECT_ENDIAN BUILD_EXPECT_TOOL_TRIPLE_GLOB
 export SAMBA4X_VERSION SAMBA4X_GIT_URL SAMBA4X_GIT_REF SAMBA4X_GIT_COMMIT SAMBA4X_JOBS SAMBA4X_HOST_ALIAS
+export SAMBA4X_CCACHE CCACHE_DIR CCACHE_MAXSIZE
 export SAMBA4X_GMP_VERSION SAMBA4X_NETTLE_VERSION SAMBA4X_LIBTASN1_VERSION SAMBA4X_GNUTLS_VERSION
 export SAMBA4X_GMP_URL SAMBA4X_NETTLE_URL SAMBA4X_LIBTASN1_URL SAMBA4X_GNUTLS_URL
 export SAMBA4X_GMP_SHA256 SAMBA4X_NETTLE_SHA256 SAMBA4X_LIBTASN1_SHA256 SAMBA4X_GNUTLS_SHA256

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -28,25 +29,56 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotIn("netbsd4le", text)
         self.assertIn("for d in tc_a_test tc_b_test;", text)
         self.assertTrue(text.rstrip().endswith("echo JOB_DONE"))
-        # The lane order is kept, and each download comes before its build.
+        # Each lane downloads before it builds.
         self.assertLess(text.index("downloadsamba4x.sh"), text.index("samba4x.sh >"))
-        self.assertLess(text.index("samba4x.sh >"), text.index("downloadsamba4xoldbe.sh"))
+        self.assertLess(text.index("downloadsamba4xoldbe.sh"), text.index("samba4xoldbe.sh >"))
+
+
+    def test_a_lane_named_twice_is_refused(self) -> None:
+        # Two builds of one lane at once would share its tree.
+        with self.assertRaisesRegex(ValueError, "named twice"):
+            job_script(["6", "4le", "6"], "/tmp/o", "/tmp/l", ())
+
+    def test_the_command_line_refuses_a_lane_named_twice(self) -> None:
+        proc = subprocess.run([sys.executable, "-m", "tests.samba.vm_build", "--out", "/nonexistent",
+                               "--lanes", "6,6"], cwd=Path(vm_build.__file__).resolve().parents[2],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("each lane may be named once", proc.stderr)
 
 
 class JobScriptRunTest(unittest.TestCase):
     """Run the job script under sh with stand-in download and build scripts."""
 
-    def lane(self, tmp: Path, name: str, download_rc: int, build_rc: int) -> dict:
+    def packages(self, tmp: Path, rc: int) -> None:
+        """The VM-package step every job runs first; it leaves a marker the
+        stand-in downloads check, so a lane that started before it fails."""
+        (tmp / "repo/build").mkdir(parents=True, exist_ok=True)
+        helper = tmp / "repo/build/_samba4x_host_packages.sh"
+        helper.write_text(f"#!/bin/sh\necho pkgin ran\ntouch {tmp}/packages-done\nexit {rc}\n")
+        helper.chmod(0o755)
+
+    def lane(self, tmp: Path, name: str, download_rc: int, build_rc: int, wait_for: tuple[str, ...] = ()) -> dict:
         tree, stage = tmp / f"tree-{name}", tmp / f"stage-{name}"
         (tmp / "repo/build").mkdir(parents=True, exist_ok=True)
-        (tmp / f"repo/build/dl-{name}.sh").write_text(f"#!/bin/sh\nexit {download_rc}\n")
+        if not (tmp / "repo/build/_samba4x_host_packages.sh").exists():
+            self.packages(tmp, 0)
+        (tmp / f"repo/build/dl-{name}.sh").write_text(
+            f"#!/bin/sh\n[ -e {tmp}/packages-done ] || exit 7\nexit {download_rc}\n")
+        # A lane that waits for others' builds to start finishes only if the
+        # job runs the lanes at once; run one after another, it gives up.
+        barrier = "".join(
+            f"n=0; until [ -e {tmp}/built-{other} ]; do n=$((n+1)); [ $n -gt 300 ] && exit 9; sleep 0.1; done\n"
+            for other in wait_for)
         (tmp / f"repo/build/b-{name}.sh").write_text(
             "#!/bin/sh\n"
             f"touch {tmp}/built-{name}\n"
+            + barrier +
             f"mkdir -p {tree}/bin/default/source3/modules {stage}/sbin {stage}/bin\n"
             f"echo drv > {tree}/bin/default/source3/modules/tc_a_test.stripped\n"
             f"echo smbd-{name} > {stage}/sbin/smbd.stripped\n"
             f"echo mig > {stage}/bin/tc_xattr_hfs_migrate.stripped\n"
+            f"echo 'ccache (lane-{name}): 7 hits, 1 misses'\n"
             f"exit {build_rc}\n")
         for script in (tmp / "repo/build").iterdir():
             script.chmod(0o755)
@@ -76,6 +108,54 @@ class JobScriptRunTest(unittest.TestCase):
             self.assertTrue((out / "tc_a_test.6").exists())
             self.assertEqual(sorted(f.name for f in out.iterdir() if not f.name.endswith(".log")),
                              ["migrate.6", "smbd.6", "tc_a_test.6"])
+            self.assertFalse((tmp / "lock").exists())
+
+    def test_the_lanes_build_at_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            lanes = ("6", "4le", "4be")
+            specs = {name: self.lane(tmp, name, 0, 0, tuple(o for o in lanes if o != name)) for name in lanes}
+            out = tmp / "out"
+            text = job_script(list(lanes), str(out), str(tmp / "lock"), ("tc_a_test",),
+                              repo=str(tmp / "repo"), specs=specs)
+            proc = subprocess.run(["sh", "-c", text], capture_output=True, text=True, timeout=120)
+            for name in lanes:
+                self.assertIn(f"{name} BUILD_RC=0 ", proc.stdout)
+                self.assertEqual((out / f"smbd.{name}").read_text(), f"smbd-{name}\n")
+                # Each lane's own ccache line reaches the report, under its name.
+                self.assertIn(f"{name} ccache (lane-{name}): 7 hits, 1 misses", proc.stdout.splitlines())
+            # The report ends only after every lane, in whatever order they finish.
+            self.assertTrue(proc.stdout.rstrip().endswith("JOB_DONE"))
+
+
+    def test_a_failed_package_install_builds_no_lane_and_still_ends_the_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            self.packages(tmp, 1)
+            specs = {name: self.lane(tmp, name, 0, 0) for name in ("6", "4le")}
+            text = job_script(["6", "4le"], str(tmp / "out"), str(tmp / "lock"), ("tc_a_test",),
+                              repo=str(tmp / "repo"), specs=specs)
+            proc = subprocess.run(["sh", "-c", text], capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("HOST_PACKAGES_FAILED", proc.stdout)
+            self.assertIn("pkgin ran", proc.stdout)  # its log comes back with the report
+            self.assertNotIn("BUILD_RC", proc.stdout)
+            self.assertEqual(list(tmp.glob("built-*")), [])
+            # vm_build waits for this line, and the next job needs the lock.
+            self.assertTrue(proc.stdout.rstrip().endswith("JOB_DONE"))
+            self.assertFalse((tmp / "lock").exists())
+
+
+    def test_a_missing_checkout_is_named_and_ends_the_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            text = job_script(["6"], str(tmp / "out"), str(tmp / "lock"), (), repo=str(tmp / "no-checkout"),
+                              specs={"6": self.lane(tmp, "6", 0, 0)})
+            proc = subprocess.run(["sh", "-c", text], capture_output=True, text=True, timeout=60)
+            self.assertIn(f"CHECKOUT_MISSING {tmp / 'no-checkout'}", proc.stdout)
+            self.assertNotIn("HOST_PACKAGES_FAILED", proc.stdout)
+            self.assertFalse((tmp / "packages-done").exists())
+            self.assertTrue(proc.stdout.rstrip().endswith("JOB_DONE"))
             self.assertFalse((tmp / "lock").exists())
 
 
@@ -212,6 +292,26 @@ class BuildTest(unittest.TestCase):
         self.assertIn("mv $f ~/TimeCapsuleSMB/$f", vm.commands[-1])
         # A failed build's outputs do not stay on the VM's shared tmpfs either.
         self.assertIn("root rm -rf /tmp/tc-x-out /tmp/tc-x-job.log /tmp/tc-x-job.sh", vm.commands)
+
+
+    def test_a_failed_package_install_is_named_and_installs_nothing(self) -> None:
+        vm = FakeVm(self.local, "HOST_PACKAGES_FAILED\npkgin: lock held\nJOB_DONE\n", {})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.repo_with_local(Path(tmp))
+            with self.assertRaisesRegex(RuntimeError, "_samba4x_host_packages.sh"):
+                vm_build.build(root, ["6"], Path(tmp) / "out", "pw", "tc-x", install=True, vm=vm,
+                               log=lambda *_: None)
+            self.assertEqual((root / LANES["6"]["smbd"]).read_bytes(), b"old 6smbd")
+        self.assertIn("root rm -rf /tmp/tc-x-out /tmp/tc-x-job.log /tmp/tc-x-job.sh", vm.commands)
+
+
+    def test_a_missing_vm_checkout_is_named(self) -> None:
+        vm = FakeVm(self.local, "CHECKOUT_MISSING /home/james/TimeCapsuleSMB\nJOB_DONE\n", {})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.repo_with_local(Path(tmp))
+            with self.assertRaisesRegex(RuntimeError, "no checkout"):
+                vm_build.build(root, ["6"], Path(tmp) / "out", "pw", "tc-x", install=True, vm=vm,
+                               log=lambda *_: None)
 
 
 class VmRetryTest(unittest.TestCase):

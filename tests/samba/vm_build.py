@@ -7,10 +7,12 @@ files (tracked, and new ones git does not ignore, so an uncommitted new
 patch is built too; not bin/) to the VM checkout with rsync -c; move aside patch
 files there that this checkout does not have (the checkout is shared, and
 patch_copy_overlay copies the whole overlay directory) and put them back
-afterwards; build each lane from a clean tree (bin/ and .lock-wscript
-removed, since waf distclean does nothing there) with the regression
-drivers, as root through su, detached (a lane whose download fails is not
-built, and a failed lane's outputs are not copied); wait for it; fetch the
+afterwards; install the lanes' VM packages once, then build each lane from
+a clean tree (bin/ and .lock-wscript removed, since waf distclean does
+nothing there) with the regression drivers, as root through su, detached,
+the lanes at once as build/samba4xall.sh runs them (a lane whose download
+fails is not built, and a failed lane's outputs are not copied); wait for
+it, reporting each lane's result and ccache hits; fetch the
 stripped outputs into DIR as smbd.<lane>, migrate.<lane> and <driver>.<lane>. With
 --install, copy smbd and the migrator into bin/ and update
 artifact-manifest.json. The VM rows of the lock file are held throughout.
@@ -64,24 +66,37 @@ def checkout_files(root: Path) -> list[str]:
 
 def job_script(lanes: list[str], out: str, lock: str, driver_names: tuple[str, ...],
                repo: str = f"/home/james/{VM_REPO}", specs: dict | None = None) -> str:
-    """The root build job: one clean lane build after another, outputs copied
-    to out. A lane whose download fails is not built (its tree may be pristine
-    Samba by then), and only a lane that built copies its outputs."""
+    """The root build job: the lanes' VM packages installed once, then a clean
+    build of each lane, the lanes at once (as build/samba4xall.sh runs them),
+    outputs copied to out. A lane whose download fails is not built (its tree
+    may be pristine Samba by then), and only a lane that built copies its
+    outputs. Each lane at most once: two builds of one lane would share its
+    tree."""
+    if len(set(lanes)) != len(lanes):
+        raise ValueError(f"a lane is named twice: {lanes}")
     specs = specs or LANES
     lines = ["#!/bin/sh",
              "# Written by tests/samba/vm_build.py: clean Samba lane builds with the regression drivers.",
              f"mkdir {lock} || {{ echo 'job already running'; exit 1; }}",
-             f"O={out}; rm -rf $O; mkdir -p $O; chmod 755 $O"]
+             f"O={out}; rm -rf $O; mkdir -p $O; chmod 755 $O",
+             f"if ! cd {repo}; then echo 'CHECKOUT_MISSING {repo}'; rmdir {lock}; echo JOB_DONE; exit 1; fi",
+             # One pkgin run before the lanes start, not one per lane at once.
+             "if ! ./build/_samba4x_host_packages.sh > $O/host-packages.log 2>&1; then",
+             f"  echo HOST_PACKAGES_FAILED; cat $O/host-packages.log; rmdir {lock}; echo JOB_DONE; exit 1",
+             "fi"]
     for lane in lanes:
         spec = specs[lane]
         drivers_copy = " ".join(driver_names)
         lines += [
+            "(",
             f"cd {repo} || exit 1",
             "start=$(date +%s)",
             f"if ./build/{spec['download']} > $O/download.{lane}.log 2>&1; then",
             f"  rm -rf {spec['tree']}/bin {spec['tree']}/.lock-wscript",
             f"  SAMBA4X_BUILD_REGRESSION_TESTS=1 ./build/{spec['build']} > $O/build.{lane}.log 2>&1; rc=$?",
             f"  echo \"{lane} BUILD_RC=$rc secs=$(( $(date +%s) - start ))\"",
+            # The lane's own ccache summary (build/_samba4x.sh), if it had one.
+            f"  sed -n 's/^ccache /{lane} ccache /p' $O/build.{lane}.log",
             "  if [ $rc -eq 0 ]; then",
             f"    cp {spec['stage']}/sbin/smbd.stripped $O/smbd.{lane}",
             f"    cp {spec['stage']}/bin/tc_xattr_hfs_migrate.stripped $O/migrate.{lane}",
@@ -91,8 +106,9 @@ def job_script(lanes: list[str], out: str, lock: str, driver_names: tuple[str, .
             "else",
             f"  echo '{lane} DOWNLOAD_FAILED'",
             "fi",
+            ") &",
         ]
-    lines += ["chmod a+r $O/* 2>/dev/null", f"rmdir {lock}", "echo JOB_DONE"]
+    lines += ["wait", "chmod a+r $O/* 2>/dev/null", f"rmdir {lock}", "echo JOB_DONE"]
     return "\n".join(lines) + "\n"
 
 
@@ -240,6 +256,11 @@ def build(root: Path, lanes: list[str], out: Path, password: str, tag: str, inst
             vm.sleep(20)
         report = vm.ssh(f"cat /tmp/{tag}-job.log")
         log(report.strip())
+        if "CHECKOUT_MISSING" in report:
+            raise RuntimeError(f"the VM has no checkout at ~/{VM_REPO}; no lane was built")
+        if "HOST_PACKAGES_FAILED" in report:
+            raise RuntimeError("installing the lanes' VM packages (build/_samba4x_host_packages.sh) failed; "
+                               "no lane was built")
         failed = [lane for lane in lanes if f"{lane} BUILD_RC=0 " not in report]
         if failed:
             logs = ", ".join(f"{LANES[lane]['logs']}/{{download,}}samba4x*.log" for lane in failed)
@@ -283,6 +304,8 @@ def main() -> int:
 
     lanes = args.lanes.split(",")
     unknown = [lane for lane in lanes if lane not in LANES]
+    if len(set(lanes)) != len(lanes):
+        parser.error(f"each lane may be named once: {args.lanes}")
     if unknown:
         parser.error(f"unknown lanes {unknown}")
     password = parse_env_file(Path(args.vm_env))["TC_PASSWORD"]

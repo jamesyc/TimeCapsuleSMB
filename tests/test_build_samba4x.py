@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -221,6 +223,10 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 import sys
 
                 if "build" in sys.argv:
+                    if os.environ.get("TEST_WAF_ENV"):
+                        with open(os.environ["TEST_WAF_ENV"], "a") as stream:
+                            jobs = " ".join(arg for arg in sys.argv if arg.startswith("-j"))
+                            stream.write(jobs + "\\t" + os.environ.get("CC", "") + "\\n")
                     targets = next(
                         (arg.split("=", 1)[1] for arg in sys.argv
                          if arg.startswith("--targets=")),
@@ -1224,6 +1230,139 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertFalse(stale.exists())
             self.assertFalse((src / ".lock-wscript").exists())
 
+    def fake_ccache(self, root: Path) -> Path:
+        """A ccache that records each compile (and the stats log it was given)
+        and runs it, as the real one does on a miss; asked for the stats log's
+        counters, it answers in ccache's tab format."""
+        ccache = root / "ccache"
+        self.make_executable(ccache, textwrap.dedent("""\
+            #!/bin/sh
+            if [ "$1" = --print-log-stats ]; then
+                [ -z "${TEST_CCACHE_NO_STATS:-}" ] || exit 1
+                printf 'direct_cache_hit\\t3\\npreprocessed_cache_hit\\t2\\ncache_miss\\t1\\n'
+                exit 0
+            fi
+            printf "%s\\t%s\\n" "$CCACHE_STATSLOG" "$*" >> "$TEST_CCACHE_LOG"
+            exec "$@"
+            """))
+        return ccache
+
+    def run_lane_with_waf_capture(self, root: Path, wrapper: str, lane: str, **extra: str) -> tuple[list[tuple[str, str]], dict]:
+        env = self.env_for_lane(root, lane, root / "configure.txt")
+        for name in ("SAMBA4X_JOBS", "SAMBA4X_CCACHE", "CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_STATSLOG"):
+            env.pop(name, None)
+        env.update(TEST_WAF_ENV=str(root / "waf-env.txt"), TEST_CCACHE_LOG=str(root / "ccache.log"),
+                   CCACHE_DIR=str(root / "ccache-dir"), **extra)
+        result = self.run_wrapper(wrapper, env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.last_stdout = result.stdout
+        calls = [tuple(line.split("\t", 1)) for line in (root / "waf-env.txt").read_text().splitlines()]
+        self.assertTrue(calls)
+        return calls, env
+
+    def test_lanes_compile_through_ccache_when_it_is_installed(self) -> None:
+        for wrapper, lane in (("samba4x.sh", "netbsd7"), ("samba4xoldle.sh", "netbsd4le"),
+                              ("samba4xoldbe.sh", "netbsd4be")):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                ccache = self.fake_ccache(root)
+                calls, env = self.run_lane_with_waf_capture(root, wrapper, lane, SAMBA4X_CCACHE=str(ccache))
+                for _, cc in calls:
+                    words = cc.split()
+                    self.assertEqual(words[0], str(ccache))
+                    self.assertTrue(words[1].endswith("-gcc"), cc)
+                self.assertTrue(Path(env["CCACHE_DIR"]).is_dir())
+                log = Path(env[f"SAMBA4X_{lane.upper()}_LOG"]).read_text()
+                self.assertIn(f"CCACHE=on ({ccache}, cache {env['CCACHE_DIR']})", log.splitlines())
+                # Each lane reports its own hits (the cache's totals are shared).
+                self.assertIn(f"ccache ({lane}): 5 hits, 1 misses", log.splitlines())
+                self.assertIn(f"ccache ({lane}): 5 hits, 1 misses", self.last_stdout.splitlines())
+                if lane == "netbsd7":
+                    # The fork repair's wrapper object is compiled outside waf,
+                    # through the same CC, logging to this lane's stats log.
+                    stats_log = str(Path(env["SAMBA4X_NETBSD7_BUILD"]) / "ccache-stats.log")
+                    compiles = [line.split("\t", 1) for line in (root / "ccache.log").read_text().splitlines()]
+                    self.assertTrue(any(log_path == stats_log and c.split()[0].endswith("-gcc")
+                                        and "tc_fork_repair.c" in c for log_path, c in compiles))
+
+    def test_a_lane_without_ccache_statistics_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ccache = self.fake_ccache(root)
+            _, env = self.run_lane_with_waf_capture(root, "samba4xoldle.sh", "netbsd4le", SAMBA4X_CCACHE=str(ccache),
+                                                    TEST_CCACHE_NO_STATS="1")
+            log = Path(env["SAMBA4X_NETBSD4LE_LOG"]).read_text()
+            self.assertIn("ccache (netbsd4le): no statistics", log.splitlines())
+
+    def test_lanes_compile_directly_without_ccache(self) -> None:
+        # Off by choice, or not installed (every host but the VM).
+        for case, value in (("disabled", ""), ("missing", "missing-ccache")):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                value = value and str(root / value)
+                calls, env = self.run_lane_with_waf_capture(root, "samba4x.sh", "netbsd7", SAMBA4X_CCACHE=value)
+                for _, cc in calls:
+                    self.assertTrue(cc.split()[0].endswith("-gcc"), cc)
+                self.assertFalse((root / "ccache.log").exists())
+                self.assertFalse(Path(env["CCACHE_DIR"]).exists())
+                # The log says why, so a slow uncached build is explained.
+                reason = "SAMBA4X_CCACHE is empty" if not value else f"{value} is not installed"
+                log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                self.assertIn(f"CCACHE=off ({reason})", log.splitlines())
+                self.assertNotIn("ccache (", log + self.last_stdout)
+
+    def test_waf_runs_four_jobs_unless_samba4x_jobs_says_otherwise(self) -> None:
+        for extra, flag in (({}, "-j4"), ({"SAMBA4X_JOBS": "7"}, "-j7")):
+            with self.subTest(jobs=flag), tempfile.TemporaryDirectory() as tmp:
+                # No ccache, whatever the host has installed.
+                calls, _ = self.run_lane_with_waf_capture(Path(tmp), "samba4xoldle.sh", "netbsd4le",
+                                                          SAMBA4X_CCACHE="", **extra)
+                self.assertEqual({jobs for jobs, _ in calls}, {flag})
+
+    def test_env_example_and_env_sh_agree_on_jobs_and_ccache(self) -> None:
+        script = '. "$1"; printf "%s|%s|%s|%s\\n" "$SAMBA4X_JOBS" "$SAMBA4X_CCACHE" "$CCACHE_DIR" "$CCACHE_MAXSIZE"'
+        base = {k: v for k, v in os.environ.items()
+                if k not in ("SAMBA4X_JOBS", "SAMBA4X_CCACHE", "CCACHE_DIR", "CCACHE_MAXSIZE")}
+
+        def resolve(**env: str) -> str:
+            return subprocess.run(["sh", "-c", script, "sh", str(REPO_ROOT / "build/env.sh")],
+                                  env=dict(base, **env), check=True, capture_output=True, text=True).stdout.strip()
+
+        default = "4|/usr/pkg/bin/ccache|/root/.cache/tc-samba-ccache|1G"
+        self.assertEqual(resolve(TC_ENV_FILE="/dev/null"), default)
+        self.assertEqual(resolve(TC_ENV_FILE=str(REPO_ROOT / "build/.env.example")), default)
+        # An empty SAMBA4X_CCACHE stays empty (off); a set cache directory is kept.
+        self.assertEqual(resolve(TC_ENV_FILE="/dev/null", SAMBA4X_CCACHE="", CCACHE_DIR="/x"),
+                         "4||/x|1G")
+
+    def run_download(self, root: Path, pkgin_rc: int) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+        """build/downloadsamba4x.sh up to its first git call, with stand-in
+        pkg_info (nothing installed), pkgin and git that log their calls."""
+        env = self.env_for_lane(root, "netbsd7", root / "configure.txt")
+        bin_dir, calls = root / "bin", root / "calls.log"
+        write_executable(bin_dir / "pkg_info", "#!/bin/sh\nexit 1\n")
+        write_executable(bin_dir / "git", f'#!/bin/sh\necho "git $*" >> {calls}\nexit 1\n')
+        write_executable(root / "pkgin", f'#!/bin/sh\necho "pkgin $*" >> {calls}\nexit {pkgin_rc}\n')
+        log = root / "download.log"
+        env.update(PATH=f"{bin_dir}:{env['PATH']}", PKGIN=str(root / "pkgin"),
+                   SAMBA4X_NETBSD7_DOWNLOAD_LOG=str(log))
+        return self.run_wrapper("downloadsamba4x.sh", env), calls, log
+
+    def test_the_download_installs_the_vm_packages_before_fetching_samba(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, calls, _ = self.run_download(Path(tmp), pkgin_rc=0)
+            lines = calls.read_text().splitlines()
+            self.assertEqual(lines[:3], ["pkgin -4 -y install bison", "pkgin -4 -y install p5-Parse-Yapp",
+                                         "pkgin -4 -y install ccache"])
+            self.assertTrue(lines[3].startswith("git "), lines)
+
+    def test_a_download_whose_packages_fail_fetches_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, calls, log = self.run_download(Path(tmp), pkgin_rc=1)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls.read_text().splitlines(), ["pkgin -4 -y install bison"])
+            self.assertIn("Installing Samba 4.x host build tools", log.read_text())
+
     def test_thread_local_storage_blocks_staging(self) -> None:
         # Static libc's __tls_get_addr aborts, so a binary with a TLS section
         # would crash on its first thread-local read. The default fake
@@ -1393,6 +1532,201 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 Path(env["SAMBA4X_NETBSD4BE_LOG"]).read_text(),
             )
             self.assertFalse((output_dir / "samba4x-4.25.0-netbsd4be.answers").exists())
+
+
+
+class Samba4XAllLanesTests(unittest.TestCase):
+    """build/samba4xall.sh, run from a copy beside stand-in lane scripts."""
+
+    LANES = {"6": ("downloadsamba4x.sh", "samba4x.sh", "NetBSD 6/7"),
+             "4le": ("downloadsamba4xoldle.sh", "samba4xoldle.sh", "NetBSD 4 LE"),
+             "4be": ("downloadsamba4xoldbe.sh", "samba4xoldbe.sh", "NetBSD 4 BE")}
+
+    def setup(self, tmp: Path, wait_for: dict[str, tuple[str, ...]] | None = None,
+              download_rc: dict[str, int] | None = None, build_rc: dict[str, int] | None = None,
+              packages_rc: int = 0, build_body: str = "") -> Path:
+        build = tmp / "build"
+        build.mkdir()
+        shutil.copy(REPO_ROOT / "build/samba4xall.sh", build / "samba4xall.sh")
+        # The package step leaves a marker; a lane that started before it fails.
+        write_executable(build / "_samba4x_host_packages.sh",
+                         f"#!/bin/sh\necho ran >> {tmp}/packages-runs\nexit {packages_rc}\n")
+        for lane, (download, wrapper, _) in self.LANES.items():
+            write_executable(build / download, f"#!/bin/sh\n[ -e {tmp}/packages-runs ] || exit 7\n"
+                             f"exit {(download_rc or {}).get(lane, 0)}\n")
+            # A lane that waits for others' builds to start finishes only if
+            # the script runs the lanes at once; one after another, it gives up.
+            barrier = "".join(
+                f"n=0; until [ -e {tmp}/built-{other} ]; do n=$((n+1)); [ $n -gt 300 ] && exit 9; sleep 0.1; done\n"
+                for other in (wait_for or {}).get(lane, ()))
+            write_executable(build / wrapper, f"#!/bin/sh\ntouch {tmp}/built-{lane}\n{barrier}{build_body}"
+                             f"exit {(build_rc or {}).get(lane, 0)}\n")
+        return build / "samba4xall.sh"
+
+    def run_all(self, tmp: Path, args: tuple[str, ...] = (), **setup) -> subprocess.CompletedProcess[str]:
+        script = self.setup(tmp, **setup)
+        return subprocess.run(["/bin/sh", str(script), *args], capture_output=True, text=True, timeout=120)
+
+    def test_builds_all_three_lanes_at_once_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            lanes = tuple(self.LANES)
+            proc = self.run_all(tmp, wait_for={lane: tuple(o for o in lanes if o != lane) for lane in lanes})
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            for _, _, label in self.LANES.values():
+                self.assertIn(f"==> {label}: done", proc.stdout)
+            # The VM packages are installed once, before the lanes, not by
+            # three downloads at once.
+            self.assertEqual((tmp / "packages-runs").read_text(), "ran\n")
+
+    def test_named_lanes_build_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_all(tmp, ("4le",))
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(sorted(p.name for p in tmp.glob("built-*")), ["built-4le"])
+            self.assertEqual(proc.stdout.count("done"), 1)
+
+    def test_a_failed_lane_fails_the_run_and_the_others_still_finish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_all(tmp, download_rc={"4be": 1}, build_rc={"4le": 2})
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("==> NetBSD 4 LE: build FAILED", proc.stdout)
+            self.assertIn("==> NetBSD 4 BE: download FAILED", proc.stdout)
+            self.assertIn("==> NetBSD 6/7: done", proc.stdout)
+            # A lane whose download failed is not built.
+            self.assertFalse((tmp / "built-4be").exists())
+
+    def test_a_failed_package_install_starts_no_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_all(tmp, packages_rc=1)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(list(tmp.glob("built-*")), [])
+            self.assertNotIn("==>", proc.stdout)
+
+    def test_ctrl_c_stops_every_lane(self) -> None:
+        # The lanes run in the background, which ignores SIGINT; the script
+        # has to stop them itself or they outlive it.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            script = self.setup(tmp, build_body="exec sleep 300\n")
+            proc = subprocess.Popen(["/bin/sh", str(script)], start_new_session=True,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 30
+                while len(list(tmp.glob("built-*"))) < 3:
+                    self.assertLess(time.monotonic(), deadline, "the lanes did not start")
+                    time.sleep(0.05)
+                os.killpg(proc.pid, signal.SIGINT)  # what Ctrl-C sends the foreground group
+                self.assertNotEqual(proc.wait(timeout=30), 0)
+                deadline = time.monotonic() + 30
+                while True:
+                    left = subprocess.run(["pgrep", "-g", str(proc.pid)], capture_output=True, text=True).stdout.split()
+                    if not left:
+                        break
+                    self.assertLess(time.monotonic(), deadline, f"lane processes still running: {left}")
+                    time.sleep(0.05)
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_a_lane_named_twice_is_refused(self) -> None:
+        # Two builds of one lane would share its tree.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_all(tmp, ("6", "4le", "6"))
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("lane 6 is named twice", proc.stderr)
+            self.assertEqual(list(tmp.glob("built-*")), [])
+            self.assertFalse((tmp / "packages-runs").exists())
+
+    def test_term_stops_the_lanes_but_not_the_caller(self) -> None:
+        # A caller without job control shares the script's process group; a
+        # TERM sent to the script must stop its lanes and leave the caller.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            script = self.setup(tmp, build_body="exec sleep 300\n")
+            caller = tmp / "caller.sh"
+            write_executable(caller, f"#!/bin/sh\n/bin/sh {script} &\necho $! > {tmp}/script.pid\n"
+                             f"wait $!\necho \"script exited $?\"\necho caller-alive\n")
+            proc = subprocess.Popen(["/bin/sh", str(caller)], start_new_session=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True)
+            try:
+                deadline = time.monotonic() + 30
+                while len(list(tmp.glob("built-*"))) < 3:
+                    self.assertLess(time.monotonic(), deadline, "the lanes did not start")
+                    time.sleep(0.05)
+                os.kill(int((tmp / "script.pid").read_text()), signal.SIGTERM)
+                out, _ = proc.communicate(timeout=30)
+                self.assertEqual(proc.returncode, 0)
+                self.assertIn("script exited 143", out)
+                self.assertIn("caller-alive", out)
+                deadline = time.monotonic() + 30
+                while subprocess.run(["pgrep", "-g", str(proc.pid)], capture_output=True).returncode == 0:
+                    self.assertLess(time.monotonic(), deadline, "lane processes still running")
+                    time.sleep(0.05)
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_an_unknown_lane_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_all(tmp, ("6", "7"))
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("unknown lane 7", proc.stderr)
+            # A typo starts nothing, not even the valid lanes named before it.
+            self.assertEqual(list(tmp.glob("built-*")), [])
+
+
+class Samba4XHostPackagesTests(unittest.TestCase):
+    """build/_samba4x_host_packages.sh with stand-in pkg_info and pkgin."""
+
+    def run_helper(self, tmp: Path, installed: tuple[str, ...], pkgin_rc: int = 0) -> subprocess.CompletedProcess[str]:
+        bin_dir = tmp / "bin"
+        write_executable(bin_dir / "pkg_info", "#!/bin/sh\n"
+                         f"case \" {' '.join(installed)} \" in *\" $1 \"*) exit 0 ;; esac\nexit 1\n")
+        write_executable(tmp / "pkgin", f"#!/bin/sh\necho \"$*\" >> {tmp}/pkgin.log\nexit {pkgin_rc}\n")
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", PKGIN=str(tmp / "pkgin"))
+        return subprocess.run(["/bin/sh", str(REPO_ROOT / "build/_samba4x_host_packages.sh")], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_installs_only_what_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_helper(tmp, ("bison", "p5-Parse-Yapp"))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((tmp / "pkgin.log").read_text(), "-4 -y install ccache\n")
+
+    def test_a_vm_with_everything_runs_no_pkgin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_helper(tmp, ("bison", "p5-Parse-Yapp", "ccache"))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse((tmp / "pkgin.log").exists())
+
+    def test_a_failed_ccache_install_only_warns(self) -> None:
+        # ccache only speeds the build up; a lane without it says so in its log.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_helper(tmp, ("bison", "p5-Parse-Yapp"), pkgin_rc=1)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("could not install ccache", proc.stderr)
+            self.assertEqual((tmp / "pkgin.log").read_text(), "-4 -y install ccache\n")
+
+    def test_a_failed_install_fails_the_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            proc = self.run_helper(tmp, (), pkgin_rc=1)
+            self.assertNotEqual(proc.returncode, 0)
+            # It stops at the first failure rather than carrying on.
+            self.assertEqual((tmp / "pkgin.log").read_text(), "-4 -y install bison\n")
 
 
 if __name__ == "__main__":

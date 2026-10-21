@@ -28,6 +28,7 @@ help:
 	@printf '%s\n' ''
 	@printf '%s\n' 'Common artifact targets:'
 	@printf '%s\n' '  make service-all           # unified native service for all three lanes'
+	@printf '%s\n' '  make samba4x-all           # download and build all three Samba 4.x lanes at once'
 	@printf '%s\n' '  make samba4x-netbsd7       # download Samba 4.x source, then build NetBSD 6/7 lane'
 	@printf '%s\n' '  make samba4x-netbsd4le     # download Samba 4.x source, then build NetBSD 4 LE lane'
 	@printf '%s\n' '  make samba4x-netbsd4be     # download Samba 4.x source, then build NetBSD 4 BE lane'

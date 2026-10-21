@@ -1024,6 +1024,29 @@ else
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST, '$TC_FORK_REPAIR_WRAPPERS_OBJECT'"
     export LDFLAGS="-Wl,-Bstatic -static -Wl,--gc-sections -L$SAMBA4X_DEPS/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib"
 fi
+# Compile through ccache (build/env.sh). waf, configure's probes and the
+# dependency builds all split CC into words, as they already do for the
+# NetBSD 6 lane's --sysroot. Its object for an unchanged input is the one the
+# compiler made, so the staged binaries match an uncached build.
+# The lane log says which, and why it is off: a VM without the package
+# builds correctly but recompiles everything (_samba4x_host_packages.sh).
+samba4x_ccache_on=0
+if [ -z "$SAMBA4X_CCACHE" ]; then
+    SAMBA4X_CCACHE_STATUS="off (SAMBA4X_CCACHE is empty)"
+elif [ ! -x "$SAMBA4X_CCACHE" ]; then
+    SAMBA4X_CCACHE_STATUS="off ($SAMBA4X_CCACHE is not installed)"
+else
+    export CC="$SAMBA4X_CCACHE $CC"
+    export CXX="$SAMBA4X_CCACHE $CXX"
+    mkdir -p "$CCACHE_DIR"
+    SAMBA4X_CCACHE_STATUS="on ($SAMBA4X_CCACHE, cache $CCACHE_DIR)"
+    samba4x_ccache_on=1
+    # This lane's own counters: the lanes share the cache and its totals, so
+    # each logs its compiles here and reports its hits when it ends.
+    export CCACHE_STATSLOG="$SAMBA4X_BUILD/ccache-stats.log"
+    mkdir -p "$SAMBA4X_BUILD"
+    rm -f "$CCACHE_STATSLOG"
+fi
 export PKG_CONFIG_DIR=
 export PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig"
@@ -1049,6 +1072,9 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     echo "TOOLDIR=$TOOLDIR"
     echo "DESTDIR=$DESTDIR"
     echo "TRIPLE=$TRIPLE"
+    echo "CC=$CC"
+    echo "CCACHE=$SAMBA4X_CCACHE_STATUS"
+    echo "SAMBA4X_JOBS=$SAMBA4X_JOBS"
     echo "SYSROOT=$SYSROOT"
     echo "WORK=$SAMBA4X_WORK"
     echo "STAGE=$SAMBA4X_STAGE"
@@ -1246,6 +1272,18 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         "$SAMBA4X_STAGE/bin/tc_xattr_hfs_migrate.stripped"
 } >"$SAMBA4X_LOG" 2>&1
 
+if [ "$samba4x_ccache_on" = "1" ]; then
+    samba4x_ccache_stats="$("$SAMBA4X_CCACHE" --print-log-stats 2>/dev/null)" || samba4x_ccache_stats=
+    if [ -n "$samba4x_ccache_stats" ]; then
+        samba4x_ccache_summary="$(printf '%s\n' "$samba4x_ccache_stats" | awk -F '\t' '
+            $1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" { hits += $2 }
+            $1 == "cache_miss" { misses += $2 }
+            END { printf "%d hits, %d misses", hits, misses }')"
+    else
+        samba4x_ccache_summary="no statistics"
+    fi
+    echo "ccache ($SAMBA4X_CROSS_ANSWER_LANE): $samba4x_ccache_summary" | tee -a "$SAMBA4X_LOG"
+fi
 printf 'Samba 4.x build complete.\n'
 printf 'Log: %s\n' "$SAMBA4X_LOG"
 printf 'Regular binary: %s\n' "$SAMBA4X_STAGE/sbin/smbd"

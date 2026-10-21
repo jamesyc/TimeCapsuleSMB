@@ -26,8 +26,11 @@ volumes (`tc-samba-host-tree`, about 4 GB, and `tc-samba-host-ccache`): about
 45 s when nothing changed and 2.5 minutes after a change, against 3.7 minutes
 before. Remove the volumes with `docker volume rm` to reclaim the space.
 
-For NetBSD release validation, use the existing VM/toolchains and the matching
-test device credentials with the normal lane wrapper:
+On the VM, `build/samba4xall.sh` and `tests.samba.vm_build` build the three lanes
+at once, each through ccache (`build/env.sh`), so a clean build of all three takes
+about 3.5 minutes when the cache is warm. For NetBSD release validation, use the
+existing VM/toolchains and the matching test device credentials with the normal
+lane wrapper:
 
 ```sh
 SAMBA4X_CROSS_EXEC_REMOTE_DIR=/Volumes/dk2 \

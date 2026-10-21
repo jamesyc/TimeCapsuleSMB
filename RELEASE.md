@@ -68,13 +68,14 @@ For the unified native service, run the helper scripts from the repo root on the
 ./build/service.sh && ./build/serviceoldle.sh && ./build/serviceoldbe.sh
 ```
 
-For Samba 4.x, build and validate one lane first when changing Samba source or build logic:
+For Samba 4.x, `./build/samba4xall.sh` installs the lanes' VM packages (bison, Parse::Yapp, ccache), then downloads and builds all three lanes at once (the default); name lanes to build only those (each once). Ctrl-C stops every lane, and each lane ends with a `ccache (lane): N hits, M misses` line. When changing Samba source or build logic, build and validate one lane first:
 
 ```bash
-./build/downloadsamba4x.sh && ./build/samba4x.sh
-./build/downloadsamba4xoldle.sh && ./build/samba4xoldle.sh
-./build/downloadsamba4xoldbe.sh && ./build/samba4xoldbe.sh
+./build/samba4xall.sh            # NetBSD 6, NetBSD 4 LE and NetBSD 4 BE together
+./build/samba4xall.sh 4le        # one lane: 6, 4le or 4be
 ```
+
+Each lane compiles through ccache (`SAMBA4X_CCACHE`, `CCACHE_DIR` and `CCACHE_MAXSIZE` in `build/env.sh`; `SAMBA4X_CCACHE=''` turns it off) with `SAMBA4X_JOBS` (4) jobs. A clean build of all three lanes takes about 3.5 minutes with a warm cache and about 7 minutes with an empty one; the output is the same either way. `.venv/bin/python -m tests.samba.vm_build` runs the same parallel build from the Mac (`--lanes` picks lanes).
 
 Do not run underscore-prefixed helper scripts directly.
 
