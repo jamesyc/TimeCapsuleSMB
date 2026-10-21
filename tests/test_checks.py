@@ -683,6 +683,11 @@ class CheckTests(unittest.TestCase):
         self._exit_stack.enter_context(mock.patch(
             "timecapsulesmb.checks.doctor_steps.local_interface_networks", return_value=SAME_NETWORK_LOCAL_NETWORKS,
         ))
+        # Direct doctor calls also check routes before their mocked SMB probe;
+        # an offline runner must not reject those fixture addresses first.
+        self._exit_stack.enter_context(mock.patch(
+            "timecapsulesmb.checks.doctor_steps.select_route_to_address", return_value=RouteSelection("unknown"),
+        ))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=DEFAULT_ACTIVE_SMB_CONF)))
 
     def tearDown(self) -> None:
