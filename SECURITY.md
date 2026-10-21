@@ -6,6 +6,9 @@ This software is provided AS-IS with no warranty of any kind. There is no formal
 
 ## Reporting a Vulnerability
 
+The maintainer contact for Anthropic OSS Scanner reports is James Chang at
+[jamesc@berkeley.edu](mailto:jamesc@berkeley.edu).
+
 If you discover a security vulnerability, please file a GitHub issue without including specific details of the vulnerability. From there, we'll establish a private channel for responsible disclosure.
 
 I will respond within 72 hours and triage the issue. For high-priority vulnerabilities, I'll provide updates every 24 hours.

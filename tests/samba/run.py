@@ -286,7 +286,8 @@ def host_build_key(url: str, ref: str, env: dict[str, str], root: Path = ROOT) -
     return digest.hexdigest()
 
 
-def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None) -> None:
+def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None,
+         *, build_only: bool = False) -> None:
     # --work must be a new directory. This command never resets a user's tree.
     work.mkdir(parents=True, exist_ok=False)
     source = work / "source"
@@ -305,7 +306,8 @@ def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None
                    UBSAN_OPTIONS="halt_on_error=1:exitcode=86")
     if tree_cache is None:
         build_host(url, ref, source, jobs, env)
-        run_host_tests(source, env)
+        if not build_only:
+            run_host_tests(source, env)
     else:
         # One build kept between runs (the quick tier's Docker volume): a run
         # whose inputs all match reuses it and only runs the drivers; any change
@@ -324,7 +326,8 @@ def host(work: Path, jobs: int, sanitizers: bool, tree_cache: Path | None = None
                 shutil.rmtree(source, ignore_errors=True)
                 build_host(url, ref, source, jobs, env)
                 stamp.write_text(key)
-            run_host_tests(source, env)
+            if not build_only:
+                run_host_tests(source, env)
 
 
 def run_host_tests(source: Path, env: dict[str, str]) -> None:
@@ -365,6 +368,8 @@ def main() -> None:
     command.add_argument("--work", required=True, type=Path)
     command.add_argument("--jobs", default=2, type=int)
     command.add_argument("--sanitizers", action="store_true")
+    command.add_argument("--build-only", action="store_true",
+                         help="build without running drivers; run them separately with the run subcommand")
     command.add_argument("--tree-cache", type=Path,
                          help="keep the build here and reuse it while its inputs are unchanged")
     args = parser.parse_args()
@@ -374,7 +379,8 @@ def main() -> None:
         run_tests(args.source.resolve(), args.cross_exec)
     else:
         host(args.work.resolve(), args.jobs, args.sanitizers,
-             args.tree_cache.resolve() if args.tree_cache else None)
+             args.tree_cache.resolve() if args.tree_cache else None,
+             build_only=args.build_only)
 
 
 if __name__ == "__main__":

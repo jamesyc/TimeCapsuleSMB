@@ -1,0 +1,30 @@
+# Local appliance credentials and build settings must never enter the image.
+**/.env
+**/.env.*
+!**/.env.example
+**/.bootstrap
+**/.version-check-cache.json
+plan
+archive
+
+# Host outputs and caches are not portable to the scanner's Linux image.
+**/.git
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/.build
+**/.swiftpm
+**/dist
+**/DerivedData
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage*
+**/coverage.xml
+**/htmlcov
+**/.DS_Store
+graphify-out
+
+# Keep bin/: these checked-in NetBSD artifacts are covered by manifest tests.

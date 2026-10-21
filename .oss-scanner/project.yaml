@@ -1,0 +1,12 @@
+# After the Dockerfile and threat model are published on main, copy ONLY this
+# file to projects/timecapsulesmb/project.yaml in anthropics/oss-scanner.
+# Run that repository's tools/validate.py and tools/check timecapsulesmb.
+# TimeCapsuleSMB exposes modern SMB on legacy Apple network storage, protecting
+# users' shared files and Time Machine backups through its own runtime and
+# downstream Samba fixes. It is a maintained deployment/runtime project,
+# rather than a mirror of upstream Samba.
+repo: https://github.com/jamesyc/TimeCapsuleSMB#main
+primary_contact: jamesc@berkeley.edu
+homepage: https://github.com/jamesyc/TimeCapsuleSMB
+dockerfile: .oss-scanner/Dockerfile
+threat_model: .oss-scanner/threat_model.md

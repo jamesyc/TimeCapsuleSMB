@@ -362,10 +362,11 @@ class FakeHostBuild:
         self.builds = []
         self.runs = []
         self.fail = False
+        self.fail_tests = False
         monkeypatch.setattr(run.subprocess, "check_output", lambda *a, **k: "url\nref\n")
         monkeypatch.setattr(run, "host_build_key", lambda url, ref, env: self.key)
         monkeypatch.setattr(run, "build_host", self.build)
-        monkeypatch.setattr(run, "run_host_tests", lambda source, env: self.runs.append(source))
+        monkeypatch.setattr(run, "run_host_tests", self.run_tests)
 
     def build(self, url, ref, source, jobs, env):
         # Every build starts from an empty directory: never on an old tree.
@@ -375,14 +376,20 @@ class FakeHostBuild:
             raise subprocess.CalledProcessError(2, ["waf", "build"])
         (source / "bin").mkdir(parents=True)
 
+    def run_tests(self, source, env):
+        self.runs.append(source)
+        if self.fail_tests:
+            raise subprocess.CalledProcessError(86, ["driver"])
 
-def test_tree_cache_builds_once_then_runs_the_same_build_while_inputs_match(tmp_path, monkeypatch):
+
+@pytest.mark.parametrize("build_only", [False, True])
+def test_tree_cache_builds_once_and_obeys_test_mode_while_inputs_match(tmp_path, monkeypatch, build_only):
     fake = FakeHostBuild(monkeypatch)
     cache = tmp_path / "tree"
-    run.host(tmp_path / "work1", 8, True, cache)
-    run.host(tmp_path / "work2", 8, True, cache)
+    run.host(tmp_path / "work1", 8, True, cache, build_only=build_only)
+    run.host(tmp_path / "work2", 8, True, cache, build_only=build_only)
     assert fake.builds == [cache / "source"]
-    assert fake.runs == [cache / "source", cache / "source"]
+    assert fake.runs == ([] if build_only else [cache / "source", cache / "source"])
     assert (cache / "build-key").read_text() == "first"
 
 
@@ -417,3 +424,35 @@ def test_without_tree_cache_every_run_builds_its_new_work_directory(tmp_path, mo
     run.host(tmp_path / "work2", 8, True)
     assert fake.builds == [tmp_path / "work1/source", tmp_path / "work2/source"]
     assert fake.runs == fake.builds
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("build_only", [False, True])
+@pytest.mark.parametrize("failure", [None, "build", "test"])
+def test_host_cli_keeps_build_errors_fatal_and_tests_strict_by_default(
+    tmp_path, monkeypatch, cached, build_only, failure
+):
+    fake = FakeHostBuild(monkeypatch)
+    fake.fail = failure == "build"
+    fake.fail_tests = failure == "test"
+    work = tmp_path / "work"
+    cache = tmp_path / "cache"
+    args = ["run.py", "host", "--work", str(work), "--sanitizers"]
+    if cached:
+        args += ["--tree-cache", str(cache)]
+    if build_only:
+        args += ["--build-only"]
+    monkeypatch.setattr(sys, "argv", args)
+
+    if failure == "build" or (failure == "test" and not build_only):
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            run.main()
+        assert raised.value.returncode == (2 if failure == "build" else 86)
+    else:
+        run.main()
+
+    source = (cache if cached else work) / "source"
+    assert fake.builds == [source]
+    assert fake.runs == ([] if build_only or failure == "build" else [source])
+    if cached:
+        assert (cache / "build-key").exists() == (failure != "build")
