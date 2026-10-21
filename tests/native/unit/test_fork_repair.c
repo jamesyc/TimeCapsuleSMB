@@ -562,17 +562,27 @@ static void read_only_ranges_skipped(uintptr_t b)
 
 static void updates_keep_mask_and_errno(uintptr_t b)
 {
-	sigset_t before, after;
+	sigset_t before, after, saved;
+	int signo;
 
-	sigprocmask(SIG_BLOCK, NULL, &before);
+	/* Exercise both blocked and unblocked signals, independently of earlier
+	 * cases and the test runner's inherited mask. */
+	CHECK(sigemptyset(&before) == 0);
+	CHECK(sigaddset(&before, SIGUSR1) == 0);
+	CHECK(sigprocmask(SIG_SETMASK, &before, &saved) == 0);
 	errno = ENOSPC;
 	tc_fork_repair_note_map(at(b, 0), pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON);
 	tc_fork_repair_note_protect(at(b, 0), pg, PROT_READ);
 	tc_fork_repair_note_remap(at(b, 0), pg, at(b, 4), pg);
 	tc_fork_repair_note_unmap(at(b, 4), pg);
 	CHECK(errno == ENOSPC);
-	sigprocmask(SIG_BLOCK, NULL, &after);
-	CHECK(memcmp(&before, &after, sizeof(before)) == 0);
+	CHECK(sigprocmask(SIG_BLOCK, NULL, &after) == 0);
+	/* sigprocmask need not fill sigset_t's unused bytes on Linux; compare
+	 * signal membership rather than padding outside the kernel's mask. */
+	for (signo = 1; signo < NSIG; signo++) {
+		CHECK(sigismember(&before, signo) == sigismember(&after, signo));
+	}
+	CHECK(sigprocmask(SIG_SETMASK, &saved, NULL) == 0);
 }
 
 int main(int argc, char **argv)
