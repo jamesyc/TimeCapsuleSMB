@@ -30,24 +30,24 @@ jobs:
         python-version:
           - "3.9"
           - "3.12"
-          - "3.14"
+          - "3.15"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: ${{ matrix.python-version == '3.15' }}
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Install Python dependencies
-        run: |
-          python -m pip install -r requirements.txt
-          python -m pip install -e ".[dev]"
+        run: make install PYTHON="${{ steps.python.outputs.python-path }}"
 
       - name: Compile the native service
         run: ./build/native/host-check.sh
@@ -61,11 +61,11 @@ jobs:
           ulimit -n 256
           # One worker per runner CPU: 3 on macOS, 4 on Ubuntu, which ran
           # these serially in 14 minutes.
-          python -m pytest -n auto --dist worksteal tests/native tests/test_deploy_modules.py
+          .venv/bin/python -m pytest -n auto --dist worksteal tests/native tests/test_deploy_modules.py
 
       - name: Run Ruff
         run: |
-          python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
+          .venv/bin/python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
           # One word never goes in this repo; it is split here so the check
           # does not match itself.
           if git grep -n -i 'pony''tail'; then
@@ -74,13 +74,13 @@ jobs:
           fi
 
       - name: Verify checked-in artifact manifest
-        run: python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py
+        run: .venv/bin/python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py
 
       - name: Run full test suite
         run: |
           ulimit -n 256
           # The sanitizer step above already ran the native tests.
-          python -m pytest -n 4 --dist worksteal --ignore=tests/native --ignore=tests/test_deploy_modules.py
+          .venv/bin/python -m pytest -n 4 --dist worksteal --ignore=tests/native --ignore=tests/test_deploy_modules.py
 
   swift-test:
     name: Swift Tests (macOS)
@@ -96,14 +96,16 @@ jobs:
           swift --version
 
       - name: Set up Python for helper integration tests
+        id: python
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
       - name: Install helper integration dependencies
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install -e ".[dev]"
+        run: make install PYTHON="${{ steps.python.outputs.python-path }}"
 
       - name: Run Swift tests
         run: swift test --parallel --package-path macos/TimeCapsuleSMB

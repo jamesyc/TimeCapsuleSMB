@@ -1,6 +1,7 @@
 # TimeCapsuleSMB Makefile
 #
 # Prerequisites:
+#   - uv for development environment setup and dependency installation
 #   - macOS or Linux: Python 3 and smbclient for configure/deploy/doctor
 #
 # Quick start:
@@ -28,22 +29,21 @@
 .PHONY: venv install lint test test-parallel coverage coverage-html coverage-native test-c test-swift discover bootstrap-host set-ssh setup clean
 
 VENVDIR := .venv
-PYTHON := python3
-PIP := $(VENVDIR)/bin/pip
+UV ?= uv
+# New environments use the repository pin; CI can select its matrix interpreter.
+PYTHON ?= $(shell cat .python-version)
 PY := $(VENVDIR)/bin/python
-# Editable installs see source edits immediately; dependency inputs need pip again.
+# Editable installs see source edits immediately; dependency inputs need uv again.
 DEPS_STAMP := $(VENVDIR)/.deps-installed
 
 $(PY):
-	$(PYTHON) -m venv $(VENVDIR)
+	$(UV) venv --python "$(PYTHON)" $(VENVDIR)
 
 venv: $(PY)
 	@echo "Run: source $(VENVDIR)/bin/activate"
 
-$(DEPS_STAMP): $(PY) pyproject.toml requirements.txt
-	$(PIP) install -U pip
-	$(PIP) install -r requirements.txt
-	$(PIP) install -e ".[dev]"
+$(DEPS_STAMP): $(PY) Makefile .python-version pyproject.toml requirements.txt
+	$(UV) pip install --python $(PY) -r requirements.txt -e ".[dev]"
 	@touch $@
 
 install: $(DEPS_STAMP)
