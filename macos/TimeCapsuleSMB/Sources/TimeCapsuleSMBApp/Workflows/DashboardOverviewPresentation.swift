@@ -524,6 +524,14 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             )
         case .unhealthy where runtimeState.errorCode == DoctorSummary.diskFailingResultCode:
             return diskFailingRow(action: .viewCheckup)
+        case .unhealthy where runtimeState.errorCode == DoctorSummary.acpdBrokenResultCode:
+            return DashboardHealthRow(
+                id: "runtime-acpd-gone",
+                title: DashboardHealthDomain.runtime.title,
+                detail: L10n.string("doctor.check.acpd_gone"),
+                status: .failed,
+                action: .viewCheckup
+            )
         case .unhealthy where runtimeState.errorCode == DoctorSummary.diskNotMountingResultCode:
             return DashboardHealthRow(
                 id: "runtime-disk-not-mounting",

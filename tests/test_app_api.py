@@ -2624,6 +2624,28 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(compare.call_args.args[1], "goodpw-typo")
         self.assertNotIn("goodpw-typo", json.dumps(collector.events))
 
+    def test_configure_of_a_device_whose_acpd_quit_says_so_and_saves_nothing(self) -> None:
+        collector = CollectingSink()
+        quit_listing = "  107 1 15 S 0 select 0:00.32 sshd\ntcapsule-ps: end\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()), \
+                    mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=quit_listing):
+                rc = service.run_api_request(
+                    {"operation": "configure",
+                     "params": {"config": str(config_path), "host": "root@10.0.0.2", "password": "goodpw"}},
+                    collector.sink,
+                )
+            self.assertFalse(config_path.exists())
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "acpd_quit")
+        self.assertIn("has quit", error["message"])
+        recovery = error["recovery"]
+        self.assertEqual(recovery["localization_key"], "configure.acpd_quit")
+        self.assertIn("then try again", recovery["actions"][1])
+
     def test_configure_writes_env_without_persisting_or_leaking_password_by_default(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:

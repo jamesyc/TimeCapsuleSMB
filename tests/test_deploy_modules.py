@@ -87,6 +87,7 @@ from timecapsulesmb.core.config import AppConfig
 from tests.device_ps import FakePs, process
 from timecapsulesmb.device.processes import (
     PS_CAPTURE_COMMAND,
+    PS_LISTING_END,
     STUCK_PROCESS_PS_COMMAND,
     UNREADABLE_COMMAND,
     render_process_present_by_ucomm,
@@ -97,6 +98,7 @@ from timecapsulesmb.device.probe import (
     DISKD_UNREADABLE,
     DISK_PAYLOAD_PROBLEMS,
     RSYNC_NOT_RUNNING_STEP,
+    ACPD_QUIT_STEP,
     MANAGER_UNREADABLE,
     runtime_payload_problem,
     FOREIGN_WCIFSND_RUNNING,
@@ -106,6 +108,7 @@ from timecapsulesmb.device.probe import (
     MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
     MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
     ManagedRuntimeProbeResult,
+    ManagerState,
     ProbeStepResult,
     ReadinessProbeResult,
     SMBD_STATUS_HELPERS,
@@ -131,7 +134,8 @@ from timecapsulesmb.device.storage import (
     mounted_mast_volumes_conn,
 )
 from timecapsulesmb.services.activation import activate_runtime, decide_manual_activation
-from timecapsulesmb.device.errors import DeviceError, DiskPayloadError, RsyncNotRunningError
+from timecapsulesmb.device.disk_errors import DiskFailingError
+from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
@@ -156,6 +160,12 @@ from timecapsulesmb.services.runtime_verification import (
 )
 from timecapsulesmb.transport.errors import SshUploadTimeout
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, upload_timeout_seconds
+
+
+def manager_state(problems, *, acpd_running: bool | None = True) -> ManagerState | None:
+    """read_manager_state's reading of a listing with these title verdicts;
+    None (no reading) for None."""
+    return None if problems is None else ManagerState(tuple(problems), acpd_running)
 
 
 def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
@@ -3168,7 +3178,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=[runtime_timeout, runtime_ready]) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state(())), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=[runtime_timeout, runtime_ready]) as runtime_once:
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=10,
@@ -3190,7 +3200,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(False, "managed mDNS registrant not active", ("FAIL:managed mDNS registrant not active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state(())), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=0,
@@ -3213,7 +3223,7 @@ describe_managed_smbd_status "" ""
         )
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.1, 5.2, 5.3, 5.4])
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state(())), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
             with mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(monotonic_values)):
                 result = probe_managed_runtime_conn(
                     connection,
@@ -3234,7 +3244,7 @@ describe_managed_smbd_status "" ""
             mdns=readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready):
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state(())), mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready):
             result = probe_managed_runtime_conn(
                 connection,
                 timeout_seconds=0,
@@ -3268,7 +3278,7 @@ describe_managed_smbd_status "" ""
     def _payload_problem_runtime(self, problem) -> ManagedRuntimeProbeResult:
         # A wait whose window is already over: every verdict ends it.
         runtime = self._runtime_not_ready(samba_ready=not problem.samba_off)
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)):
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state((problem,))):
             with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime):
                 return probe_managed_runtime_conn(
                     SshConnection("host", "pw", "-o foo"), timeout_seconds=0, poll_interval_seconds=0.0,
@@ -3282,7 +3292,7 @@ describe_managed_smbd_status "" ""
         connection = SshConnection("host", "pw", "-o foo")
         for problem in (problem for problem in DISK_PAYLOAD_PROBLEMS if not problem.replaces_disk):
             with self.subTest(problem.token):
-                with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)) as asked:
+                with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state((problem,))) as asked:
                     with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
                                     return_value=self._runtime_not_ready(samba_ready=not problem.samba_off)) as runtime_once:
                         result = probe_managed_runtime_conn(
@@ -3296,6 +3306,92 @@ describe_managed_smbd_status "" ""
                 self.assertEqual(result.detail, problem.message)
                 self.assertIn(f"FAIL:{problem.message}", result.lines)
 
+    def _wait_with_listings(self, states, runtime, *, timeout_seconds: int = 200):
+        """A wait whose attempts read these listings in turn (the last one
+        again after them), each attempt not ready as runtime."""
+        states = list(states)
+        listings = iter(states)
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state",
+                        side_effect=lambda _connection: next(listings, states[-1])) as asked, \
+                mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime) as once:
+            result = probe_managed_runtime_conn(
+                SshConnection("host", "pw", "-o foo"), timeout_seconds=timeout_seconds, poll_interval_seconds=0.0,
+                smbd_mdns_stagger_seconds=0.0, mdns_settle_seconds=0.0, final_attempts=0,
+            )
+        return result, once.call_count, asked.call_count
+
+    def test_the_wait_ends_once_two_listings_in_a_row_show_no_acpd(self) -> None:
+        # ACPd quit: nothing the wait does brings it back, so it ends at the
+        # second listing without it instead of after 200 s.
+        gone = manager_state((), acpd_running=False)
+        result, attempts, _reads = self._wait_with_listings(
+            [manager_state(()), gone, gone], self._runtime_not_ready(),
+        )
+        self.assertFalse(result.ready)
+        self.assertEqual(attempts, 3)
+        self.assertIn(ACPD_QUIT_STEP, {step.id for step in result.steps})
+        self.assertTrue(result.detail.startswith("Apple ACPd is not running; "))
+        self.assertIn("managed smbd not ready", result.detail)  # what it would have waited for, as facts
+        self.assertIsNone(runtime_payload_problem(result))
+
+    def test_acpd_outranks_the_titles_verdicts(self) -> None:
+        # Without ACPd the manager sees no disk, so a verdict it shows once
+        # ACPd is gone says nothing.
+        gone = manager_state((), acpd_running=False)
+        gone_with_verdict = manager_state((DISK_PAYLOAD_PROBLEMS[0],), acpd_running=False)
+        result, attempts, _reads = self._wait_with_listings([gone, gone_with_verdict], self._runtime_not_ready())
+        self.assertIn(ACPD_QUIT_STEP, {step.id for step in result.steps})
+        self.assertIsNone(runtime_payload_problem(result))
+        self.assertEqual(attempts, 2)
+
+    def test_a_verdict_seen_with_the_first_listing_without_acpd_waits_for_the_next(self) -> None:
+        # The first listing without ACPd carries a verdict: the wait does not
+        # end on it, and the next listing settles which comes first.
+        gone_with_verdict = manager_state((DISK_PAYLOAD_PROBLEMS[0],), acpd_running=False)
+        result, attempts, _reads = self._wait_with_listings(
+            [manager_state(()), gone_with_verdict, gone_with_verdict], self._runtime_not_ready(),
+        )
+        self.assertIn(ACPD_QUIT_STEP, {step.id for step in result.steps})
+        self.assertIsNone(runtime_payload_problem(result))
+        self.assertEqual(attempts, 3)
+
+    def test_a_verdict_stands_once_acpd_is_back(self) -> None:
+        verdict = (DISK_PAYLOAD_PROBLEMS[0],)
+        result, attempts, _reads = self._wait_with_listings(
+            [manager_state(verdict, acpd_running=False), manager_state(verdict, acpd_running=True)],
+            self._runtime_not_ready(),
+        )
+        self.assertIs(runtime_payload_problem(result), DISK_PAYLOAD_PROBLEMS[0])
+        self.assertNotIn(ACPD_QUIT_STEP, {step.id for step in result.steps})
+        self.assertEqual(attempts, 2)
+
+    def test_a_verdict_with_acpd_running_ends_the_wait_at_once(self) -> None:
+        result, attempts, _reads = self._wait_with_listings(
+            [manager_state((DISK_PAYLOAD_PROBLEMS[0],), acpd_running=True)], self._runtime_not_ready(),
+        )
+        self.assertIs(runtime_payload_problem(result), DISK_PAYLOAD_PROBLEMS[0])
+        self.assertEqual(attempts, 1)
+
+    def test_an_acpd_missing_from_one_listing_only_does_not_end_the_wait(self) -> None:
+        gone = manager_state((), acpd_running=False)
+        clock = iter(range(0, 100000, 10))
+        for between in (manager_state(()), manager_state((), acpd_running=None), None):
+            with self.subTest(between=between), \
+                    mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(clock)), \
+                    mock.patch("timecapsulesmb.device.probe.time.sleep"):
+                result, attempts, _reads = self._wait_with_listings(
+                    [gone, between, gone, between, gone, between], self._runtime_not_ready(), timeout_seconds=50,
+                )
+                self.assertNotIn(ACPD_QUIT_STEP, {step.id for step in result.steps})
+                self.assertIn("runtime_timeout", {step.id for step in result.steps})
+
+    def test_acpd_gone_while_samba_serves_waits_for_rsync_as_before(self) -> None:
+        gone = manager_state((), acpd_running=False)
+        result, _attempts, _reads = self._wait_with_listings([gone, gone, gone], self._runtime_not_ready(samba_ready=True),
+                                                             timeout_seconds=1)
+        self.assertNotIn(ACPD_QUIT_STEP, {step.id for step in result.steps})
+        self.assertEqual(result.detail, "managed rsync process is not running")
+
     def test_files_the_disk_could_not_read_are_reported_only_at_the_end_of_the_wait(self) -> None:
         # payload=unreadable or rsync=unreadable: the manager reads the files
         # again within seconds, so the wait goes on through the soft window,
@@ -3304,7 +3400,7 @@ describe_managed_smbd_status "" ""
             if not problem.replaces_disk:
                 continue
             with self.subTest(problem.token):
-                with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)):
+                with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state((problem,))):
                     with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
                                     return_value=self._runtime_not_ready(samba_ready=not problem.samba_off)) as runtime_once:
                         result = probe_managed_runtime_conn(
@@ -3331,7 +3427,7 @@ describe_managed_smbd_status "" ""
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
             mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(unreadable,)):
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state((unreadable,))):
             with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
                             side_effect=[self._runtime_not_ready(), self._runtime_not_ready(), ready]):
                 result = probe_managed_runtime_conn(
@@ -3345,7 +3441,7 @@ describe_managed_smbd_status "" ""
         # rsync=damaged while smbd is still starting (or failing): the wait
         # goes on, and a Samba that never comes up is what the result reports.
         problem = next(p for p in DISK_PAYLOAD_PROBLEMS if not p.samba_off)
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=(problem,)):
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state((problem,))):
             with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
                             return_value=self._runtime_not_ready()) as runtime_once:
                 result = probe_managed_runtime_conn(
@@ -3363,7 +3459,7 @@ describe_managed_smbd_status "" ""
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
             mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems") as asked:
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state") as asked:
             with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_ready):
                 result = probe_managed_runtime_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=200)
         self.assertTrue(result.ready)
@@ -3456,6 +3552,82 @@ describe_managed_smbd_status "" ""
                 self.assertEqual(fields["result"], "error")
                 self.assertIn(message, fields["error"])
 
+    def test_a_wait_ended_by_acpd_raises_acpd_quit_from_the_real_wait(self) -> None:
+        # The whole path: the wait's listings show no ACPd twice, it ends, and
+        # the verification's error is ACPd's, not a 200 s timeout.
+        gone = manager_state((), acpd_running=False)
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=gone), \
+                mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
+                           return_value=self._runtime_not_ready()) as once, \
+                mock.patch("timecapsulesmb.device.probe.time.sleep"):
+            with self.assertRaises(AcpdQuitError) as raised:
+                verify_managed_runtime_ready(
+                    SshConnection("host", "pw", ""),
+                    callbacks=OperationCallbacks(),
+                    stage="verify_runtime_activation",
+                    timeout_seconds=200,
+                    heading="Runtime verification:",
+                    failure_message="NetBSD4 activation failed.",
+                    read_runtime_logs=mock.Mock(return_value={}),
+                    read_disk_errors=mock.Mock(return_value=()),
+                )
+        self.assertEqual(once.call_count, 2)
+        self.assertEqual(raised.exception.code, "acpd_quit")
+        self.assertTrue(raised.exception.samba_off)
+        self.assertEqual(
+            raised.exception.message,
+            "NetBSD4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, "
+            "a bug in Apple's firmware. File sharing stays off until the device restarts.",
+        )
+        self.assertIn("managed smbd not ready", raised.exception.detail)
+
+    def test_an_acpd_quit_error_lists_only_the_checks_that_failed(self) -> None:
+        verification = replace(
+            self._runtime_not_ready(),
+            extra_steps=(
+                ProbeStepResult(id="service_binary", status="pass", detail="native service binary is executable"),
+                ProbeStepResult(id="smbd_parent", status="fail", detail="managed smbd parent process is not running"),
+                ProbeStepResult(id=ACPD_QUIT_STEP, status="fail", detail="Apple ACPd is not running"),
+            ),
+        )
+        with self.assertRaises(AcpdQuitError) as raised:
+            verify_managed_runtime_ready(
+                SshConnection("host", "pw", ""),
+                callbacks=OperationCallbacks(),
+                stage="verify_runtime_activation",
+                timeout_seconds=200,
+                heading="Runtime verification:",
+                failure_message="NetBSD4 activation failed.",
+                probe_runtime=mock.Mock(return_value=verification),
+                read_runtime_logs=mock.Mock(return_value={}),
+                read_disk_errors=mock.Mock(return_value=()),
+            )
+        detail = raised.exception.detail
+        self.assertIn("managed smbd parent process is not running", detail)
+        self.assertIn("Apple ACPd is not running", detail)
+        self.assertNotIn("is executable", detail)
+
+    def test_this_boots_disk_errors_come_before_an_acpd_that_quit(self) -> None:
+        verification = replace(
+            self._runtime_not_ready(),
+            extra_steps=(ProbeStepResult(id=ACPD_QUIT_STEP, status="fail", detail="Apple ACPd is not running"),),
+        )
+        errors = ("sd0(mv_sata_integ0:0:0:0): error reading fsbn 2048",)
+        for disk_errors, expected in ((errors, DiskFailingError), ((), AcpdQuitError), (None, AcpdQuitError)):
+            with self.subTest(disk_errors=disk_errors):
+                with self.assertRaises(expected):
+                    verify_managed_runtime_ready(
+                        SshConnection("host", "pw", ""),
+                        callbacks=OperationCallbacks(),
+                        stage="verify_runtime_activation",
+                        timeout_seconds=200,
+                        heading="Runtime verification:",
+                        failure_message="NetBSD4 activation failed.",
+                        probe_runtime=mock.Mock(return_value=verification),
+                        read_runtime_logs=mock.Mock(return_value={}),
+                        read_disk_errors=mock.Mock(return_value=disk_errors),
+                    )
+
     def test_verify_managed_runtime_ready_raises_each_verdicts_own_code_and_no_other(self) -> None:
         def verify(verification: ManagedRuntimeProbeResult) -> None:
             verify_managed_runtime_ready(
@@ -3507,7 +3679,7 @@ describe_managed_smbd_status "" ""
         # would; then the result says only rsync failed, not a timeout.
         runtime = self._runtime_not_ready(samba_ready=True)
         clock = iter(range(0, 100000, 10))
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=()), \
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state(())), \
                 mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime), \
                 mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(clock)), \
                 mock.patch("timecapsulesmb.device.probe.time.sleep"):
@@ -3526,7 +3698,7 @@ describe_managed_smbd_status "" ""
         """A verification whose soft window has one attempt and whose final
         checks have the rest: the clock moves 100 s at each reading."""
         clock = iter(range(0, 100000, 100))
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", side_effect=verdicts), \
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", side_effect=[manager_state(v) for v in verdicts]), \
                 mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=runtimes), \
                 mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(clock)), \
                 mock.patch("timecapsulesmb.device.probe.time.sleep"):
@@ -3555,7 +3727,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_runtime_reports_rsync_alone_at_its_deadline(self) -> None:
         # A wait shorter than rsync's start (activation's first look): at its
         # deadline Samba serves, so the result is rsync's, not a timeout.
-        with mock.patch("timecapsulesmb.device.probe.manager_payload_problems", return_value=None), \
+        with mock.patch("timecapsulesmb.device.probe.read_manager_state", return_value=manager_state(None)), \
                 mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn",
                            return_value=self._runtime_not_ready(samba_ready=True)):
             result = probe_managed_runtime_conn(
@@ -3595,6 +3767,109 @@ describe_managed_smbd_status "" ""
                     decision = activate_runtime(SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks())
         run_actions.assert_called_once()
         self.assertTrue(decision.run_actions)
+
+    def _activate_with_acpd(self, *, never_happened=False, answers=True, listing="", runtime=None):
+        """activate_runtime on a device whose runtime is not ready, with these
+        ACPd readings (device.acpd); the start itself is a mock."""
+        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
+                mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn",
+                           return_value=runtime or self._runtime_not_ready()), \
+                mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing), \
+                mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
+            try:
+                activate_runtime(SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks())
+            except DeviceError as exc:
+                return exc, run_actions
+        return None, run_actions
+
+    def test_activate_refuses_at_once_when_acpd_quit(self) -> None:
+        # Starting the runtime would only wait out its verification.
+        listing = f"  107 1 15 S 0 select 0:00.32 sshd\n{PS_LISTING_END}"
+        error, run_actions = self._activate_with_acpd(listing=listing)
+        run_actions.assert_not_called()
+        self.assertIsInstance(error, AcpdQuitError)
+        self.assertEqual(error.code, "acpd_quit")
+        self.assertEqual(
+            str(error),
+            "NetBSD4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, a bug "
+            "in Apple's firmware. File sharing stays off until the device restarts. Nothing was started.",
+        )
+
+    def test_activate_refuses_an_acpd_that_cannot_serve_the_start(self) -> None:
+        for name, readings, said in (
+            ("restart never happened", {"never_happened": True}, "did not restart"),
+            ("syUT silent", {"answers": False}, "is stuck"),
+        ):
+            with self.subTest(name):
+                error, run_actions = self._activate_with_acpd(**readings)
+                run_actions.assert_not_called()
+                self.assertEqual(error.code, "acpd_broken")
+                self.assertTrue(str(error).startswith("NetBSD4 activation failed. Apple ACPd is broken: "))
+                self.assertIn(said, str(error))
+                self.assertTrue(str(error).endswith("Nothing was started."))
+
+    def test_activate_says_acpd_quit_before_a_verdict_the_manager_shows_without_it(self) -> None:
+        # The manager's verdict is stale without ACPd: the refusal names ACPd.
+        listing = f"  107 1 15 S 0 select 0:00.32 sshd\n{PS_LISTING_END}"
+        error, run_actions = self._activate_with_acpd(
+            listing=listing, runtime=self._payload_problem_runtime(DISK_PAYLOAD_PROBLEMS[0]),
+        )
+        run_actions.assert_not_called()
+        self.assertIsInstance(error, AcpdQuitError)
+
+    def test_activate_refuses_without_reading_again_when_its_probe_found_acpd_gone(self) -> None:
+        # The decision's own wait already ended on two listings without ACPd:
+        # no marker, syUT or listing read, and no pause, before the refusal.
+        from dataclasses import replace
+
+        probed = self._runtime_not_ready()
+        probed = replace(probed, extra_steps=probed.extra_steps + (
+            ProbeStepResult(id=ACPD_QUIT_STEP, status="fail", detail="Apple ACPd is not running"),))
+        debug: dict[str, object] = {}
+        with mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
+                mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=probed), \
+                mock.patch("timecapsulesmb.device.acpd.acpd_problems") as problems, \
+                mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as run_actions:
+            with self.assertRaises(AcpdQuitError) as raised:
+                activate_runtime(SshConnection("host", "pw", ""), [],
+                                 callbacks=OperationCallbacks(add_debug_fields=debug.update))
+        problems.assert_not_called()
+        run_actions.assert_not_called()
+        self.assertEqual(str(raised.exception), (
+            "NetBSD4 activation failed. Apple ACPd is broken: the AirPort service on this device has quit, a bug "
+            "in Apple's firmware. File sharing stays off until the device restarts. Nothing was started."))
+        self.assertEqual(debug["acpd_problems"], ["quit"])
+
+    def test_activate_starts_when_the_listing_cannot_say_and_acpd_answers(self) -> None:
+        error, run_actions = self._activate_with_acpd(listing="")
+        self.assertIsNone(error)
+        run_actions.assert_called_once()
+
+    def test_activate_starts_beside_a_stuck_fork_of_acpd(self) -> None:
+        # The fork only hangs the next restart; a start needs ACPd's local answers.
+        stuck = "\n".join((
+            "  119 1 2 Sl 0 kqueue 0:00.00 ACPd",
+            "  352 119 2 S 1 nanoslp 0:00.00 ACPd",
+            PS_LISTING_END,
+        ))
+        error, run_actions = self._activate_with_acpd(listing=stuck)
+        self.assertIsNone(error)
+        run_actions.assert_called_once()
+
+    def test_activate_asks_nothing_of_acpd_when_the_runtime_already_serves(self) -> None:
+        ready = ManagedRuntimeProbeResult(
+            ready=True,
+            detail="managed runtime ready",
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
+        )
+        with mock.patch("timecapsulesmb.device.acpd.acpd_problems") as problems:
+            error, run_actions = self._activate_with_acpd(runtime=ready)
+        self.assertIsNone(error)
+        problems.assert_not_called()
+        run_actions.assert_not_called()
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         payload_dir_name = "samba4"

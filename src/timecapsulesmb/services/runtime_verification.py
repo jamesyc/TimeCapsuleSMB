@@ -5,9 +5,11 @@ from collections.abc import Callable
 
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
+from timecapsulesmb.device import acpd
 from timecapsulesmb.device.disk_errors import DiskFailingError, disk_errors_explain, read_disk_errors_conn
-from timecapsulesmb.device.errors import DeviceError, RsyncNotRunningError
+from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, RsyncNotRunningError
 from timecapsulesmb.device.probe import (
+    ACPD_QUIT_STEP,
     ManagedRuntimeProbeResult,
     RuntimeNamingIdentityProbeResult,
     limit_remote_log_tail,
@@ -87,12 +89,19 @@ def runtime_failure_error(
     verification: ManagedRuntimeProbeResult, failure_message: str, *, disk_errors: tuple[str, ...] | None = None,
 ) -> DeviceError:
     """The error for a runtime that is not ready: this boot's disk errors
-    when they explain it (disk_errors_explain), else the manager's verdict,
-    or rsync's alone while file sharing serves (whose error must not say file
-    sharing failed), or failure_message with the probe's detail."""
+    when they explain it (disk_errors_explain), else ACPd gone (the wait's
+    ACPD_QUIT_STEP: without it the manager sees no disk, so its verdicts say
+    nothing), else the manager's verdict, or rsync's alone while file sharing
+    serves (whose error must not say file sharing failed), or failure_message
+    with the probe's detail."""
     problem = runtime_payload_problem(verification)
     if disk_errors_explain(disk_errors, (problem,) if problem else (), samba_ready=verification.samba_ready):
         return DiskFailingError(disk_errors)
+    if any(step.id == ACPD_QUIT_STEP for step in verification.steps):
+        # The checks that failed, without the ones that passed beside them.
+        failed = "; ".join(step.detail for step in verification.steps
+                           if step.status in ("fail", "timeout") and step.detail)
+        return AcpdQuitError(f"{failure_message.rstrip()} {acpd.ACPD_QUIT_MESSAGE}", detail=failed or None)
     if problem is not None:
         return problem.error_type(problem.error_after(failure_message))
     if verification.samba_ready:

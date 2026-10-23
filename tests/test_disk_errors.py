@@ -25,6 +25,7 @@ from timecapsulesmb.device.disk_errors import (
     read_disk_failing_evidence_conn,
 )
 from timecapsulesmb.device.errors import (
+    AcpdQuitError,
     DeviceError,
     DiskPayloadMissingError,
     DiskPayloadUnreadableError,
@@ -329,6 +330,45 @@ class RuntimeFailureTests(unittest.TestCase):
                         with self.assertRaises(DiskFailingError):
                             activate_runtime(SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks())
         run.assert_not_called()
+
+    def test_activate_checks_disk_errors_before_an_acpd_refusal(self) -> None:
+        from dataclasses import replace
+
+        confirmed_quit = replace(runtime(), extra_steps=(
+            ProbeStepResult(probe.ACPD_QUIT_STEP, "fail", probe.ACPD_QUIT_STEP_DETAIL),
+        ))
+        quit_listing = "107 1 15 S 0 select 0:00.32 sshd\ntcapsule-ps: end\n"
+        cases = (
+            ("probe confirmed quit", confirmed_quit, False, True, ErrorCode.ACPD_QUIT),
+            ("quit after payload verdict", runtime(problem=DAMAGED), False, True, ErrorCode.ACPD_QUIT),
+            # A missing-payload verdict cannot suppress kernel evidence once
+            # ACPd is gone: its disk inventory is no longer authoritative.
+            ("quit beside stale missing verdict", runtime(problem=MISSING), False, True, ErrorCode.ACPD_QUIT),
+            ("restart never happened", runtime(), True, True, ErrorCode.ACPD_BROKEN),
+            ("syUT silent", runtime(), False, False, ErrorCode.ACPD_BROKEN),
+        )
+        for name, verification, restart, answers, code in cases:
+            for errors in (self.ERRORS, (), None):
+                with self.subTest(case=name, errors=errors), \
+                        mock.patch("timecapsulesmb.services.activation.require_compatible_install"), \
+                        mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=verification), \
+                        mock.patch("timecapsulesmb.services.activation.read_disk_errors_conn", return_value=errors) as read, \
+                        mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=restart), \
+                        mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers), \
+                        mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=quit_listing if answers else ""), \
+                        mock.patch("timecapsulesmb.services.activation.run_activation_actions_and_verify") as start:
+                    with self.assertRaises(DeviceError) as raised:
+                        activate_runtime(SshConnection("host", "pw", ""), [], callbacks=OperationCallbacks())
+
+                    read.assert_called_once()
+                    start.assert_not_called()
+                    error = raised.exception
+                    self.assertEqual(error.code, ErrorCode.DISK_FAILING if errors else code)
+                    if errors:
+                        self.assertIsInstance(error, DiskFailingError)
+                        self.assertEqual(error.detail, errors[-1])
+                    elif code == ErrorCode.ACPD_QUIT:
+                        self.assertIsInstance(error, AcpdQuitError)
 
 
 class CommandLinePreflightTests(unittest.TestCase):

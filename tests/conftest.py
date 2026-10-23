@@ -137,6 +137,8 @@ def apple_acpd_healthy(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(acpd, "restart_never_happened", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(acpd, "mark_restart", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(acpd, "network_silent_details", lambda *_args, **_kwargs: {})
+    # A listing without ACPd is read again after a pause; tests do not wait.
+    monkeypatch.setattr(acpd, "pause", lambda *_args, **_kwargs: None)
     yield
 
 

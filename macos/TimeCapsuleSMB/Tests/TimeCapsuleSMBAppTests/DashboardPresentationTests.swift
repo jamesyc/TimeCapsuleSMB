@@ -1124,6 +1124,20 @@ final class DashboardPresentationTests: XCTestCase {
             hostWarning: nil
         ))
         XCTAssertEqual(try row(.runtime, in: other).id, "runtime-unhealthy")
+        // Apple's ACPd is gone: say unplug, not only how many checks failed.
+        stuckProfile.runtimeState?.errorCode = DoctorSummary.acpdBrokenResultCode
+        let acpdGone = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: stuckProfile,
+            passwordState: .available,
+            displayStatus: .failed,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        ))
+        let acpdRow = try row(.runtime, in: acpdGone)
+        XCTAssertEqual(acpdRow.id, "runtime-acpd-gone")
+        XCTAssertEqual(acpdRow.status, .failed)
+        XCTAssertEqual(acpdRow.action, .viewCheckup)
+        XCTAssertEqual(acpdRow.detail, L10n.string("doctor.check.acpd_gone"))
 
         let warning = HostCompatibilityWarning(title: "macOS Warning", message: "Time Machine warning.")
         let hostWarning = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(

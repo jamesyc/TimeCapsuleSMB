@@ -26,9 +26,9 @@ from timecapsulesmb.device.processes import (
     PROBE_PROCESS_HELPERS,
     PROCESS_SNAPSHOT_COMMAND,
     PS_CAPTURE_COMMAND,
-    PS_CAPTURE_SSH_COMMAND,
     STUCK_PROCESS_PS_COMMAND,
     PS_ROWS_FUNCTION,
+    acpd_running,
     describe_uninterruptible,
     parse_ps_rows,
     service_role_processes,
@@ -2315,32 +2315,69 @@ DISK_PAYLOAD_PROBLEMS = (
 DISK_UNREADABLE_PROBLEMS = tuple(problem for problem in DISK_PAYLOAD_PROBLEMS if problem.replaces_disk)
 
 
-def manager_payload_problems(connection: SshConnection) -> tuple[DiskPayloadProblem, ...] | None:
-    """The verdicts the manager's title carries now, those that turn Samba off
-    first; None when ps could not be read, which says nothing about them (a
-    caller keeps what it read before). ps only: the startup-age probe also
-    execs the service for a clock reading this does not need."""
+@dataclass(frozen=True)
+class ManagerState:
+    """One process listing's word on the runtime: the verdicts the manager's
+    title carries, those that turn Samba off first, and whether Apple's ACPd
+    runs (processes.acpd_running: None when the listing did not finish)."""
+
+    problems: tuple[DiskPayloadProblem, ...] = ()
+    acpd_running: bool | None = None
+
+
+def read_manager_state(connection: SshConnection) -> ManagerState | None:
+    """The manager's verdicts and ACPd, from one listing; None when ps could
+    not be read, which says nothing about them (a caller keeps what it read
+    before). ps only: the startup-age probe also execs the service for a clock
+    reading this does not need."""
     try:
-        proc = run_ssh(connection, PS_CAPTURE_SSH_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+        proc = run_ssh(connection, PROCESS_SNAPSHOT_COMMAND, check=False, timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
     except SshCommandTimeout:
         return None
     if proc.returncode != 0:
         return None
-    rows = service_role_processes(proc.stdout or "", "manager")
-    return _title_payload_problems(list(rows[0].argv[1:])) if len(rows) == 1 else ()
+    output = proc.stdout or ""
+    rows = service_role_processes(output, "manager")
+    problems = _title_payload_problems(list(rows[0].argv[1:])) if len(rows) == 1 else ()
+    return ManagerState(problems, acpd_running(output))
+
+
+def manager_payload_problems(connection: SshConnection) -> tuple[DiskPayloadProblem, ...] | None:
+    """The verdicts the manager's title carries now (read_manager_state)."""
+    state = read_manager_state(connection)
+    return None if state is None else state.problems
+
+
+# A wait for the runtime ends when this many listings in a row, one attempt
+# apart, show no ACPd. NetBSD 4 never starts ACPd again; on NetBSD 6 that is
+# not known, so the second listing rules out a moment between two ACPds.
+ACPD_GONE_LISTINGS = 2
 
 
 class ManagerVerdicts:
     """The verdicts the manager's title carried at the last read that worked.
     A read that failed (manager_payload_problems' None) says nothing about
-    them, so it leaves them as they were; an empty reading clears them."""
+    them, so it leaves them as they were; an empty reading clears them.
+    acpd_gone counts the listings in a row that finished without ACPd; any
+    other read starts the count again."""
 
-    def __init__(self, problems: tuple[DiskPayloadProblem, ...] = ()) -> None:
+    def __init__(self, problems: tuple[DiskPayloadProblem, ...] = (), *, acpd_gone: int = 0) -> None:
         self.problems = tuple(problems)
+        self.acpd_gone = acpd_gone
 
     def update(self, read: tuple[DiskPayloadProblem, ...] | None) -> None:
         if read is not None:
             self.problems = tuple(read)
+
+    def update_state(self, state: ManagerState | None) -> None:
+        """Take one read_manager_state reading."""
+        self.update(None if state is None else state.problems)
+        self.acpd_gone = self.acpd_gone + 1 if state is not None and state.acpd_running is False else 0
+
+    @property
+    def acpd_quit(self) -> bool:
+        """ACPd is gone: ACPD_GONE_LISTINGS listings in a row showed none."""
+        return self.acpd_gone >= ACPD_GONE_LISTINGS
 
     @property
     def samba_off(self) -> DiskPayloadProblem | None:
@@ -2364,7 +2401,9 @@ class ManagerVerdicts:
         again within seconds and clears the verdict once the disk returns
         them, as after one slow read while a cold disk settles, so a wait
         goes on through it and reports it only at its end."""
-        return ManagerVerdicts(tuple(problem for problem in self.problems if not problem.replaces_disk))
+        return ManagerVerdicts(
+            tuple(problem for problem in self.problems if not problem.replaces_disk), acpd_gone=self.acpd_gone,
+        )
 
 
 def _title_payload_problems(title: list[str]) -> tuple[DiskPayloadProblem, ...]:
@@ -2377,6 +2416,9 @@ def _title_unmounted_since(title: list[str]) -> int | None:
 
 
 RSYNC_NOT_RUNNING_STEP = "rsync_not_running"
+# The step a wait for the runtime ends with when ACPd is gone (ManagerVerdicts.acpd_quit).
+ACPD_QUIT_STEP = "acpd_quit"
+ACPD_QUIT_STEP_DETAIL = "Apple ACPd is not running"
 
 
 def _rsync_not_running(result: ManagedRuntimeProbeResult) -> ManagedRuntimeProbeResult:
@@ -2437,7 +2479,7 @@ def probe_managed_runtime_conn(
         attempts.append(summary)
         last_result = result
         if not result.ready:
-            verdicts.update(manager_payload_problems(connection))
+            verdicts.update_state(read_manager_state(connection))
         outcome = _runtime_outcome(result, verdicts if phase == "final_check" else verdicts.lasting())
         if outcome is not None:
             return finish(outcome)
@@ -2467,14 +2509,27 @@ def _runtime_outcome(
     timeout_detail: str | None = None,
 ) -> ManagedRuntimeProbeResult | None:
     """How a wait for the runtime ends after an attempt. Samba and rsync are
-    judged alike: ready; at a verdict in the manager's title, which holds
+    judged alike: ready; once ACPd is gone while Samba is off, which no wait
+    brings back (a verdict seen while the last listing lacked ACPd waits
+    for the next one); at a verdict in the manager's title, which holds
     however long it waits (rsync's once Samba serves, so the result says how
     Samba is); else, at the deadline (timeout_detail), whichever is not
     ready: rsync alone while Samba serves, or the runtime timed out. None:
     wait on."""
     if result.ready:
         return result
+    if verdicts.acpd_quit and not result.samba_ready:
+        # Without ACPd the manager can read no disk and no setting, so it
+        # never starts Samba; its title's verdicts may be out of date too.
+        step = ProbeStepResult(id=ACPD_QUIT_STEP, status="fail", detail=ACPD_QUIT_STEP_DETAIL)
+        return replace(
+            result, detail=f"{ACPD_QUIT_STEP_DETAIL}; {result.detail}", extra_steps=result.extra_steps + (step,),
+        )
     problem = verdicts.ending(result.samba_ready)
+    if problem is not None and verdicts.acpd_gone and not result.samba_ready and timeout_detail is None:
+        # The last listing had no ACPd: the next one says whether the
+        # verdict stands (ACPd back) or ACPd quit, which comes first.
+        return None
     if problem is not None:
         step = ProbeStepResult(id=problem.step_id, status="fail", detail=problem.message)
         return replace(result, detail=problem.message, extra_steps=result.extra_steps + (step,))
@@ -2820,11 +2875,11 @@ def probe_device_networks_conn(connection: SshConnection) -> DeviceNetworksProbe
 
 
 # The manager's title (build/native/service/stuck.h tc_manager_title) is read
-# from PS_CAPTURE_SSH_COMMAND. The title's started= and this reading are the
+# from PROCESS_SNAPSHOT_COMMAND. The title's started= and this reading are the
 # same clock, the kernel's monotonic one, read in that order so the age cannot
 # come out negative.
 MANAGER_STARTUP_AGE_COMMAND = (
-    PS_CAPTURE_SSH_COMMAND
+    PROCESS_SNAPSHOT_COMMAND
     + ' 2>/dev/null | sed "s/^/ps=/"; '
     'echo "now_ms=$("${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}" --print-monotonic-ms 2>/dev/null)"'
 )
@@ -2914,7 +2969,7 @@ def _manager_startup_age(title: list[str], now_text: str) -> ManagerStartupAgePr
 # manager logged at boot (best effort: the manager trims runtime.log).
 DEVICE_HOSTNAME_PROBE_COMMAND = (
     'echo "hostname=$(/bin/hostname 2>/dev/null)"; '
-    + PS_CAPTURE_SSH_COMMAND
+    + PROCESS_SNAPSHOT_COMMAND
     + ' 2>/dev/null | sed "s/^/ps=/"; '
     'sed "s/^/hosts=/" /etc/hosts 2>/dev/null; '
     "sed -n 's/.*manager: hostname found: [^ ]* after \\([0-9]*\\) ms.*/found=\\1/p' "

@@ -5,10 +5,12 @@ from typing import Literal
 
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG, release_major
+from timecapsulesmb.device import acpd
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.disk_errors import read_disk_errors_conn
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.disk_errors import DiskFailingError, disk_errors_explain, read_disk_errors_conn
+from timecapsulesmb.device.errors import AcpdQuitError, DeviceError
 from timecapsulesmb.device.probe import (
+    ACPD_QUIT_STEP,
     ManagedRuntimeProbeResult,
     ProbedDeviceState,
     flash_runtime_config_present_conn,
@@ -267,6 +269,41 @@ def run_activation_actions_and_verify(
     )
 
 
+# ACPd's problems that leave a start nothing to run on: the manager reads the
+# disks and the admin password from the device's own ACPd. A stuck fork of it
+# only hangs the next restart, and its network listener is not used here.
+ACPD_START_BLOCKERS = frozenset({"restart_never_happened", "quit", "syut_silent"})
+ACPD_QUIT_START_MESSAGE = f"NetBSD4 activation failed. {acpd.ACPD_QUIT_MESSAGE} Nothing was started."
+
+
+def require_acpd_for_start(
+    connection: SshConnection,
+    callbacks: OperationCallbacks,
+    *,
+    runtime: ManagedRuntimeProbeResult | None = None,
+) -> None:
+    """Refuse, before anything starts, a device whose ACPd cannot serve the
+    runtime (ACPD_START_BLOCKERS): its start would only wait out its whole
+    verification. `runtime` is the decision's probe, whose wait already ends
+    once two listings show ACPd gone (ACPD_QUIT_STEP): ACPd is not read again
+    then. The marker and syUT reads raise TransportError; a process listing
+    that fails says nothing."""
+    if runtime is not None and any(step.id == ACPD_QUIT_STEP for step in runtime.steps):
+        callbacks.debug(acpd_problems=["quit"])
+        raise AcpdQuitError(ACPD_QUIT_START_MESSAGE)
+    problems = [problem for problem in acpd.acpd_problems(connection) if problem.code in ACPD_START_BLOCKERS]
+    if not problems:
+        return
+    callbacks.debug(acpd_problems=[problem.code for problem in problems])
+    problem = problems[0]
+    if problem.code == "quit":
+        raise AcpdQuitError(ACPD_QUIT_START_MESSAGE)
+    raise DeviceError(
+        f"NetBSD4 activation failed. {acpd.acpd_broken_message(problem.what, note=f'{problem.note}Nothing was started. ')}",
+        code=ErrorCode.ACPD_BROKEN,
+    )
+
+
 def activate_runtime(
     connection: SshConnection,
     activation_actions: list[RemoteAction],
@@ -276,7 +313,8 @@ def activate_runtime(
     """Start an already-deployed NetBSD4 runtime unless it is already running.
 
     Raises ActivationInstallError when the device has no install this version
-    can start, and DeviceError when the started runtime does not become ready.
+    can start, DeviceError when ACPd cannot serve a start
+    (require_acpd_for_start) or the started runtime does not become ready.
     """
     callbacks.stage("probe_runtime")
     require_compatible_install(connection, callbacks)
@@ -285,6 +323,18 @@ def activate_runtime(
         activation_decision=decision.reason,
         manual_activation_required=decision.run_actions,
     )
+    if decision.run_actions:
+        # Its error comes before the manager's verdicts: without ACPd they say nothing.
+        try:
+            require_acpd_for_start(connection, callbacks, runtime=decision.runtime)
+        except DeviceError:
+            # ACPd cannot invalidate the kernel's failed disk transfers.
+            # Ignore stale payload verdicts, as the runtime wait does on quit.
+            errors = read_disk_errors_conn(connection)
+            if disk_errors_explain(errors):
+                callbacks.debug(disk_error_lines=list(errors[-5:]))
+                raise DiskFailingError(errors) from None
+            raise
     runtime = decision.runtime
     if runtime is not None and not runtime.ready and runtime_payload_problem(runtime) is not None:
         # The running manager already found Samba's or rsync's files missing,

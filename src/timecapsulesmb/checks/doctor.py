@@ -109,7 +109,13 @@ def run_doctor_checks(
     # on the network between this computer and the device.
     _doctor_report_device_not_checked(remote, sink)
     processes = _doctor_check_stuck_processes(target, remote, sink)
-    _doctor_check_apple_acpd(target, remote, processes, sink, inputs.device_reading)
+    if _doctor_check_apple_acpd(target, remote, processes, sink, inputs.device_reading).stop:
+        # Kernel disk errors remain meaningful without ACPd. Its missing
+        # inventory makes manager verdicts unreliable, so do not use them.
+        _doctor_check_disk_errors_after_failure(target, remote, None, sink, samba_serving=False)
+        # The manager's log shows what it could not read without ACPd.
+        _doctor_add_fatal_runtime_log_tails(target, remote, sink, processes)
+        return sink.results, sink.fatal()
 
     if _doctor_check_running_migration(target, remote, sink).stop:
         return sink.results, sink.fatal()

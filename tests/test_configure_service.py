@@ -1281,6 +1281,62 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(run.result.code, "device_identity_mismatch")
         run.writer.assert_not_called()
 
+    QUIT_LISTING = "  107 1 15 S 0 select 0:00.32 sshd\ntcapsule-ps: end\n"
+    RUNNING_LISTING = "  107 1 15 S 0 select 0:00.32 sshd\n  190 1 15 Sa 8 kqread 0:00.00 ACPd\ntcapsule-ps: end\n"
+
+    def configure_with_listing(self, listing: str, *, airport_mac: str | None = None):
+        """configure over SSH whose AirPort identity read gave this MAC (None:
+        ACPd did not say), with these listings of the device's processes."""
+        probe_state = self.make_probe_state()
+        probe_state = ProbedDeviceState(
+            probe_result=replace(probe_state.probe_result, airport_mac=airport_mac),
+            compatibility=probe_state.compatibility,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as listed:
+                try:
+                    result = run_configure_flow(self.configure_request(env_path, mock.Mock(return_value=probe_state)))
+                except ConfigureFlowError as exc:
+                    result = exc
+            written = env_path.read_text() if env_path.exists() else None
+        return result, written, listed
+
+    def test_a_device_whose_acpd_quit_is_not_saved_without_its_mac(self) -> None:
+        # The MAC comes from ACPd: saving the profile without one would lose
+        # the device's identity, and the device needs a restart first anyway.
+        result, written, listed = self.configure_with_listing(self.QUIT_LISTING)
+        self.assertIsInstance(result, ConfigureFlowError)
+        self.assertEqual(result.code, "acpd_quit")
+        self.assertTrue(str(result).startswith("Apple ACPd is broken: the AirPort service on this device has quit"))
+        self.assertTrue(str(result).endswith("Its AirPort identity cannot be read."))
+        self.assertIn("File sharing stays off", str(result))
+        self.assertIsNone(written)
+        self.assertEqual(listed.call_count, 2)
+
+    def test_a_device_whose_acpd_quit_after_samba_started_says_sharing_may_work(self) -> None:
+        serving = self.QUIT_LISTING.replace("tcapsule-ps: end", "  320 300 320 Ss 1 select 0:01.20 smbd\ntcapsule-ps: end")
+        result, written, _listed = self.configure_with_listing(serving)
+        self.assertIsInstance(result, ConfigureFlowError)
+        self.assertEqual(result.code, "acpd_quit")
+        self.assertIn("Sharing may work now", str(result))
+        self.assertNotIn("File sharing stays off", str(result))
+        self.assertTrue(str(result).endswith("Its AirPort identity cannot be read."))
+        self.assertIsNone(written)
+
+    def test_a_device_whose_acpd_runs_but_gave_no_mac_is_saved_without_one(self) -> None:
+        for name, listing in (("running", self.RUNNING_LISTING), ("unread", "")):
+            with self.subTest(listing=name):
+                result, written, _listed = self.configure_with_listing(listing)
+                self.assertNotIsInstance(result, ConfigureFlowError)
+                self.assertIn("TC_AIRPORT_MAC=''", written)
+
+    def test_a_device_that_gave_its_mac_is_not_listed(self) -> None:
+        result, written, listed = self.configure_with_listing(self.QUIT_LISTING, airport_mac="02:00:00:00:00:10")
+        self.assertNotIsInstance(result, ConfigureFlowError)
+        self.assertIn("TC_AIRPORT_MAC=02:00:00:00:00:10", written)
+        listed.assert_not_called()
+
     def test_password_ssh_rejects_is_not_compared_with_the_device(self) -> None:
         compare = acp_password_answer(True)
         with tempfile.TemporaryDirectory() as tmp:

@@ -7,6 +7,15 @@ class DeviceError(CodedError):
     """Base class for recoverable device probing/runtime failures."""
 
 
+class AcpdQuitError(DeviceError):
+    """Apple's ACPd no longer runs (device.acpd, "quit"): without it the
+    manager reads no disk and no setting, so file sharing stays off until the
+    device restarts."""
+
+    code = ErrorCode.ACPD_QUIT
+    samba_off = True
+
+
 class DiskPayloadError(DeviceError):
     """The manager cannot run the payload on the disk as installed, however
     long anything waits (device.probe.DISK_PAYLOAD_PROBLEMS): a reinstall

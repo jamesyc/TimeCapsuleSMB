@@ -1225,6 +1225,54 @@ class AcpdDiskReadTests(unittest.TestCase):
         self.assertIn("Apple ACPd is broken", str(error))
         answer.assert_called_once_with(self.CONNECTION)
 
+    QUIT_LISTING = "  107 1 15 S 0 select 0:00.32 sshd\ntcapsule-ps: end\n"
+    RUNNING_LISTING = "  107 1 15 S 0 select 0:00.32 sshd\n  190 1 15 Sa 8 kqread 0:00.00 ACPd\ntcapsule-ps: end\n"
+
+    def test_a_failed_mast_get_on_a_device_whose_acpd_quit_says_so(self) -> None:
+        # syUT fails at once when ACPd is gone; two listings without it name
+        # the cause, with its own code and next steps.
+        from timecapsulesmb.device.storage import StorageDeviceError
+
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.QUIT_LISTING) as listing:
+            error, answer = self.read(self.FAILED_GET, answers=False)
+        self.assertIsInstance(error, StorageDeviceError)
+        self.assertEqual(error.code, "acpd_quit")
+        self.assertEqual(
+            str(error),
+            "Apple ACPd is broken: the AirPort service on this device has quit, a bug in Apple's firmware. "
+            "File sharing stays off until the device restarts. Its disks cannot be read.",
+        )
+        self.assertEqual(listing.call_count, 2)
+        answer.assert_called_once_with(self.CONNECTION)
+
+    def test_a_failed_mast_get_on_a_device_whose_acpd_quit_after_samba_started_says_sharing_may_work(self) -> None:
+        from timecapsulesmb.device.storage import StorageDeviceError
+
+        serving = self.QUIT_LISTING.replace("tcapsule-ps: end", "  320 300 320 Ss 1 select 0:01.20 smbd\ntcapsule-ps: end")
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=serving):
+            error, _answer = self.read(self.FAILED_GET, answers=False)
+        self.assertIsInstance(error, StorageDeviceError)
+        self.assertEqual(error.code, "acpd_quit")
+        self.assertEqual(
+            str(error),
+            "Apple ACPd is broken: the AirPort service on this device has quit, a bug in Apple's firmware. "
+            "Sharing may work now, but until the device is unplugged it cannot be updated or restarted over the "
+            "network, and AirPort Utility cannot reach it. Its disks cannot be read.",
+        )
+
+    def test_a_failed_mast_get_with_acpd_still_running_stays_broken_acpd(self) -> None:
+        for name, listing in (("running", self.RUNNING_LISTING), ("unread", "")):
+            with self.subTest(listing=name):
+                with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing):
+                    error, _answer = self.read(self.FAILED_GET, answers=False)
+                self.assertEqual(error.code, "acpd_broken")
+                self.assertIn("is not answering", str(error))
+
+    def test_an_acpd_that_answers_is_never_listed(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.read_processes") as listing:
+            self.read(self.FAILED_GET, answers=True)
+        listing.assert_not_called()
+
     def test_a_failed_mast_get_with_a_working_acpd_is_an_empty_read(self) -> None:
         result, _answer = self.read(self.FAILED_GET, answers=True)
         self.assertEqual(result.volumes, ())

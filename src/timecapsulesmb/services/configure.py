@@ -20,6 +20,7 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
+from timecapsulesmb.device import acpd
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     airport_syap_supported,
@@ -394,6 +395,15 @@ def run_configure_flow(
         discovered_airport_syap=request.discovered_airport_syap,
     )
     airport_mac = probe.airport_mac if probe.ssh_authenticated else None
+    gone = acpd.acpd_quit(connection, acpd.read_processes(connection)) if probe.ssh_authenticated and airport_mac is None else None
+    if gone is not None:
+        # The MAC comes from ACPd: without it the profile would be saved
+        # with none, and the device needs a restart before anything works.
+        callbacks.debug(configure_failure_reason="acpd_quit", acpd_problems=["quit"], **gone.details)
+        raise ConfigureFlowError(
+            f"{acpd.acpd_broken_message(gone.what, note=gone.note)} Its AirPort identity cannot be read.",
+            code=ErrorCode.ACPD_QUIT,
+        )
     expected_mac = request.expected_airport_mac or (
         request.selected_record.airport_mac if request.selected_record is not None else None)
     if expected_mac and airport_mac and expected_mac != airport_mac:

@@ -729,7 +729,8 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         self.assertIn("did not restart", str(error))
         self.assertEqual(debug["acpd_problems"], ["restart_never_happened"])
         answer.assert_not_called()
-        processes.assert_not_called()
+        # Read once, for whether Samba still runs; never rechecked for a quit.
+        processes.assert_called_once_with(self.CONNECTION)
 
     def test_a_rejected_password_is_refused_before_ssh_is_asked(self) -> None:
         error, _debug, answer, processes = self.gate(reading=acp_reading(False))
@@ -770,6 +771,36 @@ class RequireAcpdReadyAcpdTests(unittest.TestCase):
         self.assertNotIn("VPN", str(error))
         self.assertEqual(debug["acpd_problems"], ["network_silent"])
         self.assertEqual(debug["acp_read_error"], "Could not connect to ACP on 10.0.0.2:5009: timed out")
+
+    def test_an_acpd_that_quit_refuses_the_command_before_anything_changes(self) -> None:
+        from timecapsulesmb.device.processes import PS_LISTING_END
+
+        sshd = "  107 1 15 S 0 select 0:00.32 sshd"
+        smbd = "  320 300 320 Ss 1 select 0:01.20 smbd"
+        cases = (
+            ("sharing off", f"{sshd}\n{PS_LISTING_END}", False,
+             "File sharing stays off until the device restarts. Nothing was changed."),
+            ("Samba still serving", f"{sshd}\n{smbd}\n{PS_LISTING_END}", True,
+             "Sharing may work now, but until the device is unplugged it cannot be updated or restarted over the "
+             "network, and AirPort Utility cannot reach it. Nothing was changed."),
+        )
+        for name, listing, serving, ending in cases:
+            with self.subTest(name):
+                error, debug, answer, _processes = self.gate(listing=listing)
+                # Its own code, as everywhere else an ACPd that quit is found.
+                self.assertEqual(error.code, "acpd_quit")
+                self.assertEqual(
+                    str(error),
+                    f"Apple ACPd is broken: the AirPort service on this device has quit, a bug in Apple's firmware. "
+                    f"{ending}",
+                )
+                self.assertEqual(debug["acpd_problems"], ["quit"])
+                self.assertEqual(debug["acpd_quit_smbd_running"], serving)
+                answer.assert_not_called()  # its syUT would only fail the same way
+                # acpd_quit's next steps hold either way: unplug, then Checkup.
+                steps = cli_steps("deploy", error.code)
+                self.assertIn("Unplug the device, wait 10 seconds and plug it back in.", steps)
+                self.assertIn("then run `tcapsule doctor`", " ".join(steps))
 
     def test_a_read_of_its_own_that_goes_unanswered_is_checked_through_ssh(self) -> None:
         # A profile without a saved MAC brings no earlier read: the gate reads

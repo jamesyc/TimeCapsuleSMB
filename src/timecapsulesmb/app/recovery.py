@@ -246,12 +246,37 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     # syUT (services.runtime.require_acpd_ready, services.reboot).
     ErrorCode.ACPD_BROKEN: RecoveryInfo(
         "Apple ACPd is broken",
-        "Apple's AirPort service (ACPd) on the device is stuck. This is a bug in Apple's firmware, not TimeCapsuleSMB.",
+        (
+            "Apple's AirPort service (ACPd) on the device is stuck or no longer running. This is a bug in Apple's "
+            "firmware, not TimeCapsuleSMB."
+        ),
         (
             "Unplug the device, wait 10 seconds and plug it back in.",
             "Wait 2 minutes for the device to start up, then try again.",
         ),
         retryable=True,
+        suggested_operation="doctor",
+        action_ids=("run_checkup",),
+    ),
+    # ACPd quit: the wait for the runtime ended once ACPd was gone, Activate
+    # refused before starting it (services.activation.require_acpd_for_start),
+    # or a command refused before changing anything (services.runtime.
+    # require_acpd_ready), where a Samba started before ACPd quit may still
+    # serve. A restart brings ACPd back; NetBSD 4 then needs Activate unless
+    # its boot hook starts file sharing.
+    ErrorCode.ACPD_QUIT: RecoveryInfo(
+        "Apple ACPd quit",
+        (
+            "Apple's AirPort service (ACPd) on the device quit and does not start again until the device "
+            "restarts. Without it, file sharing cannot start and the device cannot be updated or restarted over "
+            "the network. This is a bug in Apple's firmware, not TimeCapsuleSMB."
+        ),
+        (
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then run “Checkup”.",
+            "On NetBSD 4 devices, run “Activate” if the checkup says Samba is not running.",
+        ),
+        retryable=False,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
     ),
@@ -555,6 +580,21 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
             "Add your Time Capsule or AirPort Extreme instead.",
         ),
         retryable=False,
+    ),
+    # The device answered SSH but its ACPd quit, so its AirPort identity
+    # cannot be read: after the restart, adding it again works.
+    ("configure", ErrorCode.ACPD_QUIT): RecoveryInfo(
+        "Apple ACPd quit",
+        (
+            "Apple's AirPort service (ACPd) on the device quit, so the device cannot be identified until it "
+            "restarts. This is a bug in Apple's firmware, not TimeCapsuleSMB."
+        ),
+        (
+            "Unplug the device, wait 10 seconds and plug it back in.",
+            "Wait 2 minutes for the device to start up, then try again.",
+        ),
+        retryable=True,
+        suggested_operation="configure",
     ),
     ("configure", ErrorCode.SSH_COMPATIBILITY_FAILED): RecoveryInfo(
         "SSH connection could not be set up",
@@ -979,6 +1019,22 @@ _STAGE_RECOVERY = {
     (operation, code, stage): replace(info, localization_key=f"{operation}.{code}.{stage}")
     for (operation, code, stage), info in _STAGE_RECOVERY.items()
 }
+# ACPd quit at the deploy's start after its restart, with the boot hook
+# (verify_runtime_reboot) or by NetBSD 4's activation (services.activation.
+# start_netbsd4_runtime_after_reboot): unlike the refusal before the upload,
+# the update is on the device already. One card for both.
+_DEPLOY_ACPD_QUIT_AFTER_UPDATE = replace(
+    _DEFAULTS[ErrorCode.ACPD_QUIT],
+    message=(
+        "The update is installed, but Apple's AirPort service (ACPd) on the device quit, so file sharing cannot "
+        "start until the device restarts. This is a bug in Apple's firmware, not TimeCapsuleSMB."
+    ),
+    localization_key="deploy.acpd_quit.after_update",
+)
+_STAGE_RECOVERY.update(dict.fromkeys(
+    (("deploy", ErrorCode.ACPD_QUIT, stage) for stage in ("verify_runtime_reboot", "verify_runtime_activation")),
+    _DEPLOY_ACPD_QUIT_AFTER_UPDATE,
+))
 
 
 _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(

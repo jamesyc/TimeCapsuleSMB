@@ -100,10 +100,18 @@ EOF_PS_ROWS
 '''.replace("__PS_COLUMNS__", PS_COLUMNS).replace("__UNREADABLE__", UNREADABLE_COMMAND).strip() + "\n"
 
 
+# The line a listing ends with once ps_rows has printed every row. ACPd is
+# among the last rows ps prints, so a listing cut short reads as one without
+# ACPd: only a listing with this line says a process is gone (listing_complete).
+PS_LISTING_END = "tcapsule-ps: end"
+
+
 def ps_rows_command(*select: str) -> str:
     """An SSH command printing ps_rows' rows, reading the command lines of the
-    processes whose ucomm matches a pattern in select; it fails when ps does."""
+    processes whose ucomm matches a pattern in select; it fails when ps does.
+    A listing that finished ends with PS_LISTING_END."""
     call = " ".join(["ps_rows", *(shlex.quote(pattern) for pattern in select)])
+    call = f"{call} || exit 1; echo '{PS_LISTING_END}'"
     return f"/bin/sh -c {shlex.quote(PS_ROWS_FUNCTION + call)}"
 
 
@@ -148,8 +156,48 @@ def parse_ps_rows(output: str) -> list[Process]:
 # manager's and discovery's titles, and diskd's interface.
 PS_CAPTURE_FUNCTION = PS_ROWS_FUNCTION + "capture_ps_out() { ps_rows service diskd; }\n"
 PS_CAPTURE_COMMAND = PS_CAPTURE_FUNCTION + "capture_ps_out || true"
-# The same listing as one SSH command. A listing that fails prints nothing.
-PS_CAPTURE_SSH_COMMAND = f"/bin/sh -c {shlex.quote(PS_CAPTURE_COMMAND)}"
+
+
+def listing_complete(output: str) -> bool:
+    """Whether a listing ends with PS_LISTING_END: every row is in it."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return bool(lines) and lines[-1] == PS_LISTING_END
+
+
+def _running(output: str, ucomm: str) -> bool | None:
+    """Whether a live process named ucomm runs, in a listing that ends with
+    PS_LISTING_END; None for any other listing, which cannot say a process is
+    gone. The sshd serving this listing is always in it, so a listing without
+    it, whose rows did not parse as such (another layout, an error line),
+    cannot say a process is gone either."""
+    if not listing_complete(output):
+        return None
+    rows = [p for p in parse_ps_rows(output) if not p.zombie]
+    if any(p.ucomm == ucomm for p in rows):
+        return True
+    return False if any(p.ucomm == "sshd" for p in rows) else None
+
+
+# A real restart runs /sbin/shutdown (ACPd's reboot path), which stops ACPd
+# before sshd, its last step.
+SHUTDOWN_UCOMMS = frozenset({"shutdown", "reboot"})
+
+
+def acpd_running(output: str) -> bool | None:
+    """Whether Apple's ACPd runs (_running). sshd and the other daemons are
+    ACPd's children, so a device that answers SSH started ACPd. NetBSD 4
+    does not start it again when it exits. A listing taken while the device
+    shuts down (SHUTDOWN_UCOMMS) cannot say ACPd quit either."""
+    running = _running(output, "ACPd")
+    if running is False and any(p.ucomm in SHUTDOWN_UCOMMS for p in parse_ps_rows(output)):
+        return None
+    return running
+
+
+def smbd_running(output: str) -> bool | None:
+    """Whether smbd runs (_running). Samba is the manager's child, not
+    ACPd's, so an ACPd that quit after Samba started leaves it serving."""
+    return _running(output, "smbd")
 
 
 def service_role_processes(ps_output: str, role: str) -> list[Process]:
@@ -210,9 +258,10 @@ def describe_uninterruptible(stuck_listing: str) -> str:
     )
 
 
-# Read before any check touches the data disk. Only the manager's title and
-# diskd's interface come from command lines, so a process held on the disk
-# cannot hold up the listing (see UNREADABLE_COMMAND).
+# The same listing as one SSH command, ending with PS_LISTING_END. Read before
+# any check touches the data disk. Only the manager's title and diskd's
+# interface come from command lines, so a process held on the disk cannot hold
+# up the listing (see UNREADABLE_COMMAND).
 PROCESS_SNAPSHOT_COMMAND = ps_rows_command("service", "diskd")
 # ps shows D for an uninterruptible sleep. The kernel counts a sleeping
 # thread's seconds asleep (l_slptime) and resets the count at every wake-up,

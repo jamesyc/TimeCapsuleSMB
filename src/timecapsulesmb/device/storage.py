@@ -392,7 +392,8 @@ def parse_mast_inventory(content: str | bytes) -> tuple[MaStDiskSnapshot, ...]:
 
 def raise_if_acpd_silent(connection: SshConnection, *, after: SshCommandTimeout | None = None) -> None:
     """After an acp call failed or hung: raise acpd_broken when ACPd itself does
-    not answer syUT. `after` is the hang being explained: when SSH cannot run
+    not answer syUT, or acpd_quit when it is not running at all (acpd.acpd_quit,
+    read only then). `after` is the hang being explained: when SSH cannot run
     the syUT read either, that hang is re-raised, with the SSH error as its cause."""
     try:
         answers = acpd.acpd_answers(connection)
@@ -400,8 +401,14 @@ def raise_if_acpd_silent(connection: SshConnection, *, after: SshCommandTimeout 
         if after is None:
             raise
         raise after from exc
-    if not answers:
-        raise StorageDeviceError(ACPD_DISKS_UNREADABLE_MESSAGE, code=ErrorCode.ACPD_BROKEN)
+    if answers:
+        return
+    gone = acpd.acpd_quit(connection, acpd.read_processes(connection))
+    if gone is not None:
+        raise StorageDeviceError(
+            f"{acpd.acpd_broken_message(gone.what, note=gone.note)} Its disks cannot be read.", code=ErrorCode.ACPD_QUIT,
+        )
+    raise StorageDeviceError(ACPD_DISKS_UNREADABLE_MESSAGE, code=ErrorCode.ACPD_BROKEN)
 
 
 def read_mast_volumes_with_output_conn(connection: SshConnection, *, check_acpd: bool = True) -> MaStReadResult:

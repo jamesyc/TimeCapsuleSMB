@@ -305,6 +305,8 @@ class FakeInstalledRuntime:
     rsync_not_running: bool = False
     # This boot's disk errors (device.disk_errors), which keep Samba off.
     disk_errors: tuple[str, ...] = ()
+    # Apple's ACPd quit once the runtime started (device.acpd, "quit").
+    acpd_quit: bool = False
     calls: list[str] = field(default_factory=list)
     # The SSH target each start and wait reached the device at.
     hosts: list[str] = field(default_factory=list)
@@ -336,6 +338,11 @@ class FakeInstalledRuntime:
             from timecapsulesmb.device.disk_errors import DiskFailingError
 
             raise DiskFailingError(self.disk_errors)
+        if self.acpd_quit:
+            from timecapsulesmb.device.acpd import ACPD_QUIT_MESSAGE
+            from timecapsulesmb.device.errors import AcpdQuitError
+
+            raise AcpdQuitError(f"{failure_message} {ACPD_QUIT_MESSAGE}")
         if self.payload_problem is not None:
             raise self.payload_problem.error_type(self.payload_problem.error_after(failure_message))
         if self.rsync_not_running:

@@ -46,7 +46,9 @@ def text(raw: str) -> str:
 
 def recovery_entries() -> list[recovery.RecoveryInfo]:
     tables = (recovery._DEFAULTS, recovery._OPERATION_CODE_RECOVERY, recovery._STAGE_RECOVERY)
-    return [info for table in tables for info in table.values()] + [recovery._SSH_TIMEOUT_SLOW_DEVICE_RECOVERY]
+    # One entry can serve several stages.
+    entries = {id(info): info for table in tables for info in table.values()}
+    return [*entries.values(), recovery._SSH_TIMEOUT_SLOW_DEVICE_RECOVERY]
 
 
 def app_error_line(strings: dict[str, str], operation: str, code: str) -> str | None:
