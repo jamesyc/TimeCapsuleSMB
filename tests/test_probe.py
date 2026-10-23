@@ -816,16 +816,22 @@ class ProbeTests(unittest.TestCase):
                 (ram / sub).mkdir(parents=True)
             (ram / "sbin" / "smbd").write_text("smbd")
             (ram / "etc" / "smb.conf").write_text("[global]\n")
+            locks = Path(tmp) / "Locks"
+            locks.mkdir()
 
             def run_locally(_connection, command, **kwargs):
-                command = command.replace("/mnt/Memory/samba4", str(ram))
+                command = command.replace("/mnt/Memory/samba4", str(ram)).replace("/mnt/Memory", tmp).replace("/mnt/Locks", str(locks))
                 return subprocess.run(command, shell=True, executable="/bin/sh", text=True, capture_output=True)
 
             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=run_locally) as run_ssh_mock:
                 result = read_runtime_ram_diagnostics_conn(connection)
 
         lines = result.splitlines()
-        self.assertIn("runtime paths:", lines)
+        # The lock directory's own filesystem is reported: a full one makes
+        # smbd fail opens, and /mnt/Memory's numbers do not show it.
+        df = lines[lines.index("df:") + 1:lines.index("runtime paths:")]
+        self.assertTrue(df[0].startswith("Filesystem"))
+        self.assertEqual(len(df), 3)
         self.assertTrue(any(line.endswith(f"{ram}/sbin/smbd") and not line.startswith("missing") for line in lines))
         self.assertTrue(any(line.endswith(f"{ram}/etc/smb.conf") and not line.startswith("missing") for line in lines))
         for missing in ("sbin/rsync", "private/smbpasswd", "private/username.map", "etc/rsyncd.conf", "var/rsync.log"):
@@ -834,6 +840,32 @@ class ProbeTests(unittest.TestCase):
         _args, kwargs = run_ssh_mock.call_args
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def test_read_runtime_ram_diagnostics_conn_keeps_going_without_a_lock_directory(self) -> None:
+        # Before boot.sh mounts it there is no /mnt/Locks: df's error is kept
+        # and the runtime paths are still listed.
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        with tempfile.TemporaryDirectory() as tmp:
+            ram = Path(tmp) / "samba4"
+            ram.mkdir()
+            locks = Path(tmp) / "Locks"
+
+            def run_locally(_connection, command, **kwargs):
+                command = command.replace("/mnt/Memory/samba4", str(ram)).replace("/mnt/Memory", tmp).replace("/mnt/Locks", str(locks))
+                return subprocess.run(command, shell=True, executable="/bin/sh", text=True, capture_output=True)
+
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=run_locally):
+                result = read_runtime_ram_diagnostics_conn(connection)
+
+        lines = result.splitlines()
+        df = lines[lines.index("df:") + 1:lines.index("runtime paths:")]
+        self.assertEqual(len(df), 3)
+        # GNU df uses the invoked /bin/df path; BSD df prints its basename.
+        self.assertEqual(
+            [line.removeprefix("/bin/") for line in df if str(locks) in line],
+            [f"df: {locks}: No such file or directory"],
+        )
+        self.assertIn(f"missing {ram}/sbin/smbd", lines)
 
     def test_read_kern_limits_conn_keeps_the_values_and_the_errors(self) -> None:
         # A kernel that refuses one name still reports the others, and the
