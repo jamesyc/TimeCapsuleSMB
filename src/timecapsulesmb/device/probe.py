@@ -3197,6 +3197,8 @@ RUNTIME_RAM_VAR="$RUNTIME_RAM_ROOT/var"
 
 echo "df /mnt/Memory:"
 /bin/df -k /mnt/Memory 2>&1 || true
+echo "df /mnt/Locks:"
+/bin/df -k /mnt/Locks 2>&1 || true
 echo "runtime paths:"
 for runtime_path in \
     "$RUNTIME_RAM_ROOT" \
