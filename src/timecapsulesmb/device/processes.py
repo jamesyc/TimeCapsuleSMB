@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -290,20 +291,126 @@ def stuck_processes(ps_output: str) -> list[StuckProcess]:
     return list(by_pid.values())
 
 
-# ps's wait channel for a process waiting for another's fcntl() byte-range
-# lock: an smbd waiting for a TDB record lock that another process holds.
+# ps's wait channel for a process waiting for a lock another holds: an
+# fcntl() byte-range lock (a TDB's record locks) or a flock() on a whole file
+# (smbd's native HFS xattr writes) both sleep here.
 LOCKF_WCHAN = "lockf"
 
 
 def smbd_lock_waits(ps_output: str, min_seconds: int = 0) -> list[int]:
-    """PIDs of the smbds asleep waiting for an fcntl() lock for at least
-    min_seconds, in PROCESS_SNAPSHOT_COMMAND output.
+    """PIDs of the smbds asleep waiting for a lock for at least min_seconds,
+    in PROCESS_SNAPSHOT_COMMAND output.
 
     The wait is interruptible (state I), so stuck_processes() never reports it,
     however long it lasts.
     """
     return [p.pid for p in parse_ps_rows(ps_output)
             if p.ucomm == "smbd" and p.wchan == LOCKF_WCHAN and p.sl >= min_seconds]
+
+
+# Doctor reads a lock waiter's registers only once it has slept this long. A
+# TDB record lock is normally held for well under a second, so a longer wait
+# is worth a look at kernel memory, and a waiter about to wake is not read.
+LOCK_WAIT_READ_SECONDS = 10
+
+# What a process asleep in "lockf" asked for, from `service
+# --print-syscall-registers` (r0-r3 are a system call's arguments on ARM).
+# Two calls sleep there: flock(fd, how) and fcntl(fd, F_SETLKW, lock). Apple's
+# xattr calls have no libc wrapper and go through syscall(2) (libc's
+# SYS_syscall stub on both lanes), which takes the call's number in r0 and
+# shifts its arguments one register up; one of them here would mean the
+# kernel sleeps in "lockf" inside it.
+ARM_MODE_MASK = 0x1F
+ARM_USER_MODE = 0x10
+FCNTL_F_SETLKW = 9
+FLOCK_OPERATIONS = {1: "LOCK_SH", 2: "LOCK_EX"}
+APPLE_FD_XATTR_SYSCALLS = {377: "fsetxattr", 380: "fgetxattr", 383: "flistxattr", 386: "fremovexattr"}
+_REGISTERS_LINE = re.compile(
+    r"^(\d+) wchan=(\S+) spsr=([0-9a-f]{8}) r0=([0-9a-f]{8}) r1=([0-9a-f]{8}) r2=([0-9a-f]{8})"
+    r" r3=([0-9a-f]{8}) pc=([0-9a-f]{8})$"
+)
+_FSTAT_HEADER = ["USER", "CMD", "PID", "FD"]
+
+
+def _names_file(row: str | None) -> bool:
+    return row is not None and row.split()[4].startswith("/")
+
+
+def read_lock_waits(output: str) -> tuple[list[dict[str, object]], str]:
+    """Each lock waiter's call and the file its descriptor names, from
+    lock_waiters_command output: the service's register lines (and its
+    per-process errors), then fstat's rows (USER CMD PID FD MOUNT INUM MODE
+    SIZE R/W) for the same processes.
+
+    Returns one reading per register line, and the evidence: the service's
+    lines, then fstat's header and only the rows for the descriptors the
+    readings name, so a long descriptor table cannot push the registers out
+    of a size-limited debug field. A call is read only from a process the
+    service saw in "lockf" before and after reading its frame, whose spsr
+    says the frame was saved on entry from a program; otherwise the reading
+    says which of those failed. When the registers fit both an Apple xattr
+    call (number in r0, descriptor in r1) and a lock call (descriptor in r0,
+    operation in r1), the one whose descriptor fstat lists as a file wins;
+    with both or neither, the reading is "ambiguous" and names both. A file
+    is fstat's row past the descriptor: mount point, inode, mode, size, R/W.
+    """
+    header: str | None = None
+    rows: dict[tuple[int, int], str] = {}
+    lines: list[str] = []
+    registers: list[tuple[int, str, list[int]]] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        match = _REGISTERS_LINE.match(line)
+        if match:
+            registers.append((int(match.group(1)), match.group(2), [int(value, 16) for value in match.groups()[2:]]))
+            lines.append(line)
+            continue
+        fields = line.split()
+        if fields[:4] == _FSTAT_HEADER:
+            header = header or line
+        elif len(fields) >= 5 and fields[2].isdigit():
+            # A descriptor row; the cwd and root rows (wd, root) name none.
+            if fields[3].rstrip("*").isdigit():
+                rows.setdefault((int(fields[2]), int(fields[3].rstrip("*"))), line)
+        else:
+            lines.append(line)
+    calls: list[dict[str, object]] = []
+    named: set[tuple[int, int]] = set()
+    for pid, wchan, (spsr, r0, r1, r2, _r3, _pc) in registers:
+        fd: int | None = None
+        if wchan != LOCKF_WCHAN:
+            call = f"not waiting in lockf ({wchan})"
+        elif spsr & ARM_MODE_MASK != ARM_USER_MODE:
+            call = "not a user-mode frame"
+        else:
+            readings: list[tuple[str, int]] = []
+            if r1 == FCNTL_F_SETLKW:
+                readings.append(("fcntl F_SETLKW", r0))
+            elif r1 in FLOCK_OPERATIONS:
+                readings.append((f"flock {FLOCK_OPERATIONS[r1]}", r0))
+            if r0 in APPLE_FD_XATTR_SYSCALLS:
+                readings.append((APPLE_FD_XATTR_SYSCALLS[r0], r1))
+            if len(readings) == 2:
+                named.update((pid, descriptor) for _, descriptor in readings)
+                files = [reading for reading in readings if _names_file(rows.get((pid, reading[1])))]
+                if len(files) == 1:
+                    readings = files
+            if len(readings) == 1:
+                call, fd = readings[0]
+            elif readings:
+                call = "ambiguous: " + " or ".join(f"{name} on fd {descriptor}" for name, descriptor in readings)
+            else:
+                call = f"unrecognized (r0={r0:#x} r1={r1:#x} r2={r2:#x})"
+        row = rows.get((pid, fd)) if fd is not None else None
+        if fd is not None:
+            named.add((pid, fd))
+        calls.append({"pid": pid, "call": call, "fd": fd, "file": " ".join(row.split()[4:]) if row else None})
+    kept = [rows[key] for key in sorted(named) if key in rows]
+    if kept:
+        lines += [header, *kept] if header else kept
+    return calls, "\n".join(lines)
 
 
 def render_stop_service_runtime(*, attempts: int = 5, supervisor_seconds: int = SUPERVISOR_STOP_SECONDS) -> str:

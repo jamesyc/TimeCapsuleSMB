@@ -115,8 +115,26 @@ even if a brief detach/replug leaves inventory unchanged.
 
 `service --print-file-locks FILE...` prints each `fcntl()` byte-range lock
 other processes hold on the files (`F_GETLK` from offset 0, resuming after each
-lock it reports), as `FILE pid PID read|write START+LENGTH`. Doctor runs it on
-Samba's RAM TDBs when an smbd waits in `lockf`, to name the holder.
+lock it reports), as `FILE pid PID read|write START+LENGTH`. A read lock on byte
+4 of a `.tdb` file ends in ` (TDB open marker)`: every process that has the TDB
+open holds one, and only one holder is listed. Both kernels report a `flock()`
+lock too, as `pid -1 write 0+0`: it belongs to an open file, not a process.
+Doctor runs it on Samba's RAM TDBs when an smbd waits in `lockf`, to name the
+holder.
+
+`service --print-syscall-registers PID...` prints the user registers each
+process entered its current system call with, as `PID wchan=WCHAN spsr=… r0=…
+r1=… r2=… r3=… pc=…` in hex. It reads the `struct trapframe` at the top of the
+process's 8 KB u-area through `/dev/kmem`, at the address `KERN_PROC2` reports,
+so it neither stops the process nor reads its memory. It reads the wait channel
+before and after the frame and prints `PID: changed during the read` instead
+when the two differ: the frame of a process that woke holds another call's
+arguments. The NetBSD 6 lane's frame has a pad word after `spsr`
+(`TC_TRAPFRAME_FILL`); NetBSD 4's has none, and since the frame ends at the top
+of the u-area either way, only `spsr` depends on it. Doctor runs it for each
+smbd that has slept in `lockf` for 10 seconds or more: r0-r3 are the call's
+arguments, so `r1` tells `flock()` from `fcntl(F_SETLKW)` and `r0` gives the
+descriptor.
 
 Cold start grants no sharing services until critical facts validate. Failed
 rereads retain permissions only on unchanged interfaces. Each discovery or

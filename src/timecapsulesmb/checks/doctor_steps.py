@@ -103,8 +103,10 @@ from timecapsulesmb.device.storage import diskd_rpc_status_conn
 from timecapsulesmb.device.migration_jobs import probe_migration_activity
 from timecapsulesmb.device import acpd
 from timecapsulesmb.device.processes import (
+    LOCK_WAIT_READ_SECONDS,
     STUCK_SLEEP_SECONDS,
     manager_unnamed_stuck_count,
+    read_lock_waits,
     smbd_lock_waits,
     stuck_processes,
 )
@@ -152,8 +154,10 @@ from timecapsulesmb.device.probe import (
     ManagerVerdicts,
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
+    lock_waiters_command,
     read_file_locks_conn,
     read_kern_limits_conn,
+    read_remote_command_conn,
     read_process_snapshot_conn,
     read_uninterruptible_processes_conn,
     read_active_smb_conf_conn,
@@ -2243,6 +2247,9 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
         sink.debug_fields["remote_process_snapshot"] = limit_remote_log_tail(snapshot.rstrip() or "(empty)")
     stuck = tuple(stuck_processes(snapshot))
     if sink.debug_fields is not None and smbd_lock_waits(snapshot):
+        long_waits = smbd_lock_waits(snapshot, LOCK_WAIT_READ_SECONDS)
+        if long_waits:
+            _doctor_read_lock_waiters(target, sink, long_waits, descriptors=not stuck)
         _doctor_list_file_locks(target, sink, disk=not stuck)
     if sink.debug_fields is not None:
         _doctor_record_kern_limits(target, sink)
@@ -2270,17 +2277,18 @@ def _doctor_check_stuck_processes(target: DoctorTarget, remote: RemoteAccess, si
                 details,
             )
         )
-    # A TDB lock wait lasts as long as another process holds the lock, and
-    # nothing on the device ends it; the lock listing above names the holder.
+    # Nothing on the device ends a lock wait. The waiter's registers above say
+    # which call and file it waits on (a TDB record lock, or a flock() on a
+    # shared file), and the TDB listing names a TDB lock's holder.
     waiting = smbd_lock_waits(snapshot, STUCK_SLEEP_SECONDS)
     if waiting:
         sink.add(
             CheckResult(
                 "FAIL",
-                f"Samba has waited at least {STUCK_SLEEP_SECONDS // 60} minutes for a database lock "
+                f"Samba has waited at least {STUCK_SLEEP_SECONDS // 60} minutes for a file lock "
                 f"(PID{'s' if len(waiting) > 1 else ''} {', '.join(map(str, waiting))}); "
-                "backups from the Mac it serves fail until another process releases the lock. "
-                "Restart the device to clear it",
+                "the Mac it serves gets no answers, so its backups and open files hang, until the lock "
+                "is released. Restart the device to clear it",
                 {"smbd_lock_waits": waiting},
             )
         )
@@ -2299,9 +2307,30 @@ def _doctor_record_kern_limits(target: DoctorTarget, sink: DoctorSink) -> None:
     sink.debug_fields["remote_kern_limits"] = limits.strip() or "(empty)"
 
 
+def _doctor_read_lock_waiters(target: DoctorTarget, sink: DoctorSink, pids: list[int], *, descriptors: bool) -> None:
+    """Which call each smbd that has slept in lockf for LOCK_WAIT_READ_SECONDS
+    sleeps in, and on which descriptor: a TDB's fcntl() lock or the flock()
+    smbd takes on a file around a native HFS xattr write. The registers and
+    fstat's rows for the descriptors they name go into remote_lock_waiters,
+    and each waiter's reading into smbd_lock_wait_calls. fstat is left out
+    while a process is stuck in the kernel, as the data disk's TDB listing is."""
+    if not descriptors:
+        sink.debug_fields["remote_lock_waiters_fstat_skipped"] = "a process is stuck in the kernel"
+    try:
+        output = read_remote_command_conn(target.connection, lock_waiters_command(pids, descriptors=descriptors))
+    except Exception as e:
+        sink.debug_fields["remote_lock_waiters_error"] = f"{type(e).__name__}: {e}"
+        return
+    calls, evidence = read_lock_waits(output)
+    sink.debug_fields["remote_lock_waiters"] = limit_remote_log_tail(evidence or "(empty)")
+    if calls:
+        sink.debug_fields["smbd_lock_wait_calls"] = calls
+
+
 def _doctor_list_file_locks(target: DoctorTarget, sink: DoctorSink, *, disk: bool) -> None:
     """An smbd waiting in lockf has stopped serving its client until another
-    process releases a TDB lock; only the holder's PID tells which. The RAM
+    process releases the lock; for a TDB lock, only the holder's PID tells
+    which. The RAM
     TDBs first, then the data disk's, unless a process is already stuck in the
     kernel: a disk that stopped answering would leave the listing stuck too."""
     lists = [("remote_file_locks", FILE_LOCKS_RAM_TDBS)]
