@@ -76,7 +76,13 @@ struct FlashPresentation: Equatable {
     init(store: FlashWorkflowStore) {
         self.title = L10n.string("flash.title")
         // An error shows in its own box below, not in this line.
-        self.message = store.writeResult?.localizedSummary ?? store.plan?.localizedSummary ?? store.backup?.localizedSummary ?? store.eligibilityMessage
+        self.message = store.writeResult?.localizedSummary
+            // Only while Write Patch can be pressed: during the confirmation
+            // and the write, the plan's own summary is still true.
+            ?? (store.canWritePatch ? L10n.string("flash.message.patch_plan_ready") : nil)
+            ?? store.plan?.localizedSummary
+            ?? store.backup?.localizedSummary
+            ?? store.eligibilityMessage
         self.stateTitle = store.state.title
         self.primaryActions = [.backupAndInspect, .planPatch, .planRestore, .writePatch, .writeRestore]
         self.secondaryActions = [.checkApple, .downloadApple]
@@ -122,8 +128,18 @@ struct FlashPresentation: Equatable {
         var rows: [PresentationRow] = []
         if let backup = store.backup {
             rows.append(PresentationRow(label: L10n.string("flash.row.backup_dir"), value: backup.backupDir))
-            rows.append(PresentationRow(label: L10n.string("flash.row.active_bank"), value: backup.activeBank ?? L10n.string("value.unknown")))
-            rows.append(PresentationRow(label: L10n.string("flash.row.banks"), value: "\(backup.banks.count)"))
+            // After a write this backup no longer describes the banks; the
+            // stale-snapshot warning asks for a new one.
+            if !store.backupSnapshotStale {
+                // The helper names a bank only when one alone passes its checks
+                // (or the running LOGIN script picks it); with both passing
+                // there is none to show.
+                if let activeBank = backup.activeBank {
+                    rows.append(PresentationRow(label: L10n.string("flash.row.active_bank"), value: bankName(activeBank)))
+                }
+                rows.append(PresentationRow(label: L10n.string("flash.row.firmware_banks"), value: bankHealth(backup.banks)))
+                rows.append(PresentationRow(label: L10n.string("flash.row.boot_hook"), value: bootHook(backup.banks)))
+            }
         }
         if let plan = store.plan {
             rows.append(PresentationRow(label: L10n.string("flash.row.mode"), value: plan.mode.title))
@@ -161,6 +177,48 @@ struct FlashPresentation: Equatable {
             rows.append(PresentationRow(label: L10n.string("flash.row.write_validated"), value: result.writeValidated ? L10n.string("value.yes") : L10n.string("value.no")))
         }
         return rows
+    }
+
+    private static func bankName(_ name: String) -> String {
+        switch name {
+        case "primary":
+            return L10n.string("flash.bank.primary")
+        case "secondary":
+            return L10n.string("flash.bank.secondary")
+        default:
+            return name
+        }
+    }
+
+    // Both banks passing every check is the normal state, and then no bank can
+    // be named active; a patch writes the primary bank either way.
+    private static func bankHealth(_ banks: [FlashBankPayload]) -> String {
+        let primaryValid = banks.first { $0.name == "primary" }?.backupValid ?? false
+        let secondaryValid = banks.first { $0.name == "secondary" }?.backupValid ?? false
+        switch (primaryValid, secondaryValid) {
+        case (true, true):
+            return L10n.string("flash.banks.both_valid")
+        case (true, false):
+            return L10n.string("flash.banks.secondary_failed")
+        case (false, true):
+            return L10n.string("flash.banks.primary_failed")
+        case (false, false):
+            return L10n.string("flash.banks.both_failed")
+        }
+    }
+
+    // The patch replaces the primary bank's LOGIN script, so that bank says
+    // whether the hook is in place.
+    private static func bootHook(_ banks: [FlashBankPayload]) -> String {
+        let primary = banks.first { $0.name == "primary" }
+        switch primary?.login?.stringValue(for: "classification") {
+        case "stock":
+            return L10n.string("flash.boot_hook.not_installed")
+        case "already_patched":
+            return L10n.string("flash.boot_hook.installed")
+        default:
+            return L10n.string("flash.boot_hook.not_recognized")
+        }
     }
 
     private static func appendIfPresent(_ rows: inout [PresentationRow], label: String, value: String?) {

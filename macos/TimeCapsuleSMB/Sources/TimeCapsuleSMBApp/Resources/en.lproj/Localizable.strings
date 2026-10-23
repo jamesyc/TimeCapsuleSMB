@@ -409,6 +409,16 @@
 "flash.action.plan_restore" = "Plan Restore";
 "flash.action.write_patch" = "Write Patch";
 "flash.action.write_restore" = "Write Restore";
+"flash.bank.primary" = "Primary";
+"flash.bank.secondary" = "Secondary";
+"flash.banks.both_valid" = "Both valid";
+"flash.banks.primary_failed" = "Primary failed checks, secondary valid";
+"flash.banks.secondary_failed" = "Primary valid, secondary failed checks";
+"flash.banks.both_failed" = "Both failed checks";
+"flash.boot_hook.installed" = "Installed";
+"flash.boot_hook.not_installed" = "Not installed";
+"flash.boot_hook.not_recognized" = "Not recognized";
+"flash.message.patch_plan_ready" = "Patch plan ready. Choose “Write Patch” to install the boot hook.";
 "flash.manual_power_cycle.message" = "Flash write validation completed. Unplug the device, wait 10 seconds, then plug it back in. Wait for it to finish booting, then run “Checkup”. One firmware bank was left untouched.";
 "flash.manual_power_cycle.title" = "Manual Reboot Required";
 "flash.mode.check_apple" = "Check Apple Firmware";
@@ -424,7 +434,8 @@
 "flash.row.apple_source" = "Apple Source";
 "flash.row.apple_version" = "Apple Version";
 "flash.row.backup_dir" = "Backup";
-"flash.row.banks" = "Banks";
+"flash.row.boot_hook" = "Boot Hook";
+"flash.row.firmware_banks" = "Firmware Banks";
 "flash.row.firmware_payload_path" = "Firmware Payload";
 "flash.row.firmware_payload_sha256" = "Firmware Payload SHA-256";
 "flash.row.firmware_payload_size" = "Firmware Payload Size";

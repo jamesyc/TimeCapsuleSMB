@@ -293,6 +293,7 @@ Rules that apply to one language. The vocabulary tables above cover single terms
 - *reparatie* is repair and *herstel* is restore (`Herstel naar flash`).
 - A disk that may be failing *is mogelijk defect*.
 - Uninstall is *Verwijderen*, so Forget's menu item and question say *vergeten* (`Op deze Mac vergeten`, `%@ op deze Mac vergeten?`); like other menu items, the verb comes last.
+- Checkup is *Controle*, so a status value does not open with that word. A flash bank that fails its checks is *afgekeurd* (`Primaire bank afgekeurd, secundaire geldig`).
 
 ### French
 
@@ -336,6 +337,7 @@ Rules that apply to one language. The vocabulary tables above cover single terms
 - A volume is 卷 in our prose (Apple says 宗卷); neither means a whole physical disk.
 - [Apple's SMB guidance](https://support.apple.com/zh-cn/102064) confirms 共享 and 元数据, and its [certificate guide](https://support.apple.com/zh-cn/guide/keychain-access/mchlp2697/mac) 数字签名. The SMB setting is `SMB 签名`, without a claim about certificate-based signatures.
 - A disk that may be failing 可能出现故障.
+- Checkup is 检查 (检查通过 / 检查失败), so a flash bank that fails its checksum checks 未通过校验, never 未通过检查, which reads as a failed Checkup.
 
 ### Lithuanian
 

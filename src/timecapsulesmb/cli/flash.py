@@ -102,8 +102,15 @@ def record_flash_error(
 def print_flash_summary(manifest: dict[str, object]) -> None:
     print(f"Backed up firmware banks to: {manifest['backup_dir']}")
     print(f"Operation: {manifest['operation']}")
-    print(f"Active bank: {manifest['active_bank'] or 'unknown'}")
     selection = manifest.get("active_selection")
+    if manifest["active_bank"]:
+        print(f"Active bank: {manifest['active_bank']}")
+    elif isinstance(selection, dict) and selection.get("status") == "multiple_candidates":
+        # Both banks passing every check is the normal state; a patch writes
+        # the primary bank regardless.
+        print("Active bank: not determined (both banks valid; patch writes primary)")
+    else:
+        print("Active bank: unknown")
     if isinstance(selection, dict):
         candidates = selection.get("candidates")
         if isinstance(candidates, list) and candidates:

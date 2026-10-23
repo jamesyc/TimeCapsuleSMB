@@ -409,6 +409,16 @@
 "flash.action.plan_restore" = "Wiederherstellung planen";
 "flash.action.write_patch" = "Patch schreiben";
 "flash.action.write_restore" = "Wiederherstellung schreiben";
+"flash.bank.primary" = "Primär";
+"flash.bank.secondary" = "Sekundär";
+"flash.banks.both_valid" = "Beide gültig";
+"flash.banks.primary_failed" = "Primäre Bank hat die Prüfung nicht bestanden, sekundäre ist gültig";
+"flash.banks.secondary_failed" = "Primäre Bank ist gültig, sekundäre hat die Prüfung nicht bestanden";
+"flash.banks.both_failed" = "Beide haben die Prüfung nicht bestanden";
+"flash.boot_hook.installed" = "Installiert";
+"flash.boot_hook.not_installed" = "Nicht installiert";
+"flash.boot_hook.not_recognized" = "Nicht erkannt";
+"flash.message.patch_plan_ready" = "Patch-Plan bereit. Wählen Sie „Patch schreiben“, um den Starthook zu installieren.";
 "flash.manual_power_cycle.message" = "Flash-Schreibvorgang geprüft. Trennen Sie das Gerät vom Strom, warten Sie 10 Sekunden und schließen Sie es wieder an. Warten Sie, bis es vollständig gestartet ist, und führen Sie die „Überprüfung“ aus. Eine Firmware-Bank blieb unverändert.";
 "flash.manual_power_cycle.title" = "Manueller Neustart erforderlich";
 "flash.mode.check_apple" = "Apple-Firmware prüfen";
@@ -424,7 +434,8 @@
 "flash.row.apple_source" = "Apple-Quelle";
 "flash.row.apple_version" = "Apple-Version";
 "flash.row.backup_dir" = "Sicherung";
-"flash.row.banks" = "Firmware-Bänke";
+"flash.row.boot_hook" = "Starthook";
+"flash.row.firmware_banks" = "Firmware-Bänke";
 "flash.row.firmware_payload_path" = "Firmware-Nutzdaten";
 "flash.row.firmware_payload_sha256" = "SHA-256 der Firmware-Nutzdaten";
 "flash.row.firmware_payload_size" = "Größe der Firmware-Nutzdaten";

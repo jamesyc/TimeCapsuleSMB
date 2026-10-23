@@ -409,6 +409,16 @@
 "flash.action.plan_restore" = "Planuoti atkūrimą";
 "flash.action.write_patch" = "Įrašyti pataisymą";
 "flash.action.write_restore" = "Įrašyti atkūrimą";
+"flash.bank.primary" = "Pirminis";
+"flash.bank.secondary" = "Antrinis";
+"flash.banks.both_valid" = "Abu tinkami";
+"flash.banks.primary_failed" = "Pirminis nepraėjo patikros, antrinis tinkamas";
+"flash.banks.secondary_failed" = "Pirminis tinkamas, antrinis nepraėjo patikros";
+"flash.banks.both_failed" = "Abu nepraėjo patikros";
+"flash.boot_hook.installed" = "Įdiegtas";
+"flash.boot_hook.not_installed" = "Neįdiegtas";
+"flash.boot_hook.not_recognized" = "Neatpažintas";
+"flash.message.patch_plan_ready" = "Pataisymo planas paruoštas. Pasirinkite „Įrašyti pataisymą“, kad įdiegtumėte įkrovos įskiepį.";
 "flash.manual_power_cycle.message" = "Flash įrašymo tikrinimas baigtas. Atjunkite įrenginį, palaukite 10 sekundžių, tada vėl prijunkite. Palaukite, kol jis baigs įsikrauti, tada paleiskite operaciją „Patikrinimas“. Vienas programinės įrangos bankas liko nepakeistas.";
 "flash.manual_power_cycle.title" = "Reikalingas rankinis paleidimas iš naujo";
 "flash.mode.check_apple" = "Tikrinti Apple programinę įrangą";
@@ -424,7 +434,8 @@
 "flash.row.apple_source" = "Apple šaltinis";
 "flash.row.apple_version" = "Apple versija";
 "flash.row.backup_dir" = "Atsarginė kopija";
-"flash.row.banks" = "Bankai";
+"flash.row.boot_hook" = "Įkrovos įskiepis";
+"flash.row.firmware_banks" = "Programinės įrangos bankai";
 "flash.row.firmware_payload_path" = "Programinės įrangos turinys";
 "flash.row.firmware_payload_sha256" = "Programinės įrangos turinio SHA-256";
 "flash.row.firmware_payload_size" = "Programinės įrangos turinio dydis";

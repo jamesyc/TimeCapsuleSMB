@@ -334,6 +334,7 @@ class CliFlashTests(CliTestCase):
         self.assertEqual(manifest["banks"][1]["write_decision"], "backup only; no patch candidate built")
         self.assertIn("secondary: size=", output.getvalue())
         self.assertNotIn("patch file=", output.getvalue())
+        self.assertIn("Active bank: secondary\n", output.getvalue())
 
     def test_flash_read_only_saves_no_patch_when_active_bank_is_unknown(self) -> None:
         output = io.StringIO()
@@ -368,6 +369,35 @@ class CliFlashTests(CliTestCase):
         self.assertIsNone(manifest["banks"][0]["patch"])
         self.assertIsNone(manifest["banks"][1]["patch"])
         self.assertNotIn("patch file=", output.getvalue())
+        # Both banks passing is the normal state, not an unknown one.
+        self.assertIn(
+            "Active bank: not determined (both banks valid; patch writes primary)\n",
+            output.getvalue(),
+        )
+        self.assertNotIn("Active bank: unknown", output.getvalue())
+
+    def test_flash_read_only_reports_unknown_active_bank_when_no_bank_passes(self) -> None:
+        output = io.StringIO()
+        primary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            with zopfli_available():
+                with self.flash_cli(command_context):
+                    with mock.patch(
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=flash_inputs(primary, secondary),
+                    ):
+                        with redirect_stdout(output):
+                            rc = cli_flash.main(["--read-only", "--backup-dir", str(backup_dir)])
+
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(manifest["active_selection"]["status"], "no_candidates")
+        self.assertIn("Active bank: unknown\n", output.getvalue())
+        self.assertNotIn("not determined", output.getvalue())
 
     def test_flash_read_only_uses_live_login_to_select_between_active_candidates(self) -> None:
         output = io.StringIO()
@@ -399,6 +429,7 @@ class CliFlashTests(CliTestCase):
         self.assertEqual(manifest["active_selection"]["candidates"], ["primary"])
         self.assertEqual(manifest["banks"][0]["live_login_match"], True)
         self.assertEqual(manifest["banks"][1]["live_login_match"], False)
+        self.assertIn("Active bank: primary\n", output.getvalue())
 
     def test_flash_patch_targets_primary_when_both_banks_are_active_candidates(self) -> None:
         output = io.StringIO()
