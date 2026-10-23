@@ -17,7 +17,7 @@ import timecapsulesmb.device.probe as probe
 from timecapsulesmb.app.recovery import cli_steps
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.processes import UNREADABLE_COMMAND, parse_ps_rows
+from timecapsulesmb.device.processes import PS_LISTING_END, UNREADABLE_COMMAND, parse_ps_rows
 from timecapsulesmb.device.probe import (
     SshAccessStatus,
     flash_runtime_config_present_conn,
@@ -454,6 +454,59 @@ class ProbeTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshCommandTimeout("ps")):
             self.assertIsNone(probe.manager_payload_problems(connection))
+
+    def test_manager_state_says_whether_acpd_runs_only_from_a_listing_that_finished(self) -> None:
+        # ACPd is near the end of ps's output, so only a listing that reached
+        # the end line can say it is gone; any other says nothing about it.
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        manager = "  300 1 571 S 0 select 0:04.81 service service: role=manager started=24 payload=missing"
+        acpd_row = "  190 1 15 Ia 127 netio 0:01.19 ACPd"
+        end = PS_LISTING_END
+        cases = (
+            ("running", [manager, acpd_row, end], True),
+            ("quit", [manager, "  107 1 15 S 0 select 0:00.32 sshd", end], False),
+            ("zombie only", [manager, "  107 1 15 S 0 select 0:00.32 sshd", "  190 1 15 Z 0 - 0:00.00 ACPd", end], False),
+            ("cut short", [manager], None),
+            ("ps failed", [], None),
+        )
+        for name, rows, running in cases:
+            with self.subTest(name):
+                proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="".join(f"{row}\n" for row in rows))
+                with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+                    state = probe.read_manager_state(connection)
+                self.assertIs(state.acpd_running, running)
+                self.assertEqual(state.problems, (probe.DISK_PAYLOAD_MISSING,) if rows else ())
+
+    def test_manager_state_is_none_when_ps_could_not_be_read(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshCommandTimeout("ps")):
+            self.assertIsNone(probe.read_manager_state(connection))
+        failed = subprocess.CompletedProcess(args=["ssh"], returncode=255, stdout="")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=failed):
+            self.assertIsNone(probe.read_manager_state(connection))
+
+    def test_acpd_counts_as_quit_after_two_listings_in_a_row_without_it(self) -> None:
+        gone = probe.ManagerState((), acpd_running=False)
+        verdicts = probe.ManagerVerdicts()
+        verdicts.update_state(gone)
+        self.assertFalse(verdicts.acpd_quit)  # one listing could fall between two ACPds
+        verdicts.update_state(gone)
+        self.assertTrue(verdicts.acpd_quit)
+        self.assertTrue(verdicts.lasting().acpd_quit)  # no wait brings it back
+        for between in (probe.ManagerState((), acpd_running=True), probe.ManagerState((), acpd_running=None), None):
+            with self.subTest(between=between):
+                verdicts = probe.ManagerVerdicts()
+                verdicts.update_state(gone)
+                verdicts.update_state(between)  # a listing with ACPd, cut short, or unread
+                verdicts.update_state(gone)
+                self.assertFalse(verdicts.acpd_quit)
+
+    def test_manager_state_carries_the_titles_verdicts_into_the_count(self) -> None:
+        verdicts = probe.ManagerVerdicts((probe.RSYNC_DAMAGED,))
+        verdicts.update_state(None)  # unread: the verdicts stay
+        self.assertEqual(verdicts.problems, (probe.RSYNC_DAMAGED,))
+        verdicts.update_state(probe.ManagerState((probe.DISK_PAYLOAD_DAMAGED,), acpd_running=True))
+        self.assertEqual(verdicts.problems, (probe.DISK_PAYLOAD_DAMAGED,))
 
     def test_manager_verdicts_keep_the_last_reading_that_worked(self) -> None:
         verdicts = probe.ManagerVerdicts((probe.RSYNC_DAMAGED,))

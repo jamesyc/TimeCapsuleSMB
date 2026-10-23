@@ -12,13 +12,19 @@ import pytest
 
 from tests.device_ps import FakePs, process, ps_row
 from timecapsulesmb.device.processes import (
+    PROCESS_SNAPSHOT_COMMAND,
+    PS_CAPTURE_SSH_COMMAND,
+    PS_LISTING_END,
     PS_ROWS_FUNCTION,
     UNREADABLE_COMMAND,
     Process,
+    acpd_running,
+    listing_complete,
     describe_uninterruptible,
     parse_ps_rows,
     ps_rows_command,
     render_process_present_by_ucomm,
+    smbd_running,
 )
 
 # Ubuntu CI runs these scripts with dash; macOS has both.
@@ -215,3 +221,87 @@ def test_process_present_by_ucomm_reads_no_command_lines(tmp_path, shell, rows, 
     assert (result.returncode == 0) == present
     assert fake.command_reads() == []
     assert not list(tmp_path.glob("tcapsule-ps.*"))
+
+
+# The listings that can say ACPd is gone end with PS_LISTING_END, and only
+# once ps_rows printed every row.
+LISTINGS_WITH_END = {"snapshot": PROCESS_SNAPSHOT_COMMAND, "capture": PS_CAPTURE_SSH_COMMAND}
+
+
+@pytest.mark.parametrize("name", sorted(LISTINGS_WITH_END))
+def test_a_finished_listing_ends_with_its_end_line(tmp_path, name):
+    fake = FakePs(tmp_path, [process("190 S ACPd /sbin/ACPd -nofork"),
+                             process("300 S service service: role=manager started=24")])
+    result = subprocess.run(fake.install(LISTINGS_WITH_END[name]), shell=True, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == PS_LISTING_END
+    assert listing_complete(result.stdout)
+    assert acpd_running(result.stdout) is True
+    assert [p.ucomm for p in parse_ps_rows(result.stdout)] == ["ACPd", "service"]
+
+
+@pytest.mark.parametrize("name", sorted(LISTINGS_WITH_END))
+def test_a_finished_listing_without_acpd_says_it_quit(tmp_path, name):
+    fake = FakePs(tmp_path, [process("107 S sshd /usr/sbin/sshd"),
+                             process("300 S service service: role=manager started=24")])
+    result = subprocess.run(fake.install(LISTINGS_WITH_END[name]), shell=True, capture_output=True, text=True)
+
+    assert acpd_running(result.stdout) is False
+
+
+@pytest.mark.parametrize("name", sorted(LISTINGS_WITH_END))
+def test_a_listing_ps_could_not_make_has_no_end_line_and_says_nothing(tmp_path, name):
+    fake = FakePs(tmp_path, [process("107 S sshd /usr/sbin/sshd")], list_fails=True)
+    result = subprocess.run(fake.install(LISTINGS_WITH_END[name]), shell=True, capture_output=True, text=True)
+
+    assert PS_LISTING_END not in result.stdout
+    assert acpd_running(result.stdout) is None
+    # The snapshot fails as ps did; the capture prints nothing and succeeds.
+    assert (result.returncode != 0) == (name == "snapshot")
+
+
+def test_only_a_last_end_line_makes_a_listing_complete():
+    acpd = ps_row(190, "ACPd")
+    assert listing_complete(f"{acpd}\n{PS_LISTING_END}\n\n")
+    assert not listing_complete(f"{PS_LISTING_END}\n{acpd}\n")  # rows after it: not this listing's end
+    assert not listing_complete(acpd)
+    assert not listing_complete("")
+    # A cut-short listing never reads as ACPd gone.
+    assert acpd_running(ps_row(107, "sshd")) is None
+
+
+def test_only_a_listing_that_shows_this_logins_sshd_says_acpd_quit():
+    # The sshd serving the listing is always in it: rows that did not parse
+    # as such (another layout, an error line, none at all) say nothing.
+    sshd = ps_row(107, "sshd")
+    assert acpd_running(f"{sshd}\n{PS_LISTING_END}") is False
+    assert acpd_running(f"{sshd}\n{ps_row(190, 'ACPd')}\n{PS_LISTING_END}") is True
+    for unparsed in (
+        PS_LISTING_END,
+        f"ps: kvm_getprocs: Cannot allocate memory\n{PS_LISTING_END}",
+        f"190 ACPd Sa\n107 sshd S\n{PS_LISTING_END}",  # a layout without PS_COLUMNS
+        f"{ps_row(107, 'sshd', stat='Z')}\n{PS_LISTING_END}",  # only a zombie sshd
+    ):
+        assert acpd_running(unparsed) is None, unparsed
+
+
+def test_a_listing_taken_during_a_shutdown_never_says_acpd_quit():
+    # A real restart's shutdown stops ACPd before sshd, its last step.
+    sshd = ps_row(107, "sshd")
+    for ucomm in ("shutdown", "reboot"):
+        assert acpd_running(f"{sshd}\n{ps_row(901, ucomm)}\n{PS_LISTING_END}") is None, ucomm
+    # ACPd still listed: it runs, shutdown or not.
+    assert acpd_running(f"{sshd}\n{ps_row(190, 'ACPd')}\n{ps_row(901, 'shutdown')}\n{PS_LISTING_END}") is True
+
+
+def test_smbd_running_says_whether_samba_outlived_acpd_by_the_same_rules():
+    # Samba is the manager's child, so it can outlive ACPd: only a listing
+    # that finished and shows this login's sshd can say it is gone.
+    sshd = ps_row(107, "sshd")
+    assert smbd_running(f"{sshd}\n{ps_row(320, 'smbd')}\n{PS_LISTING_END}") is True
+    assert smbd_running(f"{sshd}\n{PS_LISTING_END}") is False
+    assert smbd_running(f"{sshd}\n{ps_row(320, 'smbd', stat='Z')}\n{PS_LISTING_END}") is False
+    assert smbd_running(f"{sshd}\n{ps_row(320, 'smbd')}") is None  # cut short
+    assert smbd_running(f"ps: kvm_getprocs: Cannot allocate memory\n{PS_LISTING_END}") is None
+

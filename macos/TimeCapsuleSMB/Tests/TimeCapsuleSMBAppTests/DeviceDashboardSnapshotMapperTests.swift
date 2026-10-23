@@ -155,6 +155,52 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(otherState?.errorCode, "doctor_failed")
     }
 
+    func testAnACPdThatIsGoneIsUnhealthyWithItsOwnCode() throws {
+        // ACPd quit, or a restart tore it down: unplugging is the one fix. It
+        // takes diskd with it, so it explains a disk that will not mount; a
+        // failing disk still comes first. A stuck fork of a running ACPd keeps
+        // the generic code.
+        let profile = try makeProfile(payloadFamily: "netbsd4le_samba4")
+        func acpd(_ problem: String) -> JSONValue {
+            testDoctorCheck(status: "FAIL", message: "Apple ACPd is broken", domain: "device",
+                            code: DoctorSummary.acpdBrokenResultCode, extraDetails: ["acpd_problem": .string(problem)])
+        }
+        let mounting = testDoctorCheck(status: "FAIL", message: "a disk on the device will not mount",
+                                       domain: "device", code: DoctorSummary.diskNotMountingResultCode)
+        let failing = testDoctorCheck(status: "FAIL", message: "the disk is failing",
+                                      domain: "device", code: DoctorSummary.diskFailingResultCode)
+        let cases: [(String, [JSONValue], Bool, String)] = [
+            ("quit", [acpd("quit")], true, DoctorSummary.acpdBrokenResultCode),
+            ("restart never happened", [acpd("restart_never_happened")], true, DoctorSummary.acpdBrokenResultCode),
+            ("quit beside a disk that will not mount", [acpd("quit"), mounting], true,
+             DoctorSummary.acpdBrokenResultCode),
+            ("quit beside a failing disk", [acpd("quit"), failing], true, DoctorSummary.diskFailingResultCode),
+            ("stuck fork", [acpd("stuck_child")], false, "doctor_failed"),
+        ]
+        for (name, checks, gone, code) in cases {
+            let summary = try makeDoctorSummary(checks: checks)
+            let state = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+                profile: profile, skipSSH: false, state: .failed, summary: summary)
+
+            XCTAssertEqual(summary.acpdGone, gone, name)
+            XCTAssertEqual(state?.state, .unhealthy, name)
+            XCTAssertEqual(state?.errorCode, code, name)
+        }
+
+        // Samba not started on NetBSD 4 asks for Activate, unless ACPd is
+        // gone: Activate would refuse until the device is unplugged.
+        let notStarted = testDoctorCheck(status: "FAIL", message: "the runtime is installed but not running",
+                                         domain: "device", code: DoctorSummary.runtimeNotStartedResultCode)
+        let startable = try makeDoctorSummary(checks: [notStarted])
+        let blocked = try makeDoctorSummary(checks: [acpd("restart_never_happened"), notStarted])
+        XCTAssertEqual(DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: startable)?.state, .activationNeeded)
+        let blockedState = DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile, skipSSH: false, state: .failed, summary: blocked)
+        XCTAssertEqual(blockedState?.state, .unhealthy)
+        XCTAssertEqual(blockedState?.errorCode, DoctorSummary.acpdBrokenResultCode)
+    }
+
     func testASectionDecodesWithoutItsTelemetryCodeLists() throws {
         // fail_codes and warn_codes are for telemetry; the app reads only the
         // status and counts.

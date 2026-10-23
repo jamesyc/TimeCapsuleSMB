@@ -310,7 +310,8 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             raise AppOperationError(str(exc), code=ErrorCode.SSH_COMPATIBILITY_FAILED) from exc
         if exc.code == ErrorCode.SSH_ENABLE_TIMEOUT:
             raise AppOperationError(str(exc), code=ErrorCode.SSH_ENABLE_TIMEOUT) from exc
-        if exc.code in (ErrorCode.DEVICE_IDENTITY_MISMATCH, ErrorCode.LOCAL_NETWORK_FILTERED, ErrorCode.SSH_CLIENT_FAILED):
+        if exc.code in (ErrorCode.DEVICE_IDENTITY_MISMATCH, ErrorCode.LOCAL_NETWORK_FILTERED, ErrorCode.SSH_CLIENT_FAILED,
+                        ErrorCode.ACPD_QUIT):
             raise AppOperationError(str(exc), code=exc.code) from exc
         if exc.code == ErrorCode.UNSUPPORTED_DEVICE:
             raise AppOperationError(str(exc), code=ErrorCode.UNSUPPORTED_DEVICE) from exc

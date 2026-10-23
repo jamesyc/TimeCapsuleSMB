@@ -12,7 +12,7 @@ from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_a
 from timecapsulesmb.deploy.planner import UninstallPlan, build_runtime_start_actions, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.disk_errors import DiskFailingError
-from timecapsulesmb.device.errors import DeviceError, DiskPayloadError, RsyncNotRunningError
+from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, DiskPayloadError, RsyncNotRunningError
 from timecapsulesmb.device.processes import render_process_present_by_ucomm
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER, MaStVolume
 from timecapsulesmb.services import storage as storage_service
@@ -431,7 +431,7 @@ def run_fsck(
                 callbacks=callbacks,
                 messages=RESTART_AFTER_REBOOT_MESSAGES,
             )
-        except (DiskPayloadError, DiskFailingError, RsyncNotRunningError) as exc:
+        except (AcpdQuitError, DiskPayloadError, DiskFailingError, RsyncNotRunningError) as exc:
             runtime_restart_error = str(exc)
             runtime_restart_code = exc.code
             # File sharing did restart when only rsync is off.

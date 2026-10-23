@@ -16,10 +16,18 @@ SSH (acpd_answers_network).
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 
 from timecapsulesmb.device.probe import AirportAcpReading, read_kern_limits_conn
-from timecapsulesmb.device.processes import PROCESS_SNAPSHOT_COMMAND, STUCK_PROCESS_PS_COMMAND, parse_ps_rows
+from timecapsulesmb.device.processes import (
+    PROCESS_SNAPSHOT_COMMAND,
+    SHUTDOWN_UCOMMS,
+    STUCK_PROCESS_PS_COMMAND,
+    acpd_running,
+    parse_ps_rows,
+    smbd_running,
+)
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
 from timecapsulesmb.transport.errors import TransportError
@@ -69,6 +77,9 @@ class AcpdProblem:
     what: str
     note: str = ""
     details: dict[str, object] = field(default_factory=dict)
+    # ACPd is gone (quit, or torn down by a restart that never happened) and
+    # a finished listing shows no smbd: nothing works until the device restarts.
+    sharing_off: bool = False
 
 
 # The one fix for a broken ACPd. An error leaves it to the code's next steps
@@ -79,6 +90,28 @@ ACPD_FIX = "Unplug the device, wait 10 seconds, plug it back in and wait 2 minut
 def acpd_broken_message(what: str, *, note: str = "") -> str:
     """Every caller's words for a broken ACPd: what failed, and why it matters."""
     return f"Apple ACPd is broken: {what}, a bug in Apple's firmware. {note}".rstrip()
+
+
+# ACPd gone from the process list (processes.acpd_running). Its children,
+# sshd among them, keep running with init as their parent; diskd, wcifsnd,
+# wcifsfs and afpserver go with it. NetBSD 4 does not start it again.
+ACPD_QUIT_WHAT = "the AirPort service on this device has quit"
+ACPD_QUIT_NOTE = "File sharing stays off until the device restarts. "
+ACPD_QUIT_MESSAGE = acpd_broken_message(ACPD_QUIT_WHAT, note=ACPD_QUIT_NOTE)
+# Samba started before ACPd quit keeps serving (processes.smbd_running).
+ACPD_QUIT_SERVING_NOTE = (
+    "Sharing may work now, but until the device is unplugged it cannot be updated or restarted over the "
+    "network, and AirPort Utility cannot reach it. "
+)
+# A listing without ACPd is read again this long after, about one attempt of
+# the runtime wait apart (probe.ACPD_GONE_LISTINGS): NetBSD 4 never starts
+# ACPd again, but on NetBSD 6 that is not known, so one listing could fall
+# between two ACPds. Only a device whose ACPd is already gone waits for it.
+ACPD_RECHECK_SECONDS = 5.0
+
+
+def pause(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def acpd_answers(connection: SshConnection) -> bool:
@@ -162,7 +195,7 @@ def restart_never_happened(connection: SshConnection) -> bool:
     proc = run_ssh(connection, _RESTART_MARKER_READ, check=False, timeout=RESTART_MARKER_TIMEOUT_SECONDS)
     if proc.returncode != 0:
         return False
-    return not {p.ucomm for p in parse_ps_rows(proc.stdout or "")} & {"shutdown", "reboot"}
+    return not {p.ucomm for p in parse_ps_rows(proc.stdout or "")} & SHUTDOWN_UCOMMS
 
 
 def read_processes(connection: SshConnection) -> str:
@@ -171,6 +204,29 @@ def read_processes(connection: SshConnection) -> str:
         return run_ssh(connection, PROCESS_SNAPSHOT_COMMAND, check=False, timeout=ACPD_SSH_TIMEOUT_SECONDS).stdout or ""
     except TransportError:
         return ""
+
+
+def acpd_quit(connection: SshConnection, ps_output: str) -> AcpdProblem | None:
+    """The "quit" problem when ACPd is gone from `ps_output`, a
+    PROCESS_SNAPSHOT_COMMAND listing, and from another one read
+    ACPD_RECHECK_SECONDS later; None otherwise. A listing that cannot say
+    (processes.acpd_running's None) is no quit. Its note says whether smbd
+    still runs in the second listing."""
+    if acpd_running(ps_output) is not False:
+        return None
+    pause(ACPD_RECHECK_SECONDS)
+    listing = read_processes(connection)
+    if acpd_running(listing) is not False:
+        return None
+    # A listing that says ACPd is gone also says whether smbd runs.
+    serving = smbd_running(listing) is True
+    return AcpdProblem(
+        "quit",
+        ACPD_QUIT_WHAT,
+        note=ACPD_QUIT_SERVING_NOTE if serving else ACPD_QUIT_NOTE,
+        details={"acpd_quit_smbd_running": serving},
+        sharing_off=not serving,
+    )
 
 
 def acpd_stuck_children(ps_output: str) -> list[int]:
@@ -197,6 +253,10 @@ def acpd_problems(
     A restart that never happened is the whole story: ACPd tore itself down,
     so it is reported alone, with one fix, and nothing more is read.
 
+    An ACPd that quit is the whole story too: every other read would only
+    fail the same way. Either one says whether file sharing is off
+    (AcpdProblem.sharing_off).
+
     `ps_output` is a PROCESS_SNAPSHOT_COMMAND listing already read; it is read
     here when None. `network_reading` is this computer's network ACP read of
     the device at this connection's address: when ACPd left it unanswered,
@@ -204,18 +264,28 @@ def acpd_problems(
     forwarded reads raise TransportError: an SSH failure is the device's or
     the network's, not ACPd's.
     """
+    # The marker first: an SSH failure reading it is raised before a listing,
+    # which says nothing when SSH fails, waits out its own timeout.
     if restart_never_happened(connection):
+        if ps_output is None:
+            ps_output = read_processes(connection)
         return [AcpdProblem(
             "restart_never_happened",
             "the device did not restart when TimeCapsuleSMB last asked it to",
             note="Restarting it again would fail the same way. ",
+            sharing_off=smbd_running(ps_output) is False,
         )]
+    if ps_output is None:
+        ps_output = read_processes(connection)
+    gone = acpd_quit(connection, ps_output)
+    if gone is not None:
+        return [gone]
     problems = []
     answers = acpd_answers(connection)
     if not answers:
         # The device's own acp gets no uptime (syUT) from ACPd.
         problems.append(AcpdProblem("syut_silent", "the AirPort service on this device is stuck"))
-    stuck = acpd_stuck_children(read_processes(connection) if ps_output is None else ps_output)
+    stuck = acpd_stuck_children(ps_output)
     if stuck:
         problems.append(AcpdProblem(
             "stuck_child",

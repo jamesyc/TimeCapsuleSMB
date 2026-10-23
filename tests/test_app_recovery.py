@@ -140,6 +140,54 @@ class AppRecoveryTests(unittest.TestCase):
         self.assertIn("run “Activate”", recovery["actions"][2])
         self.assertFalse(recovery["retryable"])
 
+    def test_an_acpd_that_quit_points_to_a_restart_and_then_the_checkup(self) -> None:
+        # One card wherever it is found: the deploy's start, Activate, the
+        # restart after a disk repair, and every command's check before it
+        # changes anything. Retrying first would fail the same way.
+        for operation, stage in (("activate", "probe_runtime"),
+                                 ("activate", "verify_runtime_activation"), ("fsck", "verify_runtime_activation"),
+                                 ("deploy", None), ("uninstall", None), ("fsck", None), ("set-ssh", None)):
+            with self.subTest(operation=operation, stage=stage):
+                recovery = recovery_for(operation, "acpd_quit", stage=stage)
+                self.assertEqual(recovery["localization_key"], "acpd_quit")
+                self.assertIn("quit", recovery["message"])
+                # A check before a command can find Samba still serving: the
+                # card says what cannot happen, not that sharing is off.
+                self.assertIn("file sharing cannot start", recovery["message"])
+                self.assertNotIn("cannot run", recovery["message"])
+                self.assertTrue(recovery["actions"][0].startswith("Unplug the device"))
+                self.assertIn("run “Checkup”", recovery["actions"][1])
+                self.assertIn("run “Activate”", recovery["actions"][2])
+                self.assertFalse(recovery["retryable"])
+                self.assertEqual(recovery["suggested_operation"], "doctor")
+
+    def test_an_acpd_that_quit_at_the_deploys_start_says_the_update_is_installed(self) -> None:
+        # After the restart, with the boot hook or by NetBSD 4's activation:
+        # the update is on the device, so the user restarts it, not reinstalls.
+        default = recovery_for("activate", "acpd_quit")
+        for stage in ("verify_runtime_reboot", "verify_runtime_activation"):
+            with self.subTest(stage=stage):
+                recovery = recovery_for("deploy", "acpd_quit", stage=stage)
+                self.assertEqual(recovery["localization_key"], f"deploy.acpd_quit.{stage}")
+                self.assertTrue(recovery["message"].startswith("The update is installed, but"))
+                self.assertEqual(recovery["title"], default["title"])
+                self.assertEqual(recovery["actions"], default["actions"])
+                self.assertFalse(recovery["retryable"])
+                self.assertEqual(recovery["suggested_operation"], "doctor")
+        # Refused before the upload: nothing is installed, so the general card.
+        for stage in (None, "check_acpd", "upload_payload"):
+            with self.subTest(stage=stage):
+                self.assertEqual(recovery_for("deploy", "acpd_quit", stage=stage)["localization_key"], "acpd_quit")
+
+    def test_configure_on_a_device_whose_acpd_quit_says_the_device_cannot_be_identified(self) -> None:
+        recovery = recovery_for("configure", "acpd_quit")
+        self.assertEqual(recovery["localization_key"], "configure.acpd_quit")
+        self.assertIn("cannot be identified until it restarts", recovery["message"])
+        self.assertTrue(recovery["actions"][0].startswith("Unplug the device"))
+        self.assertIn("then try again", recovery["actions"][1])
+        self.assertTrue(recovery["retryable"])
+        self.assertEqual(recovery["suggested_operation"], "configure")
+
     def test_deploy_reboot_up_timeout_recovery_carries_detailed_guidance(self) -> None:
         recovery = recovery_for("deploy", "reboot_not_finished", stage="wait_for_reboot_up")
 

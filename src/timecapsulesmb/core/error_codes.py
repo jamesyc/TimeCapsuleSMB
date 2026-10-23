@@ -45,6 +45,7 @@ class ErrorCode(str, Enum):
     ACP_UNREACHABLE = "acp_unreachable"
     ACP_NO_ROUTE = "acp_no_route"
     ACPD_BROKEN = "acpd_broken"
+    ACPD_QUIT = "acpd_quit"
     LOCAL_NETWORK_FILTERED = "local_network_filtered"
     LOCAL_NETWORK_PERMISSION_DENIED = "local_network_permission_denied"
     DISCOVERY_TIMEOUT_TOO_SHORT = "discovery_timeout_too_short"

@@ -515,6 +515,16 @@ class RunFsckOnNetbsd4Tests(FsckHarness, unittest.TestCase):
         self.assertTrue(outcome.failure.endswith(f"\n{errors[-1]}"))
         self.assertFalse(recorder.fields["runtime_restarted"])
 
+    def test_runtime_kept_off_by_an_acpd_that_quit_keeps_its_code(self) -> None:
+        # A restart, not "run Activate" at once, is what brings ACPd back.
+        outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(acpd_quit=True))
+
+        self.assertEqual(outcome.status, 0)
+        self.assertEqual(outcome.runtime_restart_code, "acpd_quit")
+        self.assertTrue(outcome.failure.startswith("Disk repair completed. File sharing did not restart"))
+        self.assertIn("has quit", outcome.failure)
+        self.assertFalse(recorder.fields["runtime_restarted"])
+
     def test_runtime_that_serves_without_rsync_restarted_file_sharing(self) -> None:
         outcome, recorder, _device, _runtime = self.netbsd4(runtime=FakeInstalledRuntime(rsync_not_running=True))
 

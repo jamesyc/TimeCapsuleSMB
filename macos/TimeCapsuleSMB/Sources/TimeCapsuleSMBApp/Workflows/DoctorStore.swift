@@ -61,6 +61,10 @@ struct DoctorSummary: Equatable {
     static let rsyncUnreadableOnDiskResultCode = "rsync_unreadable_on_disk"
     static let diskNotMountingResultCode = "disk_not_mounting"
     static let diskFailingResultCode = "disk_failing"
+    static let acpdBrokenResultCode = "apple_acpd_broken"
+    /// ACPd's problems that leave it gone: it quit, or a restart tore it down
+    /// without restarting the device.
+    static let acpdGoneProblems: Set<String> = ["quit", "restart_never_happened"]
     /// The installed files are missing from every disk, as after an Erase in
     /// AirPort Utility, the disk's copy of Samba is damaged, or the disk could
     /// not read it (a failing disk); or rsync's files are missing,
@@ -101,6 +105,9 @@ struct DoctorSummary: Equatable {
     /// The disk reported errors it could not recover from: it outranks the
     /// payload problems, whose fix (Install) it would undo.
     let diskFailing: Bool
+    /// Apple's ACPd is gone (acpdGoneProblems): only unplugging the device
+    /// brings it back, and the device's disks go with it.
+    let acpdGone: Bool
     let checks: [DoctorCheckPayload]
     let sections: [DoctorCheckDomain: DoctorSection]
     /// nil only for a payload without one, which the bundled helper never sends.
@@ -123,6 +130,10 @@ struct DoctorSummary: Equatable {
         self.payloadProblemCode = Self.payloadProblems.first { Self.containsResultCode($0.code, in: payload) }?.code
         self.diskNotMounting = Self.containsResultCode(Self.diskNotMountingResultCode, in: payload)
         self.diskFailing = Self.containsResultCode(Self.diskFailingResultCode, in: payload)
+        self.acpdGone = payload.results.contains { check in
+            check.details.stringValue(for: "code") == Self.acpdBrokenResultCode
+                && Self.acpdGoneProblems.contains(check.details.stringValue(for: "acpd_problem") ?? "")
+        }
         self.checks = payload.results
         self.sections = Dictionary(
             (payload.sections ?? [:]).map { (DoctorCheckDomainPolicy.domain(for: $0.key), $0.value) },

@@ -2349,38 +2349,53 @@ def _doctor_list_file_locks(target: DoctorTarget, sink: DoctorSink, *, disk: boo
 APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
 
 
+# ACPd's problems that leave it gone: an ACPd that quit, and one a restart
+# tore down without restarting the kernel. On NetBSD 4 without the boot hook
+# the restart that brings it back does not start file sharing.
+ACPD_GONE_PROBLEMS = frozenset({"quit", "restart_never_happened"})
+ACPD_GONE_ACTIVATE_NOTE = "On NetBSD 4 devices, run Activate if file sharing does not start."
+
+
 def _doctor_check_apple_acpd(
     target: DoctorTarget,
     remote: RemoteAccess,
     processes: ProcessSnapshotState,
     sink: DoctorSink,
     network_reading: AirportAcpReading | None,
-) -> None:
+) -> StepDecision:
     """Apple's ACPd: a restart it took but never ran, a stuck fork of it that
     hangs the next restart, a syUT read it does not answer
     (DETAIL.md, "Apple ACPd can hang during its own restart"), and a network
     read it left unanswered that it does not answer through SSH either. None
     clears in the time a check takes. Read from the stuck-process step's
     listing; a device whose ps did not answer is asked nothing more.
-    `network_reading` is this computer's network ACP read at this address."""
+    `network_reading` is this computer's network ACP read at this address.
+    An ACPd that is gone while Samba is off (AcpdProblem.sharing_off) is the
+    whole verdict: without it the manager reads no disk and no setting, so
+    every check after it would only restate it. With smbd still running, the
+    checks after it say how sharing is."""
     if not remote.remote_checks_enabled or processes.timed_out or processes.snapshot is None:
-        return
+        return StepDecision()
     try:
         problems = acpd.acpd_problems(target.connection, processes.snapshot, network_reading=network_reading)
     except TransportError:
-        return
+        return StepDecision()
     if sink.debug_fields is not None:
         sink.debug_fields["acpd_problems"] = [problem.code for problem in problems]
         for problem in problems:
             sink.debug_fields.update(problem.details)
     for problem in problems:
+        message = f"{acpd.acpd_broken_message(problem.what, note=problem.note)} {acpd.ACPD_FIX}, then check again"
+        if problem.code in ACPD_GONE_PROBLEMS:
+            message = f"{message}. {ACPD_GONE_ACTIVATE_NOTE}"
         sink.add(
             CheckResult(
                 "FAIL",
-                f"{acpd.acpd_broken_message(problem.what, note=problem.note)} {acpd.ACPD_FIX}, then check again",
+                message,
                 {"code": APPLE_ACPD_BROKEN_CODE, "acpd_problem": problem.code, **problem.details},
             )
         )
+    return StepDecision(stop=any(problem.sharing_off for problem in problems))
 
 
 def _doctor_check_running_migration(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:

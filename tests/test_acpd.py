@@ -16,7 +16,7 @@ from timecapsulesmb.device.probe import AirportAcpReading
 from timecapsulesmb.integrations import acp
 from tests.device_ps import FakePs, process, ps_row
 from timecapsulesmb.device.acpd import acpd_stuck_children
-from timecapsulesmb.device.processes import parse_ps_rows
+from timecapsulesmb.device.processes import PS_LISTING_END, parse_ps_rows
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -67,6 +67,28 @@ HEALTHY_NETBSD4 = "\n".join((
     "  289 190 15 S 0 select 0:00.00 sshd",
     "28338 28660 28660 R 0 piperd 0:00.00 sh",
 ))
+
+# A v3.6.0 TimeCapsule6,116 20 minutes after its deploy started Samba at
+# uptime 24: ACPd is gone, its children have init as their parent, and the
+# diskd, wcifsnd, wcifsfs and afpserver it ran are gone with it.
+QUIT_NETBSD4 = "\n".join((
+    "    1 0 1 Is 127 wait 0:00.03 init",
+    "  107 1 15 S 0 select 0:00.32 sshd",
+    "  174 1 15 Sa 2 sawait 0:00.24 mDNSResponder",
+    "  300 1 571 S 0 select 0:04.81 service service: role=manager started=24",
+    "  436 1 15 Ia 127 select 0:00.41 printd",
+    PS_LISTING_END,
+))
+# The same listing cut short: it never says ACPd is gone.
+QUIT_NETBSD4_CUT_SHORT = QUIT_NETBSD4.removesuffix(f"\n{PS_LISTING_END}")
+# ACPd killed on a NetBSD 4 LE unit whose Samba had started: smbd is the
+# manager's child, not ACPd's, so it kept running.
+QUIT_NETBSD4_SERVING = QUIT_NETBSD4.replace(
+    PS_LISTING_END, f"  320 300 320 Ss 1 select 0:01.20 smbd\n  341 320 320 S 0 select 0:00.40 smbd\n{PS_LISTING_END}",
+)
+# Only a zombie smbd left: Samba is not running.
+QUIT_NETBSD4_ZOMBIE_SMBD = QUIT_NETBSD4.replace(PS_LISTING_END, f"  320 300 320 Z 0 - 0:00.00 smbd\n{PS_LISTING_END}")
+HEALTHY_NETBSD4_FINISHED = f"{HEALTHY_NETBSD4}\n{PS_LISTING_END}"
 
 
 def completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -373,15 +395,21 @@ class AcpdProblemsTests(unittest.TestCase):
         ps_output: str | None = None,
         network_reading: AirportAcpReading | None = None,
         network_answers: bool = True,
+        listings: list[str] | None = None,
     ):
+        """acpd_problems with these readings. `listings` are the listings read
+        in turn (the recheck's too); otherwise every read gives `listing`."""
+        reads = {"side_effect": list(listings)} if listings is not None else {"return_value": listing}
         with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=never_happened) as marker, \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=answers) as syut, \
-                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=listing) as ps, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", **reads) as ps, \
+                mock.patch("timecapsulesmb.device.acpd.pause") as pause, \
                 mock.patch("timecapsulesmb.device.acpd.acpd_answers_network", return_value=network_answers) as network:
             problems = acpd.acpd_problems(CONNECTION, ps_output, network_reading=network_reading)
         marker.assert_called_once_with(CONNECTION)
         self.syut = syut
         self.network = network
+        self.pause = pause
         return problems, ps
 
     def test_a_healthy_acpd_has_none(self) -> None:
@@ -400,13 +428,117 @@ class AcpdProblemsTests(unittest.TestCase):
         self.assertEqual(problems[0].details, {"acpd_stuck_children": [352]})
         self.assertIn("pid 352", problems[0].what)
 
+    def test_an_acpd_that_quit_is_reported_alone(self) -> None:
+        # Its syUT and listener would only fail the same way, with the same fix.
+        problems, ps = self.problems(answers=False, listing=QUIT_NETBSD4, network_reading=READ_UNANSWERED,
+                                     network_answers=False)
+        self.assertEqual([problem.code for problem in problems], ["quit"])
+        self.assertEqual(problems[0].what, acpd.ACPD_QUIT_WHAT)
+        self.assertEqual(problems[0].note, acpd.ACPD_QUIT_NOTE)
+        self.assertTrue(problems[0].sharing_off)
+        self.assertEqual(problems[0].details, {"acpd_quit_smbd_running": False})
+        # Read, and read again a pause later: both listings lack ACPd.
+        self.assertEqual(ps.call_args_list, [mock.call(CONNECTION), mock.call(CONNECTION)])
+        self.pause.assert_called_once_with(acpd.ACPD_RECHECK_SECONDS)
+        self.syut.assert_not_called()
+        self.network.assert_not_called()
+        self.assertEqual(
+            acpd.ACPD_QUIT_MESSAGE,
+            "Apple ACPd is broken: the AirPort service on this device has quit, a bug in Apple's firmware. "
+            "File sharing stays off until the device restarts.",
+        )
+
+    def test_an_acpd_that_quit_says_whether_samba_still_serves(self) -> None:
+        # Samba started before ACPd quit keeps serving: the second listing,
+        # the one that confirms the quit, says which.
+        cases = (
+            ("smbd in both", [QUIT_NETBSD4_SERVING, QUIT_NETBSD4_SERVING], True),
+            ("smbd only in the second", [QUIT_NETBSD4, QUIT_NETBSD4_SERVING], True),
+            ("smbd only in the first", [QUIT_NETBSD4_SERVING, QUIT_NETBSD4], False),
+            ("only a zombie smbd", [QUIT_NETBSD4, QUIT_NETBSD4_ZOMBIE_SMBD], False),
+        )
+        for name, listings, serving in cases:
+            with self.subTest(name):
+                problems, _ps = self.problems(listings=listings)
+                self.assertEqual([problem.code for problem in problems], ["quit"])
+                self.assertEqual(problems[0].sharing_off, not serving)
+                self.assertEqual(problems[0].details, {"acpd_quit_smbd_running": serving})
+                self.assertEqual(problems[0].note, acpd.ACPD_QUIT_SERVING_NOTE if serving else acpd.ACPD_QUIT_NOTE)
+        self.assertEqual(
+            acpd.acpd_broken_message(acpd.ACPD_QUIT_WHAT, note=acpd.ACPD_QUIT_SERVING_NOTE),
+            "Apple ACPd is broken: the AirPort service on this device has quit, a bug in Apple's firmware. "
+            "Sharing may work now, but until the device is unplugged it cannot be updated or restarted over the "
+            "network, and AirPort Utility cannot reach it.",
+        )
+
+    def test_an_acpd_that_quit_is_found_in_a_listing_already_read(self) -> None:
+        # Doctor's own listing is the first; only the recheck is read here.
+        problems, ps = self.problems(ps_output=QUIT_NETBSD4, listing=QUIT_NETBSD4)
+        ps.assert_called_once_with(CONNECTION)
+        self.assertEqual([problem.code for problem in problems], ["quit"])
+
+    def test_one_listing_without_acpd_is_not_a_quit(self) -> None:
+        # The recheck shows ACPd, or cannot say: the other checks go on as usual.
+        for name, second in (("ACPd back", HEALTHY_NETBSD4_FINISHED), ("cut short", QUIT_NETBSD4_CUT_SHORT), ("unread", "")):
+            with self.subTest(second=name):
+                problems, ps = self.problems(listings=[QUIT_NETBSD4, second])
+                self.assertEqual(problems, [])
+                self.assertEqual(ps.call_count, 2)
+                self.pause.assert_called_once_with(acpd.ACPD_RECHECK_SECONDS)
+                self.syut.assert_called_once_with(CONNECTION)
+
+    def test_a_listing_with_acpd_is_not_read_again(self) -> None:
+        problems, ps = self.problems(listing=HEALTHY_NETBSD4_FINISHED)
+        self.assertEqual(problems, [])
+        ps.assert_called_once_with(CONNECTION)
+        self.pause.assert_not_called()
+
+    def test_only_a_listing_that_finished_says_acpd_quit(self) -> None:
+        for name, listing in (("cut short", QUIT_NETBSD4_CUT_SHORT), ("empty", ""), ("ACPd present", HEALTHY_NETBSD4_FINISHED)):
+            with self.subTest(listing=name):
+                problems, _ps = self.problems(listing=listing)
+                self.assertEqual(problems, [])
+                self.syut.assert_called_once_with(CONNECTION)
+
+    def test_a_restart_that_never_happened_comes_before_an_acpd_that_quit(self) -> None:
+        # The marker is the restart ACPd took and never ran: its own fix. Its
+        # listing is read once, for Samba, and never rechecked for a quit.
+        problems, ps = self.problems(never_happened=True, listing=QUIT_NETBSD4)
+        self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
+        ps.assert_called_once_with(CONNECTION)
+        self.pause.assert_not_called()
+
     def test_a_restart_that_never_happened_is_reported_alone(self) -> None:
         # ACPd tore itself down: its silent syUT and stuck fork are the same
         # problem, with the same fix, so they are not read or reported again.
         problems, ps = self.problems(never_happened=True, answers=False, listing=STUCK_AFTER_REQUEST)
         self.assertEqual([problem.code for problem in problems], ["restart_never_happened"])
         self.syut.assert_not_called()
+        ps.assert_called_once_with(CONNECTION)
+
+    def test_a_restart_that_never_happened_says_whether_sharing_is_off(self) -> None:
+        # Only a finished listing without smbd says Samba is off; one that
+        # cannot say leaves it as a problem to report, not the whole verdict.
+        cases = (
+            ("no smbd", QUIT_NETBSD4, True),
+            ("smbd serving", QUIT_NETBSD4_SERVING, False),
+            ("listing cut short", QUIT_NETBSD4_CUT_SHORT, False),
+            ("ps unread", "", False),
+        )
+        for name, listing, sharing_off in cases:
+            with self.subTest(name):
+                problems, _ps = self.problems(never_happened=True, listing=listing)
+                self.assertEqual(problems[0].sharing_off, sharing_off)
+        # Doctor's listing is used as it is.
+        problems, ps = self.problems(never_happened=True, ps_output=QUIT_NETBSD4)
         ps.assert_not_called()
+        self.assertTrue(problems[0].sharing_off)
+
+    def test_only_a_gone_acpd_says_sharing_is_off(self) -> None:
+        for name, kwargs in (("syUT silent", {"answers": False}), ("stuck fork", {"listing": STUCK_BEFORE_REBOOT})):
+            with self.subTest(name):
+                problems, _ps = self.problems(**kwargs)
+                self.assertEqual([problem.sharing_off for problem in problems], [False])
 
     def test_the_other_problems_are_listed_together(self) -> None:
         problems, _ps = self.problems(answers=False, listing=STUCK_AFTER_REQUEST)
@@ -432,6 +564,25 @@ class AcpdProblemsTests(unittest.TestCase):
                 with mock.patch.multiple("timecapsulesmb.device.acpd", **reads):
                     with self.assertRaises(SshError):
                         acpd.acpd_problems(CONNECTION, HEALTHY_NETBSD6, network_reading=READ_UNANSWERED)
+
+    def test_a_failed_marker_read_is_raised_before_any_listing_is_read(self) -> None:
+        # A listing says nothing when SSH fails, after its own timeout: the
+        # marker read, which raises, goes first.
+        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened",
+                        side_effect=SshCommandTimeout("timed out")), \
+                mock.patch("timecapsulesmb.device.acpd.read_processes") as ps:
+            with self.assertRaises(SshCommandTimeout):
+                acpd.acpd_problems(CONNECTION)
+        ps.assert_not_called()
+
+    def test_a_listing_taken_while_the_device_shuts_down_is_no_quit(self) -> None:
+        # A real restart's shutdown stops ACPd before sshd: that is no quit,
+        # and the other checks go on as usual.
+        shutting_down = QUIT_NETBSD4.replace(PS_LISTING_END, f"  901 1 901 S 0 wait 0:00.01 shutdown\n{PS_LISTING_END}")
+        problems, ps = self.problems(listing=shutting_down)
+        self.assertEqual(problems, [])
+        ps.assert_called_once_with(CONNECTION)
+        self.pause.assert_not_called()
 
     def test_a_listener_silent_through_ssh_after_an_unanswered_network_read(self) -> None:
         # The device's own acp answered, this computer's read did not, and

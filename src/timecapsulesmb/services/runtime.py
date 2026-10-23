@@ -125,10 +125,11 @@ def require_acpd_ready(
     if problems:
         details = {key: value for problem in problems for key, value in problem.details.items()}
         callbacks.debug(acpd_problems=[problem.code for problem in problems], **details)
-        # Apple's firmware, not ours (DETAIL.md, "Apple ACPd can hang during its own restart").
+        # Apple's firmware, not ours (DETAIL.md, "Apple ACPd can hang during
+        # its own restart" and "Apple ACPd can quit after file sharing starts").
         raise DeviceAccessError(
             acpd.acpd_broken_message(problems[0].what, note=f"{problems[0].note}Nothing was changed."),
-            code=ErrorCode.ACPD_BROKEN,
+            code=ErrorCode.ACPD_QUIT if problems[0].code == "quit" else ErrorCode.ACPD_BROKEN,
         )
     if reading.password_matches is None and reading.error:
         # ACPd answered its own acp and, through SSH, the network: the path

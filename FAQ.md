@@ -235,7 +235,15 @@ ACPd is Apple's AirPort service on the device: AirPort Utility, file sharing set
 
 To fix it, unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, then run Install or Checkup again.
 
-Install, Uninstall, Disk Repair, turning SSH off and the firmware tools check ACPd before they change anything, and stop with "Nothing was changed" when it is stuck. If ACPd gets stuck during the restart at the end of an install, the update is already in place and starts when the device starts up again. On a NetBSD 4 device (Gen 1-4) without the firmware startup hook, run Activate once it has started up.
+Install, Uninstall, Disk Repair, turning SSH off and the firmware tools check ACPd before they change anything, and stop with "Nothing was changed" when it is stuck or has quit. If ACPd gets stuck during the restart at the end of an install, the update is already in place and starts when the device starts up again. On a NetBSD 4 device (Gen 1-4) without the firmware startup hook, run Activate once it has started up.
+
+#### Install or Activate says "Apple ACPd quit"
+
+ACPd, Apple's AirPort service, stopped running on the device. Without it the device cannot read its disks or its settings, so file sharing cannot start, and AirPort Utility cannot reach the device either. This is a bug in Apple's firmware, not in TimeCapsuleSMB. It has been seen on Gen 1-4 Time Capsules right after an install starts file sharing.
+
+If file sharing had already started, it keeps working, and Checkup says "Sharing may work now". The device still cannot be updated or restarted over the network until it is unplugged.
+
+ACPd does not start again by itself. Unplug the device, wait 10 seconds, plug it back in, wait 2 minutes, then run Checkup. On a NetBSD 4 device (Gen 1-4) without the firmware startup hook, run Activate if Checkup says Samba is not running. Activate, Install and Checkup all check for this and stop within about 15 seconds, instead of waiting minutes for file sharing that cannot start.
 
 #### I get a "MaSt" error
 

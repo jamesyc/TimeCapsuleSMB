@@ -3329,6 +3329,102 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(failures[0].details["acpd_problem"], "syut_silent")
         self.assertEqual(run.debug_fields["acpd_problems"], ["syut_silent"])
 
+    # A finished listing without ACPd, as doctor's own listing and the recheck read it.
+    QUIT_LISTING = "\n".join(("  107 1 15 S 0 select 0:00.32 sshd", "tcapsule-ps: end"))
+
+    def test_run_doctor_checks_fails_an_apple_acpd_that_quit_once_and_stops(self) -> None:
+        # One cause, one fix: its silent syUT is not a second failure, and the
+        # runtime, Samba and Bonjour checks after it would only restate it.
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False) as syut, \
+                mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=self.QUIT_LISTING) as recheck:
+            run = self.run_doctor_with_process_snapshot(f"{self.HEALTHY_SMBD_ROW}\n{self.QUIT_LISTING}")
+
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual([result.details["acpd_problem"] for result in failures], ["quit"])
+        self.assertEqual(
+            failures[0].message,
+            "Apple ACPd is broken: the AirPort service on this device has quit, a bug in Apple's firmware. "
+            "File sharing stays off until the device restarts. Unplug the device, wait 10 seconds, plug it back "
+            "in and wait 2 minutes, then check again. On NetBSD 4 devices, run Activate if file sharing does not "
+            "start.",
+        )
+        self.assertEqual(run.debug_fields["acpd_problems"], ["quit"])
+        recheck.assert_called_once()
+        syut.assert_not_called()
+        self.assertTrue(run.fatal)
+        # The whole verdict: nothing after it ran, and the manager's log was read for it.
+        self.assertEqual([result for result in run.results if result.status == "FAIL"], failures)
+        run.mocks.check_authenticated_smb_listing.assert_not_called()
+        run.log_tails.assert_called_once()
+
+    def test_run_doctor_checks_goes_on_past_an_acpd_that_quit_while_samba_serves(self) -> None:
+        # Samba started before ACPd quit keeps serving: the FAIL says sharing
+        # may work, and the checks after it say how it is.
+        serving = f"  107 1 15 S 0 select 0:00.32 sshd\n{self.HEALTHY_SMBD_ROW}\ntcapsule-ps: end"
+        with mock.patch("timecapsulesmb.device.acpd.read_processes", return_value=serving) as recheck:
+            run = self.run_doctor_with_process_snapshot(serving)
+
+        recheck.assert_called_once()
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual([result.details["acpd_problem"] for result in failures], ["quit"])
+        self.assertEqual(
+            failures[0].message,
+            "Apple ACPd is broken: the AirPort service on this device has quit, a bug in Apple's firmware. "
+            "Sharing may work now, but until the device is unplugged it cannot be updated or restarted over the "
+            "network, and AirPort Utility cannot reach it. Unplug the device, wait 10 seconds, plug it back in and "
+            "wait 2 minutes, then check again. On NetBSD 4 devices, run Activate if file sharing does not start.",
+        )
+        self.assertTrue(failures[0].details["acpd_quit_smbd_running"])
+        self.assertTrue(run.debug_fields["acpd_quit_smbd_running"])
+        run.mocks.check_authenticated_smb_listing.assert_called()
+
+    # A finished listing with neither ACPd nor smbd: a restart tore ACPd down
+    # after the runtime stopped for it.
+    TORN_DOWN_LISTING = QUIT_LISTING
+
+    def test_run_doctor_checks_stops_at_a_restart_that_never_happened_while_samba_is_off(self) -> None:
+        # ACPd is gone as when it quit: one FAIL is the whole verdict.
+        with mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True):
+            run = self.run_doctor_with_process_snapshot(self.TORN_DOWN_LISTING)
+
+        failures = self.apple_acpd_failures(run)
+        self.assertEqual([result.details["acpd_problem"] for result in failures], ["restart_never_happened"])
+        self.assertEqual(
+            failures[0].message,
+            "Apple ACPd is broken: the device did not restart when TimeCapsuleSMB last asked it to, a bug in "
+            "Apple's firmware. Restarting it again would fail the same way. Unplug the device, wait 10 seconds, "
+            "plug it back in and wait 2 minutes, then check again. On NetBSD 4 devices, run Activate if file "
+            "sharing does not start.",
+        )
+        self.assertTrue(run.fatal)
+        self.assertEqual([result for result in run.results if result.status == "FAIL"], failures)
+        run.mocks.check_authenticated_smb_listing.assert_not_called()
+        run.log_tails.assert_called_once()
+
+    def test_run_doctor_checks_goes_on_past_a_restart_that_never_happened_while_samba_serves(self) -> None:
+        # smbd still runs, or the listing cannot say: the checks after it run.
+        serving = f"  107 1 15 S 0 select 0:00.32 sshd\n{self.HEALTHY_SMBD_ROW}\ntcapsule-ps: end"
+        for name, listing in (("smbd running", serving), ("listing cut short", "  107 1 15 S 0 select 0:00.32 sshd")):
+            with self.subTest(name), mock.patch("timecapsulesmb.device.acpd.restart_never_happened", return_value=True):
+                run = self.run_doctor_with_process_snapshot(listing)
+
+                failures = self.apple_acpd_failures(run)
+                self.assertEqual([result.details["acpd_problem"] for result in failures], ["restart_never_happened"])
+                run.mocks.check_authenticated_smb_listing.assert_called()
+
+    def test_run_doctor_checks_goes_on_past_an_acpd_that_is_only_stuck(self) -> None:
+        with mock.patch("timecapsulesmb.device.acpd.acpd_answers", return_value=False):
+            run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+
+        self.assertEqual([result.details["acpd_problem"] for result in self.apple_acpd_failures(run)], ["syut_silent"])
+        run.mocks.check_authenticated_smb_listing.assert_called()
+
+    def test_run_doctor_checks_does_not_call_a_listing_cut_short_a_quit_acpd(self) -> None:
+        run = self.run_doctor_with_process_snapshot(self.HEALTHY_SMBD_ROW)
+
+        self.assertEqual(self.apple_acpd_failures(run), [])
+        self.assertEqual(run.debug_fields["acpd_problems"], [])
+
     UNANSWERED_ACP_READ = AirportAcpReading(password_matches=None, error="ACP receive failed: timed out")
 
     def test_run_doctor_checks_fails_an_apple_acpd_that_answers_its_own_acp_but_not_the_network(self) -> None:

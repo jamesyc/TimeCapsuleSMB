@@ -91,8 +91,11 @@ enum DeviceDashboardSnapshotMapper {
                 )
             }
             return DeviceRuntimeStateSnapshot(
-                // Installed but not running: on NetBSD4 that is what Activate fixes.
-                state: summary.runtimeNotStarted && profile.traits.isNetBSD4 ? .activationNeeded : .unhealthy,
+                // Installed but not running: on NetBSD4 that is what Activate
+                // fixes, unless ACPd is gone, which refuses Activate until the
+                // device is unplugged.
+                state: summary.runtimeNotStarted && profile.traits.isNetBSD4 && !summary.acpdGone
+                    ? .activationNeeded : .unhealthy,
                 source: .doctor,
                 stage: nil,
                 payloadFamily: payloadFamily,
@@ -102,8 +105,10 @@ enum DeviceDashboardSnapshotMapper {
                 // A disk that will not mount has one fix the dashboard names,
                 // and so does a damaged rsync when nothing else failed: with
                 // other failures (Samba's own) the generic row sends the user
-                // to the Checkup, which lists them all.
+                // to the Checkup, which lists them all. An ACPd that is gone
+                // takes diskd with it, so it explains a disk that will not mount.
                 errorCode: summary.diskFailing ? DoctorSummary.diskFailingResultCode
+                    : summary.acpdGone ? DoctorSummary.acpdBrokenResultCode
                     : summary.diskNotMounting ? DoctorSummary.diskNotMountingResultCode
                     : device.failCount == 1 ? summary.payloadProblemCode ?? "doctor_failed" : "doctor_failed",
                 errorMessage: nil,
