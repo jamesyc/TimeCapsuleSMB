@@ -1297,3 +1297,45 @@ class FileLocksCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_command(Path(tmp), (f"{tmp}/none/*.tdb",))
         self.assertEqual((result.returncode, result.stdout), (0, ""))
+
+
+class LockWaitersCommandTests(unittest.TestCase):
+    """lock_waiters_command runs on the device's sh; here it runs on the
+    host's, with stand-ins for the service and fstat that echo their calls."""
+
+    def run_command(self, root: Path, pids, *, service_status: int = 0,
+                    descriptors: bool = True) -> subprocess.CompletedProcess:
+        service = root / "service"
+        service.write_text(f'#!/bin/sh\necho "registers $*"\necho "service error" >&2\nexit {service_status}\n')
+        service.chmod(0o755)
+        fstat = root / "fstat"
+        fstat.write_text('#!/bin/sh\necho "fstat $*"\necho "fstat error" >&2\n')
+        fstat.chmod(0o755)
+        command = probe.lock_waiters_command(pids, str(service), str(fstat), descriptors=descriptors)
+        return subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, timeout=10)
+
+    def test_reads_every_waiters_registers_then_each_ones_descriptors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_command(Path(tmp), [7652, 1894])
+        self.assertEqual(result.stdout.splitlines(), [
+            "registers --print-syscall-registers 7652 1894",
+            "service error",
+            "fstat -p 7652",
+            "fstat error",
+            "fstat -p 1894",
+            "fstat error",
+        ])
+
+    def test_descriptors_are_still_listed_when_the_registers_cannot_be_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_command(Path(tmp), [7652], service_status=1)
+        self.assertIn("fstat -p 7652", result.stdout.splitlines())
+
+    def test_without_descriptors_only_the_registers_are_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_command(Path(tmp), [7652, 1894], descriptors=False)
+        self.assertEqual(result.stdout.splitlines(), ["registers --print-syscall-registers 7652 1894", "service error"])
+
+    def test_only_numbers_reach_the_shell(self) -> None:
+        with self.assertRaises(ValueError):
+            probe.lock_waiters_command(["7652; reboot"])

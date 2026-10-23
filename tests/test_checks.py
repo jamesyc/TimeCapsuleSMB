@@ -2811,19 +2811,29 @@ class CheckTests(unittest.TestCase):
         ssh_login: object | None = None,
         file_locks: object = "",
         disk_file_locks: object = "",
+        lock_waiters: object = "",
         kern_limits: object = "",
         process_table: tuple[str, str] = ("", ""),
         device_reading=None,
     ):
         debug_fields: dict[str, object] = {}
         snapshot_mock = mock.Mock(side_effect=snapshot) if isinstance(snapshot, Exception) else mock.Mock(return_value=snapshot)
+        order: list[str] = []
         def read_locks(connection, patterns):
+            order.append("disk locks" if patterns == FILE_LOCKS_DISK_TDBS else "locks")
             answer = disk_file_locks if patterns == FILE_LOCKS_DISK_TDBS else file_locks
             if isinstance(answer, Exception):
                 raise answer
             return answer
 
+        def read_waiters(connection, pids, *, descriptors):
+            order.append("waiters" if descriptors else "waiters without fstat")
+            if isinstance(lock_waiters, Exception):
+                raise lock_waiters
+            return lock_waiters
+
         locks_mock = mock.Mock(side_effect=read_locks)
+        waiters_mock = mock.Mock(side_effect=read_waiters)
         kern_mock = mock.Mock(side_effect=kern_limits) if isinstance(kern_limits, Exception) else mock.Mock(return_value=kern_limits)
         log_tail_mock = mock.Mock(return_value={})
         with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
@@ -2846,6 +2856,7 @@ class CheckTests(unittest.TestCase):
                         return_value=process_table
                     ),
                     "timecapsulesmb.checks.doctor_steps.read_file_locks_conn": locks_mock,
+                    "timecapsulesmb.checks.doctor_steps.read_lock_waiters_conn": waiters_mock,
                     "timecapsulesmb.checks.doctor_steps.read_kern_limits_conn": kern_mock,
                     "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
                         return_value=ManagerStartupAgeProbeResult(
@@ -2859,6 +2870,8 @@ class CheckTests(unittest.TestCase):
         run.debug_fields = debug_fields
         run.snapshot = snapshot_mock
         run.file_locks = locks_mock
+        run.lock_waiters = waiters_mock
+        run.lock_reads = order
         run.kern_limits = kern_mock
         run.log_tails = log_tail_mock
         run.sleep = sleep_mock
@@ -2907,7 +2920,7 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(any("blocked in the kernel" in result.message for result in run.results))
         run.mocks.check_authenticated_smb_listing.assert_called()
         # Asleep 127 s, past the two minutes: one waiter, named as one.
-        self.assertIn("for a database lock (PID 8893); ", "\n".join(result.message for result in run.results))
+        self.assertIn("for a file lock (PID 8893); ", "\n".join(result.message for result in run.results))
 
     def test_run_doctor_checks_lists_no_locks_without_an_smbd_in_lockf(self) -> None:
         # Another program waiting for a lock is not Samba's TDB lock.
@@ -2915,9 +2928,106 @@ class CheckTests(unittest.TestCase):
         run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, other]))
 
         run.file_locks.assert_not_called()
+        run.lock_waiters.assert_not_called()
         self.assertNotIn("remote_file_locks", run.debug_fields)
         self.assertNotIn("remote_file_locks_error", run.debug_fields)
+        self.assertNotIn("remote_lock_waiters", run.debug_fields)
         self.assertFalse(run.fatal)
+
+    LOCK_WAITERS_OUTPUT = "\n".join([
+        "8893 wchan=lockf spsr=60000010 r0=0000000c r1=00000002 r2=00000000 r3=00000000 pc=0012abcd",
+        "8894 wchan=lockf spsr=60000010 r0=00000007 r1=00000009 r2=7fffd000 r3=00000000 pc=00034560",
+        "USER     CMD          PID   FD MOUNT       INUM MODE         SZ|DV R/W",
+        "root     smbd        8893   wd /              2 drwxr-xr-x     512 r",
+        "root     smbd        8893   12 /Volumes/dk2 48811 -rw-rw-rw-  921344 r",
+        "USER     CMD          PID   FD MOUNT       INUM MODE         SZ|DV R/W",
+        "root     smbd        8894    7 /mnt/Locks     5 -rw-r--r--   12288 rw",
+        "root     smbd        8894    8 /mnt/Locks     6 -rw-r--r--   12288 rw",
+    ]) + "\n"
+
+    def test_run_doctor_checks_reads_each_long_lock_waiters_call_before_listing_tdb_locks(self) -> None:
+        # Waiters asleep LOCK_WAIT_READ_SECONDS or more: a flock() on a data
+        # file and a TDB record lock. One that has waited less is not read.
+        ten = " 8894 457 457 I 10 lockf 0:00.00 smbd"
+        nine = " 8895 457 457 I 9 lockf 0:00.00 smbd"
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW, ten, nine]), lock_waiters=self.LOCK_WAITERS_OUTPUT,
+        )
+
+        run.lock_waiters.assert_called_once()
+        self.assertEqual(run.lock_waiters.call_args.args[1], [8893, 8894])
+        # Kernel structures first: they never wait on a disk, the disk's TDB listing can.
+        self.assertEqual(run.lock_reads, ["waiters", "locks", "disk locks"])
+        # The registers, and fstat's rows for the two descriptors they name.
+        self.assertEqual(run.debug_fields["remote_lock_waiters"], "\n".join([
+            "8893 wchan=lockf spsr=60000010 r0=0000000c r1=00000002 r2=00000000 r3=00000000 pc=0012abcd",
+            "8894 wchan=lockf spsr=60000010 r0=00000007 r1=00000009 r2=7fffd000 r3=00000000 pc=00034560",
+            "USER     CMD          PID   FD MOUNT       INUM MODE         SZ|DV R/W",
+            "root     smbd        8893   12 /Volumes/dk2 48811 -rw-rw-rw-  921344 r",
+            "root     smbd        8894    7 /mnt/Locks     5 -rw-r--r--   12288 rw",
+        ]))
+        self.assertEqual(run.debug_fields["smbd_lock_wait_calls"], [
+            {"pid": 8893, "call": "flock LOCK_EX", "fd": 12,
+             "file": "/Volumes/dk2 48811 -rw-rw-rw- 921344 r", "pc": "0x0012abcd"},
+            {"pid": 8894, "call": "fcntl F_SETLKW", "fd": 7,
+             "file": "/mnt/Locks 5 -rw-r--r-- 12288 rw", "pc": "0x00034560"},
+        ])
+        self.assertNotIn("remote_lock_waiters_fstat_skipped", run.debug_fields)
+        # Only the two-minute waiter fails, as a file lock rather than a database's.
+        waits = [result for result in run.results if "file lock" in result.message]
+        self.assertEqual([(result.status, result.details) for result in waits], [("FAIL", {"smbd_lock_waits": [8893]})])
+        self.assertIn("backups and open files hang, until the lock is released", waits[0].message)
+
+    def test_run_doctor_checks_reads_no_registers_of_short_lock_waits_but_still_lists_tdb_locks(self) -> None:
+        nine = " 8893 457 457 I 9 lockf 0:00.00 smbd"
+        locks = "/mnt/Locks/locking.tdb pid 9001 write 1460+1\n"
+        run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, nine]), file_locks=locks)
+
+        run.lock_waiters.assert_not_called()
+        self.assertNotIn("remote_lock_waiters", run.debug_fields)
+        self.assertEqual(run.lock_reads, ["locks", "disk locks"])
+        self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
+
+    def test_run_doctor_checks_reads_lock_waiters_without_fstat_while_a_process_is_stuck(self) -> None:
+        # fstat is not known to stay off a disk that stopped answering.
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW, self.STUCK_SMBD_ROW]),
+            lock_waiters="8893 wchan=lockf spsr=60000010 r0=0000000c r1=00000002 r2=00000000 r3=00000000 pc=0012abcd\n",
+        )
+
+        self.assertEqual(run.lock_reads, ["waiters without fstat", "locks"])
+        self.assertEqual(run.debug_fields["remote_lock_waiters_fstat_skipped"], "a process is stuck in the kernel")
+        self.assertEqual(run.debug_fields["smbd_lock_wait_calls"], [
+            {"pid": 8893, "call": "flock LOCK_EX", "fd": 12, "file": None, "pc": "0x0012abcd"},
+        ])
+
+    def test_run_doctor_checks_lists_tdb_locks_when_the_lock_waiters_cannot_be_read(self) -> None:
+        locks = "/mnt/Locks/brlock.tdb pid 457 read 4+1 (TDB open marker)\n"
+        run = self.run_doctor_with_process_snapshot(
+            "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW]), file_locks=locks,
+            lock_waiters=SshCommandTimeout("Timed out waiting for ssh command to finish: service"),
+        )
+
+        self.assertIn("SshCommandTimeout", run.debug_fields["remote_lock_waiters_error"])
+        self.assertNotIn("remote_lock_waiters", run.debug_fields)
+        self.assertNotIn("smbd_lock_wait_calls", run.debug_fields)
+        self.assertEqual(run.lock_reads, ["waiters", "locks", "disk locks"])
+        self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
+
+    def test_run_doctor_checks_records_lock_waiters_output_with_no_readable_call(self) -> None:
+        # A service without the option, a kernel that refused /dev/kmem, or a
+        # waiter that woke while it was read: the text is kept, no call guessed.
+        for output, recorded in (
+            ("", "(empty)"),
+            ("/dev/kmem: Permission denied\n", "/dev/kmem: Permission denied"),
+            ("8893: changed during the read\n", "8893: changed during the read"),
+        ):
+            with self.subTest(output=output):
+                run = self.run_doctor_with_process_snapshot(
+                    "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW]), lock_waiters=output,
+                )
+                self.assertEqual(run.debug_fields["remote_lock_waiters"], recorded)
+                self.assertNotIn("smbd_lock_wait_calls", run.debug_fields)
 
     def test_run_doctor_checks_fails_smbds_that_waited_two_minutes_for_a_lock(self) -> None:
         # ps counts the seconds asleep up to 127; 120 is two minutes.
@@ -2927,10 +3037,10 @@ class CheckTests(unittest.TestCase):
             "\n".join([self.HEALTHY_SMBD_ROW, self.LOCKF_SMBD_ROW, second]), file_locks=locks,
         )
 
-        waits = [result for result in run.results if "database lock" in result.message]
+        waits = [result for result in run.results if "file lock" in result.message]
         self.assertEqual([result.status for result in waits], ["FAIL"])
         self.assertTrue(waits[0].message.startswith(
-            "Samba has waited at least 2 minutes for a database lock (PIDs 8893, 8894); "))
+            "Samba has waited at least 2 minutes for a file lock (PIDs 8893, 8894); "))
         self.assertTrue(waits[0].message.endswith("Restart the device to clear it"))
         self.assertEqual(waits[0].details, {"smbd_lock_waits": [8893, 8894]})
         self.assertTrue(run.fatal)
@@ -2946,7 +3056,7 @@ class CheckTests(unittest.TestCase):
         run = self.run_doctor_with_process_snapshot("\n".join([self.HEALTHY_SMBD_ROW, short]), file_locks=locks)
 
         self.assertEqual(run.debug_fields["remote_file_locks"], locks.rstrip())
-        self.assertFalse(any("database lock" in result.message for result in run.results))
+        self.assertFalse(any("file lock" in result.message for result in run.results))
         self.assertFalse(run.fatal)
 
     def test_run_doctor_checks_records_a_failed_lock_listing_and_carries_on(self) -> None:

@@ -38,10 +38,33 @@ def test_lists_each_lock_another_process_holds_in_order(service, tmp_path):
     pid = os.getpid()
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [
-        f"{tdb} pid {pid} read 4+1",
+        f"{tdb} pid {pid} read 4+1 (TDB open marker)",
         f"{tdb} pid {pid} write 168+1",
         f"{tdb} pid {pid} write 1000+0",
     ]
+
+
+def test_marks_only_a_tdbs_read_lock_on_byte_four_as_its_open_marker(service, tmp_path):
+    # TDB's open marker is a read lock on exactly byte 4. A writer there (a
+    # clearing open) or a reader of a wider range is a lock someone may wait
+    # for, and byte 4 of a file that is not a TDB means nothing.
+    tdb = tmp_path / "brlock.tdb"
+    other = tmp_path / "brlock.tdb.bak"
+    for path in (tdb, other):
+        path.write_bytes(b"\0" * 64)
+    tdb_fd = os.open(tdb, os.O_RDWR)
+    other_fd = os.open(other, os.O_RDWR)
+    try:
+        fcntl.lockf(other_fd, fcntl.LOCK_SH, 1, 4)
+        result = run(service, tdb, other)
+        assert result.stdout.splitlines() == [f"{other} pid {os.getpid()} read 4+1"]
+        fcntl.lockf(tdb_fd, fcntl.LOCK_EX, 1, 4)
+        assert run(service, tdb).stdout == f"{tdb} pid {os.getpid()} write 4+1\n"
+        fcntl.lockf(tdb_fd, fcntl.LOCK_SH, 2, 4)
+        assert run(service, tdb).stdout == f"{tdb} pid {os.getpid()} read 4+2\n"
+    finally:
+        os.close(tdb_fd)
+        os.close(other_fd)
 
 
 def test_an_unlocked_file_lists_nothing_and_the_scan_releases_nothing(service, tmp_path):

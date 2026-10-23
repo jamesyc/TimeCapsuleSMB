@@ -210,3 +210,168 @@ class UnreadableServiceTests(unittest.TestCase):
         self.assertFalse(service_unreadable("\n".join(rows.splitlines()[1:])))
         # An unread row holds no role.
         self.assertEqual([process.pid for process in service_role_processes(rows, "manager")], [13])
+
+
+class ReadLockWaitsTests(unittest.TestCase):
+    """read_lock_waits reads lock_waiters_command output: the service's
+    register lines for each smbd in lockf, then fstat's rows for them."""
+
+    HEADER = "USER     CMD          PID   FD MOUNT       INUM MODE         SZ|DV R/W"
+    FSTAT = [
+        HEADER,
+        "root     smbd        7652   wd /             2 drwxr-xr-x     512 r",
+        "root     smbd        7652    9 /mnt/Locks     7 -rw-r--r--    8192 rw",
+        "root     smbd        7652   12 /Volumes/dk2 48811 -rw-rw-rw-  921344 r",
+        "root     smbd        7652   13* /mnt/Locks     5 -rw-r--r--   12288 rw",
+        "root     smbd        7652   14* unix stream c2859340 <-> c280f500",
+        HEADER,
+        "root     smbd        1894   12 /mnt/Locks     9 -rw-r--r--    8192 rw",
+        "root     smbd        1894  377 /Volumes/dk2 50001 -rw-rw-rw-    4096 rw",
+    ]
+
+    def read(self, *register_lines: str):
+        from timecapsulesmb.device.processes import read_lock_waits
+
+        return read_lock_waits("\n".join([*register_lines, *self.FSTAT]))
+
+    def test_a_flock_on_a_data_file_names_the_descriptor_and_its_file(self) -> None:
+        line = "7652 wchan=lockf spsr=60000010 r0=0000000c r1=00000002 r2=beef0000 r3=00000011 pc=0012abcd"
+        waits = self.read(line)
+
+        self.assertEqual(waits.calls, [{
+            "pid": 7652, "call": "flock LOCK_EX", "fd": 12,
+            "file": "/Volumes/dk2 48811 -rw-rw-rw- 921344 r", "pc": "0x0012abcd",
+        }])
+        # Only the descriptor the call names: not the cwd, the TDBs or the socket.
+        self.assertEqual(waits.evidence.splitlines(), [line, self.HEADER, self.FSTAT[3]])
+
+    def test_a_tdb_record_lock_wait_is_fcntl_f_setlkw(self) -> None:
+        # fstat marks a close-on-exec descriptor with *; the same number in
+        # another process is another file.
+        waits = self.read(
+            "7652 wchan=lockf spsr=20000010 r0=0000000d r1=00000009 r2=7fffd000 r3=00000000 pc=00034560",
+            "1894 wchan=lockf spsr=20000010 r0=0000000c r1=00000009 r2=7fffd000 r3=00000000 pc=00034560",
+        )
+
+        self.assertEqual([(c["pid"], c["call"], c["fd"], c["file"]) for c in waits.calls], [
+            (7652, "fcntl F_SETLKW", 13, "/mnt/Locks 5 -rw-r--r-- 12288 rw"),
+            (1894, "fcntl F_SETLKW", 12, "/mnt/Locks 9 -rw-r--r-- 8192 rw"),
+        ])
+        self.assertEqual(waits.evidence.splitlines()[2:], [self.HEADER, self.FSTAT[7], self.FSTAT[4]])
+
+    def test_a_shared_flock_is_named_as_one(self) -> None:
+        waits = self.read("7652 wchan=lockf spsr=00000010 r0=0000000c r1=00000001 r2=00000000 r3=00000000 pc=00001000")
+
+        self.assertEqual((waits.calls[0]["call"], waits.calls[0]["fd"]), ("flock LOCK_SH", 12))
+
+    def test_asleep_inside_apples_xattr_call_takes_the_descriptor_from_r1(self) -> None:
+        # syscall(377, fd, name, value): the kernel sleeps in lockf inside it.
+        waits = self.read("7652 wchan=lockf spsr=00000010 r0=00000179 r1=0000000c r2=00012000 r3=00013000 pc=00001000")
+
+        self.assertEqual((waits.calls[0]["call"], waits.calls[0]["fd"], waits.calls[0]["file"]),
+                         ("fsetxattr", 12, "/Volumes/dk2 48811 -rw-rw-rw- 921344 r"))
+
+    def test_registers_that_fit_both_readings_take_the_one_whose_descriptor_is_a_file(self) -> None:
+        # r0=377 r1=9: fsetxattr on fd 9 or fcntl(377, F_SETLKW). 7652 has no
+        # fd 377, so its reading is the xattr call on its TDB at fd 9.
+        waits = self.read("7652 wchan=lockf spsr=00000010 r0=00000179 r1=00000009 r2=00012000 r3=00000000 pc=00001000")
+
+        self.assertEqual((waits.calls[0]["call"], waits.calls[0]["fd"]), ("fsetxattr", 9))
+        # The other way round: 1894 has a file at fd 377 and none at fd 2.
+        waits = self.read("1894 wchan=lockf spsr=00000010 r0=00000179 r1=00000002 r2=00000000 r3=00000000 pc=00001000")
+
+        self.assertEqual((waits.calls[0]["call"], waits.calls[0]["fd"], waits.calls[0]["file"]),
+                         ("flock LOCK_EX", 377, "/Volumes/dk2 50001 -rw-rw-rw- 4096 rw"))
+
+    def test_registers_that_fit_both_readings_with_files_for_both_or_neither_are_ambiguous(self) -> None:
+        from timecapsulesmb.device.processes import read_lock_waits
+
+        line = "1894 wchan=lockf spsr=00000010 r0=00000179 r1=00000009 r2=00000000 r3=00000000 pc=00001000"
+        both = [
+            self.HEADER,
+            "root     smbd        1894    9 /mnt/Locks     7 -rw-r--r--    8192 rw",
+            "root     smbd        1894  377 /Volumes/dk2 50001 -rw-rw-rw-    4096 rw",
+        ]
+        waits = read_lock_waits("\n".join([line, *both]))
+
+        self.assertEqual(waits.calls[0]["call"], "ambiguous: fcntl F_SETLKW on fd 377 or fsetxattr on fd 9")
+        self.assertIsNone(waits.calls[0]["fd"])
+        self.assertIsNone(waits.calls[0]["file"])
+        # Both candidates' rows stay as evidence.
+        self.assertEqual(waits.evidence.splitlines(), [line, *both])
+        # Neither descriptor open: still both readings, and no rows.
+        waits = read_lock_waits(line)
+
+        self.assertEqual(waits.calls[0]["call"], "ambiguous: fcntl F_SETLKW on fd 377 or fsetxattr on fd 9")
+        self.assertEqual(waits.evidence, line)
+
+    def test_a_process_no_longer_in_lockf_is_not_read_as_a_call(self) -> None:
+        # Asleep in poll(fds, 2, ...) when read: r1 = 2 is not LOCK_EX here.
+        waits = self.read("7652 wchan=poll spsr=00000010 r0=00020000 r1=00000002 r2=000003e8 r3=00000000 pc=00001000")
+
+        self.assertEqual((waits.calls[0]["call"], waits.calls[0]["fd"], waits.calls[0]["file"]),
+                         ("not waiting in lockf (poll)", None, None))
+        self.assertEqual(waits.evidence.splitlines(), [
+            "7652 wchan=poll spsr=00000010 r0=00020000 r1=00000002 r2=000003e8 r3=00000000 pc=00001000",
+        ])
+
+    def test_registers_not_saved_from_user_mode_are_not_read_as_a_call(self) -> None:
+        # What a frame read with the other lane's layout gives: the pad word as spsr.
+        waits = self.read("7652 wchan=lockf spsr=f111f111 r0=0000000c r1=00000002 r2=00000000 r3=00000000 pc=00001000")
+
+        self.assertEqual((waits.calls[0]["call"], waits.calls[0]["fd"], waits.calls[0]["file"]),
+                         ("not a user-mode frame", None, None))
+
+    def test_an_unknown_call_keeps_its_arguments_and_names_no_file(self) -> None:
+        waits = self.read("7652 wchan=lockf spsr=00000010 r0=0000000c r1=00000008 r2=7fffd000 r3=00000000 pc=00001000")
+
+        self.assertEqual(waits.calls[0]["call"], "unrecognized (r0=0xc r1=0x8 r2=0x7fffd000)")
+        self.assertIsNone(waits.calls[0]["fd"])
+        self.assertIsNone(waits.calls[0]["file"])
+
+    def test_a_descriptor_fstat_does_not_list_has_no_file(self) -> None:
+        waits = self.read("7652 wchan=lockf spsr=00000010 r0=00000063 r1=00000002 r2=00000000 r3=00000000 pc=00001000")
+
+        self.assertEqual((waits.calls[0]["fd"], waits.calls[0]["file"]), (99, None))
+        # No row to keep, so no fstat header either.
+        self.assertEqual(len(waits.evidence.splitlines()), 1)
+
+    def test_the_services_per_process_messages_are_kept_and_give_no_call(self) -> None:
+        waits = self.read("/dev/kmem: Permission denied", "9999: No such process", "1894: changed during the read")
+
+        self.assertEqual(waits.calls, [])
+        self.assertEqual(waits.evidence.splitlines(), [
+            "/dev/kmem: Permission denied", "9999: No such process", "1894: changed during the read",
+        ])
+
+    def test_reads_apples_fstat_rows_with_the_file_name_appended(self) -> None:
+        # Verbatim from a NetBSD 4 device: a test program blocked in
+        # flock(3, LOCK_EX) on an HFS file another process held.
+        from timecapsulesmb.device.processes import read_lock_waits
+
+        output = "\n".join([
+            "4532 wchan=lockf spsr=20000010 r0=00000003 r1=00000002 r2=00000018 r3=00025e38 pc=00008908",
+            "USER     CMD          PID   FD MOUNT       INUM MODE         SZ|DV R/W",
+            "root     tc-locktest  4532   wd /              2 drwxr-xr-x     512 r ",
+            "root     tc-locktest  4532    0 /            951 crw-rw-rw-    null r ",
+            "root     tc-locktest  4532    1 /Volumes/dk2  930138 -rw-r--r--      28 w   tc-lt.out",
+            "root     tc-locktest  4532    3 /Volumes/dk2  930139 -rw-r--r--       0 rw  tc-locktest-file",
+            "root     tc-locktest  4532    4* pipe 0xc90525e0 <- 0xc90524b4 r",
+        ])
+
+        waits = read_lock_waits(output)
+
+        self.assertEqual(waits.calls, [{
+            "pid": 4532, "call": "flock LOCK_EX", "fd": 3,
+            "file": "/Volumes/dk2 930139 -rw-r--r-- 0 rw tc-locktest-file", "pc": "0x00008908",
+        }])
+
+    def test_registers_without_fstat_rows_still_give_the_call(self) -> None:
+        # Doctor leaves fstat out while a process is stuck in the kernel.
+        from timecapsulesmb.device.processes import read_lock_waits
+
+        line = "7652 wchan=lockf spsr=00000010 r0=0000000c r1=00000002 r2=00000000 r3=00000000 pc=00001000"
+        waits = read_lock_waits(line + "\n")
+
+        self.assertEqual((waits.calls[0]["call"], waits.calls[0]["fd"], waits.calls[0]["file"]), ("flock LOCK_EX", 12, None))
+        self.assertEqual(waits.evidence, line)

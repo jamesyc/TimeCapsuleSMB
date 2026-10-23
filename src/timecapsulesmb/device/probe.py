@@ -3187,6 +3187,28 @@ def read_file_locks_conn(connection: SshConnection, patterns: tuple[str, ...]) -
     return proc.stdout or ""
 
 
+def lock_waiters_command(pids: Iterable[int], service: str = "/mnt/Flash/service",
+                         fstat: str = "/usr/bin/fstat", *, descriptors: bool = True) -> str:
+    """The registers each process entered its sleeping system call with, then,
+    when descriptors is true, fstat's descriptor table for it. The registers
+    come from kernel structures, never the process's memory or a disk. fstat
+    reads kernel structures too, but whether it can wait on a disk that
+    stopped answering is untested, so callers leave it out while a process is
+    stuck in the kernel."""
+    listed = " ".join(str(int(pid)) for pid in pids)
+    command = f"{service} --print-syscall-registers {listed} 2>&1"
+    if descriptors:
+        command += f"; for p in {listed}; do {fstat} -p \"$p\" 2>&1; done"
+    return command
+
+
+def read_lock_waiters_conn(connection: SshConnection, pids: Iterable[int], *, descriptors: bool = True) -> str:
+    """lock_waiters_command's output, errors included."""
+    proc = run_ssh(connection, lock_waiters_command(pids, descriptors=descriptors), check=False,
+                   timeout=PROCESS_SNAPSHOT_TIMEOUT_SECONDS)
+    return proc.stdout or ""
+
+
 def read_runtime_ram_diagnostics_conn(connection: SshConnection) -> str:
     script = rf'''
 RUNTIME_RAM_ROOT={RUNTIME_RAM_ROOT}
