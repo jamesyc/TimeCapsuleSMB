@@ -162,6 +162,28 @@ class ProbeTests(unittest.TestCase):
         " 9807 9751 9807 S 0 - 2:47:27 service       service: role=discovery nbns=ready mode=payload",
     )
 
+    def test_probe_manager_startup_age_conn_says_whether_acpd_runs_from_a_finished_listing(self) -> None:
+        manager = " 9751 1 9751 S 0 - 2:47:31 service       service: role=manager started=24"
+        acpd_row = "  190 1 15 Sa 8 kqread 0:00.00 ACPd"
+        sshd = "  107 1 15 S 0 select 0:00.32 sshd"
+        for name, rows, running, pids in (
+            ("running", (manager, sshd, acpd_row, PS_LISTING_END), True, (190,)),
+            ("quit", (manager, sshd, PS_LISTING_END), False, ()),
+            ("cut short", (manager, sshd, acpd_row), None, ()),
+            ("quit, no manager", (sshd, PS_LISTING_END), False, ()),
+            ("running, no manager", (sshd, acpd_row, PS_LISTING_END), True, (190,)),
+            ("no row parsed", (PS_LISTING_END,), None, ()),
+        ):
+            with self.subTest(name):
+                output = "".join(f"ps={row}\n" for row in rows) + "now_ms=60000\n"
+                result, _ = self._probe_manager_age(output)
+                self.assertIs(result.acpd_running, running)
+                self.assertEqual(result.acpd_pids, pids)
+                # The clock is read whether or not a manager runs.
+                self.assertEqual(result.clock_ms, 60000)
+                if manager in rows:
+                    self.assertEqual(result.started_monotonic_s, 24)
+
     def test_probe_manager_startup_age_conn_subtracts_the_title_start_from_the_monotonic_clock(self) -> None:
         result, run_ssh_mock = self._probe_manager_age(self._manager_age_output(
             *self._MANAGER_PEERS, "  250 1 250 Ss 0 - 0:41 service       service: role=manager started=19", now_ms="60999"

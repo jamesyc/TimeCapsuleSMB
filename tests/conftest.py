@@ -143,6 +143,22 @@ def apple_acpd_healthy(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def acpd_runs_after_start(monkeypatch: pytest.MonkeyPatch):
+    # Every wait for the runtime ends by reading whether ACPd still runs, for
+    # telemetry (services.runtime_verification.acpd_after_start_measurement).
+    # Tests answer "running"; a test that needs another answer passes
+    # read_start_state or patches this function.
+    from timecapsulesmb.device.probe import ManagerStartupAgeProbeResult
+
+    monkeypatch.setattr(
+        "timecapsulesmb.services.runtime_verification.probe_manager_startup_age_conn",
+        lambda *_args, **_kwargs: ManagerStartupAgeProbeResult(None, "manager started 30s ago", 24, 54000,
+                                                               acpd_running=True, acpd_pids=(190,), clock_ms=54000),
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def device_disks_healthy(monkeypatch: pytest.MonkeyPatch):
     # Install, uninstall and disk repair read the device's kernel log for disk
     # errors before they ask, and a runtime that does not start reads it to
