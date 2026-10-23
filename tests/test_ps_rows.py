@@ -298,3 +298,26 @@ def test_smbd_running_says_whether_samba_outlived_acpd_by_the_same_rules():
     assert smbd_running(f"{sshd}\n{ps_row(320, 'smbd')}") is None  # cut short
     assert smbd_running(f"ps: kvm_getprocs: Cannot allocate memory\n{PS_LISTING_END}") is None
 
+
+def test_the_startup_age_listing_ends_with_its_end_line_and_says_whether_acpd_runs(tmp_path):
+    # The listing goes through sed with a ps= prefix and the clock after it;
+    # the probe still reads it as finished, with ACPd's pid and the clock.
+    import stat
+    from unittest import mock
+    from timecapsulesmb.device.probe import MANAGER_STARTUP_AGE_COMMAND, probe_manager_startup_age_conn
+
+    clock = tmp_path / "service"
+    clock.write_text("#!/bin/sh\necho 61234\n")
+    clock.chmod(clock.stat().st_mode | stat.S_IEXEC)
+    for processes, running, pids in (
+        ([process("107 S sshd /usr/sbin/sshd"), process("190 S ACPd /sbin/ACPd -nofork"),
+          process("300 S service service: role=manager started=24")], True, (190,)),
+        ([process("107 S sshd /usr/sbin/sshd"), process("300 S service service: role=manager started=24")], False, ()),
+    ):
+        fake = FakePs(tmp_path, processes)
+        result = subprocess.run(fake.install(MANAGER_STARTUP_AGE_COMMAND), shell=True, capture_output=True, text=True,
+                                env={**os.environ, "RUNTIME_SERVICE_BIN": str(clock)})
+        assert result.returncode == 0, result.stderr
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=result):
+            age = probe_manager_startup_age_conn(object())
+        assert (age.acpd_running, age.acpd_pids, age.now_monotonic_ms, age.started_monotonic_s) == (running, pids, 61234, 24)

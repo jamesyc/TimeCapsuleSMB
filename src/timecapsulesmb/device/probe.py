@@ -2891,6 +2891,8 @@ class ManagerStartupAgeProbeResult:
     manager_started_seconds_ago: float | None
     detail: str
     started_monotonic_s: int | None = None
+    # The clock reading itself, kept whatever the manager's state, for a
+    # check's own time (runtime_verification's acpd_after_start).
     now_monotonic_ms: int | None = None
     # The verdicts the title carries (DISK_PAYLOAD_PROBLEMS), in its order.
     payload_problems: tuple[DiskPayloadProblem, ...] = ()
@@ -2900,6 +2902,11 @@ class ManagerStartupAgeProbeResult:
     # minutes (TC_UNMOUNTED_MS). diskd can hang on a disk that stopped
     # answering; a restart clears it.
     unmounted_since: int | None = None
+    # Whether Apple's ACPd runs, from the same listing (processes.acpd_running):
+    # None when the listing did not finish or was not read. Its pids then: a
+    # different pid on a unit whose uptime ran on is an ACPd started again.
+    acpd_running: bool | None = None
+    acpd_pids: tuple[int, ...] = ()
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
@@ -2930,18 +2937,27 @@ def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupA
     # listing that always includes this shell's own processes came back empty.
     if not ps_rows:
         return ManagerStartupAgeProbeResult(None, "process listing failed")
-    rows = service_role_processes("\n".join(ps_rows), "manager")
-    if not rows and service_unreadable("\n".join(ps_rows)):
-        return ManagerStartupAgeProbeResult(None, MANAGER_UNREADABLE)
+    listing = "\n".join(ps_rows)
+    running = acpd_running(listing)
+    acpd = {
+        "acpd_running": running,
+        "acpd_pids": tuple(p.pid for p in parse_ps_rows(listing) if p.ucomm == "ACPd" and not p.zombie)
+        if running is not None else (),
+        "now_monotonic_ms": int(now_text) if _DECIMAL.fullmatch(now_text) else None,
+    }
+    rows = service_role_processes(listing, "manager")
+    if not rows and service_unreadable(listing):
+        return ManagerStartupAgeProbeResult(None, MANAGER_UNREADABLE, **acpd)
     if not rows:
-        return ManagerStartupAgeProbeResult(None, "manager is not running")
+        return ManagerStartupAgeProbeResult(None, "manager is not running", **acpd)
     if len(rows) > 1:
-        return ManagerStartupAgeProbeResult(None, f"{len(rows)} manager processes are running")
+        return ManagerStartupAgeProbeResult(None, f"{len(rows)} manager processes are running", **acpd)
     title = list(rows[0].argv[1:])
     return replace(
         _manager_startup_age(title, now_text),
         payload_problems=_title_payload_problems(title),
         unmounted_since=_title_unmounted_since(title),
+        **acpd,
     )
 
 

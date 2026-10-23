@@ -11,9 +11,11 @@ from timecapsulesmb.device.errors import AcpdQuitError, DeviceError, RsyncNotRun
 from timecapsulesmb.device.probe import (
     ACPD_QUIT_STEP,
     ManagedRuntimeProbeResult,
+    ManagerStartupAgeProbeResult,
     RuntimeNamingIdentityProbeResult,
     limit_remote_log_tail,
     probe_managed_runtime_conn,
+    probe_manager_startup_age_conn,
     probe_remote_runtime_naming_identity_conn,
     read_runtime_log_tails_conn,
     runtime_payload_problem,
@@ -34,6 +36,7 @@ def verify_managed_runtime_ready(
     probe_runtime: Callable[..., ManagedRuntimeProbeResult] | None = None,
     read_runtime_logs: Callable[[SshConnection], dict[str, object]] | None = None,
     read_disk_errors: Callable[[SshConnection], tuple[str, ...] | None] | None = None,
+    read_start_state: Callable[[SshConnection], ManagerStartupAgeProbeResult] | None = None,
 ) -> ManagedRuntimeProbeResult:
     callbacks = callbacks or OperationCallbacks()
     if probe_runtime is None:
@@ -42,6 +45,8 @@ def verify_managed_runtime_ready(
         read_runtime_logs = read_runtime_log_tails_conn
     if read_disk_errors is None:
         read_disk_errors = read_disk_errors_conn
+    if read_start_state is None:
+        read_start_state = probe_manager_startup_age_conn
     callbacks.stage(stage)
     started = time.monotonic()
     try:
@@ -67,6 +72,17 @@ def verify_managed_runtime_ready(
     )
     for line in render_managed_runtime_verification(verification, heading=heading):
         callbacks.message(line)
+    # After the result is shown: this read adds an SSH command.
+    acpd_after_start = acpd_after_start_measurement(
+        connection, stage, read_start_state,
+        quit_confirmed=any(step.id == ACPD_QUIT_STEP for step in verification.steps),
+    )
+    callbacks.measurement("acpd_after_start", **acpd_after_start)
+    if (verification.ready or verification.samba_ready) and acpd_after_start["result"] == "quit":
+        # Samba started before ACPd quit, so it serves, but nothing else
+        # works until the device is unplugged; the next command's check of
+        # ACPd refuses it (services.runtime.require_acpd_ready).
+        callbacks.message(acpd.acpd_broken_message(acpd.ACPD_QUIT_WHAT, note=acpd.ACPD_QUIT_SERVING_NOTE))
     if verification.ready or verification.samba_ready:
         # File sharing serves, with rsync or without it: Time Machine finds
         # the device through this Mac's copy of its _adisk record either way.
@@ -83,6 +99,42 @@ def verify_managed_runtime_ready(
     if disk_errors:
         callbacks.debug(disk_error_lines=list(disk_errors[-5:]))
     raise runtime_failure_error(verification, failure_message, disk_errors=disk_errors)
+
+
+def acpd_after_start_measurement(
+    connection: SshConnection,
+    stage: str,
+    read_start_state: Callable[[SshConnection], ManagerStartupAgeProbeResult],
+    *,
+    quit_confirmed: bool,
+) -> dict[str, object]:
+    """Whether Apple's ACPd still runs once a wait for the runtime ended, on
+    success too, with the manager's start and the check on the device's
+    monotonic clock: in telemetry, how many starts of each kind keep ACPd.
+    Unless the runtime wait already confirmed the exit, a reading without
+    ACPd needs a second one, acpd.ACPD_RECHECK_SECONDS later (`rechecked`):
+    one listing can fall between two ACPds (acpd.acpd_quit). Best effort:
+    a read that fails is recorded as unreadable and never fails the
+    operation. A death after this read is not seen here."""
+    fields: dict[str, object] = {"stage": stage}
+    try:
+        state = read_start_state(connection)
+        if state.acpd_running is False and not quit_confirmed:
+            acpd.pause(acpd.ACPD_RECHECK_SECONDS)
+            state = read_start_state(connection)
+            fields["rechecked"] = True
+    except Exception as exc:
+        fields.update(result="unreadable", error=system_exit_message(exc)[:200])
+        return fields
+    running = state.acpd_running
+    fields.update(
+        result="unreadable" if running is None else "running" if running else "quit",
+        acpd_running=running,
+        acpd_pids=list(state.acpd_pids),
+        manager_started_sec=state.started_monotonic_s,
+        checked_at_sec=None if state.now_monotonic_ms is None else state.now_monotonic_ms // 1000,
+    )
+    return fields
 
 
 def runtime_failure_error(

@@ -5211,7 +5211,8 @@ class CheckTests(unittest.TestCase):
                 self.assertEqual({result.message for result in failures}, nbns_failures)
                 startup = debug_fields["manager_startup_age"]
                 self.assertEqual(startup["seconds_ago"], age)
-                self.assertEqual(startup["now_monotonic_ms"], int(now_ms) if age is not None else None)
+                # The clock is read whether or not the title has a start.
+                self.assertEqual(startup["now_monotonic_ms"], int(now_ms))
                 self.assertEqual(startup["started_monotonic_s"], 5 if age is not None else None)
 
     def test_run_doctor_checks_reports_query_timeout_at_once_when_native_nbns_was_not_probed(self) -> None:

@@ -3552,6 +3552,170 @@ describe_managed_smbd_status "" ""
                 self.assertEqual(fields["result"], "error")
                 self.assertIn(message, fields["error"])
 
+    def _verify(self, verification, read_start_state):
+        """What verify_managed_runtime_ready shows and records, in order (its
+        messages, and its measurements by kind), its acpd_after_start
+        measurement, and its error."""
+        events: list[tuple[str, str]] = []
+        after: list[dict[str, object]] = []
+
+        def record(kind, **fields):
+            events.append(("measurement", kind))
+            if kind == "acpd_after_start":
+                after.append(fields)
+
+        callbacks = OperationCallbacks(log=lambda message: events.append(("message", str(message))),
+                                       record_execution_measurement=record)
+        error = None
+        try:
+            verify_managed_runtime_ready(
+                SshConnection("host", "pw", ""),
+                callbacks=callbacks,
+                stage="verify_runtime_activation",
+                timeout_seconds=200,
+                heading="Runtime verification:",
+                failure_message="NetBSD4 activation failed.",
+                probe_runtime=mock.Mock(return_value=verification),
+                read_runtime_logs=mock.Mock(return_value={}),
+                read_disk_errors=mock.Mock(return_value=()),
+                read_start_state=read_start_state,
+            )
+        except DeviceError as exc:
+            error = exc
+        self.assertEqual(len(after), 1)
+        return events, after[0], error
+
+    def _ready(self) -> ManagedRuntimeProbeResult:
+        return ManagedRuntimeProbeResult(
+            ready=True,
+            detail="managed runtime ready",
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
+        )
+
+    def test_every_wait_records_whether_acpd_still_runs_after_the_start(self) -> None:
+        # Successful starts too: telemetry counts how many starts of each kind
+        # keep ACPd, at what uptime the manager started, and when it looked.
+        from timecapsulesmb.device.probe import ManagerStartupAgeProbeResult
+
+        age = ManagerStartupAgeProbeResult(30.0, "manager started 30s ago", 24, 54321, acpd_running=True,
+                                           acpd_pids=(190,))
+        _events, fields, error = self._verify(self._ready(), mock.Mock(return_value=age))
+        self.assertIsNone(error)
+        self.assertEqual(fields, {"stage": "verify_runtime_activation", "result": "running", "acpd_running": True,
+                                  "acpd_pids": [190], "manager_started_sec": 24, "checked_at_sec": 54})
+
+        quit_age = ManagerStartupAgeProbeResult(None, "manager started 900s ago", 24, 924000, acpd_running=False)
+        _events, fields, error = self._verify(self._runtime_not_ready(), mock.Mock(return_value=quit_age))
+        self.assertIsNotNone(error)
+        self.assertEqual((fields["result"], fields["acpd_running"]), ("quit", False))
+
+    def test_the_acpd_read_comes_after_the_result_is_shown(self) -> None:
+        # It adds an SSH command: the user sees how the start went first.
+        events, _fields, _error = self._verify(self._ready(), mock.Mock(return_value=self.acpd_age(True)))
+        heading = events.index(("message", "Runtime verification:"))
+        self.assertLess(heading, events.index(("measurement", "acpd_after_start")))
+
+    @staticmethod
+    def acpd_age(running: bool | None):
+        from timecapsulesmb.device.probe import ManagerStartupAgeProbeResult
+
+        return ManagerStartupAgeProbeResult(30.0, "manager started 30s ago", 24, 54321, acpd_running=running,
+                                            acpd_pids=(190,) if running else ())
+
+    def test_a_start_that_serves_after_acpd_quit_says_what_no_longer_works(self) -> None:
+        # Samba started before ACPd quit: the start succeeds, and the user
+        # learns now what the next install's check of ACPd would refuse.
+        from timecapsulesmb.device.acpd import ACPD_QUIT_SERVING_NOTE
+
+        for running, warned in ((False, True), (True, False), (None, False)):
+            with self.subTest(acpd_running=running):
+                events, _fields, _error = self._verify(self._ready(), mock.Mock(return_value=self.acpd_age(running)))
+                warnings = [text for kind, text in events if kind == "message" and ACPD_QUIT_SERVING_NOTE.strip() in text]
+                self.assertEqual(len(warnings), int(warned))
+                if warned:
+                    self.assertTrue(warnings[0].startswith(
+                        "Apple ACPd is broken: the AirPort service on this device has quit"))
+                    self.assertLess(events.index(("measurement", "acpd_after_start")),
+                                    events.index(("message", warnings[0])))
+
+    def test_one_reading_without_acpd_counts_only_when_a_second_one_agrees(self) -> None:
+        # One listing can fall between two ACPds: the second, a pause later,
+        # decides, and only a confirmed quit warns.
+        from timecapsulesmb.device import acpd
+        from timecapsulesmb.device.acpd import ACPD_QUIT_SERVING_NOTE
+
+        gone, back, unread = self.acpd_age(False), self.acpd_age(True), self.acpd_age(None)
+        cases = (
+            ("still gone", [gone, gone], "quit", True),
+            ("back", [gone, back], "running", False),
+            ("second unreadable", [gone, unread], "unreadable", False),
+        )
+        for name, readings, result, warned in cases:
+            with self.subTest(name), mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+                read = mock.Mock(side_effect=readings)
+                events, fields, error = self._verify(self._ready(), read)
+                self.assertIsNone(error)
+                self.assertEqual(read.call_count, 2)
+                self.assertEqual(pause.call_args_list[0], mock.call(acpd.ACPD_RECHECK_SECONDS))
+                self.assertEqual(fields["result"], result)
+                self.assertTrue(fields["rechecked"])
+                warnings = [text for kind, text in events if kind == "message" and ACPD_QUIT_SERVING_NOTE.strip() in text]
+                self.assertEqual(len(warnings), int(warned))
+
+        # A second read that fails is unreadable; the start still succeeded.
+        _events, fields, error = self._verify(self._ready(), mock.Mock(side_effect=[gone, SshCommandTimeout("ps")]))
+        self.assertIsNone(error)
+        self.assertEqual(fields["result"], "unreadable")
+
+        # A reading with ACPd is not read again.
+        read = mock.Mock(return_value=back)
+        _events, fields, _error = self._verify(self._ready(), read)
+        read.assert_called_once()
+        self.assertNotIn("rechecked", fields)
+
+    def test_a_confirmed_acpd_exit_needs_only_one_fresh_telemetry_read(self) -> None:
+        # The runtime wait already confirmed the exit twice. Read fresh
+        # timing data without another confirmation pause or SSH command.
+        verification = replace(self._runtime_not_ready(), extra_steps=(
+            ProbeStepResult(id=ACPD_QUIT_STEP, status="fail", detail="Apple ACPd is not running"),
+        ))
+        for running, result in ((False, "quit"), (True, "running"), (None, "unreadable")):
+            with self.subTest(running=running), mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+                read = mock.Mock(return_value=self.acpd_age(running))
+                _events, fields, error = self._verify(verification, read)
+                read.assert_called_once()
+                pause.assert_not_called()
+                self.assertIsInstance(error, AcpdQuitError)
+                self.assertEqual(fields, {
+                    "stage": "verify_runtime_activation", "result": result, "acpd_running": running,
+                    "acpd_pids": [190] if running else [], "manager_started_sec": 24, "checked_at_sec": 54,
+                })
+
+        # Telemetry remains best effort; its failed read cannot replace the
+        # already-confirmed failure or trigger another attempt.
+        with mock.patch("timecapsulesmb.device.acpd.pause") as pause:
+            read = mock.Mock(side_effect=SshCommandTimeout("ps"))
+            _events, fields, error = self._verify(verification, read)
+            read.assert_called_once()
+            pause.assert_not_called()
+            self.assertIsInstance(error, AcpdQuitError)
+            self.assertEqual(fields["result"], "unreadable")
+
+    def test_a_reading_that_cannot_say_is_unreadable_and_changes_nothing(self) -> None:
+        from timecapsulesmb.device.probe import ManagerStartupAgeProbeResult
+
+        cut_short = ManagerStartupAgeProbeResult(None, "device monotonic clock unavailable", 24, acpd_running=None)
+        _events, fields, error = self._verify(self._ready(), mock.Mock(return_value=cut_short))
+        self.assertIsNone(error)
+        self.assertEqual(fields, {"stage": "verify_runtime_activation", "result": "unreadable", "acpd_running": None,
+                                  "acpd_pids": [], "manager_started_sec": 24, "checked_at_sec": None})
+
+        _events, fields, error = self._verify(self._ready(), mock.Mock(side_effect=SshCommandTimeout("ps")))
+        self.assertIsNone(error)  # the read is best effort: the start still succeeded
+        self.assertEqual(fields["result"], "unreadable")
+        self.assertIn("ps", fields["error"])
+
     def test_a_wait_ended_by_acpd_raises_acpd_quit_from_the_real_wait(self) -> None:
         # The whole path: the wait's listings show no ACPd twice, it ends, and
         # the verification's error is ACPd's, not a 200 s timeout.
