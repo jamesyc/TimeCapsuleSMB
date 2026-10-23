@@ -61,7 +61,7 @@ from tests.test_client_network import router_plan
 from tests.reboot_support import acp_password_answer, acp_reading
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.services.doctor import doctor_report
-from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login
+from timecapsulesmb.checks.network import LocalInterfaceNetwork, check_smb_port, check_ssh_login, closed_ssh_port_error
 from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.checks.nbns import (
     NBNS_NEGATIVE_RESPONSE_CODE,
@@ -1829,6 +1829,30 @@ class CheckTests(unittest.TestCase):
         self.assertIn("could not list the AirPorts this computer sees: dns-sd exited with status 1",
                       [r.message for r in run.results if r.status == "INFO"])
         self.assertTrue(any(r.details.get("code") == "network_not_checked" for r in run.results))
+
+    def test_doctor_with_a_stuck_acpd_reports_it_and_still_checks_the_network(self) -> None:
+        # The device answers on port 22, so its address is not dead: Bonjour
+        # and SMB may still work, and the ACPd step, which needs SSH, does not run.
+        stuck = CheckResult(
+            "FAIL",
+            "Apple ACPd is broken: the AirPort service does not answer the network, a bug in Apple's firmware. "
+            "AirPort ACP port 5009 does not answer at 10.0.0.2 (timed out), while SSH port 22 refused a connection.",
+            {"code": "apple_acpd_broken", "acpd_problem": "acp_port_unanswered", "acp_port_error": "timed out"},
+        )
+        debug_fields: dict[str, object] = {}
+        run = self.run_doctor_with_mocks(
+            None,
+            ssh_login=stuck,
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            debug_fields=debug_fields,
+        )
+
+        self.assertEqual([r.details.get("code") for r in run.results if r.status == "FAIL"], ["apple_acpd_broken"])
+        self.assertFalse(any(r.details.get("code") == "network_not_checked" for r in run.results))
+        run.mocks.check_smb_port.assert_called()
+        self.assertEqual(debug_fields["acpd_problems"], ["acp_port_unanswered"])
 
     def test_doctor_at_a_dead_address_says_when_no_airport_answers_or_bonjour_is_skipped(self) -> None:
         run, _query, _smb = self.run_doctor_against_a_dead_address([])
@@ -6122,6 +6146,81 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.details["code"], "ssh_unreachable")
         self.assertIn("Timed out waiting for ssh command to finish", result.message)
         connect.assert_called_once()
+
+    def test_acp_silent_while_ssh_refuses_says_acpd_is_stuck(self) -> None:
+        # The device is up (port 22 refuses at once) and ACPd's port drops
+        # every connect: only unplugging the device clears it.
+        cases = {
+            "one address": ({22: "Connection refused", 5009: "timed out"}, "timed out"),
+            # IPv6 has no route; IPv4 answers: each address counts on its own.
+            "two addresses": (
+                {22: "timed out; Connection refused", 5009: "timed out; [Errno 65] No route to host"},
+                "timed out; [Errno 65] No route to host",
+            ),
+        }
+        for case, (ports, acp_error) in cases.items():
+            with self.subTest(case=case):
+                result, connect = self.check_unanswered_ssh(ports)
+
+                self.assertEqual(result.status, "FAIL")
+                # The ACPd step's own code: that step needs SSH and does not run.
+                self.assertEqual(result.details["code"], "apple_acpd_broken")
+                self.assertEqual(result.details["acpd_problem"], "acp_port_unanswered")
+                self.assertEqual(
+                    result.message,
+                    # The firmware bug is ACPd's silence; the ports' answers follow as facts.
+                    "Apple ACPd is broken: the AirPort service does not answer the network, a bug in Apple's firmware. "
+                    f"AirPort ACP port 5009 does not answer at 10.0.0.5 ({acp_error}), while SSH port 22 refused a "
+                    "connection. Unplug the device, wait 10 seconds, plug it back in and wait 2 minutes, then check again",
+                )
+                self.assertEqual((result.details["ssh_port_error"], result.details["acp_port_error"]), (ports[22], acp_error))
+                # Port 22's own answer is reused, not asked again.
+                self.assertEqual([call.args[:2] for call in connect.call_args_list], [("10.0.0.5", 22), ("10.0.0.5", 5009)])
+
+    def closed_port(self, ports: dict[int, str | None], **kwargs):
+        connect = mock.Mock(side_effect=lambda _host, port, _timeout: ports[port])
+        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", connect):
+            closed = closed_ssh_port_error("10.0.0.5", **kwargs)
+        return closed, [call.args[1] for call in connect.call_args_list]
+
+    def test_a_closed_ssh_port_asks_port_22_only_when_acp_goes_unanswered(self) -> None:
+        # Commands that failed their SSH probe have no port 22 error to give.
+        cases = {
+            "ACP answers": ({5009: None, 22: "Connection refused"}, "ssh_disabled", [5009]),
+            "ACP refused": ({5009: "Connection refused", 22: "Connection refused"}, "device_unreachable", [5009]),
+            "ACP host down": ({5009: "[Errno 64] Host is down", 22: "Connection refused"}, "device_unreachable", [5009]),
+            "ACP silent, SSH refuses": ({5009: "timed out", 22: "Connection refused"}, "acpd_broken", [5009, 22]),
+            "ACP silent, SSH just opened": ({5009: "timed out", 22: None}, "acpd_broken", [5009, 22]),
+            "nothing answers": ({5009: "timed out", 22: "timed out"}, "device_unreachable", [5009, 22]),
+        }
+        for case, (ports, code, asked) in cases.items():
+            with self.subTest(case=case):
+                closed, ports_asked = self.closed_port(ports)
+
+                self.assertEqual(closed.code, code)
+                self.assertEqual(ports_asked, asked)
+
+    def test_a_stuck_acpd_reads_as_the_device_answering_without_acp(self) -> None:
+        closed, _asked = self.closed_port({5009: "timed out", 22: "Connection refused"})
+
+        self.assertEqual(
+            closed.message, "The device answers on the network, but its AirPort service does not.",
+        )
+        self.assertEqual(
+            closed.detail, "AirPort ACP port 5009 does not answer at 10.0.0.5 (timed out), while SSH port 22 refused a connection.",
+        )
+        self.assertEqual(closed.details, {"acp_port_error": "timed out", "acpd_problem": "acp_port_unanswered"})
+        self.assertEqual(closed.code, "acpd_broken")
+
+    def test_a_stuck_acpd_error_says_how_port_22_answered(self) -> None:
+        # Commands' errors carry only this text, so it keeps the evidence: a
+        # refusal (SSH off) or a connect (SSH opened since the probe).
+        for ssh_error, verb in (("Connection refused", "refused"), (None, "accepted")):
+            with self.subTest(verb=verb):
+                closed, _asked = self.closed_port({5009: "timed out", 22: ssh_error})
+
+                self.assertTrue(closed.acp_stuck)
+                self.assertTrue(closed.detail.endswith(f"while SSH port 22 {verb} a connection."), closed.detail)
 
     def test_a_password_or_filter_failure_does_not_probe_the_ports(self) -> None:
         connection = SshConnection("root@10.0.0.5", "pw", "")

@@ -16,6 +16,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.transport.local import (
     command_exists,
+    connect_answered,
+    connect_unanswered,
     mac_network_filters,
     run_local_capture,
     scoped_tcp_connect_errors,
@@ -104,6 +106,51 @@ class TcpConnectErrorTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.transport.local.socket.getaddrinfo", side_effect=socket.gaierror(8, "nodename nor servname provided")):
             self.assertEqual(tcp_connect_error("missing.local", 22), "[Errno 8] nodename nor servname provided")
+
+
+class ConnectAnswerTests(unittest.TestCase):
+    """How a host answered tcp_connect_error, whose result joins each
+    address's error with "; " (TcpConnectErrorTests)."""
+
+    def test_a_connect_or_a_refusal_at_any_address_is_an_answer(self) -> None:
+        cases = {
+            "connected": None,
+            "refused": "[Errno 61] Connection refused",
+            "IPv4 refused, IPv6 timed out": "[Errno 61] Connection refused; timed out",
+            "IPv4 timed out, IPv6 refused": "timed out; [Errno 61] Connection refused",
+            "IPv4 no route, IPv6 refused": "[Errno 65] No route to host; [Errno 61] Connection refused",
+        }
+        for case, error in cases.items():
+            with self.subTest(case=case):
+                self.assertTrue(connect_answered(error))
+
+    def test_drops_and_routing_errors_are_no_answer(self) -> None:
+        for error in ("timed out", "[Errno 64] Host is down", "[Errno 65] No route to host",
+                      "timed out; [Errno 65] No route to host", "connection failed", ""):
+            with self.subTest(error=error):
+                self.assertFalse(connect_answered(error))
+
+    def test_a_timeout_refused_at_no_address_is_unanswered(self) -> None:
+        # A full listen queue drops the connect; the host's other address may
+        # have no route to it at all.
+        for error in ("timed out", "timed out; [Errno 65] No route to host", "[Errno 64] Host is down; timed out"):
+            with self.subTest(error=error):
+                self.assertTrue(connect_unanswered(error))
+
+    def test_a_connect_a_refusal_or_no_timeout_is_not_unanswered(self) -> None:
+        # A refusal at any address means nothing listens there, not a listener
+        # that takes no connections.
+        cases = (
+            None,
+            "[Errno 61] Connection refused",
+            "timed out; [Errno 61] Connection refused",
+            "[Errno 65] No route to host",
+            "[Errno 64] Host is down",
+            "connection failed",
+        )
+        for error in cases:
+            with self.subTest(error=error):
+                self.assertFalse(connect_unanswered(error))
 
 
 class LocalTransportTests(unittest.TestCase):

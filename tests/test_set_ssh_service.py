@@ -13,7 +13,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.integrations.acp import ACP_PORT
-from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE
+from timecapsulesmb.services.acp_ssh import SSH_ENABLE_TIMEOUT_MESSAGE, ACPStuckError
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.set_ssh import (
     SSH_PORT,
@@ -57,6 +57,35 @@ class SetSshServiceTests(unittest.TestCase):
                 except RebootFlowError as exc:
                     result = exc
         return result, recorder, enable
+
+    def test_ssh_that_opened_after_the_first_check_reads_as_a_stuck_acpd(self) -> None:
+        # Accepted race (services.acp_ssh._probe_acp_port): SSH was closed at
+        # the first check and connects by the time ACP has gone unanswered, so
+        # the user is told to unplug a device whose SSH is now up.
+        closed_then_open = SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False)
+        connects: list[int] = []
+
+        def connect(_host: str, port: int) -> str | None:
+            connects.append(port)
+            return None if port == SSH_PORT else "timed out"
+
+        with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", side_effect=connect), \
+                mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=()), \
+                mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as set_dbug, \
+                mock.patch("timecapsulesmb.services.set_ssh.reboot_device") as reboot:
+            with self.assertRaises(ACPStuckError) as raised:
+                enable_set_ssh(CONNECTION, no_wait=False, initial=closed_then_open)
+
+        self.assertEqual(connects, [ACP_PORT] * 3 + [SSH_PORT])
+        self.assertEqual(raised.exception.code, "acpd_broken")
+        self.assertEqual(
+            raised.exception.detail,
+            "AirPort ACP port 5009 does not answer at 10.0.0.2 (timed out), while SSH port 22 accepted a connection.",
+        )
+        set_dbug.assert_not_called()
+        reboot.assert_not_called()
 
     def test_enable_noops_when_ssh_is_already_open(self) -> None:
         with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=lambda host, *_args, **_kwargs: host) as enable:

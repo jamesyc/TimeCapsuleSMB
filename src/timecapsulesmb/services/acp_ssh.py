@@ -5,7 +5,15 @@ import sys
 import time
 
 from timecapsulesmb.core.error_codes import ErrorCode
-from timecapsulesmb.checks.network import IpNetwork, classify_network_link, host_networks, local_lan_networks, reportable_network
+from timecapsulesmb.checks.network import (
+    SSH_PORT,
+    ClosedSshPort,
+    IpNetwork,
+    classify_network_link,
+    host_networks,
+    local_lan_networks,
+    reportable_network,
+)
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device import probe
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
@@ -20,7 +28,7 @@ from timecapsulesmb.integrations.acp import (
 from timecapsulesmb.services import acp_diagnostics
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import locate_airport
-from timecapsulesmb.transport.local import tcp_connect_error
+from timecapsulesmb.transport.local import connect_answered, connect_error_kind, connect_unanswered, tcp_connect_error
 
 
 # The dashboard groups enable timeouts by this message's text.
@@ -44,6 +52,17 @@ class ACPNoRouteError(ACPConnectionError):
     this as its Local Network access being blocked."""
 
     code = ErrorCode.ACP_NO_ROUTE
+
+
+class ACPStuckError(ACPConnectionError):
+    """Every ACP connect went unanswered (transport.local.connect_unanswered),
+    yet the address answered on SSH's port by accepting or refusing a
+    connection. The device is up and ACPd's listen queue is full: Apple's ACPd
+    is stuck. With SSH off and ACP not answering, nothing can ask the device to
+    restart, so only unplugging it brings ACPd back. A filter that drops only
+    ACP's port would look the same (DETAIL.md)."""
+
+    code = ErrorCode.ACPD_BROKEN
 
 
 # Advice for an ACP port that does not answer at an address on this
@@ -152,7 +171,7 @@ def _probe_acp_port(
             return
 
         error_text = str(error).strip() or "connection failed"
-        errors.append({"attempt": attempt, "error": error_text, "kind": acp_diagnostics.connect_error_kind(error_text)})
+        errors.append({"attempt": attempt, "error": error_text, "kind": connect_error_kind(error_text)})
         if attempt < ACP_PORT_PROBE_ATTEMPTS:
             sleep_func(ACP_PORT_PROBE_RETRY_DELAY_SECONDS)
 
@@ -177,6 +196,18 @@ def _probe_acp_port(
         raise ACPDeviceOffNetworkError(f"{failure} {message}", detail=f"{unanswered} {facts}")
     if all(entry["kind"] == "no_route" for entry in errors):
         raise ACPNoRouteError(failure, detail=unanswered)
+    if all(connect_unanswered(entry["error"]) for entry in errors):
+        # A device that is off or gone drops connects to every port; one that
+        # is up answers SSH's port, connecting or refusing while SSH is off.
+        # SSH found closed earlier may have opened since (a restart that just
+        # finished): that connect still counts, and the user is told to unplug
+        # a device whose SSH is up. Accepted: the window is the few seconds of
+        # this probe, and ACP is still not answering.
+        ssh_error = tcp_connect_error_func(host, SSH_PORT)
+        callbacks.update(acp_port_probe_ssh_port="open" if ssh_error is None else connect_error_kind(ssh_error))
+        if connect_answered(ssh_error):
+            stuck = ClosedSshPort(host, errors[-1]["error"], acp_stuck=True, ssh_accepted=ssh_error is None)
+            raise ACPStuckError(f"{failure} {stuck.message}", detail=stuck.detail)
     raise ACPConnectionError(failure, detail=unanswered)
 
 

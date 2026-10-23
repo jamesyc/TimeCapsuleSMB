@@ -2174,6 +2174,10 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
 
     ssh_result = check_ssh_login(target.connection)
     sink.add(ssh_result)
+    if ssh_result.details.get("code") == acpd.APPLE_ACPD_BROKEN_CODE and sink.debug_fields is not None:
+        # The ACPd step needs SSH and does not run; doctor_finished reports
+        # this problem in its place.
+        sink.debug_fields["acpd_problems"] = [ssh_result.details["acpd_problem"]]
     ssh_ok = ssh_result.status == "PASS"
     return RemoteAccess(
         ssh_checked=True,
@@ -2347,9 +2351,6 @@ def _doctor_list_file_locks(target: DoctorTarget, sink: DoctorSink, *, disk: boo
         sink.debug_fields[field] = limit_remote_log_tail(locks.rstrip() or "(empty)")
 
 
-APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
-
-
 # For an ACPd that is gone (AcpdProblem.gone): on NetBSD 4 without the boot
 # hook the restart that brings it back does not start file sharing.
 ACPD_GONE_ACTIVATE_NOTE = "On NetBSD 4 devices, run Activate if file sharing does not start."
@@ -2391,7 +2392,7 @@ def _doctor_check_apple_acpd(
             CheckResult(
                 "FAIL",
                 message,
-                {"code": APPLE_ACPD_BROKEN_CODE, "acpd_problem": problem.code, "acpd_gone": problem.gone,
+                {"code": acpd.APPLE_ACPD_BROKEN_CODE, "acpd_problem": problem.code, "acpd_gone": problem.gone,
                  **problem.details},
             )
         )

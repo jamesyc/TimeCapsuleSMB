@@ -24,6 +24,57 @@ def command_exists(name: str) -> bool:
     return find_command(name) is not None
 
 
+# Substrings of connect errors, in the order they are tested. The texts are
+# macOS's and Linux's strerror() and Python's socket timeout and gaierror.
+_ERROR_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("timeout", ("timed out",)),
+    ("refused", ("refused",)),
+    ("host_down", ("host is down",)),
+    ("no_route", ("no route to host",)),
+    ("network_unreachable", ("network is unreachable", "network is down")),
+    ("address_unavailable", ("assign requested address",)),
+    ("name_lookup_failed", (
+        "nodename nor servname",
+        "name or service not known",
+        "no address associated",
+        "temporary failure in name resolution",
+    )),
+    ("not_permitted", ("operation not permitted", "permission denied")),
+)
+
+
+def _error_kinds(error: str) -> list[str]:
+    """One word per distinct error; tcp_connect_error joins several addresses' with "; "."""
+    kinds: list[str] = []
+    for part in error.split("; "):
+        text = part.lower()
+        kind = next((name for name, needles in _ERROR_KINDS if any(needle in text for needle in needles)), "other")
+        if kind not in kinds:
+            kinds.append(kind)
+    return kinds
+
+
+def connect_error_kind(error: str | None) -> str | None:
+    """One word for a connect error; several addresses' errors are joined by '+'."""
+    return None if error is None else "+".join(_error_kinds(error))
+
+
+def connect_answered(error: str | None) -> bool:
+    """Whether a host's TCP stack answered tcp_connect_error: it connected, or
+    one of the host's addresses refused."""
+    return error is None or "refused" in _error_kinds(error)
+
+
+def connect_unanswered(error: str | None) -> bool:
+    """Whether a connect timed out at one of the host's addresses and was
+    refused at none. A host refuses a port nothing listens on, and its kernel
+    completes the connections a listener has not accepted yet until that
+    listener's queue is full: only a full queue, a filter, or a host that is
+    not there drops them."""
+    kinds = [] if error is None else _error_kinds(error)
+    return "timeout" in kinds and "refused" not in kinds
+
+
 def _connect_error(family: int, socktype: int, proto: int, sockaddr: tuple, timeout: float) -> str | None:
     try:
         with socket.socket(family, socktype, proto) as sock:

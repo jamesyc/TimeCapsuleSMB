@@ -242,8 +242,10 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         action_ids=("run_checkup",),
     ),
     # Apple's firmware, not ours: a stuck ACPd refused before anything changed,
-    # tore itself down without restarting the device, or stopped answering
-    # syUT (services.runtime.require_acpd_ready, services.reboot).
+    # tore itself down without restarting the device, stopped answering
+    # syUT (services.runtime.require_acpd_ready, services.reboot), or left its
+    # port unanswered on a device that answers on port 22 (services.acp_ssh,
+    # checks.network.closed_ssh_port_error).
     ErrorCode.ACPD_BROKEN: RecoveryInfo(
         "Apple ACPd is broken",
         (

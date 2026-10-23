@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
+from timecapsulesmb.checks.network import SSH_PORT
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.integrations.acp import ACP_PORT, DEVICE_ACP_PATH
@@ -13,9 +14,6 @@ from timecapsulesmb.services.reboot import reboot_device
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.errors import SshAuthenticationError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
-
-
-SSH_PORT = 22
 
 
 @dataclass(frozen=True)

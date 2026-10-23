@@ -38,39 +38,8 @@ _SHARED_IPV4 = ipaddress.ip_network("100.64.0.0/10")
 _UNIQUE_LOCAL_IPV6 = ipaddress.ip_network("fc00::/7")
 _REPORTED_SCOPES = frozenset({"private", "shared", "ula", "link_local", "loopback"})
 
-# Substrings of connect errors, in the order they are tested. The texts are
-# macOS's and Linux's strerror() and Python's socket timeout and gaierror.
-_ERROR_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("timeout", ("timed out",)),
-    ("refused", ("refused",)),
-    ("host_down", ("host is down",)),
-    ("no_route", ("no route to host",)),
-    ("network_unreachable", ("network is unreachable", "network is down")),
-    ("address_unavailable", ("assign requested address",)),
-    ("name_lookup_failed", (
-        "nodename nor servname",
-        "name or service not known",
-        "no address associated",
-        "temporary failure in name resolution",
-    )),
-    ("not_permitted", ("operation not permitted", "permission denied")),
-)
-
 IpAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 RouteFunc = Callable[[str], RouteSelection]
-
-
-def connect_error_kind(error: str | None) -> str | None:
-    """One word for a connect error; several addresses' errors are joined by '+'."""
-    if error is None:
-        return None
-    kinds: list[str] = []
-    for part in str(error).split("; "):
-        text = part.lower()
-        kind = next((name for name, needles in _ERROR_KINDS if any(needle in text for needle in needles)), "other")
-        if kind not in kinds:
-            kinds.append(kind)
-    return "+".join(kinds) or "other"
 
 
 def address_scope(ip: IpAddress) -> str:

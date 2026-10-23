@@ -7,7 +7,6 @@ from timecapsulesmb.app.ops.common import load_request_config, require_request_a
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
-from timecapsulesmb.services.acp_ssh import ACPDeviceOffNetworkError, ACPNoRouteError
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.credentials import saved_airport_mac
@@ -64,9 +63,10 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 code=ErrorCode.AUTH_FAILED,
                 debug=str(exc),
             ) from exc
-        except (ACPDeviceOffNetworkError, ACPNoRouteError) as exc:
-            raise AppOperationError(str(exc), code=exc.code) from exc
         except ACPConnectionError as exc:
+            # The port probe's errors that name a cause (services.acp_ssh) keep it.
+            if exc.code is not None:
+                raise AppOperationError(str(exc), code=exc.code) from exc
             if context.current_stage == "acp_port_probe":
                 # Neither SSH nor ACP answers at the saved address: the app then
                 # looks for the device elsewhere.

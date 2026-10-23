@@ -8,6 +8,7 @@ from typing import Literal, Union
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.error_codes import ErrorCode
 from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips
+from timecapsulesmb.device import acpd
 from timecapsulesmb.device.probe import probe_ssh_command_conn
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.transport.errors import (
@@ -18,7 +19,7 @@ from timecapsulesmb.transport.errors import (
     TransportError,
     local_network_filtered_message,
 )
-from timecapsulesmb.transport.local import tcp_connect_error
+from timecapsulesmb.transport.local import connect_answered, connect_unanswered, tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -235,56 +236,91 @@ def classify_network_link(
 
 
 PORT_CHECK_TIMEOUT_SECONDS = 2.0
+SSH_PORT = 22
 
 
 @dataclass(frozen=True)
 class ClosedSshPort:
     """Why SSH port 22 is closed at `host`: SSH is off while ACP answers
-    (`acp_error` None), or nothing answers there at all."""
+    (`acp_error` None); the device answers on port 22 but ACP's port goes
+    unanswered (`acp_stuck`, with `ssh_accepted` when port 22 connected rather
+    than refused), so Apple's ACPd is stuck; or nothing answers there at all."""
 
     host: str
     acp_error: str | None
+    acp_stuck: bool = False
+    ssh_accepted: bool = False
 
     @property
     def code(self) -> ErrorCode:
-        return ErrorCode.SSH_DISABLED if self.acp_error is None else ErrorCode.DEVICE_UNREACHABLE
+        if self.acp_error is None:
+            return ErrorCode.SSH_DISABLED
+        return ErrorCode.ACPD_BROKEN if self.acp_stuck else ErrorCode.DEVICE_UNREACHABLE
+
+    @property
+    def _ssh_answer(self) -> str:
+        return f"SSH port {SSH_PORT} {'accepted' if self.ssh_accepted else 'refused'} a connection"
 
     @property
     def message(self) -> str:
         """An error's message."""
-        return "SSH is turned off on the device." if self.acp_error is None else "The device is not answering."
+        if self.acp_error is None:
+            return "SSH is turned off on the device."
+        if self.acp_stuck:
+            return "The device answers on the network, but its AirPort service does not."
+        return "The device is not answering."
 
     @property
     def detail(self) -> str:
         """An error's facts."""
         if self.acp_error is None:
-            return f"AirPort ACP answers at {self.host} on port {ACP_PORT}, but SSH port 22 is closed."
-        return f"Neither SSH port 22 nor AirPort ACP port {ACP_PORT} is reachable at {self.host} ({self.acp_error})."
+            return f"AirPort ACP answers at {self.host} on port {ACP_PORT}, but SSH port {SSH_PORT} is closed."
+        if self.acp_stuck:
+            return f"AirPort ACP port {ACP_PORT} does not answer at {self.host} ({self.acp_error}), while {self._ssh_answer}."
+        return f"Neither SSH port {SSH_PORT} nor AirPort ACP port {ACP_PORT} is reachable at {self.host} ({self.acp_error})."
 
     @property
     def line(self) -> str:
         """Checkup's result line."""
         if self.acp_error is None:
-            return f"SSH is turned off on {self.host}: AirPort ACP answers on port {ACP_PORT}, but SSH port 22 is closed."
+            return f"SSH is turned off on {self.host}: AirPort ACP answers on port {ACP_PORT}, but SSH port {SSH_PORT} is closed."
+        if self.acp_stuck:
+            broken = acpd.acpd_broken_message("the AirPort service does not answer the network", note=self.detail)
+            return f"{broken} {acpd.ACPD_FIX}, then check again"
         return (
-            f"The device is not answering at {self.host}: neither SSH port 22 nor AirPort ACP port {ACP_PORT} "
+            f"The device is not answering at {self.host}: neither SSH port {SSH_PORT} nor AirPort ACP port {ACP_PORT} "
             f"is reachable ({self.acp_error})."
         )
 
     @property
     def details(self) -> dict[str, object]:
-        return {} if self.acp_error is None else {"acp_port_error": self.acp_error}
+        if self.acp_error is None:
+            return {}
+        if self.acp_stuck:
+            return {"acp_port_error": self.acp_error, "acpd_problem": "acp_port_unanswered"}
+        return {"acp_port_error": self.acp_error}
 
 
-def closed_ssh_port_error(host: str) -> ClosedSshPort:
+def closed_ssh_port_error(host: str, *, ssh_error: str | None = None) -> ClosedSshPort:
     """Why SSH port 22 is closed.
 
-    The user fixes the two causes differently: SSH is off (after a reset, or
-    turned off in SSH Access) while the device still answers AirPort ACP, or
-    nothing answers at this address at all (the device is off, or DHCP gave
-    it another address). One TCP connect to the ACP port tells them apart.
+    The user fixes the three causes differently: SSH is off (after a reset, or
+    turned off in SSH Access) while the device still answers AirPort ACP; ACPd
+    is stuck, which only unplugging the device clears; or nothing answers at
+    this address at all (the device is off, or DHCP gave it another address).
+    One TCP connect to the ACP port, and to SSH's when ACP's goes unanswered
+    (transport.local.connect_unanswered), tells them apart.
+
+    `ssh_error` is port 22's failed connect when the caller has one. Unlike
+    tcp_connect_error's None, None here means there is none: port 22 is then
+    tried again, and a connect that now succeeds still shows the device is up.
     """
-    return ClosedSshPort(host, tcp_connect_error(host, ACP_PORT, PORT_CHECK_TIMEOUT_SECONDS))
+    acp_error = tcp_connect_error(host, ACP_PORT, PORT_CHECK_TIMEOUT_SECONDS)
+    if not connect_unanswered(acp_error):
+        return ClosedSshPort(host, acp_error)
+    if ssh_error is None:
+        ssh_error = tcp_connect_error(host, SSH_PORT, PORT_CHECK_TIMEOUT_SECONDS)
+    return ClosedSshPort(host, acp_error, acp_stuck=connect_answered(ssh_error), ssh_accepted=ssh_error is None)
 
 
 def check_ssh_login(connection: SshConnection) -> CheckResult:
@@ -312,11 +348,13 @@ def _unanswered_ssh_port(target: str) -> CheckResult | None:
     the session itself is what hung.
     """
     host = endpoint_host(target)
-    ssh_error = tcp_connect_error(host, 22, PORT_CHECK_TIMEOUT_SECONDS)
+    ssh_error = tcp_connect_error(host, SSH_PORT, PORT_CHECK_TIMEOUT_SECONDS)
     if ssh_error is None:
         return None
-    closed = closed_ssh_port_error(host)
-    return CheckResult("FAIL", closed.line, {"code": closed.code, "ssh_port_error": ssh_error, **closed.details})
+    closed = closed_ssh_port_error(host, ssh_error=ssh_error)
+    # A stuck ACPd gets the ACPd step's own code, which needs SSH and does not run.
+    code = acpd.APPLE_ACPD_BROKEN_CODE if closed.acp_stuck else closed.code
+    return CheckResult("FAIL", closed.line, {"code": code, "ssh_port_error": ssh_error, **closed.details})
 
 
 def ssh_login_failure_code(error: TransportError | None) -> str:

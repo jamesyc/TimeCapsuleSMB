@@ -7,6 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 import timecapsulesmb.cli.main as cli_main_module
+from timecapsulesmb.checks.network import LocalInterfaceNetwork
 from timecapsulesmb.cli import set_ssh
 from timecapsulesmb.services.runtime import AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE
 from timecapsulesmb.transport.ssh import SshConnection
@@ -242,6 +243,35 @@ class CliSetSshTests(CliTestCase):
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertIn(f"Failed to enable SSH via ACP: {error}", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
+
+    def test_set_ssh_enable_with_a_stuck_acpd_says_to_unplug_the_device(self) -> None:
+        # ACP's port drops every connect while port 22 refuses at once.
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        here = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)), \
+                mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False), \
+                mock.patch(
+                    "timecapsulesmb.services.acp_ssh.tcp_connect_error",
+                    side_effect=lambda _host, port: "[Errno 61] Connection refused" if port == 22 else "timed out",
+                ), \
+                mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=here), \
+                mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_mock:
+            with redirect_stdout(output):
+                rc = set_ssh.main([])
+
+        self.assertEqual(rc, 1)
+        enable_mock.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("The device answers on the network, but its AirPort service does not.", rendered)
+        self.assertIn(
+            "Next steps:\n"
+            "  1. Unplug the device, wait 10 seconds and plug it back in.\n"
+            "  2. Wait 2 minutes for the device to start up, then try again.",
+            rendered,
+        )
 
     def test_set_ssh_disable_failure_is_reported_as_ssh_error(self) -> None:
         output = io.StringIO()

@@ -9,6 +9,7 @@ from timecapsulesmb.core.net import RouteSelection
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services import acp_diagnostics
+from timecapsulesmb.transport.local import connect_error_kind
 
 
 def network(interface: str, address: str, prefix: str) -> LocalInterfaceNetwork:
@@ -61,15 +62,15 @@ class ConnectErrorKindTests(unittest.TestCase):
         }
         for error, kind in cases.items():
             with self.subTest(error=error):
-                self.assertEqual(acp_diagnostics.connect_error_kind(error), kind)
+                self.assertEqual(connect_error_kind(error), kind)
 
     def test_no_error_has_no_kind(self) -> None:
-        self.assertIsNone(acp_diagnostics.connect_error_kind(None))
+        self.assertIsNone(connect_error_kind(None))
 
     def test_errors_from_several_addresses_keep_each_distinct_kind_once(self) -> None:
         error = "timed out; [Errno 65] No route to host; timed out"
 
-        self.assertEqual(acp_diagnostics.connect_error_kind(error), "timeout+no_route")
+        self.assertEqual(connect_error_kind(error), "timeout+no_route")
 
 
 class AddressSummaryTests(unittest.TestCase):

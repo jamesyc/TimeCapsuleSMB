@@ -3442,6 +3442,46 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "remote_error")
         self.assertIn("No AirPort ACP service responded at this address", error["message"])
 
+    def test_configure_with_acp_timing_out_while_ssh_port_refuses_says_to_unplug_the_device(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)), \
+                    mock.patch(
+                        "timecapsulesmb.services.acp_ssh.tcp_connect_error",
+                        side_effect=lambda _host, port: "Connection refused" if port == 22 else "timed out",
+                    ), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {"config": str(config_path), "host": "root@10.0.0.2", "password": "secret"},
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        self.assertFalse(config_path.exists())
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "acpd_broken")
+        self.assertEqual(
+            error["message"],
+            # The dashboard counts these by this prefix, whitespace collapsed.
+            "No AirPort ACP service responded at this address: Could not connect to ACP. The device answers on "
+            "the network, but its AirPort service does not.\nAirPort ACP port 5009 does not answer at 10.0.0.2 "
+            "(timed out), while SSH port 22 refused a connection.",
+        )
+        self.assertEqual(error["recovery"]["localization_key"], "acpd_broken")
+        self.assertEqual(error["recovery"]["actions"][0], "Unplug the device, wait 10 seconds and plug it back in.")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["error_code"], "acpd_broken")
+        self.assertEqual(finished["stage"], "acp_port_probe")
+        self.assertEqual(finished["acp_port_probe_error_kinds"], ["timeout"] * 3)
+        self.assertEqual(finished["acp_port_probe_ssh_port"], "refused")
+
     def test_configure_confirmed_ssh_enable_reprobes_and_writes_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
@@ -3824,6 +3864,99 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("Could not connect to ACP.\nNo answer from 10.0.0.2:5009.", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "device_unreachable")
         self.assertEqual(self._telemetry_client.emit.call_args_list[-1].kwargs["result"], "failure")
+
+    def test_set_ssh_enable_with_acp_timing_out_while_ssh_port_refuses_says_to_unplug_the_device(self) -> None:
+        # The device answers at its saved address, so the app must not look
+        # for it elsewhere as it does for device_unreachable.
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch(
+                "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                return_value=SetSshStatusResult(host="10.0.0.2", acp_port_reachable=False, ssh_port_reachable=False),
+            ), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)), \
+                    mock.patch(
+                        "timecapsulesmb.services.acp_ssh.tcp_connect_error",
+                        side_effect=lambda _host, port: "Connection refused" if port == 22 else "timed out",
+                    ), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+                rc = service.run_api_request(
+                    {"operation": "set-ssh", "params": {"config": str(config_path), "action": "enable", "password": "secret"}},
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "acpd_broken")
+        self.assertIn("its AirPort service does not.\nAirPort ACP port 5009 does not answer at 10.0.0.2", error["message"])
+        self.assertEqual(error["recovery"]["localization_key"], "acpd_broken")
+        self.assertEqual(error["recovery"]["actions"][0], "Unplug the device, wait 10 seconds and plug it back in.")
+        # The dashboard offers Checkup, whose SSH check gives the same verdict
+        # (checks.network.closed_ssh_port_error), not "not answering".
+        self.assertEqual(error["recovery"]["action_ids"], ["run_checkup"])
+        self.assertEqual(error["recovery"]["suggested_operation"], "doctor")
+
+    def run_set_ssh_enable_at_a_stuck_address(self, located: LocateResult):
+        """set-ssh enable for a profile saved at .2 with its MAC, where ACP's
+        port drops every connect and port 22 refuses; .9 answers both."""
+        collector = CollectingSink()
+        acp_connects: list[str] = []
+
+        def connect(host: str, port: int) -> str | None:
+            acp_connects.append(host)
+            if host == "10.0.0.9":
+                return None
+            return "[Errno 61] Connection refused" if port == 22 else "timed out"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.device.probe.read_airport_acp", return_value=acp_reading(None)), \
+                    mock.patch("timecapsulesmb.services.runtime.locate_airport", return_value=located) as locate, \
+                    mock.patch(
+                        "timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status",
+                        side_effect=lambda host: SetSshStatusResult(
+                            host=host.removeprefix("root@"), acp_port_reachable=False, ssh_port_reachable=False,
+                        ),
+                    ), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=(LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network("10.0.0.0/24")),)), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", side_effect=connect), \
+                    mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.time.sleep"), \
+                    mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
+                rc = service.run_api_request(
+                    {"operation": "set-ssh", "params": {
+                        "config": str(config_path), "action": "enable", "password": "secret", "airport_mac": DEVICE_AIRPORT_MAC,
+                    }},
+                    collector.sink,
+                )
+        enable_ssh.assert_not_called()
+        return rc, collector, locate, acp_connects
+
+    def test_set_ssh_enable_looks_for_the_saved_device_before_calling_its_acpd_stuck(self) -> None:
+        # What answers on port 22 at the saved address may be another host
+        # that took it: the saved MAC is looked for first (load_request_config).
+        moved = LocateResult("found", host="root@10.0.0.9", address="10.0.0.9")
+        rc, collector, locate, acp_connects = self.run_set_ssh_enable_at_a_stuck_address(moved)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(locate.call_args.args[0], DEVICE_AIRPORT_MAC)
+        self.assertEqual(locate.call_args.kwargs["trigger"], "unreachable")
+        # The reboot is offered at the address the device answers at now.
+        self.assertEqual(acp_connects, ["10.0.0.9"])
+        self.assert_confirmation(collector, "ssh_access.enable_reboot", {"host": "10.0.0.9"})
+
+    def test_set_ssh_enable_reports_a_stuck_acpd_where_the_saved_device_was_not_found_elsewhere(self) -> None:
+        rc, collector, locate, acp_connects = self.run_set_ssh_enable_at_a_stuck_address(LocateResult("not_found"))
+
+        self.assertEqual(rc, 1)
+        locate.assert_called_once()
+        self.assertEqual(acp_connects, ["10.0.0.2"] * 4)
+        self.assertEqual(self.assert_single_terminal_event(collector, "error")["code"], "acpd_broken")
 
     def test_set_ssh_enable_that_loses_acp_while_writing_stays_a_remote_error(self) -> None:
         # ACP answered and the reboot was confirmed: the device is there, so
@@ -6345,7 +6478,15 @@ MaSt = (
         self.assertIn("only supported for NetBSD4", error["message"])
         self.assert_neutral_unsupported_device_recovery(error)
 
-    def run_deploy_dry_run_against(self, probe_state: ProbedDeviceState, *, acp_error: str | None = None):
+    def run_deploy_dry_run_against(
+        self,
+        probe_state: ProbedDeviceState,
+        *,
+        acp_error: str | None = None,
+        ports: dict[int, str | None] | None = None,
+    ):
+        """A dry-run deploy whose port checks all get `acp_error`, or each
+        port's error from `ports`."""
         collector = CollectingSink()
         target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"), probe_state=probe_state)
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
@@ -6353,7 +6494,11 @@ MaSt = (
             with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
-                        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value=acp_error) as acp_probe:
+                        with mock.patch(
+                            "timecapsulesmb.checks.network.tcp_connect_error",
+                            return_value=acp_error,
+                            side_effect=(lambda _host, port, _timeout: ports[port]) if ports else None,
+                        ) as acp_probe:
                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions", side_effect=AssertionError("no remote actions")):
                                 rc = service.run_api_request({"operation": "deploy", "params": {"dry_run": True}}, collector.sink)
         return rc, collector, acp_probe
@@ -6391,6 +6536,25 @@ MaSt = (
         self.assertIn("The device is not answering.\nNeither SSH port 22 nor AirPort ACP port 5009 is reachable at 10.0.0.2", error["message"])
         self.assertIn("Host is down", error["message"])
         self.assertEqual(error["recovery"]["localization_key"], "device_unreachable")
+        self.assert_not_unsupported_model_guidance(error)
+
+    def test_deploy_reports_a_stuck_acpd_when_acp_goes_unanswered_while_ssh_refuses(self) -> None:
+        rc, collector, acp_probe = self.run_deploy_dry_run_against(
+            failed_probe_state(SshAccessStatus.CLOSED, "SSH is not reachable yet."),
+            ports={5009: "timed out", 22: "[Errno 61] Connection refused"},
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual([call.args[1] for call in acp_probe.call_args_list], [5009, 22])
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "acpd_broken")
+        self.assertEqual(
+            error["message"],
+            "The device answers on the network, but its AirPort service does not.\n"
+            "AirPort ACP port 5009 does not answer at 10.0.0.2 (timed out), while SSH port 22 refused a connection.",
+        )
+        self.assertEqual(error["recovery"]["localization_key"], "acpd_broken")
+        self.assertEqual(error["recovery"]["actions"][0], "Unplug the device, wait 10 seconds and plug it back in.")
         self.assert_not_unsupported_model_guidance(error)
 
     def test_deploy_reports_each_ssh_login_failure_with_its_own_code(self) -> None:

@@ -89,6 +89,9 @@ class AcpdProblem:
 # (app.recovery); Checkup's result says it.
 ACPD_FIX = "Unplug the device, wait 10 seconds, plug it back in and wait 2 minutes"
 
+# Checkup's code for every ACPd problem; its `acpd_problem` names which.
+APPLE_ACPD_BROKEN_CODE = "apple_acpd_broken"
+
 
 def acpd_broken_message(what: str, *, note: str = "") -> str:
     """Every caller's words for a broken ACPd: what failed, and why it matters."""

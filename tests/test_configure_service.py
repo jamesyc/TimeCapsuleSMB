@@ -26,6 +26,7 @@ from timecapsulesmb.services.acp_ssh import (
     SSH_ENABLE_TIMEOUT_MESSAGE,
     ACPDeviceOffNetworkError,
     ACPNoRouteError,
+    ACPStuckError,
     AirportIdentityMismatchError,
     enable_ssh_with_port_preflight,
 )
@@ -432,11 +433,26 @@ class ConfigureServiceTests(unittest.TestCase):
             ],
         )
 
-    def probe_failure(self, errors: list[str], *, lan: str = "10.0.0.0/24") -> ACPConnectionError:
-        """The error one failed port probe of 10.0.0.2 raises, with each
-        attempt's connect error and this computer on `lan`."""
+    def probe_run(
+        self,
+        errors: list[str],
+        *,
+        ssh_error: str | None = "timed out",
+        lan: str = "10.0.0.0/24",
+    ) -> SimpleNamespace:
+        """One failed port probe of 10.0.0.2, with each ACP attempt's connect
+        error, `ssh_error` for SSH's port and this computer on `lan`: the
+        error, the ports connected to in order, and the fields updated."""
         networks = (LocalInterfaceNetwork("en0", "10.0.0.50", ipaddress.ip_network(lan)),)
-        callbacks, _stages, _logs, _debug_fields, _update_fields = self.callbacks()
+        callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
+        acp_errors = iter(errors)
+        ports: list[int] = []
+
+        def connect(host: str, port: int) -> str | None:
+            self.assertEqual(host, "10.0.0.2")
+            ports.append(port)
+            return ssh_error if port == 22 else next(acp_errors)
+
         with mock.patch("timecapsulesmb.services.acp_ssh.local_lan_networks", return_value=networks), \
                 mock.patch("timecapsulesmb.services.acp_ssh._record_port_probe_context"), \
                 mock.patch("timecapsulesmb.services.acp_ssh.set_dbug") as enable_ssh:
@@ -445,11 +461,15 @@ class ConfigureServiceTests(unittest.TestCase):
                     "10.0.0.2",
                     "pw",
                     callbacks=callbacks,
-                    tcp_connect_error_func=mock.Mock(side_effect=errors),
+                    tcp_connect_error_func=connect,
                     sleep_func=mock.Mock(),
                 )
         enable_ssh.assert_not_called()
-        return raised.exception
+        return SimpleNamespace(error=raised.exception, ports=ports, updates=update_fields)
+
+    def probe_failure(self, errors: list[str], **kwargs) -> ACPConnectionError:
+        """The error one failed port probe of 10.0.0.2 raises (probe_run)."""
+        return self.probe_run(errors, **kwargs).error
 
     def test_port_probe_with_no_route_on_every_attempt_says_so(self) -> None:
         # The macOS app reads this as Local Network access being blocked.
@@ -470,6 +490,7 @@ class ConfigureServiceTests(unittest.TestCase):
             "host down then no route": ["[Errno 64] Host is down", "[Errno 65] No route to host", "[Errno 65] No route to host"],
             "host down": ["[Errno 64] Host is down"] * 3,
             "refused": ["Connection refused"] * 3,
+            # SSH's port times out too (probe_run's default).
             "timeout": ["timed out"] * 3,
         }
         for name, errors in cases.items():
@@ -485,6 +506,88 @@ class ConfigureServiceTests(unittest.TestCase):
 
         self.assertIsInstance(error, ACPDeviceOffNetworkError)
         self.assertNotIsInstance(error, ACPNoRouteError)
+
+    def test_acp_timeouts_while_the_ssh_port_answers_say_acpd_is_stuck(self) -> None:
+        # A stuck ACPd's port drops every connect until the device is
+        # unplugged, while port 22 refuses at once with SSH off.
+        cases = {
+            "SSH off": ("[Errno 61] Connection refused", "refused", "refused"),
+            "SSH on": (None, "open", "accepted"),
+        }
+        for case, (ssh_error, answer, verb) in cases.items():
+            with self.subTest(case=case):
+                run = self.probe_run(["timed out"] * 3, ssh_error=ssh_error)
+
+                self.assertIsInstance(run.error, ACPStuckError)
+                # Its next steps say to unplug the device (app.recovery).
+                self.assertEqual(run.error.code, "acpd_broken")
+                self.assertEqual(
+                    run.error.message,
+                    "Could not connect to ACP. The device answers on the network, but its AirPort service does not.",
+                )
+                self.assertEqual(
+                    run.error.detail,
+                    f"AirPort ACP port 5009 does not answer at 10.0.0.2 (timed out), while SSH port 22 {verb} a connection.",
+                )
+                self.assertEqual(run.ports, [ACP_PORT] * 3 + [22])
+                self.assertEqual(run.updates[-1], {"acp_port_probe_ssh_port": answer})
+
+    def test_a_name_with_several_addresses_is_judged_address_by_address(self) -> None:
+        # IPv4 and IPv6 results are joined: one address with no route to it,
+        # or one that times out on port 22, must not hide the other's answer.
+        run = self.probe_run(
+            ["timed out; [Errno 65] No route to host"] * 3, ssh_error="timed out; [Errno 61] Connection refused",
+        )
+
+        self.assertIsInstance(run.error, ACPStuckError)
+        self.assertEqual(
+            run.error.detail,
+            "AirPort ACP port 5009 does not answer at 10.0.0.2 (timed out; [Errno 65] No route to host), "
+            "while SSH port 22 refused a connection.",
+        )
+        self.assertEqual(run.ports, [ACP_PORT] * 3 + [22])
+        self.assertEqual(run.updates[-1], {"acp_port_probe_ssh_port": "timeout+refused"})
+
+    def test_acp_timeouts_with_no_answer_on_the_ssh_port_stay_generic(self) -> None:
+        # A device that is off, gone or still restarting answers on no port.
+        cases = {
+            "timed out": "timeout",
+            "[Errno 64] Host is down": "host_down",
+            "[Errno 65] No route to host": "no_route",
+            "": "other",
+        }
+        for ssh_error, answer in cases.items():
+            with self.subTest(ssh_error=ssh_error):
+                run = self.probe_run(["timed out"] * 3, ssh_error=ssh_error)
+
+                self.assertIs(type(run.error), ACPConnectionError)
+                self.assertEqual(str(run.error), "Could not connect to ACP.\nNo answer from 10.0.0.2:5009.")
+                self.assertEqual(run.ports, [ACP_PORT] * 3 + [22])
+                self.assertEqual(run.updates[-1], {"acp_port_probe_ssh_port": answer})
+
+    def test_the_ssh_port_is_tried_only_when_every_acp_connect_timed_out(self) -> None:
+        # A refused ACP connect means nothing listens there (ACPd quit or is
+        # starting), not a listener that takes no connections.
+        cases = {
+            "refused": ["Connection refused"] * 3,
+            "timeouts then refused": ["timed out", "timed out", "Connection refused"],
+            "host down then timeouts": ["[Errno 64] Host is down", "timed out", "timed out"],
+            "blank errors": [""] * 3,
+            "one address refused": ["timed out; Connection refused"] * 3,
+        }
+        for case, errors in cases.items():
+            with self.subTest(case=case):
+                run = self.probe_run(errors, ssh_error=None)
+
+                self.assertIs(type(run.error), ACPConnectionError)
+                self.assertEqual(run.ports, [ACP_PORT] * 3)
+                self.assertNotIn("acp_port_probe_ssh_port", {key for fields in run.updates for key in fields})
+
+    def test_acp_timeouts_at_an_address_off_this_computers_network_say_so_first(self) -> None:
+        run = self.probe_run(["timed out"] * 3, ssh_error=None, lan="192.168.20.0/24")
+
+        self.assertIsInstance(run.error, ACPDeviceOffNetworkError)
+        self.assertEqual(run.ports, [ACP_PORT] * 3)
 
     def test_port_probe_records_its_context_with_the_selected_record(self) -> None:
         callbacks, _stages, _logs, _debug_fields, update_fields = self.callbacks()
@@ -509,6 +612,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self,
         *,
         port_answers: bool,
+        ssh_error: str | None = "timed out",
         located: LocateResult | None = None,
         reading: AirportAcpReading | None = None,
         record: BonjourResolvedService = RECORD_WITH_MAC,
@@ -516,8 +620,9 @@ class ConfigureServiceTests(unittest.TestCase):
     ):
         """enable_ssh_with_port_preflight against the record's 192.168.1.218.
 
-        `port_answers` is whether ACP's port answers there, `reading` the
-        network ACP read of it, `located` where locate_airport finds the device."""
+        `port_answers` is whether ACP's port answers there, `ssh_error` SSH's
+        port's connect error where it does not, `reading` the network ACP read
+        of it, `located` where locate_airport finds the device."""
         callbacks, _stages, logs, _debug, update_fields = self.callbacks()
         locate = mock.Mock(return_value=located or LocateResult("not_found"))
         read = mock.Mock(return_value=reading or acp_reading(True))
@@ -532,7 +637,7 @@ class ConfigureServiceTests(unittest.TestCase):
                     "pw",
                     callbacks=callbacks,
                     record=record,
-                    tcp_connect_error_func=mock.Mock(return_value=None if port_answers else "timed out"),
+                    tcp_connect_error_func=lambda _host, port: None if port_answers else (ssh_error if port == 22 else "timed out"),
                     sleep_func=mock.Mock(),
                     before_enable=before_enable,
                 )
@@ -656,6 +761,24 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertIsInstance(run.outcome, ACPConnectionError)
         self.assertIn("Could not connect to ACP.\nNo answer from 192.168.1.218:5009.", str(run.outcome))
         run.set_dbug.assert_not_called()
+
+    def test_a_stuck_acpd_is_still_looked_for_by_its_mac(self) -> None:
+        # What answers on port 22 may be another host that took the address.
+        cases = {
+            "found nowhere else": (None, None),
+            "found elsewhere": (LocateResult("found", host="root@192.168.1.40", address="192.168.1.40"), "192.168.1.40"),
+        }
+        for case, (located, enabled_at) in cases.items():
+            with self.subTest(case=case):
+                run = self.preflight(port_answers=False, ssh_error="Connection refused", located=located)
+
+                self.assertEqual(run.locate.call_args.kwargs["trigger"], "acp_unreachable")
+                if enabled_at is None:
+                    self.assertIsInstance(run.outcome, ACPStuckError)
+                    run.set_dbug.assert_not_called()
+                else:
+                    self.assertEqual(run.outcome, enabled_at)
+                    self.assertEqual(run.set_dbug.call_args.args[0], enabled_at)
 
     def test_a_device_found_with_another_password_is_reported_and_keeps_the_connection_error(self) -> None:
         # The record's MAC may be a stale cache entry for an address another

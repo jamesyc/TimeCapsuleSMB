@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 
+from timecapsulesmb.checks.network import SSH_PORT
 from timecapsulesmb.core.error_codes import CodedError, ErrorCode
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device import acpd
@@ -12,7 +13,7 @@ from timecapsulesmb.services import acp_diagnostics
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.locate import LocateResult, locate_airport
 from timecapsulesmb.transport.errors import TransportError
-from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.local import connect_error_kind, tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, close_ssh_masters
 
 
@@ -45,7 +46,6 @@ UPTIME_SLACK_SECONDS = 2
 # sshd starts 7-10 s after the kernel on both device families, ACPd at 4-5 s.
 # A device whose SSH is still closed at this uptime kept SSH off.
 SSH_CLOSED_CHECK_UPTIME_SECONDS = 60
-SSH_PORT = 22
 # A device that is down this long may have come back at another DHCP address
 # (51 of 259 installs whose wait timed out since v3.0 later reached it at a new
 # address), so it is looked for by its AirPort MAC from then on. The new kernel
@@ -180,7 +180,7 @@ def _read_error_kind(error: acp.ACPError) -> str:
         return "property"
     if isinstance(error, acp.ACPProtocolError):
         return "protocol"
-    return acp_diagnostics.connect_error_kind(str(error)) or "other"
+    return connect_error_kind(str(error)) or "other"
 
 
 def _network_context(host: str) -> dict[str, object]:
