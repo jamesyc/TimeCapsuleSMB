@@ -876,7 +876,6 @@ struct FlashPlanPayload: Decodable, Equatable {
     let mode: FlashPlanMode
     let writeRequested: Bool
     let alreadySatisfied: Bool
-    let activeBank: String?
     let banks: [FlashBankPayload]
     let flashPlan: JSONValue?
     let appleFirmwareMatch: FlashAppleFirmwareMatchPayload?
@@ -895,7 +894,6 @@ struct FlashPlanPayload: Decodable, Equatable {
         case mode
         case writeRequested = "write_requested"
         case alreadySatisfied = "already_satisfied"
-        case activeBank = "active_bank"
         case banks
         case flashPlan = "flash_plan"
         case appleFirmwareMatch = "apple_firmware_match"
@@ -916,7 +914,6 @@ struct FlashPlanPayload: Decodable, Equatable {
         self.mode = try container.decodeIfPresent(FlashPlanMode.self, forKey: .mode) ?? .patch
         self.writeRequested = try container.decodeIfPresent(Bool.self, forKey: .writeRequested) ?? false
         self.alreadySatisfied = try container.decodeIfPresent(Bool.self, forKey: .alreadySatisfied) ?? false
-        self.activeBank = try container.decodeIfPresent(String.self, forKey: .activeBank)
         self.banks = try container.decodeIfPresent([FlashBankPayload].self, forKey: .banks) ?? []
         self.flashPlan = try container.decodeIfPresent(JSONValue.self, forKey: .flashPlan)
         self.appleFirmwareMatch = try container.decodeIfPresent(FlashAppleFirmwareMatchPayload.self, forKey: .appleFirmwareMatch)

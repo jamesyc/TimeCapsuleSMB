@@ -409,6 +409,16 @@
 "flash.action.plan_restore" = "Planifier la restauration";
 "flash.action.write_patch" = "Écrire le correctif";
 "flash.action.write_restore" = "Écrire la restauration";
+"flash.bank.primary" = "Principale";
+"flash.bank.secondary" = "Secondaire";
+"flash.banks.both_valid" = "Les deux sont valides";
+"flash.banks.primary_failed" = "La principale a échoué aux vérifications, la secondaire est valide";
+"flash.banks.secondary_failed" = "La principale est valide, la secondaire a échoué aux vérifications";
+"flash.banks.both_failed" = "Les deux ont échoué aux vérifications";
+"flash.boot_hook.installed" = "Installé";
+"flash.boot_hook.not_installed" = "Non installé";
+"flash.boot_hook.not_recognized" = "Non reconnu";
+"flash.message.patch_plan_ready" = "Plan de correctif prêt. Choisissez « Écrire le correctif » pour installer le hook de démarrage.";
 "flash.manual_power_cycle.message" = "Écriture en mémoire flash vérifiée. Débranchez l’appareil, attendez 10 secondes, puis rebranchez-le. Attendez la fin du démarrage et lancez « Vérification ». Une banque de firmware est restée intacte.";
 "flash.manual_power_cycle.title" = "Redémarrage manuel requis";
 "flash.mode.check_apple" = "Vérifier le firmware Apple";
@@ -424,7 +434,8 @@
 "flash.row.apple_source" = "Source Apple";
 "flash.row.apple_version" = "Version Apple";
 "flash.row.backup_dir" = "Sauvegarde";
-"flash.row.banks" = "Banques de firmware";
+"flash.row.boot_hook" = "Hook de démarrage";
+"flash.row.firmware_banks" = "Banques de firmware";
 "flash.row.firmware_payload_path" = "Charge utile du firmware";
 "flash.row.firmware_payload_sha256" = "SHA-256 de la charge utile du firmware";
 "flash.row.firmware_payload_size" = "Taille de la charge utile du firmware";

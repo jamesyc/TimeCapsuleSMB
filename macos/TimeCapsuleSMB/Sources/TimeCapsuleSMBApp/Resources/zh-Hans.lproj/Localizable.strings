@@ -409,6 +409,16 @@
 "flash.action.plan_restore" = "规划恢复";
 "flash.action.write_patch" = "写入补丁";
 "flash.action.write_restore" = "写入恢复固件";
+"flash.bank.primary" = "主固件区";
+"flash.bank.secondary" = "第二固件区";
+"flash.banks.both_valid" = "两个固件区均有效";
+"flash.banks.primary_failed" = "主固件区未通过校验，第二固件区有效";
+"flash.banks.secondary_failed" = "主固件区有效，第二固件区未通过校验";
+"flash.banks.both_failed" = "两个固件区均未通过校验";
+"flash.boot_hook.installed" = "已安装";
+"flash.boot_hook.not_installed" = "未安装";
+"flash.boot_hook.not_recognized" = "无法识别";
+"flash.message.patch_plan_ready" = "修补计划已就绪。选择“写入补丁”以安装启动钩子。";
 "flash.manual_power_cycle.message" = "闪存写入验证已完成。拔掉设备电源，等待 10 秒，然后重新接通。启动完成后运行“检查”。其中一个固件区未被修改。";
 "flash.manual_power_cycle.title" = "需要手动重启";
 "flash.mode.check_apple" = "检查苹果固件";
@@ -424,7 +434,8 @@
 "flash.row.apple_source" = "苹果来源";
 "flash.row.apple_version" = "苹果版本";
 "flash.row.backup_dir" = "备份";
-"flash.row.banks" = "固件区";
+"flash.row.boot_hook" = "启动钩子";
+"flash.row.firmware_banks" = "固件区";
 "flash.row.firmware_payload_path" = "固件有效载荷";
 "flash.row.firmware_payload_sha256" = "固件有效载荷 SHA-256";
 "flash.row.firmware_payload_size" = "固件有效载荷大小";

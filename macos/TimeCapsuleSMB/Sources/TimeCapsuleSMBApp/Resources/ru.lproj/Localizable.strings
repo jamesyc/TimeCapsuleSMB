@@ -409,6 +409,16 @@
 "flash.action.plan_restore" = "Спланировать восстановление";
 "flash.action.write_patch" = "Записать патч";
 "flash.action.write_restore" = "Записать восстановленную прошивку";
+"flash.bank.primary" = "Основной";
+"flash.bank.secondary" = "Вторичный";
+"flash.banks.both_valid" = "Оба действительны";
+"flash.banks.primary_failed" = "Основной не прошел проверку, вторичный действителен";
+"flash.banks.secondary_failed" = "Основной действителен, вторичный не прошел проверку";
+"flash.banks.both_failed" = "Оба не прошли проверку";
+"flash.boot_hook.installed" = "Установлен";
+"flash.boot_hook.not_installed" = "Не установлен";
+"flash.boot_hook.not_recognized" = "Не распознан";
+"flash.message.patch_plan_ready" = "План патча готов. Выберите «Записать патч», чтобы установить хук запуска.";
 "flash.manual_power_cycle.message" = "Запись во флеш-память проверена. Отключите питание устройства, подождите 10 секунд и подключите его снова. Дождитесь завершения запуска и запустите операцию «Проверка». Один банк прошивки остался без изменений.";
 "flash.manual_power_cycle.title" = "Требуется ручная перезагрузка";
 "flash.mode.check_apple" = "Проверить прошивку Apple";
@@ -424,7 +434,8 @@
 "flash.row.apple_source" = "Источник Apple";
 "flash.row.apple_version" = "Версия Apple";
 "flash.row.backup_dir" = "Резервное копирование";
-"flash.row.banks" = "Банки прошивки";
+"flash.row.boot_hook" = "Хук запуска";
+"flash.row.firmware_banks" = "Банки прошивки";
 "flash.row.firmware_payload_path" = "Полезная нагрузка прошивки";
 "flash.row.firmware_payload_sha256" = "SHA-256 полезной нагрузки прошивки";
 "flash.row.firmware_payload_size" = "Размер полезной нагрузки прошивки";

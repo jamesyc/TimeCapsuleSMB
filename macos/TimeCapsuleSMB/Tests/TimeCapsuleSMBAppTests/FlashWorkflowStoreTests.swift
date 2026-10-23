@@ -421,6 +421,10 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
             store.write(mode: mode, password: "pw", profile: profile)
             try await waitUntilStoreState { store.state == .awaitingStrongConfirmation }
+            if mode == .patch {
+                // Write Patch was just pressed; the plan's own summary stays true.
+                XCTAssertEqual(FlashPresentation(store: store).message, "Flash patch write plan generated.")
+            }
             XCTAssertTrue(coordinator.isDeviceBusy(profile))
             XCTAssertNil(coordinator.readyConfirmation)
             runner.finishAll()
@@ -429,6 +433,9 @@ final class FlashWorkflowStoreTests: XCTestCase {
             coordinator.cancel(pending)
             coordinator.cancel(pending)
             XCTAssertEqual(store.state, .planAvailable)
+            if mode == .patch {
+                XCTAssertEqual(FlashPresentation(store: store).message, "Patch plan ready. Choose “Write Patch” to install the boot hook.")
+            }
             XCTAssertFalse(coordinator.isDeviceBusy(profile))
             XCTAssertFalse(store.isBusy)
             XCTAssertNil(store.currentStage)
@@ -528,7 +535,10 @@ final class FlashWorkflowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "flash", ok: true, payload: flashWritePayload(mode: .patch))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload(banks: [
+                    flashBank(name: "primary", backupValid: true, login: "already_patched"),
+                    flashBank(name: "secondary", backupValid: true, login: "stock")
+                ]))
             ])
         ])
         let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
@@ -547,6 +557,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
         XCTAssertTrue(store.canPlan)
         XCTAssertEqual(FlashPresentation(store: store).title(for: .backupAndInspect), "Back Up and Inspect")
+        XCTAssertEqual(row("Boot Hook", in: FlashPresentation(store: store)), "Installed")
     }
 
     func testFlashPresentationUsesWriteResultSummaryAfterWrite() async throws {
@@ -555,6 +566,188 @@ final class FlashWorkflowStoreTests: XCTestCase {
         let presentation = FlashPresentation(store: store)
 
         XCTAssertEqual(presentation.message, "Flash patch write validated; manual power cycle required.")
+    }
+
+    func testBackupRowsReportBankHealth() async throws {
+        let cases: [(primary: Bool, secondary: Bool, expected: String)] = [
+            (true, true, "Both valid"),
+            (true, false, "Primary valid, secondary failed checks"),
+            (false, true, "Primary failed checks, secondary valid"),
+            (false, false, "Both failed checks")
+        ]
+        for testCase in cases {
+            let store = try await storeAfterBackup(flashBackupPayload(activeBank: nil, banks: [
+                flashBank(name: "primary", backupValid: testCase.primary, login: "stock"),
+                flashBank(name: "secondary", backupValid: testCase.secondary, login: "stock")
+            ]))
+
+            let presentation = FlashPresentation(store: store)
+
+            XCTAssertEqual(row("Firmware Banks", in: presentation), testCase.expected, "\(testCase)")
+        }
+    }
+
+    func testActiveBankRowShowsOnlyABankTheHelperPicked() async throws {
+        let cases: [(activeBank: String?, primaryCandidate: Bool, secondaryCandidate: Bool, expected: String?)] = [
+            // Both banks passing: the normal state, with no bank to name.
+            (nil, true, true, nil),
+            ("primary", true, false, "Primary"),
+            // Both banks valid but only the secondary matches the running
+            // kernel: the reason a patch of the primary is refused.
+            ("secondary", false, true, "Secondary")
+        ]
+        for testCase in cases {
+            let store = try await storeAfterBackup(flashBackupPayload(activeBank: testCase.activeBank, banks: [
+                flashBank(name: "primary", backupValid: true, activeCandidate: testCase.primaryCandidate, login: "stock"),
+                flashBank(name: "secondary", backupValid: true, activeCandidate: testCase.secondaryCandidate, login: "stock")
+            ]))
+
+            let presentation = FlashPresentation(store: store)
+
+            XCTAssertEqual(row("Active Bank", in: presentation), testCase.expected, "\(testCase)")
+            XCTAssertEqual(row("Firmware Banks", in: presentation), "Both valid", "\(testCase)")
+        }
+    }
+
+    func testBootHookRowFollowsThePrimaryBankLoginScript() async throws {
+        let cases: [(primary: String?, secondary: String?, expected: String)] = [
+            ("stock", "stock", "Not installed"),
+            ("already_patched", "stock", "Installed"),
+            // Only the primary bank is patched, so a patched secondary does not count.
+            ("stock", "already_patched", "Not installed"),
+            ("unknown", "stock", "Not recognized"),
+            (nil, "stock", "Not recognized")
+        ]
+        for testCase in cases {
+            let store = try await storeAfterBackup(flashBackupPayload(banks: [
+                flashBank(name: "primary", backupValid: testCase.primary != nil, login: testCase.primary),
+                flashBank(name: "secondary", backupValid: true, login: testCase.secondary)
+            ]))
+
+            XCTAssertEqual(row("Boot Hook", in: FlashPresentation(store: store)), testCase.expected, "\(testCase)")
+        }
+    }
+
+    func testBankRowsLeaveWithTheStaleBackupAfterAWrite() async throws {
+        let store = try await storeAfterValidatedWrite(mode: .patch)
+
+        let presentation = FlashPresentation(store: store)
+
+        // The backup still says the hook is not installed; the write just changed that.
+        XCTAssertNil(row("Boot Hook", in: presentation))
+        XCTAssertNil(row("Firmware Banks", in: presentation))
+        XCTAssertNil(row("Active Bank", in: presentation))
+        XCTAssertEqual(row("Backup", in: presentation), "/tmp/flash-backup")
+        XCTAssertTrue(presentation.warnings.contains("Firmware was written after this backup. Back up and inspect again before planning another flash action."))
+    }
+
+    func testWriteInProgressDoesNotAskForWritePatch() async throws {
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
+            ]),
+            .init(events: [
+                BackendEvent(type: "stage", operation: "flash", stage: "write_primary_bank", risk: "remote_write", cancellable: false)
+            ], pauseAfterEvents: true)
+        ])
+        defer { runner.finishAll() }
+        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        store.refresh(profile: profile)
+        store.backupAndInspect(password: "pw", profile: profile)
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+        store.planFlash(mode: .patch, profile: profile)
+        try await waitUntilStoreState { store.plan != nil && !store.isBusy }
+
+        store.write(mode: .patch, password: "pw", profile: profile)
+        try await waitUntilStoreState { store.state == .writing }
+
+        let presentation = FlashPresentation(store: store)
+        XCTAssertNotNil(store.plan)
+        XCTAssertFalse(presentation.isEnabled(.writePatch))
+        XCTAssertEqual(presentation.message, "Flash patch write plan generated.")
+    }
+
+    func testFailedWriteAsksForWritePatchOnlyWhenFirmwareWasUntouched() async throws {
+        let cases: [(stage: String, asksForWritePatch: Bool)] = [
+            // Refused before anything was written: the plan still holds.
+            ("pre_write_validation", true),
+            // Failed while writing: the backup no longer describes the banks.
+            ("write_primary_bank", false)
+        ]
+        for testCase in cases {
+            let runner = StoreTestRunner(responses: [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+                ]),
+                .init(events: [
+                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: .patch, writeRequested: true))
+                ]),
+                .init(events: [
+                    BackendEvent(type: "stage", operation: "flash", stage: testCase.stage, risk: "remote_write", cancellable: false),
+                    BackendEvent(type: "error", operation: "flash", code: "validation_failed", message: "write failed")
+                ])
+            ])
+            let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+            store.refresh(profile: profile)
+            store.backupAndInspect(password: "pw", profile: profile)
+            try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+            store.planFlash(mode: .patch, profile: profile)
+            try await waitUntilStoreState { store.plan != nil && !store.isBusy }
+            store.write(mode: .patch, password: "pw", profile: profile)
+            try await waitUntilStoreState { store.state == .failed && !store.isBusy }
+
+            let presentation = FlashPresentation(store: store)
+
+            XCTAssertEqual(presentation.isEnabled(.writePatch), testCase.asksForWritePatch, testCase.stage)
+            XCTAssertEqual(
+                presentation.message == "Patch plan ready. Choose “Write Patch” to install the boot hook.",
+                testCase.asksForWritePatch,
+                testCase.stage
+            )
+        }
+    }
+
+    func testPlansThatCannotWriteAPatchKeepTheirOwnSummary() async throws {
+        let cases: [(mode: FlashPlanMode, writeRequested: Bool, alreadySatisfied: Bool, expected: String)] = [
+            (.restore, true, false, "Flash restore write plan generated."),
+            (.patch, false, true, "Flash plan is already satisfied; no write is needed.")
+        ]
+        for testCase in cases {
+            let runner = StoreTestRunner(responses: [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+                ]),
+                .init(events: [
+                    BackendEvent(
+                        type: "result",
+                        operation: "flash",
+                        ok: true,
+                        payload: flashPlanPayload(
+                            mode: testCase.mode,
+                            writeRequested: testCase.writeRequested,
+                            alreadySatisfied: testCase.alreadySatisfied
+                        )
+                    )
+                ])
+            ])
+            let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+            let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+            store.refresh(profile: profile)
+            store.backupAndInspect(password: "pw", profile: profile)
+            try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+            store.planFlash(mode: testCase.mode, profile: profile)
+            try await waitUntilStoreState { store.plan != nil && !store.isBusy }
+
+            let presentation = FlashPresentation(store: store)
+
+            XCTAssertFalse(presentation.isEnabled(.writePatch), "\(testCase)")
+            XCTAssertEqual(presentation.message, testCase.expected, "\(testCase)")
+        }
     }
 
     func testFlashFailureShowsInAnErrorBoxNotInTheStatusLine() async throws {
@@ -620,28 +813,63 @@ final class FlashWorkflowStoreTests: XCTestCase {
         )
     }
 
-    private func flashBackupPayload() -> JSONValue {
-        .object([
+    private func flashBackupPayload(
+        activeBank: String? = "primary",
+        banks: [JSONValue]? = nil
+    ) -> JSONValue {
+        let banks = banks ?? [
+            flashBank(name: "primary", backupValid: true, login: "stock"),
+            flashBank(name: "secondary", backupValid: true, login: "stock")
+        ]
+        return .object([
             "schema_version": .number(1),
             "backup_dir": .string("/tmp/flash-backup"),
             "host": .string("10.0.0.2"),
             "syap": .string("116"),
-            "active_bank": .string("primary"),
-            "banks": .array([
-                .object([
-                    "name": .string("primary"),
-                    "device": .string("/dev/rflash0.raw"),
-                    "size": .number(128),
-                    "sha256": .string("abc"),
-                    "backup_valid": .bool(true),
-                    "active_candidate": .bool(true),
-                    "would_write": .bool(false),
-                    "write_decision": .string("no write")
-                ])
-            ]),
-            "counts": .object(["banks": .number(1)]),
+            "active_bank": activeBank.map(JSONValue.string) ?? .null,
+            "banks": .array(banks),
+            "counts": .object(["banks": .number(Double(banks.count))]),
             "summary": .string("Flash backup saved to /tmp/flash-backup.")
         ])
+    }
+
+    /// A bank as the helper reports it; `login: nil` is a bank whose analysis failed.
+    /// A bank is an active candidate only if it is also a valid backup.
+    private func flashBank(
+        name: String,
+        backupValid: Bool,
+        activeCandidate: Bool? = nil,
+        login: String?
+    ) -> JSONValue {
+        .object([
+            "name": .string(name),
+            "device": .string(name == "primary" ? "/dev/rflash0.raw" : "/dev/rflash1.raw"),
+            "size": .number(128),
+            "sha256": .string("abc"),
+            "backup_valid": .bool(backupValid),
+            "active_candidate": .bool(activeCandidate ?? backupValid),
+            "would_write": .bool(false),
+            "write_decision": .string("no write"),
+            "login": login.map { .object(["classification": .string($0)]) } ?? .null
+        ])
+    }
+
+    private func storeAfterBackup(_ payload: JSONValue) async throws -> FlashWorkflowStore {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: payload)
+            ])
+        ])
+        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        store.refresh(profile: profile)
+        store.backupAndInspect(password: "pw", profile: profile)
+        try await waitUntilStoreState { store.backup != nil && !store.isBusy }
+        return store
+    }
+
+    private func row(_ label: String, in presentation: FlashPresentation) -> String? {
+        presentation.rows.first { $0.label == label }?.value
     }
 
     private func flashPlanPayload(
@@ -661,7 +889,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
             "active_bank": .string("primary"),
             "banks": .array([]),
             "flash_plan": .object(["mode": .string(mode.rawValue)]),
-            "summary": .string(summary(for: mode, alreadySatisfied: alreadySatisfied))
+            "summary": .string(summary(for: mode, writeRequested: writeRequested, alreadySatisfied: alreadySatisfied))
         ]
         if let appleMatched {
             payload["apple_firmware_match"] = .object([
@@ -718,7 +946,8 @@ final class FlashWorkflowStoreTests: XCTestCase {
         return .object(payload)
     }
 
-    private func summary(for mode: FlashPlanMode, alreadySatisfied: Bool) -> String {
+    /// The summary `flash_plan_payload` gives each plan.
+    private func summary(for mode: FlashPlanMode, writeRequested: Bool, alreadySatisfied: Bool) -> String {
         switch mode {
         case .checkApple:
             return alreadySatisfied
@@ -727,7 +956,10 @@ final class FlashWorkflowStoreTests: XCTestCase {
         case .downloadOnly:
             return "Apple restore firmware validated (version 7.8.1, product 116)."
         case .patch, .restore:
-            return "Flash \(mode.rawValue) plan generated."
+            if alreadySatisfied {
+                return "Flash plan is already satisfied; no write is needed."
+            }
+            return writeRequested ? "Flash \(mode.rawValue) write plan generated." : "Flash \(mode.rawValue) plan generated."
         }
     }
 

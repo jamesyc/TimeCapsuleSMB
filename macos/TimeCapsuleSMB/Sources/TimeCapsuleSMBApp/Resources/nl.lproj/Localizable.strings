@@ -409,6 +409,16 @@
 "flash.action.plan_restore" = "Herstel plannen";
 "flash.action.write_patch" = "Patch schrijven";
 "flash.action.write_restore" = "Herstel schrijven";
+"flash.bank.primary" = "Primair";
+"flash.bank.secondary" = "Secundair";
+"flash.banks.both_valid" = "Beide geldig";
+"flash.banks.primary_failed" = "Primaire bank afgekeurd, secundaire geldig";
+"flash.banks.secondary_failed" = "Primaire bank geldig, secundaire afgekeurd";
+"flash.banks.both_failed" = "Beide afgekeurd";
+"flash.boot_hook.installed" = "Geïnstalleerd";
+"flash.boot_hook.not_installed" = "Niet geïnstalleerd";
+"flash.boot_hook.not_recognized" = "Niet herkend";
+"flash.message.patch_plan_ready" = "Patchplan klaar. Kies ‘Patch schrijven’ om de opstart-hook te installeren.";
 "flash.manual_power_cycle.message" = "Schrijven naar flash geverifieerd. Trek de stekker uit het apparaat, wacht 10 seconden en sluit het weer aan. Wacht tot het is opgestart en voer ‘Controle’ uit. Eén firmwarebank is ongewijzigd gebleven.";
 "flash.manual_power_cycle.title" = "Handmatig opnieuw opstarten vereist";
 "flash.mode.check_apple" = "Apple-firmware controleren";
@@ -424,7 +434,8 @@
 "flash.row.apple_source" = "Apple-bron";
 "flash.row.apple_version" = "Apple-versie";
 "flash.row.backup_dir" = "Back-up";
-"flash.row.banks" = "Firmwarebanken";
+"flash.row.boot_hook" = "Opstart-hook";
+"flash.row.firmware_banks" = "Firmwarebanken";
 "flash.row.firmware_payload_path" = "Firmwarepayload";
 "flash.row.firmware_payload_sha256" = "SHA-256 van firmwarepayload";
 "flash.row.firmware_payload_size" = "Grootte firmwarepayload";
